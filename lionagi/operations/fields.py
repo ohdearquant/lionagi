@@ -290,7 +290,7 @@ def get_default_field(
     ],
     default: Any = Unset,
     nullable: bool = True,
-    listable: bool = None,
+    listable: bool | None = None,
 ):
     global _DEFAULT_FIELDS
     key = (kind, str(default), nullable, listable)
@@ -311,7 +311,7 @@ def _get_default_fields(
     ],
     default: Any = Unset,
     nullable: bool = True,
-    listable: bool = None,
+    listable: bool | None = None,
 ):
     from lionagi.models.field_model import FieldModel
 

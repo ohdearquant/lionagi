@@ -46,21 +46,21 @@ class iModel:  # noqa: N801
 
     def __init__(
         self,
-        provider: str = None,
-        base_url: str = None,
+        provider: str | None = None,
+        base_url: str | None = None,
         endpoint: str | Endpoint = "chat",
-        api_key: str = None,
+        api_key: str | None = None,
         queue_capacity: int | None = None,
         capacity_refresh_time: float = 60,
         interval: float | None = None,
-        limit_requests: int = None,
-        limit_tokens: int = None,
+        limit_requests: int | None = None,
+        limit_tokens: int | None = None,
         concurrency_limit: int | None = None,
-        streaming_process_func: Callable = None,
+        streaming_process_func: Callable | None = None,
         provider_metadata: dict | None = None,
         hook_registry: HookRegistry | dict | None = None,
         exit_hook: bool = False,
-        id: UUID | str = None,  # noqa: A002
+        id: UUID | str | None = None,  # noqa: A002
         created_at: float | None = None,
         **kwargs,
     ) -> None:
@@ -160,15 +160,15 @@ class iModel:  # noqa: N801
     async def create_event(
         self,
         create_event_type: type[Event] = APICalling,
-        create_event_exit_hook: bool = None,
+        create_event_exit_hook: bool | None = None,
         create_event_hook_timeout: float = 10.0,
-        create_event_hook_params: dict = None,
-        pre_invoke_event_exit_hook: bool = None,
+        create_event_hook_params: dict | None = None,
+        pre_invoke_event_exit_hook: bool | None = None,
         pre_invoke_event_hook_timeout: float = 30.0,
-        pre_invoke_event_hook_params: dict = None,
-        post_invoke_event_exit_hook: bool = None,
+        pre_invoke_event_hook_params: dict | None = None,
+        post_invoke_event_exit_hook: bool | None = None,
         post_invoke_event_hook_timeout: float = 30.0,
-        post_invoke_event_hook_params: dict = None,
+        post_invoke_event_hook_params: dict | None = None,
         **kwargs,
     ) -> APICalling:
         h_ev = None

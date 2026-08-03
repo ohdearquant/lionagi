@@ -28,8 +28,8 @@ class RateLimitedAPIProcessor(Processor):
         queue_capacity: int,
         capacity_refresh_time: float,
         interval: float | None = None,
-        limit_requests: int = None,
-        limit_tokens: int = None,
+        limit_requests: int | None = None,
+        limit_tokens: int | None = None,
         concurrency_limit: int | None = None,
     ):
         super().__init__(
@@ -91,8 +91,8 @@ class RateLimitedAPIProcessor(Processor):
         queue_capacity: int,
         capacity_refresh_time: float,
         interval: float | None = None,
-        limit_requests: int = None,
-        limit_tokens: int = None,
+        limit_requests: int | None = None,
+        limit_tokens: int | None = None,
         concurrency_limit: int | None = None,
     ) -> Self:
         self = cls(
@@ -108,7 +108,7 @@ class RateLimitedAPIProcessor(Processor):
         return self
 
     @override
-    async def request_permission(self, required_tokens: int = None, **kwargs: Any) -> bool:
+    async def request_permission(self, required_tokens: int | None = None, **kwargs: Any) -> bool:
         # No limits configured, just check queue capacity
         if self._available_requests is None and self._available_tokens is None:
             return self.queue.qsize() < self.queue_capacity
@@ -147,8 +147,8 @@ class RateLimitedAPIExecutor(Executor):
         queue_capacity: int,
         capacity_refresh_time: float,
         interval: float | None = None,
-        limit_requests: int = None,
-        limit_tokens: int = None,
+        limit_requests: int | None = None,
+        limit_tokens: int | None = None,
         strict_event_type: bool = False,
         concurrency_limit: int | None = None,
     ):

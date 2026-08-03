@@ -451,10 +451,10 @@ class CodingToolkit(LionTool):
         async def reader(
             action: str,
             path: str,
-            offset: int = None,
-            limit: int = None,
-            recursive: bool = None,
-            file_types: list[str] = None,
+            offset: int | None = None,
+            limit: int | None = None,
+            recursive: bool | None = None,
+            file_types: list[str] | None = None,
         ) -> dict:
             """Read files, convert documents (PDF/PPTX/DOCX/HTML via docling), or list directory contents.
             Use action='open' then action='read' with offset/limit to paginate a converted document.
@@ -494,9 +494,9 @@ class CodingToolkit(LionTool):
         async def editor(
             action: str,
             file_path: str,
-            content: str = None,
-            old_string: str = None,
-            new_string: str = None,
+            content: str | None = None,
+            old_string: str | None = None,
+            new_string: str | None = None,
             replace_all: bool = False,
         ) -> dict:
             """Write or edit files on disk; you must read a file (via reader) before editing it.
@@ -538,8 +538,8 @@ class CodingToolkit(LionTool):
 
         async def bash(
             command: str,
-            timeout: int = None,
-            cwd: str = None,
+            timeout: int | None = None,
+            cwd: str | None = None,
         ) -> dict:
             """Execute a single shell command and return stdout, stderr, and return code.
             One command per call — shell operators (&&, ||, |, ;, redirects, backticks, $(...)) are rejected; pass cwd= to run in a directory. Output is truncated if it exceeds 100 KB per stream.
@@ -576,9 +576,9 @@ class CodingToolkit(LionTool):
         async def search(
             action: str,
             pattern: str,
-            path: str = None,
-            include: str = None,
-            max_results: int = None,
+            path: str | None = None,
+            include: str | None = None,
+            max_results: int | None = None,
         ) -> dict:
             """Search file contents by regex (action='grep') or find files by name (action='find').
             Results are capped at max_results to prevent context overflow.
@@ -628,12 +628,12 @@ class CodingToolkit(LionTool):
 
         async def context(
             action: str,
-            start: int = None,
-            end: int = None,
-            keep_last: int = None,
-            summary: str = None,
-            mode: str = None,
-            scope: str = None,
+            start: int | None = None,
+            end: int | None = None,
+            keep_last: int | None = None,
+            summary: str | None = None,
+            mode: str | None = None,
+            scope: str | None = None,
             auto: bool = False,
         ) -> dict:
             """Manage your conversation context — check usage, list messages, evict/restore/compact them.
@@ -689,7 +689,7 @@ class CodingToolkit(LionTool):
 
         async def sandbox(
             action: str,
-            message: str = None,
+            message: str | None = None,
         ) -> dict:
             """Work in an isolated git worktree — safe experimentation with easy merge or discard.
             Workflow: create -> edit/bash in the sandbox dir -> diff -> commit -> merge (applies changes) or discard (throws them away).
@@ -766,7 +766,7 @@ class CodingToolkit(LionTool):
             instruction: str,
             permissions: str = "read_only",
             max_turns: int = 20,
-            cwd: str = None,
+            cwd: str | None = None,
         ) -> dict:
             """Spawn a sub-agent with its own Branch and coding tools to handle a task independently via a ReAct loop.
             permissions controls what it can do: read_only (search/read only), safe (read/write/search, bash restricted), or allow_all (full access).

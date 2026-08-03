@@ -50,7 +50,7 @@ class FieldModel(Params):
     base_type: type[Any]
     metadata: tuple[Meta, ...]
 
-    def __init__(self, base_type: type[Any] = None, **kwargs: Any) -> None:
+    def __init__(self, base_type: type[Any] | None = None, **kwargs: Any) -> None:
         if base_type is not None:
             kwargs["base_type"] = base_type
         converted = self._convert_kwargs_to_params(**kwargs)

@@ -332,7 +332,7 @@ class OperableModel(HashableModel):
         name: str | None = None,
         use_fields: set[str] | None = None,
         base_type: type[BaseModel] | None = None,
-        exclude_fields: list = None,
+        exclude_fields: list | None = None,
         inherit_base: bool = True,
         config_dict: ConfigDict | dict | None = None,
         doc: str | None = None,

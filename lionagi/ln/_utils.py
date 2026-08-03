@@ -226,8 +226,8 @@ def get_bins(input_: list[str], upper: int) -> list[list[int]]:
 
 def import_module(
     package_name: str,
-    module_name: str = None,
-    import_name: str | list = None,
+    module_name: str | None = None,
+    import_name: str | list | None = None,
 ) -> Any:
     try:
         full_import_path = f"{package_name}.{module_name}" if module_name else package_name
@@ -492,7 +492,7 @@ def union_members(
 def create_path(
     directory: StdPath | str,
     filename: str,
-    extension: str = None,
+    extension: str | None = None,
     timestamp: bool = False,
     dir_exist_ok: bool = True,
     file_exist_ok: bool = False,

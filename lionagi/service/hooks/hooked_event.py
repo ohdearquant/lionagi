@@ -324,9 +324,9 @@ class HookedEvent(Event):
     def create_pre_invoke_hook(
         self,
         hook_registry,
-        exit_hook: bool = None,
+        exit_hook: bool | None = None,
         hook_timeout: float = 30.0,
-        hook_params: dict = None,
+        hook_params: dict | None = None,
     ):
         """Attach a PreInvocation HookEvent; hook failure aborts invocation when exit_hook is True."""
         h_ev = HookEvent(
@@ -342,9 +342,9 @@ class HookedEvent(Event):
     def create_post_invoke_hook(
         self,
         hook_registry,
-        exit_hook: bool = None,
+        exit_hook: bool | None = None,
         hook_timeout: float = 30.0,
-        hook_params: dict = None,
+        hook_params: dict | None = None,
     ):
         """Attach a PostInvocation HookEvent; runs even on core failure (post-stream failures are logged, not raised)."""
         h_ev = HookEvent(

@@ -182,7 +182,7 @@ target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "B", "I", "UP", "N", "S", "A"]
+select = ["E", "F", "W", "B", "I", "UP", "N", "S", "A", "RUF013"]
 ignore = [
     "N805",   # pydantic validator first-arg naming
     "A004",   # ExceptionGroup stdlib shadowing (compat shim)

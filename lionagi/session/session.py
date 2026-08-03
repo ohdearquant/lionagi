@@ -112,7 +112,7 @@ class Session(Node, Relational):
     def register_operation(self, operation: str, func: Callable, *, update: bool = False):
         self._operation_manager.register(operation, func, update=update)
 
-    def operation(self, name: str = None, *, update: bool = False):
+    def operation(self, name: str | None = None, *, update: bool = False):
         """Decorator to register a function as a named operation."""
 
         def decorator(func: Callable) -> Callable:
@@ -221,7 +221,7 @@ class Session(Node, Relational):
         self,
         system: System | JsonValue = None,
         system_sender: SenderRecipient = None,
-        system_datetime: bool | str = None,
+        system_datetime: bool | str | None = None,
         user: SenderRecipient = None,
         name: str | None = None,
         messages: Pile[RoledMessage] = None,
