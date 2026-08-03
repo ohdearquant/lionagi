@@ -126,6 +126,18 @@ async def _enqueue_control_inner(
         # having no drain at all — the control would be admitted, never
         # delivered, and never closed. Ask about the capability instead, and
         # let the runner declare it when it starts the session.
+        #
+        # This refuses one row that used to be admitted and deserved to be: a
+        # CLI agent leg that was already running when this check landed. It has
+        # a run_id and a real turn-end drain, but its session row predates the
+        # declaration, so it is unsteerable until it ends or resumes. That is
+        # deliberate and it is not a migration that was skipped. A pre-existing
+        # row carries no field separating a CLI leg from an embedded runner —
+        # both are agent-kind with a run_id and no declaration — so reading the
+        # absent key as "capable" to spare the CLI leg would re-admit exactly
+        # the orphaned controls this exists to refuse. The window is bounded by
+        # the life of legs that started before the upgrade; every leg started
+        # after it declares.
         if kind == "agent" and not _runner_drains_controls(session):
             return (
                 f"session {session_id[:8]} is run by something that does not "

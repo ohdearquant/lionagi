@@ -1205,23 +1205,31 @@ async def setup_agent_persist(
             # markers. Nothing to do here for a row that was terminal.
             #
             # A resume that did NOT reopen adopts a row still reading running,
-            # and that row keeps whatever the earlier leg declared. Two cases,
-            # and only one of them is benign. If that leg is genuinely alive,
-            # its declaration is the right answer: it is the one a control would
-            # reach. If it died without terminalizing, the row outlives it, and
-            # a declaration of True then admits a control for a drain that is
-            # gone. Nothing here can tell those apart — a row reading running is
-            # the only evidence available, and it is exactly the evidence a dead
-            # leg leaves behind. The stale-session doctor is what resolves it,
-            # after the fact.
+            # and that row keeps whatever the earlier leg declared. Three
+            # representations reach here, not two: explicit True, explicit
+            # False, and no declaration at all on a row written before this
+            # field existed. The last one refuses like False at the admission
+            # gate, but it is a third state and not a spelling of the second —
+            # it means nobody ever answered the question, where False means a
+            # runner answered no.
+            #
+            # Of the three, only True is not benign. If that leg is genuinely
+            # alive, its declaration is the right answer: it is the one a
+            # control would reach. If it died without terminalizing, the row
+            # outlives it, and a declaration of True then admits a control for
+            # a drain that is gone. Nothing here can tell those apart — a row
+            # reading running is the only evidence available, and it is exactly
+            # the evidence a dead leg leaves behind. The stale-session doctor is
+            # what resolves it, after the fact.
             #
             # So this path is not made correct by leaving it alone; it is left
             # alone because the alternative is worse. Writing the declaration
             # here would mean a read-modify-write against a row a live leg may
             # be updating, which is how the exited leg's process markers got
             # restored over the live leg's once already. The narrower cost is
-            # the other direction: a row reading False keeps refusing controls
-            # even though this leg would drain them.
+            # the other direction: a row reading False, or carrying no
+            # declaration at all, keeps refusing controls even though this leg
+            # would drain them.
         else:
             session_prog_id = str(uuid.uuid4())
             branch_prog_id = str(uuid.uuid4())

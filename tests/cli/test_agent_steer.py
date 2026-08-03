@@ -172,7 +172,14 @@ async def test_msg_refused_when_the_session_never_declared_a_drain(temp_db_path,
     """Absence is a refusal, not a pass. A session row written before the
     declaration existed, or by a runner that forgot to make one, says nothing
     about whether anything will read its controls — and admitting on silence
-    is how the queue fills with rows nobody closes."""
+    is how the queue fills with rows nobody closes.
+
+    This pins a cost as well as a guarantee, and the cost is real: a CLI agent
+    leg that was already running when this landed matches this row exactly, and
+    it does have a drain, so it loses steering until it ends or resumes. Read
+    that as accepted rather than as overlooked. Nothing on a pre-existing row
+    separates that leg from an embedded runner with no drain at all, so the
+    only way to keep steering it is to admit the orphaned controls too."""
     async with StateDB() as db:
         sid = uuid.uuid4().hex[:12]
         pid = uuid.uuid4().hex
@@ -1525,12 +1532,18 @@ async def test_a_resumed_session_takes_the_declaration_of_the_leg_running_it_now
         # it. Refusing is the side to be wrong on.
         (False, True, False),
     ],
-    ids=["stale-true-still-admits", "stale-false-now-refuses"],
+    ids=["KNOWN-GAP-stale-true-still-admits", "GUARANTEE-stale-false-refuses"],
 )
-async def test_a_resume_that_does_not_reopen_keeps_the_declaration_already_on_the_row(
+async def test_a_resume_that_does_not_reopen_keeps_the_row_declaration_one_gap_one_guarantee(
     temp_db_path, monkeypatch, declared_by_the_first_leg, declared_by_the_resumer, admits
 ):
     """A resume only rewrites the declaration when it reopens a terminal row.
+
+    The two parameters are NOT both guarantees, and the ids say which is which.
+    KNOWN-GAP pins behaviour that is wrong and not fixed here: a control admitted
+    for a drain that is gone. It is in the suite so it cannot be lost, not
+    because it is correct. GUARANTEE pins behaviour this change is responsible
+    for. Read the first as coverage of the defect and you have it backwards.
 
     Adopting a row that still reads running leaves it alone, deliberately: a
     write here is a read-modify-write against a row a live leg may be updating,
