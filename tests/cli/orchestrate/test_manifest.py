@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from hashlib import blake2b
+from pathlib import Path
 
 import pytest
 import yaml
@@ -574,3 +575,179 @@ def test_env_in_defaults_is_refused_as_unknown_key(tmp_path):
     manifest_path = _dump_yaml(tmp_path, data)
     with pytest.raises(ManifestError, match="defaults has unknown key"):
         load_manifest(manifest_path)
+
+
+# ── raw-document strictness and snapshot identity ───────────────────────
+
+
+def test_shared_brief_is_read_once_with_one_snapshot(tmp_path, monkeypatch):
+    brief = _brief(tmp_path, "shared.md", "first\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    data = {
+        "manifest_version": 1,
+        "legs": [
+            {"brief": str(brief), "cwd": str(cwd), "label": "leg-a"},
+            {"brief": str(brief), "cwd": str(cwd), "label": "leg-b"},
+        ],
+    }
+    manifest_path = _dump_yaml(tmp_path, data)
+
+    reads: list[Path] = []
+    real_read_bytes = Path.read_bytes
+
+    def mutating_read_bytes(self):
+        content = real_read_bytes(self)
+        reads.append(self)
+        # A write landing right after the first read: any second read of the
+        # same brief would observe it and split the snapshot.
+        self.write_text("second\n")
+        return content
+
+    monkeypatch.setattr(Path, "read_bytes", mutating_read_bytes)
+    manifest = load_manifest(manifest_path)
+
+    assert len(reads) == 1
+    assert manifest.legs[0].brief_bytes == manifest.legs[1].brief_bytes == b"first\n"
+    assert manifest.legs[0].brief_hash == manifest.legs[1].brief_hash
+
+
+@pytest.mark.parametrize("dump", [_dump_yaml, _dump_json])
+def test_manifest_version_float_refused(tmp_path, dump):
+    data = _minimal_manifest_dict(tmp_path)
+    data["manifest_version"] = 1.0
+    with pytest.raises(ManifestError, match="manifest_version must be exactly 1"):
+        load_manifest(dump(tmp_path, data))
+
+
+def test_manifest_version_string_refused(tmp_path):
+    data = _minimal_manifest_dict(tmp_path)
+    data["manifest_version"] = "1"
+    with pytest.raises(ManifestError, match="manifest_version must be exactly 1"):
+        load_manifest(_dump_yaml(tmp_path, data))
+
+
+def test_yaml_merge_key_refused(tmp_path):
+    brief = _brief(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    text = (
+        "manifest_version: 1\n"
+        "defaults:\n"
+        "  <<: {timeout: 86400}\n"
+        "legs:\n"
+        f"  - {{brief: '{brief}', cwd: '{cwd}', label: leg-a}}\n"
+    )
+    with pytest.raises(ManifestError, match="merge keys"):
+        load_manifest(_write(tmp_path / "manifest.yaml", text))
+
+
+def test_yaml_duplicate_top_level_key_refused(tmp_path):
+    brief = _brief(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    text = (
+        "manifest_version: 2\n"
+        "manifest_version: 1\n"
+        "legs:\n"
+        f"  - {{brief: '{brief}', cwd: '{cwd}', label: leg-a}}\n"
+    )
+    with pytest.raises(ManifestError, match="duplicate mapping key"):
+        load_manifest(_write(tmp_path / "manifest.yaml", text))
+
+
+def test_yaml_duplicate_env_key_refused(tmp_path):
+    brief = _brief(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    text = (
+        "manifest_version: 1\n"
+        "legs:\n"
+        f"  - brief: '{brief}'\n"
+        f"    cwd: '{cwd}'\n"
+        "    label: leg-a\n"
+        "    env:\n"
+        "      PORT_HINT: '8001'\n"
+        "      PORT_HINT: '8002'\n"
+    )
+    with pytest.raises(ManifestError, match="duplicate mapping key"):
+        load_manifest(_write(tmp_path / "manifest.yaml", text))
+
+
+def test_json_duplicate_key_refused(tmp_path):
+    data = _minimal_manifest_dict(tmp_path)
+    text = (
+        '{"manifest_version": 2, "manifest_version": 1, "legs": ' + json.dumps(data["legs"]) + "}"
+    )
+    with pytest.raises(ManifestError, match="duplicate key"):
+        load_manifest(_write(tmp_path / "manifest.json", text))
+
+
+def test_non_string_top_level_key_refused(tmp_path):
+    data = _minimal_manifest_dict(tmp_path)
+    text = yaml.safe_dump(data) + "1: stray\n"
+    with pytest.raises(ManifestError, match="manifest has non-string key"):
+        load_manifest(_write(tmp_path / "manifest.yaml", text))
+
+
+def test_yaml_bool_key_under_defaults_refused(tmp_path):
+    brief = _brief(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    text = (
+        "manifest_version: 1\n"
+        "defaults:\n"
+        "  on: reviewer\n"
+        "legs:\n"
+        f"  - {{brief: '{brief}', cwd: '{cwd}', label: leg-a}}\n"
+    )
+    with pytest.raises(ManifestError, match="defaults has non-string key"):
+        load_manifest(_write(tmp_path / "manifest.yaml", text))
+
+
+def test_non_string_leg_key_refused(tmp_path):
+    brief = _brief(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    text = (
+        "manifest_version: 1\n"
+        "legs:\n"
+        f"  - brief: '{brief}'\n"
+        f"    cwd: '{cwd}'\n"
+        "    label: leg-a\n"
+        "    2: stray\n"
+    )
+    with pytest.raises(ManifestError, match=r"legs\[0\] has non-string key"):
+        load_manifest(_write(tmp_path / "manifest.yaml", text))
+
+
+def test_non_string_env_key_refused_by_name(tmp_path):
+    brief = _brief(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    text = (
+        "manifest_version: 1\n"
+        "legs:\n"
+        f"  - brief: '{brief}'\n"
+        f"    cwd: '{cwd}'\n"
+        "    label: leg-a\n"
+        "    env:\n"
+        "      1: '8001'\n"
+    )
+    with pytest.raises(ManifestError, match="env key 1 must match"):
+        load_manifest(_write(tmp_path / "manifest.yaml", text))
+
+
+def test_yaml_unhashable_key_refused(tmp_path):
+    brief = _brief(tmp_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    text = (
+        "manifest_version: 1\n"
+        "? [a, b]\n"
+        ": stray\n"
+        "legs:\n"
+        f"  - {{brief: '{brief}', cwd: '{cwd}', label: leg-a}}\n"
+    )
+    with pytest.raises(ManifestError, match="unhashable mapping key"):
+        load_manifest(_write(tmp_path / "manifest.yaml", text))

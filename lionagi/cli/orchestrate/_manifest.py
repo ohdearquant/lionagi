@@ -63,6 +63,47 @@ class ManifestError(LionError):
     """
 
 
+class _StrictYamlLoader(yaml.SafeLoader):
+    """SafeLoader that refuses YAML merge keys and duplicate mapping keys.
+
+    `yaml.safe_load` expands a merge key (`<<`) into its target mapping and
+    collapses duplicate keys last-write-wins BEFORE any schema check can see
+    the raw document, so either one would smuggle values past the
+    closed-schema validation. Refusing them at construction keeps what the
+    validator sees identical to what the file says.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                raise yaml.constructor.ConstructorError(
+                    None,
+                    None,
+                    "merge keys ('<<') are not allowed in a manifest",
+                    key_node.start_mark,
+                )
+            key = self.construct_object(key_node, deep=True)
+            try:
+                duplicate = key in seen
+            except TypeError:
+                raise yaml.constructor.ConstructorError(
+                    None,
+                    None,
+                    f"unhashable mapping key {key!r}",
+                    key_node.start_mark,
+                ) from None
+            if duplicate:
+                raise yaml.constructor.ConstructorError(
+                    None,
+                    None,
+                    f"duplicate mapping key {key!r}",
+                    key_node.start_mark,
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 @dataclass(frozen=True, slots=True)
 class Leg:
     """One validated, snapshotted leg of a manifest."""
@@ -112,8 +153,22 @@ def load_manifest(path: str | Path) -> Manifest:
 
     text = resolved.read_text()
     is_json = resolved.suffix.lower() == ".json"
+
+    def _refuse_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict:
+        obj: dict = {}
+        for key, val in pairs:
+            if key in obj:
+                raise ManifestError(f"manifest {resolved} has duplicate key {key!r}")
+            obj[key] = val
+        return obj
+
     try:
-        raw = json.loads(text) if is_json else yaml.safe_load(text)
+        if is_json:
+            raw = json.loads(text, object_pairs_hook=_refuse_duplicate_json_keys)
+        else:
+            # _StrictYamlLoader subclasses SafeLoader; S506 only recognizes
+            # the literal safe_load spelling.
+            raw = yaml.load(text, Loader=_StrictYamlLoader)  # noqa: S506
     except (json.JSONDecodeError, yaml.YAMLError) as exc:
         kind = "JSON" if is_json else "YAML"
         raise ManifestError(f"manifest {resolved} is not valid {kind}: {exc}") from exc
@@ -125,7 +180,9 @@ def load_manifest(path: str | Path) -> Manifest:
     _refuse_unknown_keys(raw, _TOP_LEVEL_KEYS, "manifest")
 
     version = raw.get("manifest_version")
-    if isinstance(version, bool) or version != MANIFEST_VERSION:
+    # type() rather than isinstance: bool is an int subclass, and a float 1.0
+    # compares equal to 1 — both must be refused, only the exact integer passes.
+    if type(version) is not int or version != MANIFEST_VERSION:
         raise ManifestError(f"manifest_version must be exactly {MANIFEST_VERSION}, got {version!r}")
 
     defaults_raw = raw.get("defaults", {})
@@ -145,9 +202,21 @@ def load_manifest(path: str | Path) -> Manifest:
 
     legs: list[Leg] = []
     seen_labels: dict[str, int] = {}
+    # Keyed by resolved brief path: two legs naming the same file must share
+    # one read and one snapshot, or a write landing between the reads hands a
+    # single manifest two contradictory versions of the same brief.
+    brief_cache: dict[Path, tuple[bytes, str]] = {}
     for index, leg_raw in enumerate(legs_raw):
         legs.append(
-            _load_leg(leg_raw, index, seen_labels, default_model, default_agent, default_timeout)
+            _load_leg(
+                leg_raw,
+                index,
+                seen_labels,
+                default_model,
+                default_agent,
+                default_timeout,
+                brief_cache,
+            )
         )
 
     return Manifest(
@@ -160,6 +229,12 @@ def load_manifest(path: str | Path) -> Manifest:
 
 
 def _refuse_unknown_keys(obj: dict, allowed: frozenset[str], where: str) -> None:
+    # YAML happily yields int or bool mapping keys ("1:", "on:"); refuse them
+    # by name before the set arithmetic, which assumes strings.
+    non_string = [key for key in obj if not isinstance(key, str)]
+    if non_string:
+        rendered = ", ".join(repr(key) for key in sorted(non_string, key=repr))
+        raise ManifestError(f"{where} has non-string key(s): {rendered}")
     unknown = sorted(set(obj) - allowed)
     if unknown:
         raise ManifestError(f"{where} has unknown key(s): {', '.join(unknown)}")
@@ -200,19 +275,26 @@ def _validate_label(value: Any, where: str) -> str:
     return lowered
 
 
-def _validate_brief(value: Any, where: str) -> tuple[Path, bytes, str]:
+def _validate_brief(
+    value: Any, where: str, cache: dict[Path, tuple[bytes, str]]
+) -> tuple[Path, bytes, str]:
     if not isinstance(value, str):
         raise ManifestError(f"{where}.brief must be a string path, got {type(value).__name__}")
     path = Path(value)
     if not path.is_absolute():
         raise ManifestError(f"{where}.brief must be an absolute path, got {value!r}")
     resolved = path.resolve()
+    cached = cache.get(resolved)
+    if cached is not None:
+        data, digest = cached
+        return resolved, data, digest
     if not resolved.is_file():
         raise ManifestError(f"{where}.brief does not exist or is not a regular file: {resolved}")
     data = resolved.read_bytes()
     if not data.decode("utf-8", "replace").strip():
         raise ManifestError(f"{where}.brief is empty: {resolved}")
     digest = blake2b(data).hexdigest()
+    cache[resolved] = (data, digest)
     return resolved, data, digest
 
 
@@ -254,6 +336,7 @@ def _load_leg(
     default_model: str | None,
     default_agent: str | None,
     default_timeout: int | None,
+    brief_cache: dict[Path, tuple[bytes, str]],
 ) -> Leg:
     where = f"legs[{index}]"
     if not isinstance(leg_raw, dict):
@@ -270,7 +353,7 @@ def _load_leg(
         raise ManifestError(f"{where} collides with legs[{seen_labels[label]}] after lowercasing")
     seen_labels[label] = index
 
-    brief_path, brief_bytes, brief_hash = _validate_brief(leg_raw["brief"], where)
+    brief_path, brief_bytes, brief_hash = _validate_brief(leg_raw["brief"], where, brief_cache)
     cwd_path = _validate_cwd(leg_raw["cwd"], where)
 
     leg_model, leg_agent = _resolve_model_agent(leg_raw, where)
