@@ -132,12 +132,13 @@ async def _enqueue_control_inner(
         # run_id and a real turn-end drain, and its control would have landed.
         # That is deliberate and it is not a migration that was skipped.
         #
-        # It is not bounded in time, and it would be convenient to say it was.
-        # Only a resume that REOPENS a terminal row writes a declaration; a
-        # resume adopting a row that still reads running writes nothing, by
-        # design, so an absent key stays absent however many times that row is
-        # adopted. The leg running it then declares, drains, and is refused
-        # anyway. Ending is what clears it, not resuming.
+        # Which transitions replace an absent declaration, and when that
+        # refusal ends, are not described here on purpose: every attempt to
+        # state it in prose has been wrong, in a different way each time, while
+        # the meaning below has held. The tests own that behaviour — see the
+        # resume cases in tests/cli/test_agent_steer.py, which pin each
+        # transition individually and cannot drift from the code the way a
+        # sentence can.
         #
         # Absence is still the right reading. Fields that happen to differ
         # between producers are not capability: the embedded runner's run_id

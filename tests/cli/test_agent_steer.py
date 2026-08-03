@@ -1657,17 +1657,30 @@ async def test_a_row_that_never_declared_stays_undeclared_across_a_resume_that_d
     await second["db"].close()
 
     async with StateDB() as db:
-        after = (await db.get_session(session_id))["node_metadata"] or {}
+        row = await db.get_session(session_id)
+    after = row["node_metadata"] or {}
     assert "drains_controls" not in after, (
         "the non-reopening path wrote a declaration; it is documented as writing nothing"
     )
+    # The owner gate runs first and returns the same nonzero code, so without
+    # this the whole test passes on a row that lost its run_id and never
+    # reached the predicate under test. Verified by mutation: stripping run_id
+    # at creation leaves every other assertion here satisfied.
+    assert row["run_id"] == "20260802T000000-undeclared", (
+        "the row lost its run_id, so a refusal below proves nothing about the declaration"
+    )
 
-    _message, exit_code = await _enqueue_control_inner(
+    message, exit_code = await _enqueue_control_inner(
         entity_id=session_id, verb="message", payload={"text": "steer"}
     )
     assert exit_code != 0, (
         "a row carrying no declaration must refuse however capable the leg adopting it is"
     )
+    assert "does not consume operator controls" in message, (
+        f"refused by a different gate than the one under test: {message}"
+    )
+    async with StateDB() as db:
+        assert await db.list_pending_session_controls(session_id) == []
 
 
 @pytest.mark.asyncio
