@@ -490,3 +490,87 @@ def test_cwd_must_be_a_directory_not_a_file(tmp_path):
     manifest_path = _dump_yaml(tmp_path, data)
     with pytest.raises(ManifestError, match="does not exist or is not a directory"):
         load_manifest(manifest_path)
+
+
+# ── env ─────────────────────────────────────────────────────────────────
+
+
+def test_env_map_loads_as_sorted_pairs_with_verbatim_values(tmp_path):
+    data = _minimal_manifest_dict(tmp_path)
+    data["legs"][0]["env"] = {
+        "ZED_VAR": "z value",
+        "CARGO_TARGET_DIR": "/abs/targets/module-a",
+    }
+    manifest_path = _dump_yaml(tmp_path, data)
+
+    leg = load_manifest(manifest_path).legs[0]
+
+    assert leg.env == (
+        ("CARGO_TARGET_DIR", "/abs/targets/module-a"),
+        ("ZED_VAR", "z value"),
+    )
+    assert leg.env_keys == ("CARGO_TARGET_DIR", "ZED_VAR")
+
+
+def test_env_omitted_is_empty_tuple(tmp_path):
+    data = _minimal_manifest_dict(tmp_path)
+    manifest_path = _dump_yaml(tmp_path, data)
+
+    leg = load_manifest(manifest_path).legs[0]
+
+    assert leg.env == ()
+    assert leg.env_keys == ()
+
+
+def test_env_must_be_a_mapping(tmp_path):
+    data = _minimal_manifest_dict(tmp_path)
+    data["legs"][0]["env"] = ["CARGO_TARGET_DIR=/abs"]
+    manifest_path = _dump_yaml(tmp_path, data)
+    with pytest.raises(ManifestError, match="env must be a mapping"):
+        load_manifest(manifest_path)
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    ["lower_case", "1LEADING_DIGIT", "_LEADING_UNDERSCORE", "HAS-DASH", "X" * 65, ""],
+)
+def test_env_key_pattern_refused_by_name(tmp_path, bad_key):
+    data = _minimal_manifest_dict(tmp_path)
+    data["legs"][0]["env"] = {bad_key: "value"}
+    manifest_path = _dump_yaml(tmp_path, data)
+    with pytest.raises(ManifestError, match="env key"):
+        load_manifest(manifest_path)
+
+
+def test_env_key_at_max_length_is_accepted(tmp_path):
+    key = "K" + "X" * 63
+    data = _minimal_manifest_dict(tmp_path)
+    data["legs"][0]["env"] = {key: "value"}
+    manifest_path = _dump_yaml(tmp_path, data)
+
+    assert load_manifest(manifest_path).legs[0].env == ((key, "value"),)
+
+
+def test_env_reserved_leg_artifacts_key_is_refused(tmp_path):
+    data = _minimal_manifest_dict(tmp_path)
+    data["legs"][0]["env"] = {"LIONAGI_LEG_ARTIFACTS": "/abs/elsewhere"}
+    manifest_path = _dump_yaml(tmp_path, data)
+    with pytest.raises(ManifestError, match="reserved key 'LIONAGI_LEG_ARTIFACTS'"):
+        load_manifest(manifest_path)
+
+
+@pytest.mark.parametrize("bad_value", [8080, True, None, ["a"], {"nested": "no"}])
+def test_env_values_must_be_strings(tmp_path, bad_value):
+    data = _minimal_manifest_dict(tmp_path)
+    data["legs"][0]["env"] = {"PORT_HINT": bad_value}
+    manifest_path = _dump_json(tmp_path, data)
+    with pytest.raises(ManifestError, match="must be a string value"):
+        load_manifest(manifest_path)
+
+
+def test_env_in_defaults_is_refused_as_unknown_key(tmp_path):
+    data = _minimal_manifest_dict(tmp_path)
+    data["defaults"] = {"env": {"CARGO_TARGET_DIR": "/abs"}}
+    manifest_path = _dump_yaml(tmp_path, data)
+    with pytest.raises(ManifestError, match="defaults has unknown key"):
+        load_manifest(manifest_path)

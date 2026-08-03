@@ -30,6 +30,8 @@ __all__ = (
     "MAX_LEGS",
     "MAX_TIMEOUT_SECONDS",
     "LABEL_PATTERN",
+    "ENV_KEY_PATTERN",
+    "RESERVED_ENV_KEYS",
     "ManifestError",
     "Leg",
     "Manifest",
@@ -42,10 +44,15 @@ MAX_LEGS = 64
 MAX_TIMEOUT_SECONDS = 86400
 
 LABEL_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+ENV_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+
+# The runner's own reserved name (the leg artifact channel); a manifest that
+# sets it would silently redirect harvest, so it is refused at load.
+RESERVED_ENV_KEYS = frozenset({"LIONAGI_LEG_ARTIFACTS"})
 
 _TOP_LEVEL_KEYS = frozenset({"manifest_version", "defaults", "legs"})
 _DEFAULTS_KEYS = frozenset({"model", "agent", "timeout"})
-_LEG_KEYS = frozenset({"brief", "cwd", "label", "model", "agent", "timeout"})
+_LEG_KEYS = frozenset({"brief", "cwd", "label", "model", "agent", "timeout", "env"})
 
 
 class ManifestError(LionError):
@@ -68,6 +75,14 @@ class Leg:
     timeout: int | None
     brief_bytes: bytes
     brief_hash: str
+    # Sorted (key, value) pairs, not a dict: the manifest is a snapshot and a
+    # mutable mapping on a frozen dataclass would let a caller edit the record.
+    env: tuple[tuple[str, str], ...]
+
+    @property
+    def env_keys(self) -> tuple[str, ...]:
+        """Declared env key names, the form the durable leg record lists."""
+        return tuple(k for k, _ in self.env)
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +216,25 @@ def _validate_brief(value: Any, where: str) -> tuple[Path, bytes, str]:
     return resolved, data, digest
 
 
+def _validate_env(value: Any, where: str) -> tuple[tuple[str, str], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict):
+        raise ManifestError(f"{where}.env must be a mapping, got {type(value).__name__}")
+    pairs: list[tuple[str, str]] = []
+    for key, val in value.items():
+        if not isinstance(key, str) or not ENV_KEY_PATTERN.fullmatch(key):
+            raise ManifestError(f"{where}.env key {key!r} must match {ENV_KEY_PATTERN.pattern!r}")
+        if key in RESERVED_ENV_KEYS:
+            raise ManifestError(f"{where}.env must not set reserved key {key!r}")
+        if isinstance(val, bool) or not isinstance(val, str):
+            raise ManifestError(
+                f"{where}.env[{key!r}] must be a string value, got {type(val).__name__}"
+            )
+        pairs.append((key, val))
+    return tuple(sorted(pairs))
+
+
 def _validate_cwd(value: Any, where: str) -> Path:
     if not isinstance(value, str):
         raise ManifestError(f"{where}.cwd must be a string path, got {type(value).__name__}")
@@ -248,6 +282,8 @@ def _load_leg(
     leg_timeout = _validate_timeout(leg_raw.get("timeout"), where)
     timeout = leg_timeout if leg_timeout is not None else default_timeout
 
+    env = _validate_env(leg_raw.get("env"), where)
+
     return Leg(
         label=label,
         brief=brief_path,
@@ -257,4 +293,5 @@ def _load_leg(
         timeout=timeout,
         brief_bytes=brief_bytes,
         brief_hash=brief_hash,
+        env=env,
     )
