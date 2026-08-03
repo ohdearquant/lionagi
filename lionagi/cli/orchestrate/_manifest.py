@@ -14,8 +14,10 @@ already loaded.
 from __future__ import annotations
 
 import json
+import os
 import re
-from dataclasses import dataclass
+import stat as stat_module
+from dataclasses import dataclass, field
 from hashlib import blake2b
 from pathlib import Path
 from typing import Any
@@ -102,6 +104,24 @@ class _StrictYamlLoader(yaml.SafeLoader):
                 )
             seen.add(key)
         return super().construct_mapping(node, deep=deep)
+
+
+@dataclass(slots=True)
+class _BriefCache:
+    """Per-load snapshot cache with two keys, closing two alias routes.
+
+    `by_literal` is keyed by the submitted pathname string: a repeated
+    literal never resolves or reads a second time, so a path whose target
+    is swapped between two legs cannot hand them different content —
+    resolution itself is time-dependent and must happen at most once per
+    spelling. `by_identity` is keyed by (st_dev, st_ino) captured by fstat
+    on the descriptor actually read: distinct spellings of one physical
+    file (hard links, symlink and target) coalesce onto the first accepted
+    snapshot even if the file changes between their reads.
+    """
+
+    by_literal: dict[str, tuple[Path, bytes, str]] = field(default_factory=dict)
+    by_identity: dict[tuple[int, int], tuple[bytes, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,10 +222,7 @@ def load_manifest(path: str | Path) -> Manifest:
 
     legs: list[Leg] = []
     seen_labels: dict[str, int] = {}
-    # Keyed by resolved brief path: two legs naming the same file must share
-    # one read and one snapshot, or a write landing between the reads hands a
-    # single manifest two contradictory versions of the same brief.
-    brief_cache: dict[Path, tuple[bytes, str]] = {}
+    brief_cache = _BriefCache()
     for index, leg_raw in enumerate(legs_raw):
         legs.append(
             _load_leg(
@@ -275,27 +292,49 @@ def _validate_label(value: Any, where: str) -> str:
     return lowered
 
 
-def _validate_brief(
-    value: Any, where: str, cache: dict[Path, tuple[bytes, str]]
-) -> tuple[Path, bytes, str]:
+def _read_brief_file(resolved: Path) -> tuple[bytes, tuple[int, int]]:
+    """Read a brief through one descriptor, returning bytes and file identity.
+
+    fstat on the open descriptor binds the (device, inode) identity to the
+    bytes actually read; a stat beside a separate read could straddle a
+    concurrent swap of the path's target.
+    """
+    with open(resolved, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat_module.S_ISREG(st.st_mode):
+            raise OSError(f"not a regular file: {resolved}")
+        return fh.read(), (st.st_dev, st.st_ino)
+
+
+def _validate_brief(value: Any, where: str, cache: _BriefCache) -> tuple[Path, bytes, str]:
     if not isinstance(value, str):
         raise ManifestError(f"{where}.brief must be a string path, got {type(value).__name__}")
+    hit = cache.by_literal.get(value)
+    if hit is not None:
+        return hit
     path = Path(value)
     if not path.is_absolute():
         raise ManifestError(f"{where}.brief must be an absolute path, got {value!r}")
     resolved = path.resolve()
-    cached = cache.get(resolved)
-    if cached is not None:
-        data, digest = cached
-        return resolved, data, digest
     if not resolved.is_file():
         raise ManifestError(f"{where}.brief does not exist or is not a regular file: {resolved}")
-    data = resolved.read_bytes()
-    if not data.decode("utf-8", "replace").strip():
-        raise ManifestError(f"{where}.brief is empty: {resolved}")
-    digest = blake2b(data).hexdigest()
-    cache[resolved] = (data, digest)
-    return resolved, data, digest
+    try:
+        data, identity = _read_brief_file(resolved)
+    except OSError as exc:
+        raise ManifestError(f"{where}.brief could not be read: {resolved} ({exc})") from exc
+    known = cache.by_identity.get(identity)
+    if known is not None:
+        # A second spelling of one physical file: the first accepted snapshot
+        # wins, and the fresh read is discarded.
+        data, digest = known
+    else:
+        if not data.decode("utf-8", "replace").strip():
+            raise ManifestError(f"{where}.brief is empty: {resolved}")
+        digest = blake2b(data).hexdigest()
+        cache.by_identity[identity] = (data, digest)
+    result = (resolved, data, digest)
+    cache.by_literal[value] = result
+    return result
 
 
 def _validate_env(value: Any, where: str) -> tuple[tuple[str, str], ...]:
@@ -336,7 +375,7 @@ def _load_leg(
     default_model: str | None,
     default_agent: str | None,
     default_timeout: int | None,
-    brief_cache: dict[Path, tuple[bytes, str]],
+    brief_cache: _BriefCache,
 ) -> Leg:
     where = f"legs[{index}]"
     if not isinstance(leg_raw, dict):

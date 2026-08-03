@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from lionagi.cli.orchestrate import _manifest
 from lionagi.cli.orchestrate._manifest import (
     MAX_LEGS,
     MAX_TIMEOUT_SECONDS,
@@ -580,7 +581,7 @@ def test_env_in_defaults_is_refused_as_unknown_key(tmp_path):
 # ── raw-document strictness and snapshot identity ───────────────────────
 
 
-def test_shared_brief_is_read_once_with_one_snapshot(tmp_path, monkeypatch):
+def test_shared_brief_literal_is_read_once_with_one_snapshot(tmp_path, monkeypatch):
     brief = _brief(tmp_path, "shared.md", "first\n")
     cwd = tmp_path / "work"
     cwd.mkdir()
@@ -594,21 +595,95 @@ def test_shared_brief_is_read_once_with_one_snapshot(tmp_path, monkeypatch):
     manifest_path = _dump_yaml(tmp_path, data)
 
     reads: list[Path] = []
-    real_read_bytes = Path.read_bytes
+    real_read = _manifest._read_brief_file
 
-    def mutating_read_bytes(self):
-        content = real_read_bytes(self)
-        reads.append(self)
+    def mutating_read(resolved):
+        result = real_read(resolved)
+        reads.append(resolved)
         # A write landing right after the first read: any second read of the
-        # same brief would observe it and split the snapshot.
-        self.write_text("second\n")
-        return content
+        # same brief would observe it and split the snapshot. A repeated
+        # literal must not even re-resolve, so no second call happens at all.
+        brief.write_text("second\n")
+        return result
 
-    monkeypatch.setattr(Path, "read_bytes", mutating_read_bytes)
+    monkeypatch.setattr(_manifest, "_read_brief_file", mutating_read)
     manifest = load_manifest(manifest_path)
 
     assert len(reads) == 1
     assert manifest.legs[0].brief_bytes == manifest.legs[1].brief_bytes == b"first\n"
+    assert manifest.legs[0].brief_hash == manifest.legs[1].brief_hash
+
+
+def test_physical_alias_briefs_coalesce_onto_first_snapshot(tmp_path, monkeypatch):
+    # Two distinct spellings of one physical file, with the file rewritten
+    # between their reads: both legs must carry the first accepted snapshot.
+    brief_a = _brief(tmp_path, "a.md", "first\n")
+    brief_b = _brief(tmp_path, "b.md", "unused\n")
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    data = {
+        "manifest_version": 1,
+        "legs": [
+            {"brief": str(brief_a), "cwd": str(cwd), "label": "leg-a"},
+            {"brief": str(brief_b), "cwd": str(cwd), "label": "leg-b"},
+        ],
+    }
+    manifest_path = _dump_yaml(tmp_path, data)
+
+    shared_identity = (1, 42)
+    contents = iter([b"first\n", b"second\n"])
+
+    def aliased_read(resolved):
+        return next(contents), shared_identity
+
+    monkeypatch.setattr(_manifest, "_read_brief_file", aliased_read)
+    manifest = load_manifest(manifest_path)
+
+    assert manifest.legs[0].brief_bytes == manifest.legs[1].brief_bytes == b"first\n"
+    assert manifest.legs[0].brief_hash == manifest.legs[1].brief_hash
+
+
+def test_symlink_and_target_share_one_snapshot(tmp_path):
+    target = _brief(tmp_path, "real.md", "the one brief\n")
+    link = tmp_path / "link.md"
+    link.symlink_to(target)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    data = {
+        "manifest_version": 1,
+        "legs": [
+            {"brief": str(link), "cwd": str(cwd), "label": "leg-a"},
+            {"brief": str(target), "cwd": str(cwd), "label": "leg-b"},
+        ],
+    }
+    manifest_path = _dump_yaml(tmp_path, data)
+
+    manifest = load_manifest(manifest_path)
+
+    assert manifest.legs[0].brief_bytes == manifest.legs[1].brief_bytes
+    assert manifest.legs[0].brief_hash == manifest.legs[1].brief_hash
+
+
+def test_hard_link_briefs_share_one_snapshot(tmp_path):
+    import os as _os
+
+    original = _brief(tmp_path, "orig.md", "hard-linked brief\n")
+    alias = tmp_path / "alias.md"
+    _os.link(original, alias)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    data = {
+        "manifest_version": 1,
+        "legs": [
+            {"brief": str(original), "cwd": str(cwd), "label": "leg-a"},
+            {"brief": str(alias), "cwd": str(cwd), "label": "leg-b"},
+        ],
+    }
+    manifest_path = _dump_yaml(tmp_path, data)
+
+    manifest = load_manifest(manifest_path)
+
+    assert manifest.legs[0].brief_bytes == manifest.legs[1].brief_bytes
     assert manifest.legs[0].brief_hash == manifest.legs[1].brief_hash
 
 
