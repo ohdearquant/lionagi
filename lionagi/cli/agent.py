@@ -979,6 +979,10 @@ async def _run_agent(
         provider=provider,
         effort=effort,
         project=project,
+        # This runner drains queued operator messages at turn end and
+        # tombstones whatever it did not take, so controls aimed at it have a
+        # consumer.
+        drains_controls=True,
     )
     if seed_injection_totals:
         await _seed_injection_stats(live, _injection_totals)

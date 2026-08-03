@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from typing import Any
 
 from .._logging import log_error
@@ -60,6 +61,23 @@ async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
     return await _resolve_primary_session(db, entity_type, row)
 
 
+def _runner_drains_controls(session: dict[str, Any]) -> bool:
+    """Whether this session's runner declared that it consumes operator controls.
+
+    The declaration is written into node_metadata when the run starts. Absence
+    reads as False on purpose: a runner that never said it drains is exactly the
+    case this exists to catch, and a control admitted for it would be delivered
+    by nobody.
+    """
+    meta = session.get("node_metadata") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (ValueError, TypeError):
+            return False
+    return bool(meta.get("drains_controls")) if isinstance(meta, dict) else False
+
+
 async def _enqueue_control_inner(
     *, entity_id: str, verb: str, payload: dict[str, Any] | None
 ) -> tuple[str, int]:
@@ -98,6 +116,44 @@ async def _enqueue_control_inner(
                 f"session {session_id[:8]} is a mirrored/imported agent "
                 "session (no lionagi run owns it), so no runner would ever "
                 "deliver the steer",
+                EXIT_UNKNOWN,
+            )
+        # Owning a run is not the same as consuming controls. The check above
+        # uses run_id as a proxy for "a lionagi runner owns this", and that
+        # proxy held only while the CLI agent runner was the sole caller that
+        # stamped one. Other callers persist through the same path, write the
+        # same kind, and supply their own run_id, so they pass that check while
+        # having no drain at all — the control would be admitted, never
+        # delivered, and never closed. Ask about the capability instead, and
+        # let the runner declare it when it starts the session.
+        #
+        # This refuses one row that used to be admitted and deserved to be: a
+        # CLI agent leg whose session row predates the declaration. It has a
+        # run_id and a real turn-end drain, and its control would have landed.
+        # That is deliberate and it is not a migration that was skipped.
+        #
+        # Which transitions replace an absent declaration, and when that
+        # refusal ends, are not described here on purpose: every attempt to
+        # state it in prose has been wrong, in a different way each time, while
+        # the meaning below has held. Read the resume cases in
+        # tests/cli/test_agent_steer.py instead. They are where that behaviour
+        # is stated in a form that fails when it stops being true, which a
+        # comment cannot do; they are not a claim that every transition is
+        # covered.
+        #
+        # Absence is still the right reading. Fields that happen to differ
+        # between producers are not capability: the embedded runner's run_id
+        # carries a distinguishing prefix today, but a naming convention is not
+        # a contract, and keying admission on the shape of an id is the same
+        # move as keying it on the presence of one — the proxy this check
+        # exists to retire. There is no field on a pre-existing row that says
+        # what the runner will DO, and inventing one from a prefix would
+        # re-admit the orphaned controls as soon as a producer renamed a run.
+        if kind == "agent" and not _runner_drains_controls(session):
+            return (
+                f"session {session_id[:8]} is run by something that does not "
+                "consume operator controls, so the control would sit pending "
+                "forever with nobody to deliver or close it",
                 EXIT_UNKNOWN,
             )
         if kind not in allowed:
