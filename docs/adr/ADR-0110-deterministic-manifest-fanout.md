@@ -283,8 +283,13 @@ OBSERVABLE, never silent.
   terminal write, so the claimant makes that single write from the
   recorded facts and touches nothing else (no kill, no harvest:
   `complete` is published only after a proved-quiet sweep); terminal but
-  `pending_harvest` — the late-facts pass (below): records land late and
-  `round_state` flips; neither terminal nor `complete` — the claimant's
+  `pending_harvest` — the late-facts pass (below), whose sequence is
+  exactly the unfinalized path minus its last step: quiescence sweep of
+  every recorded group first (`complete` is never published before one),
+  then harvest, then records, then the `round_state` flip — and no second
+  terminal write and no second notice, because the run already has its
+  terminal facts and the latch (ADR-0107) keeps them; neither terminal
+  nor `complete` — the claimant's
   full path runs, quiescence first wherever the path is destructive.
   A failed non-blocking acquire means a live owner
   exists; the failed claimant re-checks later and touches no scratch
@@ -554,8 +559,19 @@ enumerated it, for the benefit of one producer.
 
 - **Mapping**: round `completed` → job outcome `succeeded`; round `partial`
   or `failed` → job outcome `failed`; a round killed before any leg spawned
-  → `cancelled`. The coarse job outcome answers "did the round come out
-  clean"; anything finer is the round summary's job.
+  → `cancelled`. The mapping governs the terminal write a manifest-aware
+  finalizer makes, and only that write: where a terminal outcome already
+  exists when the late-facts pass runs, ADR-0107's terminal latch keeps the
+  first recorded end — including an orphan reap's `indeterminate` — and the
+  late pass never rewrites it. A reader can therefore observe round
+  `completed` beside job outcome `indeterminate`; that is ADR-0107's named
+  succeeded-but-indeterminate window surfacing through the round field,
+  stated here so it reads as a known edge rather than a contract violation.
+  The job outcome answers "what did the first recorded end conclude"; the
+  round summary is authoritative for the round's own facts, and anything
+  finer than the outcome is its job. The required tests include this
+  interleaving: a terminal-latched run whose late pass computes round
+  `completed` must surface both values unchanged.
 - **The read**: for manifest runs, `job.output`'s response carries one
   additive field, `round`, and its shape is exact. `round` is an ADR-0106
   D7 availability wrapper — `{available, value, reason_code, detail}` —
