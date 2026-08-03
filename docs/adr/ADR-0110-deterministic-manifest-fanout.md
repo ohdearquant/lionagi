@@ -187,10 +187,11 @@ concurrency caps compose the same way they do for the planner fanout.
 - **A timed-out leg** is recorded `timed_out`, receives cooperative
   termination escalating to hard kill, and its harvest runs only after its
   process's death is confirmed. The quiescence invariant (D3) is
-  path-independent: `round_state: complete` is never published while any
-  member of the run's recorded process-control domain survives, on
-  cooperative and reap paths alike. D3 states that domain exactly and names
-  the one residual it cannot close.
+  path-independent: `round_state: complete` is never published before a
+  quiescence sweep has run against every recorded control group — the
+  runner's own and each leg's, all captured at spawn — and observed each
+  empty, on cooperative and reap paths alike. D3 states that domain
+  exactly and names the residuals the sweep cannot close.
 
 ### D3 — Durable records, ordering, and the two-stage end
 
@@ -206,11 +207,22 @@ Each leg gets one durable record in the run directory,
   "model": "<resolved spec>",
   "env_keys": ["CARGO_TARGET_DIR"],
   "brief_hash": "<content hash recorded at submit>",
+  "pgid": 41230,
   "harvest_state": "harvested-3",
   "harvest_detail": {"files": 3, "bytes": 18211, "skipped": []},
   "artifacts": ["module-a/verdict.md", "module-a/notes.md", "module-a/log.txt"]
 }
 ```
+
+The dispatch facts — label, cwd, model, `env_keys`, `brief_hash`,
+`started_at`, and the leg's own process group (`pgid`, captured at spawn
+exactly as the provider subprocess layer already captures its child's) —
+are durably recorded in the leg record's first write, at spawn; status and
+harvest fields complete the record at finalization. The spawn-time write is
+what makes a reaper's quiescence sweep possible at all: the control domain
+is read from the run directory, never from a live runner's memory, so a
+reaper that shared nothing with the dead runner sweeps the same groups the
+runner would have.
 
 The round gets one summary record, `{run_dir}/round.json`:
 
@@ -267,8 +279,8 @@ OBSERVABLE, never silent.
   escalation parameter is possible future work, not claimed here. Claim
   recovery by the operator is deliberately narrower than group cleanup —
   the operator only needs to free the claim. The reaper that then acquires
-  it owns the rest: its pre-harvest group kill and absence check (above)
-  are what make a leader-only kill safe, because surviving group members
+  it owns the rest: its pre-harvest quiescence sweep (above) is what makes
+  a leader-only kill safe, because surviving domain members
   hold no claim and cannot outlive the reaper's first act.
   The reaper holders are server-side actors a job-group signal cannot
   reach; their work is bounded by construction — the same per-leg file and
@@ -277,13 +289,14 @@ OBSERVABLE, never silent.
   recovery for a server-side holder, and it is sufficient because the
   claim is kernel-held and leaves no persistent state behind.
 - **Cooperative ordering guarantee**: on normal completion and per-leg
-  timeout, the finalizer first proves the recorded process group holds no
-  member besides itself — a surviving descendant of a leg that already
-  ended, still inside the group, receives the same hard kill and its
-  absence is verified, so a straggler is ended at round close rather than
-  tolerated into the harvest window (the finalizer cannot use the group
-  kill here, being a member itself; it scans the recorded group and
-  signals the survivors individually, identity-checked the same way).
+  timeout, the finalizer first proves every recorded control group quiet.
+  For each leg's recorded group it hard-kills identity-verified survivors
+  and verifies absence — a leg that ended normally leaves its group empty
+  already, and the sweep confirms exactly that; a straggling descendant
+  still inside it is ended at round close rather than tolerated into the
+  harvest window. For the runner's own group — which it cannot group-kill,
+  being a member — it scans and signals survivors individually,
+  identity-checked the same way.
   Only then every leg's harvest runs and its record persists, then
   `round.json` is written with `round_state: complete`, and only then does
   the parent terminalize and its single notice fire. A notification consumer
@@ -303,20 +316,30 @@ OBSERVABLE, never silent.
   reaper first CHECKS the claim, not an unconditional handoff. Only on
   acquiring the lock — which a dead owner cannot still hold, the kernel
   released it with the process — does it proceed, and its FIRST act on the
-  claim is quiescence, not harvest: a hard kill of the run's recorded
-  process group (the raw `os.killpg` primitive, identity-verified against
-  the recorded pgid and the group marker every member inherits — not the
-  existing plain-kill helper, whose killed-marking record write belongs to
-  ordinary kills; the reaper's single terminal write comes later, after
-  harvest), then verification that no member of that group survives.
-  `round_state: complete` is never published while any member of the
-  recorded group is alive. The recorded group is the quiescence domain,
-  stated exactly: it is the strongest control the launch primitive
-  establishes portably — the initial child receives its own session, and
-  nothing prevents a descendant from leaving that session. A leg that
-  deliberately detaches into a new session while keeping the scratch path
-  can therefore still write after `complete`; that residual is accepted
-  and named rather than papered over. Such an escapee is the caller's own
+  claim is quiescence, not harvest: a hard kill of every recorded control
+  group — the runner's and each leg's, read from the run directory (the
+  raw `os.killpg` primitive, identity-verified against each recorded pgid
+  and the group marker every descendant inherits — environment survives a
+  new session, so the marker identifies leg-group members too — not the existing
+  plain-kill helper, whose killed-marking record write belongs to ordinary
+  kills; the reaper's single terminal write comes later, after harvest),
+  then verification that no member of any recorded group survives.
+  `round_state: complete` is never published before that sweep has
+  observed every recorded group empty. The recorded groups are the
+  quiescence domain, stated exactly, and it is plural by design: the
+  provider subprocess layer starts every leg in its own session, so one
+  shared group never existed to sweep — an ordinary leg sits inside the
+  domain because its group was recorded at spawn, not because it stayed
+  inside anyone else's. What the sweep cannot close, named rather than
+  papered over: a descendant that deliberately leaves its own leg's
+  recorded session while keeping the scratch path can still write after
+  `complete`; a member that forks during the sweep can leave a child the
+  verification pass never observed; and identification and signal are two
+  syscalls, so the sweep inherits the job surface's stated guarantee shape
+  — never a signal without positive identification, not never a missed or
+  misdirected one (the internals documentation states this window and why
+  process groups alone cannot close it). All three residuals fall under
+  the same consumer rule below. Such an escapee is the caller's own
   agent executing the caller's own brief, so it crosses no privilege
   boundary and sabotages only its author's round: D4's harvest copies
   defensively, so the published record describes the harvested copies and
@@ -325,8 +348,10 @@ OBSERVABLE, never silent.
   residual, stated as a rule: consume through the round record only —
   `job.output` serves the harvested copies under the run directory and
   never reads a scratch tree, so the read surface enforces this by
-  construction; a leg-artifacts directory that exists or reappears after
-  `round_state: complete` is the escapee's signature, sits outside the
+  construction; a leg-artifacts directory that reappears after
+  `round_state: complete` — or survives it without that leg's record
+  naming a failed removal (D4 removes every harvested scratch before
+  `complete` on all paths) — is an escapee's signature, sits outside the
   round's guarantees, and is disposable — deleting it changes nothing
   recorded; and a leg that detaches workers past its own round is a defect
   in that leg's brief, fixed in the brief, not a runner defect. A mechanically non-escapable process
@@ -344,8 +369,8 @@ OBSERVABLE, never silent.
   definition of the path, so the lock is free; acquisition still serializes
   it against a concurrent kill-reaper) and performs the same
   quiescence-then-harvest-then-record sequence before its terminal write —
-  a dead parent does not mean dead legs, so the pre-harvest group kill and
-  absence check apply identically — recording
+  a dead parent does not mean dead legs, so the pre-harvest quiescence
+  sweep applies identically — recording
   `"recorded_by": "orphan-reaper"`. Where the existing reaper (or any non-manifest-aware
   writer) has already published a terminal status, the manifest-aware pass
   still runs, writes the records late, and flips `round_state` from
@@ -389,8 +414,13 @@ No sandbox configuration changes anywhere.
   silent truncation.
 - **Collisions are unrepresentable**, not handled: labels are unique and
   path-safe by D1's pattern, and each label owns its directory.
-- **The scratch dir is removed after harvest** on cooperative paths. On
-  hard-kill paths it may survive; the reap-time harvest (D3) consumes it.
+- **The scratch dir is removed after harvest on every finalization path** —
+  cooperative, kill-reaper, and orphan-reaper alike — and the removal
+  precedes `round_state: complete`. That ordering is what entitles D3's
+  residual rule to read a surviving directory as an escapee's signature
+  rather than permitted reap residue. A removal that fails is recorded in
+  that leg's record, and a directory whose survival is recorded there is
+  not escapee evidence.
 - **The env var name is a decision with a check**: before implementation
   merges, the name is swept against the variables a leg already inherits
   (provider CLIs document theirs; the leg baseline environment is

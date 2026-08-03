@@ -99,7 +99,7 @@ wake it. A consumer restart across a successful delivery loses it the same way.
 | Distinguishing absence from failure | D7: every read-derived field carries its own availability and reason |
 | Process-level faults | D8: a valid envelope is authoritative; exit status is the transport-level answer, with a defined precedence |
 | Terminal notification | D9: a notification is a prompt to read state, never proof and never the only path |
-| Bounded observation | D10: `wait` is bounded, returns partial results, and takes ADR-0066 D6 with two marked extensions and one clause D6 leaves open decided here |
+| Bounded observation | D10: `wait` is bounded, returns partial results, and shares ADR-0066 D6's wait contract — first stated here as extensions, since adopted into D6 by its 2026-07-27 and 2026-08-03 amendments; this ADR carries the fuller statement |
 
 Out of scope:
 
@@ -575,7 +575,7 @@ is configured, sends a terminal notice.
 - Artifacts are written before the notice is sent, so a consumer woken by the notice
   finds the outputs already present.
 
-### D10 — Bounded observation, taken from ADR-0066 D6, extended in two places and completed in one
+### D10 — Bounded observation, shared with ADR-0066 D6, stated here in full
 
 `wait` takes ids, a maximum wait, and a poll interval; both numbers are clamped to
 documented bounds and the effective values are echoed back. `0` is a legal snapshot
@@ -604,7 +604,11 @@ request.
   is nicer is not the point. Every status-bearing path in this contract resolves through one
   authority, and an orphan is terminal on all of them or on none.
 
-**Three additions this ADR makes, which ADR-0066 does not state.** They are marked as
+**Three additions this ADR made when its text froze, which ADR-0066 then did not state.**
+ADR-0066's amendments have since adopted all three (`outcome` on every entry and the
+partition on 2026-07-27; the four-way partition, either-list floor, and fenced purity
+exception on 2026-08-03), so they are shared rules now and this section carries the fuller
+rationale. They were marked as
 extensions rather than folded into the list above, because presenting a new decision as an
 existing one tells every reader there is nothing left to reconcile, which is the most
 effective way to prevent it being reconciled:
@@ -616,13 +620,16 @@ effective way to prevent it being reconciled:
   where the fenced write publishes — an attributable terminal written under a fenced
   claim, before notification and wait aggregation — repairing a record no writer survived
   to finish, never mutating live work. A refused or unpublishable write leaves the run
-  exactly as every other observation does; the retry belongs to the next reader. ADR-0066 D6 is silent on signal and disconnect, so an MCP
-  implementer reading only that ADR could let request cancellation propagate into the
-  operation while an external consumer assumes it cannot — the two surfaces then behave
-  differently after the identical event.
+  exactly as every other observation does; the retry belongs to the next reader. ADR-0066
+  D6 as first written was silent on signal and disconnect, so an MCP
+  implementer reading only that ADR could have let request cancellation propagate into the
+  operation while an external consumer assumed it could not; its 2026-07-27 amendment
+  states the purity rule and its 2026-08-03 amendment adds this same fenced exception.
 - **Every entry carries `outcome`** as well as `terminal`, per D4. ADR-0066 D6's entry
-  contract lists kind, status, terminality and reason code, so a conforming ADR-0066
-  implementation would omit the field this contract requires for reporting a result.
+  contract as first written listed kind, status, terminality and reason code, so a
+  conforming implementation could have omitted the field this contract requires for
+  reporting a result; the 2026-07-27 amendment added `outcome` and both documents now
+  require it.
 - **An id that waiting cannot resolve does not hold the window open, and the producer pays
   a floor for it.** A run whose process is gone with no end recorded has stopped, and both
   original writers of an end are past it. Where that finding is conclusive for a `started`
@@ -681,16 +688,17 @@ ADR-0066 D6 was amended on 2026-08-03 to state the same partition, the same eith
 floor, and the same fenced-reap exception, so the two documents agree; where the level of
 detail differs, this ADR carries the fuller statement.
 
-**The third is a definition of something ADR-0066 D6 leaves open**, and it is the clause to
-read carefully. D6 states the result as the entries plus `all_terminal`, `timed_out`, and
-the list of ids still pending. It names that key and nowhere says which ids qualify for it,
-so it does not by itself decide where a run that stopped without an end belongs. A reading
-is available on which it does: D6 names a per-id error channel for ids that could not be
+**The third was a definition of something ADR-0066 D6 as first written left open**, and it
+is the clause whose history is worth keeping. D6 then stated the result as the entries plus
+`all_terminal`, `timed_out`, and
+the list of ids still pending. It named that key and nowhere said which ids qualify for it,
+so it did not by itself decide where a run that stopped without an end belongs. A reading
+was available on which it did: D6 names a per-id error channel for ids that could not be
 observed, and naming one exclusion can be read as ruling out others. That reading is
-recorded here because it was argued seriously, not because it is adopted. It is not
+recorded here because it was argued seriously, not because it was adopted. It was not
 adopted — the error channel is for ids observation could not resolve, while a stopped id
 was observed and classified, so naming that channel does not settle the pending rule by
-exclusion. The honest conclusion is that D6 underdetermines this, and an underdetermined
+exclusion. The honest conclusion was that D6 underdetermined this, and an underdetermined
 clause is settled by amending it rather than by either document assuming its own reading.
 ADR-0066's 2026-08-03 amendment therefore states the partition outright: `pending`,
 `stopped_without_end`, `unresolved_spawn` and terminal are disjoint and exhaustive over
@@ -861,12 +869,13 @@ own tests will not catch it.
 **Cost of reversal.** D3, D4 and D7 are cheap to extend and expensive to retract. D2 is
 the escape hatch: a breaking change is expressible as a version increment rather than a
 negotiation. D8 could be dropped without touching the envelope, at the cost of P7
-returning. D10 cannot be dropped without re-opening the contradiction with ADR-0066, and
-its two marked extensions cannot be dropped without leaving the two documents disagreeing
-about what a wait entry contains and what a disconnect does. The clause it decides where
-D6 is silent is the opposite case: nothing forces it, an implementation could have put
-stopped ids in `pending` and stayed conforming, and it is reversible only until a consumer
-has been written against it. The producer floor attached to it is cheaper to reverse than
+returning. D10's rules are now stated in ADR-0066 D6 as well, so dropping them here would
+not create disagreement; it would leave the verb surface carrying the rules with none of
+the rationale, and reversing any of them is a coordinated amendment of both documents. The
+partition clause had a window in which it was cheap to reverse — before ADR-0066's
+2026-08-03 amendment an implementation could have put
+stopped ids in `pending` and stayed conforming — and that window is closed: both documents
+now state where every unresolved id belongs, and consumers may be written against it. The producer floor attached to it is cheaper to reverse than
 to introduce, since removing a minimum call duration cannot break a caller that was
 tolerating it.
 
