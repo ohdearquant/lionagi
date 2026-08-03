@@ -195,13 +195,211 @@ def test_workflow_keeps_quarantine_outside_fail_closed_gate() -> None:
     gate = workflow.split("  ci-gate:", 1)[1].split("  publish:", 1)[0]
 
     assert "  quarantine:\n    continue-on-error: true" in workflow
-    assert (
-        "needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, vscode, marketplace]"
-        in gate
-    )
     assert '"quarantine"' not in gate
     assert "run: scripts/ci.sh test-python-quarantine" in workflow
     assert "run: scripts/ci.sh lint-quarantine" in workflow
+
+
+def test_ci_gate_needs_list_agrees_with_its_own_script_gates() -> None:
+    # Both halves of the aggregate live in one file: the YAML `needs:` list
+    # decides which jobs ci-gate waits for, and the embedded script's
+    # hard_gates / conditional_gates lists decide which results it judges. A
+    # job present in one but not the other is either an unjudged wait (green
+    # regardless of its result) or a KeyError at gate time. Deriving both
+    # sides from the same source keeps this test from pinning a stale copy of
+    # production text, and makes the agreement itself the assertion.
+    import ast
+
+    import yaml
+
+    jobs = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]
+    gate = jobs["ci-gate"]
+    needs = set(gate["needs"])
+
+    script = gate["steps"][0]["run"]
+    body = script.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    consts: dict[str, object] = {}
+    for node in ast.walk(ast.parse(body)):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in ("hard_gates", "conditional_gates")
+        ):
+            consts[node.targets[0].id] = ast.literal_eval(node.value)
+
+    hard = set(consts["hard_gates"])
+    conditional = set(consts["conditional_gates"])
+
+    assert hard | conditional == needs
+    assert not (hard & conditional)
+    assert "quarantine" not in needs
+    assert "performance" not in needs
+    # Every conditional job's filter flag must be an output the changes job
+    # actually declares, or the gate's else-branch fails it unconditionally.
+    declared_outputs = set(jobs["changes"]["outputs"])
+    assert set(consts["conditional_gates"].values()) <= declared_outputs
+
+
+# Jobs this repository deliberately does not gate on, each for a stated reason.
+# This set is the POLICY, and it is the one thing here that is written down
+# rather than derived: adding a job to it is a decision to let that job fail
+# without blocking a merge. Everything else defined in ci.yml must be judged.
+_UNGATED_JOBS = {
+    # Advisory lanes, documented as such in ci.yml.
+    "performance",
+    "quarantine",
+    # Not a gate subject: publish runs only on main after merge, and ci-gate
+    # is the aggregate itself.
+    "publish",
+    "ci-gate",
+}
+
+
+def test_every_job_defined_in_the_workflow_is_gated_or_explicitly_ungated() -> None:
+    # The agreement test above compares ci-gate's two lists AGAINST EACH
+    # OTHER, so it holds just as well when a job is dropped from both at
+    # once — and a job dropped from both is one the aggregate neither waits
+    # for nor judges, which is the exact escape the aggregate exists to
+    # prevent. The population is taken here from the workflow's own job
+    # DEFINITIONS instead, a different part of the file from the lists under
+    # test, so a synchronized deletion leaves the job defined, ungated, and
+    # unlisted below — and fails.
+    import yaml
+
+    jobs = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]
+    gated = set(jobs["ci-gate"]["needs"])
+    defined = set(jobs)
+
+    ungated = defined - gated - _UNGATED_JOBS
+    assert not ungated, (
+        f"jobs defined in ci.yml but neither gated by ci-gate nor listed as "
+        f"deliberately ungated: {sorted(ungated)}"
+    )
+    # The exclusions must still exist; a stale name here would silently widen
+    # the allowance for whatever job is added under it later.
+    assert _UNGATED_JOBS <= defined
+
+
+def test_ci_gate_runs_and_reads_its_inputs_regardless_of_dependency_results() -> None:
+    # Two wirings outside the script body decide whether the script ever sees
+    # the truth. Without `always()` a failed dependency SKIPS ci-gate, and a
+    # skipped required check satisfies branch protection — a green that never
+    # ran. Without the toJSON(needs) binding the script judges something other
+    # than this run's results. Neither is visible in the script's own text.
+    import yaml
+
+    gate = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]["ci-gate"]
+
+    assert gate["if"].strip() == "${{ always() }}"
+    assert gate["steps"][0]["env"]["NEEDS_CONTEXT"].strip() == "${{ toJSON(needs) }}"
+
+
+def test_the_studio_filter_covers_every_input_to_the_studio_image() -> None:
+    # studio-docker may skip when the studio filter reports no image-relevant
+    # change, so a build input the filter does not match is a path to a green
+    # gate over an image that would not build. The inputs are derived from the
+    # Dockerfile itself rather than restated here, plus the context-control
+    # file, which is an input precisely because it decides what the build
+    # context contains: a root .dockerignore excluding a COPY source makes the
+    # build fail while matching none of the source paths.
+    import re
+
+    import yaml
+
+    jobs = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]
+    filters = yaml.safe_load(jobs["changes"]["steps"][1]["with"]["filters"])
+    studio_rules = filters["studio"]
+
+    def covered(path: str) -> bool:
+        for rule in studio_rules:
+            if rule == path:
+                return True
+            if rule.endswith("/**") and path.startswith(rule[:-2]):
+                return True
+        return False
+
+    dockerfile = (REPO_ROOT / "apps/studio/Dockerfile").read_text()
+    sources: list[str] = []
+    for line in dockerfile.splitlines():
+        m = re.match(r"^COPY\s+(?!--from)(.+)$", line.strip())
+        if not m:
+            continue
+        # Everything but the destination; a trailing glob is not a path.
+        parts = m.group(1).split()[:-1]
+        sources.extend(p for p in parts if not p.endswith("*"))
+
+    assert sources, "no COPY sources parsed from the Studio Dockerfile"
+    uncovered = [s for s in sources if not covered(s)]
+    assert not uncovered, f"Studio image inputs not matched by the studio filter: {uncovered}"
+
+    # Not a COPY source, and the reason it must be listed anyway: it changes
+    # what every COPY source resolves to.
+    assert covered(".dockerignore"), (
+        "a root .dockerignore is a Studio image input — it decides what the "
+        "build context contains — and must trigger the studio filter"
+    )
+
+
+def _extract_gate_parts() -> tuple[str, list[str], dict[str, str]]:
+    import ast
+
+    import yaml
+
+    gate = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]["ci-gate"]
+    script = gate["steps"][0]["run"]
+    body = script.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    consts: dict[str, object] = {}
+    for node in ast.walk(ast.parse(body)):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in ("hard_gates", "conditional_gates")
+        ):
+            consts[node.targets[0].id] = ast.literal_eval(node.value)
+    return body, list(consts["hard_gates"]), dict(consts["conditional_gates"])
+
+
+def test_ci_gate_script_judges_by_every_list_entry() -> None:
+    # The agreement test proves the lists exist and match needs; this proves
+    # the verdict path CONSUMES them. A refactor that keeps the lists as
+    # data but stops iterating one of them would leave every other assertion
+    # green while the gate judges nothing — here, each entry individually
+    # flipped to a failing result must flip the verdict, executing the same
+    # script body the workflow runs.
+    import json
+    import os
+    import subprocess
+    import sys
+
+    body, hard_gates, conditional_gates = _extract_gate_parts()
+
+    def run_gate(ctx: dict) -> int:
+        return subprocess.run(
+            [sys.executable, "-c", body],
+            env={**os.environ, "NEEDS_CONTEXT": json.dumps(ctx)},
+            capture_output=True,
+        ).returncode
+
+    def green_context() -> dict:
+        ctx: dict = {name: {"result": "success"} for name in hard_gates}
+        ctx["changes"]["outputs"] = {flag: "true" for flag in conditional_gates.values()}
+        for job in conditional_gates:
+            ctx[job] = {"result": "success"}
+        return ctx
+
+    assert run_gate(green_context()) == 0
+
+    for name in hard_gates:
+        ctx = green_context()
+        ctx[name]["result"] = "failure"
+        assert run_gate(ctx) == 1, f"gate ignored failing hard gate {name!r}"
+
+    for job in conditional_gates:
+        ctx = green_context()
+        ctx[job]["result"] = "skipped"
+        assert run_gate(ctx) == 1, f"gate ignored {job!r} skipping while its inputs changed"
 
 
 def test_required_ci_wrapper_excludes_only_performance_and_quarantine() -> None:
