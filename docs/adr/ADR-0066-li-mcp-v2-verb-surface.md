@@ -4,13 +4,32 @@
 - **Kind**: Aspirational
 - **Area**: cli-surface
 - **Date**: 2026-07-24 (amended 2026-07-25 twice — D1, D2, D3 and D7; amended 2026-07-27 —
-  D6, see Amendment history)
+  D6; amended 2026-08-03 — D6, see Amendment history)
 - **Relations**: builds on ADR-0095 (run-terminal callbacks — the `notify.on_terminal`
   layer the MCP submits ride) and ADR-0104 (`li kill` transitive play reaping and
   terminal-notify on kill, whose semantics the kill verb must inherit rather than
   re-implement); none superseded
 
 ## Amendment history
+
+**2026-08-03 — Amendment 4: D6's wait contract catches up with the observed surface.**
+Three changes, all already true of the implementation, recorded under this document's own
+rule that a non-terminal classification is added to a list a caller can read, never left
+to the classifier alone.
+
+1. **The partition is four-way.** An aged `preparing` record has no process to prove
+   absent, so it is neither `pending` (waiting has stopped changing its answer) nor
+   `stopped_without_end` (nothing observable stopped); it is returned in its own list,
+   `unresolved_spawn`, with the age threshold echoed in the result. `stopped_without_end`
+   is also now stated by evidence rather than phase: it holds records that stopped or
+   cannot be shown to be progressing, including a conclusive finding whose transition
+   could not be published and a record from before the spawn phase was recorded.
+2. **The one-poll floor keys on either special list**, since neither resolves by waiting.
+3. **Observation purity gains its one fenced exception.** The first reader of a
+   conclusively-gone `started` run may durably reap it where the fenced write publishes;
+   a refused write leaves the record untouched. ADR-0106 D10 and ADR-0107 carry the full
+   statement; it is recorded here so a verb-surface reader is not told purity is
+   unconditional.
 
 **2026-07-27 — Amendment 3: D6 states four things it previously left to the reader.** All
 four were already true of the implementation and none was findable in this document, which
@@ -450,8 +469,13 @@ unrecognised failure as a success.
 
 **The result partitions the observed ids, and the partition is exhaustive.** Every id that
 was observed without a per-id error is exactly one of: terminal; still `pending`, meaning
-further waiting can still change its answer; or in `stopped_without_end`, meaning its process
-is gone with no end recorded and waiting cannot. The three are disjoint and together cover
+further waiting can still change its answer; in `stopped_without_end`, meaning the record
+stopped or cannot be shown to be progressing — its process gone with no end recorded, a
+conclusive finding whose transition could not be published, or a record with no recorded
+spawn phase — and waiting cannot change it; or in `unresolved_spawn`, meaning the record
+still says `preparing` past the producer's stated age threshold (echoed in the result), so
+there is no process to prove absent and waiting has stopped meaning anything. The four are
+disjoint and together cover
 every observed id, so a caller can hold a policy for each and know it has covered them all.
 An id that is not resolved and is not named anywhere is a defect in the implementation, not
 a caller's problem to infer: the duty to have a policy for an unresolved run is only
@@ -459,9 +483,10 @@ dischargeable if every unresolved run arrives somewhere it can be read. A future
 non-terminal classification is therefore added to a list at the same time it is added to the
 classifier, never to the classifier alone.
 
-Because an id in `stopped_without_end` resolves nothing by waiting, a caller looping until
+Because an id in `stopped_without_end` or `unresolved_spawn` resolves nothing by waiting, a
+caller looping until
 `all_terminal` would otherwise re-ask as fast as it could send. So a call that would return
-without having waited at all, while at least one id is in that list, first waits one poll
+without having waited at all, while at least one id is in either list, first waits one poll
 interval — bounded by whatever is left of the window — and observes again. This is a floor
 on the call rather than a charge added to it: a call that already waited on a running id has
 met it, and a snapshot request has no window to spend and pays nothing. Pacing sits here
@@ -475,8 +500,13 @@ other ids from being observed. Those errors are a separate channel from the pend
 do not define it: they are for ids that could not be observed at all, so an id that *was*
 observed is placed by the partition above rather than by what the error channel excludes.
 
-**Observing does not touch the run.** A wait that expires, that is signalled, or whose caller
-disconnects leaves the durable record exactly as it was. Cancelling an observation is not
+**Observing does not touch the run — with one deliberate, fenced exception.** A wait that
+expires, that is signalled, or whose caller
+disconnects leaves the durable record exactly as it was. The exception: the first reader of
+a `started` run whose process is conclusively established gone may durably reap it to an
+attributable terminal where the fenced write publishes; a refused write leaves the record
+exactly as every other observation does (ADR-0106 D10 and ADR-0107 specify the evidence and
+the fence). Cancelling an observation is not
 cancelling the work, and no implementation may make the two the same operation — a caller
 that walks away from a bounded wait has said nothing about whether the work should continue,
 and the only safe reading of silence is that it should.

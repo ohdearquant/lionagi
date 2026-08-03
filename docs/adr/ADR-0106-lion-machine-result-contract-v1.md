@@ -627,15 +627,19 @@ effective way to prevent it being reconciled:
   a floor for it.** A run whose process is gone with no end recorded has stopped, and both
   original writers of an end are past it. Where that finding is conclusive for a `started`
   run and the fenced reap publishes, the status read resolves it before aggregation
-  (ADR-0107): it comes back terminal and never appears in this list. The list holds the
-  `started` cases that stopped and could not be resolved — an inconclusive finding, or a
-  conclusive one whose transition could not be published, retried on the next
-  observation. A `preparing` record is never in it: fresh, it stays in `pending`; aged
-  past the producer's stated threshold, it is returned in its own fourth bucket,
-  `unresolved_spawn`, with that threshold reported beside it (there is no process to
-  prove absent, so it is a different fact than a stopped run). The stopped ids are
-  returned in their own list, `stopped_without_end`, rather than in `pending`, and the call
-  stops re-observing once every remaining id is either terminal or in that list. It is a
+  (ADR-0107): it comes back terminal and never appears in this list. The list is keyed on
+  what is known, not on a phase name: it holds every observed record that stopped, or
+  cannot be shown to be progressing, and could not be resolved — a `started` case with an
+  inconclusive finding, one whose conclusive transition could not be published (retried
+  on the next observation), and a record written before the spawn phase existed, whose
+  phase is unknown and which lands here by the same absence of evidence. The only records
+  kept out are the ones the producer explicitly marked `preparing`: fresh, such a record
+  stays in `pending`; aged past the producer's stated threshold, it is returned in its
+  own fourth bucket, `unresolved_spawn`, with that threshold reported beside it (there is
+  no process to prove absent, so it is a different fact than a stopped run). The stopped
+  ids are returned in their own list, `stopped_without_end`, rather than in `pending`,
+  and the call stops re-observing once every remaining id is either terminal or in one of
+  those two lists. It is a
   separate list and not a per-id error, because observing them succeeded. For those entries
   nothing about the
   record changes: the entry stays non-terminal with a null outcome, and a run that does
@@ -648,7 +652,9 @@ effective way to prevent it being reconciled:
   resolves. Dropping such ids from `pending` removes the second, and a consumer looping
   until `all_terminal` with no backoff of its own would turn a visible stall into a hot
   loop, which is worse than the stall it removes. So a call that would return without having
-  waited at all, while at least one id is in `stopped_without_end`, first sleeps one poll
+  waited at all, while at least one id is in `stopped_without_end` or `unresolved_spawn` —
+  the floor keys on either list, since an aged `preparing` record resolves nothing by
+  waiting either — first sleeps one poll
   interval — bounded by whatever is left of the window — and observes once more. The trigger
   is a property of the observation the call is about to return, not of any history, so it
   applies on a first observation as much as a later one.
@@ -671,9 +677,9 @@ effective way to prevent it being reconciled:
   boundary whose safety depends on N independent clients continuing to behave is not a
   boundary.
 
-The first two extensions need a forward amendment to ADR-0066 D6 to keep the two documents
-in agreement; until that lands, this ADR is the stricter of the two on them and an
-implementation satisfying it also satisfies ADR-0066.
+ADR-0066 D6 was amended on 2026-08-03 to state the same partition, the same either-list
+floor, and the same fenced-reap exception, so the two documents agree; where the level of
+detail differs, this ADR carries the fuller statement.
 
 **The third is a definition of something ADR-0066 D6 leaves open**, and it is the clause to
 read carefully. D6 states the result as the entries plus `all_terminal`, `timed_out`, and
@@ -686,7 +692,7 @@ adopted — the error channel is for ids observation could not resolve, while a 
 was observed and classified, so naming that channel does not settle the pending rule by
 exclusion. The honest conclusion is that D6 underdetermines this, and an underdetermined
 clause is settled by amending it rather than by either document assuming its own reading.
-The forward amendment therefore states the partition outright: `pending`,
+ADR-0066's 2026-08-03 amendment therefore states the partition outright: `pending`,
 `stopped_without_end`, `unresolved_spawn` and terminal are disjoint and exhaustive over
 every observed id (2026-08-03: the fourth bucket — an aged `preparing` record — is
 corrected into the partition here; the implementation and its tests already enforce the
@@ -795,7 +801,8 @@ being asked of them in one place.
    finish, or three integrators each inventing a different timeout behaviour, which is
    the divergence removed from the specification arriving back through the consumers.
 
-   On pacing, this obligation describes rather than requires. A `stopped_without_end` id
+   On pacing, this obligation describes rather than requires. A `stopped_without_end` or
+   `unresolved_spawn` id
    does not consume the window, so the window is not backpressure for it — the producer
    spends a one-interval floor instead (D10), and the correctness of the boundary does not
    depend on you. A backoff of your own is still recommended, because a floor set by the
@@ -829,7 +836,7 @@ non-terminal for as long as its record existed. Since ADR-0107 the first case cl
 the evidence is conclusive and the fenced reap publishes — a `started` orphan is reaped
 to an attributable terminal — while producer-death-before-spawn (`preparing`) and
 inconclusive findings still stay non-terminal. A consumer's bounded wait reports the
-inconclusive or unpublishable `started` cases as stopped without an end every time, and
+inconclusive or unpublishable cases as stopped without an end every time, and
 an aged `preparing` record in its own `unresolved_spawn` bucket, never as finished. Two earlier revisions tried to close this with a rule
 every reader would apply, and both produced worse failures than the one they removed: a
 healthy child reported as terminally failed, and two hosts disagreeing about one unchanged

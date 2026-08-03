@@ -277,7 +277,14 @@ OBSERVABLE, never silent.
   recovery for a server-side holder, and it is sufficient because the
   claim is kernel-held and leaves no persistent state behind.
 - **Cooperative ordering guarantee**: on normal completion and per-leg
-  timeout, every leg's harvest runs and its record persists, then
+  timeout, the finalizer first proves the recorded process group holds no
+  member besides itself — a surviving descendant of a leg that already
+  ended, still inside the group, receives the same hard kill and its
+  absence is verified, so a straggler is ended at round close rather than
+  tolerated into the harvest window (the finalizer cannot use the group
+  kill here, being a member itself; it scans the recorded group and
+  signals the survivors individually, identity-checked the same way).
+  Only then every leg's harvest runs and its record persists, then
   `round.json` is written with `round_state: complete`, and only then does
   the parent terminalize and its single notice fire. A notification consumer
   and a polling consumer read the same facts; there is no cooperative window
@@ -314,7 +321,15 @@ OBSERVABLE, never silent.
   boundary and sabotages only its author's round: D4's harvest copies
   defensively, so the published record describes the harvested copies and
   stays internally consistent — writes made after recorded-domain
-  quiescence simply miss the round. A mechanically non-escapable process
+  quiescence simply miss the round. What a consumer does about the
+  residual, stated as a rule: consume through the round record only —
+  `job.output` serves the harvested copies under the run directory and
+  never reads a scratch tree, so the read surface enforces this by
+  construction; a leg-artifacts directory that exists or reappears after
+  `round_state: complete` is the escapee's signature, sits outside the
+  round's guarantees, and is disposable — deleting it changes nothing
+  recorded; and a leg that detaches workers past its own round is a defect
+  in that leg's brief, fixed in the brief, not a runner defect. A mechanically non-escapable process
   domain would close the residual; that is platform-specific hardening
   this ADR names and does not adopt. Only then the manifest-aware reap:
   harvest each leg's scratch from disk as D4
