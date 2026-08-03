@@ -134,6 +134,43 @@ terminal event now comes from the guarded lifecycle transition itself
 and letting the registry's own post-commit push fire it is what prevents
 double delivery.
 
+**`deliver_flow_notify_now`** — the direct-path sibling of
+`register_flow_notify_scope`, for the one case that registered path cannot
+cover: `setup_agent_persist` failing before a session entity exists (`li
+agent`, `agent.py`). With no session there is no terminal transition to
+register against, so the run delivers its own `--notify` adapter itself, at
+process end in the `finally` block, once its own terminal status is already
+known — same `resolve_notify_config` resolution, same legacy payload/argv/env
+shape (`_legacy_argv_env_builders`, shared with the registered path), just
+invoked against a synthesized `RunTerminalEnvelope` instead of one raised by
+a DB transition. This is why the MCP server's job-spawn `--notify` template
+(`lionagi/mcp/jobs.py`, `_notify_template`) still fires for a run whose
+persistence broke: the argv it invokes (`lionagi.mcp._notify_hook`) carries
+its own `run_id` and needs nothing from the session/StateDB path to record
+the job's end and attempt delivery — it is agnostic to which of the two
+notify paths called it.
+
+Idempotence is a single file check, not the per-run lock the MCP job record
+uses: `run.notify_outcome_path.exists()` before attempting delivery, skipping
+if something is already recorded there. This is sufficient (not merely
+convenient) because the two notify paths are mutually exclusive by
+construction within one process — whether a session entity exists is decided
+once, right after `setup_agent_persist` returns, and never changes for the
+rest of the run, so the registered path and the direct path can never both
+fire for the same run. The check exists for re-entrancy safety (a second
+pass through the same `finally` body), not to arbitrate a real race.
+
+The refusal record (`record_notify_rejection_to_run`, `notify_outcome.json`
+with `reason` set) that used to fire unconditionally the moment persistence
+failed now fires only when delivery is actually attempted and genuinely
+cannot be completed — nothing configured to run, or the configured adapter
+itself fails to resolve/build. A `--notify` adapter that resolves and builds
+but fails to *launch or exit cleanly* is recorded by `record_notify_outcome_
+to_run` instead (no `reason` key — see `lionagi/state/lifecycle/
+notify_settings.py`), which is what lets `lionagi/mcp/jobs.py`'s orphan
+reaper (see `docs/internals/mcp.md#reap-reason-code-split`) tell "this run
+said its notice never arrived" from "this run said nothing at all."
+
 ### `_orchestration.py` — team-mode worker/coordinator wiring
 
 `team_worker_system()`/`team_history_context()`: a worker never has both

@@ -51,6 +51,46 @@ run ended. A mutation that cannot take that lock records nothing and says so —
 the record stays non-terminal and the next observation retries it, rather than a
 terminal fact being announced that no reader can find.
 
+#### reap-reason-code-split
+
+Three ways a run can end with nobody around to say what happened, each with
+its own `reason_code` — `_derive()` and `reap_orphan()` (`lionagi/mcp/jobs.py`):
+
+- **Spawn never started doing work** — `spawn_state == "failed"`, caught and
+  recorded synchronously by `_record_spawn_failure` before this run ever did
+  anything. `reason_code=spawn_failed` (`_SPAWN_FAILED_REASON`), `terminal`
+  true immediately; never reaches the orphan path at all. Already distinct
+  before the notice-survives-lost-persistence change — no new code needed
+  here, only documented as the first branch of the split.
+- **Notice recorded as undelivered** — the run's own directory carries a
+  `notify_outcome.json` with `ok: false` (the refusal `--notify` asked for
+  and never got, from `record_notify_rejection_to_run`, or a `--notify`
+  adapter that resolved but failed to deliver, from `record_notify_outcome_
+  to_run` — see `docs/internals/cli.md#_notifypy`). `reap_orphan()` checks
+  this (`_notice_recorded_undelivered`) only once every other admission gate
+  already holds (`spawn_state == "started"`, no `finished_at` yet, a
+  conclusive `process_gone` finding) — never as a substitute for those
+  checks, only as a refinement of which reason code the reap writes.
+  `reason_code=process_gone_notice_recorded_undelivered`
+  (`LOST_REASON_NOTICE_RECORDED_UNDELIVERED`).
+- **True silence** — no spawn failure, no recorded notice either way, process
+  conclusively gone. `reason_code=process_gone_without_outcome` (`LOST_
+  REASON`), unchanged from before.
+
+The file read for the second case is best-effort and one-directional: found
+and parseable with `ok: false` upgrades the reason code; anything else (file
+absent, unreadable, `ok: true`, wrong shape) falls through to `LOST_REASON`.
+An *absent* file is never evidence of true silence — run directories are
+pruned by retention, so "the file used to say undelivered and is gone now" is
+indistinguishable on disk from "nothing was ever recorded" — but the
+resulting reason code (`LOST_REASON`, the pre-existing default) is the
+correct one for both, so this never mislabels anything as more or less
+informative than it actually is. `ok: true` similarly falls through, but is
+moot in practice for an MCP-spawned run: a delivered `--notify` means
+`lionagi.mcp._notify_hook` ran and called `mark_terminal`, which sets
+`finished_at` and disqualifies the run from reaping before this check is
+ever reached.
+
 #### unresolved-spawn-window
 
 `UNRESOLVED_SPAWN_AFTER_SECONDS` (= `WAIT_MAX_SECONDS`) is a defensible default,
