@@ -185,7 +185,11 @@ concurrency caps compose the same way they do for the planner fanout.
   over.
 
 - **A timed-out leg** is recorded `timed_out`, receives cooperative
-  termination, and its harvest is still attempted during cooperative teardown.
+  termination escalating to hard kill, and its harvest runs only after its
+  process's death is confirmed. The quiescence invariant (D3) is
+  path-independent: `round_state: complete` is never published while any
+  process that can write a leg's scratch is alive, on cooperative and reap
+  paths alike.
 
 ### D3 — Durable records, ordering, and the two-stage end
 
@@ -260,8 +264,11 @@ OBSERVABLE, never silent.
   which releases the claim with the process. No existing CLI or MCP
   surface performs that escalation for this id class today; a first-class
   escalation parameter is possible future work, not claimed here. Claim
-  recovery is deliberately narrower than group cleanup: surviving group
-  members hold no claim and remain the existing kill machinery's concern.
+  recovery by the operator is deliberately narrower than group cleanup —
+  the operator only needs to free the claim. The reaper that then acquires
+  it owns the rest: its pre-harvest group kill and absence check (above)
+  are what make a leader-only kill safe, because surviving group members
+  hold no claim and cannot outlive the reaper's first act.
   The reaper holders are server-side actors a job-group signal cannot
   reach; their work is bounded by construction — the same per-leg file and
   byte caps that bound every harvest — and one that nonetheless hangs
@@ -287,7 +294,14 @@ OBSERVABLE, never silent.
   terminal write belongs to the claim holder; grace expiry is when the
   reaper first CHECKS the claim, not an unconditional handoff. Only on
   acquiring the lock — which a dead owner cannot still hold, the kernel
-  released it with the process — does it perform a manifest-aware reap: harvest each leg's scratch from disk as D4
+  released it with the process — does it proceed, and its FIRST act on the
+  claim is quiescence, not harvest: a hard kill of the run's recorded
+  process group (`os.killpg`, a primitive the server-side reaper already
+  holds; identity-verified against the recorded pgid and the group marker
+  every member inherits), then verification that no member survives.
+  `round_state: complete` is never published while any process that can
+  write a scratch directory is alive. Only then the manifest-aware reap:
+  harvest each leg's scratch from disk as D4
   specifies, write each leg record with what could be established
   (`harvest_failed` with a reason where a scratch is unreadable — never an
   empty artifact list), write `round.json`, then make its single terminal
@@ -297,8 +311,10 @@ OBSERVABLE, never silent.
   existing orphan-reaping path on the job surface; for manifest runs that
   reaper acquires the same finalization lock (its previous owner is dead by
   definition of the path, so the lock is free; acquisition still serializes
-  it against a concurrent kill-reaper) and performs the same disk-side
-  harvest-then-record sequence before its terminal write, recording
+  it against a concurrent kill-reaper) and performs the same
+  quiescence-then-harvest-then-record sequence before its terminal write —
+  a dead parent does not mean dead legs, so the pre-harvest group kill and
+  absence check apply identically — recording
   `"recorded_by": "orphan-reaper"`. Where the existing reaper (or any non-manifest-aware
   writer) has already published a terminal status, the manifest-aware pass
   still runs, writes the records late, and flips `round_state` from

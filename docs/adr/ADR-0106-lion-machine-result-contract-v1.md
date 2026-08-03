@@ -553,8 +553,11 @@ is configured, sends a terminal notice.
   reading, so nothing wakes it to learn that nothing will wake it (P8). A consumer
   restart across a successful delivery loses it identically. Reconciliation is D10's
   bounded wait, or a poll; the notice is an optimisation over that floor, not a
-  replacement for it. That floor is bounded observation and not eventual resolution: an
-  orphan under D6 sends no notice, because it never reaches a terminal status, and it does
+  replacement for it. That floor is bounded observation, and it is eventual resolution
+  only for the case ADR-0107 closed: a conclusive `started` orphan is reaped to a
+  terminal, and the reap winner attempts the same configured delivery the dead child's
+  hook would have sent. A `preparing` or inconclusive orphan sends no notice, because it
+  never reaches a terminal status, and it does
   not resolve under polling either. A consumer that reads this decision as "the poll always
   gets there in the end" has the right fallback and the wrong stopping condition, which is
   what the consumer obligation on an unresolved bounded wait is for. D10 names such a run
@@ -602,9 +605,13 @@ extensions rather than folded into the list above, because presenting a new deci
 existing one tells every reader there is nothing left to reconcile, which is the most
 effective way to prevent it being reconciled:
 
-- **Observing does not touch the run.** A wait that times out, is signalled, or whose
-  caller disconnects leaves the durable run exactly as it was. Cancelling an observation is
-  not cancelling the work. ADR-0066 D6 is silent on signal and disconnect, so an MCP
+- **Observing does not touch the run — with one deliberate, fenced exception.** A wait
+  that times out, is signalled, or whose caller disconnects leaves the durable run exactly
+  as it was; cancelling an observation is not cancelling the work. The exception is the
+  one ADR-0107 added: the first reader of a conclusively-gone `started` orphan durably
+  reaps it — an attributable terminal written under a fenced claim, before notification
+  and wait aggregation — repairing a record no writer survived to finish, never mutating
+  live work. ADR-0066 D6 is silent on signal and disconnect, so an MCP
   implementer reading only that ADR could let request cancellation propagate into the
   operation while an external consumer assumes it cannot — the two surfaces then behave
   differently after the identical event.
@@ -613,10 +620,14 @@ effective way to prevent it being reconciled:
   implementation would omit the field this contract requires for reporting a result.
 - **An id that waiting cannot resolve does not hold the window open, and the producer pays
   a floor for it.** A run whose process is gone with no end recorded has stopped, and both
-  writers of an end are past it, so further polling cannot change its answer. Such ids are
+  original writers of an end are past it. Where that finding is conclusive for a `started`
+  run, the status read reaps it before aggregation (ADR-0107): it comes back terminal and
+  never appears in this list. The `preparing` and inconclusive cases are what the list is
+  for: such ids are
   returned in their own list, `stopped_without_end`, rather than in `pending`, and the call
   stops re-observing once every remaining id is either terminal or in that list. It is a
-  separate list and not a per-id error, because observing them succeeded. Nothing about the
+  separate list and not a per-id error, because observing them succeeded. For those entries
+  nothing about the
   record changes: the entry stays non-terminal with a null outcome, and a run that does
   record an end afterwards is classified terminal by the next observation exactly as
   before. `all_terminal` stays false while any id is in the list, because a run that stopped
