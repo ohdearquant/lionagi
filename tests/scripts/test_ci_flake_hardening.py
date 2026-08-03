@@ -241,6 +241,67 @@ def test_ci_gate_needs_list_agrees_with_its_own_script_gates() -> None:
     assert set(consts["conditional_gates"].values()) <= declared_outputs
 
 
+def _extract_gate_parts() -> tuple[str, list[str], dict[str, str]]:
+    import ast
+
+    import yaml
+
+    gate = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]["ci-gate"]
+    script = gate["steps"][0]["run"]
+    body = script.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    consts: dict[str, object] = {}
+    for node in ast.walk(ast.parse(body)):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in ("hard_gates", "conditional_gates")
+        ):
+            consts[node.targets[0].id] = ast.literal_eval(node.value)
+    return body, list(consts["hard_gates"]), dict(consts["conditional_gates"])
+
+
+def test_ci_gate_script_judges_by_every_list_entry() -> None:
+    # The agreement test proves the lists exist and match needs; this proves
+    # the verdict path CONSUMES them. A refactor that keeps the lists as
+    # data but stops iterating one of them would leave every other assertion
+    # green while the gate judges nothing — here, each entry individually
+    # flipped to a failing result must flip the verdict, executing the same
+    # script body the workflow runs.
+    import json
+    import os
+    import subprocess
+    import sys
+
+    body, hard_gates, conditional_gates = _extract_gate_parts()
+
+    def run_gate(ctx: dict) -> int:
+        return subprocess.run(
+            [sys.executable, "-c", body],
+            env={**os.environ, "NEEDS_CONTEXT": json.dumps(ctx)},
+            capture_output=True,
+        ).returncode
+
+    def green_context() -> dict:
+        ctx: dict = {name: {"result": "success"} for name in hard_gates}
+        ctx["changes"]["outputs"] = {flag: "true" for flag in conditional_gates.values()}
+        for job in conditional_gates:
+            ctx[job] = {"result": "success"}
+        return ctx
+
+    assert run_gate(green_context()) == 0
+
+    for name in hard_gates:
+        ctx = green_context()
+        ctx[name]["result"] = "failure"
+        assert run_gate(ctx) == 1, f"gate ignored failing hard gate {name!r}"
+
+    for job in conditional_gates:
+        ctx = green_context()
+        ctx[job]["result"] = "skipped"
+        assert run_gate(ctx) == 1, f"gate ignored {job!r} skipping while its inputs changed"
+
+
 def test_required_ci_wrapper_excludes_only_performance_and_quarantine() -> None:
     script = CI_SCRIPT.read_text()
 
