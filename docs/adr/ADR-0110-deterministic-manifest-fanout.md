@@ -537,8 +537,10 @@ enumerated it, for the benefit of one producer.
   `{label, available, value, reason_code, detail}` — one unreadable leg
   record must not poison the others or masquerade as an absent leg.
   Consumers that do not know `round` ignore it; nothing existing changes
-  shape. This is a named, versioned amendment to the ADR-0106 result
-  surface, carried by this ADR rather than smuggled in by implementation.
+  shape. This is an additive field of the kind ADR-0106 D2 already permits,
+  introduced and specified here rather than smuggled in by implementation —
+  ADR-0106 itself is unchanged by it and contains no `round` text to look
+  for.
 - **The notice is the signal, not the carrier.** The terminal-notice payload
   is unchanged. A notification consumer that needs leg facts performs the
   `job.output` read on receipt; the cooperative ordering guarantee (D3) makes
