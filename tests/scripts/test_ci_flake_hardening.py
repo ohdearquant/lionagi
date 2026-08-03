@@ -195,13 +195,50 @@ def test_workflow_keeps_quarantine_outside_fail_closed_gate() -> None:
     gate = workflow.split("  ci-gate:", 1)[1].split("  publish:", 1)[0]
 
     assert "  quarantine:\n    continue-on-error: true" in workflow
-    assert (
-        "needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, vscode, marketplace]"
-        in gate
-    )
     assert '"quarantine"' not in gate
     assert "run: scripts/ci.sh test-python-quarantine" in workflow
     assert "run: scripts/ci.sh lint-quarantine" in workflow
+
+
+def test_ci_gate_needs_list_agrees_with_its_own_script_gates() -> None:
+    # Both halves of the aggregate live in one file: the YAML `needs:` list
+    # decides which jobs ci-gate waits for, and the embedded script's
+    # hard_gates / conditional_gates lists decide which results it judges. A
+    # job present in one but not the other is either an unjudged wait (green
+    # regardless of its result) or a KeyError at gate time. Deriving both
+    # sides from the same source keeps this test from pinning a stale copy of
+    # production text, and makes the agreement itself the assertion.
+    import ast
+
+    import yaml
+
+    jobs = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]
+    gate = jobs["ci-gate"]
+    needs = set(gate["needs"])
+
+    script = gate["steps"][0]["run"]
+    body = script.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    consts: dict[str, object] = {}
+    for node in ast.walk(ast.parse(body)):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in ("hard_gates", "conditional_gates")
+        ):
+            consts[node.targets[0].id] = ast.literal_eval(node.value)
+
+    hard = set(consts["hard_gates"])
+    conditional = set(consts["conditional_gates"])
+
+    assert hard | conditional == needs
+    assert not (hard & conditional)
+    assert "quarantine" not in needs
+    assert "performance" not in needs
+    # Every conditional job's filter flag must be an output the changes job
+    # actually declares, or the gate's else-branch fails it unconditionally.
+    declared_outputs = set(jobs["changes"]["outputs"])
+    assert set(consts["conditional_gates"].values()) <= declared_outputs
 
 
 def test_required_ci_wrapper_excludes_only_performance_and_quarantine() -> None:
