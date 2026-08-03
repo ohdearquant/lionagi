@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
-from ._db import store_path
+from ._db import require_file_store, store_path
 
 APPROVAL_TTL_SECONDS = 5 * 60
 
@@ -155,6 +155,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 
 
 async def _fetch_row(approval_id: str) -> dict[str, Any] | None:
+    require_file_store()
     async with _open_db(store_path()) as db:
         await _ensure_table(db)
         cur = await db.execute(
@@ -253,6 +254,7 @@ async def _write_evidence(
 
 async def verify_evidence_chain() -> dict[str, Any]:
     """Replay the evidence chain end to end and report whether it is intact."""
+    require_file_store()
     errors: list[str] = []
     total = 0
     async with _open_db(store_path()) as db:
@@ -354,6 +356,7 @@ async def create_approval(
     *, action_kind: str, params: dict[str, Any], session_id: str | None = None
 ) -> dict[str, Any]:
     """Propose a mutating action; returns the pending approval row."""
+    require_file_store()
     now = time.time()
     approval_id = uuid.uuid4().hex
     params_hash = compute_params_hash(params)

@@ -506,11 +506,20 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     # changes can't move this schedule's spawn cwd out from under it.
     action_cwd = data.get("action_cwd")
     if not action_cwd and data.get("action_project"):
+        from lionagi.studio.services._db import StoreNotAddressableError
         from lionagi.studio.services.projects import get_project
 
         from ..scheduler.engine import _is_usable_execution_root
 
-        project = await get_project(data["action_project"])
+        # This lookup is a best-effort cwd snapshot on an otherwise
+        # StateDB-only write (server-reachable). The projects catalog is
+        # SQLite-only, so a server-backed store makes it unreadable here --
+        # same as the project simply not being found, not a reason to refuse
+        # a schedule create that does not itself need SQLite.
+        try:
+            project = await get_project(data["action_project"])
+        except StoreNotAddressableError:
+            project = None
         project_path = project.get("path") if project else None
         # The same rule the resolver applies, so a root is never persisted here
         # that the resolver would refuse to honor later. Registered project

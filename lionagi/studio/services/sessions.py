@@ -15,7 +15,7 @@ from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
-from ._db import store_exists, store_path
+from ._db import require_file_store, store_exists, store_path
 from ._io import parse_json_col as _parse_json_col
 from .artifact_verification import resolve_artifact_verification
 
@@ -184,6 +184,7 @@ class SessionFilter:
 
 async def count_sessions(where: SessionFilter | None = None) -> int:
     """Total matching sessions, without reading a single branch or progression."""
+    require_file_store()
     if not store_exists():
         return 0
     clause, params = (where or SessionFilter()).where()
@@ -204,6 +205,7 @@ async def list_sessions(
 ) -> list[dict[str, Any]]:
     """One page of sessions, newest first. Cost is proportional to `limit`, not
     to the size of the store."""
+    require_file_store()
     if not store_exists():
         return []
 
@@ -333,6 +335,7 @@ async def list_sessions(
 
 async def list_project_counts() -> list[dict[str, Any]]:
     """Per-project run counts via a cheap GROUP BY (no branch/message join)."""
+    require_file_store()
     if not store_exists():
         return []
     async with _open_db(store_path()) as db:
@@ -627,6 +630,7 @@ async def get_session(
     message_offset: int = 0,
     message_cursor: str | None = None,
 ) -> dict[str, Any] | None:
+    require_file_store()
     if not store_exists():
         return None
 
@@ -837,6 +841,7 @@ async def get_session(
 
 async def get_session_by_cc_id(cc_uid: str) -> dict[str, Any] | None:
     """Return a mirrored Claude Code session, including legacy unbackfilled rows."""
+    require_file_store()
     if not store_exists():
         return None
 
@@ -883,6 +888,7 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
 
 
 async def session_exists(session_id: str) -> bool:
+    require_file_store()
     if not store_exists():
         return False
 

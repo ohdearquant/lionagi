@@ -21,6 +21,7 @@ from lionagi.version import __version__
 from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
 from .config import CORS_ORIGINS, HOST
 from .registry import iter_studio_routes, load_studio_route_modules
+from .services._db import StoreNotAddressableError
 
 _log = logging.getLogger(__name__)
 
@@ -339,6 +340,31 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.message},
+        )
+
+    @application.exception_handler(StoreNotAddressableError)
+    async def _store_not_addressable_handler(
+        request: Request, exc: StoreNotAddressableError
+    ) -> JSONResponse:
+        """Map a route asking for rows it structurally cannot fetch to 501.
+
+        Handles exactly :class:`StoreNotAddressableError` and nothing wider --
+        a path-resolution bug raising something else must not land here and be
+        reported as this specific, permanent condition. Not 503: the store
+        being server-backed does not change while this process runs, so
+        retrying buys nothing and shouldn't be implied.
+        """
+        return JSONResponse(
+            status_code=501,
+            content={
+                "detail": (
+                    f"{request.url.path} cannot answer: the configured store "
+                    f"is {exc.backend}-backed, and this route can only read "
+                    "from a local SQLite file."
+                ),
+                "route": request.url.path,
+                "backend": exc.backend,
+            },
         )
 
     @application.middleware("http")
