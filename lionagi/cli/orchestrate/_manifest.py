@@ -110,7 +110,7 @@ def load_manifest(path: str | Path) -> Manifest:
     _refuse_unknown_keys(raw, _TOP_LEVEL_KEYS, "manifest")
 
     version = raw.get("manifest_version")
-    if version != MANIFEST_VERSION:
+    if isinstance(version, bool) or version != MANIFEST_VERSION:
         raise ManifestError(f"manifest_version must be exactly {MANIFEST_VERSION}, got {version!r}")
 
     defaults_raw = raw.get("defaults", {})

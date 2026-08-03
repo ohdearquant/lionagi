@@ -196,6 +196,14 @@ def test_manifest_version_must_be_exactly_one(tmp_path):
         load_manifest(manifest_path)
 
 
+def test_manifest_version_true_is_not_one(tmp_path):
+    data = _minimal_manifest_dict(tmp_path)
+    data["manifest_version"] = True
+    manifest_path = _dump_yaml(tmp_path, data)
+    with pytest.raises(ManifestError, match="manifest_version must be exactly 1"):
+        load_manifest(manifest_path)
+
+
 def test_manifest_version_missing(tmp_path):
     data = _minimal_manifest_dict(tmp_path)
     del data["manifest_version"]
