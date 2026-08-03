@@ -233,6 +233,32 @@ def test_the_absent_reason_names_the_store_that_was_consulted(moved_sqlite_url, 
     assert "moved" in detail
 
 
+# ── the open mode a schedules read route asks for ─────────────────────────────
+# Which stores the predicate answers True for is pinned above, beside the
+# predicate. What is left to check here is that a schedules read route actually
+# routes through it, since a route that hardcoded True would pass every one of
+# those tests and still be a total outage on a server-backed store.
+
+
+async def test_a_server_url_read_fails_on_the_connection_not_on_the_open_mode(
+    absent_default, monkeypatch
+):
+    """The failure a server URL produces here must stay the one it produced
+    before the read routes changed open mode: the driver is absent or the host
+    refuses. If a read route asks for read-only mode on a server store the open
+    is rejected before any connection is attempted, and that rejection would
+    reach a real Postgres deployment as a total outage of the route rather than
+    as the connection error this asserts.
+    """
+    _set_url(monkeypatch, _SERVER_URL)
+    from lionagi.studio.services import schedules as svc
+
+    with pytest.raises(Exception) as excinfo:  # noqa: B017 — the message is the assertion
+        await svc.list_schedules()
+
+    assert "only supports sqlite" not in str(excinfo.value)
+
+
 def test_reported_sizes_describe_the_configured_store(moved_sqlite_url, tmp_path):
     from lionagi.cli.state import _db_sizes
 
