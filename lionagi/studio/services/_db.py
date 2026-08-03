@@ -9,7 +9,11 @@ from contextlib import asynccontextmanager
 
 import aiosqlite
 
-from lionagi.state.engine import SQLITE_BUSY_TIMEOUT_MS
+# Module import, not a from-import of the value: the timeout is a module
+# attribute that deployments set via env and tests retune at runtime, and a
+# from-import would freeze a copy here at import time — two layers onto one
+# store file would then wait different lengths, a difference nobody chose.
+from lionagi.state import engine as _state_engine
 
 _log = logging.getLogger(__name__)
 
@@ -71,7 +75,7 @@ async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
         _ACTIVE_CONNECTIONS += 1
         try:
             await db.execute("PRAGMA journal_mode = WAL")
-            await db.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            await db.execute(f"PRAGMA busy_timeout = {_state_engine.SQLITE_BUSY_TIMEOUT_MS}")
             await db.execute("PRAGMA foreign_keys = ON")
             db.row_factory = aiosqlite.Row
             yield db

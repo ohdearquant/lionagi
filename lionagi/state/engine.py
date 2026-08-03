@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import uuid
@@ -17,11 +18,48 @@ from lionagi._paths import LIONAGI_HOME
 
 _log = logging.getLogger(__name__)
 
+
+def _busy_timeout_from_env() -> int:
+    """The sqlite busy_timeout (ms) this deployment asked for, or the default.
+
+    The default of 5000 is sized for the test suite — a test that deliberately
+    holds a write lock should fail fast, not wait out a production-grade
+    timeout — and for years it was also silently the production value. On a
+    large store contended by more than one long-lived process, five seconds is
+    the difference between a write that waits and a write that reports
+    "database is locked" after having already waited as long as it was allowed
+    to. That is a deployment property, so it comes from the environment: a
+    daemon's launch config sets it high, the suite sets nothing and keeps the
+    fast failure.
+
+    An unusable value falls back to the default and says so. Refusing to start
+    over a malformed tuning knob would trade a slower lock wait for no daemon
+    at all, which is not a trade the knob's owner asked for. Zero and negative
+    values are refused the same way: busy_timeout=0 means "never wait", which
+    turns every momentary lock into an error and is never what a deployment
+    that bothered to set the variable wants.
+    """
+    raw = os.environ.get("LIONAGI_SQLITE_BUSY_TIMEOUT_MS")
+    if raw is None:
+        return 5000
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value <= 0:
+        _log.warning(
+            "LIONAGI_SQLITE_BUSY_TIMEOUT_MS=%r is not a positive integer; using 5000",
+            raw,
+        )
+        return 5000
+    return value
+
+
 # sqlite busy_timeout (ms) applied to every connection this process opens against
-# the store, whether through this engine or through the Studio connection helper;
-# kept low so tests that deliberately hold a write lock fail fast instead of
-# waiting the full default.
-SQLITE_BUSY_TIMEOUT_MS = 5000
+# the store, whether through this engine or through the Studio connection helper.
+# A module attribute rather than a frozen local because the pragma listeners read
+# it at connection time — tests that need a different wait retune it here.
+SQLITE_BUSY_TIMEOUT_MS = _busy_timeout_from_env()
 
 
 def has_wal_reset_fix(version_info: tuple[int, ...]) -> bool:
