@@ -718,6 +718,16 @@ guard_paths, and the session-level gate into that shape. Legacy hooks signal den
 treated as an evaluator failure and turned into a fail-closed deny rather than propagating
 uncaught.
 
+A control that cannot reach a verdict at all — misconfigured, or its backend unreachable —
+raises `ControlUnavailableError`, which subclasses `PermissionError` so existing callers keep
+failing closed on it unchanged. The gate catches it ahead of `PermissionError` and sets
+`GateResult.errored`, which separates "your configuration cannot answer this" from "the answer
+is no": both refuse the call, and an operator acts on them differently. `errored` has two
+readers, the pass logging at error level where a plain denial logs nothing, and
+`GateDeniedError`'s message. `PermissionPolicy.to_pre_hook` raises it for an escalate decision
+with no `on_escalate` configured; an escalation a configured handler *declined* is an ordinary
+denial and says so.
+
 ### `agent/hooks.py`
 
 `_resolve_against_any_root()` / `guard_paths()` — multi-root path-containment contract: a
