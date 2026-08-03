@@ -283,10 +283,15 @@ another copy of our rules living in code we do not control.
   is false**. (`cancelled` added by the 2026-08-03 erratum carried by ADR-0110 D6.
   Timing, recorded because D2 makes it matter: this text froze on 2026-07-25 with three
   values; the wire began emitting `cancelled` hours later that same day and has shipped
-  it since. That unversioned expansion violated D2 when it happened; this
-  correction documents the wire as it ships and moves no version, because the breaking
-  event was the 2026-07-25 code change, not the text catching up to it. ADR-0107's Notes
-  recorded the drift.)
+  it since. Envelope stamping itself began at 20:11 that day, so stamped v1 envelopes
+  spoke three values for under three hours, four ever since. That unversioned expansion
+  violated D2 when it happened; this correction documents the wire as it ships and moves
+  no version, because the breaking event was the 2026-07-25 code change, not the text
+  catching up to it. ADR-0107's Notes recorded the drift. Consumer notice and migration
+  policy, normative: a consumer exhaustively matching three values has been exposed to an
+  unlisted `cancelled` since 2026-07-25 22:54; add the `cancelled` branch, and until it is
+  added treat an out-of-vocabulary `outcome` the way `indeterminate` is treated — result
+  not establishable, never success and never failure.)
   Stated against `terminal` rather than against "the run is still going", because v1 has a
   state that is neither: an orphan has stopped and is still not terminal (D6), and a rule
   phrased around being in flight would leave that case undefined. Being closed, `outcome`
@@ -435,7 +440,11 @@ li job kill <run_id> --machine
   owns it, so a reused pid makes a dead run look alive, and the same unchanged record reads
   differently from two hosts. A lifecycle transition resting on that is a transition that
   depends on who asked.
-- **In v1, nothing terminalises an orphan. It stays non-terminal indefinitely.** This is a
+- **In v1 as frozen, nothing terminalised an orphan.** (2026-08-03: ADR-0107 has since
+  implemented the guarded reaper — a `started` run whose process is conclusively gone now
+  receives an attributable terminal with `outcome: indeterminate`; a `preparing` record
+  stays non-terminal exactly as described below.) The paragraph that follows records the
+  decision as frozen. This is a
   decision, not a gap, and it is stated here so that a consumer can plan for it rather than
   discover it. A run whose process died without its terminal hook running, and a run whose
   producer died before it ever spawned, both remain `terminal: false` for as long as their
@@ -692,7 +701,9 @@ starts from the constraints rather than rediscovering them:
 Everything in this list is a constraint on a future design, not a requirement on a v1
 implementation. Nothing here is normative: a v1 implementation has no reconciler, and the
 list exists so that whoever builds one starts from the constraints rather than
-rediscovering them. Adding it later is additive under D2 only because `outcome`'s
+rediscovering them. (2026-08-03: ADR-0107 built the `started`-phase reconciler within
+exactly these constraints — incarnation identity, host boundary, fenced ownership,
+per-phase eligibility; `preparing` remains unresolved, as this list predicted.) Adding it later is additive under D2 only because `outcome`'s
 vocabulary and the terminal fields are defined now, which is why they are.
 
 **DEFERRED: usage and cost accounting** — tokens, duration, and whatever else a metered
@@ -724,14 +735,15 @@ being asked of them in one place.
    actually tolerates it.
 3. **Never map `status` onto a local set** (D4). Record and display it verbatim; branch
    on `terminal` and `outcome`.
-4. **Branch on `outcome` totally, including `indeterminate`** (D4). All four cases —
-   `null`, `succeeded`, `failed`, `indeterminate` — need a defined behaviour. This is the
-   obligation that makes D4's reservation of `indeterminate` worth anything: the value is
-   defined now so that a reconciler can be added later without a version increment, and
-   that additivity is real only if consumers already have somewhere to put it. No v1 path
-   emits it, so a consumer cannot find the missing branch by testing against a producer,
-   and a two-way branch written against v1 behaviour looks complete for as long as v1 is
-   what it talks to. Test the branch against a hand-written envelope.
+4. **Branch on `outcome` totally** (D4). All five cases — `null`, `succeeded`, `failed`,
+   `cancelled`, `indeterminate` — need a defined behaviour (2026-08-03 erratum:
+   `cancelled` joined the documented set, and ADR-0107's reaper now emits
+   `indeterminate`, so neither formerly-theoretical branch is theoretical any longer).
+   This is the obligation that made D4's reservation of `indeterminate` worth anything:
+   the value was defined before any path emitted it, so its producer was added without a
+   version increment — which is exactly what then happened. A branch written against the
+   pre-reaper wire looks complete for as long as that wire is what it talks to. Test the
+   branch against a hand-written envelope.
 5. **Never render `available: false` as "none"** (D7). Absence of evidence is not
    evidence of absence, and the whole wrapper exists to stop those sharing an encoding.
 6. **Check the exit status before parsing stdout, and do not parse it at all on 78**

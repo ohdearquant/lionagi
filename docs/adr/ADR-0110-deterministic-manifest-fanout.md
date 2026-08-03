@@ -248,6 +248,17 @@ OBSERVABLE, never silent.
   record already present leaves it — first write wins, `recorded_by` names
   the winner — so even a mis-sequenced writer cannot produce two competing
   records for one leg.
+- **A hung live holder has a named recovery, per holder — one signal path
+  does not cover all three.** The runner holder lives in the job's own
+  process group: `job.kill` delivers the stop signal (the MCP surface sends
+  a fixed SIGTERM and exposes no signal choice), and an operator's group
+  SIGKILL through the CLI kill surface releases the claim with the process.
+  The reaper holders are server-side actors a job-group signal cannot
+  reach; their work is bounded by construction — the same per-leg file and
+  byte caps that bound every harvest — and one that nonetheless hangs
+  holds the claim until the serving process restarts. Restart is the named
+  recovery for a server-side holder, and it is sufficient because the
+  claim is kernel-held and leaves no persistent state behind.
 - **Cooperative ordering guarantee**: on normal completion and per-leg
   timeout, every leg's harvest runs and its record persists, then
   `round.json` is written with `round_state: complete`, and only then does
@@ -266,11 +277,8 @@ OBSERVABLE, never silent.
   surface waits and re-checks — the stop signal has been delivered, and the
   terminal write belongs to the claim holder; grace expiry is when the
   reaper first CHECKS the claim, not an unconditional handoff. Only on
-  acquiring the lock — which a dead owner cannot still hold (the kernel
-  released it with the process), and which a hung-but-alive holder keeps
-  until it exits; escalation is the caller's act, `job.kill` accepts the
-  signal to send and SIGKILL is not survivable — does it perform a
-  manifest-aware reap: harvest each leg's scratch from disk as D4
+  acquiring the lock — which a dead owner cannot still hold, the kernel
+  released it with the process — does it perform a manifest-aware reap: harvest each leg's scratch from disk as D4
   specifies, write each leg record with what could be established
   (`harvest_failed` with a reason where a scratch is unreadable — never an
   empty artifact list), write `round.json`, then make its single terminal
@@ -369,14 +377,25 @@ terminal fix landed, and has shipped it ever since (`lionagi/mcp/jobs.py`,
 `_OUTCOMES`; `indeterminate`, reserved at freeze, gained its producer when
 ADR-0107's reaper landed) — an unversioned expansion that
 ADR-0107's Notes later recorded as a pending ADR-0106 amendment item.
-This ADR carries that amendment as an ERRATUM: the vocabulary is corrected
-to the four values the wire ships, the true timing is recorded in the
-correction, and `contract_version` still does not move. The document
-correction changes nothing on the wire; the D2-breaking event was the
-2026-07-25 unversioned code change, and a retroactive bump today would
-tell consumers — every one of whom faces the four-value wire either way —
-that behavior changed today when it did not. Recording the violation as an
-erratum keeps D2's rule intact instead of manufacturing an exception to
+This ADR carries that amendment as an ERRATUM with a stated migration
+policy, and `contract_version` does not move. Precision the record owes
+its readers: envelope stamping itself began at 20:11 that same day, so
+stamped `contract_version: 1` envelopes spoke a three-value wire for under
+three hours on 2026-07-25 and a four-value wire ever since. A bump today
+was considered and declined: D2's mismatch rule tells a conforming
+consumer to stop trusting the surface, which is the right medicine when
+decoding would otherwise go wrong — here the payload shape is unchanged,
+the only delta is one more value in a closed set, and a bump would cost
+every current consumer a coordinated update for a change none of them
+would observe in payload shape. The proportionate remedy is the policy
+now stated normatively in ADR-0106's correction: consumers built against
+the three-value text add the `cancelled` branch, and until they do they
+treat an out-of-vocabulary `outcome` the way `indeterminate` is treated —
+result not establishable, never success and never failure. The erratum is
+also a consumer notice, stated plainly there: any consumer exhaustively
+matching three values has been exposed to an unlisted `cancelled` since
+2026-07-25 22:54. Recording the violation as an erratum with a migration
+policy keeps D2's rule intact instead of manufacturing an exception to
 it. `partial` does NOT join the set either way: widening a closed
 vocabulary with a genuinely new value breaks every consumer that
 enumerated it, for the benefit of one producer.
