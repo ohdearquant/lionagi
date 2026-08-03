@@ -74,6 +74,45 @@ def _dumps_with_uuid(value):
     return json.dumps(value, default=_json_serializer, allow_nan=False)
 
 
+# A value with no scheme is a filesystem path. That is the documented case and
+# almost always what was meant. But `user:secret@host/db` with the scheme left
+# off is also scheme-less, and resolving it as a path creates a database file
+# whose *name* carries the credential, at a location nobody chose, while the
+# server it was meant to reach is never contacted. Nothing about that failure
+# announces itself: the store opens, it is empty, and the daemon runs.
+#
+# The shape being matched is a URL's userinfo prefix, `something:something@`
+# before any slash. A filename may legally contain an `@` — `user@host.db` is
+# an odd but valid name — so the colon before it is what separates a credential
+# from a filename, and this must not fire on the latter. Nothing beginning with
+# `./` or `/` can match, which is the way to spell a path that really does look
+# like this.
+_CREDENTIALED_USERINFO = re.compile(r"^[^\s:/@]+:[^\s:/@]+@([^\s/@]+)")
+
+
+def _reject_schemeless_credentials(value: str) -> None:
+    """Refuse a scheme-less value shaped like a credentialed connection string.
+
+    Refusing rather than warning, because there is no reading of this value
+    under which resolving it is the right thing to do. Every outcome of going
+    ahead is wrong: the server named in it is not contacted, the store that
+    does open is empty, and the credential is written into a file name where it
+    outlives the process that was misconfigured. A warning leaves all three in
+    place and asks somebody to be reading the log at the right moment.
+    """
+    match = _CREDENTIALED_USERINFO.match(value)
+    if match is None:
+        return
+    raise ValueError(
+        "The state store URL has no scheme, so it would be read as a filesystem "
+        f"path and a SQLite file created from it. It has the shape of a connection "
+        f"string to {match.group(1)} with credentials in front, so the credentials "
+        "would become part of a file name on disk and the server would never be "
+        "contacted. Add the scheme (postgresql:// for a server), or prefix the "
+        "value with ./ if it really is a relative path."
+    )
+
+
 def normalize_state_db_url(value: str | Path | None) -> str:
     """Resolve *value* to a fully-qualified async SQLAlchemy URL string."""
     if value is None:
@@ -89,6 +128,7 @@ def normalize_state_db_url(value: str | Path | None) -> str:
         return "sqlite+aiosqlite:///:memory:"
 
     if "://" not in s:
+        _reject_schemeless_credentials(s)
         return f"sqlite+aiosqlite:///{Path(s).resolve()}"
 
     if s.startswith("sqlite+aiosqlite://") or s.startswith("postgresql+asyncpg://"):
