@@ -57,17 +57,17 @@ def dir_to_files(
 def chunk(
     *,
     text: str | None = None,
-    url_or_path: str | Path = None,
+    url_or_path: str | Path | None = None,
     file_types: list[str] | None = None,  # only local files
     recursive: bool = False,  # only local files
-    tokenizer: Callable[[str], list[str]] = None,
+    tokenizer: Callable[[str], list[str]] | None = None,
     chunk_by: Literal["chars", "tokens"] = "chars",
     chunk_size: int = 1500,
     overlap: float = 0.1,
     threshold: int = 200,
     output_file: str | Path | None = None,
     metadata: dict[str, Any] | None = None,
-    reader_tool: Callable = None,
+    reader_tool: Callable | None = None,
     as_node: bool = False,
 ) -> list:
     texts = []

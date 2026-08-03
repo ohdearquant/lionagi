@@ -1123,7 +1123,7 @@ class _SinkVisitor(ast.NodeVisitor):
     def __init__(
         self,
         kernel_names: set[str] = frozenset(),
-        constructor_aliases: dict[str, str] = None,  # type: ignore[assignment]
+        constructor_aliases: dict[str, str] | None = None,
         flow_env: _FlowModuleEnv | None = None,
     ) -> None:
         self._stack: list[str] = []

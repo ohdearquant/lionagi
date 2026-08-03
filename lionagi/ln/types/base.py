@@ -111,7 +111,7 @@ class Params:
         dict_.update(kw_)
         return dict_
 
-    def to_dict(self, exclude: set[str] = None) -> dict[str, str]:
+    def to_dict(self, exclude: set[str] | None = None) -> dict[str, str]:
         data = {}
         exclude = exclude or set()
         for k in self.allowed():
@@ -169,7 +169,7 @@ class DataClass:
         for k in self.allowed():
             _validate_strict(k)
 
-    def to_dict(self, exclude: set[str] = None) -> dict[str, str]:
+    def to_dict(self, exclude: set[str] | None = None) -> dict[str, str]:
         data = {}
         exclude = exclude or set()
         for k in type(self).allowed():

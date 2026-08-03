@@ -48,7 +48,7 @@ class TokenCalculator:
 
     @staticmethod
     def tokenize(
-        s_: str = None,
+        s_: str | None = None,
         /,
         encoding_name: str | None = None,
         tokenizer: Callable | None = None,

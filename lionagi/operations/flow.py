@@ -1238,7 +1238,9 @@ async def flow_stream(
         yield event
 
 
-def cleanup_flow_results(result: dict[str, Any], keep_only: list[str] = None) -> dict[str, Any]:
+def cleanup_flow_results(
+    result: dict[str, Any], keep_only: list[str] | None = None
+) -> dict[str, Any]:
     """Clean up flow results to reduce memory usage."""
     if not isinstance(result, dict) or "operation_results" not in result:
         return result

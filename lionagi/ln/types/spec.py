@@ -54,7 +54,9 @@ class CommonMeta(Enum):
                 raise ValueError("Validators must be a list of functions or a function")
 
     @classmethod
-    def prepare(cls, *args: Meta, metadata: tuple[Meta, ...] = None, **kw: Any) -> tuple[Meta, ...]:
+    def prepare(
+        cls, *args: Meta, metadata: tuple[Meta, ...] | None = None, **kw: Any
+    ) -> tuple[Meta, ...]:
         from .._to_list import to_list
 
         seen_keys = set()
@@ -96,9 +98,9 @@ class Spec:
 
     def __init__(
         self,
-        base_type: type = None,
+        base_type: type | None = None,
         *args,
-        metadata: tuple[Meta, ...] = None,
+        metadata: tuple[Meta, ...] | None = None,
         **kw,
     ) -> None:
         metas = CommonMeta.prepare(*args, metadata=metadata, **kw)

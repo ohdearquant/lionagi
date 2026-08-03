@@ -71,9 +71,9 @@ def function_to_schema(
     style: Literal["google", "rest"] = "google",
     *,
     request_options: dict[str, Any] | None = None,
-    strict: bool = None,
-    func_description: str = None,
-    parametert_description: dict[str, str] = None,
+    strict: bool | None = None,
+    func_description: str | None = None,
+    parametert_description: dict[str, str] | None = None,
     return_obj: bool = False,
 ) -> dict:
     """Generate an OpenAI-format function schema from type hints and docstrings.

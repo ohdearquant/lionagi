@@ -115,7 +115,7 @@ class Role(Pattern):
     def kind(self) -> PatternKind:
         return PatternKind.ROLE
 
-    def to_dict(self, exclude: set[str] = None) -> dict[str, Any]:
+    def to_dict(self, exclude: set[str] | None = None) -> dict[str, Any]:
         # Params.to_dict (not super()) — zero-arg super is unreliable under @dataclass(slots=True).
         d = Params.to_dict(self, exclude=exclude)
         if "emits" in d:

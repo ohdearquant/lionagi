@@ -28,7 +28,7 @@ def create_lionagi_async_postgres_adapter() -> type[AsyncAdapter]:
             /,
             *,
             many: bool = True,
-            adapt_meth: str = None,
+            adapt_meth: str | None = None,
             **kw,
         ):
             """Write lionagi Node(s) to database with auto-table creation."""

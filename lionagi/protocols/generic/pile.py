@@ -247,7 +247,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     def __init__(
         self,
         collections: ID.ItemSeq = None,
-        item_type: set[type[T]] = None,
+        item_type: set[type[T]] | None = None,
         order: ID.RefSeq = None,
         strict_type: bool = False,
         **kwargs,

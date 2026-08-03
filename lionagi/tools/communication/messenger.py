@@ -133,9 +133,9 @@ class LionMessenger(LionTool):
 
         def messenger(
             action: str,
-            to: str | list[str] = None,
-            content: str = None,
-            urgency: str = None,
+            to: str | list[str] | None = None,
+            content: str | None = None,
+            urgency: str | None = None,
         ) -> str:
             """Team messaging and signals. 'wakeup' takes one name; a list's rest are ignored.
 

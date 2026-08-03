@@ -111,7 +111,7 @@ def prepare_parse_kws(
     text: str,
     handle_validation: HandleValidation = "return_value",
     max_retries: int = 3,
-    request_type: type[BaseModel] = None,
+    request_type: type[BaseModel] | None = None,
     operative=None,
     similarity_algo="jaro_winkler",
     similarity_threshold: float = 0.85,
@@ -305,7 +305,7 @@ def _extract_lndl(text: str, operable: "Operable") -> Any:
 def _validate_dict_or_model(
     text: str,
     response_format: type[BaseModel] | dict | Any,
-    fuzzy_match_params: FuzzyMatchKeysParams | dict = None,
+    fuzzy_match_params: FuzzyMatchKeysParams | dict | None = None,
 ):
     if _is_lndl_operable(response_format):
         return _extract_lndl(text, response_format)
