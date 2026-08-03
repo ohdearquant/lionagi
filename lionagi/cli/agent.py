@@ -992,6 +992,26 @@ async def _run_agent(
     # auto-resume legs unregister without firing; the recursed leg registers anew.
     _notify_scope_name: str | None = None
     _notify_session_id = live.get("session_id") if live else None
+    if notify and _notify_session_id is None:
+        # Asked for a notifier that can never fire, and say so.
+        #
+        # The terminal notice is raised by a terminal transition on this run's
+        # session entity. Persistence setup failing leaves no session entity, so
+        # no transition can occur and nothing will call the adapter however well
+        # it resolves. That is the most complete refusal there is, and it is the
+        # one the registration below cannot report: on_rejection is passed into
+        # it, so it only speaks for runs that got far enough to register.
+        #
+        # Without this the run is silent in a way that reads as success. A
+        # caller waiting on a terminal notice sees what a caller that never
+        # asked for one sees, and the ones consuming these runs are automated:
+        # they conclude the process vanished, which is the opposite of what
+        # happened, since the run goes on to do all of its work.
+        from lionagi.state.lifecycle.notify_settings import (
+            record_notify_rejection_to_run,
+        )
+
+        record_notify_rejection_to_run(run, "run_has_no_persisted_session_to_notify_on")
     if notify and _notify_session_id is not None:
         from lionagi.cli.orchestrate._notify import (
             register_flow_notify_scope,
