@@ -229,16 +229,21 @@ who finds a terminal job with `round_state: pending_harvest` is told, in the
 record itself, that leg facts are still landing — the window exists and is
 OBSERVABLE, never silent.
 
-- **Finalization has exactly one owner at a time.** The right to harvest,
-  write leg records, and flip `round_state` is taken by atomically creating
-  `{run_dir}/finalize.lock` (create-exclusive), which records the owner's
-  role (`runner`, `kill-reaper`, or `orphan-reaper`), its pid, and the run's
-  job marker. The cooperative runner claims it when teardown starts. A
-  reaper may claim only when no live owner holds it: either no claim exists,
-  or the recorded owner is dead — owner-death established from the recorded
-  identity (pid plus job marker), never from elapsed time. While a live
-  owner holds the claim, a reaper does not touch scratch directories or
-  records. Every leg record and `round.json` write lands by
+- **Finalization has exactly one owner at a time, and the claim cannot go
+  stale.** The claim is an OS advisory lock (`flock`-style, exclusive,
+  acquired non-blocking) held on `{run_dir}/finalize.lock` for the duration
+  of finalization; the cooperative runner acquires it when teardown starts.
+  The descriptor is opened close-on-exec — a lock a spawned leg could
+  inherit would keep a dead runner's claim alive from inside a living leg.
+  The kernel couples the lock's lifetime to its holder's: a dead owner's
+  claim vanishes with its process, so there is no stale-lock repair path
+  for two reapers to race on — takeover IS acquisition, the same primitive
+  every claimant uses. A failed non-blocking acquire means a live owner
+  exists; the failed claimant re-checks later and touches no scratch
+  directory or record meanwhile. The file's content (owner role `runner` /
+  `kill-reaper` / `orphan-reaper`, pid, the run's job marker, claimed_at)
+  is observability, written by the holder after acquiring — never the
+  mechanism itself. Every leg record and `round.json` write lands by
   temp-file-plus-atomic-rename, and a writer that finds a complete leg
   record already present leaves it — first write wins, `recorded_by` names
   the winner — so even a mis-sequenced writer cannot produce two competing
@@ -261,8 +266,11 @@ OBSERVABLE, never silent.
   surface waits and re-checks — the stop signal has been delivered, and the
   terminal write belongs to the claim holder; grace expiry is when the
   reaper first CHECKS the claim, not an unconditional handoff. Only on
-  taking the claim (no owner, or owner dead by recorded identity) does it
-  perform a manifest-aware reap: harvest each leg's scratch from disk as D4
+  acquiring the lock — which a dead owner cannot still hold (the kernel
+  released it with the process), and which a hung-but-alive holder keeps
+  until it exits; escalation is the caller's act, `job.kill` accepts the
+  signal to send and SIGKILL is not survivable — does it perform a
+  manifest-aware reap: harvest each leg's scratch from disk as D4
   specifies, write each leg record with what could be established
   (`harvest_failed` with a reason where a scratch is unreadable — never an
   empty artifact list), write `round.json`, then make its single terminal
@@ -270,9 +278,9 @@ OBSERVABLE, never silent.
   "kill-reaper"`).
 - **An already-dead parent** (crash, OOM, machine restart) is found by the
   existing orphan-reaping path on the job surface; for manifest runs that
-  reaper takes the finalization claim the same way (its owner is dead by
-  definition of the path, but the claim still serializes it against a
-  concurrent kill-reaper) and performs the same disk-side
+  reaper acquires the same finalization lock (its previous owner is dead by
+  definition of the path, so the lock is free; acquisition still serializes
+  it against a concurrent kill-reaper) and performs the same disk-side
   harvest-then-record sequence before its terminal write, recording
   `"recorded_by": "orphan-reaper"`. Where the existing reaper (or any non-manifest-aware
   writer) has already published a terminal status, the manifest-aware pass
@@ -354,17 +362,24 @@ is exactly why it is pinned by a test rather than a review.
 ### D6 — Observation contract: closed outcomes preserved, round facts on `job.output`
 
 The job surface's `outcome` is a closed vocabulary, and consumers
-legitimately bind to it. The contract text (ADR-0106) lists
-`succeeded | failed | indeterminate`; the implementation has additionally
-emitted `cancelled` since before that text froze (`lionagi/mcp/jobs.py`,
-`_OUTCOMES`) — a drift ADR-0107's Notes records as a pending ADR-0106
-amendment item. This ADR carries that amendment: ADR-0106's vocabulary is
-corrected to the four values the wire already ships. That is a record
-catching up to shipped behavior — nothing on the wire changes, so
-`contract_version` does not move; the increment exists to warn consumers of
-wire changes, and there is none. `partial` does NOT join the set either
-way: widening a closed vocabulary with a genuinely new value breaks every
-consumer that enumerated it, for the benefit of one producer.
+legitimately bind to it. The contract text (ADR-0106) froze at three
+values (`succeeded | failed | indeterminate`) on 2026-07-25; the wire
+began emitting `cancelled` hours later that same day, when the li-kill
+terminal fix landed, and has shipped it ever since (`lionagi/mcp/jobs.py`,
+`_OUTCOMES`; `indeterminate`, reserved at freeze, gained its producer when
+ADR-0107's reaper landed) — an unversioned expansion that
+ADR-0107's Notes later recorded as a pending ADR-0106 amendment item.
+This ADR carries that amendment as an ERRATUM: the vocabulary is corrected
+to the four values the wire ships, the true timing is recorded in the
+correction, and `contract_version` still does not move. The document
+correction changes nothing on the wire; the D2-breaking event was the
+2026-07-25 unversioned code change, and a retroactive bump today would
+tell consumers — every one of whom faces the four-value wire either way —
+that behavior changed today when it did not. Recording the violation as an
+erratum keeps D2's rule intact instead of manufacturing an exception to
+it. `partial` does NOT join the set either way: widening a closed
+vocabulary with a genuinely new value breaks every consumer that
+enumerated it, for the benefit of one producer.
 
 - **Mapping**: round `completed` → job outcome `succeeded`; round `partial`
   or `failed` → job outcome `failed`; a round killed before any leg spawned

@@ -276,12 +276,17 @@ another copy of our rules living in code we do not control.
   state, derived by lionagi from a recorded end — `finished_at`, a producer-written spawn
   failure (D5) — never by matching `status` against a set, and never computed by a reader.
   In v1 those are the only two sources; the deferred reconciler in D6 would be a third.
+  (2026-08-03: ADR-0107 has since implemented that reconciler — its orphan reaper is now
+  the third source.)
 - `outcome` answers **"did the work come out right"**. It is a **closed** vocabulary,
   `succeeded | failed | cancelled | indeterminate`, and it is **`null` whenever `terminal`
-  is false**. (`cancelled` added by the 2026-08-03 amendment carried by ADR-0110 D6: the
-  implementation emitted it before this text froze — the drift ADR-0107's Notes recorded
-  as a pending amendment item — so the correction records shipped behavior and moves no
-  version.)
+  is false**. (`cancelled` added by the 2026-08-03 erratum carried by ADR-0110 D6.
+  Timing, recorded because D2 makes it matter: this text froze on 2026-07-25 with three
+  values; the wire began emitting `cancelled` hours later that same day and has shipped
+  it since. That unversioned expansion violated D2 when it happened; this
+  correction documents the wire as it ships and moves no version, because the breaking
+  event was the 2026-07-25 code change, not the text catching up to it. ADR-0107's Notes
+  recorded the drift.)
   Stated against `terminal` rather than against "the run is still going", because v1 has a
   state that is neither: an orphan has stopped and is still not terminal (D6), and a rule
   phrased around being in flight would leave that case undefined. Being closed, `outcome`
@@ -292,10 +297,13 @@ another copy of our rules living in code we do not control.
   `completed_empty` is `terminal: true, outcome: "failed"`. A consumer given only
   `terminal` must either invent the forbidden vocabulary or call every finished run a
   success, which is P2 recreated one level up (P2b).
-- **`indeterminate` is reserved in v1 and emitted by no path in it.** It is the value for a
-  run that can be established to have ended but whose result cannot be established, and the
-  only component that would produce it is the reconciler deferred in D6. It is defined now
-  anyway, and deliberately: `outcome` is a closed vocabulary that consumers branch on, so
+- **`indeterminate` was reserved at freeze and is emitted today.** (2026-08-03: ADR-0107
+  implemented the producer this paragraph deferred — its orphan reaper writes
+  `indeterminate` with an attributable reason; the reservation strategy below worked as
+  intended.) It is the value for a run that can be established to have ended but whose
+  result cannot be established, and the component that produces it is the reconciler D6
+  deferred and ADR-0107 then implemented. It was defined before any path emitted it, and
+  deliberately: `outcome` is a closed vocabulary that consumers branch on, so
   adding a third value later would be a breaking change under D2 and would cost a contract
   version. Defining an unused value costs one sentence; introducing it in v2 costs every
   consumer an upgrade. A two-valued field would also force `failed` for the unknowable case,
