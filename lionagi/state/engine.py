@@ -145,15 +145,59 @@ def normalize_state_db_url(value: str | Path | None) -> str:
     return s
 
 
+# A `user:secret@` credential, wherever it appears. The secret runs to the
+# first `@` and may not contain whitespace, a slash, a quote or a second colon,
+# which is what keeps this off `sqlite:///path` (no `@`) and off an ordinary
+# `scheme://host` (no colon before the host).
+_CREDENTIAL_IN_TEXT = re.compile(r"(?<![\w.+~%-])([\w.+~%-]+):([^\s:@/\\'\"]+)@")
+
+
+def _mask_secret(secret: str) -> str:
+    """The one mask token. Long secrets keep a 6-char prefix so an operator can
+    tell two of them apart; short ones show nothing but their length, because a
+    prefix of a short secret is most of it."""
+    prefix = secret[:6] if len(secret) >= 12 else ""
+    return f"{prefix}…[{len(secret)} chars]"
+
+
+def mask_credentials(text: str) -> str:
+    """Return *text* with the secret in every ``user:secret@`` masked.
+
+    For prose rather than for a URL: an error message that quotes the store it
+    failed to open carries the credential just as plainly as the URL field
+    beside it, and masking only the field closes one of two channels onto the
+    same secret.
+
+    Text is scanned rather than parsed because the strings that reach here are
+    not URLs and cannot be made into them. Two consequences worth stating: a
+    password containing a literal ``@`` is masked only up to that character,
+    and a secret passed as a bare argument rather than inside a URL is not
+    matched at all. Both are under-masking, so neither is a reason to skip the
+    pass, and both are why this is a backstop rather than the only control.
+
+    Masking is idempotent: the token it writes contains a space, and a space
+    cannot appear inside a secret this pattern will match.
+    """
+    return _CREDENTIAL_IN_TEXT.sub(lambda m: f"{m.group(1)}:{_mask_secret(m.group(2))}@", text)
+
+
 def mask_db_url(url: str) -> str:
-    """Return *url* with any password replaced by the first-6-chars mask."""
+    """Return *url* with any password replaced by the first-6-chars mask.
+
+    The structured pass comes first, and text scanning is the fallback for the
+    URLs it cannot decompose. A string with no scheme parses as a path rather
+    than as a URL, so ``urlparse`` reports no password for it and the
+    credential would otherwise be returned verbatim by the function whose whole
+    job is to remove it. Such a value is refused as a store setting, which is
+    not a reason to drop the arm: what reaches here is whatever a caller was
+    handed, including a driver quoting its own connection string, an older log
+    line, and the ``./``-prefixed path that spelling makes acceptable.
+    """
     try:
         parsed = urlparse(url)
         if not parsed.password:
-            return url
-        pw = parsed.password
-        prefix = pw[:6] if len(pw) >= 12 else ""
-        masked = f"{prefix}…[{len(pw)} chars]"
+            return mask_credentials(url)
+        masked = _mask_secret(parsed.password)
         user_info = f"{parsed.username}:{masked}"
         host_part = parsed.hostname or ""
         if parsed.port:

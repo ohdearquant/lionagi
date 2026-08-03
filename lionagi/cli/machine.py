@@ -282,6 +282,7 @@ async def readonly_state_db() -> AsyncIterator[tuple[Any | None, dict[str, Any] 
     it, and a bug in a reader still surfaces as the crash it is.
     """
     from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+    from lionagi.state.engine import mask_db_url
 
     # Asked of the configured store, not of the default path: the open below
     # honours LIONAGI_STATE_DB_URL, so a guard that consulted the file would
@@ -299,7 +300,18 @@ async def readonly_state_db() -> AsyncIterator[tuple[Any | None, dict[str, Any] 
             # claims the store is open, which is what the claim has to mean.
             await db.fetch_all("SELECT 1")
         except Exception as exc:  # noqa: BLE001 — an unopenable store is an answer, not a crash
-            yield None, unavailable(REASON_UNREADABLE, f"{StateDB().url}: {type(exc).__name__}")
+            # The exception's own message is dropped here, as it always was:
+            # the availability wrapper's key set is a published contract with
+            # a test enumerating it, so there is nowhere to put the message
+            # that does not change the shape of an answer every reader parses.
+            # It is masked at its producers instead, which is where the leak
+            # was; what is lost is a diagnostic, not a control.
+            yield (
+                None,
+                unavailable(
+                    REASON_UNREADABLE, f"{mask_db_url(StateDB().url)}: {type(exc).__name__}"
+                ),
+            )
             return
         yield db, None
 
@@ -309,12 +321,15 @@ def state_db_absent() -> dict[str, Any]:
 
     Names the store that was actually consulted. Naming the default path while a
     URL is configured sends the reader to a file that is not the one their
-    command would have read.
+    command would have read. Naming it in full would print its password, so the
+    name it gives is the masked one.
     """
     from lionagi.state.db import StateDB
+    from lionagi.state.engine import mask_db_url
 
     return unavailable(
-        REASON_NOT_FOUND, f"{StateDB().url} does not exist; nothing has been recorded yet"
+        REASON_NOT_FOUND,
+        f"{mask_db_url(StateDB().url)} does not exist; nothing has been recorded yet",
     )
 
 
@@ -588,6 +603,7 @@ def lifecycle_data(run_id: str) -> dict[str, Any]:
         state_db_file,
         state_db_known_absent,
     )
+    from lionagi.state.engine import mask_credentials
 
     if state_db_known_absent():
         # No store at all is absence of every record, not evidence about this
@@ -595,7 +611,10 @@ def lifecycle_data(run_id: str) -> dict[str, Any]:
         # moves under LIONAGI_STATE_DB_URL), not the default path.
         return {
             "run_id": run_id,
-            "lifecycle": unavailable(REASON_NOT_FOUND, f"{state_db_file()} does not exist"),
+            "lifecycle": unavailable(
+                REASON_NOT_FOUND,
+                f"{mask_credentials(str(state_db_file()))} does not exist",
+            ),
         }
 
     async def _read() -> list[dict[str, Any]]:
@@ -611,7 +630,10 @@ def lifecycle_data(run_id: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 — an unreadable store is an answer, not a crash
         return {
             "run_id": run_id,
-            "lifecycle": unavailable(REASON_UNREADABLE, f"{type(exc).__name__}: {exc}"),
+            "lifecycle": unavailable(
+                REASON_UNREADABLE,
+                mask_credentials(f"{type(exc).__name__}: {exc}"),
+            ),
         }
     return {"run_id": run_id, "lifecycle": available(_lifecycle_summary(rows))}
 
@@ -746,7 +768,12 @@ def dispatch_machine(argv: list[str]) -> int:
                 raise
             channel.emit(failure("internal", "a required module is not installed"))
         except Exception as exc:  # noqa: BLE001 — a crash with no envelope is unreadable
-            channel.emit(failure("internal", f"{type(exc).__name__}: {exc}"))
+            from lionagi.state.engine import mask_credentials
+
+            # The only sink that prints a message from code we do not own. The
+            # producers we do own mask at the source; a driver that quotes the
+            # connection string it was handed has nowhere else to be caught.
+            channel.emit(failure("internal", mask_credentials(f"{type(exc).__name__}: {exc}")))
         else:
             channel.emit(ok(data))
     return 0
