@@ -95,7 +95,7 @@ wake it. A consumer restart across a successful delivery loses it the same way.
 | The envelope every machine call returns | D3: one envelope shape — `ok`, `contract_version`, `data`, `error` |
 | Run status | D4: `status` is opaque and verbatim; the producer also publishes `terminal` and `outcome`, on every status-bearing response |
 | Submit | D5: submit returns a handle; the spawn phase is recorded rather than inferred from a missing pid |
-| Reads | D6: one lifecycle authority for every path; liveness is advisory; in v1 an orphaned run stays non-terminal |
+| Reads | D6: one lifecycle authority for every path; liveness is advisory; a conclusively-gone `started` orphan is reaped terminal (ADR-0107), a `preparing` or inconclusive one stays non-terminal |
 | Distinguishing absence from failure | D7: every read-derived field carries its own availability and reason |
 | Process-level faults | D8: a valid envelope is authoritative; exit status is the transport-level answer, with a defined precedence |
 | Terminal notification | D9: a notification is a prompt to read state, never proof and never the only path |
@@ -432,7 +432,12 @@ li job kill <run_id> --machine
   extra information carried beside it with its own reliability.
 - A run whose recorded pid is gone with no terminal recorded is an **orphan**. It is
   reported as `status: "exited"`, `terminal: false`, `outcome: null`, with `alive: false`
-  and an advisory flag that it may be orphaned. In v1 it never becomes terminal.
+  and an advisory flag that it may be orphaned. As frozen, it never became terminal;
+  since ADR-0107, a `started` orphan whose process is CONCLUSIVELY established gone —
+  process-incarnation evidence under a fenced claim, never the advisory pid probe the
+  next bullet warns about — is reaped to an attributable terminal
+  (`outcome: indeterminate`); a `preparing` record or an inconclusive finding stays
+  non-terminal exactly as before.
 - **Liveness may not be the fact that establishes terminality**, and an earlier revision
   had it both ways: this decision declares the pid probe advisory because a pid can be
   reused or denied, and the next paragraph then derived a terminal outcome from that same
@@ -757,9 +762,10 @@ being asked of them in one place.
    expires, and an id in `stopped_without_end`, which comes back at once and comes back
    every time. This is the obligation created by v1's liveness choice, and it is the one
    most likely to be skipped, because most runs resolve and the case looks like an edge.
-   It is not an edge: v1 states that nothing terminalises an orphan, so a consumer that
-   runs long enough **will** meet a run that never resolves, and this contract does not
-   supply the policy for it. Give up after N attempts, escalate to a human, mark it
+   It is not an edge: v1 as frozen terminalised no orphan, and although ADR-0107 now
+   reaps the conclusive `started` cases, a `preparing` or inconclusive orphan still never
+   resolves on its own — so a consumer that runs long enough **will** meet a run that
+   never resolves, and this contract does not supply the policy for it. Give up after N attempts, escalate to a human, mark it
    abandoned in your own store — any of those is conforming. Having no policy is not,
    because the failure mode is a consumer that waits forever on a run nobody will ever
    finish, or three integrators each inventing a different timeout behaviour, which is
@@ -793,15 +799,19 @@ a local change: it must also be classified, on every status-bearing response.
 it. Additive change stays free under the narrowed rule in D2; anything else costs a
 version increment and a coordinated update.
 
-**Accepted in v1, and stated rather than discovered.** A run whose process dies without
-recording a terminal, or whose producer dies before spawning it, stays non-terminal for as
-long as its record exists. A consumer's bounded wait reports it as stopped without an end
-every time, and never as finished. Two earlier revisions tried to close this with a rule
+**Accepted in v1, and stated rather than discovered.** As frozen: a run whose process
+died without recording a terminal, or whose producer died before spawning it, stayed
+non-terminal for as long as its record existed. Since ADR-0107 the first case closes when
+the evidence is conclusive — a `started` orphan is reaped to an attributable terminal —
+while producer-death-before-spawn (`preparing`) and inconclusive findings still stay
+non-terminal, and a consumer's bounded wait reports those as stopped without an end every
+time, never as finished. Two earlier revisions tried to close this with a rule
 every reader would apply, and both produced worse failures than the one they removed: a
 healthy child reported as terminally failed, and two hosts disagreeing about one unchanged
 record. Closing it properly needs a fenced reconciler with process-incarnation evidence,
 which is a protocol with its own failure modes rather than a clause, so it is written out
-in the deferred section instead of half-specified here. Naming the run is not resolving it:
+in the deferred section instead of half-specified here — and was then built to exactly
+that specification, for the `started` phase, by ADR-0107. Naming the run is not resolving it:
 the caller learns at once that nobody will finish this run, and still has to decide what to
 do about it, which is what consumer obligation 8 is for.
 

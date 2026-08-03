@@ -249,10 +249,19 @@ OBSERVABLE, never silent.
   the winner — so even a mis-sequenced writer cannot produce two competing
   records for one leg.
 - **A hung live holder has a named recovery, per holder — one signal path
-  does not cover all three.** The runner holder lives in the job's own
-  process group: `job.kill` delivers the stop signal (the MCP surface sends
-  a fixed SIGTERM and exposes no signal choice), and an operator's group
-  SIGKILL through the CLI kill surface releases the claim with the process.
+  does not cover all three.** The runner holder is the runner process
+  itself, and the claim descriptor is close-on-exec, so no surviving child
+  holds the claim. `job.kill` delivers the stop request (the MCP surface
+  sends a fixed SIGTERM and exposes no signal choice). Where that is
+  ignored, the recovery is an operator kill of the recorded leader pid
+  with the identity checks the job record already supports — the recorded
+  pid, and the group-marker environment variable every group member
+  inherits, exist for exactly this verification — escalating to SIGKILL,
+  which releases the claim with the process. No existing CLI or MCP
+  surface performs that escalation for this id class today; a first-class
+  escalation parameter is possible future work, not claimed here. Claim
+  recovery is deliberately narrower than group cleanup: surviving group
+  members hold no claim and remain the existing kill machinery's concern.
   The reaper holders are server-side actors a job-group signal cannot
   reach; their work is bounded by construction — the same per-leg file and
   byte caps that bound every harvest — and one that nonetheless hangs
