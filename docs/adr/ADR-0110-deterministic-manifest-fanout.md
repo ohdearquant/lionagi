@@ -354,7 +354,16 @@ OBSERVABLE, never silent.
   domain nobody joins is indistinguishable from a clean sweep and fails
   toward reassuring. Here the populating mechanism is the runner's
   spawn-time `pgid` capture written into each leg record's first write,
-  plus the job surface's recording of the runner's own group. What the sweep cannot close, named rather than
+  plus the job surface's recording of the runner's own group. Its
+  companion rule, earned by the successor defect: a membership or
+  quiescence predicate states where the observer sits relative to the set
+  it observes — the observer is inside the measured population unless
+  something puts it outside, and a predicate that forgets its own
+  observer fails toward unsatisfiable, while one that forgets who joins
+  fails toward reassuring. That is why the predicates above are stated
+  per path rather than once: the reap-path observer is outside every
+  recorded group and demands absolute emptiness; the cooperative observer
+  is a member of the runner's group and exempts exactly itself. What the sweep cannot close, named rather than
   papered over: a descendant that deliberately leaves its own leg's
   recorded session while keeping the scratch path can still write after
   `complete`; a member that forks during the sweep can leave a child the
