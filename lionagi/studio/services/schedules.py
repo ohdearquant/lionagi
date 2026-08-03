@@ -413,8 +413,17 @@ def _read_only_ok() -> bool:
     Read-only mode removes both, but it is SQLite-only by contract — Postgres
     has no side-effect-free connect mode to fake at this layer and wants a
     read-only role instead. ``state_db_file()`` returns a path exactly when the
-    configured store is an on-disk SQLite file, which is the same set
-    ``make_readonly_engine()`` accepts, so other stores take the normal open.
+    configured store is an on-disk SQLite file, so every other store takes the
+    normal open.
+
+    That is the set ``make_readonly_engine()`` accepts for any URL an async
+    engine can be built from at all, which is the only case that matters here.
+    It is not literally the same set: ``make_readonly_engine()`` also requires
+    the ``sqlite+aiosqlite:///`` spelling, and ``normalize_state_db_url()``
+    passes an unrecognised driver such as ``sqlite+pysqlite:///`` through
+    untouched. Such a URL fails the ordinary open too, since a sync driver
+    cannot back an async engine, so it is broken either way and only the
+    exception differs.
     """
     return state_db_file() is not None
 
