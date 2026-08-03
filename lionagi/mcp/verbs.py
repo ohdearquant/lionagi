@@ -422,7 +422,13 @@ _REGISTERED: tuple[Verb, ...] = (
     ),
     Verb(
         name="job.list",
-        summary="Recent background jobs, newest first, optionally filtered by status.",
+        summary=(
+            "Recent background jobs, newest first, optionally filtered by status. "
+            "Each row carries notify_delivery_state (none/delivered/"
+            "delivered_unverified/failed) — sweeping for terminal notices that "
+            "never arrived means reading this column and acting on 'failed'; no "
+            "prior suspicion about any particular run is needed."
+        ),
         executor="job",
         own_schema=_JOB_LIST_SCHEMA,
     ),
