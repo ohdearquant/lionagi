@@ -139,8 +139,8 @@ async def store_probe(*, timeout_ms: int = STORE_PROBE_TIMEOUT_MS) -> dict[str, 
             conn = aiosqlite.connect(str(DEFAULT_DB_PATH))
             db = await conn
         with move_on_after(timeout_ms / 1000) as scope:
-            # The shared connection helper waits 5s on a lock, which would
-            # outlast this probe's own deadline; the probe would rather
+            # The shared busy timeout is longer than this probe's own deadline,
+            # so waiting it out would outlast the answer; the probe would rather
             # report "slow" than sit in SQLite's retry loop.
             await db.execute(f"PRAGMA busy_timeout = {timeout_ms}")
             cur = await db.execute(_STORE_PROBE_SQL)

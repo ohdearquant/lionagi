@@ -320,7 +320,7 @@ def test_maintenance_lock_contention_returns_409(tmp_path, monkeypatch, action):
 
     # Shorten the per-connection busy_timeout so the contended open/write fails
     # fast (every pooled connection reads this at connect time).
-    monkeypatch.setattr(engine_mod, "_SQLITE_BUSY_TIMEOUT_MS", 100)
+    monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 100)
 
     # Hold an exclusive write lock with a raw sqlite3 connection.
     lock_conn = sqlite3.connect(str(db_path), timeout=0)
