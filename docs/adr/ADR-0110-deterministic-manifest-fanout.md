@@ -188,8 +188,9 @@ concurrency caps compose the same way they do for the planner fanout.
   termination escalating to hard kill, and its harvest runs only after its
   process's death is confirmed. The quiescence invariant (D3) is
   path-independent: `round_state: complete` is never published while any
-  process that can write a leg's scratch is alive, on cooperative and reap
-  paths alike.
+  member of the run's recorded process-control domain survives, on
+  cooperative and reap paths alike. D3 states that domain exactly and names
+  the one residual it cannot close.
 
 ### D3 — Durable records, ordering, and the two-stage end
 
@@ -296,11 +297,26 @@ OBSERVABLE, never silent.
   acquiring the lock — which a dead owner cannot still hold, the kernel
   released it with the process — does it proceed, and its FIRST act on the
   claim is quiescence, not harvest: a hard kill of the run's recorded
-  process group (`os.killpg`, a primitive the server-side reaper already
-  holds; identity-verified against the recorded pgid and the group marker
-  every member inherits), then verification that no member survives.
-  `round_state: complete` is never published while any process that can
-  write a scratch directory is alive. Only then the manifest-aware reap:
+  process group (the raw `os.killpg` primitive, identity-verified against
+  the recorded pgid and the group marker every member inherits — not the
+  existing plain-kill helper, whose killed-marking record write belongs to
+  ordinary kills; the reaper's single terminal write comes later, after
+  harvest), then verification that no member of that group survives.
+  `round_state: complete` is never published while any member of the
+  recorded group is alive. The recorded group is the quiescence domain,
+  stated exactly: it is the strongest control the launch primitive
+  establishes portably — the initial child receives its own session, and
+  nothing prevents a descendant from leaving that session. A leg that
+  deliberately detaches into a new session while keeping the scratch path
+  can therefore still write after `complete`; that residual is accepted
+  and named rather than papered over. Such an escapee is the caller's own
+  agent executing the caller's own brief, so it crosses no privilege
+  boundary and sabotages only its author's round: D4's harvest copies
+  defensively, so the published record describes the harvested copies and
+  stays internally consistent — writes made after recorded-domain
+  quiescence simply miss the round. A mechanically non-escapable process
+  domain would close the residual; that is platform-specific hardening
+  this ADR names and does not adopt. Only then the manifest-aware reap:
   harvest each leg's scratch from disk as D4
   specifies, write each leg record with what could be established
   (`harvest_failed` with a reason where a scratch is unreadable — never an

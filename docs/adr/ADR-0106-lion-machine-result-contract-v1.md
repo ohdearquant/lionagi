@@ -95,7 +95,7 @@ wake it. A consumer restart across a successful delivery loses it the same way.
 | The envelope every machine call returns | D3: one envelope shape — `ok`, `contract_version`, `data`, `error` |
 | Run status | D4: `status` is opaque and verbatim; the producer also publishes `terminal` and `outcome`, on every status-bearing response |
 | Submit | D5: submit returns a handle; the spawn phase is recorded rather than inferred from a missing pid |
-| Reads | D6: one lifecycle authority for every path; liveness is advisory; a conclusively-gone `started` orphan is reaped terminal (ADR-0107), a `preparing` or inconclusive one stays non-terminal |
+| Reads | D6: one lifecycle authority for every path; liveness is advisory; a conclusively-gone `started` orphan is reaped terminal where the fenced reap publishes (ADR-0107); a `preparing` or inconclusive one, or a reap whose write was refused, stays non-terminal |
 | Distinguishing absence from failure | D7: every read-derived field carries its own availability and reason |
 | Process-level faults | D8: a valid envelope is authoritative; exit status is the transport-level answer, with a defined precedence |
 | Terminal notification | D9: a notification is a prompt to read state, never proof and never the only path |
@@ -436,8 +436,9 @@ li job kill <run_id> --machine
   since ADR-0107, a `started` orphan whose process is CONCLUSIVELY established gone —
   process-incarnation evidence under a fenced claim, never the advisory pid probe the
   next bullet warns about — is reaped to an attributable terminal
-  (`outcome: indeterminate`); a `preparing` record or an inconclusive finding stays
-  non-terminal exactly as before.
+  (`outcome: indeterminate`) where the fenced write publishes; a refused write leaves
+  it non-terminal until a later observation retries, and a `preparing` record or an
+  inconclusive finding stays non-terminal exactly as before.
 - **Liveness may not be the fact that establishes terminality**, and an earlier revision
   had it both ways: this decision declares the pid probe advisory because a pid can be
   reused or denied, and the next paragraph then derived a terminal outcome from that same
@@ -447,8 +448,8 @@ li job kill <run_id> --machine
   depends on who asked.
 - **In v1 as frozen, nothing terminalised an orphan.** (2026-08-03: ADR-0107 has since
   implemented the guarded reaper — a `started` run whose process is conclusively gone now
-  receives an attributable terminal with `outcome: indeterminate`; a `preparing` record
-  stays non-terminal exactly as described below.) The paragraph that follows records the
+  receives an attributable terminal with `outcome: indeterminate` where the fenced reap
+  publishes; a `preparing` record stays non-terminal exactly as described below.) The paragraph that follows records the
   decision as frozen. This is a
   decision, not a gap, and it is stated here so that a consumer can plan for it rather than
   discover it. A run whose process died without its terminal hook running, and a run whose
@@ -554,9 +555,12 @@ is configured, sends a terminal notice.
   restart across a successful delivery loses it identically. Reconciliation is D10's
   bounded wait, or a poll; the notice is an optimisation over that floor, not a
   replacement for it. That floor is bounded observation, and it is eventual resolution
-  only for the case ADR-0107 closed: a conclusive `started` orphan is reaped to a
-  terminal, and the reap winner attempts the same configured delivery the dead child's
-  hook would have sent. A `preparing` or inconclusive orphan sends no notice, because it
+  only for the case ADR-0107 closed: a conclusive `started` orphan whose fenced reap
+  PUBLISHES durably is terminal, and the reap winner attempts the same configured
+  delivery the dead child's hook would have sent. A reap that cannot publish — the lock
+  or the write refused — leaves the record non-terminal and advisory-flagged, sends no
+  notice, and is retried by the next observation. A `preparing` or inconclusive orphan
+  sends no notice, because it
   never reaches a terminal status, and it does
   not resolve under polling either. A consumer that reads this decision as "the poll always
   gets there in the end" has the right fallback and the wrong stopping condition, which is
@@ -608,10 +612,11 @@ effective way to prevent it being reconciled:
 - **Observing does not touch the run — with one deliberate, fenced exception.** A wait
   that times out, is signalled, or whose caller disconnects leaves the durable run exactly
   as it was; cancelling an observation is not cancelling the work. The exception is the
-  one ADR-0107 added: the first reader of a conclusively-gone `started` orphan durably
-  reaps it — an attributable terminal written under a fenced claim, before notification
-  and wait aggregation — repairing a record no writer survived to finish, never mutating
-  live work. ADR-0066 D6 is silent on signal and disconnect, so an MCP
+  one ADR-0107 added: the first reader of a conclusively-gone `started` orphan reaps it
+  where the fenced write publishes — an attributable terminal written under a fenced
+  claim, before notification and wait aggregation — repairing a record no writer survived
+  to finish, never mutating live work. A refused or unpublishable write leaves the run
+  exactly as every other observation does; the retry belongs to the next reader. ADR-0066 D6 is silent on signal and disconnect, so an MCP
   implementer reading only that ADR could let request cancellation propagate into the
   operation while an external consumer assumes it cannot — the two surfaces then behave
   differently after the identical event.
@@ -621,9 +626,14 @@ effective way to prevent it being reconciled:
 - **An id that waiting cannot resolve does not hold the window open, and the producer pays
   a floor for it.** A run whose process is gone with no end recorded has stopped, and both
   original writers of an end are past it. Where that finding is conclusive for a `started`
-  run, the status read reaps it before aggregation (ADR-0107): it comes back terminal and
-  never appears in this list. The `preparing` and inconclusive cases are what the list is
-  for: such ids are
+  run and the fenced reap publishes, the status read resolves it before aggregation
+  (ADR-0107): it comes back terminal and never appears in this list. The list holds the
+  `started` cases that stopped and could not be resolved — an inconclusive finding, or a
+  conclusive one whose transition could not be published, retried on the next
+  observation. A `preparing` record is never in it: fresh, it stays in `pending`; aged
+  past the producer's stated threshold, it is returned in its own fourth bucket,
+  `unresolved_spawn`, with that threshold reported beside it (there is no process to
+  prove absent, so it is a different fact than a stopped run). The stopped ids are
   returned in their own list, `stopped_without_end`, rather than in `pending`, and the call
   stops re-observing once every remaining id is either terminal or in that list. It is a
   separate list and not a per-id error, because observing them succeeded. For those entries
@@ -677,9 +687,11 @@ was observed and classified, so naming that channel does not settle the pending 
 exclusion. The honest conclusion is that D6 underdetermines this, and an underdetermined
 clause is settled by amending it rather than by either document assuming its own reading.
 The forward amendment therefore states the partition outright: `pending`,
-`stopped_without_end` and terminal are disjoint and exhaustive over every observed id.
-That is the invariant this contract's implementation already tests, so the amendment
-records a rule that is enforced rather than adding one that is not.
+`stopped_without_end`, `unresolved_spawn` and terminal are disjoint and exhaustive over
+every observed id (2026-08-03: the fourth bucket — an aged `preparing` record — is
+corrected into the partition here; the implementation and its tests already enforce the
+four-way form). The amendment records a rule that is enforced rather than adding one
+that is not.
 
 **Why this is taken up rather than deferred.** An earlier draft deferred bounded wait on
 the grounds that timeout, signal and disconnect had no v1 answer. That was wrong about
@@ -768,14 +780,15 @@ being asked of them in one place.
 7. **Never treat a terminal notice as proof, or as the only discovery path** (D9).
    Delivery can fail, and the record of that failure lives in state a non-polling
    consumer is not reading.
-8. **Have a defined policy for a run a bounded wait does not resolve** (D10, D6). Two
-   shapes reach you and both need the policy: an id still in `pending` when the window
-   expires, and an id in `stopped_without_end`, which comes back at once and comes back
-   every time. This is the obligation created by v1's liveness choice, and it is the one
+8. **Have a defined policy for a run a bounded wait does not resolve** (D10, D6). Three
+   shapes reach you and all need the policy: an id still in `pending` when the window
+   expires; an id in `stopped_without_end`, which comes back at once and comes back
+   every time; and an id in `unresolved_spawn` — an aged `preparing` record with no
+   process to prove absent, which likewise returns every time. This is the obligation created by v1's liveness choice, and it is the one
    most likely to be skipped, because most runs resolve and the case looks like an edge.
    It is not an edge: v1 as frozen terminalised no orphan, and although ADR-0107 now
-   reaps the conclusive `started` cases, a `preparing` or inconclusive orphan still never
-   resolves on its own — so a consumer that runs long enough **will** meet a run that
+   reaps the conclusive `started` cases whose fenced write publishes, a `preparing` or
+   inconclusive orphan still never resolves on its own — so a consumer that runs long enough **will** meet a run that
    never resolves, and this contract does not supply the policy for it. Give up after N attempts, escalate to a human, mark it
    abandoned in your own store — any of those is conforming. Having no policy is not,
    because the failure mode is a consumer that waits forever on a run nobody will ever
@@ -813,10 +826,11 @@ version increment and a coordinated update.
 **Accepted in v1, and stated rather than discovered.** As frozen: a run whose process
 died without recording a terminal, or whose producer died before spawning it, stayed
 non-terminal for as long as its record existed. Since ADR-0107 the first case closes when
-the evidence is conclusive — a `started` orphan is reaped to an attributable terminal —
-while producer-death-before-spawn (`preparing`) and inconclusive findings still stay
-non-terminal, and a consumer's bounded wait reports those as stopped without an end every
-time, never as finished. Two earlier revisions tried to close this with a rule
+the evidence is conclusive and the fenced reap publishes — a `started` orphan is reaped
+to an attributable terminal — while producer-death-before-spawn (`preparing`) and
+inconclusive findings still stay non-terminal. A consumer's bounded wait reports the
+inconclusive or unpublishable `started` cases as stopped without an end every time, and
+an aged `preparing` record in its own `unresolved_spawn` bucket, never as finished. Two earlier revisions tried to close this with a rule
 every reader would apply, and both produced worse failures than the one they removed: a
 healthy child reported as terminally failed, and two hosts disagreeing about one unchanged
 record. Closing it properly needs a fenced reconciler with process-incarnation evidence,
