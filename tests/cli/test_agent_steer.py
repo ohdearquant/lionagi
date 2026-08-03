@@ -1684,6 +1684,85 @@ async def test_a_row_that_never_declared_stays_undeclared_across_a_resume_that_d
 
 
 @pytest.mark.asyncio
+async def test_a_row_that_never_declared_is_repaired_by_a_resume_that_reopens_it(
+    temp_db_path, monkeypatch
+):
+    """The repair path for a row written before the declaration existed.
+
+    Its sibling above pins that adopting such a row while it still reads running
+    leaves it undeclared and refusing. This pins the other end: once the row is
+    terminal, a resume reopens it and the reopening write records the declaration
+    of the leg running it now, so the session becomes steerable again.
+
+    Absent is a third representation and this is where that matters. The terminal
+    reopen is tested elsewhere starting from an explicit False; starting from no
+    key at all is a different write, and without this the suite would still pass
+    if a change repaired only rows that had once declared something.
+    """
+    import json as _json
+
+    import lionagi.cli._runs as runs_mod
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist
+
+    monkeypatch.setattr(runs_mod, "active_run_id", lambda: "20260802T000000-repaired")
+    exited_leg = {"pid": 303, "pid_create_time": 3.0}
+    live_leg = {"pid": 404, "pid_create_time": 4.0}
+    monkeypatch.setattr(runs_mod, "current_pid_markers", lambda: dict(exited_leg), raising=False)
+    monkeypatch.setattr("lionagi.cli.kill.current_pid_markers", lambda: dict(exited_leg))
+
+    branch = Branch(name="predates-the-field-then-ends")
+    first = await setup_agent_persist(
+        branch, agent_name="claude", share_db=False, drains_controls=True
+    )
+    assert first is not None
+    session_id = first["session_id"]
+    await first["db"].close()
+
+    # A row from before the field existed, then ended: no key at all, terminal.
+    async with StateDB() as db:
+        meta = dict((await db.get_session(session_id)).get("node_metadata") or {})
+        meta.pop("drains_controls", None)
+        await db.update_session(session_id, node_metadata=_json.dumps(meta))
+        await _terminalize(db, session_id)
+        row = await db.get_session(session_id)
+        assert "drains_controls" not in (row["node_metadata"] or {}), (
+            "the row still declares, so this does not start from the absent state"
+        )
+        assert row["status"] != "running", "not terminal, so the resume would not reopen"
+
+    monkeypatch.setattr("lionagi.cli.kill.current_pid_markers", lambda: dict(live_leg))
+
+    second = await setup_agent_persist(
+        Branch.from_dict(branch.to_dict()),
+        agent_name="claude",
+        share_db=False,
+        drains_controls=True,
+    )
+    assert second is not None
+    assert second["session_id"] == session_id, "this did not resume, so it proves nothing"
+    await second["db"].close()
+
+    async with StateDB() as db:
+        row = await db.get_session(session_id)
+    assert _runner_drains_controls(row), (
+        "the reopen did not record the resuming leg's declaration, so a row that "
+        "predates the field can never become steerable again"
+    )
+    assert row["status"] == "running"
+    # Same invariant the explicit-False reopen pins: the declaration rides the
+    # transition, so the live leg's identity is not overwritten by the exited
+    # leg's markers.
+    assert row["node_metadata"]["pid"] == 404
+    assert row["node_metadata"]["pid_create_time"] == 4.0
+
+    message, exit_code = await _enqueue_control_inner(
+        entity_id=session_id, verb="message", payload={"text": "steer the repaired leg"}
+    )
+    assert exit_code == 0, message
+
+
+@pytest.mark.asyncio
 async def test_a_run_still_finishes_when_the_sweep_cannot_get_a_connection(
     temp_db_path, tmp_path, monkeypatch, caplog
 ):

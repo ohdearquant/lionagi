@@ -135,10 +135,11 @@ async def _enqueue_control_inner(
         # Which transitions replace an absent declaration, and when that
         # refusal ends, are not described here on purpose: every attempt to
         # state it in prose has been wrong, in a different way each time, while
-        # the meaning below has held. The tests own that behaviour — see the
-        # resume cases in tests/cli/test_agent_steer.py, which pin each
-        # transition individually and cannot drift from the code the way a
-        # sentence can.
+        # the meaning below has held. Read the resume cases in
+        # tests/cli/test_agent_steer.py instead. They are where that behaviour
+        # is stated in a form that fails when it stops being true, which a
+        # comment cannot do; they are not a claim that every transition is
+        # covered.
         #
         # Absence is still the right reading. Fields that happen to differ
         # between producers are not capability: the embedded runner's run_id
