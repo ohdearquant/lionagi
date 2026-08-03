@@ -18,6 +18,7 @@ from starlette.staticfiles import StaticFiles
 from lionagi._errors import LionError
 from lionagi.version import __version__
 
+from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
 from .config import CORS_ORIGINS, HOST
 from .registry import iter_studio_routes, load_studio_route_modules
 
@@ -185,6 +186,10 @@ async def lifespan(app_instance):
     # verdict on top.
     await asyncio.to_thread(snapshot_git_position)
 
+    # Off unless LIONAGI_STUDIO_TRACEBACK_DUMP names a path. Armed here rather
+    # than later so a hang anywhere in the rest of startup is still captured.
+    arm_traceback_dump()
+
     _emit_startup_warnings()
     # The second of the two settings-driven notify bootstrap points (CLI is the first).
     from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
@@ -202,6 +207,7 @@ async def lifespan(app_instance):
     yield
     from .services.launches import shutdown_launches
 
+    disarm_traceback_dump()
     await _finalize_warmup(warmup_task)
     await _stop_claude_mirror(mirror_stop, mirror_task)
     await operator_shutdown()
