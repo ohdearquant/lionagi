@@ -753,7 +753,17 @@ async def stream_codex_cli(
                 else:
                     if request.verbose_output:
                         log.error("Codex error: %s", session.result)
-                sc = StreamChunk(type="error", content=session.result, metadata=chunk_meta)
+                # The flag follows the classification above, so a consumer
+                # reading it sees the same verdict as one reading the metadata.
+                # Benign end-of-stream keeps `is_error` false: the type is
+                # "error" only because that is the event the CLI sends, and the
+                # three conditions above are what say it is not one.
+                sc = StreamChunk(
+                    type="error",
+                    content=session.result,
+                    is_error=not _is_benign_eos,
+                    metadata=chunk_meta,
+                )
                 session.chunks.append(sc)
                 yield sc
 
@@ -905,10 +915,16 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         async with contextlib.aclosing(stream_codex_cli(request_obj, **handlers)) as gen:
             async for item in gen:
                 if isinstance(item, CLISession):
-                    if item.is_error:
+                    # The parser already yields an error chunk for a failed
+                    # turn, so without the guard a single failure is reported
+                    # twice — once as it happens and once as the session ends.
+                    # This is the session-terminal verdict; per-tool failures
+                    # have their own carriers and are not what this counts.
+                    if item.is_error and not any(c.type == "error" for c in item.chunks):
                         yield StreamChunk(
                             type="error",
                             content=item.result or "Codex session failed",
+                            is_error=True,
                         )
                     continue
                 yield item
