@@ -113,6 +113,12 @@ async def test_a_failure_already_carrying_an_error_chunk_is_not_reported_twice()
     contract is pinned now because the emission being guarded lives in this file
     and a future error chunk added a few lines away would otherwise double-report.
     Read this as documenting intent, not as covering a reachable path.
+
+    Deleting the guard does make this fail, so it is not passing vacuously. Those
+    are two independent things and only the first one holds: the guard expression
+    cannot be silently removed, and the guard is still never reached by a real
+    event sequence. Seeing this go red is not evidence that it fires in
+    production, which is the inference it cannot support.
     """
     session = CLISession()
     session.is_error = True
