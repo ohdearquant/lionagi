@@ -460,7 +460,6 @@
       "stateDbSuffix": "state DB",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "bekleyen WAL",
       "phantoms": "phantom oturumlar",
       "phantomsNone": "algılanmadı",
       "manageLink": "bakımda yönet →",

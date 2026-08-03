@@ -460,7 +460,6 @@
       "stateDbSuffix": "DB state",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "WAL tertunda",
       "phantoms": "Sesi phantom",
       "phantomsNone": "Tidak ada yang terdeteksi",
       "manageLink": "Kelola di Pemeliharaan →",

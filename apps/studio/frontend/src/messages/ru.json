@@ -460,7 +460,6 @@
       "stateDbSuffix": "БД состояния",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "Записи WAL в ожидании",
       "phantoms": "Фантомные сессии",
       "phantomsNone": "Не обнаружено",
       "manageLink": "Управлять в обслуживании →",

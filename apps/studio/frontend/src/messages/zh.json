@@ -460,7 +460,6 @@
       "stateDbSuffix": "状态数据库",
       "wal": "预写日志",
       "walSuffix": "WAL",
-      "walPending": "待处理 WAL",
       "phantoms": "幽灵会话",
       "phantomsNone": "未检测到",
       "manageLink": "在维护中管理 →",

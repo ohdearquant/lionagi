@@ -460,7 +460,6 @@
       "stateDbSuffix": "स्टेट DB",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "WAL लंबित",
       "phantoms": "फ़ैंटम सेशन",
       "phantomsNone": "कोई नहीं मिला",
       "manageLink": "मेंटेनेंस में मैनेज करें →",

@@ -460,7 +460,6 @@
       "stateDbSuffix": "DB d’état",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "WAL en attente",
       "phantoms": "Sessions fantômes",
       "phantomsNone": "Aucune détectée",
       "manageLink": "Gérer dans Maintenance →",

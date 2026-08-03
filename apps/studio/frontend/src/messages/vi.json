@@ -460,7 +460,6 @@
       "stateDbSuffix": "state DB",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "WAL đang chờ",
       "phantoms": "phiên phantom",
       "phantomsNone": "không phát hiện",
       "manageLink": "quản lý trong bảo trì →",
