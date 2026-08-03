@@ -196,7 +196,7 @@ def test_workflow_keeps_quarantine_outside_fail_closed_gate() -> None:
 
     assert "  quarantine:\n    continue-on-error: true" in workflow
     assert (
-        "needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, vscode, marketplace]"
+        "needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, vscode, marketplace]"
         in gate
     )
     assert '"quarantine"' not in gate
