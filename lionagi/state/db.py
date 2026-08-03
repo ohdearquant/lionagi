@@ -164,6 +164,33 @@ def state_db_file() -> Path | None:
     return Path(database)
 
 
+def read_only_open_supported() -> bool:
+    """Whether ``StateDB(readonly=True)`` can open the configured store at all.
+
+    Read-only mode is SQLite-only by contract: it is an ``mode=ro`` URI open of
+    an existing file, and ``make_readonly_engine()`` rejects every other
+    dialect. ``StateDB.open()``'s read-only branch is not dialect-gated, so an
+    unconditional ``readonly=True`` does not degrade on a server-backed store,
+    it fails at open. Callers that want read-only as an optimisation, rather
+    than as a safety requirement, pass this instead of True and take the
+    ordinary open where read-only is unavailable.
+
+    Callers that need read-only for safety must NOT use this: it hands them a
+    writable connection on the stores it returns False for, which is the
+    opposite of what they asked for.
+
+    ``state_db_file()`` returns a path exactly when the configured store is an
+    on-disk SQLite file, which is the set read-only mode accepts for any URL an
+    async engine can be built from at all. It is not literally the same set:
+    ``make_readonly_engine()`` also requires the ``sqlite+aiosqlite:///``
+    spelling, and an unrecognised driver such as ``sqlite+pysqlite:///`` passes
+    ``normalize_state_db_url()`` untouched. Such a URL fails the ordinary open
+    too, since a sync driver cannot back an async engine, so it is broken
+    either way and only the exception differs.
+    """
+    return state_db_file() is not None
+
+
 def state_db_known_absent() -> bool:
     """Whether the store a default ``StateDB()`` would open is known not to exist.
 
