@@ -269,7 +269,29 @@ OBSERVABLE, never silent.
   The kernel couples the lock's lifetime to its holder's: a dead owner's
   claim vanishes with its process, so there is no stale-lock repair path
   for two reapers to race on — takeover IS acquisition, the same primitive
-  every claimant uses. A failed non-blocking acquire means a live owner
+  every claimant uses. Acquisition carries an obligation: every decision
+  to claim is made on a PRE-acquisition observation, and the gap between
+  observing and acquiring is exactly where a live holder finishes,
+  publishes, and exits — releasing the very lock whose availability the
+  claimant then reads as confirmation of its premise. So a claim holder's
+  FIRST act, on every path, is to re-read the run's terminal status and
+  `round.json`'s `round_state` under the claim, and to proceed on what
+  that re-read shows — never on the observation that motivated the claim.
+  The re-read admits exactly four dispositions, shared by every claimant:
+  terminal and `complete` — release, nothing is owed; nonterminal but
+  `complete` — the dead holder finished everything except the parent's
+  terminal write, so the claimant makes that single write from the
+  recorded facts and touches nothing else (no kill, no harvest:
+  `complete` is published only after a proved-quiet sweep); terminal but
+  `pending_harvest` — the late-facts pass (below), whose sequence is
+  exactly the unfinalized path minus its last step: quiescence sweep of
+  every recorded group first (`complete` is never published before one),
+  then harvest, then records, then the `round_state` flip — and no second
+  terminal write and no second notice, because the run already has its
+  terminal facts and the latch (ADR-0107) keeps them; neither terminal
+  nor `complete` — the claimant's
+  full path runs, quiescence first wherever the path is destructive.
+  A failed non-blocking acquire means a live owner
   exists; the failed claimant re-checks later and touches no scratch
   directory or record meanwhile. The file's content (owner role `runner` /
   `kill-reaper` / `orphan-reaper`, pid, the run's job marker, claimed_at)
@@ -295,7 +317,7 @@ OBSERVABLE, never silent.
   the operator only needs to free the claim. The reaper that then acquires
   it owns the rest: its pre-harvest quiescence sweep (above) is what makes
   a leader-only kill safe, because surviving domain members
-  hold no claim and cannot outlive the reaper's first act.
+  hold no claim and cannot outlive the reaper's quiescence sweep.
   The reaper holders are server-side actors a job-group signal cannot
   reach; their work is bounded by construction — the same per-leg file and
   byte caps that bound every harvest — and one that nonetheless hangs
@@ -331,8 +353,21 @@ OBSERVABLE, never silent.
   terminal write belongs to the claim holder; grace expiry is when the
   reaper first CHECKS the claim, not an unconditional handoff. Only on
   acquiring the lock — which a dead owner cannot still hold, the kernel
-  released it with the process — does it proceed, and its FIRST act on the
-  claim is quiescence, not harvest: a hard kill of every recorded control
+  released it with the process — does it proceed, and per the claim
+  obligation above its first act is the re-read of terminal status and
+  `round_state`. A round found `complete` means a finalizer proved every
+  recorded group quiet before publishing, and the kill path is never
+  entered — the grace-expiry observation is stale, and firing the one
+  destructive primitive in this sequence on it would act on a premise the
+  claim's own availability had already falsified. What remains owed is
+  only what the dead finalizer had not yet written: a parent still
+  nonterminal gets its single terminal write from the recorded facts (the
+  finalizer died between publishing `complete` and terminalizing —
+  releasing without that write would strand the run nonterminal forever);
+  a parent already terminal means release with nothing to do. Only when
+  the re-read shows the round unfinalized does the
+  destructive work begin, and it begins with
+  quiescence, not harvest: a hard kill of every recorded control
   group — the runner's and each leg's, read from the run directory (the
   raw `os.killpg` primitive, identity-verified against each recorded pgid
   and the group marker every descendant inherits — environment survives a
@@ -400,7 +435,10 @@ OBSERVABLE, never silent.
   existing orphan-reaping path on the job surface; for manifest runs that
   reaper acquires the same finalization lock (its previous owner is dead by
   definition of the path, so the lock is free; acquisition still serializes
-  it against a concurrent kill-reaper) and performs the same
+  it against a concurrent kill-reaper), takes the same post-acquisition
+  re-read and dispositions as every claimant — a round already `complete`
+  is terminalized or released, never re-harvested and never swept — and
+  where the re-read shows the round unfinalized performs the same
   quiescence-then-harvest-then-record sequence before its terminal write —
   a dead parent does not mean dead legs, so the pre-harvest quiescence
   sweep applies identically — recording
@@ -521,8 +559,19 @@ enumerated it, for the benefit of one producer.
 
 - **Mapping**: round `completed` → job outcome `succeeded`; round `partial`
   or `failed` → job outcome `failed`; a round killed before any leg spawned
-  → `cancelled`. The coarse job outcome answers "did the round come out
-  clean"; anything finer is the round summary's job.
+  → `cancelled`. The mapping governs the terminal write a manifest-aware
+  finalizer makes, and only that write: where a terminal outcome already
+  exists when the late-facts pass runs, ADR-0107's terminal latch keeps the
+  first recorded end — including an orphan reap's `indeterminate` — and the
+  late pass never rewrites it. A reader can therefore observe round
+  `completed` beside job outcome `indeterminate`; that is ADR-0107's named
+  succeeded-but-indeterminate window surfacing through the round field,
+  stated here so it reads as a known edge rather than a contract violation.
+  The job outcome answers "what did the first recorded end conclude"; the
+  round summary is authoritative for the round's own facts, and anything
+  finer than the outcome is its job. The required tests include this
+  interleaving: a terminal-latched run whose late pass computes round
+  `completed` must surface both values unchanged.
 - **The read**: for manifest runs, `job.output`'s response carries one
   additive field, `round`, and its shape is exact. `round` is an ADR-0106
   D7 availability wrapper — `{available, value, reason_code, detail}` —
@@ -537,8 +586,10 @@ enumerated it, for the benefit of one producer.
   `{label, available, value, reason_code, detail}` — one unreadable leg
   record must not poison the others or masquerade as an absent leg.
   Consumers that do not know `round` ignore it; nothing existing changes
-  shape. This is a named, versioned amendment to the ADR-0106 result
-  surface, carried by this ADR rather than smuggled in by implementation.
+  shape. This is an additive field of the kind ADR-0106 D2 already permits,
+  introduced and specified here rather than smuggled in by implementation —
+  ADR-0106 itself is unchanged by it and contains no `round` text to look
+  for.
 - **The notice is the signal, not the carrier.** The terminal-notice payload
   is unchanged. A notification consumer that needs leg facts performs the
   `job.output` read on receipt; the cooperative ordering guarantee (D3) makes
