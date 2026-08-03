@@ -54,6 +54,14 @@ _FAILURE_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("refused_by_policy", ("refused by", "blocked by", "denied by policy", "forbidden", "403")),
     ("target_unknown", ("unknown recipient", "no such actor", "unknown actor", "no such user")),
     ("invalid_usage", ("usage:", "unrecognized argument", "invalid argument", "unknown option")),
+    # A delivery command that verifies who it would be sending AS (kkernel's
+    # --expect-actor) refuses when the working directory resolves to a different
+    # identity than the record's sender. That is a producer-side configuration
+    # fact — the submit named a sender its own directory cannot sign for — and
+    # an operator reading "unknown" cannot tell it from a genuinely novel
+    # failure, though it has exactly one fix (make notify_sender match the
+    # submitting directory's actor, or omit it).
+    ("sender_identity_mismatch", ("expect-actor mismatch",)),
 )
 
 
