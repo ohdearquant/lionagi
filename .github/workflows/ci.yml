@@ -430,6 +430,10 @@ jobs:
             - 'LICENSE'
             - 'marketplace/**'
             - '.claude-plugin/**'
+            # Not copied by the Dockerfile, but it decides what every COPY in
+            # it resolves to: excluding a source here makes the build fail
+            # while matching none of the source paths above.
+            - '.dockerignore'
             - '.github/workflows/ci.yml'
           adr:
             - 'docs/adr/**'
