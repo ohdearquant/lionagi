@@ -289,7 +289,6 @@ class OperatorCoordinator:
                     await asyncio.sleep(0.05)
 
             conversation_row = await self.store.get_conversation(conversation_id)
-            resumed_session_id = conversation_row.get("providerSessionId")
             selected_provider = conversation_row.get("provider")
             selected_model = conversation_row.get("providerModel")
             selected_effort = turn_row.get("effort")
@@ -301,12 +300,28 @@ class OperatorCoordinator:
                 history=compiled.frames,
                 request_permission=request_permission,
                 store_path=str(self.store.path()),
-                provider_session_id=(
-                    resumed_session_id if isinstance(resumed_session_id, str) else None
-                ),
+                # Filled in below, once the store has said whether the session
+                # still belongs to what this turn is about to run on.
+                provider_session_id=None,
                 provider=selected_provider if isinstance(selected_provider, str) else None,
                 model=selected_model if isinstance(selected_model, str) else None,
                 effort=selected_effort if isinstance(selected_effort, str) else None,
+            )
+            # Resolve once, here, and hand the same pair to the store, the
+            # branch and the manifest. The environment is re-read on every
+            # resolution, so two calls a few lines apart are two chances to
+            # disagree about what ran.
+            resolved_provider, resolved_model = resolve_operator_provider_model(engine_turn)
+            resumed_session_id = await self.store.claim_resolved_pair(
+                conversation_id,
+                provider=resolved_provider,
+                model=resolved_model,
+            )
+            engine_turn = replace(
+                engine_turn,
+                provider_session_id=(
+                    resumed_session_id if isinstance(resumed_session_id, str) else None
+                ),
             )
             run_branch = build_operator_branch(engine_turn)
             engine_turn = replace(engine_turn, runtime_branch=run_branch)
@@ -321,10 +336,6 @@ class OperatorCoordinator:
             run_dir.ensure_state_dirs()
             run_dir.ensure_artifact_root()
             started_at = time.time()
-            # Same resolution build_operator_branch already applied to the Branch
-            # itself, so the manifest and persisted run record never disagree with
-            # what actually ran.
-            resolved_provider, resolved_model = resolve_operator_provider_model(engine_turn)
             run_dir.write_manifest(
                 {
                     "kind": "agent",

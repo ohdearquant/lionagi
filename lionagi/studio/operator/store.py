@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- Provider the conversation is currently pinned to; NULL means "use the
   -- env-var default" (see build_operator_branch), same as provider_model.
   provider            TEXT,
+  -- What the last turn actually ran on, which is not the same fact as the pin
+  -- above: an unpinned conversation has no pin and still ran on whatever the
+  -- environment resolved to. The provider session belongs to this pair, so
+  -- this is the pair the resume path compares against. NULL means no turn has
+  -- recorded a resolution yet, which is not the same as "it changed".
+  resolved_provider   TEXT,
+  resolved_model      TEXT,
   pinned             INTEGER NOT NULL DEFAULT 0,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
@@ -206,6 +213,8 @@ class OperatorStore:
                         "provider_session_id": "TEXT",
                         "provider_model": "TEXT",
                         "provider": "TEXT",
+                        "resolved_provider": "TEXT",
+                        "resolved_model": "TEXT",
                         "pinned": "INTEGER NOT NULL DEFAULT 0",
                     },
                 )
@@ -294,6 +303,11 @@ class OperatorStore:
             "providerSessionId": row["provider_session_id"],
             "providerModel": row["provider_model"],
             "provider": row["provider"],
+            # Served beside the pin because a session that resets has to be
+            # explainable: without these, "my conversation started over" has no
+            # visible cause anywhere in the UI or the API.
+            "resolvedProvider": row["resolved_provider"],
+            "resolvedModel": row["resolved_model"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -647,6 +661,69 @@ class OperatorStore:
                 (session_id, time.time(), conversation_id),
             )
             await db.commit()
+
+    async def claim_resolved_pair(
+        self,
+        conversation_id: str,
+        *,
+        provider: str,
+        model: str,
+    ) -> str | None:
+        """Record what this turn will run on and return the session it may resume.
+
+        A provider session belongs to the (provider, model) pair that created
+        it, and until now the only thing that could invalidate one was an
+        explicit pin change. An unpinned conversation has no pin to change: it
+        runs on whatever the environment resolves to, which is re-read every
+        turn, so moving the default silently resumed a session that belonged to
+        the old pair. This compares the pair that is about to run against the
+        pair that last ran, which is the comparison the pin check could never
+        make.
+
+        Returns the session id to resume with, or ``None`` when the pair moved
+        and the stored session no longer belongs to this turn.
+
+        A stored pair of ``NULL`` returns the session unchanged. It means no
+        turn has recorded a resolution yet, which is not evidence that anything
+        changed, and every conversation alive when this ships is in exactly
+        that state -- reading it as a mismatch would drop every live session
+        once, at upgrade, and would look like the check working.
+        """
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT provider_session_id, resolved_provider, resolved_model "
+                    "FROM studio_operator_conversations WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            session_id = row["provider_session_id"]
+            known = row["resolved_provider"] is not None
+            moved = known and (row["resolved_provider"], row["resolved_model"]) != (
+                provider,
+                model,
+            )
+            if moved:
+                await db.execute(
+                    "UPDATE studio_operator_conversations "
+                    "SET resolved_provider = ?, resolved_model = ?, "
+                    "provider_session_id = NULL, updated_at = ? WHERE id = ?",
+                    (provider, model, time.time(), conversation_id),
+                )
+            else:
+                await db.execute(
+                    "UPDATE studio_operator_conversations "
+                    "SET resolved_provider = ?, resolved_model = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (provider, model, time.time(), conversation_id),
+                )
+            await db.commit()
+        return None if moved else session_id
 
     @staticmethod
     async def _write_selection(

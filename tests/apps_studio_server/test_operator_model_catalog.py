@@ -936,3 +936,151 @@ async def test_a_refused_selection_does_not_move_the_pin_through_the_coordinator
     assert conversation["provider"] == "codex"
     assert conversation["providerModel"] == "gpt-5.4"
     assert conversation["providerSessionId"] == "session-1"
+
+
+# ── a provider session belongs to what ran, not to what was pinned ──────────
+
+
+class _CapturingEngine:
+    """Records the turn it is handed instead of streaming it.
+
+    The built-in engine reads provider and model off the Branch, so whether a
+    resume was passed is only observable from the turn itself.
+    """
+
+    captured: list = []
+
+    async def _stream(self, turn):
+        type(self).captured.append(turn)
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    def stream(self, turn):
+        return self._stream(turn)
+
+
+async def _run_one_turn(coordinator, cid: str, *, expect: int):
+    import asyncio
+
+    before = len(_CapturingEngine.captured)
+    await coordinator.submit(
+        cid,
+        instruction="go",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=expect,
+    )
+    for _ in range(200):
+        if len(_CapturingEngine.captured) > before:
+            break
+        await asyncio.sleep(0.02)
+    assert len(_CapturingEngine.captured) > before, "the engine was never handed a turn"
+    return _CapturingEngine.captured[-1]
+
+
+@pytest.mark.asyncio
+async def test_an_unpinned_conversation_stops_resuming_when_the_default_model_moves(
+    tmp_path, monkeypatch
+):
+    """The case the pin check could never see.
+
+    An unpinned conversation has no pin to change, so nothing used to compare
+    anything: it ran on whatever the environment resolved to, kept the session
+    that pair produced, and resumed it under a different pair after the default
+    moved.
+    """
+    _CapturingEngine.captured = []
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    monkeypatch.setenv("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
+
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=_CapturingEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation(title="Unpinned"))["conversation"]["id"]
+
+    await _run_one_turn(coordinator, cid, expect=0)
+    conversation = await coordinator.store.get_conversation(cid)
+    # The conversation is genuinely unpinned, which is the whole premise: if a
+    # pin were set the existing check would already cover this.
+    assert conversation["providerModel"] is None
+    assert conversation["resolvedModel"] == "sonnet"
+    await coordinator.store.set_provider_session_id(cid, "session-from-sonnet")
+
+    monkeypatch.setenv("LIONAGI_STUDIO_OPERATOR_MODEL", "opus")
+    turn = await _run_one_turn(
+        coordinator, cid, expect=(await coordinator.store.get_conversation(cid))["nextSequence"] - 1
+    )
+
+    assert turn.provider_session_id is None
+    assert (await coordinator.store.get_conversation(cid))["resolvedModel"] == "opus"
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_an_unpinned_conversation_keeps_resuming_while_the_default_holds_still(
+    tmp_path, monkeypatch
+):
+    """The over-firing arm. A check that drops the session every turn also
+    passes the test above, and it would silently end resuming for everyone."""
+    _CapturingEngine.captured = []
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    monkeypatch.setenv("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
+
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=_CapturingEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation(title="Steady"))["conversation"]["id"]
+
+    await _run_one_turn(coordinator, cid, expect=0)
+    await coordinator.store.set_provider_session_id(cid, "session-from-sonnet")
+
+    turn = await _run_one_turn(
+        coordinator, cid, expect=(await coordinator.store.get_conversation(cid))["nextSequence"] - 1
+    )
+
+    assert turn.provider_session_id == "session-from-sonnet"
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_that_predates_this_check_keeps_its_session(tmp_path):
+    """A stored resolution of NULL means no turn ever recorded one, which is not
+    evidence that anything changed.
+
+    Every conversation alive when this ships is in that state, so reading NULL
+    as a mismatch would drop every live session once, at upgrade, and would look
+    like the check working.
+    """
+    store = OperatorStore(tmp_path / "state.db")
+    cid = (await store.create_conversation())["id"]
+    await store.set_provider_session_id(cid, "session-from-before")
+    assert (await store.get_conversation(cid))["resolvedModel"] is None
+
+    kept = await store.claim_resolved_pair(cid, provider="claude_code", model="sonnet")
+
+    assert kept == "session-from-before"
+    assert (await store.get_conversation(cid))["providerSessionId"] == "session-from-before"
+
+
+@pytest.mark.asyncio
+async def test_the_resolved_columns_are_added_to_a_preexisting_store(tmp_path):
+    """Same additive-migration contract the provider and effort columns carry."""
+    import aiosqlite
+
+    db_path = tmp_path / "state.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "CREATE TABLE studio_operator_conversations ("
+            "id TEXT PRIMARY KEY, project TEXT, title TEXT, "
+            "status TEXT NOT NULL DEFAULT 'active', "
+            "next_sequence INTEGER NOT NULL DEFAULT 1, active_request_id TEXT, "
+            "created_at REAL NOT NULL, updated_at REAL NOT NULL, "
+            "archived_at REAL, deleted_at REAL)"
+        )
+        await db.commit()
+
+    store = OperatorStore(db_path)
+    cid = (await store.create_conversation())["id"]
+    assert await store.claim_resolved_pair(cid, provider="codex", model="gpt-5.3-codex") is None
+    conversation = await store.get_conversation(cid)
+    assert conversation["resolvedProvider"] == "codex"
+    assert conversation["resolvedModel"] == "gpt-5.3-codex"
