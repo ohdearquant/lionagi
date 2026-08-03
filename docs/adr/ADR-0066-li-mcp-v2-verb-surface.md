@@ -23,7 +23,8 @@ to the classifier alone.
    `unresolved_spawn`, with the age threshold echoed in the result. `stopped_without_end`
    is also now stated by evidence rather than phase: it holds records that stopped or
    cannot be shown to be progressing, including a conclusive finding whose transition
-   could not be published and a record from before the spawn phase was recorded.
+   could not be published and a not-shown-alive record from before the spawn phase was
+   recorded (a live pre-field record is classified running and stays in `pending`).
 2. **The one-poll floor keys on either special list**, since neither resolves by waiting.
 3. **Observation purity gains its one fenced exception.** The first reader of a
    conclusively-gone `started` run may durably reap it where the fenced write publishes;
@@ -472,7 +473,8 @@ was observed without a per-id error is exactly one of: terminal; still `pending`
 further waiting can still change its answer; in `stopped_without_end`, meaning the record
 stopped or cannot be shown to be progressing — its process gone with no end recorded, a
 conclusive finding whose transition could not be published, or a record with no recorded
-spawn phase — and waiting cannot change it; or in `unresolved_spawn`, meaning the record
+spawn phase that is not shown alive (a live one is classified running and stays
+`pending`) — and waiting cannot change it; or in `unresolved_spawn`, meaning the record
 still says `preparing` past the producer's stated age threshold (echoed in the result), so
 there is no process to prove absent and waiting has stopped meaning anything. The four are
 disjoint and together cover

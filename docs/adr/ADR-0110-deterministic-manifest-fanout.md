@@ -187,11 +187,19 @@ concurrency caps compose the same way they do for the planner fanout.
 - **A timed-out leg** is recorded `timed_out`, receives cooperative
   termination escalating to hard kill, and its harvest runs only after its
   process's death is confirmed. The quiescence invariant (D3) is
-  path-independent: `round_state: complete` is never published before a
-  quiescence sweep has run against every recorded control group — the
-  runner's own and each leg's, all captured at spawn — and observed each
-  empty, on cooperative and reap paths alike. D3 states that domain
-  exactly and names the residuals the sweep cannot close.
+  path-independent in what it protects, and its predicate names the one
+  process that must survive to publish: `round_state: complete` is never
+  published before a quiescence sweep has run against every recorded
+  control group — the runner's own and each leg's, all captured at spawn.
+  On reap paths the reaper belongs to no recorded group, so the predicate
+  is absolute: every recorded group observed empty. On the cooperative
+  path the publishing finalizer is a member of the runner's own group and
+  must outlive the sweep to write the summary, so the predicate there is
+  every leg group observed empty and the runner's group holding no member
+  but the identified finalizer itself — demanding the finalizer's own
+  absence would make cooperative publication impossible, not safer. D3
+  states the domain exactly and names the residuals the sweep cannot
+  close.
 
 ### D3 — Durable records, ordering, and the two-stage end
 
@@ -215,10 +223,16 @@ Each leg gets one durable record in the run directory,
 ```
 
 The dispatch facts — label, cwd, model, `env_keys`, `brief_hash`,
-`started_at`, and the leg's own process group (`pgid`, captured at spawn
-exactly as the provider subprocess layer already captures its child's) —
+`started_at`, and the leg's own process group (`pgid`) —
 are durably recorded in the leg record's first write, at spawn; status and
-harvest fields complete the record at finalization. The spawn-time write is
+harvest fields complete the record at finalization. The `pgid` capture is
+the manifest runner's own duty, named here as required work: it reads the
+group immediately after the spawn returns, the same spawn-time capture the
+job surface performs for its own child. The provider subprocess layer
+starts each leg's new session but today neither captures nor persists the
+resulting group, so the runner performs the read itself (or a provider API
+is added that returns it) — this ADR does not describe that capture as
+existing. The spawn-time write is
 what makes a reaper's quiescence sweep possible at all: the control domain
 is read from the run directory, never from a live runner's memory, so a
 reaper that shared nothing with the dead runner sweeps the same groups the
@@ -295,8 +309,10 @@ OBSERVABLE, never silent.
   already, and the sweep confirms exactly that; a straggling descendant
   still inside it is ended at round close rather than tolerated into the
   harvest window. For the runner's own group — which it cannot group-kill,
-  being a member — it scans and signals survivors individually,
-  identity-checked the same way.
+  being a member — it scans and signals survivors other than itself
+  individually, identity-checked the same way; the cooperative predicate
+  is "no member but the finalizer" (D2), because the finalizer must
+  survive its own sweep to publish.
   Only then every leg's harvest runs and its record persists, then
   `round.json` is written with `round_state: complete`, and only then does
   the parent terminalize and its single notice fire. A notification consumer
@@ -323,14 +339,22 @@ OBSERVABLE, never silent.
   new session, so the marker identifies leg-group members too — not the existing
   plain-kill helper, whose killed-marking record write belongs to ordinary
   kills; the reaper's single terminal write comes later, after harvest),
-  then verification that no member of any recorded group survives.
-  `round_state: complete` is never published before that sweep has
-  observed every recorded group empty. The recorded groups are the
+  then verification that no member of any recorded group survives — a
+  reaper belongs to no recorded group, so the reap-path predicate is
+  absolute emptiness, differing from the cooperative predicate (D2) by
+  exactly the publishing finalizer. `round_state: complete` is never
+  published before that sweep has observed every recorded group empty. The recorded groups are the
   quiescence domain, stated exactly, and it is plural by design: the
   provider subprocess layer starts every leg in its own session, so one
   shared group never existed to sweep — an ordinary leg sits inside the
   domain because its group was recorded at spawn, not because it stayed
-  inside anyone else's. What the sweep cannot close, named rather than
+  inside anyone else's. That correction earns a standing rule for any
+  future revision of this domain: a membership sweep names and cites the
+  mechanism that populates the set it sweeps, because a sweep over a
+  domain nobody joins is indistinguishable from a clean sweep and fails
+  toward reassuring. Here the populating mechanism is the runner's
+  spawn-time `pgid` capture written into each leg record's first write,
+  plus the job surface's recording of the runner's own group. What the sweep cannot close, named rather than
   papered over: a descendant that deliberately leaves its own leg's
   recorded session while keeping the scratch path can still write after
   `complete`; a member that forks during the sweep can leave a child the

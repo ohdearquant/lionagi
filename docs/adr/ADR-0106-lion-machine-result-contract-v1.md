@@ -109,10 +109,10 @@ Out of scope:
   Owned by the consumer; see D1 on why we nonetheless state a requirement about the
   binary path.
 - **The MCP tool surface itself.** ADR-0066 decides that. This ADR constrains what
-  those tools return, which is a strictly smaller question, and D10 takes ADR-0066 D6
-  as written rather than re-deciding it, marking its two additions as additions and
-  saying plainly where D6 underdetermines a rule that an implementation must nonetheless
-  settle.
+  those tools return, which is a strictly smaller question. D10 shares ADR-0066 D6's
+  wait contract — the rules D10 first stated as additions were adopted into D6 by its
+  2026-07-27 and 2026-08-03 amendments, so neither document re-decides the other; D10
+  carries the fuller rationale.
 - **Hosted / multi-tenant concerns.** No tenancy appears in this contract; a hosted
   join is built above it, not inside it.
 - **Playbook and flow semantics.** What a flow *does* is unchanged here.
@@ -454,9 +454,11 @@ li job kill <run_id> --machine
   decision, not a gap, and it is stated here so that a consumer can plan for it rather than
   discover it. A run whose process died without its terminal hook running, and a run whose
   producer died before it ever spawned, both remain `terminal: false` for as long as their
-  records exist. A consumer's bounded wait will keep returning them as pending until its own
-  window closes; what it does then is the consumer's policy, and this contract does not
-  pretend to make that decision for it.
+  records exist. As frozen, a consumer's bounded wait kept returning them as pending until
+  its own window closed (today D10's amended contract returns the stopped cases in
+  `stopped_without_end` and an aged `preparing` record in `unresolved_spawn`, at once
+  rather than at window close); what the consumer does then is its own policy, and this
+  contract does not pretend to make that decision for it.
 - **Why not simply specify the reconciler here.** Two earlier revisions tried, in opposite
   directions, and both failed for the same underlying reason: terminalising a run you did
   not run requires evidence that a run *ended*, and neither a missing pid nor an
@@ -638,8 +640,9 @@ effective way to prevent it being reconciled:
   what is known, not on a phase name: it holds every observed record that stopped, or
   cannot be shown to be progressing, and could not be resolved — a `started` case with an
   inconclusive finding, one whose conclusive transition could not be published (retried
-  on the next observation), and a record written before the spawn phase existed, whose
-  phase is unknown and which lands here by the same absence of evidence. The only records
+  on the next observation), and a record written before the spawn phase existed that is
+  not shown alive — phase absence alone is never stopped evidence, so a live pre-field
+  record is classified running and stays in `pending`. The only records
   kept out are the ones the producer explicitly marked `preparing`: fresh, such a record
   stays in `pending`; aged past the producer's stated threshold, it is returned in its
   own fourth bucket, `unresolved_spawn`, with that threshold reported beside it (there is

@@ -352,7 +352,9 @@ group."
   looking alive but may still be running for all this can tell); a
   conclusive loss whose fenced reap could not be published (the transition
   is retried by the next observation); and a record predating the
-  spawn-phase field, which lands here by the same absence of evidence. Only
+  spawn-phase field that is not shown alive — phase absence alone is never
+  stopped evidence, and a live pre-field record is classified running and
+  stays in `pending`. Only
   an explicitly-`preparing` record is kept out (fresh → `pending`, aged →
   `unresolved_spawn`). Not
   `pending` (waiting longer can't resolve it), not a per-id `error`
