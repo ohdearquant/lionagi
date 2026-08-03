@@ -1058,3 +1058,39 @@ async def test_schedule_round_trips_threshold_config_and_last_alert_at():
     assert row["last_alert_at"] == 123.0
 
     await state.close()
+
+
+# ---------------------------------------------------------------------------
+# VALID_METRICS and _THRESHOLD_METRIC_QUERIES, named in one place
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_valid_metric_is_answered_by_metric_value():
+    """A metric the scheduler accepts but the store cannot answer is a config
+    that validates and then raises at alert time, which is the worst moment.
+
+    Each metric already has its own test, but nothing named both symbols
+    together, so the two sets could drift apart: adding a member to
+    VALID_METRICS without a query or a branch broke nothing until a schedule
+    used it.
+    """
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.threshold import VALID_METRICS
+
+    state = StateDB(":memory:")
+    await state.open()
+    try:
+        for metric in sorted(VALID_METRICS):
+            assert isinstance(await state.metric_value(metric, window_start=0.0), float), metric
+    finally:
+        await state.close()
+
+
+def test_threshold_metric_queries_serve_only_metrics_the_scheduler_accepts():
+    """The other direction. A keyed query for a metric validate_threshold_config
+    rejects is dead code that reads as a supported feature."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.threshold import VALID_METRICS
+
+    assert set(StateDB._THRESHOLD_METRIC_QUERIES) <= VALID_METRICS
