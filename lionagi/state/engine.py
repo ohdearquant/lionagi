@@ -185,10 +185,13 @@ def mask_db_url(url: str) -> str:
     """Return *url* with any password replaced by the first-6-chars mask.
 
     The structured pass comes first, and text scanning is the fallback for the
-    URLs it cannot decompose. A string with no scheme, which is what a
-    mis-set store URL usually is, parses as a path rather than as a URL, so
-    ``urlparse`` reports no password for it and the credential would otherwise
-    be returned verbatim by the function whose whole job is to remove it.
+    URLs it cannot decompose. A string with no scheme parses as a path rather
+    than as a URL, so ``urlparse`` reports no password for it and the
+    credential would otherwise be returned verbatim by the function whose whole
+    job is to remove it. Such a value is refused as a store setting, which is
+    not a reason to drop the arm: what reaches here is whatever a caller was
+    handed, including a driver quoting its own connection string, an older log
+    line, and the ``./``-prefixed path that spelling makes acceptable.
     """
     try:
         parsed = urlparse(url)

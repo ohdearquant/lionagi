@@ -20,10 +20,14 @@ command that never reached the store at all: an early probe of this fix
 mistyped the invocation, got a clean password check from six commands that all
 answered "no such command", and read as a pass.
 
-The scheme-less URL is not a contrived shape. A store URL with no scheme is
-read as a filesystem path, so a mis-set variable puts the credential in a real
-path — which is both how it evades a masker that only parses URLs, and why the
-branch that looks like it has nothing to hide is the one that leaked.
+A store URL with no scheme is read as a filesystem path, so a credential in
+one puts a password in a real path. That is both how it evades a masker that
+only parses URLs, and why the branch that looks like it has nothing to hide is
+the one that leaked. The shape reaches a store setting only through the ``./``
+spelling now, since a bare ``user:secret@host/db`` is refused before it
+resolves, so that is the spelling the store-setting arms use. The masker is
+still asked about the bare form directly: it is handed strings built by
+drivers and by older logs, not only strings that passed our own validation.
 """
 
 from __future__ import annotations
@@ -42,6 +46,11 @@ MASKED = "hunter…[21 chars]"
 
 SERVER_URL = f"postgresql://dbuser:{PASSWORD}@127.0.0.1:59999/lionagi"
 SCHEMELESS_URL = f"dbuser:{PASSWORD}@127.0.0.1/x"
+# The same shape as a store setting. `./` is what says "this really is a path"
+# to the check that otherwise refuses a scheme-less credential outright, and it
+# changes nothing about what lands on disk: the credential is still in the name
+# of a real file, which is the leak these arms are about.
+CREDENTIALED_PATH = f"./{SCHEMELESS_URL}"
 
 
 def _set_url(monkeypatch, url: str) -> None:
@@ -62,7 +71,12 @@ def _assert_masked(text: str, where: str) -> None:
 
 
 def test_a_url_with_no_scheme_is_masked_too():
-    """The shape ``urlparse`` cannot decompose, and the one a real mistake makes."""
+    """The shape ``urlparse`` cannot decompose.
+
+    Refused as a store setting, and still reaching this function from every
+    other direction: a driver quoting what it was handed, an older log line,
+    a path spelled with the ``./`` that makes it acceptable.
+    """
     from lionagi.state.engine import mask_db_url
 
     _assert_masked(mask_db_url(SCHEMELESS_URL), "mask_db_url of a scheme-less URL")
@@ -190,12 +204,13 @@ async def test_the_writable_guard_masks_a_message_that_quotes_the_store(monkeypa
 
 @pytest.mark.anyio
 async def test_a_read_only_open_with_no_file_masks_the_path_it_names(monkeypatch, tmp_path):
-    """The producer of the message that started this: a scheme-less store URL
-    is read as a path, so the refusal names a path with a password in it."""
+    """The producer of the message that started this: a store URL with no
+    scheme is read as a path, so the refusal names a path with a password in
+    it."""
     from lionagi.state.db import StateDB
 
     monkeypatch.chdir(tmp_path)
-    _set_url(monkeypatch, SCHEMELESS_URL)
+    _set_url(monkeypatch, CREDENTIALED_PATH)
     with pytest.raises(FileNotFoundError) as caught:
         await StateDB(readonly=True).open()
 
@@ -221,7 +236,7 @@ def test_the_size_report_masks_a_credential_that_became_a_file_path(monkeypatch,
     from lionagi.cli.state import _db_sizes
 
     monkeypatch.chdir(tmp_path)
-    _set_url(monkeypatch, SCHEMELESS_URL)
+    _set_url(monkeypatch, CREDENTIALED_PATH)
     sizes = _db_sizes()
     assert sizes["is_file"] is True, "this arm is meant to take the file branch"
     _assert_masked(sizes["path"], "the size report's path")
@@ -242,13 +257,13 @@ def test_a_newer_schema_refusal_names_a_masked_store(monkeypatch):
 
 @pytest.mark.anyio
 async def test_the_writable_guard_masks_the_store_it_reports_absent(monkeypatch, tmp_path):
-    """The absent branch, which a credentialed URL reaches whenever the file it
-    was misread as does not exist."""
+    """The absent branch, which a credentialed path reaches whenever the file
+    it names does not exist."""
     from lionagi.cli.dispatch import _writable_state_db
     from lionagi.cli.machine import MachineError
 
     monkeypatch.chdir(tmp_path)
-    _set_url(monkeypatch, SCHEMELESS_URL)
+    _set_url(monkeypatch, CREDENTIALED_PATH)
     with pytest.raises(MachineError) as caught:
         async with _writable_state_db():
             pass
@@ -290,12 +305,12 @@ def test_the_lifecycle_read_masks_a_message_that_quotes_the_store(monkeypatch):
 
 
 def test_the_lifecycle_absent_answer_masks_the_path_it_names(monkeypatch, tmp_path):
-    """``state_db_file()`` is a path, and a scheme-less store URL is how a
+    """``state_db_file()`` is a path, and a store URL with no scheme is how a
     password gets into one."""
     from lionagi.cli.machine import lifecycle_data
 
     monkeypatch.chdir(tmp_path)
-    _set_url(monkeypatch, SCHEMELESS_URL)
+    _set_url(monkeypatch, CREDENTIALED_PATH)
     why = lifecycle_data("run-that-does-not-matter")["lifecycle"]
 
     assert why["reason_code"] == "not_found", f"this arm wanted the absent branch: {why}"
@@ -338,7 +353,9 @@ def _run_cli(args: list[str], url: str, cwd) -> subprocess.CompletedProcess:
     )
 
 
-@pytest.mark.parametrize("url", [SERVER_URL, SCHEMELESS_URL], ids=["server", "scheme-less"])
+@pytest.mark.parametrize(
+    "url", [SERVER_URL, CREDENTIALED_PATH], ids=["server", "credentialed-path"]
+)
 @pytest.mark.parametrize("args", [["--machine", "dispatch", "ls"], ["--machine", "stats", "runs"]])
 def test_machine_mode_prints_the_password_on_neither_channel(tmp_path, url, args):
     """Machine mode is the channel that gets stored: its JSON lands in logs."""
@@ -355,7 +372,9 @@ def test_machine_mode_prints_the_password_on_neither_channel(tmp_path, url, args
     )
 
 
-@pytest.mark.parametrize("url", [SERVER_URL, SCHEMELESS_URL], ids=["server", "scheme-less"])
+@pytest.mark.parametrize(
+    "url", [SERVER_URL, CREDENTIALED_PATH], ids=["server", "credentialed-path"]
+)
 def test_the_human_size_report_prints_the_password_on_neither_channel(tmp_path, url):
     proc = _run_cli(["state", "stats"], url, tmp_path)
 
