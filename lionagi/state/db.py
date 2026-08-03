@@ -3925,8 +3925,15 @@ class StateDB:
 
     # Threshold-alert metrics (studio-wide, not scoped to a single schedule's
     # own runs -- unlike sum_schedule_spend above, which sums a single
-    # schedule's spawned sessions). Keys must match
-    # lionagi.studio.scheduler.threshold.VALID_METRICS.
+    # schedule's spawned sessions).
+    #
+    # The members of lionagi.studio.scheduler.threshold.VALID_METRICS that one
+    # aggregate query answers, which is not all of them: p95_latency_ms needs a
+    # sorted sample (SQLite has no percentile function) and
+    # github_poll_healthy_age_minutes is a point-in-time gauge, so both are
+    # served by their own branches in metric_value below. The invariant is that
+    # every VALID_METRICS member is answered somewhere in metric_value, not
+    # that it is answered here.
     _THRESHOLD_METRIC_QUERIES: dict[str, str] = {
         "failed_sessions": (
             "SELECT COUNT(*) AS n FROM sessions "
