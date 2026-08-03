@@ -60,10 +60,12 @@ transcripts is tracked separately.
 
 Landing red, on purpose
 -----------------------
-This suite lands with known divergences marked ``xfail(strict=True)``. Strict
-matters: non-strict would let the suite stay green on the day a divergence is
-fixed while still claiming the gap is open, and a stale expectation reads as
-current state.
+This suite lands with the remaining known divergence marked ``xfail(strict=True)``.
+Strict matters: non-strict would let the suite stay green on the day a
+divergence is fixed while still claiming the gap is open, and a stale
+expectation reads as current state. It has already earned that once: codex's
+marks were removed because the divergence they named was fixed, and strict is
+what turned that into a failing run rather than a quiet pass.
 
 AN EXPECTED FAILURE IS UNMARKED BY THE DIVERGENCE IT NAMES BEING FIXED, NEVER BY
 A PASSING RUN. An xfail here that starts passing is a signal to investigate, not
@@ -81,9 +83,11 @@ difference is in which layer constructs the chunk:
 - ``gemini_code`` constructs one in the parser on the failing path, and its
   endpoint guard is what stops a second. Here the guard IS reachable, which
   makes gemini the one adapter where "exactly one" is non-vacuous today.
-- ``codex`` constructs one in the parser AND one in the endpoint, with no guard
-  between them, so a real ``turn.failed`` event is reported twice. This is why
-  "at least one" would have been the wrong contract: it passes on codex.
+- ``codex`` constructs one in the parser AND one in the endpoint, and until
+  recently there was no guard between them, so a real ``turn.failed`` event was
+  reported twice. That is why "at least one" would have been the wrong
+  contract: it passed on codex while the defect was live. The guard now exists
+  and codex satisfies all three assertions unmarked.
 - ``pi`` constructs none at all.
 
 Codex also yields an ``error``-type chunk when a resumed session ends normally,
@@ -130,7 +134,11 @@ _UNMARK_RULE = (
 
 # Each mark names the specific divergence it is waiting on, so it cannot be
 # removed by anything less than that divergence going away.
-_CODEX_GAP = "the codex double report, and its error chunks not setting is_error"
+#
+# Codex used to be marked here for the double report and for its error chunks
+# not setting is_error. That divergence is fixed and closed out, so the mark is
+# gone and the codex parameters are held to the contract like any other. This
+# is the only reason a mark comes off.
 _PI_GAP = "pi emitting no error chunk and delivering the failure as a result chunk"
 
 
@@ -286,7 +294,7 @@ def _params(diverging: dict[str, str]):
 # --------------------------------------------------------------------------- the contract
 
 
-@pytest.mark.parametrize("adapter", _params({"codex": _CODEX_GAP, "pi": _PI_GAP}))
+@pytest.mark.parametrize("adapter", _params({"pi": _PI_GAP}))
 async def test_a_failed_session_yields_exactly_one_error_chunk(adapter, monkeypatch):
     chunks = await _stream_chunks(adapter, adapter.failing, monkeypatch)
     errors = [c for c in chunks if c.type == "error"]
@@ -297,7 +305,7 @@ async def test_a_failed_session_yields_exactly_one_error_chunk(adapter, monkeypa
     )
 
 
-@pytest.mark.parametrize("adapter", _params({"codex": _CODEX_GAP, "pi": _PI_GAP}))
+@pytest.mark.parametrize("adapter", _params({"pi": _PI_GAP}))
 async def test_the_error_chunk_carries_the_error_flag(adapter, monkeypatch):
     chunks = await _stream_chunks(adapter, adapter.failing, monkeypatch)
     errors = [c for c in chunks if c.type == "error"]
