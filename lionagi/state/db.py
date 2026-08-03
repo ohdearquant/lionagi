@@ -28,6 +28,8 @@ from lionagi.state.engine import (
     dialect_of,
     make_engine,
     make_readonly_engine,
+    mask_credentials,
+    mask_db_url,
     normalize_state_db_url,
 )
 from lionagi.state.lifecycle import LifecycleNotFoundError as _LifecycleNotFoundError
@@ -712,9 +714,15 @@ class StateDB:
             if p is not None and str(p) != ":memory:":
                 if self.readonly:
                     if not p.exists():
+                        # A store URL with no scheme is read as a filesystem
+                        # path, so this path is where a mis-set credentialed
+                        # URL ends up, verbatim. Masked here rather than only
+                        # where it is printed, because an exception travels to
+                        # readers this module does not know about.
                         raise FileNotFoundError(
-                            f"state.db not found at {p} — read-only open requires an "
-                            "existing database file (it will never be created)"
+                            f"state.db not found at {mask_credentials(str(p))} — read-only "
+                            "open requires an existing database file (it will never be "
+                            "created)"
                         )
                 else:
                     ensure_lionagi_dir(p.parent)
@@ -876,7 +884,15 @@ class StateDB:
             return
         if recorded_n <= int(SCHEMA_VERSION):
             return
-        where = self.path if self.dialect == "sqlite" and self.path is not None else self.url
+        # Named for an operator, so masked: on a server-backed store this is
+        # the connection URL, and this refusal fires on an ordinary open of a
+        # database a newer release wrote, which is a routine upgrade order
+        # mistake rather than a rare one.
+        where = (
+            mask_credentials(str(self.path))
+            if self.dialect == "sqlite" and self.path is not None
+            else mask_db_url(self.url)
+        )
         raise SchemaTooNewError(
             f"{where} records schema version {recorded} but this version of lionagi "
             f"applies schema version {SCHEMA_VERSION}. It was written by a later "

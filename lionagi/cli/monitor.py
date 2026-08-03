@@ -15,6 +15,8 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from lionagi.state.engine import mask_credentials
+
 from ._project import detect_project
 from ._runs import RUNS_ROOT
 from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
@@ -897,7 +899,9 @@ async def _run_table(
             )
         return _format_table(rows)
     except Exception as exc:  # noqa: BLE001
-        return _red(f"error reading state.db: {exc}")
+        # A catch-all around a store open, so the message can be one that names
+        # the store. Masked here for the same reason the envelope sinks are.
+        return _red(f"error reading state.db: {mask_credentials(str(exc))}")
 
 
 async def _run_detail(entity_id: str) -> str:
@@ -925,7 +929,7 @@ async def _run_detail(entity_id: str) -> str:
         # turn into a non-success exit code, not a rendered detail body.
         raise
     except Exception as exc:  # noqa: BLE001
-        return _red(f"error: {exc}")
+        return _red(f"error: {mask_credentials(str(exc))}")
 
 
 # ── Watch loop ────────────────────────────────────────────────────────────────

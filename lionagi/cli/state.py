@@ -441,11 +441,15 @@ def _db_sizes() -> dict[str, Any]:
     answerable" and can never be read as "empty".
     """
     from lionagi.state.db import StateDB, state_db_file
+    from lionagi.state.engine import mask_credentials, mask_db_url
 
     db_path = state_db_file()
     if db_path is None:
+        # A store with no file behind it is a server URL, so this name is the
+        # one that most obviously carries a password. `is_file` is already
+        # false here, so nothing downstream treats it as a path to open.
         return {
-            "path": StateDB().url,
+            "path": mask_db_url(StateDB().url),
             "is_file": False,
             "exists": False,
             "size_bytes": None,
@@ -453,7 +457,11 @@ def _db_sizes() -> dict[str, Any]:
         }
     wal_path = db_path.with_name(db_path.name + "-wal")
     return {
-        "path": str(db_path),
+        # And so is this one, less obviously. A store URL with no scheme is
+        # read as a filesystem path, credential and all, which puts a password
+        # in the name of a real file and sends it down the branch that looks
+        # like it has nothing to hide.
+        "path": mask_credentials(str(db_path)),
         "is_file": True,
         "exists": db_path.exists(),
         "size_bytes": db_path.stat().st_size if db_path.exists() else 0,
