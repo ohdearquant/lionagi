@@ -409,12 +409,13 @@ jobs:
           apps/studio/frontend/test-results/
         retention-days: 7
 
-  # Detect whether Studio Docker image inputs changed, to gate the build below.
+  # Detect which conditional-job inputs changed, to gate the jobs below.
   changes:
     runs-on: ubuntu-latest
     outputs:
       studio: ${{ steps.filter.outputs.studio }}
       adr: ${{ steps.filter.outputs.adr }}
+      imports: ${{ steps.filter.outputs.imports }}
     steps:
     - uses: actions/checkout@v7
     - uses: dorny/paths-filter@v4
@@ -433,6 +434,11 @@ jobs:
           adr:
             - 'docs/adr/**'
             - 'lionagi/state/lifecycle/**'
+          imports:
+            - 'lionagi/**'
+            - 'pyproject.toml'
+            - 'uv.lock'
+            - '.github/workflows/ci.yml'
 
   # Build the Studio image (Vite SPA + FastAPI single-origin) whenever its inputs
   # change, so a broken image is caught on the PR that breaks it instead of at
@@ -456,6 +462,99 @@ jobs:
         push: false
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+  # `import lionagi` is deliberately light: measured at well under a second
+  # with ZERO heavy libraries loaded eagerly (no pydantic, no httpx, no
+  # provider SDKs — they all load lazily at first use). That property decays
+  # one convenient top-level import at a time, and nothing else in CI
+  # notices: core-install proves the bare package IMPORTS with base
+  # dependencies, not that the heavy modules stay unloaded or that import
+  # time holds a budget. These two jobs used to live in a standalone
+  # workflow, where a red could not block a merge — a separate workflow
+  # cannot join a `needs:` list across files — so they moved here, onto the
+  # aggregate, path-gated the same way studio-docker is.
+  minimal-import:
+    name: Bare install imports within budget
+    needs: changes
+    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.imports == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install runtime deps only
+        run: |
+          uv venv
+          uv sync --no-dev
+      - name: Import lionagi, timed
+        # Three fresh interpreters, best-of-three: absorbs runner FS cold-cache
+        # noise while still catching a real regression (an eager heavy import
+        # multiplies the time, it doesn't nudge it). Budget is ~8x the measured
+        # local time, so a failure is structural, not jitter.
+        #
+        # --no-sync is load-bearing, not tidiness. `uv run` syncs the project
+        # environment before it runs anything, and its default set includes the
+        # dev group, so a plain `uv run` here would reinstall everything the
+        # `uv sync --no-dev` above deliberately left out and this job would time
+        # an import against an environment no user has.
+        run: |
+          uv run --no-sync python - <<'EOF'
+          import subprocess, sys
+          times = []
+          for _ in range(3):
+              out = subprocess.run(
+                  [sys.executable, "-c",
+                   "import time; t0=time.perf_counter(); import lionagi; "
+                   "print(time.perf_counter()-t0)"],
+                  capture_output=True, text=True,
+              )
+              if out.returncode != 0:
+                  print(out.stderr, file=sys.stderr)
+                  raise SystemExit("bare `import lionagi` failed in a no-extras environment")
+              times.append(float(out.stdout.strip()))
+          best = min(times)
+          print(f"::notice::cold `import lionagi` best-of-3: {best:.3f}s (runs: {[f'{t:.3f}' for t in times]})")
+          BUDGET = 2.0
+          if best > BUDGET:
+              raise SystemExit(f"import took {best:.3f}s, budget is {BUDGET}s — something heavy became eager")
+          EOF
+
+  no-eager-heavies:
+    name: Full install stays lazy
+    needs: changes
+    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.imports == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install everything
+        run: |
+          uv venv
+          uv sync --all-extras
+      - name: Bare import must not load heavy modules
+        # The list is what a bare import measurably does NOT load today. A
+        # name appearing in sys.modules after `import lionagi` means someone
+        # promoted a lazy import to top level — the fix is to demote it, not
+        # to shrink this list.
+        run: |
+          uv run python - <<'EOF'
+          import sys
+          import lionagi  # noqa: F401
+          heavies = [
+              "pydantic", "httpx", "aiohttp", "openai", "anthropic",
+              "fastapi", "uvicorn", "starlette", "sqlalchemy", "aiosqlite",
+              "pandas", "matplotlib", "playwright", "torch", "litellm",
+          ]
+          eager = [m for m in heavies if m in sys.modules]
+          if eager:
+              raise SystemExit(f"bare `import lionagi` eagerly loaded: {eager}")
+          print(f"::notice::bare import loaded none of the {len(heavies)} guarded heavy modules")
+          EOF
 
   vscode:
     runs-on: ubuntu-latest
@@ -492,11 +591,13 @@ jobs:
   # the event (PRs run a subset of Python versions) and a renamed leg would
   # strand PRs on a check that never reports. Fail-closed: every hard gate must
   # report success; a skipped, failed, or cancelled hard gate fails the aggregate.
-  # studio-docker is the sole conditional exception, and only when the changes
-  # path-filter job itself succeeded and reported no Studio image inputs changed.
+  # The conditional jobs (studio-docker, minimal-import, no-eager-heavies) may
+  # skip only when the changes path-filter job itself succeeded and reported
+  # their inputs unchanged; any other skip, failure, or cancellation fails the
+  # aggregate.
   ci-gate:
     if: ${{ always() }}
-    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, vscode, marketplace]
+    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, vscode, marketplace]
     runs-on: ubuntu-latest
     steps:
     - name: Check aggregate result
@@ -527,22 +628,30 @@ jobs:
             if needs[name]["result"] != "success"
         ]
 
-        studio_changed = needs["changes"].get("outputs", {}).get("studio")
-        studio_result = needs["studio-docker"]["result"]
-        if studio_changed == "true":
-            if studio_result != "success":
-                bad.append(f"studio-docker={studio_result} while studio inputs changed")
-        elif studio_changed == "false":
-            if studio_result not in ("success", "skipped"):
-                bad.append(f"studio-docker={studio_result} while studio inputs did not change")
-        else:
-            bad.append(f"changes.outputs.studio={studio_changed!r} (expected 'true' or 'false')")
+        # Conditional jobs: each may skip only when the path-filter output that
+        # gates it reports its inputs unchanged.
+        conditional_gates = {
+            "studio-docker": "studio",
+            "minimal-import": "imports",
+            "no-eager-heavies": "imports",
+        }
+        for job, flag in conditional_gates.items():
+            changed = needs["changes"].get("outputs", {}).get(flag)
+            result = needs[job]["result"]
+            if changed == "true":
+                if result != "success":
+                    bad.append(f"{job}={result} while {flag} inputs changed")
+            elif changed == "false":
+                if result not in ("success", "skipped"):
+                    bad.append(f"{job}={result} while {flag} inputs did not change")
+            else:
+                bad.append(f"changes.outputs.{flag}={changed!r} (expected 'true' or 'false')")
 
         if bad:
             print("ci-gate failed:", ", ".join(bad))
             sys.exit(1)
 
-        print("ci-gate passed: required jobs succeeded; studio-docker skip, if any, was path-filtered")
+        print("ci-gate passed: required jobs succeeded; conditional-job skips, if any, were path-filtered")
         PY
 
   publish:
