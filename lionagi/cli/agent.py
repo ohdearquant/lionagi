@@ -55,6 +55,7 @@ from ._runs import (
     allocate_run,
     find_branch,
     load_last_branch,
+    resolve_run_reason,
     save_last_branch_pointer,
     setup_agent_persist,
     teardown_agent_persist,
@@ -990,28 +991,19 @@ async def _run_agent(
     # Session-scoped: teardown_agent_persist terminalizes only the session;
     # invocation records are finalized externally and would never fire. Deferred
     # auto-resume legs unregister without firing; the recursed leg registers anew.
+    #
+    # Persistence setup failing leaves no session entity to fire a terminal
+    # transition on, so the registered path below (register_flow_notify_scope)
+    # cannot be used. That used to mean the notice was silently unreachable;
+    # this run now delivers it itself once its own terminal status is known,
+    # in the `finally` block below (see `deliver_flow_notify_now`) — same
+    # resolution, same payload, run directly instead of registered for a
+    # transition that will never happen. The refusal record this run can still
+    # write applies only once delivery is actually attempted and genuinely
+    # cannot be completed (nothing configured to run, or the config itself is
+    # unusable), never merely because persistence failed.
     _notify_scope_name: str | None = None
     _notify_session_id = live.get("session_id") if live else None
-    if notify and _notify_session_id is None:
-        # Asked for a notifier that can never fire, and say so.
-        #
-        # The terminal notice is raised by a terminal transition on this run's
-        # session entity. Persistence setup failing leaves no session entity, so
-        # no transition can occur and nothing will call the adapter however well
-        # it resolves. That is the most complete refusal there is, and it is the
-        # one the registration below cannot report: on_rejection is passed into
-        # it, so it only speaks for runs that got far enough to register.
-        #
-        # Without this the run is silent in a way that reads as success. A
-        # caller waiting on a terminal notice sees what a caller that never
-        # asked for one sees, and the ones consuming these runs are automated:
-        # they conclude the process vanished, which is the opposite of what
-        # happened, since the run goes on to do all of its work.
-        from lionagi.state.lifecycle.notify_settings import (
-            record_notify_rejection_to_run,
-        )
-
-        record_notify_rejection_to_run(run, "run_has_no_persisted_session_to_notify_on")
     if notify and _notify_session_id is not None:
         from lionagi.cli.orchestrate._notify import (
             register_flow_notify_scope,
@@ -1226,6 +1218,37 @@ async def _run_agent(
                 run_manifest["ended_at"] = time.time()
             if _write_run_manifest is not None:
                 _write_run_manifest(run_manifest)
+            # No session entity ever existed for this run (persistence setup
+            # failed), so register_flow_notify_scope above was never reached —
+            # this run's terminal status is now known, and delivering it here
+            # is the only chance this run gets. Same resolution, same payload
+            # shape as the registered path; see deliver_flow_notify_now.
+            if notify and _notify_session_id is None:
+                try:
+                    from lionagi.cli.orchestrate._notify import (
+                        deliver_flow_notify_now,
+                    )
+
+                    _reason_code, _, _ = resolve_run_reason(
+                        status=_terminal_status, exception=_terminal_exc
+                    )
+                    await deliver_flow_notify_now(
+                        override=notify,
+                        run=run,
+                        entity_kind="session",
+                        entity_id=branch_id,
+                        invocation_id=invocation_id,
+                        flow_kind="agent",
+                        playbook=None,
+                        save_dir=str(run.artifact_root),
+                        cwd=cwd or os.getcwd(),
+                        started_at=run_manifest["started_at"],
+                        terminal_status=_terminal_status,
+                        reason_code=_reason_code,
+                        occurred_at=time.time(),
+                    )
+                except Exception as _notify_exc:  # noqa: BLE001 — a notifier failure must never affect the run
+                    log_error(f"direct-path notify.on_terminal delivery failed: {_notify_exc!r}")
             # Unregister after teardown fires the terminal transition.
             if _notify_scope_name is not None:
                 unregister_flow_notify_scope(_notify_scope_name)

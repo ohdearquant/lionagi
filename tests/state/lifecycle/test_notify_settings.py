@@ -395,10 +395,10 @@ async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplo
 
 
 def _outcome_fn_for(run):
-    from lionagi.state.lifecycle.notify_settings import _record_notify_outcome_to_run
+    from lionagi.state.lifecycle.notify_settings import record_notify_outcome_to_run
 
     def _fn(*, ok, exit_code, stderr_text):
-        return _record_notify_outcome_to_run(
+        return record_notify_outcome_to_run(
             run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
         )
 

@@ -41,6 +41,8 @@ __all__ = (
     "PayloadBuilder",
     "ResolvedNotifyHandler",
     "build_handler",
+    "record_notify_outcome_to_run",
+    "record_notify_rejection_to_run",
     "register_run_notify_outcome_scope",
     "register_settings_terminal_callback",
     "resolve_notify_config",
@@ -313,7 +315,7 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
 OutcomeFn = Callable[..., "str | None"]
 
 
-def _record_notify_outcome_to_run(
+def record_notify_outcome_to_run(
     run: RunDir, *, ok: bool, exit_code: int | None, stderr_text: str | None
 ) -> str | None:
     """Best-effort: record the exec adapter's outcome into *run*'s own
@@ -662,7 +664,7 @@ def register_run_notify_outcome_scope(
         return None
 
     def _outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
-        return _record_notify_outcome_to_run(
+        return record_notify_outcome_to_run(
             run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
         )
 

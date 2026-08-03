@@ -1,25 +1,34 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""A run that asked for a terminal notice it can never get has to say so.
+"""A run that asked for a terminal notice, and lost its persistence before it
+could register the callback that would normally deliver one, still gets it
+delivered.
 
-`--notify` is delivered by a callback registered against this run's session
-entity and fired by that entity's terminal transition. When persistence setup
-fails there is no session entity, so no transition can happen and the adapter
-is never called, however well it resolves. The run then finishes its work and
-ends in silence, and silence is exactly what a run that never asked for a
-notifier produces.
+`--notify` is ordinarily delivered by a callback registered against this
+run's session entity and fired by that entity's terminal transition. When
+persistence setup fails there is no session entity, so no transition can ever
+happen and the registered path can never fire, however well it resolves. This
+run instead delivers the notice itself, directly, once its own terminal
+status is known — see `deliver_flow_notify_now` in
+`lionagi/cli/orchestrate/_notify.py` and docs/internals/cli.md.
 
 That matters because the consumers are automated. The lion MCP server wires
 `--notify` on every job it spawns and takes the resulting notice as the run's
 end; without one it eventually observes the process is gone with nothing
 recorded and publishes `outcome=indeterminate`, which is the opposite of what
 happened to a run that did all of its work.
+
+Recording a refusal is not the same as delivering a notice: the refusal
+record (`notify_outcome.json` with a `reason`) is now written only when
+delivery is actually attempted and genuinely cannot be completed — nothing
+usable is configured — never merely because persistence broke.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -84,25 +93,24 @@ def _wire_agent_stubs(monkeypatch, tmp_path: Path, *, persist: dict | None):
 
 
 @pytest.mark.asyncio
-async def test_notify_asked_for_without_a_session_records_the_refusal(monkeypatch, tmp_path):
-    """No session entity to fire on is recorded, not passed over in silence."""
+async def test_notify_unusable_config_without_a_session_records_the_refusal(monkeypatch, tmp_path):
+    """A notifier that was asked for and cannot even be resolved is refused
+    and recorded — the only case that still writes a bare refusal now that
+    delivery is attempted directly."""
     run = _wire_agent_stubs(monkeypatch, tmp_path, persist=None)
 
     from lionagi.cli.agent import _run_agent
 
-    await _run_agent("codex/model", "do the thing", notify="/some/notifier")
+    # Shell features are never honored by any notify resolver; this is
+    # rejected before any delivery is attempted.
+    await _run_agent("codex/model", "do the thing", notify="echo hi | cat")
 
     assert run.notify_outcome_path.exists(), (
-        "a notifier was asked for and can never fire; the run has to record that"
+        "a notifier was asked for and could not even be resolved; the run has to record that"
     )
     outcome = json.loads(run.notify_outcome_path.read_text())
     assert outcome["ok"] is False
-    # The reason is what separates this from every other way a notice fails to
-    # arrive, so it is asserted by value rather than by being present.
-    assert outcome["reason"] == "run_has_no_persisted_session_to_notify_on"
-    # Nothing was launched, so there is no exit code and no captured stderr to
-    # point at. Asserting these keeps the record from growing a fabricated
-    # success shape later.
+    assert outcome["reason"] == "on_terminal_command_requires_shell_features"
     assert outcome["exit_code"] is None
     assert outcome["stderr_path"] is None
 
@@ -123,4 +131,69 @@ async def test_no_notifier_asked_for_writes_no_refusal(monkeypatch, tmp_path):
 
     assert not run.notify_outcome_path.exists(), (
         "a run that asked for nothing must look different from one that was refused"
+    )
+
+
+def _write_fake_notifier(tmp_path: Path) -> Path:
+    """A tiny script standing in for a real `--notify` adapter: argv[1] is
+    where it records that it ran, argv[2] (if given) is written into it — the
+    `{status}` placeholder, in the delivery test below, so the assertion is
+    on what the CLI actually substituted, not just that something ran."""
+    script = tmp_path / "fake_notifier.py"
+    script.write_text(
+        "import sys\n"
+        "path = sys.argv[1]\n"
+        "status = sys.argv[2] if len(sys.argv) > 2 else ''\n"
+        "with open(path, 'w') as f:\n"
+        "    f.write(status)\n"
+    )
+    return script
+
+
+@pytest.mark.asyncio
+async def test_direct_path_delivers_the_notice_when_persistence_is_lost(monkeypatch, tmp_path):
+    """The reproduced condition: persistence setup fails for a run submitted
+    with a notify template, and the notice is DELIVERED — the fake delivery
+    command records its own invocation, carrying the run's real terminal
+    status, not silence and not a bare refusal record."""
+    run = _wire_agent_stubs(monkeypatch, tmp_path, persist=None)
+    marker = tmp_path / "delivered.txt"
+    script = _write_fake_notifier(tmp_path)
+    notify_cmd = f"{sys.executable} {script} {marker} {{status}}"
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent("codex/model", "do the thing", notify=notify_cmd)
+
+    assert marker.exists(), "the fake delivery command was never invoked"
+    assert marker.read_text() == "completed"
+
+
+@pytest.mark.asyncio
+async def test_control_disabling_the_direct_path_delivers_nothing(monkeypatch, tmp_path):
+    """The pre-fix behaviour, reproduced as a control: with the direct-path
+    seam disabled, the identical arrangement above delivers nothing. This is
+    what proves the test above exercises the new code, not something that
+    would have passed anyway (a fake notifier that always runs, a marker file
+    that already existed, etc.)."""
+    run = _wire_agent_stubs(monkeypatch, tmp_path, persist=None)
+    marker = tmp_path / "delivered.txt"
+    script = _write_fake_notifier(tmp_path)
+    notify_cmd = f"{sys.executable} {script} {marker} {{status}}"
+
+    import lionagi.cli.orchestrate._notify as notify_mod
+
+    async def _disabled(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(notify_mod, "deliver_flow_notify_now", _disabled)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent("codex/model", "do the thing", notify=notify_cmd)
+
+    assert not marker.exists(), "the old (pre-fix) path must not deliver anything"
+    assert not run.notify_outcome_path.exists(), (
+        "the old path recorded nothing either — this is what made the run look "
+        "exactly like one that never asked for a notifier at all"
     )

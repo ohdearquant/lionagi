@@ -89,6 +89,16 @@ _SPAWN_FAILED_REASON = "spawn_failed"
 OUTCOME_INDETERMINATE = "indeterminate"
 LOST_REASON = "process_gone_without_outcome"
 
+# A narrower sibling of LOST_REASON: the run's own directory carries a
+# notify_outcome.json recording that its terminal notice was never delivered
+# (persistence was unavailable, or a direct-delivery attempt itself failed —
+# see lionagi/cli/orchestrate/_notify.py). Unlike LOST_REASON this is not pure
+# silence — the run said something about its own end before going quiet — but
+# it is still not a recorded status, so it stays OUTCOME_INDETERMINATE. Never
+# assigned from the *absence* of that file: retention prunes run directories,
+# and an absent file is exactly what true silence also looks like.
+LOST_REASON_NOTICE_RECORDED_UNDELIVERED = "process_gone_notice_recorded_undelivered"
+
 # Outcome values valid to report back from a job record.
 _OUTCOMES = frozenset({"succeeded", "failed", "cancelled", OUTCOME_INDETERMINATE})
 
@@ -1501,6 +1511,22 @@ class ReapResult:
     reason: str
 
 
+def _notice_recorded_undelivered(run_id: str) -> bool:
+    """Whether *run_id*'s own run directory recorded its terminal notice as
+    never delivered (``notify_outcome.json`` with ``ok: false``).
+
+    Best-effort and evidence-only: a missing or unreadable file returns
+    False, the same as a run that never wrote one — see LOST_REASON_
+    NOTICE_RECORDED_UNDELIVERED for why absence must never be read as this.
+    """
+    try:
+        text = config.run_dir(run_id).joinpath("notify_outcome.json").read_text()
+        outcome = json.loads(text)
+    except (OSError, ValueError):
+        return False
+    return isinstance(outcome, dict) and outcome.get("ok") is False
+
+
 def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
     """Publish the end of a run whose process is conclusively gone.
 
@@ -1528,11 +1554,16 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
             return ReapResult(False, job, "spawn_state_is_not_started")
         if job.get("finished_at") is not None:
             return ReapResult(False, job, "already_ended")
+        reason_code = (
+            LOST_REASON_NOTICE_RECORDED_UNDELIVERED
+            if _notice_recorded_undelivered(run_id)
+            else LOST_REASON
+        )
         job.update(
             {
                 "status": "exited",
                 "outcome": OUTCOME_INDETERMINATE,
-                "reason_code": LOST_REASON,
+                "reason_code": reason_code,
                 "finished_at": observed_at,
                 "terminal_source": TERMINAL_SOURCE_ORPHAN_REAPER,
                 "terminal_evidence": {"kind": EVIDENCE_PROCESS_GONE, "finding": finding},
