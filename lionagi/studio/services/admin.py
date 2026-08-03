@@ -26,7 +26,7 @@ from lionagi.state.reasons import RunReasons, SessionReasons, validate_reason_co
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
-from ._db import store_exists, store_path
+from ._db import require_file_store, store_exists, store_path
 from ._path_safety import public_path
 
 _log = logging.getLogger(__name__)
@@ -321,6 +321,7 @@ def _classify_phantom(
 
 
 async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, Any]]:
+    require_file_store()
     if not store_exists():
         return []
     now = time.time()
@@ -406,6 +407,7 @@ async def health_report() -> dict[str, Any]:
     )
     from lionagi.studio.config import scheduler_timezone_report
 
+    require_file_store()
     if not store_exists():
         return {
             "sessions": {"total": 0, "by_status": {}, "by_health": {}, "unhealthy": []},
@@ -773,6 +775,7 @@ async def list_admin_events(
 
 async def prune_sessions(session_ids: list[str]) -> int:
     """Delete sessions by explicit ID list."""
+    require_file_store()
     seen: dict[str, None] = {}
     for sid in session_ids:
         seen[sid] = None

@@ -57,6 +57,58 @@ def store_exists() -> bool:
     return Path(store_path()).exists()
 
 
+class StoreNotAddressableError(RuntimeError):
+    """The configured store has no file this layer can open.
+
+    Raised by :func:`require_file_store` for a route that reads or writes rows
+    straight through a SQLite connection. A server-backed store (or an
+    in-memory one) has no file behind it, so ``store_path()`` would have to
+    fall back to a path the daemon never writes -- reading it back would
+    report a store nobody is serving, and connecting to write would create a
+    file whose rows nothing else will ever see. The route has no honest answer
+    against that connection, and this says so instead of giving one.
+    """
+
+    def __init__(self, backend: str) -> None:
+        self.backend = backend
+        super().__init__(
+            f"this route reads from a local SQLite file, but the configured "
+            f"store is {backend}-backed and has no such file"
+        )
+
+
+def require_file_store() -> None:
+    """Raise :class:`StoreNotAddressableError` when the configured store is
+    not a SQLite file this layer can open directly.
+
+    Call this where a route or service function currently guards with
+    ``if not store_exists(): return []`` (or opens the connection
+    unconditionally): it slots in front of that check. A path that exists or a
+    path that is merely absent both pass through unchanged -- the second case
+    still means "no store yet", answered the same empty way as before. Only a
+    resolution with no path at all (a server URL, or ``:memory:``) raises,
+    because that is the one condition this layer cannot ever satisfy by
+    waiting or by creating the file.
+    """
+    from lionagi.state import db as db_mod
+
+    if db_mod.state_db_file() is not None:
+        return
+
+    from lionagi.state.engine import dialect_of, normalize_state_db_url
+
+    raw = db_mod.settings.LIONAGI_STATE_DB_URL
+    if raw is None:
+        raw = db_mod.DEFAULT_DB_PATH
+    url = normalize_state_db_url(raw)
+    dialect = dialect_of(url)
+    from sqlalchemy.engine import make_url
+
+    database = make_url(url).database
+    backend = "in-memory sqlite" if (not database or database == ":memory:") else dialect
+    raise StoreNotAddressableError(backend)
+
+
 @asynccontextmanager
 async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
     """Studio-local SQLite connection with WAL mode and a busy timeout,

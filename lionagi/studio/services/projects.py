@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
-from ._db import store_exists, store_path
+from ._db import require_file_store, store_exists, store_path
 
 
 class NameConflictError(Exception):
@@ -41,6 +41,7 @@ async def _ensure_table(db) -> None:
 
 async def list_projects() -> dict[str, Any]:
     """Return all known projects with session counts and an unassigned count."""
+    require_file_store()
     if not store_exists():
         return {"projects": [], "unassigned_count": 0}
 
@@ -88,6 +89,7 @@ async def list_projects() -> dict[str, Any]:
 
 async def get_project(name: str) -> dict[str, Any] | None:
     """Return a single project with session counts and usage summaries."""
+    require_file_store()
     if not store_exists():
         return None
 
@@ -167,6 +169,7 @@ async def create_project(
 
     clean_name = name.strip()
     now = time.time()
+    require_file_store()
     async with _open_db(store_path()) as db:
         await _ensure_table(db)
         try:
@@ -191,6 +194,7 @@ async def update_project(name: str, fields: dict[str, Any]) -> bool:
     allowed = {"description", "github", "path"}
     clean = {k: v for k, v in fields.items() if k in allowed}
 
+    require_file_store()
     async with _open_db(store_path()) as db:
         await _ensure_table(db)
         if not clean:
@@ -216,6 +220,7 @@ async def assign_sessions_to_project(
     all_unassigned: bool = False,
 ) -> int:
     """Assign sessions to a project. Returns count of updated rows."""
+    require_file_store()
     async with _open_db(store_path()) as db:
         await _ensure_table(db)
         if session_ids:
@@ -250,6 +255,7 @@ async def assign_sessions_to_project(
 
 async def delete_project(name: str) -> bool:
     """Delete a Studio-managed project. Returns True when deleted."""
+    require_file_store()
     async with _open_db(store_path()) as db:
         await _ensure_table(db)
         cur = await db.execute(

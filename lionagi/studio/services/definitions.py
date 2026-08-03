@@ -14,7 +14,7 @@ from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
-from ._db import store_exists, store_path
+from ._db import require_file_store, store_exists, store_path
 from ._path_safety import validate_name_component
 from .agents import _is_protected_system
 
@@ -180,6 +180,7 @@ async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | No
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
 
+    require_file_store()
     if not await _ensure_db():
         return None
 
