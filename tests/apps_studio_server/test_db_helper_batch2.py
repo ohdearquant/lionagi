@@ -36,7 +36,8 @@ class TestOpenDb:
 
     @pytest.mark.integration
     def test_open_db_sets_busy_timeout(self, tmp_path):
-        """open_db() must set busy_timeout = 5000 ms."""
+        """open_db() must set a busy_timeout, and the shared one."""
+        from lionagi.state.engine import SQLITE_BUSY_TIMEOUT_MS
         from lionagi.studio.services._db import open_db
 
         db_path = str(tmp_path / "test.db")
@@ -48,7 +49,42 @@ class TestOpenDb:
             return row[0]
 
         timeout = _run(_check())
-        assert timeout == 5000, f"Expected busy_timeout=5000, got {timeout!r}"
+        assert timeout == SQLITE_BUSY_TIMEOUT_MS, (
+            f"Expected busy_timeout={SQLITE_BUSY_TIMEOUT_MS}, got {timeout!r}"
+        )
+
+    @pytest.mark.integration
+    def test_open_db_waits_as_long_as_the_state_engine_does(self, tmp_path):
+        """The two connection layers onto one store file must wait the same time
+        on a lock.
+
+        Asserted between two live connections rather than against the constant,
+        so that re-hardcoding a number in either layer fails here even if it
+        happens to be spelled the same as the constant's current value.
+        """
+        pytest.importorskip("sqlalchemy", reason="sqlalchemy not installed")
+        from lionagi.state.engine import make_engine
+        from lionagi.studio.services._db import open_db
+
+        db_path = tmp_path / "test.db"
+
+        async def _check():
+            async with open_db(str(db_path)) as db:
+                cur = await db.execute("PRAGMA busy_timeout")
+                helper_value = (await cur.fetchone())[0]
+            engine = make_engine(f"sqlite+aiosqlite:///{db_path}")
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.exec_driver_sql("PRAGMA busy_timeout")
+                    engine_value = result.scalar()
+            finally:
+                await engine.dispose()
+            return helper_value, engine_value
+
+        helper_value, engine_value = _run(_check())
+        assert helper_value == engine_value, (
+            f"Studio helper waits {helper_value}ms, StateDB engine waits {engine_value}ms"
+        )
 
     @pytest.mark.integration
     def test_open_db_sets_row_factory(self, tmp_path):

@@ -117,7 +117,7 @@ def _open_state_db_worker_synchronized_begin(
     # A shorter-than-production busy_timeout makes lock contention surface
     # as an OperationalError within this test's patience instead of quietly
     # blocking it out. Tuned to 500ms (vs. production's 5000ms default,
-    # engine.py:_SQLITE_BUSY_TIMEOUT_MS): low enough that the barrier-forced
+    # engine.py:SQLITE_BUSY_TIMEOUT_MS): low enough that the barrier-forced
     # pileup on the sessions rebuild's write lock can still exceed it under
     # load, but high enough to stay clear of a separate, pre-existing
     # SQLite characteristic — a bare SELECT against sqlite_master can itself
@@ -128,7 +128,7 @@ def _open_state_db_worker_synchronized_begin(
     # (this fix only guards the mutations); at very aggressive timeouts it
     # was observed to fail the harness on those unrelated reads rather than
     # on the write path this test targets.
-    state_engine_module._SQLITE_BUSY_TIMEOUT_MS = 500
+    state_engine_module.SQLITE_BUSY_TIMEOUT_MS = 500
 
     original_make_engine = state_db_module.make_engine
 
@@ -180,7 +180,7 @@ def test_concurrent_statedb_opens_rebuild_session_status_check(tmp_path: Path) -
     another process winning the rebuild race instead of crashing.
 
     Against the unguarded rebuild (no catch-and-reinspect guard), lowering
-    ``_SQLITE_BUSY_TIMEOUT_MS`` far enough (~50ms, well below this test's
+    ``SQLITE_BUSY_TIMEOUT_MS`` far enough (~50ms, well below this test's
     500ms) reliably reproduces the bug this fix closes: N processes racing
     the same DROP/CREATE/INSERT/RENAME transaction see a loser surface an
     OperationalError that isn't caught, failing that worker's whole

@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 
 import aiosqlite
 
+from lionagi.state.engine import SQLITE_BUSY_TIMEOUT_MS
+
 _log = logging.getLogger(__name__)
 
 _ACTIVE_CONNECTIONS: int = 0
@@ -20,14 +22,19 @@ def get_active_connection_count() -> int:
 
 @asynccontextmanager
 async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
-    """Studio-local SQLite connection with WAL mode and busy_timeout=5000ms,
-    preventing "database is locked" errors under modest concurrency."""
+    """Studio-local SQLite connection with WAL mode and a busy timeout,
+    preventing "database is locked" errors under modest concurrency.
+
+    The timeout is the same value the StateDB engine applies, imported rather
+    than restated: these are two connection layers onto one store file, and a
+    lock wait that differs between them is a difference nobody chose.
+    """
     global _ACTIVE_CONNECTIONS
     async with aiosqlite.connect(path) as db:
         _ACTIVE_CONNECTIONS += 1
         try:
             await db.execute("PRAGMA journal_mode = WAL")
-            await db.execute("PRAGMA busy_timeout = 5000")
+            await db.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
             await db.execute("PRAGMA foreign_keys = ON")
             db.row_factory = aiosqlite.Row
             yield db
