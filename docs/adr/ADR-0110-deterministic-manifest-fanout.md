@@ -277,6 +277,15 @@ OBSERVABLE, never silent.
   FIRST act, on every path, is to re-read the run's terminal status and
   `round.json`'s `round_state` under the claim, and to proceed on what
   that re-read shows — never on the observation that motivated the claim.
+  The re-read admits exactly four dispositions, shared by every claimant:
+  terminal and `complete` — release, nothing is owed; nonterminal but
+  `complete` — the dead holder finished everything except the parent's
+  terminal write, so the claimant makes that single write from the
+  recorded facts and touches nothing else (no kill, no harvest:
+  `complete` is published only after a proved-quiet sweep); terminal but
+  `pending_harvest` — the late-facts pass (below): records land late and
+  `round_state` flips; neither terminal nor `complete` — the claimant's
+  full path runs, quiescence first wherever the path is destructive.
   A failed non-blocking acquire means a live owner
   exists; the failed claimant re-checks later and touches no scratch
   directory or record meanwhile. The file's content (owner role `runner` /
@@ -342,11 +351,16 @@ OBSERVABLE, never silent.
   released it with the process — does it proceed, and per the claim
   obligation above its first act is the re-read of terminal status and
   `round_state`. A round found `complete` means a finalizer proved every
-  recorded group quiet before publishing; the reaper releases the claim
-  and the kill path is never entered — the grace-expiry observation is
-  stale, and firing the one destructive primitive in this sequence on it
-  would act on a premise the claim's own availability had already
-  falsified. Only when the re-read shows the round unfinalized does the
+  recorded group quiet before publishing, and the kill path is never
+  entered — the grace-expiry observation is stale, and firing the one
+  destructive primitive in this sequence on it would act on a premise the
+  claim's own availability had already falsified. What remains owed is
+  only what the dead finalizer had not yet written: a parent still
+  nonterminal gets its single terminal write from the recorded facts (the
+  finalizer died between publishing `complete` and terminalizing —
+  releasing without that write would strand the run nonterminal forever);
+  a parent already terminal means release with nothing to do. Only when
+  the re-read shows the round unfinalized does the
   destructive work begin, and it begins with
   quiescence, not harvest: a hard kill of every recorded control
   group — the runner's and each leg's, read from the run directory (the
@@ -416,7 +430,10 @@ OBSERVABLE, never silent.
   existing orphan-reaping path on the job surface; for manifest runs that
   reaper acquires the same finalization lock (its previous owner is dead by
   definition of the path, so the lock is free; acquisition still serializes
-  it against a concurrent kill-reaper) and performs the same
+  it against a concurrent kill-reaper), takes the same post-acquisition
+  re-read and dispositions as every claimant — a round already `complete`
+  is terminalized or released, never re-harvested and never swept — and
+  where the re-read shows the round unfinalized performs the same
   quiescence-then-harvest-then-record sequence before its terminal write —
   a dead parent does not mean dead legs, so the pre-harvest quiescence
   sweep applies identically — recording
