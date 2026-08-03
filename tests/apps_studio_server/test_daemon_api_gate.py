@@ -526,7 +526,15 @@ def test_admin_maintenance_checkpoint_response_shape(tmp_path, monkeypatch):
 
     r = client.post("/api/admin/maintenance", json={"action": "checkpoint"})
     assert r.status_code == 200
-    assert sorted(r.json().keys()) == ["action", "busy", "checkpointed", "log_pages", "mode"]
+    assert sorted(r.json().keys()) == [
+        "action",
+        "busy",
+        "checkpointed",
+        "elapsed_ms",
+        "log_pages",
+        "mode",
+        "wal_bytes_before",
+    ]
 
 
 def test_admin_maintenance_malformed_action_422_shape(tmp_path, monkeypatch):

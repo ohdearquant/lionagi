@@ -13,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lionagi._errors import LionError
-from lionagi.state.db import StateDB, state_db_known_absent
+from lionagi.state.db import StateDB, state_db_file, state_db_known_absent
 
 _log = logging.getLogger(__name__)
 
@@ -114,25 +114,78 @@ def _session_retention_predicate(cutoff: float) -> tuple[str, tuple[Any, ...]]:
     )
 
 
+def _wal_bytes_now() -> int | None:
+    """Size of the store's WAL sidecar at this moment, or None if unmeasurable.
+
+    ``None`` means the question does not apply or could not be answered: a
+    server-backed or in-memory store has no sidecar, and a file we are not
+    allowed to stat gives no size. A missing sidecar beside a real store file
+    is 0 rather than None, because that is a genuine answer: SQLite removes
+    the WAL on a clean close and on a successful TRUNCATE checkpoint, and both
+    mean there is nothing there to drain.
+    """
+    path = state_db_file()
+    if path is None:
+        return None
+    try:
+        return path.with_name(path.name + "-wal").stat().st_size
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        return None
+
+
 async def checkpoint_state_db(
     mode: str = "TRUNCATE",
     *,
     actor: str = "studio_db_maintenance",
-) -> dict[str, int | None]:
+) -> dict[str, Any]:
     """Run ``PRAGMA wal_checkpoint(<mode>)`` and write an audit event.
 
-    Returns the PRAGMA result dict: busy, log_pages, checkpointed.
+    Returns the PRAGMA result (busy, log_pages, checkpointed) plus the size of
+    the WAL going in and how long the whole thing took.
+
+    Those last two are here because the PRAGMA counters cannot answer the
+    question an operator brings to this record. For TRUNCATE a successful
+    checkpoint reports busy, log_pages and checkpointed all zero by
+    definition, whether it drained one page or a hundred thousand: the frames
+    are gone and the log has been reset, so there is nothing left for the
+    counters to describe. All zeros is the success signature, not evidence
+    that there was nothing to do, and reading it as the latter is the natural
+    mistake. Four consecutive rows of zeros say only that four checkpoints
+    succeeded.
+
+    ``wal_bytes_before`` is read before the connection is opened, so it is the
+    WAL this checkpoint was actually asked to deal with rather than whatever
+    is left after opening did its own work. ``elapsed_ms`` covers opening the
+    connection as well as the PRAGMA, because a checkpoint that waits can wait
+    in either place and the split cannot be recovered from the row afterwards.
+
+    Both are bounded by the same limit: the event is written after the
+    checkpoint returns, so this records a slow checkpoint and can never record
+    a hung one. A stall that never ends leaves no row at all.
     """
     if state_db_known_absent():
-        return {"mode": mode, "busy": None, "log_pages": None, "checkpointed": None}
+        return {
+            "mode": mode,
+            "busy": None,
+            "log_pages": None,
+            "checkpointed": None,
+            "wal_bytes_before": None,
+            "elapsed_ms": None,
+        }
 
+    wal_before = _wal_bytes_now()
+    started = time.perf_counter()
     async with StateDB() as db:
         row = await db.checkpoint(mode)
-        details: dict[str, int | None] = {
+        details: dict[str, Any] = {
             "mode": mode,
             "busy": int(row[0]) if row else None,
             "log_pages": int(row[1]) if row else None,
             "checkpointed": int(row[2]) if row else None,
+            "wal_bytes_before": wal_before,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
         }
         await db.insert_admin_event(action="checkpoint", details=details, actor=actor)
 
