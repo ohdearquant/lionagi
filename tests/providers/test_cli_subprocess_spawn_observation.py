@@ -232,6 +232,22 @@ class TestRequestModelsCarryThem:
             assert req.env is None
             assert req.on_spawn is None
 
+    def test_the_request_models_still_generate_a_json_schema(self):
+        """`exclude=True` keeps a field out of a serialised INSTANCE; it does
+        nothing about the model's schema, which is generated from the class and
+        walks every field. Endpoint config asks for exactly this schema when it
+        serialises `request_options`, and a callable has no JSON schema at all
+        — so a plain Callable field here fails every code path that persists a
+        CLI request, none of which is in this module."""
+        from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+        from lionagi.providers.openai.codex import CodexCodeRequest
+
+        for model in (ClaudeCodeRequest, CodexCodeRequest):
+            schema = model.model_json_schema()
+            properties = schema.get("properties", {})
+            assert "on_spawn" not in properties
+            assert "env" not in properties
+
     @pytest.mark.asyncio
     async def test_claude_code_stream_hands_both_to_the_spawn_helper(self, monkeypatch):
         import lionagi.providers.anthropic.claude_code as cc

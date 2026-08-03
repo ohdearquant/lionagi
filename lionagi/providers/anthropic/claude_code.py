@@ -12,6 +12,7 @@ from textwrap import shorten
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from lionagi import ln
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
@@ -203,7 +204,10 @@ class ClaudeCodeRequest(BaseModel):
     worktree: str | bool | None = Field(default=None, exclude=True)
 
     # ── process (runtime-only, never rendered as CLI args) ─────────
-    env: dict[str, str] | None = Field(
+    # Runtime-only, and kept out of the generated JSON schema as well as out
+    # of serialization: this model's schema describes the request payload, and
+    # a callable has no JSON schema at all — asking for one raises.
+    env: SkipJsonSchema[dict[str, str] | None] = Field(
         default=None,
         exclude=True,
         description=(
@@ -212,7 +216,7 @@ class ClaudeCodeRequest(BaseModel):
             "caller setting one variable supplies the rest itself."
         ),
     )
-    on_spawn: Callable[[int, int], None] | None = Field(
+    on_spawn: SkipJsonSchema[Callable[[int, int], None] | None] = Field(
         default=None,
         exclude=True,
         description=(
