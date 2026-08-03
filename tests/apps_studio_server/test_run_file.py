@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
@@ -38,11 +40,9 @@ async def seed_session(db_path: Path, *, session_id: str, artifacts_path: str) -
 
 @pytest.fixture
 def patched_runs_svc(tmp_path: Path, monkeypatch: Any):
-    import lionagi.studio.services.sessions as sessions_mod
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     import lionagi.studio.services.runs as runs_svc
 
@@ -377,10 +377,8 @@ async def test_open_helper_refuses_intermediate_dir_swapped_to_symlink(tmp_path)
 
 
 def _make_client(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    import lionagi.studio.services.sessions as sessions_mod
 
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app
 

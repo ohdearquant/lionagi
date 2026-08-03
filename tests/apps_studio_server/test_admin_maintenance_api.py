@@ -22,16 +22,8 @@ import lionagi.state.db as state_db_mod
 
 def _make_client(tmp_path, monkeypatch):
     """Return (client, db_path) with all relevant service modules pointed at db_path."""
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.db_maintenance as maint_mod
-    import lionagi.studio.services.sessions as sessions_mod
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app

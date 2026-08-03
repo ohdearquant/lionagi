@@ -18,12 +18,9 @@ def _make_client(
 ) -> TestClient:
     """Wire a TestClient with a real temp state.db and patched paths."""
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.projects as projects_mod
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(projects_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(projects_mod, "_DB", str(fake_db))
 
     # Ensure schema is applied to the temp DB.
     import asyncio

@@ -56,14 +56,8 @@ async def _seed_running_session(
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.sessions as sessions_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
 
     from lionagi.studio.app import app
 

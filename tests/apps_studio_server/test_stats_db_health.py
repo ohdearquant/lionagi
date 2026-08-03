@@ -42,14 +42,8 @@ async def _seed_two_sessions(db_path: Path) -> None:
 
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
-    import lionagi.studio.services.sessions as sessions_mod
-    import lionagi.studio.services.stats as stats_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(stats_mod, "_DB", str(db_path))
 
     from lionagi.studio.app import app
 
@@ -92,27 +86,31 @@ def test_stats_db_health_missing_db_returns_zeroes(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# stats DB path delegation: size_bytes must reflect stats.DEFAULT_DB_PATH
+# stats reports the store the daemon serves, not a path of its own
 # ---------------------------------------------------------------------------
 
 
-def test_stats_size_comes_from_stats_db_path(tmp_path, monkeypatch):
-    """size_bytes must reflect stats.DEFAULT_DB_PATH, not admin.DEFAULT_DB_PATH."""
-    small_db = tmp_path / "small_state.db"
-    _run(_seed_two_sessions(small_db))
+def test_stats_size_comes_from_the_configured_store(tmp_path, monkeypatch):
+    """The reported size belongs to the store in play, whichever file that is.
 
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.sessions as sessions_mod
-    import lionagi.studio.services.stats as stats_mod
+    Each service used to hold its own copy of the default path, so this asked
+    whether stats read stats' copy rather than admin's. There is one
+    resolution now, and the question that replaces it is whether that
+    resolution follows the configuration: the default path exists here and is
+    the wrong answer, so a service still reading it reports a size of zero.
+    """
+    configured = tmp_path / "configured_state.db"
+    _run(_seed_two_sessions(configured))
 
-    # Patch stats to the small DB; leave admin pointing at a nonexistent path
-    admin_db = tmp_path / "admin_state.db"
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", small_db)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", small_db)
-    monkeypatch.setattr(sessions_mod, "_DB", str(small_db))
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", small_db)
-    monkeypatch.setattr(stats_mod, "_DB", str(small_db))
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", admin_db)
+    default_path = tmp_path / "default_state.db"
+    default_path.write_bytes(b"")
+
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", default_path)
+    monkeypatch.setattr(
+        state_db_mod,
+        "settings",
+        state_db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": str(configured)}),
+    )
 
     from lionagi.studio.app import app
 
@@ -120,8 +118,7 @@ def test_stats_size_comes_from_stats_db_path(tmp_path, monkeypatch):
     r = client.get("/api/stats")
     assert r.status_code == 200
     db = r.json()["db"]
-    # The stats endpoint must report the size of small_db, which exists and has content
-    assert db["size_bytes"] > 0, "size_bytes must reflect the patched stats DB, not admin's DB"
+    assert db["size_bytes"] == configured.stat().st_size
     assert db["tables"]["sessions"] == 2
 
 
@@ -145,13 +142,11 @@ async def _seed_invocation_with_bad_metadata(db_path: Path, inv_id: str) -> None
 
 def test_invocation_bad_metadata_becomes_none(tmp_path, monkeypatch):
     """Corrupted node_metadata must be None, not the raw invalid string."""
-    import lionagi.studio.services.invocations as inv_mod
 
     db_path = tmp_path / "state.db"
     inv_id = str(uuid.uuid4())
     _run(_seed_invocation_with_bad_metadata(db_path, inv_id))
 
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app
@@ -167,13 +162,11 @@ def test_invocation_bad_metadata_becomes_none(tmp_path, monkeypatch):
 
 def test_invocation_list_bad_metadata_becomes_none(tmp_path, monkeypatch):
     """Corrupted node_metadata in list endpoint must also be None."""
-    import lionagi.studio.services.invocations as inv_mod
 
     db_path = tmp_path / "state.db"
     inv_id = str(uuid.uuid4())
     _run(_seed_invocation_with_bad_metadata(db_path, inv_id))
 
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app

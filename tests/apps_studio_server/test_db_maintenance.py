@@ -66,7 +66,6 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
     from lionagi.studio.services import db_maintenance as maint
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 # ── checkpoint tests ──────────────────────────────────────────────────────────
@@ -137,16 +136,9 @@ def test_stats_endpoint_exposes_checkpoint_and_size_fields(tmp_path, monkeypatch
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from fastapi.testclient import TestClient
 
-    import lionagi.studio.services.sessions as sessions_mod
-    import lionagi.studio.services.stats as stats_mod
     from lionagi.studio.services import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(stats_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     run_async(_make_session_in(db_path, status="running", started_at=time.time()))
@@ -669,16 +661,9 @@ def test_prune_old_data_endpoint(tmp_path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from fastapi.testclient import TestClient
 
-    import lionagi.studio.services.sessions as sessions_mod
-    import lionagi.studio.services.stats as stats_mod
     from lionagi.studio.services import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(stats_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     run_async(_make_session_in(db_path, status="completed", started_at=time.time() - 40 * 86400))

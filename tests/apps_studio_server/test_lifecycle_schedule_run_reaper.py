@@ -24,12 +24,7 @@ from ._helpers import run_async
 
 
 def _monkey_db(monkeypatch, db_path: Path) -> None:
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.lifecycle as lifecycle_mod
 
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
