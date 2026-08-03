@@ -14,7 +14,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB, state_db_file
+from lionagi.state.db import (
+    SESSION_TERMINAL_STATUSES,
+    StateDB,
+    read_only_open_supported,
+    state_db_file,
+)
 
 
 def _load_config(path: str) -> dict[str, Any]:
@@ -59,7 +64,7 @@ def _branch_resume_lock(branch_id: str):
 
 async def _wait_for_terminal(run_id: str) -> None:
     while True:
-        async with StateDB(readonly=True) as db:
+        async with StateDB(readonly=read_only_open_supported()) as db:
             session = await db.get_session(run_id)
         if session is None:
             raise RuntimeError("source run disappeared while its resume was queued")

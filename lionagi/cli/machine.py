@@ -281,7 +281,7 @@ async def readonly_state_db() -> AsyncIterator[tuple[Any | None, dict[str, Any] 
     raised. The guard covers the open alone — the caller's own body runs outside
     it, and a bug in a reader still surfaces as the crash it is.
     """
-    from lionagi.state.db import StateDB, state_db_known_absent
+    from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
     # Asked of the configured store, not of the default path: the open below
     # honours LIONAGI_STATE_DB_URL, so a guard that consulted the file would
@@ -291,7 +291,7 @@ async def readonly_state_db() -> AsyncIterator[tuple[Any | None, dict[str, Any] 
         return
     async with AsyncExitStack() as stack:
         try:
-            db = await stack.enter_async_context(StateDB(readonly=True))
+            db = await stack.enter_async_context(StateDB(readonly=read_only_open_supported()))
             # The engine is lazy: it connects on the first statement, so without
             # this the store's refusal would surface in the middle of a caller's
             # query, where it is indistinguishable from that query being wrong.
@@ -582,7 +582,12 @@ def lifecycle_data(run_id: str) -> dict[str, Any]:
     opened.
     """
     from lionagi.ln.concurrency import run_async
-    from lionagi.state.db import StateDB, state_db_file, state_db_known_absent
+    from lionagi.state.db import (
+        StateDB,
+        read_only_open_supported,
+        state_db_file,
+        state_db_known_absent,
+    )
 
     if state_db_known_absent():
         # No store at all is absence of every record, not evidence about this
@@ -594,9 +599,11 @@ def lifecycle_data(run_id: str) -> dict[str, Any]:
         }
 
     async def _read() -> list[dict[str, Any]]:
-        # readonly=True: the ordinary open reconciles the schema (create_all,
-        # seed inserts), which would write to the store this is reporting on.
-        async with StateDB(readonly=True) as db:
+        # Read-only where the backend has it: the ordinary open reconciles the
+        # schema (create_all, seed inserts), which would write to the store this
+        # is reporting on. Where read-only is unavailable the ordinary open is
+        # the only open there is, and those writes are the price of the read.
+        async with StateDB(readonly=read_only_open_supported()) as db:
             return await db.get_sessions_for_run(run_id)
 
     try:

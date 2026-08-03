@@ -17,7 +17,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.state.db import StateDB, state_db_known_absent
+from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
 from ..registry import studio_route
 from ..scheduler import subprocess as _subprocess
@@ -89,7 +89,7 @@ async def _resolve_branch(run_id: str, requested_branch_id: str | None) -> str:
     if state_db_known_absent():
         raise RunNotFoundError(f"Run {run_id!r} not found")
 
-    async with StateDB(readonly=True) as db:
+    async with StateDB(readonly=read_only_open_supported()) as db:
         session = await db.get_session(run_id)
         if session is None:
             raise RunNotFoundError(f"Run {run_id!r} not found")
@@ -113,7 +113,7 @@ async def _resolve_branch(run_id: str, requested_branch_id: str | None) -> str:
 
 
 async def _run_status(run_id: str) -> str:
-    async with StateDB(readonly=True) as db:
+    async with StateDB(readonly=read_only_open_supported()) as db:
         session = await db.get_session(run_id)
     if session is None:
         raise RunNotFoundError(f"Run {run_id!r} not found")
@@ -121,7 +121,7 @@ async def _run_status(run_id: str) -> str:
 
 
 async def _active_resume_for_branch(branch_id: str) -> dict[str, Any] | None:
-    async with StateDB(readonly=True) as db:
+    async with StateDB(readonly=read_only_open_supported()) as db:
         rows = await db.list_invocations(
             skill="resume:agent",
             status="running",
