@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from lionagi.state.claude_mirror import session_db_id  # noqa: E402
@@ -43,8 +45,7 @@ def patched_sessions_db(tmp_path, monkeypatch):
     import lionagi.studio.services.sessions as svc
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(svc, "_DB", str(db_path))
-    monkeypatch.setattr(svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     return svc, db_path
 
 

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
@@ -83,8 +85,7 @@ class TestIsSessionStreamDone:
 class TestGetSessionStreamState:
     def _patch_db(self, monkeypatch, svc, db_path: Path):
         """Patch both the string path and the Path sentinel used by the exists() check."""
-        monkeypatch.setattr(svc, "_DB", str(db_path))
-        monkeypatch.setattr(svc, "DEFAULT_DB_PATH", db_path)
+        monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     def test_returns_none_when_db_missing(self, tmp_path, monkeypatch):
         """When the DB file does not exist, return None (keep stream alive)."""

@@ -21,13 +21,14 @@ from sqlalchemy.exc import OperationalError as _SAOperationalError
 from lionagi.cli._util import pid_alive as _pid_is_live
 from lionagi.ln import now_utc
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
-from lionagi.state.db import DEFAULT_DB_PATH, state_db_known_absent
+from lionagi.state.db import state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, validate_reason_code
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
+from ._db import store_exists, store_path
+from ._path_safety import public_path
 
-_DB = str(DEFAULT_DB_PATH)
 _log = logging.getLogger(__name__)
 
 # Fallback mapping for deprecated 'reason' field without reason_code.
@@ -76,7 +77,7 @@ class TransitionBody(BaseModel):
 
 
 def db_health() -> dict[str, int]:
-    db_path = DEFAULT_DB_PATH
+    db_path = Path(store_path())
     size_bytes = db_path.stat().st_size if db_path.exists() else 0
     wal_path = db_path.parent / (db_path.name + "-wal")
     wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
@@ -109,11 +110,11 @@ async def store_probe(*, timeout_ms: int = STORE_PROBE_TIMEOUT_MS) -> dict[str, 
         "detail": "",
         "latency_ms": None,
         "timeout_ms": timeout_ms,
-        "store_present": DEFAULT_DB_PATH.exists(),
+        "store_present": store_exists(),
         "checked_at": now_utc().isoformat(),
     }
     if not result["store_present"]:
-        result["detail"] = f"no store at {DEFAULT_DB_PATH}"
+        result["detail"] = f"no store at {public_path(Path(store_path()))}"
         return result
 
     started = time.perf_counter()
@@ -136,7 +137,7 @@ async def store_probe(*, timeout_ms: int = STORE_PROBE_TIMEOUT_MS) -> dict[str, 
         # remaining way for this to hang is a filesystem that will not answer,
         # which the `store_present` check above already stands in front of.
         with CancelScope(shield=True):
-            conn = aiosqlite.connect(str(DEFAULT_DB_PATH))
+            conn = aiosqlite.connect(store_path())
             db = await conn
         with move_on_after(timeout_ms / 1000) as scope:
             # The shared busy timeout is longer than this probe's own deadline,
@@ -320,12 +321,12 @@ def _classify_phantom(
 
 
 async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, Any]]:
-    if not DEFAULT_DB_PATH.exists():
+    if not store_exists():
         return []
     now = time.time()
     stale_seconds = stale_hours * 3600
     phantoms: list[dict[str, Any]] = []
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             """
             SELECT id, name, playbook_name, started_at, updated_at, artifacts_path,
@@ -405,7 +406,7 @@ async def health_report() -> dict[str, Any]:
     )
     from lionagi.studio.config import scheduler_timezone_report
 
-    if not DEFAULT_DB_PATH.exists():
+    if not store_exists():
         return {
             "sessions": {"total": 0, "by_status": {}, "by_health": {}, "unhealthy": []},
             "db": db_health(),
@@ -415,7 +416,7 @@ async def health_report() -> dict[str, Any]:
         }
 
     now = time.time()
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         total_cur = await db.execute("SELECT COUNT(*) AS n FROM sessions")
         total_row = await total_cur.fetchone()
         total_sessions = int(total_row["n"]) if total_row else 0
@@ -776,10 +777,10 @@ async def prune_sessions(session_ids: list[str]) -> int:
     for sid in session_ids:
         seen[sid] = None
     unique_ids = list(seen)
-    if not unique_ids or not DEFAULT_DB_PATH.exists():
+    if not unique_ids or not store_exists():
         return 0
     placeholders = ",".join("?" * len(unique_ids))
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             f"DELETE FROM sessions WHERE id IN ({placeholders})",  # noqa: S608
             unique_ids,

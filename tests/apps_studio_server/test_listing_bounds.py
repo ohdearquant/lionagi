@@ -91,16 +91,9 @@ def _hold_the_write_lock(db_path):
 def seeded(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     ids = _seed(db_path, sessions=25)
-    for mod in ("sessions", "runs", "admin", "run_tags", "stats"):
-        module = pytest.importorskip(f"lionagi.studio.services.{mod}")
-        monkeypatch.setattr(module, "_DB", str(db_path), raising=False)
     import lionagi.state.db as db_mod
 
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
-    for mod in ("sessions", "runs", "admin", "run_tags"):
-        module = pytest.importorskip(f"lionagi.studio.services.{mod}")
-        if hasattr(module, "DEFAULT_DB_PATH"):
-            monkeypatch.setattr(module, "DEFAULT_DB_PATH", db_path)
     return db_path, ids
 
 
@@ -137,8 +130,6 @@ class TestPageBoundsTheWork:
         from lionagi.studio.services import sessions as sessions_svc
 
         monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
-        monkeypatch.setattr(sessions_svc, "DEFAULT_DB_PATH", db_path)
-        monkeypatch.setattr(sessions_svc, "_DB", str(db_path))
 
         rows = asyncio.run(sessions_svc.list_sessions(limit=5))
         assert [r["id"] for r in rows] == ids[:5]
@@ -285,9 +276,9 @@ class TestStoreProbe:
         assert body["latency_ms"] >= 0
 
     def test_missing_store_reports_unavailable_not_healthy(self, client, tmp_path, monkeypatch):
-        from lionagi.studio.services import admin as admin_svc
+        import lionagi.state.db as db_mod
 
-        monkeypatch.setattr(admin_svc, "DEFAULT_DB_PATH", tmp_path / "gone.db")
+        monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", tmp_path / "gone.db")
         body = client.get("/api/admin/readiness").json()
         assert body["status"] == "unavailable"
         assert body["store_present"] is False

@@ -501,8 +501,6 @@ def _make_definitions_client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})

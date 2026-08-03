@@ -7,11 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from lionagi.state.db import DEFAULT_DB_PATH
-
 from ._db import open_db as _open_db
-
-_DB = str(DEFAULT_DB_PATH)
+from ._db import store_exists, store_path
 
 
 async def get_signals_after(
@@ -21,10 +18,10 @@ async def get_signals_after(
     limit: int = 500,
 ) -> list[dict[str, Any]]:
     """Return signal rows for *session_id* with seq > *after_seq*, ordered by seq."""
-    if not DEFAULT_DB_PATH.exists():
+    if not store_exists():
         return []
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='session_signals'"
         )

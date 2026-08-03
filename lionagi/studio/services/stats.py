@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException, Query
 
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB, state_db_known_absent
+from lionagi.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
 from . import agents as agents_svc
@@ -14,11 +15,9 @@ from . import plugins as plugins_svc
 from . import sessions as sessions_svc
 from . import shows as shows_svc
 from . import skills as skills_svc
-from ._db import get_active_connection_count
+from ._db import get_active_connection_count, store_path
 from ._db import open_db as _open_db
 from ._path_safety import public_path
-
-_DB = str(DEFAULT_DB_PATH)
 
 # ADR-0057 D1 defines the seven-value session status vocabulary; the Pulse
 # sparkline folds it into four buckets (timed_out→failed, aborted→cancelled).
@@ -158,7 +157,7 @@ async def _pragmas(db: Any) -> dict[str, Any]:
 async def get_db_stats() -> dict[str, Any]:
     from .db_maintenance import get_db_size_alert, get_last_checkpoint_at
 
-    db_path = DEFAULT_DB_PATH
+    db_path = Path(store_path())
     size_bytes = db_path.stat().st_size if db_path.exists() else 0
     wal_path = db_path.parent / (db_path.name + "-wal")
     wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
@@ -194,7 +193,7 @@ async def get_db_stats() -> dict[str, Any]:
 
     last_checkpoint_at = await get_last_checkpoint_at()
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         tables = await _table_counts(db)
         by_status = await _sessions_by_status(db)
         pragmas = await _pragmas(db)

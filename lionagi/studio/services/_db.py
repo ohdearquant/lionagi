@@ -20,6 +20,43 @@ def get_active_connection_count() -> int:
     return _ACTIVE_CONNECTIONS
 
 
+def store_path() -> str:
+    """The store file these services open.
+
+    Every service here used to name ``DEFAULT_DB_PATH`` directly, which is the
+    right file exactly when nothing has moved it. With
+    ``LIONAGI_STATE_DB_URL`` pointing at another file, a route would read a
+    database the daemon never opens and report on rows nobody is serving, and
+    ``aiosqlite`` would create that unrelated file on connect if it were not
+    already there.
+
+    This layer talks to SQLite directly, so the only store it can reach is one
+    with a file behind it. When the configured store is a server, there is no
+    file to name and this falls back to the default path, which is what these
+    services did before and is equally wrong for that deployment: a
+    server-backed store has rows no SQLite connection here can reach. What a
+    route should answer in that case is a question about the route's contract,
+    not about path resolution, and it is tracked separately.
+    """
+    from lionagi.state import db as db_mod
+
+    path = db_mod.state_db_file()
+    return str(path if path is not None else db_mod.DEFAULT_DB_PATH)
+
+
+def store_exists() -> bool:
+    """Whether the store file is there to read.
+
+    The direct analogue of the ``DEFAULT_DB_PATH.exists()`` checks these
+    services used to make, asked about the file they will actually open. It
+    stays in step with :func:`store_path` by construction, so a guard and the
+    connection it protects cannot disagree about which store is in play.
+    """
+    from pathlib import Path
+
+    return Path(store_path()).exists()
+
+
 @asynccontextmanager
 async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
     """Studio-local SQLite connection with WAL mode and a busy timeout,

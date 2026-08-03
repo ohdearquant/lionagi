@@ -28,14 +28,8 @@ def _run(coro):
 
 def _patch_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.run_tags as run_tags_mod
-    import lionagi.studio.services.sessions as sessions_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(run_tags_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(run_tags_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
 
 
 def _make_client(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -414,13 +408,13 @@ def test_pruning_a_session_cascades_its_tags(tmp_path, monkeypatch):
     _patch_db(monkeypatch, db_path)
     _run(_init_db(db_path))
 
+    # admin freezes its own _DB / DEFAULT_DB_PATH at import; _patch_db does not
+    # touch them, so point prune at the tmp db too.
+    import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin
     import lionagi.studio.services.run_tags as run_tags
 
-    # admin freezes its own _DB / DEFAULT_DB_PATH at import; _patch_db does not
-    # touch them, so point prune at the tmp db too.
-    monkeypatch.setattr(admin, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin, "_DB", str(db_path))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     sid = str(uuid.uuid4())
     _run(_seed_session(db_path, sid))

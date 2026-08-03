@@ -381,10 +381,6 @@ def test_api_prefix_appears_exactly_once_in_every_route_path():
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
     """Point every service module's DB reference at a fresh temp path; must run before any seeding call since StateDB() re-reads DEFAULT_DB_PATH fresh per instantiation, and admin.py/sessions.py additionally cache the path in their own module-level `_DB`."""
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.db_maintenance as db_maintenance_mod
-    import lionagi.studio.services.schedules as schedules_mod
-    import lionagi.studio.services.sessions as sessions_mod
 
     # An environment with LIONAGI_STUDIO_AUTH_TOKEN set (a dev machine, CI)
     # would make every unauthenticated request in this file 401 before it
@@ -402,11 +398,6 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
         "settings",
         state_db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None}),
     )
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     # db_maintenance imports DEFAULT_DB_PATH by value, so the state_db_mod
     # patch above never reaches its own module-level binding.

@@ -11,10 +11,10 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
-from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
+from ._db import store_exists, store_path
 from ._path_safety import validate_name_component
 from .agents import _is_protected_system
 
@@ -30,8 +30,6 @@ async def _lock_for(kind: str, name: str) -> asyncio.Lock:
     async with _DEFINITION_LOCKS_GUARD:
         return _DEFINITION_LOCKS.setdefault((kind, name), asyncio.Lock())
 
-
-_DB = str(DEFAULT_DB_PATH)
 
 AGENTS_DIR = LIONAGI_HOME / "agents"
 PLAYBOOKS_DIR = LIONAGI_HOME / "playbooks"
@@ -59,7 +57,7 @@ def _relative_path(full_path: Path) -> str:
 
 
 async def _ensure_db() -> bool:
-    return DEFAULT_DB_PATH.exists()
+    return store_exists()
 
 
 async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
@@ -111,7 +109,7 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
     if result and await _ensure_db():
         conditions = " OR ".join("(kind = ? AND name = ?)" for _ in result)
         params = [value for item in result for value in (item["kind"], item["name"])]
-        async with _open_db(_DB) as db:
+        async with _open_db(store_path()) as db:
             cur = await db.execute(
                 f"SELECT kind, name, MAX(version) AS v, MAX(created_at) AS ts"  # noqa: S608
                 f" FROM definitions WHERE {conditions} GROUP BY kind, name",
@@ -147,7 +145,7 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
 
     versions: list[dict[str, Any]] = []
     if await _ensure_db():
-        async with _open_db(_DB) as db:
+        async with _open_db(store_path()) as db:
             cur = await db.execute(
                 "SELECT id, version, created_at, message FROM definitions WHERE kind = ? AND name = ? ORDER BY version DESC",
                 (kind, name),
@@ -185,7 +183,7 @@ async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | No
     if not await _ensure_db():
         return None
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             "SELECT id, content, version, created_at, message FROM definitions"
             " WHERE kind = ? AND name = ? AND version = ?",
@@ -280,7 +278,7 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
 
     current_version = 0
     if await _ensure_db():
-        async with _open_db(_DB) as db:
+        async with _open_db(store_path()) as db:
             cur = await db.execute(
                 "SELECT MAX(version) AS v FROM definitions WHERE kind = ? AND name = ?",
                 (kind, name),
