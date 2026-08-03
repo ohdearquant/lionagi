@@ -859,12 +859,21 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
             async for item in gen:
                 if isinstance(item, CLISession):
                     # The session carries the run's terminal verdict and is not
-                    # itself yielded, so a failure recorded only there reaches
-                    # nobody on this path: the result chunk emitted beside it
-                    # carries usage, cost, turns and duration, never the error
-                    # flag. A run that ended in error then looks exactly like
-                    # one that succeeded, and that is the direction consumers
-                    # believe without checking.
+                    # itself yielded here, so a failure recorded only there
+                    # reaches nobody on this stream: the result chunk emitted
+                    # beside it carries usage, cost, turns and duration, never
+                    # the error flag. A run that ended in error then looks
+                    # exactly like one that succeeded, and that is the direction
+                    # consumers believe without checking.
+                    #
+                    # The scope is this stream and no wider. `_call()` below
+                    # drives the same generator itself and returns the session
+                    # as a dict, so the flag is present there and nothing
+                    # branches on it; the one-shot helpers built on `_call()`
+                    # still return an ordinary answer for a failed session.
+                    # Closing that is a separate change with a separate
+                    # compatibility question, and this comment is not a claim
+                    # that it is closed.
                     #
                     # Per-tool failures already have their own carriers, so this
                     # is only about the session-terminal verdict.
