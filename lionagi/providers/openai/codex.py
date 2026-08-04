@@ -65,7 +65,15 @@ CodexApprovalMode = Literal[
 
 CodexColorMode = Literal["always", "never", "auto"]
 
-CodexReasoningEffort = Literal[
+# The effort words lionagi itself produces. Deliberately a tuple of strings
+# and not a Literal on the request fields: codex reaches models other than
+# OpenAI's through the `model_providers` tables in ~/.codex/config.toml, and
+# each of those models carries its own effort vocabulary. The value is emitted
+# verbatim as `-c reasoning_effort=<val>` for the CLI to interpret, so codex
+# and the provider it is configured against are the authority on what is
+# valid — a closed set here would reject a working configuration before the
+# CLI ever saw it, and would need editing every time a model is added.
+CODEX_REASONING_EFFORTS: tuple[str, ...] = (
     "none",
     "minimal",
     "low",
@@ -74,7 +82,7 @@ CodexReasoningEffort = Literal[
     "xhigh",
     "max",
     "ultra",
-]
+)
 
 __all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
 
@@ -320,13 +328,21 @@ class CodexCodeRequest(BaseModel):
     )
 
     # ── reasoning (order 75, emitted as -c overrides) ───────────
-    reasoning_effort: CodexReasoningEffort | None = Field(
+    reasoning_effort: str | None = Field(
         default=None,
-        description="Reasoning effort level (emitted as -c reasoning_effort=<val>)",
+        description=(
+            "Reasoning effort level (emitted as -c reasoning_effort=<val>). "
+            f"lionagi produces one of {', '.join(CODEX_REASONING_EFFORTS)}, but any "
+            "string is accepted so that a model configured behind codex can be "
+            "given the effort vocabulary it expects."
+        ),
     )
-    plan_mode_reasoning_effort: CodexReasoningEffort | None = Field(
+    plan_mode_reasoning_effort: str | None = Field(
         default=None,
-        description="Plan-mode reasoning effort (emitted as -c plan_mode_reasoning_effort=<val>)",
+        description=(
+            "Plan-mode reasoning effort (emitted as -c plan_mode_reasoning_effort=<val>). "
+            "Open to any string for the same reason as reasoning_effort."
+        ),
     )
 
     # ── fast mode (fast service tier) ────────────────────────────
