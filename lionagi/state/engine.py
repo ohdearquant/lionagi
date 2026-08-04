@@ -61,6 +61,67 @@ def _busy_timeout_from_env() -> int:
 # it at connection time — tests that need a different wait retune it here.
 SQLITE_BUSY_TIMEOUT_MS = _busy_timeout_from_env()
 
+_busy_timeout_announced = False
+
+
+def announce_busy_timeout() -> None:
+    """Say once per process what busy_timeout this process's connections use.
+
+    The value is a deployment property that lives in one config file's env
+    block, so it is set once per config and every new config that spawns a
+    lionagi process starts at the built-in default. Against a large contended
+    store that default is the difference between a write that waits and a write
+    that reports "database is locked", and until now nothing said which one was
+    in effect — it could only be inferred by reading the config that launched
+    the process, from outside the process.
+
+    The source is recomputed here rather than recorded when the module was
+    imported, so the line describes what is actually in effect at the moment a
+    connection is about to use it. That matters because the module attribute is
+    writable: tests retune it, and a provenance captured at import would keep
+    claiming the environment's answer after something else had replaced it.
+    """
+    global _busy_timeout_announced
+    if _busy_timeout_announced:
+        return
+    _busy_timeout_announced = True
+
+    effective = SQLITE_BUSY_TIMEOUT_MS
+    raw = os.environ.get("LIONAGI_SQLITE_BUSY_TIMEOUT_MS")
+    if raw is None:
+        _log.info(
+            "sqlite busy_timeout is %dms, the built-in default: "
+            "LIONAGI_SQLITE_BUSY_TIMEOUT_MS is not set for this process",
+            effective,
+        )
+        return
+    try:
+        asked = int(raw)
+    except ValueError:
+        asked = None
+    if asked is not None and asked > 0 and asked == effective:
+        _log.info(
+            "sqlite busy_timeout is %dms, from LIONAGI_SQLITE_BUSY_TIMEOUT_MS",
+            effective,
+        )
+    elif asked is None or asked <= 0:
+        # Also warned when the value was first read, which happens at import —
+        # possibly before this process configured logging at all. Repeating it
+        # here is the difference between a warning that was emitted and one that
+        # was seen.
+        _log.warning(
+            "sqlite busy_timeout is %dms: LIONAGI_SQLITE_BUSY_TIMEOUT_MS=%r is not usable",
+            effective,
+            raw,
+        )
+    else:
+        _log.info(
+            "sqlite busy_timeout is %dms, set in-process; "
+            "LIONAGI_SQLITE_BUSY_TIMEOUT_MS asks for %dms",
+            effective,
+            asked,
+        )
+
 
 def has_wal_reset_fix(version_info: tuple[int, ...]) -> bool:
     """Whether a linked SQLite carries the fix for the WAL-reset corruption race
@@ -267,6 +328,7 @@ def make_engine(url: str, **overrides):
 
     if dialect == "sqlite":
         _warn_if_wal_reset_unfixed()
+        announce_busy_timeout()
         kwargs: dict = {"echo": False, "json_serializer": _dumps_with_uuid}
         kwargs.update(overrides)
         engine = create_async_engine(url, **kwargs)

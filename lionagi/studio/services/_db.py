@@ -123,6 +123,11 @@ async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
     lock wait that differs between them is a difference nobody chose.
     """
     global _ACTIVE_CONNECTIONS
+    # Announced here as well as in make_engine because this is a second,
+    # independent way into the store: a process that only ever opens
+    # connections this way would otherwise never say which timeout it uses.
+    # The announcement is once per process, so two call sites is one line.
+    _state_engine.announce_busy_timeout()
     async with aiosqlite.connect(path) as db:
         _ACTIVE_CONNECTIONS += 1
         try:
