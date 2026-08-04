@@ -152,27 +152,6 @@ def live_group_members(
     return members, complete
 
 
-def process_create_time(pid: int) -> tuple[str, float | None]:
-    """When the process at *pid* started: ``("found", t)``, ``("gone", None)``
-    or ``("unknown", None)``.
-
-    "unknown" means the probe errored — the process may still be there — never
-    read it as death or license to signal. A zombie is "gone": it has exited but
-    holds its pid until reaped, so it can't be a recycled pid meanwhile.
-    """
-    import psutil
-
-    try:
-        proc = psutil.Process(pid)
-        if proc.status() == psutil.STATUS_ZOMBIE:
-            return "gone", None
-        return "found", proc.create_time()
-    except psutil.NoSuchProcess:
-        return "gone", None
-    except (psutil.Error, OSError):
-        return "unknown", None
-
-
 def group_member_pids(pgid: int) -> tuple[list[int], bool]:
     """Pids currently in group *pgid*, and whether the scan was complete.
 
