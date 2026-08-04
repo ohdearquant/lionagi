@@ -765,6 +765,16 @@ _LONG_RUNNING = (
     "it is a process to start, not a call to make"
 )
 
+# Separate from _STORE_MUTATION, whose objection is that a write invalidates
+# answers the caller already holds. That one is about consistency and would be
+# answerable by a better result shape. This one is not: the content is gone, and
+# no reply a machine seam could return would undo the call that asked for it.
+_IRREVERSIBLE_LOSS = (
+    "it destroys message content permanently — the rows and their references "
+    "survive but the bodies do not, and nothing a machine result could say would "
+    "give a caller back what its own call removed"
+)
+
 
 ABSENT: tuple[AbsentVerb, ...] = (
     AbsentVerb(
@@ -814,6 +824,12 @@ ABSENT: tuple[AbsentVerb, ...] = (
         ("checkpoint", "prune", "vacuum", "import", "import-teams"),
         "Writes against the lifecycle store.",
         _STORE_MUTATION,
+    ),
+    *_absent(
+        "state",
+        ("null-content",),
+        "Reclaiming the space held by old message bodies.",
+        _IRREVERSIBLE_LOSS,
     ),
     *_absent(
         "studio",

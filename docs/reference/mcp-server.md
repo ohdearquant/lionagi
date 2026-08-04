@@ -194,7 +194,7 @@ against rather than a copy of it.
 
 ## Operations the surface does not offer
 
-Twenty-nine further names are catalogued as **unavailable**, each with its
+Thirty further names are catalogued as **unavailable**, each with its
 reason. They are not omissions: a caller that asks what exists gets the name and
 why it cannot be called, which is a different answer from the name never having
 been considered. The right-hand column below abbreviates the reason; `help=true`
@@ -216,6 +216,7 @@ returns each one in full.
 | `state.import-teams` | Writes against the lifecycle store. | invalidating write |
 | `state.prune` | Writes against the lifecycle store. | invalidating write |
 | `state.vacuum` | Writes against the lifecycle store. | invalidating write |
+| `state.null-content` | Reclaiming the space held by old message bodies. | irreversible loss |
 | `hooks.import` | Importing hook commands from another tool's config. | grants privilege |
 | `plugin.disable` | Plugin bundle enablement. | grants privilege |
 | `plugin.enable` | Plugin bundle enablement. | grants privilege |

@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
+
 from ._runs import RUNS_ROOT
 from ._util import EXIT_CODE_BY_STATUS
 
@@ -34,6 +36,9 @@ __all__ = [
     "_vacuum",
     "_prune",
     "_prune_candidates",
+    "_null_content",
+    "_null_content_candidates",
+    "_null_content_targets",
     "_doctor",
     # CLI entrypoints
     "add_state_subparser",
@@ -920,6 +925,212 @@ async def _prune(
     return counts
 
 
+# Which message bodies the reclaim replaces, written once so the operation and
+# the recount below cannot describe different populations. Two copies of this
+# drifting apart would make the pair agree while counting different rows, which
+# is worse than printing no check at all.
+#
+# The already-reclaimed exclusion is what makes a second run of the same command
+# a no-op instead of a marker rewrite that reports work it did not do.
+_NULL_CONTENT_TARGETS = (
+    "FROM messages "
+    "WHERE created_at < :cutoff "
+    "  AND content IS NOT NULL "
+    f"  AND json_extract(content, '$.{CONTENT_PRUNED_KEY}') IS NULL"
+)
+
+
+def _null_content_targets(roles: tuple[str, ...]) -> str:
+    """The predicate, with the role filter appended when one was asked for."""
+    if not roles:
+        return _NULL_CONTENT_TARGETS
+    placeholders = ",".join(f":role{i}" for i in range(len(roles)))
+    return f"{_NULL_CONTENT_TARGETS} AND role IN ({placeholders})"
+
+
+def _null_content_params(*, cutoff: float, roles: tuple[str, ...]) -> dict[str, Any]:
+    params: dict[str, Any] = {"cutoff": cutoff}
+    for i, role in enumerate(roles):
+        params[f"role{i}"] = role
+    return params
+
+
+async def _null_content_candidates(
+    *,
+    older_than_days: int,
+    roles: tuple[str, ...],
+) -> dict[str, Any]:
+    """Recount what the reclaim's own predicate still selects, and their size.
+
+    Printed beside the result so the command cannot report an outcome nothing
+    contradicts. After a real run this has to read zero; after a preview it has
+    to equal what the preview reported. A single number is undetectable when it
+    is wrong, and a pair is not.
+
+    Runs outside the operation's transaction deliberately: inside it, it would
+    be reading the same uncommitted rows the operation just wrote and would
+    agree with it by construction.
+    """
+    import time as _time
+
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    cutoff = _time.time() - (older_than_days * 86400)
+    params = _null_content_params(cutoff=cutoff, roles=roles)
+    where = _null_content_targets(roles)
+
+    async with StateDB() as db:
+        async with db._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(  # noqa: S608
+                            f"SELECT COUNT(*) AS n, "
+                            f"COALESCE(SUM(LENGTH(content)), 0) AS b, "
+                            f"MIN(created_at) AS oldest {where}"
+                        ),
+                        params,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+
+    oldest = row["oldest"] if row else None
+    return {
+        "candidates": int(row["n"]) if row else 0,
+        "bytes": int(row["b"]) if row else 0,
+        # None rather than 0.0 when nothing is selected: no rows and rows
+        # written this instant are different states, and only one of them means
+        # the window has nothing to reach.
+        "oldest_age_days": None if oldest is None else (_time.time() - oldest) / 86400.0,
+    }
+
+
+async def _null_content(
+    *,
+    older_than_days: int,
+    roles: tuple[str, ...],
+    dry_run: bool,
+) -> dict[str, int]:
+    """Replace old message bodies with a marker, keeping every row and reference.
+
+    This exists because the prune cannot reach these bytes. The prune selects
+    SESSIONS; the bytes live on MESSAGES; and a message some surviving
+    progression still names is kept whatever its age. So a store can be almost
+    entirely message content, have every message inside a keep-window, and give
+    a prune nothing to delete.
+
+    The row, its id, its role, its timestamp and its place in every progression
+    all survive. What is dropped is the body, and in its place goes a value that
+    says a body was there and how large it was, so the removal stays legible
+    instead of reading as a turn that produced nothing.
+
+    ``dry_run`` performs the update and rolls it back, so the reported numbers
+    are measurements of the operation rather than an estimate of it. That makes
+    a preview a WRITE that takes the same lock for the same duration -- it is
+    not a read, and on a large store it is not a quick one.
+    """
+    import time as _time
+
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    now = _time.time()
+    cutoff = now - (older_than_days * 86400)
+    params = _null_content_params(cutoff=cutoff, roles=roles)
+    where = _null_content_targets(roles)
+
+    counts = {"messages": 0, "bytes_before": 0, "bytes_after": 0}
+
+    async with StateDB() as db:
+        try:
+            async with db._tx() as conn:
+                # The batch is pinned to a scratch table before anything is
+                # written, because both measurements have to be about the same
+                # rows and the predicate stops selecting them the moment the
+                # update lands. It also keeps the after-size away from markers
+                # an earlier run left behind, which the predicate excludes but a
+                # sum over "rows carrying a marker" would quietly re-include.
+                await conn.execute(text("DROP TABLE IF EXISTS null_content_batch"))
+                await conn.execute(
+                    text("CREATE TEMPORARY TABLE null_content_batch (id TEXT PRIMARY KEY)")
+                )
+                await conn.execute(
+                    text(f"INSERT INTO null_content_batch (id) SELECT id {where}"),  # noqa: S608
+                    params,
+                )
+
+                measured = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT COUNT(*) AS n, "
+                                "COALESCE(SUM(LENGTH(content)), 0) AS b "
+                                "FROM messages WHERE id IN (SELECT id FROM null_content_batch)"
+                            )
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                target_count = int(measured["n"])
+                bytes_before = int(measured["b"])
+
+                # The marker is built in SQL rather than in Python so that
+                # LENGTH(content) is evaluated against each row as it is
+                # overwritten. That makes original_bytes the row's OWN size in a
+                # single statement -- the alternative, one marker computed here
+                # and written everywhere, records a batch average under a
+                # per-row name.
+                await conn.execute(
+                    text(
+                        # noqa on the interpolation: pruned_content_sql() takes
+                        # no argument here, so the expression is a constant of
+                        # this module's making and the only value crossing the
+                        # boundary is :at, which is bound.
+                        f"UPDATE messages SET content = {pruned_content_sql()} "  # noqa: S608
+                        "WHERE id IN (SELECT id FROM null_content_batch)"
+                    ),
+                    {"at": now},
+                )
+
+                # Read back inside the same transaction: what the markers
+                # actually occupy. SQLite wrote them and is the only authority
+                # on how much of it is there.
+                bytes_after = int(
+                    (
+                        (
+                            await conn.execute(
+                                text(
+                                    "SELECT COALESCE(SUM(LENGTH(content)), 0) AS b "
+                                    "FROM messages "
+                                    "WHERE id IN (SELECT id FROM null_content_batch)"
+                                )
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )["b"]
+                )
+                await conn.execute(text("DROP TABLE IF EXISTS null_content_batch"))
+
+                counts = {
+                    "messages": target_count,
+                    "bytes_before": bytes_before,
+                    "bytes_after": bytes_after,
+                }
+                if dry_run:
+                    raise _PreviewOnlyError(counts)
+        except _PreviewOnlyError as preview:
+            return preview.counts
+
+    return counts
+
+
 async def _doctor(
     *,
     stale_hours: int,
@@ -1343,6 +1554,59 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Print what WOULD be deleted, but don't actually delete.",
     )
 
+    # li state null-content — reclaim message bodies the prune cannot reach
+    nullc = state_sub.add_parser(
+        "null-content",
+        help="Replace old message bodies with a marker, keeping the rows.",
+        description=(
+            "Reclaim the space held by message bodies older than --older-than "
+            "days, keeping every row, id, role, timestamp and progression "
+            "reference. THIS IS WHERE THE BYTES ARE, and prune cannot reach "
+            "them: prune selects SESSIONS, and a message any surviving "
+            "progression still names is kept whatever its age. A store can "
+            "therefore be almost entirely message content, have every message "
+            "inside a keep-window, and give a prune nothing to delete.\n\n"
+            "A reclaimed body is not emptied. It is replaced with a marker "
+            "recording that a body was there and how large it was, so it stays "
+            "distinguishable from a turn that genuinely produced nothing. "
+            "Reclaiming is not reversible: the text is gone.\n\n"
+            "The file does not shrink. Freed pages return to the database's own "
+            "free list and the bytes on disk stay where they are until "
+            "`li state vacuum` rebuilds the file.\n\n"
+            "--dry-run is not a read. It performs the update and rolls it back, "
+            "so its numbers measure the operation instead of estimating it, and "
+            "it takes the same write lock for the same duration."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    nullc.add_argument(
+        "--older-than",
+        type=int,
+        required=True,
+        metavar="DAYS",
+        help=(
+            "Reclaim bodies older than N days. Required and deliberately has no "
+            "default: there is no age that is safe to assume for an "
+            "irreversible operation."
+        ),
+    )
+    nullc.add_argument(
+        "--role",
+        action="append",
+        default=None,
+        metavar="ROLE",
+        help=(
+            "Limit to messages with this role; repeatable. Omitted means every "
+            "role. Check `li state stats` first — the roles are not evenly "
+            "sized, and one of them usually holds most of the bytes."
+        ),
+    )
+    nullc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Perform the reclaim and roll it back, reporting what it measured.",
+    )
+
     # li state doctor — sweep stale 'running' sessions
     doctor = state_sub.add_parser(
         "doctor",
@@ -1465,6 +1729,42 @@ def run_state(args: argparse.Namespace) -> int:
                 )
         return 0
 
+    if args.state_command == "null-content":
+        roles = tuple(args.role or ())
+        result = run_async(
+            _null_content(
+                older_than_days=args.older_than,
+                roles=roles,
+                dry_run=args.dry_run,
+            )
+        )
+        prefix = "(dry-run) would reclaim" if args.dry_run else "reclaimed"
+        scope = f"role(s) {', '.join(roles)}" if roles else "every role"
+        freed = result["bytes_before"] - result["bytes_after"]
+        print(
+            f"{prefix} {result['messages']} message body(ies) older than "
+            f"{args.older_than}d, {scope}"
+        )
+        print(
+            f"  content size: {_format_bytes(result['bytes_before'])} → "
+            f"{_format_bytes(result['bytes_after'])} "
+            f"(freed {_format_bytes(freed)} inside the DB)"
+        )
+        # Recomputed from the same predicate, outside the operation's
+        # transaction. A real run has to leave nothing selected; a preview has
+        # to leave exactly what it reported. Until this line existed the success
+        # line was a number with nothing to contradict it.
+        check = run_async(_null_content_candidates(older_than_days=args.older_than, roles=roles))
+        expected = result["messages"] if args.dry_run else 0
+        print(
+            f"  still selected by --older-than {args.older_than}: "
+            f"{check['candidates']} (expected {expected})"
+        )
+        if check["oldest_age_days"] is not None:
+            print(f"  oldest still selected: {check['oldest_age_days']:.1f}d")
+        print("  the file does not shrink until `li state vacuum`")
+        return 0
+
     if args.state_command == "doctor":
         result = run_async(
             _doctor(
@@ -1574,6 +1874,7 @@ def machine_result(argv: list[str]) -> dict[str, Any]:
             "checkpoint": "it checkpoints the write-ahead log",
             "vacuum": "it rebuilds the database file",
             "prune": "it deletes rows",
+            "null-content": "it destroys message bodies, which is an irreversible write",
             "doctor": "it sweeps stale rows to a new status, which is a write",
         },
     )
