@@ -29,7 +29,7 @@ from typing import Any
 
 from lionagi.state import db as state_db_mod
 
-from ..services._db import open_db
+from ..services._db import open_db, require_file_store
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS studio_operator_conversations (
@@ -173,10 +173,23 @@ class OperatorStore:
         self._schema_lock = asyncio.Lock()
 
     def path(self) -> Path:
+        """The StateDB file these tables live in.
+
+        A store with no file at all is refused as
+        :class:`StoreNotAddressableError` rather than as an
+        ``OperatorStoreError``, because those two say different things to a
+        caller. An Operator error is about this subsystem and the routes map it
+        to 503, which invites a retry; a server-backed or in-memory store is
+        not a condition that resolves by waiting, and the app answers 501 for
+        it everywhere else. Reusing the existing refusal also keeps one
+        definition of which stores this SQLite-direct layer can open, instead of
+        a second one here that could drift from it.
+        """
         if self._db_path is not None:
             return self._db_path
+        require_file_store()
         path = state_db_mod.state_db_file()
-        if path is None:
+        if path is None:  # pragma: no cover — require_file_store already refused
             raise OperatorStoreError(
                 "Studio Operator currently requires a local StateDB file; "
                 "no ephemeral fallback is available"

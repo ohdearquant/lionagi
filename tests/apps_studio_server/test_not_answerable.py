@@ -157,3 +157,66 @@ def test_readiness_route_stays_200_when_store_is_server_backed(tmp_path, monkeyp
     assert r.status_code == 200
     body = r.json()
     assert body["status"] in {"unavailable", "healthy", "slow"}
+
+
+# ── Startup must reach the routes that do the refusing ──────────────────────
+
+
+def test_the_daemon_starts_against_a_server_backed_store(tmp_path, monkeypatch):
+    """Every test above builds the client without entering the lifespan, so
+    none of them exercises startup — and startup is where a subsystem that can
+    only read a local file gets to abort the whole daemon before a single
+    route is reachable. The Operator did exactly that: its store resolves the
+    StateDB file eagerly during recovery, so a server-backed deployment never
+    served anything, and the 501 those routes are supposed to answer was
+    unreachable by construction.
+
+    The port here is one nothing listens on, so the connection is refused
+    rather than hanging. That is the point: the rest of startup tolerates a
+    store it cannot reach, and the assertion is that the Operator does too.
+    """
+    default = tmp_path / "state.db"
+    _configure(monkeypatch, default=default, url="postgresql://user:secret@127.0.0.1:1/db")
+
+    from lionagi.studio.app import app
+
+    with TestClient(app, base_url="http://127.0.0.1:8765", raise_server_exceptions=False) as client:
+        r = client.get("/api/operator/conversations")
+
+    assert r.status_code == 501, (
+        "the daemon started, so the route got to answer — and its answer is the "
+        "permanent one, not a 503 inviting a retry that cannot help"
+    )
+    body = r.json()
+    assert body["backend"] == "postgresql"
+    assert "secret" not in str(body), "the refusal must not echo the store URL"
+
+
+def test_operator_startup_recovers_nothing_rather_than_refusing(tmp_path, monkeypatch):
+    """The startup half on its own, without a client: a store with no file
+    holds no interrupted turns, so there is nothing to recover and no reason
+    to raise. Asserted separately because the test above would also pass if
+    the Operator were removed from the lifespan altogether."""
+    default = tmp_path / "state.db"
+    _configure(monkeypatch, default=default, url="postgresql://user:secret@127.0.0.1:1/db")
+
+    from lionagi.studio.services.operator import operator_startup
+
+    assert _run(operator_startup()) == []
+
+
+def test_operator_startup_still_recovers_against_a_file_store(tmp_path, monkeypatch):
+    """The arm that stops the gate above from being a blanket disable: a real
+    file-backed store still runs Operator recovery, which is what a guard
+    keyed on the wrong condition would have silently switched off."""
+    default = tmp_path / "state.db"
+    _run(StateDB(default).open())
+    _configure(monkeypatch, default=default, url=None)
+
+    from lionagi.studio.operator.coordinator import get_operator_coordinator
+    from lionagi.studio.services.operator import operator_startup
+
+    assert _run(operator_startup()) == []
+    assert get_operator_coordinator()._started, (
+        "the coordinator never started, so recovery was skipped on a store that has a file"
+    )

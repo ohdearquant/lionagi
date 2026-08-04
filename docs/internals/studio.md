@@ -38,6 +38,19 @@ the SPA fallback: a catch-all `/{full_path:path}` route would intercept
 `/api/shows` before FastAPI's trailing-slash redirect fires, whereas an
 exception handler runs only after every route has been tried and missed.
 
+**Startup and the 501 store guard** — `StoreNotAddressableError` becomes a 501
+at the route, which only helps if startup gets far enough for routes to be
+reachable at all. A subsystem that can read only a local SQLite file must
+therefore skip itself during `lifespan` rather than raise: `operator_startup`
+checks `require_file_store()` and returns empty against a server-backed or
+in-memory store, because raising there aborts the whole lifespan and the
+daemon serves nothing, including the routes whose whole job is to say this
+condition cannot be served. `OperatorStore.path()` raises the same
+`StoreNotAddressableError` as the rest of the SQLite-direct layer rather than
+an `OperatorStoreError`, so its routes answer 501 (permanent) instead of 503
+(retryable), and the definition of which stores this layer can open stays in
+one place.
+
 ## lionagi/studio/cli.py
 
 **`_validate_chain_action_node`** — Validates one `chain_action` node, recursing
