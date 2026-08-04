@@ -117,14 +117,45 @@ class AgenticHandlersMixin:
         supervisor would quietly stop hearing from the copy's legs.
         """
         self._runtime_state: dict[str, object] = {}
-        for name in self._runtime_state_fields:
-            if name in self.config.kwargs:
-                self._runtime_state[name] = self.config.kwargs.pop(name)
+        self.drain_runtime_state()
         # Values taken off the caller's own objects win over what the pop just
         # produced: everything in config.kwargs came through a deep copy, and
         # for a bound callback that copy is a different receiver.
         if supplied:
             self._runtime_state.update(supplied)
+
+    def drain_runtime_state(self) -> None:
+        """Move declared runtime values out of the serializable config.
+
+        Called wherever the config is about to be READ rather than only at
+        construction, because construction is not the only way these values
+        get in. ``EndpointConfig.update()`` puts unknown keys straight back
+        into ``kwargs``, and ``iModel.from_dict()`` assigns a hydrated config
+        over the specialized one. Both are public routes and both bypass a
+        drain that happens once.
+
+        Draining keeps the value working while taking it out of what gets
+        written down: the value moves to ``_runtime_state``, which
+        ``create_payload`` reads at the same precedence ``config.kwargs`` had.
+
+        Serialization is the only place this is called from besides
+        construction, and deliberately so. ``create_payload`` reads
+        ``config.kwargs`` directly, so a value sitting there still works
+        without being drained first, and a drain on that path was measured to
+        change no observable behaviour. Writing it down is what makes a
+        credential durable, so that is where the drain belongs.
+        """
+        for name in self._runtime_state_fields:
+            if name in self.config.kwargs:
+                self._runtime_state[name] = self.config.kwargs.pop(name)
+
+    def to_dict(self, **kwargs):
+        """Drain before serializing. A child environment reaching a run
+        snapshot is a credential in a saved file, and the value that got there
+        after construction is the same credential as the one that was there
+        before it."""
+        self.drain_runtime_state()
+        return super().to_dict(**kwargs)
 
     def _validate_handlers(self, handlers: dict[str, Callable | None], /) -> None:
         if not isinstance(handlers, dict):

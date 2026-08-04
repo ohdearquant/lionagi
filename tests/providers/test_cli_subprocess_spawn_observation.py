@@ -1283,3 +1283,85 @@ class TestTheRawInputShapesTheFixWasNotWrittenAgainst:
         # The type is named, because a type name is not a credential and a
         # caller cannot fix this without it.
         assert "NotACallback" in str(excinfo.value)
+
+
+class TestRuntimeValuesArriveAfterConstructionToo:
+    """The drain ran once, at construction, and construction is not the only
+    way these values get in. ``EndpointConfig.update()`` puts unknown keys
+    straight back into the serializable ``kwargs`` and ``iModel.from_dict()``
+    assigns a hydrated config over the specialized one. Both are public, and a
+    value that arrives by either is the same credential as one passed to the
+    constructor."""
+
+    SECRET = "post-construction-canary"
+    PROVIDERS = ["claude_code", "codex"]
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_an_update_does_not_reach_a_serialised_model(self, provider):
+        from lionagi.service.imodel import iModel
+
+        model = iModel(provider=provider)
+        model.endpoint.config.update(env={"TOKEN": self.SECRET})
+
+        # Serialized BEFORE any payload is built, because that ordering is what
+        # would leave a drain hung off create_payload unreached.
+        assert self.SECRET not in json.dumps(model.to_dict())
+        payload, _ = model.endpoint.create_payload({"prompt": "ok"})
+        assert payload["request"].env == {"TOKEN": self.SECRET}
+        assert self.SECRET not in json.dumps(model.to_dict())
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_hydrated_config_does_not_reach_a_serialised_model(self, provider):
+        from lionagi.service.imodel import iModel
+
+        model = iModel(provider=provider)
+        payload_dict = model.to_dict()
+        payload_dict["endpoint"]["config"]["kwargs"]["env"] = {"TOKEN": self.SECRET}
+
+        rebuilt = iModel.from_dict(payload_dict)
+
+        assert self.SECRET not in json.dumps(rebuilt.to_dict())
+        payload, _ = rebuilt.endpoint.create_payload({"prompt": "ok"})
+        assert payload["request"].env == {"TOKEN": self.SECRET}
+
+
+class TestTheContinuationKeepsTheCallersOwnRecorder:
+    """The continuation request is deep-copied, and a deep copy of a bound
+    method copies its receiver. The copy would notify a duplicate supervisor
+    while the real one, which holds the durable process accounting, never hears
+    about the second subprocess. A stateless callback hides this entirely."""
+
+    @pytest.mark.asyncio
+    async def test_auto_finish_notifies_the_supervisor_the_caller_passed(self, monkeypatch):
+        import lionagi.providers.anthropic.claude_code as cc
+
+        class Supervisor:
+            def __init__(self):
+                self.seen: list = []
+
+            def observe(self, spawned):
+                self.seen.append(spawned)
+
+        supervisor = Supervisor()
+        seen_requests: list = []
+
+        async def fake_stream(request, session, **handlers):
+            # Record the request each leg was given, then hand the recorder the
+            # identity it would get from a real spawn.
+            seen_requests.append(request)
+            on_spawn = getattr(request, "on_spawn", None)
+            if on_spawn is not None:
+                on_spawn(f"leg-{len(seen_requests)}")
+            yield cc.StreamChunk(type="system", metadata={})
+
+        monkeypatch.setattr(cc, "stream_claude_code_cli", fake_stream)
+
+        endpoint = cc.ClaudeCodeCLIEndpoint()
+        request = cc.ClaudeCodeRequest(prompt="ok", auto_finish=True, on_spawn=supervisor.observe)
+        await endpoint._call({"request": request}, {})
+
+        # Both legs ran, and both reported to the object the caller handed in.
+        assert len(seen_requests) == 2, "auto_finish did not produce a continuation leg"
+        assert supervisor.seen == ["leg-1", "leg-2"]
+        assert seen_requests[1] is not seen_requests[0]
+        assert seen_requests[1].on_spawn.__self__ is supervisor

@@ -1025,7 +1025,16 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
             and responses
             and not isinstance(responses[-1], CLISession)
         ):
+            # Deep on purpose for everything else, then the runtime-only
+            # fields are put back BY IDENTITY. A deep copy of a bound method
+            # copies its receiver, so the continuation would notify a copy of
+            # the supervisor while the real one -- the thing holding the
+            # durable process accounting -- never hears about the second
+            # subprocess. A stateless callback hides this completely, which is
+            # why it needs saying rather than leaving to a copy mode.
             req2 = request.model_copy(deep=True)
+            for _runtime_field in ("env", "on_spawn"):
+                object.__setattr__(req2, _runtime_field, getattr(request, _runtime_field))
             req2.prompt = "Please provide a the final result message only"
             req2.max_turns = 1
             req2.continue_conversation = True
