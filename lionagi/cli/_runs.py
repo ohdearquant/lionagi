@@ -1018,10 +1018,18 @@ def _make_message_handler(
     return _on_message
 
 
-async def _flush_pending_message_events(ctx: dict) -> None:
-    """Retry queued messages before teardown reads completion evidence."""
+async def _flush_pending_message_events(ctx: dict) -> bool:
+    """Retry queued messages before teardown reads completion evidence.
+
+    Returns whether every queue emptied. What follows this reads the run's
+    completion evidence, so a queue that gave up here means that evidence is
+    being read against a transcript missing messages the run produced.
+    """
+    flushed = True
     for retry_queue in ctx.get("message_retry_queues", []):
-        await retry_queue.flush()
+        if not await retry_queue.flush_final():
+            flushed = False
+    return flushed
 
 
 async def _reopen_session_for_resume(

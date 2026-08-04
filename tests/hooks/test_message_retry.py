@@ -95,3 +95,121 @@ async def test_transient_error_still_head_of_line_blocks_until_deferred():
 
     assert db.persisted == []
     assert queue.pending_count == 2
+
+
+class _RefusingDB:
+    """Refuses every write, the way a contended sqlite does."""
+
+    def __init__(self) -> None:
+        self.persisted: list[str] = []
+        self.attempts = 0
+
+    async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
+        self.attempts += 1
+        raise RuntimeError("database is locked")
+
+
+async def _deferred_queue(db, logger):
+    """A queue driven past its consecutive-failure limit, as real traffic does."""
+    queue = MessagePersistRetryQueue(db, logger=logger, owner="b1")
+    for i in range(4):
+        await queue.submit(_event(f"m{i}"))
+    return queue
+
+
+async def test_a_teardown_that_loses_messages_says_so(caplog):
+    """The last attempt these events get is the one that used to say nothing.
+
+    By teardown the queue is already deferred, so the state log stays quiet
+    because nothing changed, and the only other signal is a return value.
+    """
+    db = _RefusingDB()
+    logger = logging.getLogger("test")
+    queue = await _deferred_queue(db, logger)
+    assert queue.pending_count == 4
+
+    with caplog.at_level(logging.ERROR, logger="test"):
+        flushed = await queue.flush_final()
+
+    assert flushed is False
+    losses = [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert len(losses) == 1, "the loss is reported once, not per event and not never"
+    assert "lost" in losses[0].message
+    # The count is the part nobody can reconstruct once the events are gone.
+    assert "4" in losses[0].message
+
+
+async def test_a_healthy_teardown_stays_quiet(caplog):
+    """The other direction. A report that always fires is a report nobody reads,
+    and this one exists to be believed the once it appears."""
+    db = _FakeDB(fail_ids=set())
+    logger = logging.getLogger("test")
+    queue = MessagePersistRetryQueue(db, logger=logger, owner="b1")
+    await queue.submit(_event("good-1"))
+
+    with caplog.at_level(logging.DEBUG, logger="test"):
+        flushed = await queue.flush_final()
+
+    assert flushed is True
+    assert db.persisted == ["good-1"]
+    assert [rec for rec in caplog.records if rec.levelno >= logging.WARNING] == []
+
+
+async def test_a_teardown_that_recovers_stays_quiet(caplog):
+    """A queue that was failing and then drains is not a loss. Reporting one
+    here is exactly the crying-wolf this is meant to avoid."""
+
+    class _RecoveringDB:
+        def __init__(self) -> None:
+            self.persisted: list[str] = []
+            self.refuse = True
+
+        async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
+            if self.refuse:
+                raise RuntimeError("database is locked")
+            self.persisted.append(message["id"])
+
+    db = _RecoveringDB()
+    logger = logging.getLogger("test")
+    queue = await _deferred_queue(db, logger)
+    db.refuse = False
+
+    with caplog.at_level(logging.WARNING, logger="test"):
+        flushed = await queue.flush_final()
+
+    assert flushed is True
+    assert queue.pending_count == 0
+    assert db.persisted == ["m0", "m1", "m2", "m3"], "order is preserved across the recovery"
+    assert [rec for rec in caplog.records if rec.levelno >= logging.ERROR] == []
+
+
+async def test_the_bus_reports_whether_its_queues_emptied(caplog):
+    """The bus teardown discarded this, so nothing downstream could tell."""
+    from lionagi.hooks.bus import HookBus
+
+    logger = logging.getLogger("test")
+    bus = HookBus()
+    bus._message_retry_queues = {"b1": await _deferred_queue(_RefusingDB(), logger)}
+
+    with caplog.at_level(logging.ERROR, logger="test"):
+        assert await bus.flush_message_retries() is False
+
+    healthy = MessagePersistRetryQueue(_FakeDB(fail_ids=set()), logger=logger, owner="b2")
+    await healthy.submit(_event("good-1"))
+    bus._message_retry_queues = {"b2": healthy}
+
+    assert await bus.flush_message_retries() is True
+
+
+async def test_the_run_teardown_reports_whether_its_queues_emptied():
+    """The second teardown that discarded it. What runs after this reads the
+    run's completion evidence."""
+    from lionagi.cli._runs import _flush_pending_message_events
+
+    logger = logging.getLogger("test")
+    lost = await _deferred_queue(_RefusingDB(), logger)
+    assert await _flush_pending_message_events({"message_retry_queues": [lost]}) is False
+
+    healthy = MessagePersistRetryQueue(_FakeDB(fail_ids=set()), logger=logger, owner="b2")
+    await healthy.submit(_event("good-1"))
+    assert await _flush_pending_message_events({"message_retry_queues": [healthy]}) is True

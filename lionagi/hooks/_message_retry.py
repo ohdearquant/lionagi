@@ -59,6 +59,32 @@ class MessagePersistRetryQueue:
                 return True
             return await self._drain_locked(force=True)
 
+    async def flush_final(self) -> bool:
+        """Flush at teardown, and say so when events did not make it.
+
+        ``flush`` reports failure only by returning ``False``, and that is the
+        whole of what the failing path says. The state log is deliberately quiet
+        when nothing changed, and a queue that has been failing long enough to
+        reach teardown is already in the state it would be transitioning to, so
+        the last attempt these events will ever get is exactly the attempt that
+        emits nothing. A caller that drops the return value is then told nothing
+        at all, by a queue that just lost their messages.
+
+        Losing them is an outcome rather than a state change, so it is reported
+        here whichever state the queue was already in. The count is included
+        because it is the part nobody can reconstruct afterwards: the events are
+        gone, and no later sweep has anything left to find.
+        """
+        flushed = await self.flush()
+        if not flushed:
+            self._logger.error(
+                "live persist gave up for %s at teardown: %d event(s) were never "
+                "written and are lost",
+                self._owner,
+                self.pending_count,
+            )
+        return flushed
+
     async def _drain_locked(self, *, force: bool = False) -> bool:
         if self._retry_deferred and not force:
             return False
