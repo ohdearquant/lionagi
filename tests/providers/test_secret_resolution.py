@@ -237,6 +237,60 @@ class TestFillingTheChildEnvironment:
 
 
 @pytest.mark.asyncio
+class TestARefusedLookupIsDistinguishableFromAnAbsentOne:
+    """Both return ``env`` untouched, so the return value cannot tell them
+    apart and the child dies identically either way -- on a missing variable,
+    naming the variable and never the lookup. The log is where they separate.
+
+    These arms are paired on purpose: asserting only that the refused case
+    warns would pass just as well with the warning emitted unconditionally,
+    which is the outcome that makes the signal worthless.
+    """
+
+    async def test_a_refused_lookup_says_the_child_is_spawning_without_them(self, caplog):
+        caplog.set_level(logging.WARNING)
+        base = {"PATH": "/usr/bin"}
+        # `argv` is not a list, so the config is refused rather than absent.
+        assert (
+            await fill_declared_secrets(
+                base, settings={"secrets": {"lookup": {"argv": "not-a-list", "names": [NAME]}}}
+            )
+            is base
+        )
+        assert "spawning without declared secrets" in caplog.text
+        assert "refused" in caplog.text
+
+    async def test_nothing_configured_stays_silent(self, caplog):
+        """The discriminating half. Chosen silence is not a problem to report,
+        and a machine that configured no lookup must not be warned at every
+        spawn -- an alarm that fires for everyone trains its reader to skip it.
+        """
+        caplog.set_level(logging.WARNING)
+        base = {"PATH": "/usr/bin"}
+        assert await fill_declared_secrets(base, settings={}) is base
+        assert "spawning without declared secrets" not in caplog.text
+
+    async def test_the_reason_reaches_the_operator_not_just_the_type(self, caplog):
+        """The reason identifier is what says WHICH refusal happened. Without
+        it the message narrows the problem to `your lookup config` and leaves
+        the operator to diff it against the schema by hand."""
+        caplog.set_level(logging.WARNING)
+        await fill_declared_secrets(
+            {}, settings={"secrets": {"lookup": {"argv": [], "names": [NAME]}}}
+        )
+        assert "lookup_argv" in caplog.text
+
+    async def test_a_working_lookup_does_not_claim_the_child_went_without(self, caplog):
+        """A lookup that resolves must not emit the refusal line. Sharing one
+        branch with the success path would make the warning fire on the runs it
+        has nothing to say about."""
+        caplog.set_level(logging.WARNING)
+        env = await fill_declared_secrets({}, settings=_block(_PRINTS_A_VALUE))
+        assert env[NAME] == f"resolved::{NAME}"
+        assert "spawning without declared secrets" not in caplog.text
+
+
+@pytest.mark.asyncio
 class TestTheValueDoesNotReachTheLogs:
     async def test_a_successful_lookup_logs_no_value(self, caplog):
         caplog.set_level(logging.DEBUG)

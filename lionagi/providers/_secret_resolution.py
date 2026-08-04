@@ -272,10 +272,26 @@ async def fill_declared_secrets(
     A variable that already carries a value is never looked up and never
     overwritten, so exporting one is still the way to override the store for a
     single run.
+
+    A REFUSED lookup returns ``env`` unchanged, exactly as an absent one does,
+    and says so before it does. The two are one value apart at the return and
+    the child dies the same way in both cases -- on a missing variable, naming
+    the variable and not the lookup -- so without this the operator debugging
+    that child has nothing pointing at their own configuration.
     """
     resolution = resolve_secret_lookup_config(settings=settings)
     lookup = resolution.lookup
     if lookup is None:
+        if resolution.reason:
+            # The validator already warned that the config is bad. This is the
+            # separate statement: and therefore this child gets none of the
+            # variables it declared.
+            logger.warning(
+                "spawning without declared secrets: the configured lookup was "
+                "refused (%s), so any variable it would have filled is absent "
+                "from this child's environment",
+                resolution.reason,
+            )
         return env
 
     source: Mapping[str, str] = os.environ if env is None else env
