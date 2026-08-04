@@ -78,6 +78,23 @@ class ProviderTeardownError(ProviderError):
     retryable: ClassVar[bool] = True
 
 
+class ProviderPermissionError(ProviderError):
+    """The turn produced nothing because the CLI could not be granted a tool permission.
+
+    Separate from the adapter catch-all because the two demand opposite
+    responses. An adapter error carries no identified cause and tells a caller
+    nothing it can act on. This one names a configuration defect on THIS side
+    that a person can fix in one line, and it is not a provider fault at all:
+    the provider answered, and answered successfully. A headless CLI cannot
+    prompt for a permission, so a tool call it was not pre-granted is denied and
+    the turn returns empty.
+
+    Not retryable, and the distinction matters more here than elsewhere: an
+    unmodified retry reproduces this exactly, forever, while a consumer reading
+    it as a provider condition waits for an outage that is not happening.
+    """
+
+
 class ProviderAdapterError(ProviderError):
     """A CLI adapter reported a non-success status with no more specific cause
     identified from the message text (e.g. an `agy` turn ending status=ERROR)."""
@@ -173,6 +190,14 @@ _TEARDOWN_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"agy\s+teardown\s+failed:\s*event\s+loop\s+is\s+closed", re.IGNORECASE),
 ]
 
+# A turn that ended with nothing because a tool call could not be permitted.
+# Matched on what the adapter says about the cause rather than on the word
+# "permission" alone, which appears in plenty of unrelated provider text.
+_PERMISSION_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"auto[\s._-]?denied", re.IGNORECASE),
+    re.compile(r"cannot\s+prompt\s+for\s+a?\s*tool\s+permission", re.IGNORECASE),
+]
+
 # Catch-all for adapters (e.g. `agy`) that report a bare non-success status
 # with no parseable cause in the message. Checked last — a more specific
 # pattern above always wins when the adapter's own text names one.
@@ -220,6 +245,16 @@ def classify_provider_error(
     for pat in _TEARDOWN_PATTERNS:
         if pat.search(combined):
             return ProviderTeardownError(content, stderr_tail=stderr_tail, raw=content)
+
+    # Ahead of the adapter catch-all deliberately, and the order is the whole
+    # change rather than a tidiness preference. A permission failure is reported
+    # BY an adapter, so its text can satisfy both patterns; whichever branch runs
+    # first wins, and the catch-all would swallow the specific cause while every
+    # pattern-level test still passed. The arm that pins this feeds a string
+    # matching both.
+    for pat in _PERMISSION_PATTERNS:
+        if pat.search(combined):
+            return ProviderPermissionError(content, stderr_tail=stderr_tail, raw=content)
 
     for pat in _ADAPTER_PATTERNS:
         if pat.search(combined):
