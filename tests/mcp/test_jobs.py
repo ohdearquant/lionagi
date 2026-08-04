@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from lionagi.cli import _mcp_resolve
+from lionagi.ln import _proc
 from lionagi.mcp import config, jobs
 
 
@@ -327,7 +328,7 @@ def no_stray_signal(monkeypatch):
 
     monkeypatch.setattr(jobs.os, "getpgid", refuse_getpgid)
     monkeypatch.setattr(jobs.os, "killpg", lambda *a: calls.append(a))
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("unknown", None))
+    monkeypatch.setattr(_proc, "process_marker", lambda pid, marker_var: ("unknown", None))
     return calls
 
 
@@ -1506,6 +1507,11 @@ def _scan_one_candidate(monkeypatch, pgid, create_times, marker):
     The process table yields one candidate whose group matches; every read of
     that pid is answered from *create_times* in call order, so a caller can make
     the pid change identity partway through the scan without a real race.
+
+    Substituted on ``lionagi.ln._proc``, where the group scan resolves them, and
+    not on this module: patching the job surface's own wrappers would leave the
+    scan reading the real process table and the substitution would cover nothing
+    it was written to cover.
     """
     import psutil
 
@@ -1513,9 +1519,9 @@ def _scan_one_candidate(monkeypatch, pgid, create_times, marker):
     monkeypatch.setattr(jobs.os, "getpgid", lambda pid: pgid)
     reads = iter(create_times)
     monkeypatch.setattr(
-        jobs, "_process_create_time", lambda pid: ("found", next(reads, create_times[-1]))
+        _proc, "process_create_time", lambda pid: ("found", next(reads, create_times[-1]))
     )
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("found", marker))
+    monkeypatch.setattr(_proc, "process_marker", lambda pid, marker_var: ("found", marker))
 
 
 def test_a_member_that_changes_identity_mid_scan_does_not_identify_the_group(
@@ -1580,7 +1586,7 @@ def test_a_member_whose_environment_is_closed_still_counts_as_a_member(
     monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
     rid = _identity_record()
     _scan_one_candidate(monkeypatch, 7777, [_SPAWNED_AT + 3.0], None)
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("unknown", None))
+    monkeypatch.setattr(_proc, "process_marker", lambda pid, marker_var: ("unknown", None))
 
     members, complete = jobs._live_group_members(7777)
     out = jobs.kill(rid)
@@ -1609,7 +1615,7 @@ def test_an_unread_marker_is_not_reported_as_a_group_carrying_none(
     _scan_one_candidate(monkeypatch, 7777, [_SPAWNED_AT + 3.0], None)
     read_and_absent = jobs.kill(rid)
 
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("unknown", None))
+    monkeypatch.setattr(_proc, "process_marker", lambda pid, marker_var: ("unknown", None))
     could_not_read = jobs.kill(rid)
 
     assert no_stray_signal == []
@@ -2478,8 +2484,8 @@ def test_a_member_whose_group_read_fails_is_told_apart_from_one_that_exited(monk
     reporting it as absence would let a scan call itself complete while a live
     member went unseen.
     """
-    monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("unknown", None))
+    monkeypatch.setattr(_proc, "process_create_time", lambda pid: ("found", _SPAWNED_AT))
+    monkeypatch.setattr(_proc, "process_marker", lambda pid, marker_var: ("unknown", None))
 
     monkeypatch.setattr(jobs.os, "getpgid", _raise(ProcessLookupError()))
     assert jobs._pinned_member(4242, 7777) == ("gone", None)
@@ -2520,7 +2526,7 @@ def test_a_candidate_whose_group_cannot_be_read_leaves_the_scan_incomplete(monke
 
     monkeypatch.setattr(psutil, "pids", lambda: [4242])
     monkeypatch.setattr(jobs, "_process_create_time", lambda pid: ("found", _SPAWNED_AT))
-    monkeypatch.setattr(jobs, "_process_marker", lambda pid: ("unknown", None))
+    monkeypatch.setattr(_proc, "process_marker", lambda pid, marker_var: ("unknown", None))
 
     monkeypatch.setattr(jobs.os, "getpgid", _raise(OSError(1, "not permitted")))
     members, complete = jobs._live_group_members(7777)
