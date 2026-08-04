@@ -357,10 +357,61 @@ class CodexCodeRequest(BaseModel):
         ),
     )
 
+    @classmethod
+    def _resolve_config_profile(cls, values):
+        """Turn a model that names a codex config profile into the profile.
+
+        Runs at the REQUEST level so both entry points reach it. The CLI
+        resolves this too, and did so alone for a while: a request built
+        through the library -- ``Branch(chat_model="codex/deepseek-flash")`` --
+        carried the profile NAME all the way to the spawn, codex read it as a
+        model id, and every leg died with an unsupported-model error naming a
+        model nobody had asked for.
+
+        Idempotent by construction, so the CLI path is unaffected: it has
+        already replaced the name with the profile's model id, and a real model
+        id carries dots or a slash, which the bare-name check rejects.
+
+        NOT a validator of its own, and that is deliberate. It has to run
+        before the effort clamp, whose ceilings are keyed on the model -- a
+        profile names a different model than the caller did, so clamping first
+        applies one model's ceiling to another's effort. Two ``mode="before"``
+        validators looked like the way to order that, and it is the wrong way:
+        pydantic runs them in REVERSE definition order, so the one written
+        first runs last. Written that way the clamp saw the profile NAME, and
+        the test that caught it is the one asserting a clamped OUTCOME rather
+        than that the effort survived. Called explicitly from the single
+        validator below, the order is stated rather than inherited.
+
+        Caller-supplied ``config_overrides`` WIN over the profile's. An
+        override passed at the call site is an explicit instruction; the
+        profile is a default sitting in a file.
+        """
+        from ._codex_profile import resolve_codex_config_profile
+
+        model = values.get("model")
+        if not isinstance(model, str) or not model:
+            return values
+        resolved = resolve_codex_config_profile(model)
+        if resolved is None:
+            return values
+        profile_model, profile_overrides = resolved
+        values["model"] = profile_model
+        if profile_overrides:
+            merged = dict(profile_overrides)
+            merged.update(values.get("config_overrides") or {})
+            values["config_overrides"] = merged
+        return values
+
     @model_validator(mode="before")
     @classmethod
-    def _clamp_effort(cls, values):
-        """Clamp max/ultra down to the target model's supported ceiling (model-dependent).
+    def _resolve_profile_then_clamp_effort(cls, values):
+        """Resolve a config-profile model, THEN clamp effort against it.
+
+        One validator running two steps in a written order, rather than two
+        validators relying on pydantic's. The clamp's ceilings are keyed on the
+        model id and a profile names a different model than the caller did, so
+        the sequence is load-bearing rather than cosmetic.
 
         `values` is the raw constructor input, which omits `model` when the
         caller relies on the field default (Pydantic v2 applies defaults
@@ -368,6 +419,8 @@ class CodexCodeRequest(BaseModel):
         default so the clamp is consistent either way.
         """
         from lionagi.service.providers import _clamp_codex_effort
+
+        values = cls._resolve_config_profile(values)
 
         model = values.get("model", cls.model_fields["model"].default)
         for key in ("reasoning_effort", "plan_mode_reasoning_effort"):
