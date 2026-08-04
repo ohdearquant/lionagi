@@ -28,6 +28,7 @@ usable is configured — never merely because persistence broke.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -341,3 +342,42 @@ async def test_a_run_that_raises_still_reports_before_the_exception_leaves(monke
     assert notices == ["failed"], (
         f"a run that raised must still report, exactly once; got {notices}"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_pointer_write_does_not_cost_the_run_its_notice(
+    monkeypatch, tmp_path, caplog
+):
+    """The last-branch pointer is written after teardown and before the tail
+    that delivers, so anything raising there takes the notice with it.
+
+    The fault injected here is the filesystem's rather than a stand-in raiser:
+    the pointer is aimed at a directory and the real helper is put back, because
+    what has to survive is a write that fails, not a function someone replaced.
+    """
+    _wire_agent_stubs(monkeypatch, tmp_path, persist=None)
+
+    import lionagi.cli._runs as runs_mod
+    import lionagi.cli.agent as agent_mod
+
+    marker = tmp_path / "delivered.txt"
+    script = _write_fake_notifier(tmp_path)
+    notify_cmd = f"{sys.executable} {script} {marker} {{status}}"
+
+    # The shared harness stubs the pointer write out; this test is about it.
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", runs_mod.save_last_branch_pointer)
+    blocked = tmp_path / "pointer-is-a-directory"
+    blocked.mkdir()
+    monkeypatch.setattr(runs_mod, "_LAST_BRANCH_POINTER", blocked)
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli"):
+        _res, _provider, _branch_id, status, _session = await agent_mod._run_agent(
+            "codex/model", "do the thing", notify=notify_cmd
+        )
+
+    assert status == "completed"
+    assert marker.exists(), "the pointer write took the terminal notice with it"
+    assert marker.read_text() == "completed"
+    # Reported, not swallowed: the next `-c` will resume something else, and a
+    # silent version of this is worse than the failure it is hiding.
+    assert any("last-branch pointer" in rec.message for rec in caplog.records)

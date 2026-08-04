@@ -1306,6 +1306,10 @@ async def _run_agent(
         if _write_run_manifest is not None:
             _write_run_manifest(run_manifest)
 
+    # Bookkeeping, and the terminal notice below has not gone out yet. This call
+    # reports its own failures rather than raising for exactly that reason: a
+    # run that finished still owes its answer to whoever asked to be told, and
+    # an unwritable convenience pointer is not a reason to withhold it.
     save_last_branch_pointer(run.run_id, branch_id)
 
     session_id = live.get("session_id") if live else None
