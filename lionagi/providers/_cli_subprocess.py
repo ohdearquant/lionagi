@@ -25,6 +25,8 @@ from lionagi.ln._proc import (
 )
 from lionagi.ln.concurrency.utils import maybe_await
 
+from ._secret_resolution import fill_declared_secrets
+
 log = logging.getLogger(__name__)
 
 # Sentinel that means "do not pass stdin to create_subprocess_exec at all"
@@ -429,9 +431,14 @@ async def ndjson_from_cli(
     exception propagates through the teardown below, which ends the group it
     was called for.
     """
+    # Every CLI provider spawns through here, so a secret the child must read
+    # from its own environment is filled in one place rather than four. Purely
+    # additive: with nothing configured this returns ``env`` unchanged, and a
+    # lookup that fails leaves the child to fail the way it already failed.
+    child_env = await fill_declared_secrets(env)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
-        env=env,
+        env=dict(child_env) if child_env is not None else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
