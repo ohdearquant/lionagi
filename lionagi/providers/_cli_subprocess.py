@@ -605,9 +605,18 @@ async def ndjson_from_cli(
             except asyncio.CancelledError:
                 raise
             err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            # Emptiness is decided on what was captured, before the drain note
+            # is appended. Deciding it on the concatenated string instead lets
+            # the note itself count as output, so a truncated drain that
+            # captured nothing would report neither the exit code nor the fact
+            # that there was nothing to quote. No probe I built reaches that
+            # arm; this orders the two steps so its reachability stops
+            # mattering.
+            if not err:
+                err = _no_stderr_reason(rc, stderr_unavailable, stderr_drain_error)
             if drain_truncated:
-                err = (err or "") + " [stderr drain timed out]"
-            raise RuntimeError(err or _no_stderr_reason(rc, stderr_unavailable, stderr_drain_error))
+                err += " [stderr drain timed out]"
+            raise RuntimeError(err)
 
     finally:
         await end_child_group(proc)
