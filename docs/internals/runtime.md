@@ -1049,6 +1049,51 @@ the serialized config — this only decides which of the two receivers the endpo
 notifying. A test written with a plain nested function cannot see any of this: `deepcopy` of a
 function returns the same object, and only a bound method has a receiver to rebind.
 
+### `_secret_resolution.py`
+
+Every CLI provider authenticates from its child's own environment: a codex `model_providers`
+entry names an `env_key` and the CLI reads that variable itself. When the value is kept in a
+keychain or a vault rather than exported, the spawning process has nothing to pass and the child
+dies on a missing variable that says nothing about where the value was meant to come from.
+
+`secrets.lookup` in `~/.lionagi/settings.yaml` names a command that prints one secret to stdout,
+and the variables it may be asked for:
+
+```yaml
+secrets:
+  lookup:
+    argv: [security, find-generic-password, -s, "{name}", -a, lionagi, -w]
+    names: [OPENROUTER_API_KEY]
+```
+
+`fill_declared_secrets()` is awaited once inside `ndjson_from_cli`, which is the single spawn
+seam for all four CLI providers, so this is wired in one place rather than four. It is purely
+additive: with nothing configured it returns the caller's `env` unchanged — `None` included, so
+an inheriting child stays inheriting instead of being frozen to a snapshot — and a lookup that
+fails leaves the child to fail exactly as it already did.
+
+- **Global settings only** (`load_settings(include_project=False)`). The project-local file is
+  the content of whatever tree happens to be checked out, and a repository must not get to name
+  the program that reads this machine's secret store. Where a secret lives is a property of the
+  machine.
+- **A refusal is distinguishable from silence.** `SecretLookupResolution.reason` is set iff a
+  lookup was configured and rejected; nothing configured and `enabled: false` both carry no
+  reason. Otherwise a typo'd block and an unconfigured machine both arrive as "the environment
+  was not changed". Reasons are short stable identifiers and never interpolate configured values.
+- **Every refusal is total.** One malformed name rejects the whole block rather than being
+  dropped from it, because a silently skipped name leaves the block reading as configured while
+  resolving less than it says.
+- **argv is a list, never a command string**, so nothing is ever split and no shape reaches a
+  shell. At least one argument after the program must contain `{name}` (a lookup that cannot say
+  which secret it wants is refused), and `argv[0]` must not, since the program to run may not
+  vary with the variable being looked up.
+- **A variable that already has a value is never looked up and never overwritten**, so exporting
+  one is still how a single run overrides the store.
+- **The value reaches the child's environment and nothing else.** Never a file, never an argv,
+  never a log line: `_run_lookup` reports only the program name, the variable name and the exit
+  status, and discards stdout on every failure path — a store that prints its errors to stdout
+  uses the same channel the secret arrives on.
+
 ### `anthropic/claude_code.py`
 
 - **CLI flag metadata protocol.** Every CLI-mappable `ClaudeCodeRequest` field carries a
