@@ -31,6 +31,7 @@ from typing import Any
 # The CLI runs this file's module by absolute interpreter path; lionagi is on
 # the path because that interpreter is the one lionagi is installed in.
 from . import config, jobs
+from ._terminal_cause import read_terminal_cause
 
 _DELIVERY_TIMEOUT_S = 30
 
@@ -439,6 +440,14 @@ def main(argv: list[str] | None = None) -> int:
         # completion the record contradicts; run stays non-terminal.
         _note_persistence_failure(args.run_id, "terminal status")
         return 1
+
+    # Before the notice: the cause belongs to how the run ended, and a delivery
+    # that hangs or fails must not be what decides whether the reason was kept.
+    # Absent, unreadable and malformed all come back as None, and None leaves
+    # the field off rather than writing a placeholder that reads like an answer.
+    cause = read_terminal_cause(jobs.failure_cause_path(args.run_id))
+    if cause is not None:
+        jobs.record_failure_cause(args.run_id, cause)
 
     outcome = deliver_terminal_notice(
         args.run_id,

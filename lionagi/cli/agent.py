@@ -1171,6 +1171,13 @@ async def _run_agent(
     except (TimeoutError, LionTimeoutError) as exc:
         _terminal_status = "timed_out"
         _terminal_exc = exc
+        from lionagi.mcp._terminal_cause import write_terminal_cause
+
+        # Written on the timeout path too, even though a timeout is never one of
+        # the typed provider errors. A recorded `unknown` says the cause was
+        # looked at and was not a provider error; no record at all says nobody
+        # looked, and a reader cannot tell those apart after the fact.
+        write_terminal_cause(exc)
         from lionagi.cli._logging import warn
 
         warn(f"agent timed out after {timeout}s")
@@ -1179,6 +1186,12 @@ async def _run_agent(
     except BaseException as exc:
         _terminal_status = classify_exception(exc)
         _terminal_exc = exc
+        from lionagi.mcp._terminal_cause import write_terminal_cause
+
+        # Before the re-raise: this is the last point that still holds the
+        # exception object, and the hook that records the run's end runs in a
+        # different process where only its own class name would survive.
+        write_terminal_cause(exc)
         # Nothing after this try block runs, so the teardown below is this
         # run's last chance to notify. Every other path falls through to the
         # tail, where the status is still being decided.

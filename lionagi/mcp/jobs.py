@@ -1177,6 +1177,10 @@ def submit(
         # Inherited by every process the child spawns, so a live group member
         # can later be asked what it belongs to instead of guessed from timing.
         env[config.JOB_MARKER_ENV_VAR] = run_id
+        # Where the run drops the typed class of whatever exception ended it, so
+        # the terminal hook can record a cause instead of leaving the reason to
+        # be read out of console prose.
+        env[config.CAUSE_FILE_ENV_VAR] = str(d / config.CAUSE_FILENAME)
 
         # Checked before anything is written: Popen raising this late would
         # leave a job recorded "running" for a run that never started.
@@ -2413,3 +2417,35 @@ def record_notify_delivery(run_id: str, outcome: dict[str, Any]) -> WriteResult:
             return WriteResult(None, guard.state)
         job["notify_delivery"] = outcome
         return WriteResult(job, guard.state)
+
+
+def record_failure_cause(run_id: str, cause: dict[str, Any]) -> WriteResult:
+    """Record the typed class of the exception that ended *run_id*.
+
+    Merged under the same per-run lock as every other mutation, and merged
+    alone: a cause describes how the run ended and must never carry a stale copy
+    of the lifecycle fields back over an end recorded while the hook was
+    starting, for the same reason ``record_notify_delivery`` does not.
+
+    Only called with a cause that was actually read. A run whose cause file is
+    absent leaves this field off the record entirely, so a caller can tell a run
+    that reported no typed cause from one that predates the field.
+    """
+    with _locked_job(run_id) as guard:
+        job = guard.record
+        if job is None:
+            return WriteResult(None, guard.state)
+        job["failure_cause"] = cause
+        return WriteResult(job, guard.state)
+
+
+def failure_cause_path(run_id: str) -> Path | None:
+    """Where *run_id*'s cause file would be, or None if it has no job directory.
+
+    Resolved through ``config.job_dir`` — the same function the submit that set
+    the child's environment used — so the two cannot drift onto different
+    layouts. Reading the path back off the record instead would be checking the
+    value against itself.
+    """
+    d = config.job_dir(run_id)
+    return d / config.CAUSE_FILENAME if d.is_dir() else None
