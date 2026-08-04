@@ -482,13 +482,19 @@ class CodexCodeRequest(BaseModel):
         if self.system_prompt:
             args.extend(["-c", f"developer_instructions={self.system_prompt}"])
 
+        # Encoded like every other `-c` override below. While these fields were
+        # a closed Literal of eight bare words, emitting them unencoded was
+        # safe by construction; now that any string is accepted, what keeps an
+        # arbitrary value inside its own override is codex's own leniency about
+        # the right-hand side, which is not a contract lionagi owns.
         if self.reasoning_effort:
-            args.extend(["-c", f"reasoning_effort={self.reasoning_effort}"])
+            args.extend(["-c", f"reasoning_effort={toml_override_value(self.reasoning_effort)}"])
         if self.plan_mode_reasoning_effort:
             args.extend(
                 [
                     "-c",
-                    f"plan_mode_reasoning_effort={self.plan_mode_reasoning_effort}",
+                    "plan_mode_reasoning_effort="
+                    f"{toml_override_value(self.plan_mode_reasoning_effort)}",
                 ]
             )
 
