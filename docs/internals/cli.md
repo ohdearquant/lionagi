@@ -620,6 +620,18 @@ leg is about to fire on this same session, so this leg's teardown must not stamp
 status the resumed leg would then be blocked from overwriting by the ADR-0035 terminal guard
 (see `_runs.py` `_teardown_common` defer_terminal, below).
 
+The same ownership governs the direct no-persistence notice, and for the same reason: an
+interim leg has no answer to report. It is delivered from the tail rather than from the
+teardown, past every line that can still move the status — the empty-resumed-stream conversion
+to `failed`, and the auto-resume recursion that makes this leg interim. Delivering from the
+teardown reported `timed_out` for a run that went on to complete, and `completed` for one whose
+own return value said `failed`. Only the propagating-exception path still delivers from the
+teardown, because there the status is settled and nothing after the `try` block runs; the
+delivery is idempotent so those two reaches cannot both fire. The condition is the recursion's
+own branch and not the `will_auto_resume` computed earlier in teardown: that one is read before
+the effective status is applied, so suppressing on it could silence a leg that then does not
+recurse.
+
 ## `_agent_depth.py` — inherited agent-depth env marker
 
 `LIONAGI_AGENT_DEPTH` (integer string; unset/`0` = top-level, `>=1` = spawned worker) lets an

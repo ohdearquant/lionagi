@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Literal
 
 from fastapi import HTTPException, Query, Request
@@ -28,6 +29,8 @@ from ..operator.types import (
 )
 from ..registry import studio_route
 from ._sse import sse_response
+
+_log = logging.getLogger(__name__)
 
 
 def _http_error(exc: OperatorStoreError) -> HTTPException:
@@ -53,6 +56,26 @@ def _http_error(exc: OperatorStoreError) -> HTTPException:
 
 
 async def operator_startup() -> list[str]:
+    """Recover Operator turns interrupted by a previous daemon exit.
+
+    Skipped where the configured store has no file. The Operator's tables live
+    in the local StateDB file and nowhere else, so a server-backed or in-memory
+    store holds nothing for this to recover — and raising here aborts the whole
+    lifespan, so the daemon never starts serving and the 501 the routes would
+    have answered is never reached. A subsystem that cannot run must not take
+    the ones that can down with it.
+    """
+    from ._db import StoreNotAddressableError, require_file_store
+
+    try:
+        require_file_store()
+    except StoreNotAddressableError as exc:
+        _log.warning(
+            "Studio Operator disabled: %s. Its routes answer 501; the rest of "
+            "the daemon is unaffected.",
+            exc,
+        )
+        return []
     return await get_operator_coordinator().startup()
 
 

@@ -342,8 +342,29 @@ def load_last_branch() -> tuple[str | None, str]:
 
 
 def save_last_branch_pointer(run_id: str, branch_id: str) -> None:
-    ensure_lionagi_dir(LIONAGI_HOME)
-    _LAST_BRANCH_POINTER.write_text(json.dumps({"run_id": run_id, "branch_id": branch_id}))
+    """Record which branch `--continue` should pick up next. Best effort.
+
+    This is a convenience pointer, and it is written late — after a run has
+    produced its answer and, in the agent path, before that answer's terminal
+    notice goes out. Letting a filesystem error escape from here would cost the
+    caller the notice and the return value both, to protect a file whose only
+    job is to save someone typing a branch id.
+
+    So the failure is reported and not raised. It is reported rather than
+    swallowed because the next `--continue` will silently pick up an older run,
+    and that is confusing precisely when nobody remembers this warning.
+    """
+    from lionagi.cli._logging import warn
+
+    try:
+        ensure_lionagi_dir(LIONAGI_HOME)
+        _LAST_BRANCH_POINTER.write_text(json.dumps({"run_id": run_id, "branch_id": branch_id}))
+    except Exception as exc:  # noqa: BLE001 — a convenience pointer never fails a run
+        _log.warning("could not write the last-branch pointer: %r", exc, exc_info=exc)
+        warn(
+            f"could not record this run as the last branch ({exc}); "
+            f"`li agent -c` will resume an earlier run instead of this one"
+        )
 
 
 # ── Introspection ───────────────────────────────────────────────────────
