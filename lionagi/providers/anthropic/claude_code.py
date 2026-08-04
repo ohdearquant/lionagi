@@ -6,12 +6,13 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from lionagi import ln
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
@@ -20,10 +21,14 @@ from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_r
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
+    Redacted,
+    SpawnedProcess,
     build_declarative_cli_args,
     discover_cli,
     ndjson_from_cli,
     print_readable,
+    raise_if_env_is_not_a_string_map,
+    redact_runtime_fields_in_place,
     resolve_cli_workspace,
 )
 from lionagi.providers._cli_subprocess import (
@@ -202,6 +207,88 @@ class ClaudeCodeRequest(BaseModel):
     # worktree is special-cased (bool vs str) — no _cli metadata
     worktree: str | bool | None = Field(default=None, exclude=True)
 
+    # ── process (runtime-only, never rendered as CLI args) ─────────
+    # Runtime-only, and kept out of the generated JSON schema as well as out
+    # of serialization: this model's schema describes the request payload, and
+    # a callable has no JSON schema at all — asking for one raises.
+    env: SkipJsonSchema[dict[str, str] | None] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description=(
+            "Complete environment for the CLI process. None inherits this "
+            "process's environment; a mapping REPLACES it wholesale, so a "
+            "caller setting one variable supplies the rest itself."
+        ),
+    )
+    on_spawn: SkipJsonSchema[Callable[[SpawnedProcess], None | Awaitable[None]] | None] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description=(
+            "Called once with a SpawnedProcess as soon as the CLI process "
+            "exists, for a caller that must record the identity of a process "
+            "it did not spawn itself. May be a coroutine function."
+        ),
+    )
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _env_is_a_string_map(cls, value):
+        """Reject a malformed environment without printing anything from it.
+
+        A child environment routinely holds credentials, and a pydantic
+        ValidationError quotes the whole rejected input into its message, so
+        letting the ordinary string check fail here would print every value in
+        the map beside the one bad entry. TypeError is the escape: pydantic
+        converts ValueError and AssertionError into validation errors and lets
+        anything else propagate untouched, so nothing from the mapping reaches
+        a traceback or a log line. It is also the right exception for a wrongly
+        typed mapping.
+
+        The value arrives wrapped when it came through a model-level validator,
+        which is what keeps it off that validator's error. This is the code that
+        needs to look at it, so this is where it is unwrapped; what the model
+        then stores is an ordinary mapping, kept out of dumps by ``exclude`` and
+        out of the request's representation by ``repr=False``.
+        """
+        if isinstance(value, Redacted):
+            value = value.reveal()
+        if value is None:
+            return value
+        if not isinstance(value, Mapping):
+            # Not "leave it for pydantic": pydantic quotes the rejected value,
+            # and for a wrongly shaped env the value IS the credential.
+            raise TypeError(
+                f"env must be a mapping of strings to strings, got {type(value).__name__}"
+            )
+        raise_if_env_is_not_a_string_map(value)
+        return dict(value)
+
+    @field_validator("on_spawn", mode="before")
+    @classmethod
+    def _unwrap_on_spawn(cls, value):
+        """Undo the wrapping a model-level validator applied.
+
+        The callback is wrapped there for the same reason the environment is: a
+        BOUND callback carries its receiver into its own ``repr``, so a
+        supervisor holding a credential would print it from an error about some
+        unrelated field. Nothing but this validator needs the wrapper gone, and
+        pydantic rejects it outright as not callable if it survives — which is
+        the failure mode this method exists to prevent, and the one a test that
+        only checks for leaks would never see.
+        """
+        if isinstance(value, Redacted):
+            value = value.reveal()
+        if value is None or callable(value):
+            return value
+        # Rejected HERE rather than handed back for pydantic to reject, because
+        # unwrapping is what re-exposes the value: pydantic renders a failing
+        # field's input, and an object with a credential-bearing __repr__ is
+        # exactly the shape this carrier exists to keep out of an error. A
+        # TypeError names the type and never the object.
+        raise TypeError(f"on_spawn must be callable, got {type(value).__name__}")
+
     # ── features (order 80–89) ────────────────────────────────────
     chrome: bool | None = Field(
         default=None,
@@ -306,6 +393,9 @@ class ClaudeCodeRequest(BaseModel):
 
     @model_validator(mode="before")
     def _validate_message_prompt(cls, data):
+        # First, before anything here can raise: this validator holds the whole
+        # raw input, and pydantic quotes a failing validator's input verbatim.
+        redact_runtime_fields_in_place(data)
         if "prompt" in data and data["prompt"]:
             return data
 
@@ -484,7 +574,13 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
     cmd = [CLAUDE_CLI, *request.as_cmd_args()]
     # tail_repair recovers a malformed-but-repairable final JSON object instead of dropping it.
     async with contextlib.aclosing(
-        ndjson_from_cli(cmd, cwd=workspace, tail_repair=_claude_tail_repair)
+        ndjson_from_cli(
+            cmd,
+            cwd=workspace,
+            env=request.env,
+            tail_repair=_claude_tail_repair,
+            on_spawn=request.on_spawn,
+        )
     ) as stream:
         async for obj in stream:
             yield obj
@@ -831,14 +927,18 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CLAUDE_HANDLER_PARAMS
     _handler_kwarg = "claude_handlers"
     _request_model = ClaudeCodeRequest
+    _runtime_state_fields = ("env", "on_spawn")
     # Claude Code streams a "system" event as soon as the CLI session starts,
     # well before the run completes — see stream_cc_cli() above.
     streams_first_output_early = True
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("claude_handlers", None)
+        # Before super(), which deep-copies a supplied config: see
+        # take_supplied_runtime_state for what that copy does to a bound method.
+        supplied = self.take_supplied_runtime_state(config, kwargs)
         super().__init__(config=config, **kwargs)
-        self._init_handlers(handlers)
+        self._init_handlers(handlers, supplied=supplied)
 
     @property
     def claude_handlers(self):
@@ -925,7 +1025,16 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
             and responses
             and not isinstance(responses[-1], CLISession)
         ):
+            # Deep on purpose for everything else, then the runtime-only
+            # fields are put back BY IDENTITY. A deep copy of a bound method
+            # copies its receiver, so the continuation would notify a copy of
+            # the supervisor while the real one -- the thing holding the
+            # durable process accounting -- never hears about the second
+            # subprocess. A stateless callback hides this completely, which is
+            # why it needs saying rather than leaving to a copy mode.
             req2 = request.model_copy(deep=True)
+            for _runtime_field in ("env", "on_spawn"):
+                object.__setattr__(req2, _runtime_field, getattr(request, _runtime_field))
             req2.prompt = "Please provide a the final result message only"
             req2.max_turns = 1
             req2.continue_conversation = True

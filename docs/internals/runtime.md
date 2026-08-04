@@ -821,6 +821,234 @@ runs, `os.getpgid(proc.pid)` raises `ProcessLookupError`. Since `start_new_sessi
 `pgid == proc.pid`, so capturing `proc.pid` right after spawn is equivalent and safe. The
 actual pid-guard/platform check lives in `aterminate_process_group`.
 
+**`on_spawn` and `SpawnedProcess`.** A caller that has to supervise a leg it did not itself
+spawn passes `on_spawn`, which is called exactly once with a `SpawnedProcess` as soon as the
+child exists and before any output is read. Three things about that record are load-bearing:
+
+- **It carries a start time, not just two integers.** `pid` and `pgid` are both recyclable —
+  once a process is reaped the kernel may hand its numbers to anything — so a consumer holding
+  only those cannot tell this child from a stranger that arrived later, and signalling on that
+  basis reaches the stranger. `create_time` binds them, it is readable only while the child is
+  known to exist, and a consumer acting on the record later must compare a live read against
+  it. `None` means nothing was established and is never a claim about the process; this mirrors
+  what `lionagi/mcp/jobs.py` does with `pid_create_time`.
+- **The three fields are one observation, within limits worth stating.** The group and the start
+  time are separate reads by pid, so `observe_spawned()` brackets the group read between two
+  start-time reads and drops `create_time` to `None` if they disagree, the same shape as
+  `_pinned_member` in `lionagi/mcp/jobs.py`. That rejects a replacement arriving *during* the
+  observation. It does not speak for one that arrived before the first read, and the window
+  where that is possible is a child that exits and is reaped between the spawn call returning
+  and the first probe — covered not by the bracket but by the probe, which answers `None` for
+  both a reaped pid and a zombie.
+- **It may be a coroutine function, and the result is awaited.** A durable recorder is written
+  in async style, and `Callable[..., None]` does not reject an `async def` at runtime: an
+  un-awaited one returns a coroutine that is dropped, so the leg runs entirely unrecorded with
+  nothing raised. The await completes before the first byte of output is read, so a consumer
+  acting on the stream is never ahead of the record.
+- **Its failure is not swallowed**, including `CancelledError` and `KeyboardInterrupt`. A
+  recorder that fails has no record of a child that is now running, so the child is terminated
+  and the exception propagates. A guard written against `Exception` would let a cancellation
+  through and leave the child alive.
+- **That termination does not depend on surviving a second cancellation.** The graceful path
+  sends `SIGTERM` and waits out a grace before escalating, and that wait is itself a
+  cancellation point: a runner being torn down is exactly where a second cancellation arrives,
+  and a child ignoring `SIGTERM` would then outlive an escalation that never ran. So a
+  synchronous `SIGKILL` backstop runs in a `finally` when the graceful path did not complete —
+  no `await`, so nothing can interpose. It runs under the same evidence rule as the pass it is
+  backing up rather than under anything about the direct child: an unreaped child is signalled
+  on its own unrecyclable pid, a reaped one only where the group answers with a live member.
+  Signalling a pid asyncio has reaped, with nothing to say the group still holds it, is how a
+  stranger's group gets killed.
+
+- **The child exists even when nothing recorded it.** The OS has already started the child by
+  the time `create_subprocess_exec` resumes, so a cancellation landing in the window before it
+  returns leaves a running leg that this process holds no handle for and that no callback has
+  seen — unreachable by teardown and by any later sweep over the records. The creation is
+  therefore shielded so the handle still arrives, and a done-callback ends that child's group
+  from outside the coroutine that unwound. The callback retrieves the task's exception either
+  way, or a cancelled spawn is reported at exit as a never-retrieved failure.
+
+`end_child_group()` is what every teardown path calls, and it differs from the graceful helper
+on two counts. It drains the *group* rather than the process: the graceful helper returns as
+soon as the process it holds a handle to is gone, and a descendant that ignores `SIGTERM`
+outlives a parent that does not, so the group is read afterwards and killed if anyone is still
+in it. And it cannot be interrupted into leaving something running, via the synchronous
+backstop described above.
+
+Every signal fires only on *positive* evidence that the group id is still this child's,
+because the other direction is worse than an orphan. There are exactly two things that
+establish it: the child has not been waited, in which case its pid cannot have been reissued;
+or the group answers with a live member, and an occupied group is never reissued. Nothing else
+counts, and the graceful helper is therefore reached *only* on the not-yet-waited path. It
+signals the id it is handed without checking anything, so calling it after a normal drain
+would send `SIGTERM` to whatever now holds a recycled id.
+
+The escalation keys on that membership evidence rather than on whether the direct child is
+dead. Those are different facts: a leader that died to `SIGTERM` sets `returncode` while a
+descendant ignoring `SIGTERM` is still in its group, and a backstop gated on the leader's
+liveness reads that as nothing left to do.
+
+Both checks matter, and checking only one leaves a hole where the other applies. An earlier
+version of this had only the membership check, so the cancellation backstop refused to signal
+wherever the process table could not be read — and on that path the direct child has not been
+waited, so identity was never in question. The refusal is right after the reap and wrong before
+it, and it read as caution rather than as a defect.
+
+*After* the reap, a scan that could not read the whole process table and saw no members leaves
+emptiness *unproved*, and nothing signals on that: an unprovable group and a reissued one look
+identical from here. That refusal is logged rather than silent, because it is the one outcome
+where something may still be running and nothing was done about it. It is a real platform limit
+rather than a gap waiting to be closed: once the child is reaped, only a surviving member pins
+the id, and proving one exists *is* the enumeration that was unavailable.
+
+**The one case teardown cannot reach.** A cancellation landing inside
+`create_subprocess_exec`, after the OS has made the child but before the call returns, leaves a
+process whose pid was never handed to anyone here. Interpreter shutdown cancels pending tasks
+and does exactly this. asyncio closes the transport on that path, which ends the direct child
+but not the group it leads. Recording the handle as soon as the creation call returns was tried
+and removed: it covers only the window between the call returning and the caller resuming,
+which is not where the cancellation lands. Reaching it needs the pid *before* the creation call
+returns, which means driving `loop.subprocess_exec` with a protocol that records
+`transport.get_pid()` in `connection_made` — declined here because it pins this file to stdlib
+classes outside that module's `__all__` across every supported Python.
+
+Nothing recovers it afterwards either, and an earlier version of this section said otherwise:
+that the orphan sits in the record the caller writes and a later sweep still finds it. It does
+not. `on_spawn` fires only once the creation call has returned, which is the thing that did not
+happen, so in this window there is no record of any kind — the same emptiness the bullet above
+describes, written up two ways that contradicted each other. This is a stated hole rather than
+a handled one. The test for the window asserts the emptiness rather than assuming it, so the
+claim cannot quietly come back, and the log line on that path says what was lost and why.
+
+The group in the record is the *initial* one. A process group is not a containment boundary: a
+child or descendant that calls `setsid()` leaves it and the record then says nothing about that
+process. A caller who needs "nothing the leg started survives" must either require
+non-daemonizing CLIs or use a platform containment primitive.
+
+**Runtime-only request fields.** `env` and `on_spawn` on `ClaudeCodeRequest` /
+`CodexCodeRequest` are `SkipJsonSchema[...]` with `exclude=True` and `repr=False`. Each
+qualifier answers a different channel and none implies the others: `exclude` keeps them out of
+dumps, `SkipJsonSchema` keeps them out of the generated schema (a callable has none, so
+`model_json_schema()` raises without it, which breaks every path that persists a request),
+and `repr=False` keeps a complete child environment out of log lines and exception text.
+
+Those qualifiers all govern *the model*, and the model is not the only thing that prints a
+child environment. Pydantic renders the input of a failing `mode="before"` validator verbatim,
+and a model-level one holds the whole raw mapping, so a request rejected for a reason having
+nothing to do with `env` — an empty prompt, say — quotes every variable beside the reason. The
+redaction therefore happens at the top of every model-level before-validator and before
+anything there can raise. Carrying it on the value rather than at each error site is what stops
+a validator added later from reopening the channel by not knowing about it, and it is why the
+two providers each redact at their own validator entry.
+
+The substitute is deliberately **not a mapping**. A `dict` subclass with a quiet `__repr__`
+closes the rendering channel and leaves the serialization one wide open: `str(err)` and
+`err.errors()` go through `repr`, but `err.json()` walks the structure and writes out every key
+and value, and `err.json()` is what a structured logger emits. `Redacted` is neither `dict` nor
+`Mapping`, so there is nothing for pydantic to walk, and it reports `<env: N variable(s)>` in
+every channel.
+
+`on_spawn` is wrapped for the same reason. A **bound method carries its receiver into its own
+`repr`**, so a callback bound to a supervisor renders whatever that supervisor holds — and
+receivers that render their attributes are the common case here. Both models unwrap the carrier
+in a field validator; without that, pydantic rejects a perfectly good callback as not callable,
+which is a failure a leak test alone would never show.
+
+Two rejections stay explicit because the redaction cannot reach them:
+
+- An `env` that is not a mapping at all is left alone by the substitution, so the field
+  validator rejects it itself rather than leaving it for pydantic to quote.
+- A mapping with bad entries is rejected as `TypeError`, not `ValueError`: pydantic converts
+  `ValueError` and `AssertionError` into a `ValidationError` that quotes the rejected input and
+  lets everything else propagate untouched. The message names string keys, because a string key
+  is a variable *name* and naming it is what makes the error actionable; a key of any other type
+  is not a name and is reported by position and type only. Values are never printed.
+
+`_runtime_state_fields` on the endpoint does two jobs for those fields, and both are about a
+value that must stay in memory:
+
+- **Surviving `create_payload`.** It rebuilds the request from `to_dict(request)`, and that dump
+  omits excluded fields by construction. A field not named here is silently lost, so a caller
+  passing a fully populated request model gets one where the runtime wiring reverted to its
+  defaults.
+- **Staying out of what gets written to disk.** `iModel(**kwargs)` forwards anything it does not
+  recognise into `EndpointConfig.kwargs`, which is a supported way to configure an endpoint and
+  also exactly what `Endpoint.to_dict` serializes — so it reaches `iModel.to_dict`,
+  `Branch.to_dict`, and the run snapshots. A child environment left there is a credential in a
+  saved file, and a callback left there is a function something is about to JSON-encode.
+  `_init_runtime_state()` moves the named values out of `config.kwargs` into `_runtime_state` at
+  construction, where `create_payload` reads them at the same precedence they had before.
+
+**The drain is not the whole of it, and the part it misses is the public one.** A drain has to be
+*reached*, and it hangs off the endpoint's own `to_dict`. `EndpointConfig` is public and inherits
+Pydantic's `model_dump`, so a caller that logs or persists the config directly never goes through
+an endpoint at all. Two supported routes also put a runtime value back into `kwargs` after the
+endpoint has already drained it once: a post-construction `EndpointConfig.update()`, which puts
+unknown keys straight back, and `iModel.from_dict`, which assigns a freshly hydrated config over
+the drained one (`imodel.py`, in the `match_endpoint` branch). Between either of those and the
+next endpoint-level dump, the value is resting in a serializable field.
+
+So the names are declared on `EndpointConfig` itself, as `RUNTIME_STATE_NAMES`, and that model
+excludes them from its own `kwargs` serializer. The set of callers that can reach a drain is
+open-ended because the model is public, where a serializer runs on every dump that model has. The
+endpoint re-exports the same tuple rather than keeping its own — one list decides what gets
+written down, and a second copy would eventually be the one that fell behind.
+
+A serializer is not every route out, though, and the two it misses are both public. `dict(config)`
+and `list(config)` go through `BaseModel.__iter__`, which yields the raw values held in `__dict__`
+without running a field serializer at all; `json.dumps(dict(config), default=str)` is an ordinary
+way to write an object to a log or a file. `repr` walks `kwargs` whole for the same reason, so a
+config excluded from every dump still prints its environment into a traceback, a log line, or a
+debugger. Both are closed on the model itself, through `__iter__` and `__repr_args__`, which is
+what keeps the answer independent of which caller is asking.
+
+What that covers is the conversion API: the ways this object offers to turn itself into something
+else. It is not a claim about reflection. `config.__dict__` and `pickle` read the instance's raw
+state and still contain these values, deliberately — the runtime value has to live somewhere for
+the endpoint to use it, and a rule that emptied every raw read would take the working value with
+it. The line is between a route that produces a structure for something else to hold, which is
+what ends up in a log or a file, and a route that reads the object's own memory.
+
+The three channels do not all leave the same thing behind. A dump and a `dict()` omit the key,
+since both are structures a config can be rebuilt from and a placeholder string would hydrate as a
+real value of the wrong type. `repr` reports that a value is set without its contents, because
+nothing is rebuilt from a `repr` and a reader asking why an environment was not applied is
+answered by the key alone.
+
+`copy_runtime_state_to` carries `_runtime_state` shallowly on purpose. `iModel.copy` deep copies
+the config, and a deep copy of a bound callback rebinds it to a copied receiver, so the original
+supervisor would quietly stop hearing from the copy's legs while everything still looked wired.
+
+That transfer only carries what the source is actually holding, which is why `iModel.copy` drains
+the source endpoint *before* copying its config rather than after. A value that arrived through
+`update()` is still sitting in `config.kwargs` and has never been drained, so the source's
+`_runtime_state` is empty: the new endpoint drains the copied `kwargs` correctly at construction,
+and then the transfer overwrites that with the empty mapping. The result is a copy whose child
+gets a default environment and whose spawns are reported to nobody. Draining first means the
+copied config has nothing runtime-only left in it and the live objects move across whole. Reading
+the source's state this way does not take it away — a drain relocates a value without changing
+which one wins in `create_payload` — so the original keeps working after being copied.
+
+**The endpoint-instance route.** `iModel(endpoint=<instance>, ...)` is a supported signature,
+and it takes a branch that keeps the endpoint and discards every other keyword. For most
+keywords that only loses configuration the endpoint already has. For these two it hands the
+child a default environment and leaves the supervisor hearing nothing, with nothing raised and
+nothing logged, which reads exactly like a working leg. A caller who hands over a finished
+endpoint has missed the window below entirely, so `adopt_runtime_state()` places the values on
+the instance — the way that same branch already treats `provider` and `base_url` — and an
+endpoint with no runtime state to hold them refuses rather than dropping them. A `None` is the
+absence of a value there, not an instruction to clear one.
+
+The same deep copy sits on the construction path: `Endpoint.__init__` does
+`config.model_copy(deep=True)` before any subclass code runs, so an endpoint built from a
+prepared `EndpointConfig` would hold a callback bound to a copy of the supervisor. The
+constructors therefore call `take_supplied_runtime_state()` *before* `super().__init__()`, which
+reads the declared names off the object the caller actually handed in, and those values win over
+what the copy produced. Nothing is skipped — the copy still happens and the values still leave
+the serialized config — this only decides which of the two receivers the endpoint ends up
+notifying. A test written with a plain nested function cannot see any of this: `deepcopy` of a
+function returns the same object, and only a bound method has a receiver to rebind.
+
 ### `anthropic/claude_code.py`
 
 - **CLI flag metadata protocol.** Every CLI-mappable `ClaudeCodeRequest` field carries a
