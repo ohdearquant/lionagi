@@ -304,3 +304,40 @@ async def test_an_empty_resumed_stream_notifies_the_status_it_is_converted_to(
     assert result[3] == "failed", "the conversion this test is about did not happen"
     notices = marker.read_text().split() if marker.exists() else []
     assert notices == ["failed"], f"the notice must agree with the returned status; got {notices}"
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_raises_still_reports_before_the_exception_leaves(monkeypatch, tmp_path):
+    """The path where teardown really is the last chance.
+
+    Delivery happens in the tail for every ordinary outcome, because that is
+    where the status stops changing. An exception propagating out of the leg
+    never reaches the tail, so teardown delivers for it — and a failed run is
+    the case the direct path exists for. Without a notice the MCP server that
+    wired `--notify` eventually observes a vanished process and publishes an
+    indeterminate outcome, which is the opposite of what happened here.
+    """
+    _wire_agent_stubs(monkeypatch, tmp_path, persist=None)
+
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    marker = tmp_path / "notices.txt"
+    script = _write_appending_notifier(tmp_path)
+
+    async def operate(self, instruction=None, **kw):
+        raise RuntimeError("the work itself blew up")
+
+    monkeypatch.setattr(Branch, "operate", operate)
+
+    with pytest.raises(RuntimeError, match="blew up"):
+        await agent_mod._run_agent(
+            "codex/model",
+            "do the thing",
+            notify=f"{sys.executable} {script} {marker} {{status}}",
+        )
+
+    notices = marker.read_text().split() if marker.exists() else []
+    assert notices == ["failed"], (
+        f"a run that raised must still report, exactly once; got {notices}"
+    )
