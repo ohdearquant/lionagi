@@ -79,18 +79,18 @@ class TestTheBreakdownSeparatesRoles:
         counts = {e["role"]: e["count"] for e in got["messages_by_role"]}
         assert counts == {"action": 4, "user": 1}
 
-    async def test_the_byte_sum_is_withheld_unless_asked_for(self, temp_db_path: Path):
-        """The companion arm. Every assertion that bytes ARRIVE would pass just as
-        well with the scan running unconditionally, and that is the cost this
-        option exists to avoid paying on every invocation."""
+    async def test_the_breakdown_never_sums_content(self, temp_db_path: Path):
+        """Counts only, and this arm is what keeps it that way. Summing content
+        size is the one query here no index can serve — 57s against 1.68M rows
+        versus under 2s for everything else — so a scan added later would make
+        every `li state stats` pay for it, silently and permanently."""
         async with StateDB() as db:
             await _seed_message(db, role="action", age_days=0, text="some content")
 
-            without = await _collect_message_breakdown(db)
-            with_bytes = await _collect_message_breakdown(db, content_bytes=True)
+            got = await _collect_message_breakdown(db)
 
-        assert "content_bytes" not in without["messages_by_role"][0]
-        assert with_bytes["messages_by_role"][0]["content_bytes"] > 0
+        assert "content_bytes" not in got["messages_by_role"][0]
+        assert set(got["messages_by_role"][0]) == {"role", "count"}
 
 
 class TestTheAgeHistogramIsWhatMakesAKeepWindowCheckable:

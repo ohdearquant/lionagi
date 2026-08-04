@@ -476,7 +476,7 @@ def _db_sizes() -> dict[str, Any]:
     }
 
 
-async def _collect_message_breakdown(db: Any, *, content_bytes: bool = False) -> dict[str, Any]:
+async def _collect_message_breakdown(db: Any) -> dict[str, Any]:
     """Messages by role and by age — the two axes a retention decision is made on.
 
     A total row count cannot say whether a retention setting is able to reclaim
@@ -485,11 +485,11 @@ async def _collect_message_breakdown(db: Any, *, content_bytes: bool = False) ->
     while doing it. The age histogram is what makes that readable before the
     prune runs rather than after it has run and changed nothing.
 
-    ``content_bytes`` adds each role's summed content length, and is off by
-    default because it is the one query here that no index can serve. Measured
-    on a 1.68M-row store: role counts 0.9s, age counts 0.5s, byte sum 57s.
-    Bytes are what say which role is worth reclaiming, so the option exists;
-    charging every ``li state stats`` for it does not follow.
+    Counts only. Summing content size is the one query here no index can serve
+    (57s against 1.68M rows, versus under 2s for everything else), and the
+    command that reclaims that content reports the size of the exact population
+    it is about to touch — which is the same number, measured where the decision
+    is actually taken.
     """
     import time as _time
 
@@ -511,27 +511,6 @@ async def _collect_message_breakdown(db: Any, *, content_bytes: bool = False) ->
         )
 
     by_role: list[dict[str, Any]] = [{"role": r["r"], "count": r["n"]} for r in role_rows]
-
-    if content_bytes:
-        async with db._read() as conn:
-            byte_rows = (
-                (
-                    await conn.execute(
-                        text(
-                            "SELECT role AS r, SUM(LENGTH(content)) AS b "
-                            "FROM messages GROUP BY role"
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        # LENGTH() over a JSON column measures the stored text, which is what
-        # occupies the file. It is not the same as the page count the row costs
-        # and is not presented as one.
-        sized = {r["r"]: r["b"] or 0 for r in byte_rows}
-        for entry in by_role:
-            entry["content_bytes"] = sized.get(entry["role"], 0)
 
     by_age: list[dict[str, Any]] = []
     for days in _MESSAGE_AGE_DAYS:
@@ -567,7 +546,7 @@ async def _collect_message_breakdown(db: Any, *, content_bytes: bool = False) ->
     }
 
 
-async def _collect_stats(db: Any, *, content_bytes: bool = False) -> dict[str, Any]:
+async def _collect_stats(db: Any) -> dict[str, Any]:
     """Row counts, the message breakdown, the session status distribution, and the pragmas."""
     from sqlalchemy import text
 
@@ -605,7 +584,7 @@ async def _collect_stats(db: Any, *, content_bytes: bool = False) -> dict[str, A
             row = (await conn.execute(text(f"PRAGMA {pragma}"))).first()
         pragmas[pragma] = row[0] if row else None
 
-    breakdown = await _collect_message_breakdown(db, content_bytes=content_bytes)
+    breakdown = await _collect_message_breakdown(db)
 
     return {
         "row_counts": counts,
@@ -618,7 +597,7 @@ async def _collect_stats(db: Any, *, content_bytes: bool = False) -> dict[str, A
     }
 
 
-async def _print_stats(*, content_bytes: bool = False) -> None:
+async def _print_stats() -> None:
     from lionagi.state.db import StateDB
 
     sizes = _db_sizes()
@@ -636,7 +615,7 @@ async def _print_stats(*, content_bytes: bool = False) -> None:
         return
 
     async with StateDB() as db:
-        collected = await _collect_stats(db, content_bytes=content_bytes)
+        collected = await _collect_stats(db)
 
     print("Row counts:")
     for table, n in collected["row_counts"].items():
@@ -646,14 +625,9 @@ async def _print_stats(*, content_bytes: bool = False) -> None:
     print("Messages by role:")
     for entry in collected["messages_by_role"]:
         label = "(null)" if entry["role"] is None else entry["role"]
-        line = f"  {label:<14} {entry['count']:>10}"
-        if "content_bytes" in entry:
-            line += f"  {_format_bytes(entry['content_bytes']):>10} of content"
-        print(line)
+        print(f"  {label:<14} {entry['count']:>10}")
     if not collected["messages_by_role"]:
         print("  (none)")
-    if not content_bytes:
-        print("  (pass --content-bytes for per-role size; it is a full scan)")
     print()
 
     print("Messages by age:")
@@ -1283,8 +1257,10 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
 
-    # li state stats
-    stats = state_sub.add_parser(
+    # li state stats — no flags, and the machine surface takes none either, so
+    # its projected schema stays empty and the two cannot describe different
+    # commands.
+    state_sub.add_parser(
         "stats",
         help="Print DB/WAL size, row counts, message role/age breakdown, and lifecycle health.",
         description=(
@@ -1294,15 +1270,6 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
             "wal_autocheckpoint, busy_timeout). Use to spot growth and "
             "lock contention, and to check before pruning whether the "
             "keep-window can reach anything at all."
-        ),
-    )
-    stats.add_argument(
-        "--content-bytes",
-        action="store_true",
-        help=(
-            "Also sum each role's stored content size. No index can serve this, so it "
-            "scans every message row: measured at 57s on a 1.7M-row store against under "
-            "2s for the rest of this command."
         ),
     )
 
@@ -1442,7 +1409,7 @@ def run_state(args: argparse.Namespace) -> int:
         return 0
 
     if args.state_command == "stats":
-        run_async(_print_stats(content_bytes=args.content_bytes))
+        run_async(_print_stats())
         return 0
 
     if args.state_command == "checkpoint":
@@ -1545,8 +1512,6 @@ async def _machine_stats_data() -> dict[str, Any]:
     result["sessions_by_status"] = available(collected["sessions_by_status"])
     # Carried here for the same reason _STATS_TABLES is named once: a machine
     # caller and the printout must not come to describe different databases.
-    # content_bytes is never requested on this path — a full scan behind an
-    # MCP call is a cost the caller cannot see coming.
     result["messages_by_role"] = available(collected["messages_by_role"])
     result["messages_by_age"] = available(collected["messages_by_age"])
     result["oldest_message_age_days"] = available(collected["oldest_message_age_days"])
