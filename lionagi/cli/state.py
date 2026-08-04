@@ -1513,6 +1513,7 @@ async def _machine_stats_data() -> dict[str, Any]:
             result["sessions_by_status"] = absent
             result["messages_by_role"] = absent
             result["messages_by_age"] = absent
+            result["oldest_message_age_days"] = absent
             result["journal_mode"] = absent
             return result
         collected = await _collect_stats(db)

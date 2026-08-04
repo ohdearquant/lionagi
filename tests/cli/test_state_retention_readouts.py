@@ -222,6 +222,44 @@ class TestThePruneCannotReportAnOutcomeNothingContradicts:
         assert check["oldest_session_age_days"] is None
 
 
+class TestTheMachineResultDescribesTheSameStoreOnBothPaths:
+    """A field that vanishes when the store is absent is worse than one reporting
+    absence, because the caller cannot tell it apart from a field that was never
+    part of the schema.
+
+    The arm asserts the two branches carry the SAME KEY SET rather than checking
+    for particular names. Listing names is what let this through in the first
+    place: three fields were added to the present branch and two to the absent
+    one, and no assertion in the file was about the relationship between them.
+    Written this way the next field added to either branch has to be added to
+    both, and nobody has to remember that it does.
+    """
+
+    async def test_both_branches_carry_the_same_keys(self, temp_db_path: Path):
+        from lionagi.cli.state import _machine_stats_data
+
+        async with StateDB() as db:
+            await _seed_message(db, role="action", age_days=1)
+        present = await _machine_stats_data()
+
+        # Point the reader at a path with no store. The absent branch is reached
+        # by the store being gone, not by an argument, so this is the only way in.
+        missing = temp_db_path.parent / "no-such-store.db"
+        import lionagi.state.db as dbm
+
+        original = dbm.DEFAULT_DB_PATH
+        dbm.DEFAULT_DB_PATH = missing
+        try:
+            absent = await _machine_stats_data()
+        finally:
+            dbm.DEFAULT_DB_PATH = original
+
+        # Positive control: the two calls really did take different branches,
+        # otherwise identical key sets would prove nothing at all.
+        assert present["row_counts"] != absent["row_counts"]
+        assert set(present) == set(absent)
+
+
 class TestTheBannerFiresOnTheStateItNames:
     """The advisory reads the age, and the age means two OPPOSITE things.
 
