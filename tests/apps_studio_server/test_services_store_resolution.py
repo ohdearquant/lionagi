@@ -181,10 +181,86 @@ def test_history_enrichment_is_dropped_rather_than_read_from_a_stale_file(tmp_pa
     assert got["content"] == "what is on disk now", (
         "the disk half is correct whatever the store is, and must still be answered"
     )
-    assert got["versions"] == [], "history came from a database this deployment does not serve"
-    assert got["version"] == 0
-    assert listed[0]["has_versions"] is False
-    assert listed[0]["version"] == 0
+    # The stale local file must not be the source, and "unreadable" must not be
+    # dressed up as "empty": an empty history is a claim about the definition,
+    # and the true statement here is about the store. A caller told there are no
+    # versions concludes nothing was ever saved, which is the opposite of true.
+    assert "what the old local database holds" not in str(got)
+    assert got["history_available"] is False
+    assert got["versions"] is None, "an unreadable history is null, never an empty list"
+    assert got["version"] is None
+    assert listed[0]["history_available"] is False
+    assert listed[0]["has_versions"] is None, "unknown, not False"
+
+
+def test_the_routes_that_are_only_history_refuse_rather_than_report_absence(tmp_path, monkeypatch):
+    """A version read and a rollback have no disk half to fall back on, so an
+    unreadable store leaves them nothing true to say. Answering 404 would say
+    the store was read and does not have this version.
+
+    503 rather than 501: every store this deployment can be configured for is
+    one StateDB reads, so an unreadable one is an operational condition a retry
+    can outlive. The Operator routes answer 501 for the opposite reason, their
+    store being SQLite-only, and the two must not be conflated.
+
+    The port is one nothing listens on, so the connection is refused rather
+    than hanging.
+    """
+    from fastapi.testclient import TestClient
+
+    default = tmp_path / "state.db"
+    disk = tmp_path / "agents"
+    disk.mkdir()
+    (disk / "demo.md").write_text("what is on disk now")
+    _configure(monkeypatch, default=default, url="postgresql://user:secret@127.0.0.1:1/db")
+
+    import lionagi.studio.services.definitions as definitions_mod
+
+    monkeypatch.setitem(definitions_mod.KIND_DIRS, "agent", disk)
+
+    from lionagi.studio.app import app
+
+    with TestClient(app, base_url="http://127.0.0.1:8765", raise_server_exceptions=False) as client:
+        version_read = client.get("/api/definitions/agent/demo/versions/1")
+        rollback = client.post("/api/definitions/agent/demo/rollback?version=1")
+
+    for label, response in (("version read", version_read), ("rollback", rollback)):
+        assert response.status_code == 503, f"{label}: {response.text}"
+        # The body is the fixed refusal and carries nothing the driver said.
+        # Asserting that directly, rather than searching the body for the
+        # password: the five store failures reachable from here name a socket
+        # or a plugin and never quote the URL, so a search for the credential
+        # passes whether or not anything guards it. What is worth pinning is
+        # that the driver's message does not reach the caller at all, which is
+        # the property that keeps this true for a driver that does quote it.
+        assert response.json()["detail"] == definitions_mod._HISTORY_UNAVAILABLE_DETAIL, (
+            f"{label} passed the driver's own message through"
+        )
+
+
+def test_a_readable_store_still_answers_those_routes(tmp_path, monkeypatch):
+    """The over-refusal arm for the pair above. Without it, a version route
+    that refused unconditionally would pass that test."""
+    from fastapi.testclient import TestClient
+
+    store = tmp_path / "state.db"
+    _seed_definition(store, content="what the database holds", message="recorded")
+    disk = tmp_path / "agents"
+    disk.mkdir()
+    (disk / "demo.md").write_text("what is on disk now")
+    _configure(monkeypatch, default=store, url=None)
+
+    import lionagi.studio.services.definitions as definitions_mod
+
+    monkeypatch.setitem(definitions_mod.KIND_DIRS, "agent", disk)
+
+    from lionagi.studio.app import app
+
+    with TestClient(app, base_url="http://127.0.0.1:8765", raise_server_exceptions=False) as client:
+        response = client.get("/api/definitions/agent/demo/versions/1")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["content"] == "what the database holds"
 
 
 def test_history_enrichment_still_happens_against_the_configured_file(tmp_path, monkeypatch):

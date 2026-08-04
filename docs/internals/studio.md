@@ -47,9 +47,13 @@ in-memory store, because raising there aborts the whole lifespan and the
 daemon serves nothing, including the routes whose whole job is to say this
 condition cannot be served. `OperatorStore.path()` raises the same
 `StoreNotAddressableError` as the rest of the SQLite-direct layer rather than
-an `OperatorStoreError`, so its routes answer 501 (permanent) instead of 503
-(retryable), and the definition of which stores this layer can open stays in
-one place.
+an `OperatorStoreError`, so the routes that open the store answer 501
+(permanent) instead of 503 (retryable), and the definition of which stores this
+layer can open stays in one place. The qualifier is doing work: a route that
+never opens the store is unaffected and answers normally in every mode.
+`GET /operator/models` returns its catalog from `operator/catalog.py` and so
+returns 200 against a server-backed store like any other, which is worth
+knowing before reading a 200 there as evidence that the store is reachable.
 
 ## lionagi/studio/cli.py
 
@@ -247,17 +251,33 @@ message ids) must not fall through to `0 or fallback`.
 - **`_find_definition_file`** — Candidates are literal-path joins, not glob
   patterns. Symlinks outside `base` are intentionally left unresolved and
   unrestricted — restricting them would break symlinked agent definitions.
-- **`_ensure_db` and the mixed-source reads** — `list_definitions` and
-  `get_definition` answer from two stores at once: current content from disk,
-  version history from SQLite. `save_definition` writes through `StateDB`, so
-  on a server-backed store the history lands in the server while the read side
-  falls back to the default local path — an old local database still present
-  from a previous deployment, reported as this definition's versions over
-  content read live from disk. `_ensure_db` answers False for a store with no
-  file for that reason, so the disk half is still served and the history is
-  simply left out. Routes whose whole answer *is* history (`get_version`)
-  refuse with `require_file_store` instead; the difference is whether dropping
-  the DB half leaves a usable answer.
+- **The mixed-source reads** — `list_definitions` and `get_definition` answer
+  from two places at once: current content from disk, version history from the
+  store. Both halves now resolve the same way, because history is read through
+  `StateDB` exactly as `save_definition` writes it. Reading SQLite directly was
+  the failure this replaces: writes went through `StateDB` and landed in the
+  configured server while reads fell back to the default local path, so an old
+  local database left over from a previous deployment was reported as this
+  definition's versions, laid over content read live from disk. Nothing in that
+  payload looks wrong; the two halves simply came from different stores.
+
+  When the store cannot be read at all, the disk half is still answered and the
+  history half is null rather than empty. The distinction is the point: an
+  empty history is a claim about the definition, and a caller told there are no
+  versions concludes nothing was ever saved. The true statement is about the
+  store, so `get_definition` returns `versions: null` with
+  `history_available: false`, and `list_definitions` reports `has_versions:
+  null` for the same reason. A client that does not handle it fails on a null
+  instead of quietly believing the definition was never versioned.
+
+  Routes whose whole answer *is* history have no disk half to fall back on, so
+  they refuse: `get_version` and `rollback_definition` raise
+  `HistoryUnavailableError` and the routes map it to 503. 503 rather than the 501
+  the Operator routes use, and the two are not interchangeable — every store
+  this deployment can be configured for is one `StateDB` reads, so failing to
+  read it is an operational condition a retry can outlive, where the Operator's
+  SQLite-only store makes the refusal permanent for that deployment. The
+  refusal body is a fixed string and carries nothing the driver said.
 
 ## lionagi/studio/services/playbooks.py
 
