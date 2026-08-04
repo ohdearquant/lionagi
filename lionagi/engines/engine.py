@@ -428,6 +428,12 @@ class EngineRun:
             cwd=cwd,
             system_prompt=extra_prompt,
             khive_injection=injection,
+            # Read off the engine rather than defaulted here: create_agent is
+            # the single grant site, and a grant this path could not express
+            # was the whole defect -- a headless CLI cannot prompt for a tool
+            # permission, so a leg spawned without this is denied every tool
+            # call and reports success with nothing in it.
+            yolo=self.engine.yolo,
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
@@ -743,12 +749,21 @@ class Engine:
         agent_cwd: str | None = None,
         agent_extra_prompt: str | None = None,
         khive_injection: Any = None,
+        yolo: bool = False,
     ) -> None:
         # Run-wide agent defaults: pin every agent to a working directory (e.g. a
         # provisioned worktree) and/or a shared standards prompt; per-call
         # make_agent(cwd=..., extra_prompt=...) still wins.
         self.agent_cwd = agent_cwd
         self.agent_extra_prompt = agent_extra_prompt
+        # Auto-approve tool permission requests for every agent this engine
+        # spawns, applied per provider from the same table the CLI and profile
+        # paths use. Default False: auto-approving tool execution is not
+        # something a caller should receive without asking for it. What this
+        # switch buys is that asking is now POSSIBLE from here -- without it the
+        # table is unreachable on this path, and a CLI that cannot prompt for a
+        # permission has no way to be granted one.
+        self.yolo = yolo
         # Run-wide khive context-injection default for every stage agent
         # (True/mapping/policy enable, False disables even a profile opt-in,
         # None defers to each stage role's agent profile).
