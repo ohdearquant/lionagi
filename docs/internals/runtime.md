@@ -858,6 +858,29 @@ child exists and before any output is read. Three things about that record are l
   a completed graceful path has already waited the child, and signalling a pid asyncio has
   reaped is how a stranger's group gets killed.
 
+- **The record exists even when nothing recorded it.** The OS has already started the child by
+  the time `create_subprocess_exec` resumes, so a cancellation landing in the window before it
+  returns leaves a running leg that this process holds no handle for and that no callback has
+  seen — unreachable by teardown and by any later sweep over the records. The creation is
+  therefore shielded so the handle still arrives, and a done-callback ends that child's group
+  from outside the coroutine that unwound. The callback retrieves the task's exception either
+  way, or a cancelled spawn is reported at exit as a never-retrieved failure.
+
+`end_child_group()` is what every teardown path calls, and it differs from the graceful helper
+on two counts. It drains the *group* rather than the process: the graceful helper returns as
+soon as the process it holds a handle to is gone, and a descendant that ignores `SIGTERM`
+outlives a parent that does not, so the group is read afterwards and killed if anyone is still
+in it. And it cannot be interrupted into leaving something running, via the synchronous
+backstop described above.
+
+Both of those kills fire only on *positive* evidence that the group id is still this child's,
+because the other direction is worse than an orphan. After a completed graceful pass the child
+has been waited and its pid may already belong to someone else, so the evidence there is a live
+member — an occupied group is never reissued. On the cancelled path the child has not been
+waited at all, so the id is unambiguously ours. A scan that could not read the whole process
+table and saw no members leaves emptiness *unproved*, and nothing signals on that: an
+unprovable group and a reissued one look identical from here.
+
 The group in the record is the *initial* one. A process group is not a containment boundary: a
 child or descendant that calls `setsid()` leaves it and the record then says nothing about that
 process. A caller who needs "nothing the leg started survives" must either require
@@ -868,10 +891,27 @@ non-daemonizing CLIs or use a platform containment primitive.
 qualifier answers a different channel and none implies the others: `exclude` keeps them out of
 dumps, `SkipJsonSchema` keeps them out of the generated schema (a callable has none, so
 `model_json_schema()` raises without it, which breaks every path that persists a request),
-and `repr=False` keeps a complete child environment out of log lines and exception text. The
-`env` validator raises `TypeError` rather than `ValueError` for the same reason: pydantic turns
-`ValueError` into a `ValidationError` that quotes the whole rejected mapping, so the error path
-would print every value beside the one bad entry.
+and `repr=False` keeps a complete child environment out of log lines and exception text.
+
+Those qualifiers all govern *the model*, and the model is not the only thing that prints a
+child environment. Pydantic renders the input of a failing `mode="before"` validator verbatim,
+and a model-level one holds the whole raw mapping, so a request rejected for a reason having
+nothing to do with `env` — an empty prompt, say — quotes every variable beside the reason. The
+redaction therefore happens at the top of every model-level before-validator and before
+anything there can raise: `env` is replaced by an equal `RedactedEnv`, a real mapping that
+reports `<env: N variable(s)>` instead of itself. Carrying it on the value rather than at each
+error site is what stops a validator added later from reopening the channel by not knowing
+about it, and it is why the two providers each redact at their own validator entry.
+
+Two rejections stay explicit because the redaction cannot reach them:
+
+- An `env` that is not a mapping at all is left alone by the substitution, so the field
+  validator rejects it itself rather than leaving it for pydantic to quote.
+- A mapping with bad entries is rejected as `TypeError`, not `ValueError`: pydantic converts
+  `ValueError` and `AssertionError` into a `ValidationError` that quotes the rejected input and
+  lets everything else propagate untouched. The message names string keys, because a string key
+  is a variable *name* and naming it is what makes the error actionable; a key of any other type
+  is not a name and is reported by position and type only. Values are never printed.
 
 `_runtime_state_fields` on the endpoint does two jobs for those fields, and both are about a
 value that must stay in memory:
@@ -891,6 +931,16 @@ value that must stay in memory:
 `copy_runtime_state_to` carries `_runtime_state` shallowly on purpose. `iModel.copy` deep copies
 the config, and a deep copy of a bound callback rebinds it to a copied receiver, so the original
 supervisor would quietly stop hearing from the copy's legs while everything still looked wired.
+
+The same deep copy sits on the construction path: `Endpoint.__init__` does
+`config.model_copy(deep=True)` before any subclass code runs, so an endpoint built from a
+prepared `EndpointConfig` would hold a callback bound to a copy of the supervisor. The
+constructors therefore call `take_supplied_runtime_state()` *before* `super().__init__()`, which
+reads the declared names off the object the caller actually handed in, and those values win over
+what the copy produced. Nothing is skipped — the copy still happens and the values still leave
+the serialized config — this only decides which of the two receivers the endpoint ends up
+notifying. A test written with a plain nested function cannot see any of this: `deepcopy` of a
+function returns the same object, and only a bound method has a receiver to rebind.
 
 ### `anthropic/claude_code.py`
 

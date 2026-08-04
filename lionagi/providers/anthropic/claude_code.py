@@ -21,11 +21,14 @@ from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_r
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
+    RedactedEnv,
     SpawnedProcess,
     build_declarative_cli_args,
     discover_cli,
     ndjson_from_cli,
     print_readable,
+    raise_if_env_is_not_a_string_map,
+    redact_runtime_fields_in_place,
     resolve_cli_workspace,
 )
 from lionagi.providers._cli_subprocess import (
@@ -232,16 +235,20 @@ class ClaudeCodeRequest(BaseModel):
     @field_validator("env", mode="before")
     @classmethod
     def _env_is_a_string_map(cls, value):
-        """Reject a malformed environment naming only the keys, never the values.
+        """Reject a malformed environment without printing anything from it.
 
         A child environment routinely holds credentials, and a pydantic
         ValidationError quotes the whole rejected input into its message, so
         letting the ordinary string check fail here would print every value in
         the map beside the one bad entry. TypeError is the escape: pydantic
         converts ValueError and AssertionError into validation errors and lets
-        anything else propagate untouched, so this reports the offending keys
-        and nothing else reaches a traceback or a log line. It is also the
-        right exception for a wrongly typed mapping.
+        anything else propagate untouched, so nothing from the mapping reaches
+        a traceback or a log line. It is also the right exception for a wrongly
+        typed mapping.
+
+        What survives is a RedactedEnv, so the mapping stays unprintable for
+        every later validator too — this one is not the only thing that can
+        fail with the request in hand.
         """
         if value is None:
             return value
@@ -251,14 +258,8 @@ class ClaudeCodeRequest(BaseModel):
             raise TypeError(
                 f"env must be a mapping of strings to strings, got {type(value).__name__}"
             )
-        bad = sorted(
-            str(k) for k, v in value.items() if not isinstance(k, str) or not isinstance(v, str)
-        )
-        if bad:
-            raise TypeError(
-                "env must map strings to strings; these entries do not: " + ", ".join(bad)
-            )
-        return dict(value)
+        raise_if_env_is_not_a_string_map(value)
+        return RedactedEnv(value)
 
     # ── features (order 80–89) ────────────────────────────────────
     chrome: bool | None = Field(
@@ -364,6 +365,9 @@ class ClaudeCodeRequest(BaseModel):
 
     @model_validator(mode="before")
     def _validate_message_prompt(cls, data):
+        # First, before anything here can raise: this validator holds the whole
+        # raw input, and pydantic quotes a failing validator's input verbatim.
+        redact_runtime_fields_in_place(data)
         if "prompt" in data and data["prompt"]:
             return data
 
@@ -902,8 +906,11 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("claude_handlers", None)
+        # Before super(), which deep-copies a supplied config: see
+        # take_supplied_runtime_state for what that copy does to a bound method.
+        supplied = self.take_supplied_runtime_state(config, kwargs)
         super().__init__(config=config, **kwargs)
-        self._init_handlers(handlers)
+        self._init_handlers(handlers, supplied=supplied)
 
     @property
     def claude_handlers(self):

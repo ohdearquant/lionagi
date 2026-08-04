@@ -14,8 +14,10 @@ once the child is reaped.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import signal
 import sys
 
 import pytest
@@ -66,6 +68,85 @@ _ECHO_ENV = (
 # under the sleepers' 30s, so expiry means teardown did not run rather than
 # meaning the child finished by itself.
 _TEARDOWN_DEADLINE = 15.0
+
+_REQUEST_MODELS = [
+    "lionagi.providers.anthropic.claude_code:ClaudeCodeRequest",
+    "lionagi.providers.openai.codex:CodexCodeRequest",
+]
+
+# The descendant these tests are actually about. It ignores SIGTERM, writes its
+# own pid where the test can read it, and then outlives anything polite.
+_STUBBORN_DESCENDANT = (
+    "import os, signal, sys, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+    "time.sleep(60)\n"
+)
+
+# A CLI parent that starts that descendant inside its own group and then reports
+# ready. The parent itself dies promptly on SIGTERM, which is the shape that
+# matters: waiting the process a handle points at is not draining the group it
+# leads, so a teardown that equates the two leaves the descendant running.
+_PARENT_WITH_STUBBORN_CHILD = (
+    "import os, subprocess, sys, time\n"
+    "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])\n"
+    "while not os.path.exists(sys.argv[2]):\n"
+    "    time.sleep(0.02)\n"
+    "open(sys.argv[3], 'w').close()\n"
+    "time.sleep(60)\n"
+)
+
+
+def _stubborn_cmd(kid_pid_file, ready_file) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        _PARENT_WITH_STUBBORN_CHILD,
+        _STUBBORN_DESCENDANT,
+        str(kid_pid_file),
+        str(ready_file),
+    ]
+
+
+async def _wait_for_file(path, limit: float = 15.0) -> bool:
+    loop = asyncio.get_running_loop()
+    until = loop.time() + limit
+    while loop.time() < until:
+        if path.exists():
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+def _is_alive(pid: int) -> bool:
+    """Alive and not a corpse. A zombie answers signal 0 and is not running."""
+    import psutil
+
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.Error:
+        return False
+
+
+async def _assert_dies(pid: int, what: str, deadline: float = _TEARDOWN_DEADLINE) -> None:
+    """Fail unless *pid* is gone within the deadline, and never leave it running.
+
+    Separate from :func:`_await_death` on two counts, both about a pid this
+    process did not spawn. It is not our child, so nothing here reaps it and it
+    can sit as a zombie that ``os.kill(pid, 0)`` answers for; status is what
+    distinguishes a corpse from a runner. And it ignores SIGTERM and sleeps for
+    a minute, so a failing assertion that merely reported would leave it behind
+    for every later test in the session to trip over.
+    """
+    loop = asyncio.get_running_loop()
+    until = loop.time() + deadline
+    while loop.time() < until:
+        if not _is_alive(pid):
+            return
+        await asyncio.sleep(0.05)
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGKILL)
+    pytest.fail(f"{what} ({pid}) outlived the teardown by {deadline}s")
 
 
 def _cmd(script: str) -> list[str]:
@@ -707,22 +788,228 @@ class TestTheConfigRouteKeepsThemOutOfWhatIsSerialised:
         assert payload["request"].on_spawn is recorder
 
     @pytest.mark.parametrize("provider", ["claude_code", "codex"])
-    def test_a_copy_gets_the_same_callback_object_not_a_copy_of_it(self, provider):
-        """``iModel.copy`` deep copies the config. A deep copy of a bound
-        callback rebinds it to a copied receiver, so the original supervisor
-        would quietly stop hearing from the copy's legs while everything still
-        looked wired."""
+    def test_a_copy_still_notifies_the_original_supervisor(self, provider):
+        """``iModel.copy`` deep copies the config, and a deep copy of a bound
+        callback copies its receiver too — so the copy's legs would report to a
+        copied supervisor while the real one, which owns the durable process
+        accounting, hears nothing and every wiring check still passes.
+
+        It has to be a BOUND method. ``deepcopy`` of a plain function returns
+        the same object, so a test written with a nested function stays green
+        against an implementation that deep copies everything, which is the one
+        thing it exists to catch.
+        """
         from lionagi.service.imodel import iModel
 
-        def recorder(spawned):
-            return None
-
-        imodel = iModel(provider=provider, env={"TOKEN": self.SECRET}, on_spawn=recorder)
+        supervisor = _Supervisor()
+        imodel = iModel(provider=provider, env={"TOKEN": self.SECRET}, on_spawn=supervisor.observe)
         clone = imodel.copy()
 
         payload, _ = clone.endpoint.create_payload({"prompt": "hi"})
-        assert payload["request"].on_spawn is recorder
+        payload["request"].on_spawn("spawned")
+
+        assert supervisor.seen == ["spawned"], "the copy reported to a different supervisor"
+        assert payload["request"].env == {"TOKEN": self.SECRET}, "the copy lost the environment"
         assert self.SECRET not in json.dumps(clone.to_dict())
+
+    @pytest.mark.parametrize(
+        "endpoint_path",
+        [
+            "lionagi.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
+            "lionagi.providers.openai.codex:CodexCLIEndpoint",
+        ],
+    )
+    def test_a_supplied_config_still_notifies_the_original_supervisor(self, endpoint_path):
+        """The other construction route. ``Endpoint.__init__`` copies a supplied
+        ``EndpointConfig`` with ``model_copy(deep=True)`` before anything of
+        ours runs, so the runtime values have to be lifted off the caller's own
+        object first or the endpoint holds the copy's rebound callback."""
+        import copy as copy_module
+
+        endpoint_cls = _load(endpoint_path)
+        supervisor = _Supervisor()
+
+        config = copy_module.deepcopy(endpoint_cls().config)
+        config.kwargs["on_spawn"] = supervisor.observe
+        config.kwargs["env"] = {"TOKEN": self.SECRET}
+
+        endpoint = endpoint_cls(config=config)
+        payload, _ = endpoint.create_payload({"prompt": "hi"})
+        payload["request"].on_spawn("spawned")
+
+        assert supervisor.seen == ["spawned"]
+        assert payload["request"].env == {"TOKEN": self.SECRET}
+        assert self.SECRET not in json.dumps(endpoint.to_dict())
+
+
+class _Supervisor:
+    """Stands in for the thing that owns durable process accounting.
+
+    Its ``observe`` is a bound method precisely because that is what a deep
+    copy rebinds; a module-level function would be copied to itself and prove
+    nothing.
+    """
+
+    def __init__(self):
+        self.seen: list[object] = []
+
+    def observe(self, spawned):
+        self.seen.append(spawned)
+
+
+class TestTheEnvironmentSurvivesNoErrorPath:
+    """``repr=False`` governs the model's own representation. It says nothing
+    about the channel pydantic opens when a DIFFERENT validator fails: the
+    input of a failing model-level validator is rendered verbatim, and at that
+    point the input is the caller's whole raw mapping."""
+
+    SECRET = "leaked-credential-value"
+
+    @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
+    def test_an_unrelated_validation_failure_prints_no_variable(self, model_path):
+        model = _load(model_path)
+
+        with pytest.raises(Exception) as excinfo:  # noqa: B017 - the type is the point below
+            model(env={"TOKEN": self.SECRET})
+
+        message = str(excinfo.value)
+        assert self.SECRET not in message
+        # The request really was rejected, so the absence above is a redaction
+        # and not a request that quietly succeeded.
+        assert "env" not in message or "variable(s)" in message
+        assert excinfo.type.__name__ == "ValidationError"
+
+    @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
+    def test_a_non_string_key_is_reported_by_position_not_printed(self, model_path):
+        """A string key is a variable NAME and naming it is what makes the
+        error actionable. A key of any other type is not a name, and printing
+        it prints whatever the caller put in it."""
+        model = _load(model_path)
+        secret_key = (self.SECRET,)
+
+        with pytest.raises(TypeError) as excinfo:
+            model(prompt="hi", env={secret_key: "ok"})
+
+        message = str(excinfo.value)
+        assert self.SECRET not in message
+        assert "entry 0" in message and "tuple" in message
+
+    @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
+    def test_a_string_key_is_still_named_because_a_name_is_not_a_secret(self, model_path):
+        model = _load(model_path)
+
+        with pytest.raises(TypeError) as excinfo:
+            model(prompt="hi", env={"CARGO_TARGET_DIR": 3})
+
+        assert "CARGO_TARGET_DIR" in str(excinfo.value)
+
+    @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
+    def test_an_environment_that_is_not_a_mapping_is_not_printed(self, model_path):
+        """The redaction substitutes one mapping for another. A caller who
+        passes a sequence of pairs — a plausible way to build an environment —
+        goes past it untouched, so this rejection is the only thing standing
+        between that value and an error that would quote the whole of it."""
+        model = _load(model_path)
+
+        with pytest.raises(TypeError) as excinfo:
+            model(prompt="hi", env=[("TOKEN", self.SECRET)])
+
+        message = str(excinfo.value)
+        assert self.SECRET not in message
+        assert "list" in message
+
+
+class TestTheWholeGroupIsEnded:
+    """A CLI leg is a group, not a process.
+
+    Every spawn here uses ``start_new_session``, so the child leads a group that
+    holds whatever it starts. Teardown that waits the handle it holds is waiting
+    one member of that group; the rest are reparented and keep running, and
+    nothing in the parent's own state says so. These use a descendant that
+    ignores SIGTERM, because a cooperative one dies to the polite signal and
+    makes every version of this path look identical.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_failing_recorder_ends_the_descendants_too(self, tmp_path):
+        kid_pid = tmp_path / "kid.pid"
+        ready = tmp_path / "ready"
+
+        async def boom(spawned: SpawnedProcess) -> None:
+            assert await _wait_for_file(ready), "the leg never reported ready"
+            raise RuntimeError("cannot record")
+
+        with pytest.raises(RuntimeError):
+            await _drain(ndjson_from_cli(_stubborn_cmd(kid_pid, ready), on_spawn=boom))
+
+        await _assert_dies(int(kid_pid.read_text()), "the descendant of a failed spawn")
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_stream_ends_the_descendants_too(self, tmp_path):
+        """The recorder succeeds here, so the record exists and the ordinary
+        teardown runs. That is the reassuring case, and it is where the direct
+        child dies promptly to SIGTERM, the wait it is being watched by returns,
+        and the escalation that would have reached the rest of the group never
+        fires."""
+        kid_pid = tmp_path / "kid.pid"
+        ready = tmp_path / "ready"
+        recorded: list[SpawnedProcess] = []
+
+        task = asyncio.create_task(
+            _drain(ndjson_from_cli(_stubborn_cmd(kid_pid, ready), on_spawn=recorded.append))
+        )
+        assert await _wait_for_file(ready), "the leg never reported ready"
+        assert recorded, "the recorder never fired"
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        await _assert_dies(int(kid_pid.read_text()), "the descendant of a cancelled stream")
+        await _await_death(recorded[0].pid)
+
+
+class TestACancellationBeforeTheHandleArrives:
+    @pytest.mark.asyncio
+    async def test_a_child_started_but_never_returned_is_still_ended(self, tmp_path, monkeypatch):
+        """The OS has already started the child by the time
+        ``create_subprocess_exec`` resumes. A cancellation landing in the window
+        before it returns leaves a running leg that this process holds no handle
+        for and that no callback has recorded, so neither the teardown below nor
+        any later sweep over the records can reach it.
+
+        The window is widened deliberately. It is real and short, and a test
+        that raced it would pass on timing rather than on the shield.
+        """
+        kid_pid = tmp_path / "kid.pid"
+        ready = tmp_path / "ready"
+        started: list[int] = []
+        recorded: list[SpawnedProcess] = []
+        real = asyncio.create_subprocess_exec
+
+        async def slow(*args, **kwargs):
+            proc = await real(*args, **kwargs)
+            started.append(proc.pid)
+            await asyncio.sleep(2.0)
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", slow)
+
+        task = asyncio.create_task(
+            _drain(ndjson_from_cli(_stubborn_cmd(kid_pid, ready), on_spawn=recorded.append))
+        )
+        assert await _wait_for_file(ready), "the leg never reported ready"
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        # The premise, asserted rather than assumed: the OS made the child and
+        # nothing recorded it. Without both, this passes for the wrong reason.
+        assert started, "the spawn never reached the OS"
+        assert not recorded, "the cancellation did not land inside the spawn window"
+
+        await _assert_dies(int(kid_pid.read_text()), "the descendant of an abandoned spawn")
+        await _assert_dies(started[0], "the abandoned leg")
 
 
 def _load(path: str):

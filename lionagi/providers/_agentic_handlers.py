@@ -22,7 +22,36 @@ class AgenticHandlersMixin:
     # survive create_payload's rebuild. See _carried_runtime_state.
     _runtime_state_fields: ClassVar[tuple[str, ...]] = ()
 
-    def _init_handlers(self, handlers: dict | None = None) -> None:
+    @classmethod
+    def take_supplied_runtime_state(cls, config, kwargs: dict) -> dict:
+        """Lift the declared runtime values off the caller's OWN objects.
+
+        Called before ``Endpoint.__init__``, which copies a supplied
+        ``EndpointConfig`` with ``model_copy(deep=True)``. A deep copy of a
+        bound method copies its receiver too, so the callback that reaches the
+        CLI would notify a copy of the supervisor while the real one — the
+        thing that owns the durable process accounting — hears nothing, and
+        every wiring check still passes. Reading the values here, from the
+        object the caller handed in, is what preserves identity.
+
+        Nothing is mutated: the copy still happens and the copied values are
+        still removed from the serialized config afterwards. This only decides
+        which of the two the endpoint ends up holding.
+        """
+        taken: dict[str, object] = {}
+        source = getattr(config, "kwargs", None)
+        if isinstance(config, dict):
+            source = config
+        if isinstance(source, dict):
+            for name in cls._runtime_state_fields:
+                if name in source:
+                    taken[name] = source[name]
+        for name in cls._runtime_state_fields:
+            if name in kwargs:
+                taken[name] = kwargs[name]
+        return taken
+
+    def _init_handlers(self, handlers: dict | None = None, supplied: dict | None = None) -> None:
         config_handlers = self.config.kwargs.pop(self._handler_kwarg, None)
         self._handlers: dict[str, Callable | None] = {k: None for k in self._handler_params}
         if config_handlers is not None:
@@ -33,9 +62,9 @@ class AgenticHandlersMixin:
             self._handlers.update(handlers)
         # Called from here so every endpoint that initialises handlers gets it,
         # rather than from four constructors where the fifth would be missed.
-        self._init_runtime_state()
+        self._init_runtime_state(supplied)
 
-    def _init_runtime_state(self) -> None:
+    def _init_runtime_state(self, supplied: dict | None = None) -> None:
         """Move declared runtime state out of the serializable endpoint config.
 
         ``iModel(**kwargs)`` forwards anything it does not recognise into
@@ -56,6 +85,11 @@ class AgenticHandlersMixin:
         for name in self._runtime_state_fields:
             if name in self.config.kwargs:
                 self._runtime_state[name] = self.config.kwargs.pop(name)
+        # Values taken off the caller's own objects win over what the pop just
+        # produced: everything in config.kwargs came through a deep copy, and
+        # for a bound callback that copy is a different receiver.
+        if supplied:
+            self._runtime_state.update(supplied)
 
     def _validate_handlers(self, handlers: dict[str, Callable | None], /) -> None:
         if not isinstance(handlers, dict):
