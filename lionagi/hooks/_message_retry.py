@@ -39,6 +39,7 @@ class MessagePersistRetryQueue:
         self._consecutive_failures = 0
         self._retry_deferred = False
         self._state = "healthy"
+        self._reported_loss_count: int | None = None
 
     @property
     def pending_count(self) -> int:
@@ -74,16 +75,32 @@ class MessagePersistRetryQueue:
         here whichever state the queue was already in. The count is included
         because it is the part nobody can reconstruct afterwards: the events are
         gone, and no later sweep has anything left to find.
+
+        Teardown reaches this more than once. The hook bus flushes on
+        ``SESSION_END`` and the run teardown flushes before it reads completion
+        evidence, and both traverse the same queues without either being able to
+        see the other. The repeated *attempt* is wanted — the store may have come
+        back between them, and the second call is a real last chance — so what is
+        suppressed is the repeated *report*: the same loss, restated, reads as
+        two separate incidents. A count that has changed is a different fact and
+        is reported again, and a flush that finally succeeds clears the marker so
+        a later loss is not swallowed as a repeat.
         """
         flushed = await self.flush()
-        if not flushed:
+        if flushed:
+            self._reported_loss_count = None
+            return True
+
+        lost = self.pending_count
+        if lost != self._reported_loss_count:
+            self._reported_loss_count = lost
             self._logger.error(
                 "live persist gave up for %s at teardown: %d event(s) were never "
                 "written and are lost",
                 self._owner,
-                self.pending_count,
+                lost,
             )
-        return flushed
+        return False
 
     async def _drain_locked(self, *, force: bool = False) -> bool:
         if self._retry_deferred and not force:
