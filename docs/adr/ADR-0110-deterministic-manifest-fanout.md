@@ -4,9 +4,14 @@
 - **Kind**: Aspirational (records the target state)
 - **Area**: orchestration
 - **Date**: 2026-08-03
-- **Relations**: extends ADR-0106 (machine result contract; D6 here names one
-  additive change to it); composes with the MCP job surface (`job.output` is
-  the artifact and round-summary read)
+- **Relations**: extends ADR-0106 (machine result contract — D6 here names one
+  additive change to it and preserves its closed outcome vocabulary); extends
+  ADR-0066 (`li mcp` verb surface — the round submits as a job kind and is read
+  back through `job.output`, whose artifact and round-summary shape D6
+  widens); depends on ADR-0107 (conclusive orphan terminal reaping — its
+  identity-verified reads and its rule that only positive evidence of a gone
+  process admits a terminal transition are what D3's reaper path is built on,
+  and D3's finalization claim decides which of them a late arrival still owes)
 
 ## Context
 
@@ -146,6 +151,16 @@ would-be-refused submissions):
   DEFERRED (see Alternatives): the file path gives snapshot semantics,
   a natural durable-evidence story, and parity with `prompt_file`, and the
   consuming workflow already produces brief files on disk.
+- **`round` is never a submit-side noun.** A caller submits a manifest and
+  gets a run; the word `round` appears only on the observation side, where it
+  names facts about a run that already exists (`round_state`, the round
+  summary, the `round` field D6 adds to `job.output`). No submit parameter,
+  manifest key, or CLI flag may be called it. The constraint is here rather
+  than left to taste because the alternative reading is available and costly:
+  a submit-side `round` invites a caller to believe rounds are a thing they
+  create, number, and re-run, which would make a round an identity separate
+  from its run and give every durable record two keys to be consistent about.
+  One run, one round, and the word belongs to whichever half can say that.
 
 ### D2 — Round execution: independence, clocks, total aggregation
 
