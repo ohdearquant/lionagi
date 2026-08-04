@@ -176,6 +176,37 @@ async def _await_death(pid: int, deadline: float = _TEARDOWN_DEADLINE) -> None:
     pytest.fail(f"child {pid} was still alive {deadline}s after the callback failed")
 
 
+def _scan_can_see_an_occupied_group() -> bool:
+    """Whether the post-reap escalation can fire in this environment at all.
+
+    Not a judgement about the platform, and not a check that the scan "works":
+    it asks the enumerator the production code uses about a group that is
+    provably occupied, because this process is in it. A scan that cannot find
+    us in our own group cannot find a descendant in a child's either.
+
+    It keys on membership alone and deliberately not on the completeness flag,
+    because that is the order the decision itself uses: members present
+    short-circuits ahead of any completeness question, and an incomplete scan
+    that still saw a member kills the group. Gating on completeness would skip
+    runs the code would have handled.
+    """
+    from lionagi.ln._proc import group_member_pids
+
+    members, _ = group_member_pids(os.getpgrp())
+    return os.getpid() in members
+
+
+_needs_the_membership_scan = pytest.mark.skipif(
+    not _scan_can_see_an_occupied_group(),
+    reason=(
+        "the membership scan cannot see this process in its own group, so it cannot "
+        "see a descendant in a child's group either. Once the direct child is reaped "
+        "the documented behaviour is to refuse to signal an unproven group, so a "
+        "surviving descendant here is that refusal and not a defect"
+    ),
+)
+
+
 class TestSpawnObservation:
     @pytest.mark.asyncio
     async def test_reports_the_live_child_pid_and_its_real_process_group(self):
@@ -1015,9 +1046,21 @@ class TestTheWholeGroupIsEnded:
     nothing in the parent's own state says so. These use a descendant that
     ignores SIGTERM, because a cooperative one dies to the polite signal and
     makes every version of this path look identical.
+
+    Both reach the descendant only *after* the graceful pass has waited the
+    direct child, which is the one moment the code needs the membership scan:
+    the leader's pid is recyclable from then on, and only a live member pins
+    the group id. Where that scan cannot see a live group the documented
+    outcome is a refusal to signal, so the descendant survives by design and
+    these would report a defect that is not there. They are gated on a positive
+    control rather than on a platform name, and the gate skips nothing about
+    the refusal itself: what the decision does with an unreadable table is
+    pinned unconditionally, against a forced answer, in
+    :class:`TestWhatTheProcessTableCouldNotAnswer`.
     """
 
     @pytest.mark.asyncio
+    @_needs_the_membership_scan
     async def test_a_failing_recorder_ends_the_descendants_too(self, tmp_path):
         kid_pid = tmp_path / "kid.pid"
         ready = tmp_path / "ready"
@@ -1032,6 +1075,7 @@ class TestTheWholeGroupIsEnded:
         await _assert_dies(int(kid_pid.read_text()), "the descendant of a failed spawn")
 
     @pytest.mark.asyncio
+    @_needs_the_membership_scan
     async def test_a_cancelled_stream_ends_the_descendants_too(self, tmp_path):
         """The recorder succeeds here, so the record exists and the ordinary
         teardown runs. That is the reassuring case, and it is where the direct
@@ -1200,8 +1244,11 @@ class TestWhatTheProcessTableCouldNotAnswer:
         """No members seen and the scan incomplete are the same observation as
         an empty group, and one of the two readings sends a signal to whatever
         now holds a recycled id. The cost is not symmetric: the orphan left by
-        refusing is still in the caller's records for a later sweep to find,
-        and a stranger's process group is not recoverable at all."""
+        refusing is a process whose identity a caller was handed and could have
+        written down, and a stranger's process group is not recoverable at all.
+        Could have, not did — nothing in this package writes such a record, and
+        saying otherwise would credit the refusal with a recovery route that
+        does not exist here."""
         verdict, killed = self._decide(monkeypatch, [], False)
 
         assert verdict == "unproven"

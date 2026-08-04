@@ -854,11 +854,13 @@ child exists and before any output is read. Three things about that record are l
   cancellation point: a runner being torn down is exactly where a second cancellation arrives,
   and a child ignoring `SIGTERM` would then outlive an escalation that never ran. So a
   synchronous `SIGKILL` backstop runs in a `finally` when the graceful path did not complete —
-  no `await`, so nothing can interpose. It is conditioned on `proc.returncode is None` because
-  a completed graceful path has already waited the child, and signalling a pid asyncio has
-  reaped is how a stranger's group gets killed.
+  no `await`, so nothing can interpose. It runs under the same evidence rule as the pass it is
+  backing up rather than under anything about the direct child: an unreaped child is signalled
+  on its own unrecyclable pid, a reaped one only where the group answers with a live member.
+  Signalling a pid asyncio has reaped, with nothing to say the group still holds it, is how a
+  stranger's group gets killed.
 
-- **The record exists even when nothing recorded it.** The OS has already started the child by
+- **The child exists even when nothing recorded it.** The OS has already started the child by
   the time `create_subprocess_exec` resumes, so a cancellation landing in the window before it
   returns leaves a running leg that this process holds no handle for and that no callback has
   seen — unreachable by teardown and by any later sweep over the records. The creation is
@@ -908,8 +910,15 @@ and removed: it covers only the window between the call returning and the caller
 which is not where the cancellation lands. Reaching it needs the pid *before* the creation call
 returns, which means driving `loop.subprocess_exec` with a protocol that records
 `transport.get_pid()` in `connection_made` — declined here because it pins this file to stdlib
-classes outside that module's `__all__` across every supported Python. The orphan is in the
-record the caller writes, so a later sweep over those records still finds it.
+classes outside that module's `__all__` across every supported Python.
+
+Nothing recovers it afterwards either, and an earlier version of this section said otherwise:
+that the orphan sits in the record the caller writes and a later sweep still finds it. It does
+not. `on_spawn` fires only once the creation call has returned, which is the thing that did not
+happen, so in this window there is no record of any kind — the same emptiness the bullet above
+describes, written up two ways that contradicted each other. This is a stated hole rather than
+a handled one. The test for the window asserts the emptiness rather than assuming it, so the
+claim cannot quietly come back, and the log line on that path says what was lost and why.
 
 The group in the record is the *initial* one. A process group is not a containment boundary: a
 child or descendant that calls `setsid()` leaves it and the record then says nothing about that

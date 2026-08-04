@@ -241,9 +241,14 @@ def _kill_abandoned_spawn(task: asyncio.Future) -> None:
     before the cancellable wait. It is declined here because it means
     reimplementing ``create_subprocess_exec`` on top of stdlib classes outside
     that module's ``__all__``, pinning this file to their shape across every
-    Python version supported. The orphan that results is recorded by the
-    manifest the caller writes, so a later sweep over those records still finds
-    it; that is the layer this is left to.
+    Python version supported.
+
+    Nor does anything recover it later. This said the opposite until it was
+    read against the code: that the orphan is in the record the caller writes
+    and a later sweep still finds it. ``on_spawn`` fires only once the creation
+    call has returned, which is precisely what did not happen here, so the
+    window leaves no record of any kind — which is what the log line is for,
+    and why it is a warning. Left as a stated hole, not a handled one.
 
     The exception is retrieved where there is one, or asyncio reports it as
     never-retrieved at exit and a cancelled spawn starts looking like a defect
