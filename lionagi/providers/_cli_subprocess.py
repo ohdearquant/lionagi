@@ -92,23 +92,40 @@ class SpawnedProcess:
     create_time: float | None
 
 
-class RedactedEnv(dict):
-    """A child environment that does not print itself.
+class Redacted:
+    """A runtime-only value, wrapped so that nothing can print or serialize it.
 
-    ``repr=False`` on the field keeps the mapping out of a request's own
-    representation, and that is not the whole channel: pydantic renders the
-    input of a failing model-level validator verbatim, so a request rejected
-    for an unrelated reason — an empty prompt, say — prints every variable
-    beside it. Carrying the redaction on the value rather than at each error
-    site is what stops a validator added later from reopening the leak by not
-    knowing about it.
+    ``repr=False`` on the field keeps a value out of a request's own
+    representation, and that is only one channel. Pydantic keeps the raw input
+    of a failing ``mode="before"`` validator on the error, and a model-level
+    validator holds the WHOLE raw mapping, so a request rejected for an
+    unrelated reason — an empty prompt, say — carries the child environment
+    along with the reason.
 
-    It is a real mapping in every other respect, so nothing downstream has to
-    know it exists.
+    **Not a mapping, and that is the entire point.** A ``dict`` subclass with a
+    quiet ``__repr__`` closes the rendering channel and leaves the
+    serialization one wide open: ``str(err)`` and ``err.errors()`` go through
+    ``repr``, but ``err.json()`` walks the structure and writes out every key
+    and value, and ``err.json()`` is what a structured logger emits. Pydantic
+    has no structure to walk here, so all three channels get the same summary.
+
+    The real value stays reachable through :meth:`reveal` for the one validator
+    that has to look at it.
     """
 
+    __slots__ = ("_value", "_label")
+
+    def __init__(self, value, label: str) -> None:
+        self._value = value
+        self._label = label
+
+    def reveal(self):
+        return self._value
+
     def __repr__(self) -> str:
-        return f"<env: {len(self)} variable(s)>"
+        if isinstance(self._value, Mapping):
+            return f"<{self._label}: {len(self._value)} variable(s)>"
+        return f"<{self._label}: redacted>"
 
     __str__ = __repr__
 
@@ -142,39 +159,110 @@ def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
 
 
 def redact_runtime_fields_in_place(data) -> None:
-    """Make the runtime-only values in a raw request mapping unprintable.
+    """Wrap the runtime-only values in a raw request mapping so nothing can
+    print or serialize them.
 
     Called at the top of every model-level ``mode="before"`` validator, because
-    that is the one place a validator holds the WHOLE raw input: pydantic
-    renders the input of a failing validator verbatim, so a request rejected
-    for an unrelated reason prints the child environment beside the reason.
-    ``exclude`` and ``repr=False`` do not reach this channel — they govern the
-    model, and this runs before a model exists.
+    that is the one place a validator holds the WHOLE raw input, and pydantic
+    keeps a failing validator's raw input on the error. ``exclude`` and
+    ``repr=False`` do not reach that channel: they govern the model, and this
+    runs before a model exists.
 
-    In place, and only substituting a mapping for an equal one that prints
-    differently, so nothing downstream sees a different value.
+    Every declared runtime field is wrapped, not just ``env``. ``on_spawn`` is
+    a callback, and a bound one carries its receiver into its own ``repr``, so
+    a supervisor holding credentials would print them from the same error. The
+    wrapper is unwrapped by the field validators, which are the only code that
+    needs the value.
+
+    Anything the raw mapping holds under any other key is untouched and is not
+    covered by this. The claim here is about the two declared runtime fields.
     """
-    if not isinstance(data, dict):
+    if not isinstance(data, Mapping):
         return
-    env = data.get("env")
-    if isinstance(env, Mapping) and not isinstance(env, RedactedEnv):
-        data["env"] = RedactedEnv(env)
+    for name in ("env", "on_spawn"):
+        value = data.get(name)
+        if value is None or isinstance(value, Redacted):
+            continue
+        try:
+            data[name] = Redacted(value, name)
+        except TypeError:
+            # An immutable mapping: nothing to substitute into, and returning
+            # quietly would leave the caller believing this ran. The field
+            # validators still reject or unwrap what they are given.
+            return
 
 
 def _kill_abandoned_spawn(task: asyncio.Future) -> None:
-    """End the group of a child whose creator was cancelled before it resumed.
+    """End the group of a child nobody is left to receive.
 
-    Runs as a done-callback because by then nothing is left to await from: the
-    coroutine that asked for the child has already unwound. The exception is
-    retrieved either way, or asyncio reports it as never-retrieved at exit and
-    a cancelled spawn starts looking like a defect in the spawn.
+    Runs as a done-callback because by then there is nothing left to await
+    from: the coroutine that asked for the child has already unwound.
+
+    A cancelled task is a KNOWN HOLE here, not a case of nothing having
+    happened, and it is logged rather than passed over in silence. Interpreter
+    shutdown cancels pending tasks, and a cancellation landing inside the
+    creation call leaves a child the OS has made and whose pid was never
+    returned to anyone in this process. asyncio closes the transport on that
+    path, which ends the direct child; the group it leads is not reached,
+    because reaching it needs the pid.
+
+    This was measured rather than reasoned about: a leg spawned under a loop
+    that then shuts down leaves a SIGTERM-ignoring descendant running, and it
+    still does. Recording the handle as soon as the creation call returns was
+    tried and removed — it covers only a window between the call returning and
+    the caller resuming, which is not where the cancellation lands.
+
+    Closing it needs the pid before the creation call returns. There is a route
+    to that: driving ``loop.subprocess_exec`` with a protocol that records
+    ``transport.get_pid()`` in ``connection_made``, which the loop schedules
+    before the cancellable wait. It is declined here because it means
+    reimplementing ``create_subprocess_exec`` on top of stdlib classes outside
+    that module's ``__all__``, pinning this file to their shape across every
+    Python version supported. The orphan that results is recorded by the
+    manifest the caller writes, so a later sweep over those records still finds
+    it; that is the layer this is left to.
+
+    The exception is retrieved where there is one, or asyncio reports it as
+    never-retrieved at exit and a cancelled spawn starts looking like a defect
+    in the spawn.
     """
     if task.cancelled():
+        log.warning(
+            "the spawn task was cancelled before it produced a handle. If the OS had "
+            "already created the child, nothing in this process can reach it: the pid "
+            "was never returned to anyone. asyncio closes the transport on this path, "
+            "which ends the direct child but not the group it leads"
+        )
         return
     if task.exception() is not None:
         return
-    proc = task.result()
-    kill_group_now(getattr(proc, "pid", None))
+    kill_group_now(getattr(task.result(), "pid", None))
+
+
+def _kill_group_if_occupied(pgid: Any) -> str:
+    """End a process group if it can be shown to still hold someone.
+
+    Returns what happened, which the caller does not currently branch on but a
+    reader of the log needs: ``killed``, ``empty``, ``unproven`` or
+    ``no-group``. The unproven case is the one that matters — a process table
+    that could not be read completely and showed no members is not an empty
+    group, and it is the only outcome here where something may still be running
+    and nothing was done about it, so it says so rather than passing as clean.
+    """
+    if not isinstance(pgid, int):
+        return "no-group"
+    members, complete = group_member_pids(pgid)
+    if members:
+        kill_group_now(pgid)
+        return "killed"
+    if not complete:
+        log.warning(
+            "process group %s could not be read completely and showed no members; "
+            "leaving it alone rather than signalling a possibly reissued group id",
+            pgid,
+        )
+        return "unproven"
+    return "empty"
 
 
 async def end_child_group(proc: Any, *, grace: float = 5.0) -> None:
@@ -195,30 +283,42 @@ async def end_child_group(proc: Any, *, grace: float = 5.0) -> None:
     runs in a ``finally`` when that pass did not finish: no await, so nothing
     can interpose.
 
-    Both kills fire only on positive evidence that the group id is still this
-    child's, because the other direction is worse than an orphan. After a
-    completed graceful pass the child has been waited, so its pid — and hence
-    this group id — may already belong to someone else; the evidence there is
-    a live member, since an occupied group is never reissued. On the cancelled
-    path the child has not been waited at all, so the id is unambiguously ours.
+    Every signal it sends is conditioned on the recorded group id still being
+    this child's, and there are exactly two things that establish that. Either
+    the child has not been waited, in which case its pid cannot have been
+    reissued and the polite signal is safe; or the group answers with a live
+    member, and an occupied group is never reissued. Nothing else counts, and
+    the graceful helper is therefore reached ONLY on the not-yet-waited path:
+    it signals the group id it is given without checking anything, so calling it
+    after a normal drain would send SIGTERM to whatever now holds a recycled id.
+
+    The escalation keys on that membership evidence rather than on whether the
+    direct child is dead. Those are different facts: a leader that died to
+    SIGTERM sets ``returncode`` while a descendant ignoring SIGTERM is still in
+    its group, and a backstop gated on the leader's liveness reads that as
+    nothing left to do. Confusing the two is the defect this function exists to
+    fix, so it must not be the condition the fix runs under.
 
     What it therefore cannot close, rather than papering over it: a scan that
     could not read the whole process table and saw no members leaves emptiness
     unproved, and this refuses to signal on that, because an unprovable group
-    and a reissued one look the same from here.
+    and a reissued one look the same from here. That refusal is logged rather
+    than silent — it is the one outcome where something may still be running
+    and nothing was done about it.
     """
     pgid = getattr(proc, "pid", None)
-    graceful_done = False
+    swept = False
     try:
-        await aterminate_process_group(proc, grace=grace)
-        graceful_done = True
-        if isinstance(pgid, int):
-            members, _complete = group_member_pids(pgid)
-            if members:
-                kill_group_now(pgid)
+        if getattr(proc, "returncode", None) is None:
+            await aterminate_process_group(proc, grace=grace)
+        _kill_group_if_occupied(pgid)
+        swept = True
     finally:
-        if not graceful_done and getattr(proc, "returncode", None) is None:
-            kill_group_now(pgid)
+        # Synchronous, so a second cancellation cannot interpose, and keyed on
+        # the same membership evidence as the pass it is backing up rather than
+        # on anything about the direct child.
+        if not swept:
+            _kill_group_if_occupied(pgid)
 
 
 def observe_spawned(pid: int) -> SpawnedProcess:

@@ -10,7 +10,12 @@ from pydantic import BaseModel
 
 from lionagi.utils import to_dict
 
-__all__ = ("AgenticHandlersMixin",)
+__all__ = ("RUNTIME_STATE_NAMES", "AgenticHandlersMixin")
+
+# The runtime-only values a CLI endpoint can hold. Named here so a caller that
+# supplies them to an endpoint with no route for them can be refused, which
+# needs the names before any endpoint class is in hand.
+RUNTIME_STATE_NAMES: tuple[str, ...] = ("env", "on_spawn")
 
 
 class AgenticHandlersMixin:
@@ -50,6 +55,36 @@ class AgenticHandlersMixin:
             if name in kwargs:
                 taken[name] = kwargs[name]
         return taken
+
+    def adopt_runtime_state(self, kwargs: dict) -> tuple[str, ...]:
+        """Take declared runtime values onto an endpoint already built.
+
+        The constructor route lifts these off the caller's config before the
+        endpoint exists. A caller who hands over an endpoint INSTANCE has
+        missed that window entirely: the endpoint was built without them, and
+        the values arrive beside an object that is finished. They are written
+        here instead of dropped, which is what happened before and is the worst
+        of the three options — a child would inherit the wrong environment and
+        no supervisor would hear about it, with nothing raised and nothing
+        logged.
+
+        Writing onto the supplied instance rather than a copy is deliberate and
+        matches what the same branch already does with ``provider`` and
+        ``base_url``: the caller handed this object over to be configured. A
+        ``None`` is not a value here, it is the absence of one, and it must not
+        erase state the endpoint was built with.
+
+        Returns the names it could not place, so the caller can refuse rather
+        than let them evaporate.
+        """
+        placed = set()
+        for name in self._runtime_state_fields:
+            if kwargs.get(name) is not None:
+                self._runtime_state[name] = kwargs[name]
+                placed.add(name)
+        return tuple(
+            n for n in RUNTIME_STATE_NAMES if kwargs.get(n) is not None and n not in placed
+        )
 
     def _init_handlers(self, handlers: dict | None = None, supplied: dict | None = None) -> None:
         config_handlers = self.config.kwargs.pop(self._handler_kwarg, None)

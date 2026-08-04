@@ -287,16 +287,38 @@ class TestSpawnObservation:
 
     @pytest.mark.asyncio
     async def test_identity_is_recorded_even_for_a_child_that_exits_at_once(self):
-        """A read deferred to teardown cannot answer for a reaped child. The
-        recorded group is a usable identity here only because it was read while
-        the child still existed."""
-        seen: list[SpawnedProcess] = []
+        """A read deferred to teardown cannot answer for a reaped child, so the
+        observation has to happen before anything is streamed — which is what
+        this asserts, by ordering rather than by content.
 
-        objs = await _drain(ndjson_from_cli(_cmd(_QUICK), on_spawn=seen.append))
+        What it deliberately does NOT assert is a start time. This child can be
+        reaped before the read reaches it, and no one can recover the start time
+        of a reaped process; requiring one here produced a test that passes
+        alone and fails under the load of the full suite. The claim that a live
+        child's identity IS bound to its start time belongs to the test above,
+        which holds the child open and can therefore make it. Here the only
+        thing that must hold is that an absent start time is reported as absent
+        and never filled in from somewhere else."""
+        seen: list[SpawnedProcess] = []
+        order: list[str] = []
+        objs: list[dict] = []
+
+        def record(spawned: SpawnedProcess) -> None:
+            order.append("spawn")
+            seen.append(spawned)
+
+        async for obj in ndjson_from_cli(_cmd(_QUICK), on_spawn=record):
+            order.append("output")
+            objs.append(obj)
 
         assert objs == [{"type": "hello"}]
         assert len(seen) == 1
         assert seen[0].pgid == seen[0].pid
+        # The observation preceded the stream. A read moved to teardown fails
+        # this, which is the defect the early read exists to avoid.
+        assert order[0] == "spawn"
+        if seen[0].create_time is not None:
+            assert seen[0].create_time != spawned_create_time(os.getpid())
 
     @pytest.mark.asyncio
     async def test_an_async_recorder_is_awaited_before_the_stream_is_read(self):
@@ -872,12 +894,76 @@ class TestTheEnvironmentSurvivesNoErrorPath:
         with pytest.raises(Exception) as excinfo:  # noqa: B017 - the type is the point below
             model(env={"TOKEN": self.SECRET})
 
-        message = str(excinfo.value)
-        assert self.SECRET not in message
+        # Every channel pydantic renders this through, not just the one a
+        # human reads. str() and errors() go via repr, json() walks the
+        # structure and writes out keys and values, and json() is what a
+        # structured logger emits — so a carrier that is quiet in repr and
+        # still a mapping passes the first two and leaks through the third.
+        err = excinfo.value
+        rendered = {
+            "str": str(err),
+            "errors": repr(err.errors()),
+            "json": err.json(),
+        }
+        for channel, text in rendered.items():
+            assert self.SECRET not in text, f"the environment leaked through {channel}"
         # The request really was rejected, so the absence above is a redaction
         # and not a request that quietly succeeded.
-        assert "env" not in message or "variable(s)" in message
+        assert "env" not in rendered["str"] or "variable(s)" in rendered["str"]
         assert excinfo.type.__name__ == "ValidationError"
+
+    @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
+    def test_a_callback_receiver_is_not_printed_by_any_channel(self, model_path):
+        """A bound method carries its receiver into its own repr, so the
+        supervisor's attributes are rendered with it. The callback is a
+        credential channel for the same reason the environment is."""
+        model = _load(model_path)
+
+        class Supervisor:
+            """The repr is what makes this a channel. A default object repr
+            shows an address and nothing else, so asserting against one proves
+            nothing — and receivers that DO render their attributes are the
+            common case here: dataclasses, pydantic models, anything holding
+            the credentials it was configured with."""
+
+            def __init__(self):
+                self.token = "leaked-from-the-supervisor"
+
+            def __repr__(self):
+                return f"Supervisor(token={self.token!r})"
+
+            def record(self, spawned):
+                pass
+
+        sup = Supervisor()
+
+        with pytest.raises(Exception) as excinfo:  # noqa: B017 - see above
+            model(on_spawn=sup.record)
+
+        err = excinfo.value
+        for channel, text in (
+            ("str", str(err)),
+            ("errors", repr(err.errors())),
+            ("json", err.json()),
+        ):
+            assert sup.token not in text, f"the receiver leaked through {channel}"
+
+    @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
+    def test_a_redacted_callback_is_still_the_callable_the_caller_passed(self, model_path):
+        """The redaction wraps the value before validation sees it, so the
+        field validator has to unwrap it. Without that, pydantic rejects a
+        perfectly good callback as not callable — a failure a leak test alone
+        would never show."""
+        model = _load(model_path)
+        seen = []
+
+        req = model(prompt="hi", on_spawn=seen.append)
+
+        # Not ``is``: a bound method is a new object on every attribute access,
+        # so identity fails here even when nothing was replaced. What has to
+        # hold is that calling it reaches the caller's own object.
+        req.on_spawn("recorded")
+        assert seen == ["recorded"]
 
     @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
     def test_a_non_string_key_is_reported_by_position_not_printed(self, model_path):
@@ -1017,3 +1103,114 @@ def _load(path: str):
     import importlib
 
     return getattr(importlib.import_module(module_name), attr)
+
+
+class TestAnEndpointTheCallerAlreadyBuilt:
+    """``iModel(endpoint=<instance>, ...)`` is a supported signature and it
+    takes a branch that keeps the endpoint and discards every other keyword.
+    For most keywords that only loses configuration the endpoint already has;
+    for these two it hands the child a default environment and leaves the
+    supervisor hearing nothing, with nothing raised and nothing logged. That
+    reads exactly like a working leg."""
+
+    ENDPOINTS = [
+        "lionagi.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
+        "lionagi.providers.openai.codex:CodexCLIEndpoint",
+    ]
+
+    @pytest.mark.parametrize("endpoint_path", ENDPOINTS)
+    def test_both_runtime_values_reach_the_request(self, endpoint_path):
+        from lionagi.service.imodel import iModel
+
+        endpoint_cls = _load(endpoint_path)
+        seen: list = []
+
+        model = iModel(endpoint=endpoint_cls(), env={"TOKEN": "supplied"}, on_spawn=seen.append)
+        payload, _ = model.endpoint.create_payload({"prompt": "hi"})
+        request = payload["request"]
+
+        assert request.env == {"TOKEN": "supplied"}
+        # Reached by calling it, because a bound method is a new object on every
+        # access and identity would fail here even with nothing replaced.
+        request.on_spawn("recorded")
+        assert seen == ["recorded"]
+
+    @pytest.mark.parametrize("endpoint_path", ENDPOINTS)
+    def test_an_absent_value_does_not_erase_what_the_endpoint_was_built_with(self, endpoint_path):
+        """``None`` is the absence of a value, not an instruction to clear one.
+        A caller who passes an endpoint already carrying an environment and does
+        not mention it again must keep it."""
+        from lionagi.service.imodel import iModel
+
+        endpoint_cls = _load(endpoint_path)
+        endpoint = endpoint_cls(env={"TOKEN": "built-in"})
+
+        model = iModel(endpoint=endpoint, env=None)
+        payload, _ = model.endpoint.create_payload({"prompt": "hi"})
+
+        assert payload["request"].env == {"TOKEN": "built-in"}
+
+    def test_an_endpoint_with_nowhere_to_put_them_refuses(self):
+        """The alternative to placing them is refusing them. Dropping them is
+        what this whole class exists to rule out, and a non-CLI endpoint has no
+        child process for either value to describe."""
+        from lionagi.service.connections.match_endpoint import match_endpoint
+        from lionagi.service.imodel import iModel
+
+        endpoint = match_endpoint(provider="openai", endpoint="chat")
+
+        with pytest.raises(TypeError) as excinfo:
+            iModel(endpoint=endpoint, env={"TOKEN": "nowhere"})
+
+        assert "env" in str(excinfo.value)
+
+
+class TestWhatTheProcessTableCouldNotAnswer:
+    """The escalation keys on positive evidence that the recorded group id is
+    still this child's, and an unreadable process table produces no evidence
+    either way. That branch cannot be reached by running real processes on a
+    machine where enumeration works, so the enumerator is stubbed: the point
+    under test is what the decision does with each answer, not how the answer
+    was obtained."""
+
+    def _decide(self, monkeypatch, members, complete):
+        import lionagi.providers._cli_subprocess as cs
+
+        killed: list = []
+        monkeypatch.setattr(cs, "group_member_pids", lambda pgid: (members, complete))
+        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: killed.append(pgid))
+        return cs._kill_group_if_occupied(4242), killed
+
+    def test_a_group_holding_someone_is_killed(self, monkeypatch):
+        """An occupied group id is never reissued, so this one is provably
+        still the child's."""
+        verdict, killed = self._decide(monkeypatch, [999], True)
+
+        assert verdict == "killed"
+        assert killed == [4242]
+
+    def test_a_group_read_completely_and_found_empty_is_left_alone(self, monkeypatch):
+        verdict, killed = self._decide(monkeypatch, [], True)
+
+        assert verdict == "empty"
+        assert killed == []
+
+    def test_a_group_that_could_not_be_read_is_not_signalled(self, monkeypatch):
+        """No members seen and the scan incomplete are the same observation as
+        an empty group, and one of the two readings sends a signal to whatever
+        now holds a recycled id. The cost is not symmetric: the orphan left by
+        refusing is still in the caller's records for a later sweep to find,
+        and a stranger's process group is not recoverable at all."""
+        verdict, killed = self._decide(monkeypatch, [], False)
+
+        assert verdict == "unproven"
+        assert killed == []
+
+    def test_nothing_is_signalled_without_a_group_id(self, monkeypatch):
+        import lionagi.providers._cli_subprocess as cs
+
+        killed: list = []
+        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: killed.append(pgid))
+
+        assert cs._kill_group_if_occupied(None) == "no-group"
+        assert killed == []

@@ -23,7 +23,7 @@ from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_r
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
-    RedactedEnv,
+    Redacted,
     SpawnedProcess,
     build_declarative_cli_args,
     discover_cli,
@@ -218,10 +218,14 @@ class CodexCodeRequest(BaseModel):
         a traceback or a log line. It is also the right exception for a wrongly
         typed mapping.
 
-        What survives is a RedactedEnv, so the mapping stays unprintable for
-        every later validator too — this one is not the only thing that can
-        fail with the request in hand.
+        The value arrives wrapped when it came through a model-level validator,
+        which is what keeps it off that validator's error. This is the code that
+        needs to look at it, so this is where it is unwrapped; what the model
+        then stores is an ordinary mapping, kept out of dumps by ``exclude`` and
+        out of the request's representation by ``repr=False``.
         """
+        if isinstance(value, Redacted):
+            value = value.reveal()
         if value is None:
             return value
         if not isinstance(value, Mapping):
@@ -231,7 +235,22 @@ class CodexCodeRequest(BaseModel):
                 f"env must be a mapping of strings to strings, got {type(value).__name__}"
             )
         raise_if_env_is_not_a_string_map(value)
-        return RedactedEnv(value)
+        return dict(value)
+
+    @field_validator("on_spawn", mode="before")
+    @classmethod
+    def _unwrap_on_spawn(cls, value):
+        """Undo the wrapping a model-level validator applied.
+
+        The callback is wrapped there for the same reason the environment is: a
+        BOUND callback carries its receiver into its own ``repr``, so a
+        supervisor holding a credential would print it from an error about some
+        unrelated field. Nothing but this validator needs the wrapper gone, and
+        pydantic rejects it outright as not callable if it survives — which is
+        the failure mode this method exists to prevent, and the one a test that
+        only checks for leaks would never see.
+        """
+        return value.reveal() if isinstance(value, Redacted) else value
 
     # ── system prompt (order 40) ──────────────────────────────────
     system_prompt: str | None = None
