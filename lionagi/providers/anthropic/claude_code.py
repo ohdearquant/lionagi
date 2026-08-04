@@ -6,7 +6,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
@@ -21,6 +21,7 @@ from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_r
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
+    SpawnedProcess,
     build_declarative_cli_args,
     discover_cli,
     ndjson_from_cli,
@@ -210,21 +211,48 @@ class ClaudeCodeRequest(BaseModel):
     env: SkipJsonSchema[dict[str, str] | None] = Field(
         default=None,
         exclude=True,
+        repr=False,
         description=(
             "Complete environment for the CLI process. None inherits this "
             "process's environment; a mapping REPLACES it wholesale, so a "
             "caller setting one variable supplies the rest itself."
         ),
     )
-    on_spawn: SkipJsonSchema[Callable[[int, int], None] | None] = Field(
+    on_spawn: SkipJsonSchema[Callable[[SpawnedProcess], None | Awaitable[None]] | None] = Field(
         default=None,
         exclude=True,
+        repr=False,
         description=(
-            "Called once with (pid, pgid) as soon as the CLI process exists, "
-            "for a caller that must record the identity of a process it did "
-            "not spawn itself."
+            "Called once with a SpawnedProcess as soon as the CLI process "
+            "exists, for a caller that must record the identity of a process "
+            "it did not spawn itself. May be a coroutine function."
         ),
     )
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _env_is_a_string_map(cls, value):
+        """Reject a malformed environment naming only the keys, never the values.
+
+        A child environment routinely holds credentials, and a pydantic
+        ValidationError quotes the whole rejected input into its message, so
+        letting the ordinary string check fail here would print every value in
+        the map beside the one bad entry. TypeError is the escape: pydantic
+        converts ValueError and AssertionError into validation errors and lets
+        anything else propagate untouched, so this reports the offending keys
+        and nothing else reaches a traceback or a log line. It is also the
+        right exception for a wrongly typed mapping.
+        """
+        if value is None or not isinstance(value, dict):
+            return value
+        bad = sorted(
+            str(k) for k, v in value.items() if not isinstance(k, str) or not isinstance(v, str)
+        )
+        if bad:
+            raise TypeError(
+                "env must map strings to strings; these entries do not: " + ", ".join(bad)
+            )
+        return value
 
     # ── features (order 80–89) ────────────────────────────────────
     chrome: bool | None = Field(
@@ -861,6 +889,7 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CLAUDE_HANDLER_PARAMS
     _handler_kwarg = "claude_handlers"
     _request_model = ClaudeCodeRequest
+    _runtime_state_fields = ("env", "on_spawn")
     # Claude Code streams a "system" event as soon as the CLI session starts,
     # well before the run completes — see stream_cc_cli() above.
     streams_first_output_early = True

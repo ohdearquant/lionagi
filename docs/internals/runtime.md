@@ -821,6 +821,46 @@ runs, `os.getpgid(proc.pid)` raises `ProcessLookupError`. Since `start_new_sessi
 `pgid == proc.pid`, so capturing `proc.pid` right after spawn is equivalent and safe. The
 actual pid-guard/platform check lives in `aterminate_process_group`.
 
+**`on_spawn` and `SpawnedProcess`.** A caller that has to supervise a leg it did not itself
+spawn passes `on_spawn`, which is called exactly once with a `SpawnedProcess` as soon as the
+child exists and before any output is read. Three things about that record are load-bearing:
+
+- **It carries a start time, not just two integers.** `pid` and `pgid` are both recyclable —
+  once a process is reaped the kernel may hand its numbers to anything — so a consumer holding
+  only those cannot tell this child from a stranger that arrived later, and signalling on that
+  basis reaches the stranger. `create_time` binds them, it is readable only while the child is
+  known to exist, and a consumer acting on the record later must compare a live read against
+  it. `None` means nothing was established and is never a claim about the process; this mirrors
+  what `lionagi/mcp/jobs.py` does with `pid_create_time`.
+- **It may be a coroutine function, and the result is awaited.** A durable recorder is written
+  in async style, and `Callable[..., None]` does not reject an `async def` at runtime: an
+  un-awaited one returns a coroutine that is dropped, so the leg runs entirely unrecorded with
+  nothing raised.
+- **Its failure is not swallowed**, including `CancelledError` and `KeyboardInterrupt`. A
+  recorder that fails has no record of a child that is now running, so the child is terminated
+  and the exception propagates. A guard written against `Exception` would let a cancellation
+  through and leave the child alive.
+
+The group in the record is the *initial* one. A process group is not a containment boundary: a
+child or descendant that calls `setsid()` leaves it and the record then says nothing about that
+process. A caller who needs "nothing the leg started survives" must either require
+non-daemonizing CLIs or use a platform containment primitive.
+
+**Runtime-only request fields.** `env` and `on_spawn` on `ClaudeCodeRequest` /
+`CodexCodeRequest` are `SkipJsonSchema[...]` with `exclude=True` and `repr=False`. Each
+qualifier answers a different channel and none implies the others: `exclude` keeps them out of
+dumps, `SkipJsonSchema` keeps them out of the generated schema (a callable has none, so
+`model_json_schema()` raises without it, which breaks every path that persists a request),
+and `repr=False` keeps a complete child environment out of log lines and exception text. The
+`env` validator raises `TypeError` rather than `ValueError` for the same reason: pydantic turns
+`ValueError` into a `ValidationError` that quotes the whole rejected mapping, so the error path
+would print every value beside the one bad entry.
+
+Because `AgenticHandlersMixin.create_payload` rebuilds the request from `to_dict(request)`, and
+that dump omits excluded fields by construction, an endpoint that wants such a field to survive
+the rebuild must name it in `_runtime_state_fields`. Without that, a caller passing a fully
+populated request model silently gets one where the runtime wiring reverted to its defaults.
+
 ### `anthropic/claude_code.py`
 
 - **CLI flag metadata protocol.** Every CLI-mappable `ClaudeCodeRequest` field carries a

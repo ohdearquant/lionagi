@@ -10,7 +10,8 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.ln._proc import aterminate_process_group
+from lionagi.ln.concurrency.utils import maybe_await
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,52 @@ def spawned_pgid(pid: int) -> int:
         return pid
 
 
+def spawned_create_time(pid: int) -> float | None:
+    """When the process at *pid* started, or None if that cannot be established.
+
+    The pid and the group id are both recyclable: once a process is reaped the
+    kernel is free to hand its numbers to anything, so a reader that has only
+    those two integers cannot tell this child from a stranger that arrived
+    later. The start time is what binds them to one process, and it is readable
+    only here, while the child is known to exist.
+
+    None is not a claim. It means the probe found no process or errored, and a
+    consumer must treat it as "no identity was captured" rather than as a
+    statement about the child.
+    """
+    import psutil
+
+    try:
+        proc = psutil.Process(pid)
+        if proc.status() == psutil.STATUS_ZOMBIE:
+            return None
+        return proc.create_time()
+    except (psutil.Error, OSError):
+        return None
+
+
+@dataclass(frozen=True)
+class SpawnedProcess:
+    """The identity of a CLI child, as read at the moment it came into being.
+
+    ``pid`` and ``pgid`` are the handles a later sweep signals. ``create_time``
+    is what makes them an identity rather than two integers the OS may have
+    reissued in the meantime, so a consumer that intends to act on this record
+    later must compare a live start-time read against it and refuse to signal
+    when they disagree or when this field is None.
+
+    The group is the initial one, and a process group is not a containment
+    boundary: a child or descendant that calls ``setsid()`` leaves it, and this
+    record then says nothing about that process. Callers who need "nothing the
+    leg started survives" must either require non-daemonizing CLIs or use a
+    platform containment primitive; the group alone will not give it to them.
+    """
+
+    pid: int
+    pgid: int
+    create_time: float | None
+
+
 async def ndjson_from_cli(
     cmd: list[str],
     *,
@@ -48,7 +96,7 @@ async def ndjson_from_cli(
     stdin: Any = asyncio.subprocess.DEVNULL,
     stdin_data: str | bytes | None = None,
     tail_repair: Callable[[str], dict | None] | None = None,
-    on_spawn: Callable[[int, int], None] | None = None,
+    on_spawn: Callable[[SpawnedProcess], None | Awaitable[None]] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles malformed final chunks.
 
@@ -61,13 +109,16 @@ async def ndjson_from_cli(
     output nobody is draining), and the pipe is closed afterwards so the child
     sees EOF rather than waiting forever for more input.
 
-    ``on_spawn`` is called once with ``(pid, pgid)`` immediately after the
-    child exists, for a caller that must record the process identity of a
-    process it did not itself spawn. It is deliberately not wrapped in an
-    exception guard: a caller whose recording fails has no record of a child
-    that is now running, and swallowing that leaves a live process outside
-    whatever domain the record defines. The exception propagates through the
-    teardown below, which ends the group it was called for.
+    ``on_spawn`` is called once with a :class:`SpawnedProcess` immediately
+    after the child exists, for a caller that must record the process identity
+    of a process it did not itself spawn. It may be a coroutine function; the
+    result is awaited before the first byte of output is read, so a recorder
+    that writes durably has finished writing before anything can consume the
+    stream. Its failure is deliberately not swallowed: a caller whose recording
+    fails has no record of a child that is now running, and continuing would
+    leave a live process outside whatever domain the record defines. The
+    exception propagates through the teardown below, which ends the group it
+    was called for.
     """
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
@@ -82,11 +133,20 @@ async def ndjson_from_cli(
         kwargs["stdin"] = stdin
     proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
     if on_spawn is not None:
-        # Read the group here, not at teardown: once the child is reaped its
-        # pid is recyclable, so a group read then can resolve to a stranger's.
-        # See docs/internals/runtime.md.
+        # Read the identity here, not at teardown: once the child is reaped its
+        # pid and group id are both recyclable, so either read then can resolve
+        # to a stranger's, and the start time that would have told them apart is
+        # readable only while the process is alive. See docs/internals/runtime.md.
         try:
-            on_spawn(proc.pid, spawned_pgid(proc.pid))
+            await maybe_await(
+                on_spawn(
+                    SpawnedProcess(
+                        pid=proc.pid,
+                        pgid=spawned_pgid(proc.pid),
+                        create_time=spawned_create_time(proc.pid),
+                    )
+                )
+            )
         except BaseException:
             await aterminate_process_group(proc, grace=5.0)
             raise
