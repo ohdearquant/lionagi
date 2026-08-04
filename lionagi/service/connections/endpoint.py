@@ -81,6 +81,15 @@ class Endpoint:
     def copy_runtime_state_to(self, other: Endpoint) -> None:
         pass
 
+    def drain_runtime_state(self) -> None:
+        """Endpoints that hold runtime-only state move it out of the config here.
+
+        A plain endpoint has none, so this does nothing. It is declared beside
+        ``copy_runtime_state_to`` because the two are called as a pair, and a
+        caller that has to ask whether an endpoint supports draining will
+        eventually skip it for the one that needs it.
+        """
+
     @property
     def request_options(self):
         return self.config.request_options

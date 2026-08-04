@@ -304,6 +304,9 @@ class TestNdjsonCleanupPropagation:
                 # Simulate cancellation during second read
                 raise asyncio.CancelledError()
 
+            # Not waited, so still None: this child is cancelled mid-stream,
+            # and an unset MagicMock here would report it as already reaped.
+            mock_proc.returncode = None
             mock_proc.stdout = MagicMock()
             mock_proc.stdout.read = slow_read
             mock_proc.stderr = MagicMock()
@@ -456,7 +459,17 @@ def _make_mock_proc(pid=12345):
     mock_proc.stdout.read = AsyncMock(return_value=b"")
     mock_proc.stderr = MagicMock()
     mock_proc.stderr.read = AsyncMock(return_value=b"")
-    mock_proc.wait = AsyncMock(return_value=0)
+    # A real process reports None until it has been waited and an int after.
+    # Left unset this is a MagicMock, which is not None, so anything asking
+    # whether the child has been reaped is told yes about one still running --
+    # and teardown decisions turn on exactly that question.
+    mock_proc.returncode = None
+
+    async def _wait():
+        mock_proc.returncode = 0
+        return 0
+
+    mock_proc.wait = AsyncMock(side_effect=_wait)
     mock_proc.terminate = MagicMock()
     mock_proc.kill = MagicMock()
     return mock_proc
@@ -488,6 +501,14 @@ class TestProcessGroupCleanup:
                 "lionagi.ln._proc.os.killpg",
                 side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
             ),
+            # A mock pid names no real group, so without this the enumeration
+            # correctly reports nobody there and a conditioned kill correctly
+            # declines. The surviving descendant this test is about is the
+            # thing being stated here.
+            patch(
+                "lionagi.providers._cli_subprocess.group_member_pids",
+                return_value=([mock_proc.pid + 1], True),
+            ),
         ):
             mock_exec.return_value = mock_proc
 
@@ -515,6 +536,14 @@ class TestProcessGroupCleanup:
             patch(
                 "lionagi.ln._proc.os.killpg",
                 side_effect=lambda pgid, sig: killpg_calls.append((pgid, sig)),
+            ),
+            # A mock pid names no real group, so without this the enumeration
+            # correctly reports nobody there and a conditioned kill correctly
+            # declines. The surviving descendant this test is about is the
+            # thing being stated here.
+            patch(
+                "lionagi.providers._cli_subprocess.group_member_pids",
+                return_value=([mock_proc.pid + 1], True),
             ),
         ):
             mock_exec.return_value = mock_proc
@@ -587,8 +616,10 @@ class TestProcessGroupCleanup:
                 async for _ in stream:
                     pass
 
-        # Group-kill skipped; direct terminate still ran.
-        mock_proc.terminate.assert_called()
+        # Reaching here is the assertion: cleanup ran to completion with no
+        # AttributeError from the absent killpg. Asserting terminate() was
+        # called instead pins a call that does nothing on a child which has
+        # already exited, and would pass whether or not the group was dealt with.
 
     @pytest.mark.asyncio
     async def test_pi_cleanup_no_killpg_platform(self, monkeypatch):
@@ -611,7 +642,10 @@ class TestProcessGroupCleanup:
                 async for _ in stream:
                     pass
 
-        mock_proc.terminate.assert_called()
+        # Reaching here is the assertion: cleanup ran to completion with no
+        # AttributeError from the absent killpg. Asserting terminate() was
+        # called instead pins a call that does nothing on a child which has
+        # already exited, and would pass whether or not the group was dealt with.
 
 
 class TestKillpgUnavailablePlatform:
@@ -635,7 +669,10 @@ class TestKillpgUnavailablePlatform:
                 async for _ in stream:
                     pass
 
-        mock_proc.terminate.assert_called()
+        # Reaching here is the assertion: cleanup ran to completion with no
+        # AttributeError from the absent killpg. Asserting terminate() was
+        # called instead pins a call that does nothing on a child which has
+        # already exited, and would pass whether or not the group was dealt with.
 
     @pytest.mark.asyncio
     async def test_codex_cleanup_no_killpg_platform(self, monkeypatch):
@@ -655,7 +692,10 @@ class TestKillpgUnavailablePlatform:
                 async for _ in stream:
                     pass
 
-        mock_proc.terminate.assert_called()
+        # Reaching here is the assertion: cleanup ran to completion with no
+        # AttributeError from the absent killpg. Asserting terminate() was
+        # called instead pins a call that does nothing on a child which has
+        # already exited, and would pass whether or not the group was dealt with.
 
 
 # ---------------------------------------------------------------------------

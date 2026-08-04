@@ -8,9 +8,16 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
+from lionagi.service.connections.endpoint_config import RUNTIME_STATE_NAMES
 from lionagi.utils import to_dict
 
-__all__ = ("AgenticHandlersMixin",)
+__all__ = ("RUNTIME_STATE_NAMES", "AgenticHandlersMixin")
+
+# RUNTIME_STATE_NAMES is re-exported, not redefined. It is declared beside the
+# config that must not serialize these values, because that model is what every
+# route to a written-down config passes through; a second list here would be a
+# second thing to keep in step, and the one that fell behind would be the one
+# deciding what gets written down.
 
 
 class AgenticHandlersMixin:
@@ -51,6 +58,36 @@ class AgenticHandlersMixin:
                 taken[name] = kwargs[name]
         return taken
 
+    def adopt_runtime_state(self, kwargs: dict) -> tuple[str, ...]:
+        """Take declared runtime values onto an endpoint already built.
+
+        The constructor route lifts these off the caller's config before the
+        endpoint exists. A caller who hands over an endpoint INSTANCE has
+        missed that window entirely: the endpoint was built without them, and
+        the values arrive beside an object that is finished. They are written
+        here instead of dropped, which is what happened before and is the worst
+        of the three options — a child would inherit the wrong environment and
+        no supervisor would hear about it, with nothing raised and nothing
+        logged.
+
+        Writing onto the supplied instance rather than a copy is deliberate and
+        matches what the same branch already does with ``provider`` and
+        ``base_url``: the caller handed this object over to be configured. A
+        ``None`` is not a value here, it is the absence of one, and it must not
+        erase state the endpoint was built with.
+
+        Returns the names it could not place, so the caller can refuse rather
+        than let them evaporate.
+        """
+        placed = set()
+        for name in self._runtime_state_fields:
+            if kwargs.get(name) is not None:
+                self._runtime_state[name] = kwargs[name]
+                placed.add(name)
+        return tuple(
+            n for n in RUNTIME_STATE_NAMES if kwargs.get(n) is not None and n not in placed
+        )
+
     def _init_handlers(self, handlers: dict | None = None, supplied: dict | None = None) -> None:
         config_handlers = self.config.kwargs.pop(self._handler_kwarg, None)
         self._handlers: dict[str, Callable | None] = {k: None for k in self._handler_params}
@@ -82,14 +119,45 @@ class AgenticHandlersMixin:
         supervisor would quietly stop hearing from the copy's legs.
         """
         self._runtime_state: dict[str, object] = {}
-        for name in self._runtime_state_fields:
-            if name in self.config.kwargs:
-                self._runtime_state[name] = self.config.kwargs.pop(name)
+        self.drain_runtime_state()
         # Values taken off the caller's own objects win over what the pop just
         # produced: everything in config.kwargs came through a deep copy, and
         # for a bound callback that copy is a different receiver.
         if supplied:
             self._runtime_state.update(supplied)
+
+    def drain_runtime_state(self) -> None:
+        """Move declared runtime values out of the serializable config.
+
+        Called wherever the config is about to be READ rather than only at
+        construction, because construction is not the only way these values
+        get in. ``EndpointConfig.update()`` puts unknown keys straight back
+        into ``kwargs``, and ``iModel.from_dict()`` assigns a hydrated config
+        over the specialized one. Both are public routes and both bypass a
+        drain that happens once.
+
+        Draining keeps the value working while taking it out of what gets
+        written down: the value moves to ``_runtime_state``, which
+        ``create_payload`` reads at the same precedence ``config.kwargs`` had.
+
+        Serialization is the only place this is called from besides
+        construction, and deliberately so. ``create_payload`` reads
+        ``config.kwargs`` directly, so a value sitting there still works
+        without being drained first, and a drain on that path was measured to
+        change no observable behaviour. Writing it down is what makes a
+        credential durable, so that is where the drain belongs.
+        """
+        for name in self._runtime_state_fields:
+            if name in self.config.kwargs:
+                self._runtime_state[name] = self.config.kwargs.pop(name)
+
+    def to_dict(self, **kwargs):
+        """Drain before serializing. A child environment reaching a run
+        snapshot is a credential in a saved file, and the value that got there
+        after construction is the same credential as the one that was there
+        before it."""
+        self.drain_runtime_state()
+        return super().to_dict(**kwargs)
 
     def _validate_handlers(self, handlers: dict[str, Callable | None], /) -> None:
         if not isinstance(handlers, dict):

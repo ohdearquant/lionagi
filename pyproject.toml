@@ -9,7 +9,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "aiocache>=0.12.0",
-    "aiohttp>=3.14.1",
+    # CVE: out-of-bounds heap read in the C response parser on a malformed
+    # chunked response, request smuggling via WebSocket upgrade, and a
+    # WebSocket client that accepts compressed frames with no negotiated
+    # permessage-deflate.
+    "aiohttp>=3.14.3",
     "anyio>=4.10.0",
     # Imported directly by the flow kernel to detect the running async backend.
     # anyio dropped sniffio from its own dependencies in 4.10, the floor pinned
@@ -337,15 +341,20 @@ constraint-dependencies = [
     "pyjwt>=2.13.0",        # CVE: PyJWK HMAC/alg-allowlist bypass, PyJWKClient SSRF + DoS
     "tornado>=6.5.7",       # CVE: gzip bomb, auth-header redirect leak, curl credential leak
     "cairosvg>=2.9.0",      # CVE: recursive <use> exponential DoS
-    "cryptography>=48.0.1", # CVE: vulnerable OpenSSL bundled in wheels
+    # CVE: vulnerable OpenSSL bundled in wheels; then a Bleichenbacher oracle
+    # in PKCS#7 EnvelopedData decryption via distinguishable errors and timing
+    "cryptography>=50.0.0",
     "requests>=2.33.0",     # CVE: insecure temp file reuse in extract_zipped_paths
     "pygments>=2.20.0",     # CVE: ReDoS in GUID regex
     "lxml>=6.1.0",          # CVE-2026-41066: XXE via default iterparse / ETCompatXMLParser config
-    "gitpython>=3.1.55",    # CVE: RCE via config_writer + path traversal in reference APIs; then a
+    "gitpython>=3.1.57",    # CVE: RCE via config_writer + path traversal in reference APIs; then a
                             # run of option-injection escapes -- long-option abbreviation, joined and
                             # single-character short options, and unguarded options in archive(),
                             # ls_remote(), iter_commits() and blame() -- plus env-var exfiltration
-                            # through expandvars() on clone_from()/create_remote() URLs
+                            # through expandvars() on clone_from()/create_remote() URLs,
+                            # unguarded option forwarding in IndexFile.checkout() and
+                            # TagReference.create(), and an unsafe_git_archive_options
+                            # denylist that omitted --add-file / --add-virtual-file
     "pymdown-extensions>=11.0.0",  # CVE: path traversal in the b64 extension lets an <img src> read
                             # files outside base_path
     "setuptools>=83.0.0",   # CVE: MANIFEST.in exclusion bypass in sdist via Unicode NFC/NFD
