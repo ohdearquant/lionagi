@@ -1051,6 +1051,58 @@ async def _run_agent(
 
     _terminal_status = "completed"
     _terminal_exc: BaseException | None = None
+    _propagating = False
+    _direct_notice_sent = False
+
+    async def _deliver_direct_notice() -> None:
+        """Send this run's one terminal notice on the no-persistence route.
+
+        No session entity ever existed for this run, so the registered path
+        was never reached and nothing else will ever deliver for it. Which
+        makes *when* this is called the whole question: it reads
+        ``_terminal_status`` at call time, and a status is not this run's
+        answer until every later line that can still change it has run.
+
+        Shielded, because the guarantee it exists to provide is that a
+        terminal notice arrives, and the caller is a teardown path where a
+        cancellation is exactly what is expected to arrive.
+
+        Idempotent by flag rather than by the caller being careful: it is
+        reached from a ``finally`` and from the ordinary tail, and those two
+        overlap on nothing today, which is the sort of thing that stays true
+        only until someone adds a branch.
+        """
+        nonlocal _direct_notice_sent
+
+        if not notify or _notify_session_id is not None or _direct_notice_sent:
+            return
+        _direct_notice_sent = True
+        import anyio as _anyio
+
+        with _anyio.CancelScope(shield=True):
+            try:
+                from lionagi.cli.orchestrate._notify import deliver_flow_notify_now
+
+                _reason_code, _, _ = resolve_run_reason(
+                    status=_terminal_status, exception=_terminal_exc
+                )
+                await deliver_flow_notify_now(
+                    override=notify,
+                    run=run,
+                    entity_kind="session",
+                    entity_id=branch_id,
+                    invocation_id=invocation_id,
+                    flow_kind="agent",
+                    playbook=None,
+                    save_dir=str(run.artifact_root),
+                    cwd=cwd or os.getcwd(),
+                    started_at=run_manifest["started_at"],
+                    terminal_status=_terminal_status,
+                    reason_code=_reason_code,
+                    occurred_at=time.time(),
+                )
+            except Exception as _notify_exc:  # noqa: BLE001 — a notifier failure must never affect the run
+                log_error(f"direct-path notify.on_terminal delivery failed: {_notify_exc!r}")
 
     # Armed unconditionally, not only when --timeout is set: the steer receipt
     # ack below is the operator's only signal that a queued message was
@@ -1127,6 +1179,10 @@ async def _run_agent(
     except BaseException as exc:
         _terminal_status = classify_exception(exc)
         _terminal_exc = exc
+        # Nothing after this try block runs, so the teardown below is this
+        # run's last chance to notify. Every other path falls through to the
+        # tail, where the status is still being decided.
+        _propagating = True
         if _terminal_status == "failed":
             # Default traceback printing is unreliable under SIGTERM/process
             # death — leave a one-line diagnostic before it propagates.
@@ -1218,37 +1274,15 @@ async def _run_agent(
                 run_manifest["ended_at"] = time.time()
             if _write_run_manifest is not None:
                 _write_run_manifest(run_manifest)
-            # No session entity ever existed for this run (persistence setup
-            # failed), so register_flow_notify_scope above was never reached —
-            # this run's terminal status is now known, and delivering it here
-            # is the only chance this run gets. Same resolution, same payload
-            # shape as the registered path; see deliver_flow_notify_now.
-            if notify and _notify_session_id is None:
-                try:
-                    from lionagi.cli.orchestrate._notify import (
-                        deliver_flow_notify_now,
-                    )
-
-                    _reason_code, _, _ = resolve_run_reason(
-                        status=_terminal_status, exception=_terminal_exc
-                    )
-                    await deliver_flow_notify_now(
-                        override=notify,
-                        run=run,
-                        entity_kind="session",
-                        entity_id=branch_id,
-                        invocation_id=invocation_id,
-                        flow_kind="agent",
-                        playbook=None,
-                        save_dir=str(run.artifact_root),
-                        cwd=cwd or os.getcwd(),
-                        started_at=run_manifest["started_at"],
-                        terminal_status=_terminal_status,
-                        reason_code=_reason_code,
-                        occurred_at=time.time(),
-                    )
-                except Exception as _notify_exc:  # noqa: BLE001 — a notifier failure must never affect the run
-                    log_error(f"direct-path notify.on_terminal delivery failed: {_notify_exc!r}")
+            # Only when an exception is on its way out, because then this is
+            # the last code this run executes. On every other path the status
+            # is not settled yet: an empty resumed stream becomes `failed`
+            # below, and a leg about to auto-resume has no terminal answer of
+            # its own at all — the resumed leg carries the notice. Sending
+            # from here regardless is how a notifier was told `timed_out`
+            # about a run that went on to complete.
+            if _propagating:
+                await _deliver_direct_notice()
             # Unregister after teardown fires the terminal transition.
             if _notify_scope_name is not None:
                 unregister_flow_notify_scope(_notify_scope_name)
@@ -1279,6 +1313,12 @@ async def _run_agent(
     if _terminal_status == "timed_out" and resume_on_timeout and not _auto_resumed:
         from lionagi.cli._logging import warn
 
+        # Deliberately keyed on this branch rather than on the `will_auto_resume`
+        # the teardown computed: that one is read before the effective status is
+        # applied, so the two can disagree, and a notice suppressed on a
+        # recursion that then does not happen is a leg that never reports at all.
+        # The recursive call owns the notice, which is what makes it the final
+        # status rather than an interim one.
         warn(
             f"[auto-resume] session {session_id or branch_id} timed out after "
             f"{timeout}s — resuming once with 'continue and conclude the task'"
@@ -1309,6 +1349,10 @@ async def _run_agent(
             _auto_resumed=True,
             _injection_totals=_injection_totals,
         )
+
+    # Past every line that can still move the status, and past the recursion
+    # that would have made this leg an interim one, so this is the run's answer.
+    await _deliver_direct_notice()
 
     return res or "", provider, branch_id, _terminal_status, session_id
 

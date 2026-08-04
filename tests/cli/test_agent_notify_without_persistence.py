@@ -197,3 +197,110 @@ async def test_control_disabling_the_direct_path_delivers_nothing(monkeypatch, t
         "the old path recorded nothing either — this is what made the run look "
         "exactly like one that never asked for a notifier at all"
     )
+
+
+def _write_appending_notifier(tmp_path: Path) -> Path:
+    """Like the fake notifier above, but appends.
+
+    The question in the two tests below is how MANY notices one logical run
+    sends, so a notifier that overwrites would report a two-notice run and a
+    one-notice run identically — and the wrong count is the defect.
+    """
+    script = tmp_path / "appending_notifier.py"
+    script.write_text("import sys\nopen(sys.argv[1], 'a').write(sys.argv[2] + '\\n')\n")
+    return script
+
+
+@pytest.mark.asyncio
+async def test_a_leg_that_will_auto_resume_leaves_the_notice_to_the_resumed_leg(
+    monkeypatch, tmp_path
+):
+    """A timed-out leg that is about to auto-resume has no answer yet.
+
+    Its status is `timed_out` and the run is not over: the recursion below it
+    carries on and can finish the work. Delivering from the interim leg told
+    the notifier the run timed out while the run went on to complete, and the
+    notifier's whole job is to report how the run ended.
+
+    Both legs are real here, including the recursion and the per-leg run
+    allocation. Pinning them to one run directory would hide the count behind
+    the once-per-run delivery guard, which is a different mechanism from the
+    one under test.
+    """
+    _wire_agent_stubs(monkeypatch, tmp_path, persist=None)
+
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi._errors import TimeoutError as LionTimeoutError
+    from lionagi.cli._runs import allocate_run as real_allocate_run
+
+    monkeypatch.setattr(agent_mod, "allocate_run", real_allocate_run)
+
+    marker = tmp_path / "notices.txt"
+    script = _write_appending_notifier(tmp_path)
+
+    turns = {"n": 0}
+
+    async def operate(self, instruction=None, **kw):
+        turns["n"] += 1
+        if turns["n"] == 1:
+            raise LionTimeoutError("synthetic")
+        return "the resumed leg concluded the task"
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    branch_file = tmp_path / "branch.json"
+    branch_file.write_text("{}")
+    monkeypatch.setattr(agent_mod, "find_branch", lambda rid: (None, branch_file))
+    monkeypatch.setattr(Branch, "from_dict", classmethod(lambda cls, data: Branch()))
+
+    result = await agent_mod._run_agent(
+        "codex/model",
+        "do the thing",
+        timeout=1,
+        resume_on_timeout=True,
+        notify=f"{sys.executable} {script} {marker} {{status}}",
+    )
+
+    assert turns["n"] == 2, "the resume never happened, so this asserts nothing about it"
+    notices = marker.read_text().split() if marker.exists() else []
+    assert notices == ["completed"], (
+        f"one notice, carrying the status the run actually reached; got {notices}"
+    )
+    assert result[3] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_resumed_stream_notifies_the_status_it_is_converted_to(
+    monkeypatch, tmp_path
+):
+    """A resume that produces nothing is converted from `completed` to
+    `failed`, and that conversion happens after the teardown that used to
+    deliver. So the notifier was told `completed` about a run whose own
+    return value, manifest and log line all said `failed`."""
+    _wire_agent_stubs(monkeypatch, tmp_path, persist=None)
+
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    marker = tmp_path / "notices.txt"
+    script = _write_appending_notifier(tmp_path)
+
+    async def operate(self, instruction=None, **kw):
+        return ""
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    branch_file = tmp_path / "branch.json"
+    branch_file.write_text("{}")
+    monkeypatch.setattr(agent_mod, "find_branch", lambda rid: (None, branch_file))
+    monkeypatch.setattr(Branch, "from_dict", classmethod(lambda cls, data: Branch()))
+
+    result = await agent_mod._run_agent(
+        "codex/model",
+        "do the thing",
+        resume="resumed-branch",
+        notify=f"{sys.executable} {script} {marker} {{status}}",
+    )
+
+    assert result[3] == "failed", "the conversion this test is about did not happen"
+    notices = marker.read_text().split() if marker.exists() else []
+    assert notices == ["failed"], f"the notice must agree with the returned status; got {notices}"
