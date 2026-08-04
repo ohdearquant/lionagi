@@ -19,7 +19,7 @@ import json
 import os
 import signal
 import sys
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -1365,3 +1365,95 @@ class TestTheContinuationKeepsTheCallersOwnRecorder:
         assert supervisor.seen == ["leg-1", "leg-2"]
         assert seen_requests[1] is not seen_requests[0]
         assert seen_requests[1].on_spawn.__self__ is supervisor
+
+
+class TestIdentityIsEstablishedTwoWaysNotOne:
+    """A recorded group id is provably still this child's under either of two
+    facts, and they cover different moments. While the child is unreaped its
+    pid cannot have been reissued. Once it is reaped, only a live member pins
+    the id. Checking only the second refuses where identity was never in
+    question; checking only the first signals a number that may name a
+    stranger."""
+
+    def test_an_unreaped_child_is_ended_without_consulting_the_scan(self, monkeypatch):
+        """This is the half that was missing. On the cancellation backstop the
+        direct child has not been waited, so its pid cannot have been reissued
+        and the group is provably its own. Refusing here because the process
+        table could not be read left a SIGTERM-ignoring descendant alive on
+        every platform that cannot enumerate."""
+        import lionagi.providers._cli_subprocess as cs
+
+        signalled: list = []
+        scanned: list = []
+        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: signalled.append(pgid) or True)
+        monkeypatch.setattr(
+            cs, "group_member_pids", lambda pgid: (scanned.append(pgid), ([], False))[1]
+        )
+
+        verdict = cs._end_group_with_evidence(SimpleNamespace(pid=4242, returncode=None))
+
+        assert verdict == "killed-unreaped"
+        assert signalled == [4242]
+        # The scan is not merely ignored, it is not reached: an unreadable
+        # process table must not be able to change this answer.
+        assert scanned == []
+
+    def test_a_reaped_child_still_defers_to_the_scan(self, monkeypatch):
+        """The other side of the same rule, so the fix cannot be satisfied by
+        always killing. Once reaped, the pid is just a number."""
+        import lionagi.providers._cli_subprocess as cs
+
+        signalled: list = []
+        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: signalled.append(pgid) or True)
+        monkeypatch.setattr(cs, "group_member_pids", lambda pgid: ([], False))
+
+        verdict = cs._end_group_with_evidence(SimpleNamespace(pid=4242, returncode=0))
+
+        assert verdict == "unproven"
+        assert signalled == []
+
+    def test_a_completed_but_reaped_spawn_is_not_signalled(self, monkeypatch):
+        """A spawn task can complete AND its child be reaped before the
+        done-callback runs. The pid is then just a number, and the group scan
+        is the only thing that can say whether it still names this child."""
+        import lionagi.providers._cli_subprocess as cs
+
+        signalled: list = []
+        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: signalled.append(pgid) or True)
+        monkeypatch.setattr(cs, "group_member_pids", lambda pgid: ([], True))
+
+        class CompletedSpawn:
+            def cancelled(self):
+                return False
+
+            def exception(self):
+                return None
+
+            def result(self):
+                return SimpleNamespace(pid=4242, returncode=0)
+
+        cs._kill_abandoned_spawn(CompletedSpawn())
+
+        assert signalled == []
+
+    def test_a_completed_and_still_running_spawn_is_signalled(self, monkeypatch):
+        """The other half, so the fix above cannot be satisfied by never
+        signalling at all. Unreaped means the id is still this child's."""
+        import lionagi.providers._cli_subprocess as cs
+
+        signalled: list = []
+        monkeypatch.setattr(cs, "kill_group_now", lambda pgid: signalled.append(pgid) or True)
+
+        class RunningSpawn:
+            def cancelled(self):
+                return False
+
+            def exception(self):
+                return None
+
+            def result(self):
+                return SimpleNamespace(pid=4242, returncode=None)
+
+        cs._kill_abandoned_spawn(RunningSpawn())
+
+        assert signalled == [4242]

@@ -259,7 +259,31 @@ def _kill_abandoned_spawn(task: asyncio.Future) -> None:
         return
     if task.exception() is not None:
         return
-    kill_group_now(getattr(task.result(), "pid", None))
+    # Not a raw kill: a spawn that completed may ALSO have been reaped by the
+    # time this callback runs, and a reaped pid names whatever now holds it.
+    _end_group_with_evidence(task.result())
+
+
+def _end_group_with_evidence(proc: Any) -> str:
+    """End a child's group wherever its identity can be established.
+
+    TWO facts establish that a recorded group id still belongs to this child,
+    and they cover different moments, so checking only one leaves a hole where
+    the other applies. While the child is unreaped its pid cannot have been
+    reissued, so the group id is provably still its own and no scan is needed.
+    Once it has been reaped, only a live member pins that id, which is what the
+    membership scan looks for.
+
+    Checking only the second is what left a SIGTERM-ignoring descendant running
+    whenever the process table could not be read: the refusal is correct AFTER
+    the reap and wrong before it, where identity was never in question. The rule
+    was stated correctly and implemented halfway, which is the kind of gap that
+    reads as caution rather than as a defect.
+    """
+    pgid = getattr(proc, "pid", None)
+    if getattr(proc, "returncode", None) is None:
+        return "killed-unreaped" if kill_group_now(pgid) else "no-group"
+    return _kill_group_if_occupied(pgid)
 
 
 def _kill_group_if_occupied(pgid: Any) -> str:
@@ -329,19 +353,18 @@ async def end_child_group(proc: Any, *, grace: float = 5.0) -> None:
     than silent — it is the one outcome where something may still be running
     and nothing was done about it.
     """
-    pgid = getattr(proc, "pid", None)
     swept = False
     try:
         if getattr(proc, "returncode", None) is None:
             await aterminate_process_group(proc, grace=grace)
-        _kill_group_if_occupied(pgid)
+        _end_group_with_evidence(proc)
         swept = True
     finally:
         # Synchronous, so a second cancellation cannot interpose, and keyed on
         # the same membership evidence as the pass it is backing up rather than
         # on anything about the direct child.
         if not swept:
-            _kill_group_if_occupied(pgid)
+            _end_group_with_evidence(proc)
 
 
 def observe_spawned(pid: int) -> SpawnedProcess:
