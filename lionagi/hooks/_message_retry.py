@@ -39,6 +39,7 @@ class MessagePersistRetryQueue:
         self._consecutive_failures = 0
         self._retry_deferred = False
         self._state = "healthy"
+        self._reported_loss_count: int | None = None
 
     @property
     def pending_count(self) -> int:
@@ -58,6 +59,48 @@ class MessagePersistRetryQueue:
             if not self._pending:
                 return True
             return await self._drain_locked(force=True)
+
+    async def flush_final(self) -> bool:
+        """Flush at teardown, and say so when events did not make it.
+
+        ``flush`` reports failure only by returning ``False``, and that is the
+        whole of what the failing path says. The state log is deliberately quiet
+        when nothing changed, and a queue that has been failing long enough to
+        reach teardown is already in the state it would be transitioning to, so
+        the last attempt these events will ever get is exactly the attempt that
+        emits nothing. A caller that drops the return value is then told nothing
+        at all, by a queue that just lost their messages.
+
+        Losing them is an outcome rather than a state change, so it is reported
+        here whichever state the queue was already in. The count is included
+        because it is the part nobody can reconstruct afterwards: the events are
+        gone, and no later sweep has anything left to find.
+
+        Teardown reaches this more than once. The hook bus flushes on
+        ``SESSION_END`` and the run teardown flushes before it reads completion
+        evidence, and both traverse the same queues without either being able to
+        see the other. The repeated *attempt* is wanted — the store may have come
+        back between them, and the second call is a real last chance — so what is
+        suppressed is the repeated *report*: the same loss, restated, reads as
+        two separate incidents. A count that has changed is a different fact and
+        is reported again, and a flush that finally succeeds clears the marker so
+        a later loss is not swallowed as a repeat.
+        """
+        flushed = await self.flush()
+        if flushed:
+            self._reported_loss_count = None
+            return True
+
+        lost = self.pending_count
+        if lost != self._reported_loss_count:
+            self._reported_loss_count = lost
+            self._logger.error(
+                "live persist gave up for %s at teardown: %d event(s) were never "
+                "written and are lost",
+                self._owner,
+                lost,
+            )
+        return False
 
     async def _drain_locked(self, *, force: bool = False) -> bool:
         if self._retry_deferred and not force:

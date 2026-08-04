@@ -186,10 +186,18 @@ class HookBus:
         if point is not HookPoint.MESSAGE_ADD:
             await self._record(point, kwargs)
 
-    async def flush_message_retries(self) -> None:
-        """Flush default message-hook retries before terminal lifecycle work."""
+    async def flush_message_retries(self) -> bool:
+        """Flush default message-hook retries before terminal lifecycle work.
+
+        Returns whether every queue emptied. The queues report their own losses,
+        so this is for a caller that can do something about it rather than the
+        record that it happened.
+        """
+        flushed = True
         for retry_queue in getattr(self, "_message_retry_queues", {}).values():
-            await retry_queue.flush()
+            if not await retry_queue.flush_final():
+                flushed = False
+        return flushed
 
 
 # ── Decorator for user-defined handlers ───────────────────────────────────────
