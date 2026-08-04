@@ -176,20 +176,43 @@ def redact_runtime_fields_in_place(data) -> None:
 
     Anything the raw mapping holds under any other key is untouched and is not
     covered by this. The claim here is about the two declared runtime fields.
+
+    **An immutable mapping is refused, not skipped.** Substituting in place is
+    not a convenience here, it is the whole mechanism: pydantic keeps the
+    object that was passed INTO the failing validator, so handing back a
+    sanitized copy changes nothing about what the error holds. When the raw
+    input cannot be written to, there is no way to make it safe, and the only
+    two options are to leak it or to refuse it. ``BaseModel.model_validate()``
+    accepts any mapping, so this route is public and reachable, and skipping
+    quietly meant a credential in ``str(exc)``, ``exc.errors()`` and
+    ``exc.json()`` alike.
+
+    The refusal is a ``TypeError`` because pydantic converts ``ValueError`` and
+    ``AssertionError`` into a ``ValidationError`` that quotes the rejected
+    input, which would reintroduce exactly what is being prevented. It names
+    the fields and the mapping type and never the values. A mapping carrying
+    neither runtime field has nothing to protect and passes through, so
+    read-only inputs are not broken in general.
     """
     if not isinstance(data, Mapping):
         return
-    for name in ("env", "on_spawn"):
-        value = data.get(name)
-        if value is None or isinstance(value, Redacted):
-            continue
-        try:
-            data[name] = Redacted(value, name)
-        except TypeError:
-            # An immutable mapping: nothing to substitute into, and returning
-            # quietly would leave the caller believing this ran. The field
-            # validators still reject or unwrap what they are given.
-            return
+    present = [
+        name
+        for name in ("env", "on_spawn")
+        if data.get(name) is not None and not isinstance(data.get(name), Redacted)
+    ]
+    if not present:
+        return
+    try:
+        for name in present:
+            data[name] = Redacted(data[name], name)
+    except TypeError:
+        raise TypeError(
+            f"{type(data).__name__} is read-only, so the runtime-only field(s) "
+            f"{', '.join(present)} cannot be replaced before validation. These carry a "
+            "child environment and a spawn callback, and a validation error would "
+            "render the mapping verbatim. Pass a mutable mapping."
+        ) from None
 
 
 def _kill_abandoned_spawn(task: asyncio.Future) -> None:

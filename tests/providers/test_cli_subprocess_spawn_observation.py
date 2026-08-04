@@ -19,6 +19,7 @@ import json
 import os
 import signal
 import sys
+from types import MappingProxyType
 
 import pytest
 
@@ -1214,3 +1215,71 @@ class TestWhatTheProcessTableCouldNotAnswer:
 
         assert cs._kill_group_if_occupied(None) == "no-group"
         assert killed == []
+
+
+class TestTheRawInputShapesTheFixWasNotWrittenAgainst:
+    """The redaction was built against ``Model(**mutable_dict)`` and held there.
+    Two other shapes reach the same validators and neither was covered: an
+    immutable mapping through ``model_validate``, and a callback that is not
+    callable at all. Both put the value back into the error the carrier exists
+    to keep it out of."""
+
+    SECRET = "raw-input-canary"
+
+    @staticmethod
+    def _channels(exc) -> dict[str, str]:
+        """Every channel pydantic renders through, or the message for a plain
+        exception. Asserting on one of these is how the first version of this
+        protection passed while leaking."""
+        errors = getattr(exc, "errors", None)
+        if errors is None:
+            return {"str": str(exc)}
+        return {"str": str(exc), "errors": repr(exc.errors()), "json": exc.json()}
+
+    @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
+    def test_an_immutable_mapping_is_refused_rather_than_left_unredacted(self, model_path):
+        """Substituting in place is the mechanism, not a convenience: pydantic
+        keeps the object passed INTO the failing validator, so a sanitized copy
+        would change nothing. A mapping that cannot be written to can only be
+        leaked or refused."""
+        model = _load(model_path)
+
+        with pytest.raises(TypeError) as excinfo:
+            model.model_validate(MappingProxyType({"prompt": "", "env": {"TOKEN": self.SECRET}}))
+
+        for channel, text in self._channels(excinfo.value).items():
+            assert self.SECRET not in text, f"the environment leaked through {channel}"
+        # Refused for the right reason, and named so a caller can act on it.
+        assert "env" in str(excinfo.value)
+
+    @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
+    def test_a_read_only_mapping_without_runtime_fields_still_validates(self, model_path):
+        """The refusal is scoped to inputs that actually carry something to
+        protect. Without this, the fix for the leak breaks every read-only
+        mapping in general, which no leak test would have caught."""
+        model = _load(model_path)
+
+        request = model.model_validate(MappingProxyType({"prompt": "hi"}))
+
+        assert request.prompt == "hi"
+
+    @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
+    def test_a_callback_that_is_not_callable_is_rejected_without_being_printed(self, model_path):
+        """Unwrapping the carrier is what re-exposes the value. Handing a
+        non-callable back for pydantic to reject renders its ``repr`` in the
+        field error, so the rejection has to happen where the unwrapping does."""
+        model = _load(model_path)
+        secret = self.SECRET
+
+        class NotACallback:
+            def __repr__(self):
+                return f"NotACallback(token={secret!r})"
+
+        with pytest.raises(TypeError) as excinfo:
+            model(prompt="hi", on_spawn=NotACallback())
+
+        for channel, text in self._channels(excinfo.value).items():
+            assert self.SECRET not in text, f"the callback leaked through {channel}"
+        # The type is named, because a type name is not a credential and a
+        # caller cannot fix this without it.
+        assert "NotACallback" in str(excinfo.value)

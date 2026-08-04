@@ -278,7 +278,16 @@ class ClaudeCodeRequest(BaseModel):
         the failure mode this method exists to prevent, and the one a test that
         only checks for leaks would never see.
         """
-        return value.reveal() if isinstance(value, Redacted) else value
+        if isinstance(value, Redacted):
+            value = value.reveal()
+        if value is None or callable(value):
+            return value
+        # Rejected HERE rather than handed back for pydantic to reject, because
+        # unwrapping is what re-exposes the value: pydantic renders a failing
+        # field's input, and an object with a credential-bearing __repr__ is
+        # exactly the shape this carrier exists to keep out of an error. A
+        # TypeError names the type and never the object.
+        raise TypeError(f"on_spawn must be callable, got {type(value).__name__}")
 
     # ── features (order 80–89) ────────────────────────────────────
     chrome: bool | None = Field(
