@@ -247,6 +247,17 @@ message ids) must not fall through to `0 or fallback`.
 - **`_find_definition_file`** — Candidates are literal-path joins, not glob
   patterns. Symlinks outside `base` are intentionally left unresolved and
   unrestricted — restricting them would break symlinked agent definitions.
+- **`_ensure_db` and the mixed-source reads** — `list_definitions` and
+  `get_definition` answer from two stores at once: current content from disk,
+  version history from SQLite. `save_definition` writes through `StateDB`, so
+  on a server-backed store the history lands in the server while the read side
+  falls back to the default local path — an old local database still present
+  from a previous deployment, reported as this definition's versions over
+  content read live from disk. `_ensure_db` answers False for a store with no
+  file for that reason, so the disk half is still served and the history is
+  simply left out. Routes whose whole answer *is* history (`get_version`)
+  refuse with `require_file_store` instead; the difference is whether dropping
+  the DB half leaves a usable answer.
 
 ## lionagi/studio/services/playbooks.py
 

@@ -57,6 +57,29 @@ def _relative_path(full_path: Path) -> str:
 
 
 async def _ensure_db() -> bool:
+    """Whether version history is readable from here, at all.
+
+    Two ways it is not, and they are different conditions with the same
+    answer. A store file that has not been created yet holds no history. A
+    store with no file at all — a server, or an in-memory database — holds
+    history this SQLite-direct layer cannot reach, and ``store_path()`` falls
+    back to the default path for it. Enriching from that path is worse than
+    not enriching: a deployment that once ran on the local file still has it,
+    so the routes report version numbers and audit messages out of a database
+    nobody serves, over content read live from disk, in one payload that looks
+    entirely consistent. Writes are unaffected — ``save_definition`` goes
+    through ``StateDB`` and lands in the configured store — which is exactly
+    what makes the stale read plausible rather than obviously empty.
+
+    Routes whose whole answer is history refuse instead, with
+    ``require_file_store``. The two callers here are mixed-source: their disk
+    content is current and correct whatever the store is, so they answer that
+    and leave the history they cannot see out of it.
+    """
+    from lionagi.state import db as db_mod
+
+    if db_mod.state_db_file() is None:
+        return False
     return store_exists()
 
 

@@ -131,3 +131,78 @@ def test_a_configured_store_is_never_created_by_reading_it(tmp_path, monkeypatch
 
     assert store_exists() is False
     assert not configured.exists()
+
+
+# ── A store with no file is not a store that is merely empty ────────────────
+
+
+def _seed_definition(db_path: Path, *, content: str, message: str) -> None:
+    async def _go():
+        async with StateDB(db_path) as db:
+            await db.save_definition(
+                kind="agent",
+                name="demo",
+                path="agents/demo.md",
+                content=content,
+                message=message,
+            )
+
+    _run(_go())
+
+
+def test_history_enrichment_is_dropped_rather_than_read_from_a_stale_file(tmp_path, monkeypatch):
+    """The definition routes read current content from disk and enrich it with
+    version history from the store. Against a server-backed store there is no
+    file for that history, and resolution falls back to the default path — so a
+    deployment that once ran locally still has that database, and the route
+    reported its versions and audit messages over content read live from disk.
+    Nothing about the payload looks wrong; the two halves simply came from
+    different stores, and only one of them is the store in use.
+
+    Writes are not affected, which is what makes it plausible rather than
+    obviously broken: `save_definition` goes through StateDB and lands in the
+    configured store, so the local file only ever looks out of date, never
+    empty.
+    """
+    import lionagi.studio.services.definitions as definitions_mod
+
+    fallback = tmp_path / "state.db"
+    _seed_definition(fallback, content="what the old local database holds", message="old")
+    disk = tmp_path / "agents"
+    disk.mkdir()
+    (disk / "demo.md").write_text("what is on disk now")
+
+    _configure(monkeypatch, default=fallback, url="postgresql://user:secret@host/prod")
+    monkeypatch.setitem(definitions_mod.KIND_DIRS, "agent", disk)
+
+    got = _run(definitions_mod.get_definition("agent", "demo"))
+    listed = _run(definitions_mod.list_definitions("agent"))
+
+    assert got["content"] == "what is on disk now", (
+        "the disk half is correct whatever the store is, and must still be answered"
+    )
+    assert got["versions"] == [], "history came from a database this deployment does not serve"
+    assert got["version"] == 0
+    assert listed[0]["has_versions"] is False
+    assert listed[0]["version"] == 0
+
+
+def test_history_enrichment_still_happens_against_the_configured_file(tmp_path, monkeypatch):
+    """The over-refusal arm, on the same seeded database: configure it as the
+    store and the identical call must enrich. Without this, dropping enrichment
+    unconditionally would pass the test above."""
+    import lionagi.studio.services.definitions as definitions_mod
+
+    store = tmp_path / "state.db"
+    _seed_definition(store, content="what the database holds", message="recorded")
+    disk = tmp_path / "agents"
+    disk.mkdir()
+    (disk / "demo.md").write_text("what is on disk now")
+
+    _configure(monkeypatch, default=store, url=None)
+    monkeypatch.setitem(definitions_mod.KIND_DIRS, "agent", disk)
+
+    got = _run(definitions_mod.get_definition("agent", "demo"))
+
+    assert got["version"] == 1
+    assert [v["message"] for v in got["versions"]] == ["recorded"]
