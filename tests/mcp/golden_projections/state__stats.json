@@ -2,7 +2,7 @@
   "path": "state stats",
   "schema": {
     "additionalProperties": false,
-    "description": "Report state.db + state.db-wal sizes, per-table row counts, session status distribution, and SQLite PRAGMAs (journal_mode, wal_autocheckpoint, busy_timeout). Use to spot growth and lock contention.",
+    "description": "Report state.db + state.db-wal sizes, per-table row counts, messages broken down by role and by age, session status distribution, and SQLite PRAGMAs (journal_mode, wal_autocheckpoint, busy_timeout). Use to spot growth and lock contention, and to check before pruning whether the keep-window can reach anything at all.",
     "properties": {},
     "title": "state stats",
     "type": "object"
