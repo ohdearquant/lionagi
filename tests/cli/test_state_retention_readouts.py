@@ -17,6 +17,7 @@ import time
 import uuid
 from pathlib import Path
 
+import anyio
 import pytest
 
 from lionagi.cli.state import (
@@ -24,6 +25,7 @@ from lionagi.cli.state import (
     _print_stats,
     _prune,
     _prune_candidates,
+    run_state,
 )
 from lionagi.state.db import StateDB
 
@@ -218,3 +220,96 @@ class TestThePruneCannotReportAnOutcomeNothingContradicts:
 
         assert check["candidates"] == 0
         assert check["oldest_session_age_days"] is None
+
+
+class TestTheBannerFiresOnTheStateItNames:
+    """The advisory reads the age, and the age means two OPPOSITE things.
+
+    ``oldest_session_age_days`` is taken over every surviving session, not over
+    the candidates, so ``age < keep_days`` says the window reaches nothing when
+    it is read BEFORE the prune, and says the prune WORKED when it is read after
+    a successful one. Both arms are here because a banner tested only where it
+    should print passes just as well when it always prints, and the harmful
+    direction is the one where it always prints: its advice is to lower the
+    window, which deletes more, delivered on the path where nothing was wrong.
+    """
+
+    def _prune_args(self, **overrides):
+        """Args from the real parser, so the fixture cannot drift from the CLI."""
+        import argparse
+
+        from lionagi.cli.state import add_state_subparser
+
+        parser = argparse.ArgumentParser()
+        add_state_subparser(parser.add_subparsers(dest="command"))
+        argv = ["state", "prune"]
+        for flag, value in overrides.items():
+            argv += [f"--{flag.replace('_', '-')}", str(value)]
+        return parser.parse_args(argv)
+
+    def test_it_prints_when_the_window_genuinely_reaches_nothing(
+        self, temp_db_path: Path, capsys: pytest.CaptureFixture
+    ):
+        async def seed():
+            async with StateDB() as db:
+                await _seed_session_aged(db, age_days=12)
+
+        anyio.run(seed)
+
+        assert run_state(self._prune_args(keep_days=30, keep_n=0)) == 0
+        out = capsys.readouterr().out
+
+        assert "deleted 0 session(s)" in out
+        assert "NOTHING IS OLDER THAN --keep-days 30" in out
+
+    def test_it_is_absent_after_a_prune_that_deleted_something(
+        self, temp_db_path: Path, capsys: pytest.CaptureFixture
+    ):
+        """The arm that would have caught this shipping.
+
+        Every survivor of a successful prune is inside the window by
+        construction, so the ungated condition holds on exactly the path where
+        the banner's sentence is false.
+        """
+
+        async def seed():
+            async with StateDB() as db:
+                for _ in range(2):
+                    await _seed_session_aged(db, age_days=60)
+                await _seed_session_aged(db, age_days=1)
+
+        anyio.run(seed)
+
+        assert run_state(self._prune_args(keep_days=30, keep_n=0)) == 0
+        out = capsys.readouterr().out
+
+        assert "deleted 2 session(s)" in out
+        # The survivor is 1 day old, so age < keep_days holds here -- which is
+        # precisely why the age alone cannot decide this.
+        assert "oldest session: " in out
+        assert "NOTHING IS OLDER" not in out
+
+    def test_it_is_absent_when_keep_n_held_the_old_rows_back(
+        self, temp_db_path: Path, capsys: pytest.CaptureFixture
+    ):
+        """The other half of the condition, which the two arms above cannot reach.
+
+        Both of them leave the store younger than the window, so a banner gated
+        on the count alone would satisfy them. Here nothing is deleted and the
+        store IS older than the window -- ``keep_n`` is holding the rows, not the
+        window failing to reach them -- so the advice to lower the window would
+        be wrong for a second, independent reason.
+        """
+
+        async def seed():
+            async with StateDB() as db:
+                for _ in range(2):
+                    await _seed_session_aged(db, age_days=60)
+
+        anyio.run(seed)
+
+        assert run_state(self._prune_args(keep_days=30, keep_n=2)) == 0
+        out = capsys.readouterr().out
+
+        assert "deleted 0 session(s)" in out
+        assert "NOTHING IS OLDER" not in out

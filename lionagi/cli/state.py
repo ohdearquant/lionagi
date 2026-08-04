@@ -1449,10 +1449,18 @@ def run_state(args: argparse.Namespace) -> int:
             print("  oldest session: (none)")
         else:
             print(f"  oldest session: {age:.1f}d")
-            if age < args.keep_days:
+            # Gated on the operation's own count, not on the age alone. The same
+            # comparison means two opposite things depending on when it is read:
+            # before the prune it says the window reaches nothing, after a
+            # successful one it says the prune WORKED and every survivor is
+            # inside the window. Ungated it prints "this reclaimed nothing"
+            # directly beneath "deleted 2000 session(s)", and tells an operator
+            # to lower the window -- advice that deletes more, on the one path
+            # where nothing was wrong.
+            if result["sessions"] == 0 and age < args.keep_days:
                 print(
                     f"  NOTHING IS OLDER THAN --keep-days {args.keep_days}, so this "
-                    "reclaimed nothing and no smaller change to the data would have "
+                    "selected nothing and no smaller change to the data would have "
                     "helped. Lower the window or prune on a different axis."
                 )
         return 0
