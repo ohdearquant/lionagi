@@ -5178,6 +5178,30 @@ class StateDB:
             )
         return [dict(r) for r in rows]
 
+    async def list_latest_definition_versions(self) -> list[dict[str, Any]]:
+        """Latest version and timestamp for every definition, in one read.
+
+        For enriching a listing. The alternative is a query per definition,
+        which is the shape that turns a directory scan into a request storm;
+        the table holds one row per saved version, so grouping it whole is
+        cheaper than asking about each name in turn.
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT kind, name, MAX(version) AS version,"
+                            " MAX(created_at) AS created_at FROM definitions"
+                            " GROUP BY kind, name"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
     # ── Session signals (Phase C Move 1) ─────────────────────────────
 
     async def insert_session_signal(

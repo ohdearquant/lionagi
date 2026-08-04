@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from functools import partial
 from pathlib import Path
@@ -12,11 +13,15 @@ from pydantic import BaseModel
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 
+# Imported eagerly: the state package resolves attributes lazily, so this
+# reaches the small URL-handling module without pulling the database layer in.
+from lionagi.state.engine import mask_credentials
+
 from ..registry import studio_route
-from ._db import open_db as _open_db
-from ._db import require_file_store, store_exists, store_path
 from ._path_safety import validate_name_component
 from .agents import _is_protected_system
+
+_log = logging.getLogger("lionagi.studio")
 
 # Per-(kind, name) concurrency lock, shared across all requests in this process.
 # Spans both the DB write and the disk write so a crash between them cannot leave disk ahead of history.
@@ -56,8 +61,62 @@ def _relative_path(full_path: Path) -> str:
         return str(full_path)
 
 
-async def _ensure_db() -> bool:
-    return store_exists()
+class HistoryUnavailableError(Exception):
+    """The configured store could not be read. Distinct from holding nothing."""
+
+
+# What the caller is told. The reason is logged rather than returned: a caller
+# can do nothing with a driver's connection error, and a driver that quotes the
+# connection string it failed on quotes the store password with it.
+#
+# The masking below is a backstop, not a repair of a demonstrated leak. Five
+# store failures were measured here — refused connection, unresolvable host,
+# unknown driver, unparseable URL, unknown scheme — and every one names a
+# socket or a plugin without quoting the URL. The set of drivers is open, and
+# masking a message that has nothing to mask costs nothing.
+_HISTORY_UNAVAILABLE_DETAIL = "Definition history is not readable right now"
+
+
+async def _read_history(kind: str, name: str) -> list[dict[str, Any]]:
+    """Version history for one definition, from the store that actually holds it.
+
+    History is read through ``StateDB``, the same way ``save_definition``
+    writes it, so a file, an in-memory database and a server all answer from
+    the store the deployment is configured for. Reading SQLite directly instead
+    could only ever see a local file, which for a server-backed deployment is a
+    database nobody serves: version numbers and audit messages out of an old
+    local file, laid over content read live from disk, in one payload that
+    looks entirely consistent.
+
+    Raising when the store cannot be read is the point. Returning an empty list
+    would say this definition has no versions, which is a claim about the
+    definition; the true statement is that this deployment cannot answer, which
+    is a claim about the store. A caller told "no versions" reasonably concludes
+    nothing was ever saved.
+    """
+    from lionagi.state.db import StateDB
+
+    try:
+        async with StateDB() as db:
+            rows = await db.list_definition_versions(kind, name)
+    except Exception as exc:  # noqa: BLE001 — any unreadable store is the same answer
+        _log.warning(
+            "definition history is unreadable for %s/%s: %s",
+            kind,
+            name,
+            mask_credentials(repr(exc)),
+        )
+        raise HistoryUnavailableError(mask_credentials(str(exc))) from exc
+
+    return [
+        {
+            "id": r["id"],
+            "version": r["version"],
+            "created_at": r["created_at"],
+            "message": r["message"],
+        }
+        for r in rows
+    ]
 
 
 async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
@@ -106,23 +165,33 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
 
     result = await anyio.to_thread.run_sync(partial(_scan_disk, kind))
 
-    if result and await _ensure_db():
-        conditions = " OR ".join("(kind = ? AND name = ?)" for _ in result)
-        params = [value for item in result for value in (item["kind"], item["name"])]
-        async with _open_db(store_path()) as db:
-            cur = await db.execute(
-                f"SELECT kind, name, MAX(version) AS v, MAX(created_at) AS ts"  # noqa: S608
-                f" FROM definitions WHERE {conditions} GROUP BY kind, name",
-                params,
+    if result:
+        from lionagi.state.db import StateDB
+
+        try:
+            async with StateDB() as db:
+                rows = await db.list_latest_definition_versions()
+        except Exception as exc:  # noqa: BLE001 — any unreadable store is the same answer
+            # Same distinction the single-definition route makes: unknown is
+            # null, not False. Reporting has_versions=False here would say
+            # these definitions have never been saved.
+            _log.warning(
+                "definition history is unreadable for the listing: %s",
+                mask_credentials(repr(exc)),
             )
-            rows = await cur.fetchall()
+            for entry in result:
+                entry["has_versions"] = None
+                entry["history_available"] = False
+            return result
+
         versions = {(row["kind"], row["name"]): row for row in rows}
         for entry in result:
+            entry["history_available"] = True
             row = versions.get((entry["kind"], entry["name"]))
-            if row and row["v"] is not None:
+            if row and row["version"] is not None:
                 entry["has_versions"] = True
-                entry["version"] = row["v"]
-                entry["updated_at"] = row["ts"] or entry["updated_at"]
+                entry["version"] = row["version"]
+                entry["updated_at"] = row["created_at"] or entry["updated_at"]
 
     return result
 
@@ -143,65 +212,72 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
 
     content = await anyio.to_thread.run_sync(disk_file.read_text)
 
-    versions: list[dict[str, Any]] = []
-    if await _ensure_db():
-        async with _open_db(store_path()) as db:
-            cur = await db.execute(
-                "SELECT id, version, created_at, message FROM definitions WHERE kind = ? AND name = ? ORDER BY version DESC",
-                (kind, name),
-            )
-            rows = await cur.fetchall()
-            versions = [
-                {
-                    "id": r["id"],
-                    "version": r["version"],
-                    "created_at": r["created_at"],
-                    "message": r["message"],
-                }
-                for r in rows
-            ]
-
-    current_version = versions[0]["version"] if versions else 0
+    # The disk half is current and correct whatever the store is, so it is
+    # answered either way. The history half is null rather than empty when the
+    # store cannot be read: a client that does not handle it fails on a null
+    # instead of quietly believing this definition was never versioned.
+    try:
+        versions = await _read_history(kind, name)
+    except HistoryUnavailableError:
+        return {
+            "kind": kind,
+            "name": name,
+            "path": _relative_path(disk_file),
+            "content": content,
+            "version": None,
+            "versions": None,
+            "history_available": False,
+        }
 
     return {
         "kind": kind,
         "name": name,
         "path": _relative_path(disk_file),
         "content": content,
-        "version": current_version,
+        "version": versions[0]["version"] if versions else 0,
         "versions": versions,
+        "history_available": True,
     }
 
 
 async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | None:
-    """Get a specific historical version's content."""
+    """Get a specific historical version's content.
+
+    This route's whole answer is history, so it has nothing to fall back on:
+    it either reads the store or it refuses. Raising ``HistoryUnavailableError``
+    keeps that refusal distinct from ``None``, which means the store answered
+    and does not have this version.
+    """
     # Validate at service boundary — kind/name are used in SQL WHERE clauses
     # and, indirectly, in any path lookups that build on this function.
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
 
-    require_file_store()
-    if not await _ensure_db():
+    from lionagi.state.db import StateDB
+
+    try:
+        async with StateDB() as db:
+            row = await db.get_definition(kind, name, version=version)
+    except Exception as exc:  # noqa: BLE001 — any unreadable store is the same answer
+        _log.warning(
+            "definition version is unreadable for %s/%s: %s",
+            kind,
+            name,
+            mask_credentials(repr(exc)),
+        )
+        raise HistoryUnavailableError(mask_credentials(str(exc))) from exc
+
+    if not row:
         return None
 
-    async with _open_db(store_path()) as db:
-        cur = await db.execute(
-            "SELECT id, content, version, created_at, message FROM definitions"
-            " WHERE kind = ? AND name = ? AND version = ?",
-            (kind, name, version),
-        )
-        row = await cur.fetchone()
-        if not row:
-            return None
-
-        return {
-            "kind": kind,
-            "name": name,
-            "version": row["version"],
-            "content": row["content"],
-            "created_at": row["created_at"],
-            "message": row["message"],
-        }
+    return {
+        "kind": kind,
+        "name": name,
+        "version": row["version"],
+        "content": row["content"],
+        "created_at": row["created_at"],
+        "message": row["message"],
+    }
 
 
 async def save_definition(
@@ -277,16 +353,24 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
     if not old:
         return None
 
-    current_version = 0
-    if await _ensure_db():
-        async with _open_db(store_path()) as db:
-            cur = await db.execute(
-                "SELECT MAX(version) AS v FROM definitions WHERE kind = ? AND name = ?",
-                (kind, name),
-            )
-            row = await cur.fetchone()
-            if row and row["v"] is not None:
-                current_version = row["v"]
+    from lionagi.state.db import StateDB
+
+    # The read above already refused if the store was unreadable, so reaching
+    # here means it answered once. It can still go away between the two reads,
+    # and that is the same condition under the same route, so it gets the same
+    # refusal rather than an uncaught error.
+    try:
+        async with StateDB() as db:
+            latest = await db.get_definition(kind, name)
+    except Exception as exc:  # noqa: BLE001 — any unreadable store is the same answer
+        _log.warning(
+            "definition history became unreadable mid-rollback for %s/%s: %s",
+            kind,
+            name,
+            mask_credentials(repr(exc)),
+        )
+        raise HistoryUnavailableError(mask_credentials(str(exc))) from exc
+    current_version = latest["version"] if latest else 0
 
     save_result = await save_definition(
         kind,
@@ -401,7 +485,18 @@ async def get_definition_route(kind: str, name: str) -> dict[str, Any]:
     name="get_version",
 )
 async def get_version_route(kind: str, name: str, version: int) -> dict[str, Any]:
-    v = await get_version(kind, name, version)
+    # 503, not 501: every store this deployment can be configured for is one
+    # StateDB can read, so failing to read it is an operational condition a
+    # retry can outlive. 501 would tell the caller to stop asking.
+    #
+    # The driver's own message is not repeated back over HTTP. It routinely
+    # quotes the connection string it failed on, which carries the store
+    # password, and a caller can do nothing with it either way. The diagnosis
+    # goes to the log, where it is masked.
+    try:
+        v = await get_version(kind, name, version)
+    except HistoryUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=_HISTORY_UNAVAILABLE_DETAIL) from exc
     if v is None:
         raise HTTPException(
             status_code=404, detail=f"Version {version} not found for {kind}/{name}"
@@ -436,7 +531,10 @@ async def rollback_definition_route(
     name: str,
     version: int = Query(..., description="Target version to restore"),
 ) -> dict[str, Any]:
-    result = await rollback_definition(kind, name, version)
+    try:
+        result = await rollback_definition(kind, name, version)
+    except HistoryUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=_HISTORY_UNAVAILABLE_DETAIL) from exc
     if result is None:
         raise HTTPException(
             status_code=404, detail=f"Version {version} not found for {kind}/{name}"
