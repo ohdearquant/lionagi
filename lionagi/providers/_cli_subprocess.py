@@ -18,7 +18,7 @@ from typing import Any
 
 from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
-from lionagi.ln._proc import aterminate_process_group
+from lionagi.ln._proc import aterminate_process_group, terminate_process_group
 from lionagi.ln.concurrency.utils import maybe_await
 
 log = logging.getLogger(__name__)
@@ -88,6 +88,31 @@ class SpawnedProcess:
     create_time: float | None
 
 
+def observe_spawned(pid: int) -> SpawnedProcess:
+    """Read pid, group and start time as one observation of one process.
+
+    The group and the start time are two facts read separately by pid, and a
+    pid the OS reassigns between them answers the later read as the replacement
+    process. A record assembled from those two answers would describe no
+    process that ever existed, so the group read is bracketed by the start
+    time: read before, read again after, required to be unchanged. A failed
+    bracket yields ``create_time=None``, which already means "no identity was
+    captured" and is what stops a consumer from signalling on it.
+
+    The bracket rejects a replacement arriving DURING the observation. It
+    cannot speak for one that arrived before the first read, and the window
+    where that is possible is a child that exits and is reaped between the
+    spawn call returning and the first probe. What covers that window is the
+    probe itself: a reaped pid holds no process and an exited-not-yet-reaped
+    one is a zombie, and :func:`spawned_create_time` answers None to both.
+    """
+    created = spawned_create_time(pid)
+    pgid = spawned_pgid(pid)
+    if created is not None and spawned_create_time(pid) != created:
+        created = None
+    return SpawnedProcess(pid=pid, pgid=pgid, create_time=created)
+
+
 async def ndjson_from_cli(
     cmd: list[str],
     *,
@@ -138,17 +163,23 @@ async def ndjson_from_cli(
         # to a stranger's, and the start time that would have told them apart is
         # readable only while the process is alive. See docs/internals/runtime.md.
         try:
-            await maybe_await(
-                on_spawn(
-                    SpawnedProcess(
-                        pid=proc.pid,
-                        pgid=spawned_pgid(proc.pid),
-                        create_time=spawned_create_time(proc.pid),
-                    )
-                )
-            )
+            await maybe_await(on_spawn(observe_spawned(proc.pid)))
         except BaseException:
-            await aterminate_process_group(proc, grace=5.0)
+            cleaned = False
+            try:
+                await aterminate_process_group(proc, grace=5.0)
+                cleaned = True
+            finally:
+                # A cancellation arriving while the graceful path waits out its
+                # grace skips the SIGKILL escalation that path ends with, and a
+                # child ignoring SIGTERM then survives with nobody holding a
+                # record of it. This backstop takes no await, so there is no
+                # point at which a further cancellation can interpose.
+                # Conditioned on returncode because a completed graceful path
+                # has waited the child, and signalling a pid asyncio has
+                # already reaped is how a stranger's group gets killed.
+                if not cleaned and proc.returncode is None:
+                    terminate_process_group(proc, grace=None)
             raise
 
     decoder = codecs.getincrementaldecoder("utf-8")()

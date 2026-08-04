@@ -8,7 +8,7 @@ import contextlib
 import logging
 import re
 import warnings
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
@@ -216,8 +216,14 @@ class CodexCodeRequest(BaseModel):
         and nothing else reaches a traceback or a log line. It is also the
         right exception for a wrongly typed mapping.
         """
-        if value is None or not isinstance(value, dict):
+        if value is None:
             return value
+        if not isinstance(value, Mapping):
+            # Not "leave it for pydantic": pydantic quotes the rejected value,
+            # and for a wrongly shaped env the value IS the credential.
+            raise TypeError(
+                f"env must be a mapping of strings to strings, got {type(value).__name__}"
+            )
         bad = sorted(
             str(k) for k, v in value.items() if not isinstance(k, str) or not isinstance(v, str)
         )
@@ -225,7 +231,7 @@ class CodexCodeRequest(BaseModel):
             raise TypeError(
                 "env must map strings to strings; these entries do not: " + ", ".join(bad)
             )
-        return value
+        return dict(value)
 
     # ── system prompt (order 40) ──────────────────────────────────
     system_prompt: str | None = None

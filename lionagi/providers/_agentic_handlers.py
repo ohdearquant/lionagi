@@ -31,6 +31,31 @@ class AgenticHandlersMixin:
         if handlers is not None:
             self._validate_handlers(handlers)
             self._handlers.update(handlers)
+        # Called from here so every endpoint that initialises handlers gets it,
+        # rather than from four constructors where the fifth would be missed.
+        self._init_runtime_state()
+
+    def _init_runtime_state(self) -> None:
+        """Move declared runtime state out of the serializable endpoint config.
+
+        ``iModel(**kwargs)`` forwards anything it does not recognise into
+        ``EndpointConfig.kwargs``, which is a supported way to configure an
+        endpoint and also the thing ``Endpoint.to_dict`` serializes — so it
+        reaches ``iModel.to_dict``, ``Branch.to_dict``, and from there the run
+        snapshots written to disk. A child environment left there is a
+        credential in a saved file, and a callback left there is a function in a
+        structure something is about to JSON-encode.
+
+        Holding it here instead keeps the same configuration route working while
+        the value stays in memory. It also survives ``iModel.copy``, which deep
+        copies the config and then calls ``copy_runtime_state_to``: a deep copy
+        of a bound callback rebinds it to a copied receiver, so the original
+        supervisor would quietly stop hearing from the copy's legs.
+        """
+        self._runtime_state: dict[str, object] = {}
+        for name in self._runtime_state_fields:
+            if name in self.config.kwargs:
+                self._runtime_state[name] = self.config.kwargs.pop(name)
 
     def _validate_handlers(self, handlers: dict[str, Callable | None], /) -> None:
         if not isinstance(handlers, dict):
@@ -53,6 +78,10 @@ class AgenticHandlersMixin:
     def copy_runtime_state_to(self, other) -> None:
         if isinstance(other, type(self)):
             other._set_handlers(self._handlers.copy())
+            # Shallow on purpose. These are live objects — an open callback, a
+            # mapping the caller may still hold — and copying them would hand
+            # the copy a different object under the same name.
+            other._runtime_state = dict(self._runtime_state)
 
     def _runtime_handlers(self, kwargs: dict) -> dict:
         handlers = self._handlers.copy()
@@ -63,7 +92,10 @@ class AgenticHandlersMixin:
         return {k: v for k, v in handlers.items() if v is not None}
 
     def create_payload(self, request: dict | BaseModel, **kwargs):
-        req_dict = {**self.config.kwargs, **to_dict(request), **kwargs}
+        # _runtime_state sits where its values sat when they were still in
+        # config.kwargs, so moving them out of the serialized config changed
+        # where they live and not which one wins.
+        req_dict = {**self._runtime_state, **self.config.kwargs, **to_dict(request), **kwargs}
         messages = req_dict.pop("messages", [])
         if self._filter_model_fields and self._request_model is not None:
             req_dict = {k: v for k, v in req_dict.items() if k in self._request_model.model_fields}

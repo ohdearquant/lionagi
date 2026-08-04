@@ -14,6 +14,7 @@ once the child is reaped.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 
@@ -42,6 +43,16 @@ _QUICK = 'import sys; sys.stdout.write(\'{"type": "hello"}\\n\')'
 # child cannot have been reached by way of the first yielded object, because
 # there is not going to be one.
 _MUTE = "import time; time.sleep(30)"
+
+# Ignores SIGTERM, then reports that it has, so a parent can be sure the
+# handler is installed before it sends one. A SIGTERM racing the handler would
+# kill this child outright and let the escalation path pass untested.
+_IGNORES_TERM = (
+    "import signal, sys, time; "
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "open(sys.argv[1], 'w').close(); "
+    "time.sleep(30)"
+)
 
 # Prints the two variables the environment tests care about, as NDJSON.
 _ECHO_ENV = (
@@ -144,9 +155,16 @@ class TestSpawnObservation:
         only while the child exists, which is why this is not left to the
         consumer."""
         seen: list[SpawnedProcess] = []
+        live: list[float | None] = []
 
         async def run():
             async for _ in ndjson_from_cli(_cmd(_SLEEPER), on_spawn=seen.append):
+                # Read here, where the child is provably alive. Breaking out of
+                # this loop closes the generator and ends the child, so the same
+                # read after the loop races that teardown and returns None for a
+                # child that has since been killed — which says nothing about
+                # what was recorded.
+                live.append(spawned_create_time(seen[0].pid))
                 break
 
         task = asyncio.create_task(run())
@@ -157,7 +175,34 @@ class TestSpawnObservation:
         assert spawned.create_time is not None
         # The value is this child's own, not a constant and not the parent's.
         assert spawned.create_time != spawned_create_time(os.getpid())
-        assert spawned_create_time(spawned.pid) == spawned.create_time
+        assert live == [spawned.create_time]
+
+    @pytest.mark.asyncio
+    async def test_the_identity_is_read_as_one_observation(self):
+        """Group and start time are two reads by pid, and a pid reassigned
+        between them answers the second as the replacement process. A record
+        mixing the two would describe a process that never existed, so the
+        group read is bracketed by the start time and a bracket that fails
+        yields no start time at all."""
+        import lionagi.providers._cli_subprocess as mod
+
+        real = mod.spawned_create_time
+        answers = iter([100.0, 200.0])
+
+        def shifting(pid: int) -> float | None:
+            return next(answers, 200.0)
+
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(mod, "spawned_create_time", shifting)
+        try:
+            mixed = mod.observe_spawned(os.getpid())
+        finally:
+            monkey.undo()
+
+        assert mixed.pid == os.getpid()
+        assert mixed.create_time is None, "a moved start time must not be recorded as an identity"
+        # The same call against a stable process does record one.
+        assert mod.observe_spawned(os.getpid()).create_time == real(os.getpid())
 
     @pytest.mark.asyncio
     async def test_identity_is_recorded_even_for_a_child_that_exits_at_once(self):
@@ -179,18 +224,30 @@ class TestSpawnObservation:
         un-awaited one would return a coroutine that is quietly dropped, so the
         leg runs entirely unrecorded and nothing raises. The recording finishes
         before the first object arrives, so a consumer that acts on the stream
-        can never be ahead of the record."""
+        can never be ahead of the record.
+
+        Asserting that only after the stream has drained would pass against an
+        implementation that started reading first and awaited the recorder at
+        the end, so the state is sampled at the first object instead, and the
+        recorder is made slow next to the time a child takes to emit one line
+        rather than relying on scheduling luck to separate the two.
+        """
         recorded: list[SpawnedProcess] = []
+        recorded_at_first_object: list[bool] = []
 
         async def recorder(spawned: SpawnedProcess) -> None:
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.25)
             recorded.append(spawned)
 
-        objs = await _drain(ndjson_from_cli(_cmd(_QUICK), on_spawn=recorder))
+        objs = []
+        async for obj in ndjson_from_cli(_cmd(_QUICK), on_spawn=recorder):
+            recorded_at_first_object.append(bool(recorded))
+            objs.append(obj)
 
         assert objs == [{"type": "hello"}]
         assert len(recorded) == 1
         assert recorded[0].pid > 0
+        assert recorded_at_first_object == [True]
 
     @pytest.mark.asyncio
     async def test_no_callback_is_the_unchanged_path(self):
@@ -236,6 +293,49 @@ class TestSpawnObservationFailure:
             await _drain(ndjson_from_cli(_cmd(_SLEEPER), on_spawn=cancel))
 
         assert len(seen) == 1
+        await _await_death(seen[0])
+
+    @pytest.mark.asyncio
+    async def test_a_second_cancellation_during_teardown_still_ends_the_child(self, tmp_path):
+        """The graceful teardown sends SIGTERM and then waits out a grace before
+        escalating, and that wait is a cancellation point. A runner being torn
+        down is where a second cancellation actually arrives, and a child that
+        ignores SIGTERM would then outlive the escalation that never ran, with
+        nobody holding a record of it. So the escalation does not depend on the
+        wait surviving."""
+        ready = tmp_path / "ignoring-sigterm"
+        seen: list[int] = []
+
+        async def boom(spawned: SpawnedProcess) -> None:
+            seen.append(spawned.pid)
+            for _ in range(200):
+                if ready.exists():
+                    break
+                await asyncio.sleep(0.05)
+            assert ready.exists(), "the child never reported that it ignores SIGTERM"
+            raise RuntimeError("cannot record")
+
+        task = asyncio.create_task(
+            _drain(
+                ndjson_from_cli(
+                    [sys.executable, "-c", _IGNORES_TERM, str(ready)],
+                    on_spawn=boom,
+                )
+            )
+        )
+        for _ in range(200):
+            if seen and ready.exists():
+                break
+            await asyncio.sleep(0.05)
+        assert seen, "the recorder never fired"
+
+        # Long enough to be inside the grace wait, far short of the grace
+        # itself, so this cancels a wait that is genuinely in progress.
+        await asyncio.sleep(0.5)
+        task.cancel()
+        with pytest.raises((asyncio.CancelledError, RuntimeError)):
+            await task
+
         await _await_death(seen[0])
 
     @pytest.mark.asyncio
@@ -508,25 +608,121 @@ class TestEndpointsPreserveRuntimeState:
         self, endpoint_path, request_path
     ):
         """The carry fills a gap the rebuild opened; it does not outrank what
-        the caller asked for at the call site."""
+        the caller asked for at the call site. Asserted for both fields: they
+        are carried by one loop, and a mutant that reversed the precedence for
+        only one of them would go unseen by a test that watched only ``env``.
+        """
         endpoint_cls = _load(endpoint_path)
         request_cls = _load(request_path)
 
+        def on_request(spawned):
+            return None
+
+        def at_call_site(spawned):
+            return None
+
         payload, _ = endpoint_cls().create_payload(
-            request_cls(prompt="hi", env={"A": "1"}), env={"B": "2"}
+            request_cls(prompt="hi", env={"A": "1"}, on_spawn=on_request),
+            env={"B": "2"},
+            on_spawn=at_call_site,
         )
 
         assert payload["request"].env == {"B": "2"}
+        assert payload["request"].on_spawn is at_call_site
 
-    def test_a_request_passed_as_a_dict_is_unaffected(self):
+    @pytest.mark.parametrize(
+        "endpoint_path",
+        [
+            "lionagi.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
+            "lionagi.providers.openai.codex:CodexCLIEndpoint",
+        ],
+    )
+    def test_a_request_passed_as_a_dict_is_unaffected(self, endpoint_path):
         """A dict never went through a dump, so its values were never at risk.
         This is the canonical iModel route and it must keep behaving as it did.
         """
-        endpoint_cls = _load("lionagi.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint")
+        endpoint_cls = _load(endpoint_path)
 
-        payload, _ = endpoint_cls().create_payload({"prompt": "hi", "env": {"A": "1"}})
+        def recorder(spawned):
+            return None
+
+        payload, _ = endpoint_cls().create_payload(
+            {"prompt": "hi", "env": {"A": "1"}, "on_spawn": recorder}
+        )
 
         assert payload["request"].env == {"A": "1"}
+        assert payload["request"].on_spawn is recorder
+
+
+class TestTheConfigRouteKeepsThemOutOfWhatIsSerialised:
+    """``iModel(**kwargs)`` forwards anything it does not recognise into
+    ``EndpointConfig.kwargs``, which is a supported way to configure an endpoint
+    and also exactly what ``Endpoint.to_dict`` serialises — so it reaches
+    ``iModel.to_dict``, ``Branch.to_dict``, and the run snapshots written to
+    disk. A child environment left there is a credential in a saved file."""
+
+    SECRET = "leaked-credential-value"
+
+    @pytest.mark.parametrize("provider", ["claude_code", "codex"])
+    def test_the_environment_does_not_reach_a_serialised_model(self, provider):
+        from lionagi.service.imodel import iModel
+
+        imodel = iModel(provider=provider, env={"TOKEN": self.SECRET})
+
+        assert self.SECRET not in json.dumps(imodel.to_dict())
+
+    @pytest.mark.parametrize("provider", ["claude_code", "codex"])
+    def test_a_callback_does_not_break_the_snapshot_it_would_be_written_into(self, provider):
+        """A function has no JSON form. Left in the serialised config it does
+        not merely leak, it raises when anything tries to persist the branch,
+        which is every run that saves its state."""
+        from lionagi.service.imodel import iModel
+        from lionagi.session.branch import Branch
+
+        def recorder(spawned):
+            return None
+
+        branch = Branch(
+            chat_model=iModel(provider=provider, env={"TOKEN": self.SECRET}, on_spawn=recorder)
+        )
+
+        dumped = json.dumps(branch.to_dict())
+        assert self.SECRET not in dumped
+        assert "on_spawn" not in dumped
+
+    @pytest.mark.parametrize("provider", ["claude_code", "codex"])
+    def test_the_configuration_route_still_reaches_the_request(self, provider):
+        """Moving the values out of the serialised config must not move them
+        out of the caller's reach: this is the route the runner actually uses.
+        """
+        from lionagi.service.imodel import iModel
+
+        def recorder(spawned):
+            return None
+
+        imodel = iModel(provider=provider, env={"TOKEN": self.SECRET}, on_spawn=recorder)
+        payload, _ = imodel.endpoint.create_payload({"prompt": "hi"})
+
+        assert payload["request"].env == {"TOKEN": self.SECRET}
+        assert payload["request"].on_spawn is recorder
+
+    @pytest.mark.parametrize("provider", ["claude_code", "codex"])
+    def test_a_copy_gets_the_same_callback_object_not_a_copy_of_it(self, provider):
+        """``iModel.copy`` deep copies the config. A deep copy of a bound
+        callback rebinds it to a copied receiver, so the original supervisor
+        would quietly stop hearing from the copy's legs while everything still
+        looked wired."""
+        from lionagi.service.imodel import iModel
+
+        def recorder(spawned):
+            return None
+
+        imodel = iModel(provider=provider, env={"TOKEN": self.SECRET}, on_spawn=recorder)
+        clone = imodel.copy()
+
+        payload, _ = clone.endpoint.create_payload({"prompt": "hi"})
+        assert payload["request"].on_spawn is recorder
+        assert self.SECRET not in json.dumps(clone.to_dict())
 
 
 def _load(path: str):

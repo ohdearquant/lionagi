@@ -832,14 +832,31 @@ child exists and before any output is read. Three things about that record are l
   known to exist, and a consumer acting on the record later must compare a live read against
   it. `None` means nothing was established and is never a claim about the process; this mirrors
   what `lionagi/mcp/jobs.py` does with `pid_create_time`.
+- **The three fields are one observation, within limits worth stating.** The group and the start
+  time are separate reads by pid, so `observe_spawned()` brackets the group read between two
+  start-time reads and drops `create_time` to `None` if they disagree, the same shape as
+  `_pinned_member` in `lionagi/mcp/jobs.py`. That rejects a replacement arriving *during* the
+  observation. It does not speak for one that arrived before the first read, and the window
+  where that is possible is a child that exits and is reaped between the spawn call returning
+  and the first probe — covered not by the bracket but by the probe, which answers `None` for
+  both a reaped pid and a zombie.
 - **It may be a coroutine function, and the result is awaited.** A durable recorder is written
   in async style, and `Callable[..., None]` does not reject an `async def` at runtime: an
   un-awaited one returns a coroutine that is dropped, so the leg runs entirely unrecorded with
-  nothing raised.
+  nothing raised. The await completes before the first byte of output is read, so a consumer
+  acting on the stream is never ahead of the record.
 - **Its failure is not swallowed**, including `CancelledError` and `KeyboardInterrupt`. A
   recorder that fails has no record of a child that is now running, so the child is terminated
   and the exception propagates. A guard written against `Exception` would let a cancellation
   through and leave the child alive.
+- **That termination does not depend on surviving a second cancellation.** The graceful path
+  sends `SIGTERM` and waits out a grace before escalating, and that wait is itself a
+  cancellation point: a runner being torn down is exactly where a second cancellation arrives,
+  and a child ignoring `SIGTERM` would then outlive an escalation that never ran. So a
+  synchronous `SIGKILL` backstop runs in a `finally` when the graceful path did not complete —
+  no `await`, so nothing can interpose. It is conditioned on `proc.returncode is None` because
+  a completed graceful path has already waited the child, and signalling a pid asyncio has
+  reaped is how a stranger's group gets killed.
 
 The group in the record is the *initial* one. A process group is not a containment boundary: a
 child or descendant that calls `setsid()` leaves it and the record then says nothing about that
@@ -856,10 +873,24 @@ and `repr=False` keeps a complete child environment out of log lines and excepti
 `ValueError` into a `ValidationError` that quotes the whole rejected mapping, so the error path
 would print every value beside the one bad entry.
 
-Because `AgenticHandlersMixin.create_payload` rebuilds the request from `to_dict(request)`, and
-that dump omits excluded fields by construction, an endpoint that wants such a field to survive
-the rebuild must name it in `_runtime_state_fields`. Without that, a caller passing a fully
-populated request model silently gets one where the runtime wiring reverted to its defaults.
+`_runtime_state_fields` on the endpoint does two jobs for those fields, and both are about a
+value that must stay in memory:
+
+- **Surviving `create_payload`.** It rebuilds the request from `to_dict(request)`, and that dump
+  omits excluded fields by construction. A field not named here is silently lost, so a caller
+  passing a fully populated request model gets one where the runtime wiring reverted to its
+  defaults.
+- **Staying out of what gets written to disk.** `iModel(**kwargs)` forwards anything it does not
+  recognise into `EndpointConfig.kwargs`, which is a supported way to configure an endpoint and
+  also exactly what `Endpoint.to_dict` serializes — so it reaches `iModel.to_dict`,
+  `Branch.to_dict`, and the run snapshots. A child environment left there is a credential in a
+  saved file, and a callback left there is a function something is about to JSON-encode.
+  `_init_runtime_state()` moves the named values out of `config.kwargs` into `_runtime_state` at
+  construction, where `create_payload` reads them at the same precedence they had before.
+
+`copy_runtime_state_to` carries `_runtime_state` shallowly on purpose. `iModel.copy` deep copies
+the config, and a deep copy of a bound callback rebinds it to a copied receiver, so the original
+supervisor would quietly stop hearing from the copy's legs while everything still looked wired.
 
 ### `anthropic/claude_code.py`
 
