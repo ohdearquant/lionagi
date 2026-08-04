@@ -886,10 +886,16 @@ dead. Those are different facts: a leader that died to `SIGTERM` sets `returncod
 descendant ignoring `SIGTERM` is still in its group, and a backstop gated on the leader's
 liveness reads that as nothing left to do.
 
-A scan that could not read the whole process table and saw no members leaves emptiness
-*unproved*, and nothing signals on that: an unprovable group and a reissued one look identical
-from here. That refusal is logged rather than silent, because it is the one outcome where
-something may still be running and nothing was done about it. It is also a real platform limit
+Both checks matter, and checking only one leaves a hole where the other applies. An earlier
+version of this had only the membership check, so the cancellation backstop refused to signal
+wherever the process table could not be read — and on that path the direct child has not been
+waited, so identity was never in question. The refusal is right after the reap and wrong before
+it, and it read as caution rather than as a defect.
+
+*After* the reap, a scan that could not read the whole process table and saw no members leaves
+emptiness *unproved*, and nothing signals on that: an unprovable group and a reissued one look
+identical from here. That refusal is logged rather than silent, because it is the one outcome
+where something may still be running and nothing was done about it. It is a real platform limit
 rather than a gap waiting to be closed: once the child is reaped, only a surviving member pins
 the id, and proving one exists *is* the enumeration that was unavailable.
 
