@@ -8,14 +8,16 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
+from lionagi.service.connections.endpoint_config import RUNTIME_STATE_NAMES
 from lionagi.utils import to_dict
 
 __all__ = ("RUNTIME_STATE_NAMES", "AgenticHandlersMixin")
 
-# The runtime-only values a CLI endpoint can hold. Named here so a caller that
-# supplies them to an endpoint with no route for them can be refused, which
-# needs the names before any endpoint class is in hand.
-RUNTIME_STATE_NAMES: tuple[str, ...] = ("env", "on_spawn")
+# RUNTIME_STATE_NAMES is re-exported, not redefined. It is declared beside the
+# config that must not serialize these values, because that model is what every
+# route to a written-down config passes through; a second list here would be a
+# second thing to keep in step, and the one that fell behind would be the one
+# deciding what gets written down.
 
 
 class AgenticHandlersMixin:

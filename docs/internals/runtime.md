@@ -979,6 +979,29 @@ value that must stay in memory:
   `_init_runtime_state()` moves the named values out of `config.kwargs` into `_runtime_state` at
   construction, where `create_payload` reads them at the same precedence they had before.
 
+**The drain is not the whole of it, and the part it misses is the public one.** A drain has to be
+*reached*, and it hangs off the endpoint's own `to_dict`. `EndpointConfig` is public and inherits
+Pydantic's `model_dump`, so a caller that logs or persists the config directly never goes through
+an endpoint at all. Two supported routes also put a runtime value back into `kwargs` after the
+endpoint has already drained it once: a post-construction `EndpointConfig.update()`, which puts
+unknown keys straight back, and `iModel.from_dict`, which assigns a freshly hydrated config over
+the drained one (`imodel.py`, in the `match_endpoint` branch). Between either of those and the
+next endpoint-level dump, the value is resting in a serializable field.
+
+So the names are declared on `EndpointConfig` itself, as `RUNTIME_STATE_NAMES`, and that model
+excludes them from its own `kwargs` serializer. The set of callers that can reach a drain is
+open-ended because the model is public; the set that can go around a serializer is empty. The
+endpoint re-exports the same tuple rather than keeping its own — one list decides what gets
+written down, and a second copy would eventually be the one that fell behind.
+
+`repr` is a separate channel and gets the same treatment through `__repr_args__`, because it
+walks `kwargs` whole: a config excluded from every dump still prints its environment into a
+traceback, a log line, or a debugger. The two channels differ in what they leave behind. A dump
+omits the key, since a dump is something a config is rebuilt from and a placeholder string would
+hydrate as a real value of the wrong type. `repr` reports that a value is set without its
+contents, because nothing is rebuilt from a `repr` and a reader asking why an environment was not
+applied is answered by the key alone.
+
 `copy_runtime_state_to` carries `_runtime_state` shallowly on purpose. `iModel.copy` deep copies
 the config, and a deep copy of a bound callback rebinds it to a copied receiver, so the original
 supervisor would quietly stop hearing from the copy's legs while everything still looked wired.

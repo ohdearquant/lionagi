@@ -1372,6 +1372,108 @@ class TestRuntimeValuesArriveAfterConstructionToo:
         assert payload["request"].env == {"TOKEN": self.SECRET}
 
 
+class TestTheConfigsOwnSerialiserIsAlsoAPublicRoute:
+    """The two tests above serialize the whole model, and the drain that keeps
+    them clean hangs off the endpoint's ``to_dict``. ``EndpointConfig`` is
+    public and inherits Pydantic's ``model_dump``, so a caller that logs or
+    persists the config directly never reaches that drain.
+
+    Every test here serializes BEFORE any ``Endpoint.to_dict`` or
+    ``iModel.to_dict``. That ordering is the whole point: a drain runs on the
+    first higher-level dump, so a test that snapshots the model first would
+    find the config already clean and pass against the defect.
+    """
+
+    SECRET = "config-serialiser-canary"
+    PROVIDERS = ["claude_code", "codex"]
+
+    @staticmethod
+    def _fresh(provider):
+        from lionagi.service.imodel import iModel
+
+        return iModel(provider=provider)
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_an_update_does_not_reach_the_configs_own_dump(self, provider):
+        config = self._fresh(provider).endpoint.config
+        config.update(env={"TOKEN": self.SECRET})
+
+        assert self.SECRET not in config.model_dump_json()
+        assert self.SECRET not in json.dumps(config.model_dump(), default=str)
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_hydrated_config_does_not_reach_its_own_dump(self, provider):
+        from lionagi.service.imodel import iModel
+
+        snapshot = self._fresh(provider).to_dict()
+        snapshot["endpoint"]["config"]["kwargs"]["env"] = {"TOKEN": self.SECRET}
+
+        config = iModel.from_dict(snapshot).endpoint.config
+
+        assert self.SECRET not in config.model_dump_json()
+        assert self.SECRET not in json.dumps(config.model_dump(), default=str)
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_callbacks_receiver_does_not_reach_the_configs_own_dump(self, provider):
+        """A callback is not a credential, but it is bound to something that
+        holds one, and a serializer reaching an unknown type falls back to its
+        ``repr``."""
+        secret = self.SECRET
+
+        class Supervisor:
+            def __init__(self):
+                self.token = secret
+
+            def on_spawn(self, spawned):
+                return None
+
+        supervisor = Supervisor()
+        config = self._fresh(provider).endpoint.config
+        config.update(on_spawn=supervisor.on_spawn)
+
+        assert self.SECRET not in json.dumps(config.model_dump(), default=str)
+        # Without the exclusion this raises instead of leaking, because a bound
+        # method has no JSON form. Raising in a logger is its own failure, so
+        # the assertion is that it now serializes and says nothing.
+        assert self.SECRET not in config.model_dump_json()
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_runtime_value_is_not_printed_by_the_config_either(self, provider):
+        """``repr`` walks ``kwargs`` whole. A config excluded from every dump
+        still reaches a traceback, a log line, and a debugger through this."""
+        config = self._fresh(provider).endpoint.config
+        config.update(env={"TOKEN": self.SECRET})
+
+        assert self.SECRET not in repr(config)
+        assert self.SECRET not in str(config)
+        # Presence is still reported: a reader asking why an environment was
+        # not applied is answered by the key, never by the value.
+        assert "env" in repr(config)
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_an_ordinary_keyword_still_serialises_and_still_prints(self, provider):
+        """The over-refusal arm. An exclusion that drops everything passes every
+        test above and is still wrong, and ``kwargs`` is how a caller configures
+        an endpoint."""
+        config = self._fresh(provider).endpoint.config
+        config.update(some_ordinary_option="keep-me")
+
+        assert "keep-me" in config.model_dump_json()
+        assert config.model_dump()["kwargs"]["some_ordinary_option"] == "keep-me"
+        assert "keep-me" in repr(config)
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_the_value_still_works_after_being_kept_out_of_the_dump(self, provider):
+        """Excluding a value from what gets written down must not stop it
+        reaching the child. Protect-by-dropping also passes a leak test."""
+        model = self._fresh(provider)
+        model.endpoint.config.update(env={"TOKEN": self.SECRET})
+
+        assert self.SECRET not in model.endpoint.config.model_dump_json()
+        payload, _ = model.endpoint.create_payload({"prompt": "ok"})
+        assert payload["request"].env == {"TOKEN": self.SECRET}
+
+
 class TestTheContinuationKeepsTheCallersOwnRecorder:
     """The continuation request is deep-copied, and a deep copy of a bound
     method copies its receiver. The copy would notify a duplicate supervisor
