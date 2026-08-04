@@ -1,13 +1,19 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for li agent diagnostic logging on failure/SIGTERM.
+"""Tests for what li agent records about its own terminal exception.
 
 Covers the two `classify_exception(exc) == "failed"` log_error sites (the
 inner _run_agent except and the outer run_agent except) plus run_agent()'s
 SigtermInterrupt dispatch and _util.classify_exception()'s SigtermInterrupt
 mapping. Previously both "failed" sites re-raised silently, relying on
 Python's default traceback printer — unreliable under SIGTERM/process death.
+
+The last class here covers the same two handlers writing the typed cause file
+that the MCP terminal hook lifts into the job record. Its schema and failure
+paths are held in tests/mcp/test_terminal_cause.py; what these arms establish
+is that the real terminal path reaches the writer at all, which no test of the
+writer itself can answer.
 """
 
 from __future__ import annotations
@@ -260,3 +266,104 @@ def test_classify_exception_sigterm_interrupt_distinct_from_aborted():
     from lionagi.ln.concurrency import SigtermInterrupt
 
     assert classify_exception(SigtermInterrupt("received SIGTERM")) != "aborted"
+
+
+# ---------------------------------------------------------------------------
+# Both handlers write the typed cause the MCP job record reads
+# ---------------------------------------------------------------------------
+
+
+class TestTheTerminalPathReachesTheCauseWriter:
+    """Whether the real path reaches the writer, which the writer's own tests
+    cannot answer: they establish that it works when called, not that anything
+    calls it."""
+
+    @pytest.mark.asyncio
+    async def test_a_provider_failure_leaves_its_class_on_disk(self, monkeypatch, tmp_path):
+        import json
+
+        from lionagi.mcp import config
+        from lionagi.providers._provider_errors import ProviderQuotaError
+
+        Branch = _wire_agent_stubs(monkeypatch, tmp_path)
+        monkeypatch.setattr("lionagi.cli.agent.log_error", lambda msg: None)
+        cause = tmp_path / "terminal_cause.json"
+        monkeypatch.setenv(config.CAUSE_FILE_ENV_VAR, str(cause))
+
+        async def fake_operate(self, instruction=None, **kw):
+            raise ProviderQuotaError("quota exhausted until next window")
+
+        monkeypatch.setattr(Branch, "operate", fake_operate)
+
+        from lionagi.cli.agent import _run_agent
+
+        with pytest.raises(ProviderQuotaError):
+            await _run_agent("codex/model", "do the thing")
+
+        assert cause.exists(), "the failing terminal path never reached the cause writer"
+        assert json.loads(cause.read_text()) == {
+            "class": "ProviderQuotaError",
+            "retryable": True,
+            "status_source": "absent",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_run_outside_a_job_writes_nothing_and_still_fails_normally(
+        self, monkeypatch, tmp_path
+    ):
+        """`li agent` run by hand has no cause file configured. The absence must
+        cost the run nothing: the original exception still propagates, and this
+        arm fails if the writer ever starts raising on a missing variable."""
+        from lionagi.mcp import config
+
+        Branch = _wire_agent_stubs(monkeypatch, tmp_path)
+        monkeypatch.setattr("lionagi.cli.agent.log_error", lambda msg: None)
+        monkeypatch.delenv(config.CAUSE_FILE_ENV_VAR, raising=False)
+
+        async def fake_operate(self, instruction=None, **kw):
+            raise _BoomError("simulated inner failure")
+
+        monkeypatch.setattr(Branch, "operate", fake_operate)
+
+        from lionagi.cli.agent import _run_agent
+
+        with pytest.raises(_BoomError):
+            await _run_agent("codex/model", "do the thing")
+
+        assert not list(tmp_path.glob("**/terminal_cause.json"))
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_records_that_the_cause_was_not_a_provider_error(
+        self, monkeypatch, tmp_path
+    ):
+        """The timeout handler is a second, separate site. Without its own arm a
+        change there is invisible, since the failure handler's arm above would
+        stay green."""
+        import json
+
+        from lionagi.mcp import config
+
+        Branch = _wire_agent_stubs(monkeypatch, tmp_path)
+        cause = tmp_path / "terminal_cause.json"
+        monkeypatch.setenv(config.CAUSE_FILE_ENV_VAR, str(cause))
+
+        async def fake_operate(self, instruction=None, **kw):
+            raise TimeoutError("agent ran past its deadline")
+
+        monkeypatch.setattr(Branch, "operate", fake_operate)
+
+        from lionagi.cli.agent import _run_agent
+
+        _res, _prov, _bid, terminal_status, _sid = await _run_agent(
+            "codex/model", "do the thing", timeout=1
+        )
+
+        assert terminal_status == "timed_out"
+        assert cause.exists(), "the timeout path never reached the cause writer"
+        # `unknown` rather than nothing: a reader must be able to tell a cause
+        # that was looked at from a run where nobody looked.
+        assert json.loads(cause.read_text()) == {
+            "class": "unknown",
+            "retryable": False,
+            "status_source": "absent",
+        }

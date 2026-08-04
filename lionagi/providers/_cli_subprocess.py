@@ -399,6 +399,33 @@ def observe_spawned(pid: int) -> SpawnedProcess:
     return SpawnedProcess(pid=pid, pgid=pgid, create_time=created)
 
 
+def _no_stderr_reason(
+    rc: int,
+    unavailable: str | None,
+    drain_error: str | None,
+) -> str:
+    """Why a nonzero exit came with no stderr to quote.
+
+    A child that failed silently and a capture that failed to read it are
+    different facts about different components, and the caller acts on them
+    differently: the first is the child's own report and there is nothing more
+    to find, the second means the report exists somewhere this process did not
+    look. Collapsing both into the exit code makes a broken instrument read
+    exactly like a quiet subprocess, which is the direction that hides the
+    instrument.
+
+    The drain error contributes its exception type and never its message: that
+    message can embed the bytes being read when it raised, and this string is
+    what a caller stores or forwards.
+    """
+    exited = f"CLI subprocess exited with code {rc}"
+    if drain_error is not None:
+        return f"{exited}; reading its stderr failed with {drain_error}, so no output was captured"
+    if unavailable is not None:
+        return f"{exited} and {unavailable}"
+    return f"{exited} and wrote nothing to stderr"
+
+
 async def ndjson_from_cli(
     cmd: list[str],
     *,
@@ -483,10 +510,17 @@ async def ndjson_from_cli(
     stderr_cap = 256 * 1024
     stderr_chunks: list[bytes] = []
     stderr_total = 0
+    # Why the drain records how it ended: an empty `stderr_chunks` is produced
+    # by a child that said nothing, by a child whose stderr was never opened,
+    # and by a drain that raised — and the caller below turns emptiness into
+    # the message a human reads. Without this the three arrive as one.
+    stderr_unavailable: str | None = None
+    stderr_drain_error: str | None = None
 
     async def _drain_stderr() -> None:
-        nonlocal stderr_total
+        nonlocal stderr_total, stderr_unavailable, stderr_drain_error
         if proc.stderr is None:
+            stderr_unavailable = "its stderr was never opened"
             return
         try:
             while True:
@@ -499,6 +533,10 @@ async def ndjson_from_cli(
                     stderr_chunks.append(take)
                     stderr_total += len(take)
         except Exception as exc:
+            # Type only. The exception's message can embed the bytes it was
+            # reading, and this string is going into an error a caller may
+            # store or send on.
+            stderr_drain_error = type(exc).__name__
             log.debug("stderr drain ended: %s", exc)
 
     stderr_task = asyncio.create_task(_drain_stderr())
@@ -574,9 +612,18 @@ async def ndjson_from_cli(
             except asyncio.CancelledError:
                 raise
             err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            # Emptiness is decided on what was captured, before the drain note
+            # is appended. Deciding it on the concatenated string instead lets
+            # the note itself count as output, so a truncated drain that
+            # captured nothing would report neither the exit code nor the fact
+            # that there was nothing to quote. No probe I built reaches that
+            # arm; this orders the two steps so its reachability stops
+            # mattering.
+            if not err:
+                err = _no_stderr_reason(rc, stderr_unavailable, stderr_drain_error)
             if drain_truncated:
-                err = (err or "") + " [stderr drain timed out]"
-            raise RuntimeError(err or f"CLI subprocess exited with code {rc}")
+                err += " [stderr drain timed out]"
+            raise RuntimeError(err)
 
     finally:
         await end_child_group(proc)

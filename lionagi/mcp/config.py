@@ -34,6 +34,16 @@ RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
 # rest on a variable another subsystem owns and can reassign.
 JOB_MARKER_ENV_VAR = "LIONAGI_MCP_JOB_RUN_ID"
 
+# Where a run writes the typed class of the exception that ended it, for the
+# terminal hook to lift into the job record (lionagi/mcp/_terminal_cause.py).
+# Named per job rather than derived from the run id inside the child: the child
+# is free to reassign RUN_ID_ENV_VAR for a sub-run, and a cause file placed by
+# that name would land in a directory this server never reads.
+CAUSE_FILE_ENV_VAR = "LIONAGI_MCP_CAUSE_FILE"
+
+# Inside the job directory, so it is removed with the job and never outlives it.
+CAUSE_FILENAME = "terminal_cause.json"
+
 # Explicit override for the argv prefix that invokes the ``li`` CLI, split on
 # whitespace. Rarely needed: the server runs inside lionagi's own environment,
 # so the interpreter running it already resolves the CLI (see li_command).
