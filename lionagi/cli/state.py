@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from lionagi.state.content_pruned import CONTENT_PRUNED_KEY
+from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
 
 from ._runs import RUNS_ROOT
 from ._util import EXIT_CODE_BY_STATUS
@@ -773,6 +773,7 @@ async def _prune(
 _NULL_CONTENT_TARGETS = (
     "FROM messages "
     "WHERE created_at < :cutoff "
+    "  AND content IS NOT NULL "
     f"  AND json_extract(content, '$.{CONTENT_PRUNED_KEY}') IS NULL"
 )
 
@@ -872,10 +873,8 @@ async def _null_content(
     """
     import time as _time
 
-    from sqlalchemy import bindparam, text
-    from sqlalchemy.types import JSON
+    from sqlalchemy import text
 
-    from lionagi.state.content_pruned import pruned_content
     from lionagi.state.db import StateDB
 
     now = _time.time()
@@ -919,26 +918,26 @@ async def _null_content(
                 target_count = int(measured["n"])
                 bytes_before = int(measured["b"])
 
-                # Every reclaimed row gets the same marker, so the original size
-                # it records is the batch's average rather than its own. The
-                # alternative is a statement per row, which on a million-row
-                # store is a different operation entirely; the per-row number is
-                # not worth that, and calling it what it is costs nothing.
-                marker = pruned_content(
-                    at=now,
-                    original_bytes=(bytes_before // target_count) if target_count else 0,
-                )
+                # The marker is built in SQL rather than in Python so that
+                # LENGTH(content) is evaluated against each row as it is
+                # overwritten. That makes original_bytes the row's OWN size in a
+                # single statement -- the alternative, one marker computed here
+                # and written everywhere, records a batch average under a
+                # per-row name.
                 await conn.execute(
                     text(
-                        "UPDATE messages SET content = :marker "
+                        # noqa on the interpolation: pruned_content_sql() takes
+                        # no argument here, so the expression is a constant of
+                        # this module's making and the only value crossing the
+                        # boundary is :at, which is bound.
+                        f"UPDATE messages SET content = {pruned_content_sql()} "  # noqa: S608
                         "WHERE id IN (SELECT id FROM null_content_batch)"
-                    ).bindparams(bindparam("marker", type_=JSON)),
-                    {"marker": marker},
+                    ),
+                    {"at": now},
                 )
 
                 # Read back inside the same transaction: what the markers
-                # actually occupy, rather than the length of the one Python
-                # rendered. SQLite stores this column and is the only authority
+                # actually occupy. SQLite wrote them and is the only authority
                 # on how much of it is there.
                 bytes_after = int(
                     (

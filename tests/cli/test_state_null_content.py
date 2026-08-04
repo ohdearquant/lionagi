@@ -35,7 +35,6 @@ from lionagi.cli.state import (
 from lionagi.state.content_pruned import (
     CONTENT_PRUNED_KEY,
     content_was_pruned,
-    pruned_content,
 )
 from lionagi.state.db import StateDB
 
@@ -175,11 +174,71 @@ class TestAReclaimedBodyIsDistinguishableFromAnEmptyOne:
 
         assert content_was_pruned(forged) is False
 
-    def test_the_marker_records_that_a_body_was_there_and_how_large(self):
-        marker = pruned_content(at=1.0, original_bytes=4096)
+    async def test_the_marker_records_the_size_of_the_body_that_row_held(self, temp_db_path):
+        """original_bytes is per-row, and this is the arm that keeps it honest.
 
-        assert marker[CONTENT_PRUNED_KEY]["original_bytes"] == 4096
-        assert marker[CONTENT_PRUNED_KEY]["at"] == 1.0
+        The marker is written by a SQL expression so LENGTH(content) is
+        evaluated against each row as it is overwritten. Computing one size in
+        Python and writing the same marker everywhere would record a batch
+        average under a per-row name -- a number that is not wrong so much as
+        answering a different question than its label, which is the failure the
+        marker exists to prevent rather than commit.
+
+        The fixture is two bodies of deliberately different sizes, because a
+        batch average and a per-row size are the SAME NUMBER for any fixture
+        whose rows are equal, and such a fixture cannot tell the two apart.
+        """
+        async with StateDB() as db:
+            await _seed_message(
+                db, mid="small", age_days=40, content={"assistant_response": "x" * 10}
+            )
+            await _seed_message(
+                db, mid="big", age_days=40, content={"assistant_response": "x" * 5000}
+            )
+            small_before = len(await _raw_content(db, "small"))
+            big_before = len(await _raw_content(db, "big"))
+
+        await _null_content(older_than_days=30, roles=(), dry_run=False)
+
+        async with StateDB() as db:
+            small = (await db.get_message("small"))["content"][CONTENT_PRUNED_KEY]
+            big = (await db.get_message("big"))["content"][CONTENT_PRUNED_KEY]
+
+        assert small["original_bytes"] == small_before
+        assert big["original_bytes"] == big_before
+        # The average of the two would be identical for both rows.
+        assert small["original_bytes"] != big["original_bytes"]
+
+    async def test_the_marker_carries_when_it_happened(self, temp_db_path):
+        before = time.time()
+        async with StateDB() as db:
+            await _seed_message(db, mid="old", age_days=40)
+
+        await _null_content(older_than_days=30, roles=(), dry_run=False)
+
+        async with StateDB() as db:
+            marker = (await db.get_message("old"))["content"][CONTENT_PRUNED_KEY]
+
+        assert before <= marker["at"] <= time.time()
+
+    async def test_the_stored_marker_has_exactly_the_documented_shape(self, temp_db_path):
+        """The marker is built in SQL, so nothing in Python states its shape.
+
+        This arm is that statement, written out independently: a field added or
+        renamed on the SQL side without the readers being told turns this red
+        instead of silently changing a format that is permanent once rows carry
+        it.
+        """
+        async with StateDB() as db:
+            await _seed_message(db, mid="old", age_days=40)
+
+        await _null_content(older_than_days=30, roles=(), dry_run=False)
+
+        async with StateDB() as db:
+            content = (await db.get_message("old"))["content"]
+
+        assert set(content) == {CONTENT_PRUNED_KEY}
+        assert set(content[CONTENT_PRUNED_KEY]) == {"at", "original_bytes"}
 
 
 class TestTheReclaimSelectsOnTheAxisTheBytesLiveOn:
@@ -296,6 +355,38 @@ class TestTheReclaimCannotReportAnOutcomeNothingContradicts:
         async with StateDB() as db:
             got = await db.get_message("old")
         assert got["content"][CONTENT_PRUNED_KEY]["original_bytes"] > 0
+
+    async def test_a_row_with_no_body_at_all_could_not_be_marked_as_having_had_one(
+        self, temp_db_path
+    ):
+        """A NULL body satisfies ``json_extract(...) IS NULL`` the same way an
+        unreclaimed body does, so without a clause of its own it would be handed
+        a marker asserting a body was there -- fabricating the one fact the
+        marker exists to preserve.
+
+        Two things stand between the store and that state, and this arm is here
+        because they are different kinds of thing. The predicate carries
+        ``content IS NOT NULL``, which is cheap and correct whatever the schema
+        does. The schema carries ``NOT NULL`` on the column, which is what makes
+        the state unreachable TODAY -- so the arm asserts the constraint rather
+        than pretending to construct a row it cannot construct. If that
+        constraint is ever relaxed this turns red at the same moment the
+        predicate's clause becomes the only thing left.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        async with StateDB() as db:
+            await _seed_message(db, mid="old", age_days=40)
+            # Positive control: the write path reaches the row at all, so a
+            # rejection below is the constraint and not a statement that missed.
+            await db.execute("UPDATE messages SET role = 'action' WHERE id = 'old'")
+            assert (await db.get_message("old"))["role"] == "action"
+
+            with pytest.raises(IntegrityError, match="NOT NULL"):
+                await db.execute("UPDATE messages SET content = NULL WHERE id = 'old'")
+
+        assert "content IS NOT NULL" in _null_content_targets(())
+        assert "content IS NOT NULL" in _null_content_targets(("action",))
 
     def test_both_readings_are_built_from_one_predicate(self):
         """The operation and the recount call the same builder. Two copies of

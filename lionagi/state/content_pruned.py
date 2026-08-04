@@ -16,6 +16,13 @@ what it is and what used to be there, and this module is the vocabulary both
 sides use. The writer is ``li state null-content``; the readers are whatever
 displays or counts message bodies. Kept out of ``db.py`` so asking the question
 costs a reader nothing but this import.
+
+A marker records ``at`` and ``original_bytes``, and ``original_bytes`` is the
+size of the body THAT ROW held rather than an average over whatever batch it was
+reclaimed in. That is a property of how the marker is written -- see
+``pruned_content_sql`` -- and it is stated here because this is the docstring a
+reader of the marker reaches for, and a per-row name over a batch number would
+fabricate exactly the kind of fact the marker exists to preserve.
 """
 
 from __future__ import annotations
@@ -25,7 +32,7 @@ from typing import Any
 
 __all__ = [
     "CONTENT_PRUNED_KEY",
-    "pruned_content",
+    "pruned_content_sql",
     "content_was_pruned",
 ]
 
@@ -37,16 +44,27 @@ __all__ = [
 CONTENT_PRUNED_KEY = "lion_content_pruned"
 
 
-def pruned_content(*, at: float, original_bytes: int) -> dict[str, Any]:
-    """The value a reclaimed message body is replaced with.
+def pruned_content_sql(*, at_param: str = "at", size_expr: str = "LENGTH(content)") -> str:
+    """The marker as a SQL expression, evaluated per row against the row it replaces.
 
-    Carries when the reclaim happened and how large the body was, because a
-    marker that only says "gone" cannot answer the question the reclaim was
-    performed to answer: how much the operation actually recovered, after the
-    fact, from the store itself rather than from a number a command printed
-    once.
+    A marker records ``at`` and ``original_bytes``. The size is built from an
+    expression over the row being replaced rather than passed in, and that is the
+    whole reason this is SQL rather than a dict: the database can read each old
+    body's length while overwriting it, in one statement, so ``original_bytes``
+    is the row's OWN size.
+
+    The alternative -- computing one size in Python and writing the same marker
+    everywhere -- makes the field a batch average wearing a per-row name. That
+    number is not wrong so much as answering a different question than its label,
+    which is the failure the marker exists to prevent rather than commit.
+
+    ``size_expr`` is a caller-supplied SQL fragment and is not a place to put
+    anything a caller did not write; the default is the only production use.
     """
-    return {CONTENT_PRUNED_KEY: {"at": at, "original_bytes": original_bytes}}
+    return (
+        f"json_object('{CONTENT_PRUNED_KEY}', "
+        f"json_object('at', :{at_param}, 'original_bytes', {size_expr}))"
+    )
 
 
 def content_was_pruned(content: Any) -> bool:
