@@ -11,6 +11,112 @@ from typing import Any
 from .concurrency import move_on_after
 
 
+def process_create_time(pid: int) -> tuple[str, float | None]:
+    """When the process at *pid* started: ``("found", t)``, ``("gone", None)``
+    or ``("unknown", None)``.
+
+    "unknown" means the probe errored — the process may still be there — never
+    read it as death or license to signal. A zombie is "gone": it has exited but
+    holds its pid until reaped, so it can't be a recycled pid meanwhile.
+    """
+    import psutil
+
+    try:
+        proc = psutil.Process(pid)
+        if proc.status() == psutil.STATUS_ZOMBIE:
+            return "gone", None
+        return "found", proc.create_time()
+    except psutil.NoSuchProcess:
+        return "gone", None
+    except (psutil.Error, OSError):
+        return "unknown", None
+
+
+def group_member_pids(pgid: int) -> tuple[list[int], bool]:
+    """Pids currently in group *pgid*, and whether the scan was complete.
+
+    The marker-free membership read, for a caller asking only whether a group
+    is empty. It is a separate function rather than :func:`live_group_members`
+    with a field dropped because the marker has to be read INSIDE the identity
+    bracket to belong to the same process, so a read without it is a different
+    observation and not a cheaper version of the same one.
+
+    A caller may act on a non-empty answer without further identity work: a
+    process group id is not reissued while the group still has members, so a
+    group that answers with members is still the one whose id was recorded. An
+    incomplete scan is never emptiness — it is a member that may not have been
+    seen, which is exactly the case where signalling nothing is wrong.
+    """
+    import psutil
+
+    members: list[int] = []
+    complete = True
+    try:
+        pids = psutil.pids()
+    except (psutil.Error, OSError):
+        return [], False
+
+    for pid in pids:
+        if pid <= 1:
+            continue
+        state, created = process_create_time(pid)
+        if state == "gone":
+            continue
+        if state != "found" or created is None:
+            complete = False
+            continue
+        try:
+            in_group = os.getpgid(pid) == pgid
+        except ProcessLookupError:
+            continue
+        except OSError:
+            complete = False
+            continue
+        again, created_again = process_create_time(pid)
+        if again != "found" or created_again != created:
+            complete = False
+            continue
+        if in_group:
+            members.append(pid)
+    return members, complete
+
+
+def safe_pgid_value(pgid: Any) -> int | None:
+    """The group id it is safe to signal, or None.
+
+    Refuses pid<=1 (init, and the value a bad process double reports) and this
+    process's own group, which is the difference between ending a child's group
+    and ending the caller.
+    """
+    if not (hasattr(os, "killpg") and hasattr(os, "getpgrp") and isinstance(pgid, int)):
+        return None
+    if pgid <= 1:
+        return None
+    try:
+        if pgid == os.getpgrp():
+            return None
+    except OSError:
+        return None
+    return pgid
+
+
+def kill_group_now(pgid: Any) -> bool:
+    """SIGKILL a process group, synchronously. Returns whether it was signalled.
+
+    No await anywhere in here, which is the point: it is the backstop for paths
+    whose graceful cleanup can itself be cancelled, and a backstop that can be
+    interrupted is not one.
+    """
+    resolved = safe_pgid_value(pgid)
+    if resolved is None:
+        return False
+    try:
+        os.killpg(resolved, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
+
+
 def _safe_pgid(proc: Any) -> int | None:
     """Return the process-group id to signal, or None when unsafe."""
     pid = getattr(proc, "pid", None)

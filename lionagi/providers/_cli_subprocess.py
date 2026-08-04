@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -18,7 +18,11 @@ from typing import Any
 
 from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
-from lionagi.ln._proc import aterminate_process_group, terminate_process_group
+from lionagi.ln._proc import (
+    aterminate_process_group,
+    group_member_pids,
+    kill_group_now,
+)
 from lionagi.ln.concurrency.utils import maybe_await
 
 log = logging.getLogger(__name__)
@@ -86,6 +90,135 @@ class SpawnedProcess:
     pid: int
     pgid: int
     create_time: float | None
+
+
+class RedactedEnv(dict):
+    """A child environment that does not print itself.
+
+    ``repr=False`` on the field keeps the mapping out of a request's own
+    representation, and that is not the whole channel: pydantic renders the
+    input of a failing model-level validator verbatim, so a request rejected
+    for an unrelated reason — an empty prompt, say — prints every variable
+    beside it. Carrying the redaction on the value rather than at each error
+    site is what stops a validator added later from reopening the leak by not
+    knowing about it.
+
+    It is a real mapping in every other respect, so nothing downstream has to
+    know it exists.
+    """
+
+    def __repr__(self) -> str:
+        return f"<env: {len(self)} variable(s)>"
+
+    __str__ = __repr__
+
+
+def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
+    """Reject a malformed environment without quoting anything out of it.
+
+    A string key is a variable NAME and naming it is what makes the error
+    actionable. A key of any other type is not a name, and printing it prints
+    whatever the caller put there — a tuple holding a token, for instance — so
+    those are reported by position and type only. Values are never printed at
+    all, whatever their type.
+
+    Raises TypeError rather than ValueError because pydantic converts
+    ValueError into a validation error that quotes the entire rejected input,
+    and lets anything else through untouched.
+    """
+    named: list[str] = []
+    unnamed: list[str] = []
+    for index, (key, val) in enumerate(value.items()):
+        if isinstance(key, str):
+            if not isinstance(val, str):
+                named.append(f"{key!r} (value is {type(val).__name__})")
+        else:
+            unnamed.append(f"entry {index} (key is {type(key).__name__})")
+    if named or unnamed:
+        raise TypeError(
+            "env must map strings to strings; these entries do not: "
+            + ", ".join([*sorted(named), *unnamed])
+        )
+
+
+def redact_runtime_fields_in_place(data) -> None:
+    """Make the runtime-only values in a raw request mapping unprintable.
+
+    Called at the top of every model-level ``mode="before"`` validator, because
+    that is the one place a validator holds the WHOLE raw input: pydantic
+    renders the input of a failing validator verbatim, so a request rejected
+    for an unrelated reason prints the child environment beside the reason.
+    ``exclude`` and ``repr=False`` do not reach this channel — they govern the
+    model, and this runs before a model exists.
+
+    In place, and only substituting a mapping for an equal one that prints
+    differently, so nothing downstream sees a different value.
+    """
+    if not isinstance(data, dict):
+        return
+    env = data.get("env")
+    if isinstance(env, Mapping) and not isinstance(env, RedactedEnv):
+        data["env"] = RedactedEnv(env)
+
+
+def _kill_abandoned_spawn(task: asyncio.Future) -> None:
+    """End the group of a child whose creator was cancelled before it resumed.
+
+    Runs as a done-callback because by then nothing is left to await from: the
+    coroutine that asked for the child has already unwound. The exception is
+    retrieved either way, or asyncio reports it as never-retrieved at exit and
+    a cancelled spawn starts looking like a defect in the spawn.
+    """
+    if task.cancelled():
+        return
+    if task.exception() is not None:
+        return
+    proc = task.result()
+    kill_group_now(getattr(proc, "pid", None))
+
+
+async def end_child_group(proc: Any, *, grace: float = 5.0) -> None:
+    """End every member of the child's group, and survive being cancelled.
+
+    Two things this does that awaiting the graceful helper alone does not.
+
+    It drains the GROUP rather than the process. The graceful helper returns as
+    soon as the process it holds a handle to is gone, and a descendant that
+    ignores SIGTERM outlives a parent that does not — so the group is read
+    afterwards and killed if anyone is still in it. A group that answers with
+    members is still the group whose id was recorded, because a group id is not
+    reissued while it has members.
+
+    It cannot be interrupted into leaving something running. The graceful pass
+    waits out a grace period, and that wait is a cancellation point that a
+    runner being torn down is exactly where it meets. So a synchronous kill
+    runs in a ``finally`` when that pass did not finish: no await, so nothing
+    can interpose.
+
+    Both kills fire only on positive evidence that the group id is still this
+    child's, because the other direction is worse than an orphan. After a
+    completed graceful pass the child has been waited, so its pid — and hence
+    this group id — may already belong to someone else; the evidence there is
+    a live member, since an occupied group is never reissued. On the cancelled
+    path the child has not been waited at all, so the id is unambiguously ours.
+
+    What it therefore cannot close, rather than papering over it: a scan that
+    could not read the whole process table and saw no members leaves emptiness
+    unproved, and this refuses to signal on that, because an unprovable group
+    and a reissued one look the same from here.
+    """
+    pgid = getattr(proc, "pid", None)
+    graceful_done = False
+    try:
+        await aterminate_process_group(proc, grace=grace)
+        graceful_done = True
+        if isinstance(pgid, int):
+            members, _complete = group_member_pids(pgid)
+            if members:
+                kill_group_now(pgid)
+    finally:
+        if not graceful_done and getattr(proc, "returncode", None) is None:
+            kill_group_now(pgid)
 
 
 def observe_spawned(pid: int) -> SpawnedProcess:
@@ -156,7 +289,19 @@ async def ndjson_from_cli(
         kwargs["stdin"] = asyncio.subprocess.PIPE
     elif stdin is not _INHERIT_STDIN:
         kwargs["stdin"] = stdin
-    proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+    # Shielded, because the OS has already started the child by the time this
+    # await resumes and a cancellation landing in the window before it returns
+    # would abandon that child with no handle to sweep it by — unrecorded and
+    # in a group nobody knows the id of. The shield keeps the creation running
+    # so the handle still arrives, and the done-callback ends its group from
+    # outside this coroutine, which is the only place left that can.
+    spawn = asyncio.ensure_future(asyncio.create_subprocess_exec(*cmd, **kwargs))
+    try:
+        proc = await asyncio.shield(spawn)
+    except BaseException:
+        spawn.add_done_callback(_kill_abandoned_spawn)
+        raise
+
     if on_spawn is not None:
         # Read the identity here, not at teardown: once the child is reaped its
         # pid and group id are both recyclable, so either read then can resolve
@@ -165,21 +310,7 @@ async def ndjson_from_cli(
         try:
             await maybe_await(on_spawn(observe_spawned(proc.pid)))
         except BaseException:
-            cleaned = False
-            try:
-                await aterminate_process_group(proc, grace=5.0)
-                cleaned = True
-            finally:
-                # A cancellation arriving while the graceful path waits out its
-                # grace skips the SIGKILL escalation that path ends with, and a
-                # child ignoring SIGTERM then survives with nobody holding a
-                # record of it. This backstop takes no await, so there is no
-                # point at which a further cancellation can interpose.
-                # Conditioned on returncode because a completed graceful path
-                # has waited the child, and signalling a pid asyncio has
-                # already reaped is how a stranger's group gets killed.
-                if not cleaned and proc.returncode is None:
-                    terminate_process_group(proc, grace=None)
+            await end_child_group(proc)
             raise
 
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -290,7 +421,7 @@ async def ndjson_from_cli(
             raise RuntimeError(err or f"CLI subprocess exited with code {rc}")
 
     finally:
-        await aterminate_process_group(proc, grace=5.0)
+        await end_child_group(proc)
 
         # Reap the helper tasks — contextlib.suppress(Exception) does NOT
         # catch CancelledError (BaseException), so we suppress it explicitly.
@@ -327,6 +458,7 @@ def resolve_cli_workspace(repo: Path | None, workspace: str | None) -> Path:
 
 def validate_message_prompt(data: dict) -> dict:
     """Derive prompt/system_prompt from messages when prompt is unset (shared by Gemini, Pi, Codex request models)."""
+    redact_runtime_fields_in_place(data)
     from lionagi import ln
 
     if data.get("prompt"):
