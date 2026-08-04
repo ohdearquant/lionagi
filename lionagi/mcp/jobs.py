@@ -26,6 +26,14 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from lionagi.ln._json_dump import raise_if_non_finite
+from lionagi.ln._proc import (
+    CREATE_TIME_TOLERANCE,
+    live_group_members,
+    pinned_member,
+    process_create_time,
+    process_marker,
+    start_time_matches,
+)
 
 from . import config
 
@@ -155,10 +163,9 @@ UNRESOLVED_SPAWN_AFTER_SECONDS = WAIT_MAX_SECONDS
 # interpreter path so it runs regardless of PATH in the CLI's environment.
 _NOTIFY_MODULE = "lionagi.mcp._notify_hook"
 
-# A process start time is read from the kernel in clock ticks, so two reads of
-# the same process can differ in the last decimal. Compared within this
-# tolerance, the same way the CLI's own kill path compares it.
-_CREATE_TIME_TOLERANCE = 0.1
+# Re-exported so this surface's own comparisons and any sweep that has to agree
+# with them read the same number.
+_CREATE_TIME_TOLERANCE = CREATE_TIME_TOLERANCE
 
 # kill() reason codes: the human `reason` explains the case; the code is what a
 # caller can branch on without matching prose. Distinctions that matter for a
@@ -546,35 +553,35 @@ def _askable_pid(value: object) -> int | None:
     return value
 
 
+# The identity-verified process reads live in lionagi.ln._proc, which owns the
+# process-group primitives, and are bound here to this surface's marker. A
+# second copy would be a second thing to keep correct, and these are exactly the
+# reads a quiescence sweep elsewhere has to agree with.
+#
+# Written as wrappers rather than assigned aliases so the shared name is
+# resolved per call. An alias would freeze the original function object here,
+# and a probe substituted in lionagi.ln._proc would then reach the shared scan
+# below while missing this module's own direct calls — two targets with
+# different reach, which is how a substitution silently covers half of what its
+# author believes it covers.
 def _process_create_time(pid: int) -> tuple[str, float | None]:
-    """When the process at *pid* started: ``("found", t)``, ``("gone", None)``
-    or ``("unknown", None)``.
-
-    "unknown" means the probe errored — the process may still be there — never
-    read it as death or license to signal. A zombie is "gone": it has exited but
-    holds its pid until reaped, so it can't be a recycled pid meanwhile.
-    """
-    import psutil
-
-    try:
-        proc = psutil.Process(pid)
-        if proc.status() == psutil.STATUS_ZOMBIE:
-            return "gone", None
-        return "found", proc.create_time()
-    except psutil.NoSuchProcess:
-        return "gone", None
-    except (psutil.Error, OSError):
-        return "unknown", None
+    return process_create_time(pid)
 
 
 def _start_time_matches(observed: float, recorded: float) -> bool:
-    """Whether a start time read now is the one recorded for this run at spawn.
+    return start_time_matches(observed, recorded)
 
-    Compares within a tolerance (two separate reads of a kernel tick clock) —
-    only for a recorded value against a live one; two live reads of the same
-    process must compare exactly equal.
-    """
-    return abs(observed - recorded) <= _CREATE_TIME_TOLERANCE
+
+def _process_marker(pid: int) -> tuple[str, str | None]:
+    return process_marker(pid, config.JOB_MARKER_ENV_VAR)
+
+
+def _pinned_member(pid: int, pgid: int) -> tuple[str, tuple[int, float, str | None, bool] | None]:
+    return pinned_member(pid, pgid, marker_var=config.JOB_MARKER_ENV_VAR)
+
+
+def _live_group_members(pgid: int) -> tuple[list[tuple[int, float, str | None, bool]], bool]:
+    return live_group_members(pgid, marker_var=config.JOB_MARKER_ENV_VAR)
 
 
 def _spawned_pgid(pid: int) -> int:
@@ -588,108 +595,6 @@ def _spawned_pgid(pid: int) -> int:
         return os.getpgid(pid)
     except OSError:
         return pid
-
-
-def _pinned_member(pid: int, pgid: int) -> tuple[str, tuple[int, float, str | None, bool] | None]:
-    """Everything *pid* has to say as a member of *pgid*, read as one observation.
-
-    ``("found", (pid, create_time, marker, marker_read))`` when a single process
-    answered all of it, ``("gone", None)`` when the pid holds no live member of
-    this group, and ``("unknown", None)`` when the reads could not be tied to one
-    process.
-
-    Group, start time and marker are three facts, each read by pid, and a pid
-    the OS reassigns between two of those reads answers the later ones as the
-    replacement process. A verdict assembled from those answers would describe
-    no process that ever existed, so the reads are bracketed by the start time:
-    read before, read again after, required to be unchanged. That is the value
-    that tells a recycled pid from the process that held it, and it is what
-    binds the other two to the same process. Failing the bracket is "unknown" —
-    a measurement that did not come off, never evidence about the group.
-
-    *marker_read* travels with the marker because a None marker alone does not
-    say which of two things happened. The environment read and held no marker,
-    and the environment could not be read at all, are the same None; only this
-    flag tells a member that was inspected from one that refused inspection.
-    """
-    state, created = _process_create_time(pid)
-    if state == "gone":
-        return "gone", None
-    if state != "found" or created is None:
-        return "unknown", None
-    try:
-        in_group = os.getpgid(pid) == pgid
-    except ProcessLookupError:
-        return "gone", None
-    except OSError:
-        return "unknown", None
-    marker_state, marker = _process_marker(pid)
-    again, created_again = _process_create_time(pid)
-    if again != "found" or created_again != created:
-        return "unknown", None
-    if not in_group:
-        return "gone", None
-    return "found", (pid, created, marker, marker_state == "found")
-
-
-def _live_group_members(pgid: int) -> tuple[list[tuple[int, float, str | None, bool]], bool]:
-    """Live members of process group *pgid*, and whether the scan was complete.
-
-    Returns ``(members, complete)`` where each member is ``(pid, create_time,
-    marker, marker_read)`` from :func:`_pinned_member`, so a caller weighing a
-    member's marker against its age is weighing one process, not two readings.
-
-    A vanished-mid-scan process is simply not a live member; a process whose
-    group/identity couldn't be read leaves *complete* false (the group may hold
-    an unseen member) rather than being silently dropped. Zombies are excluded —
-    an unreaped corpse still counts as a group member to the kernel. A member
-    whose marker alone couldn't be read is still a seen member (*marker_read*
-    false), not a gap in membership.
-    """
-    import psutil
-
-    members: list[tuple[int, float, str | None, bool]] = []
-    complete = True
-    try:
-        pids = psutil.pids()
-    except (psutil.Error, OSError):
-        return [], False
-
-    for pid in pids:
-        if pid <= 1:
-            continue
-        try:
-            if os.getpgid(pid) != pgid:
-                continue
-        except ProcessLookupError:
-            continue
-        except OSError:
-            complete = False
-            continue
-        state, member = _pinned_member(pid, pgid)
-        if state == "found" and member is not None:
-            members.append(member)
-        elif state == "unknown":
-            complete = False
-    return members, complete
-
-
-def _process_marker(pid: int) -> tuple[str, str | None]:
-    """The run marker carried by the process at *pid*.
-
-    ``("found", value_or_None)`` when the environment was read, ``("unknown",
-    None)`` on a failed probe. A None value must never be read as "this process
-    lacks the marker" — macOS returns an empty environment without raising for a
-    protected system binary, so a declined disclosure and a genuinely absent
-    marker are indistinguishable; absence of a marker may withhold ownership but
-    can never assert a group is NOT this run's.
-    """
-    import psutil
-
-    try:
-        return "found", psutil.Process(pid).environ().get(config.JOB_MARKER_ENV_VAR)
-    except (psutil.Error, OSError, UnicodeDecodeError):
-        return "unknown", None
 
 
 def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str]:
