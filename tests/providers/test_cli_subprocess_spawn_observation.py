@@ -1474,6 +1474,175 @@ class TestTheConfigsOwnSerialiserIsAlsoAPublicRoute:
         assert payload["request"].env == {"TOKEN": self.SECRET}
 
 
+class TestBuiltInConversionIsAlsoAPublicRoute:
+    """A field serializer runs on Pydantic's dumps. It does not run on Python's
+    own conversions: ``dict(config)`` and ``list(config)`` go through
+    ``BaseModel.__iter__``, which yields the raw values held in ``__dict__``.
+
+    ``json.dumps(dict(config), default=str)`` is an ordinary way to write an
+    object to a log or a file, and it reaches neither the endpoint's drain nor
+    the config's serializer, so it is a third route to the same disk.
+    """
+
+    SECRET = "builtin-conversion-canary"
+    PROVIDERS = ["claude_code", "codex"]
+
+    @staticmethod
+    def _fresh(provider):
+        from lionagi.service.imodel import iModel
+
+        return iModel(provider=provider)
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_an_update_does_not_reach_a_dict_conversion(self, provider):
+        config = self._fresh(provider).endpoint.config
+        config.update(env={"TOKEN": self.SECRET})
+
+        assert self.SECRET not in json.dumps(dict(config), default=str)
+        assert self.SECRET not in json.dumps(list(config), default=str)
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_hydrated_config_does_not_reach_a_dict_conversion(self, provider):
+        from lionagi.service.imodel import iModel
+
+        snapshot = self._fresh(provider).to_dict()
+        snapshot["endpoint"]["config"]["kwargs"]["env"] = {"TOKEN": self.SECRET}
+
+        config = iModel.from_dict(snapshot).endpoint.config
+
+        assert self.SECRET not in json.dumps(dict(config), default=str)
+        assert self.SECRET not in json.dumps(list(config), default=str)
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_callbacks_receiver_does_not_reach_a_dict_conversion(self, provider):
+        """``default=str`` renders a bound method as its repr, which names the
+        object it is bound to, which is the object holding the credential."""
+        secret = self.SECRET
+
+        class Supervisor:
+            def __init__(self):
+                self.token = secret
+
+            def __repr__(self):
+                return f"<Supervisor token={self.token}>"
+
+            def on_spawn(self, spawned):
+                return None
+
+        supervisor = Supervisor()
+        config = self._fresh(provider).endpoint.config
+        config.update(on_spawn=supervisor.on_spawn)
+
+        assert self.SECRET not in json.dumps(dict(config), default=str)
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_an_ordinary_keyword_survives_a_dict_conversion(self, provider):
+        """The over-refusal arm. A conversion that yields nothing satisfies
+        every assertion above, and ``dict(config)`` is a supported way to read
+        a model's fields."""
+        config = self._fresh(provider).endpoint.config
+        config.update(some_ordinary_option="keep-me")
+
+        converted = dict(config)
+        assert converted["kwargs"]["some_ordinary_option"] == "keep-me"
+        assert converted["provider"] == config.provider
+
+
+class TestACopyKeepsTheRuntimeStateItWasGiven:
+    """``iModel.copy`` deep-copies the config and then transfers runtime state.
+
+    A value that arrived after construction is still in ``config.kwargs``, so
+    the deep copy takes a duplicate of it and the transfer that follows can
+    overwrite the result with whatever the source happens to be holding. What
+    the caller passed has to survive both steps, and so does the caller's own
+    object identity: a deep copy of a bound callback is bound to a copied
+    receiver, and the supervisor the caller still holds would never hear from
+    the copy's legs.
+    """
+
+    SECRET = "copied-runtime-canary"
+    PROVIDERS = ["claude_code", "codex"]
+
+    @staticmethod
+    def _request(model):
+        payload, _ = model.endpoint.create_payload({"prompt": "ok"})
+        return payload["request"]
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_copy_keeps_an_environment_added_after_construction(self, provider):
+        from lionagi.service.imodel import iModel
+
+        model = iModel(provider=provider)
+        model.endpoint.config.update(env={"TOKEN": self.SECRET})
+
+        # The control: it has to work before a copy, or losing it after one
+        # says nothing about copying.
+        assert self._request(model).env == {"TOKEN": self.SECRET}
+        assert self._request(model.copy()).env == {"TOKEN": self.SECRET}
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_copy_calls_back_the_callers_own_object(self, provider):
+        from lionagi.service.imodel import iModel
+
+        class Supervisor:
+            def __init__(self):
+                self.seen = []
+
+            def on_spawn(self, spawned):
+                self.seen.append(spawned)
+
+        supervisor = Supervisor()
+        model = iModel(provider=provider)
+        model.endpoint.config.update(on_spawn=supervisor.on_spawn)
+
+        assert self._request(model).on_spawn is not None
+        carried = self._request(model.copy()).on_spawn
+        assert carried is not None
+        # Identity, not presence. A rebound duplicate is also "not None" and
+        # reports to an object nobody is holding.
+        assert carried.__self__ is supervisor
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_the_original_still_works_after_being_copied(self, provider):
+        """Copying reads the source's runtime state. Reading it must not be
+        what takes it away."""
+        from lionagi.service.imodel import iModel
+
+        model = iModel(provider=provider)
+        model.endpoint.config.update(env={"TOKEN": self.SECRET})
+
+        model.copy()
+
+        assert self._request(model).env == {"TOKEN": self.SECRET}
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_copy_is_a_second_object_that_can_be_written_down(self, provider):
+        """A copy has the same public surface as what it was copied from, so
+        every exclusion has to hold on it too.
+
+        The value is put back after the copy on purpose. Asserting against a
+        fresh clone would assert nothing: copying moves the runtime value into
+        state the config does not serialize, so a clone read straight after
+        being made is clean whatever the serializer does.
+
+        The config's own channels are read before ``to_dict``, for the same
+        reason the class above reads them first: ``to_dict`` drains, so a test
+        that calls it first finds the config already clean and passes against
+        the defect it was written for.
+        """
+        from lionagi.service.imodel import iModel
+
+        clone = iModel(provider=provider).copy()
+        clone.endpoint.config.update(env={"TOKEN": self.SECRET})
+
+        assert self.SECRET not in json.dumps(dict(clone.endpoint.config), default=str)
+        assert self.SECRET not in clone.endpoint.config.model_dump_json()
+        assert self.SECRET not in repr(clone.endpoint.config)
+        assert self.SECRET not in json.dumps(clone.to_dict())
+        # And it still reaches the child it was set for.
+        assert self._request(clone).env == {"TOKEN": self.SECRET}
+
+
 class TestTheContinuationKeepsTheCallersOwnRecorder:
     """The continuation request is deep-copied, and a deep copy of a bound
     method copies its receiver. The copy would notify a duplicate supervisor

@@ -421,6 +421,14 @@ class iModel:  # noqa: N801
         """Create a new iModel with the same config but a fresh ID. See
         docs/internals/runtime.md for what state is/isn't shared with the copy."""
         endpoint_cls = type(self.endpoint)
+        # Drain before the deep copy, not after. A runtime value that arrived
+        # after construction is still sitting in config.kwargs, so a deep copy
+        # takes it along: a child environment gets duplicated, and a bound
+        # callback is rebound to a copied receiver, leaving the caller's own
+        # supervisor to hear nothing from the copy's legs. Draining first means
+        # the copied config has nothing runtime-only in it and the live objects
+        # transfer whole, just below.
+        self.endpoint.drain_runtime_state()
         new_endpoint = endpoint_cls(
             config=self.endpoint.config.model_copy(deep=True),
             circuit_breaker=self.endpoint.circuit_breaker,

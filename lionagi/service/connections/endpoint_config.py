@@ -163,6 +163,26 @@ class EndpointConfig(BaseModel):
         """
         return {k: val for k, val in v.items() if k not in RUNTIME_STATE_NAMES}
 
+    def __iter__(self):
+        """The same exclusion on the conversion Pydantic's dump does not run.
+
+        ``dict(config)`` and ``list(config)`` go through ``BaseModel.__iter__``,
+        which yields the raw values held in ``__dict__``. No field serializer
+        runs on that path, so the exclusion above does not reach it, and
+        ``json.dumps(dict(config), default=str)`` is an ordinary way to write a
+        config to a log or a file.
+
+        Omits rather than reports presence, matching the dump: a mapping of
+        field names to values is something a config can be rebuilt from, so a
+        stand-in string would come back as a real value of the wrong type.
+        ``repr`` is the one channel nothing is rebuilt from, and it is the only
+        one that names what it withheld.
+        """
+        for name, value in super().__iter__():
+            if name == "kwargs" and isinstance(value, dict):
+                value = {k: val for k, val in value.items() if k not in RUNTIME_STATE_NAMES}
+            yield name, value
+
     def __repr_args__(self):
         """The same values, on the channel a dump does not reach.
 

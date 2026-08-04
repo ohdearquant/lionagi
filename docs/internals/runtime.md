@@ -990,21 +990,44 @@ next endpoint-level dump, the value is resting in a serializable field.
 
 So the names are declared on `EndpointConfig` itself, as `RUNTIME_STATE_NAMES`, and that model
 excludes them from its own `kwargs` serializer. The set of callers that can reach a drain is
-open-ended because the model is public; the set that can go around a serializer is empty. The
+open-ended because the model is public, where a serializer runs on every dump that model has. The
 endpoint re-exports the same tuple rather than keeping its own — one list decides what gets
 written down, and a second copy would eventually be the one that fell behind.
 
-`repr` is a separate channel and gets the same treatment through `__repr_args__`, because it
-walks `kwargs` whole: a config excluded from every dump still prints its environment into a
-traceback, a log line, or a debugger. The two channels differ in what they leave behind. A dump
-omits the key, since a dump is something a config is rebuilt from and a placeholder string would
-hydrate as a real value of the wrong type. `repr` reports that a value is set without its
-contents, because nothing is rebuilt from a `repr` and a reader asking why an environment was not
-applied is answered by the key alone.
+A serializer is not every route out, though, and the two it misses are both public. `dict(config)`
+and `list(config)` go through `BaseModel.__iter__`, which yields the raw values held in `__dict__`
+without running a field serializer at all; `json.dumps(dict(config), default=str)` is an ordinary
+way to write an object to a log or a file. `repr` walks `kwargs` whole for the same reason, so a
+config excluded from every dump still prints its environment into a traceback, a log line, or a
+debugger. Both are closed on the model itself, through `__iter__` and `__repr_args__`, which is
+what keeps the answer independent of which caller is asking.
+
+What that covers is the conversion API: the ways this object offers to turn itself into something
+else. It is not a claim about reflection. `config.__dict__` and `pickle` read the instance's raw
+state and still contain these values, deliberately — the runtime value has to live somewhere for
+the endpoint to use it, and a rule that emptied every raw read would take the working value with
+it. The line is between a route that produces a structure for something else to hold, which is
+what ends up in a log or a file, and a route that reads the object's own memory.
+
+The three channels do not all leave the same thing behind. A dump and a `dict()` omit the key,
+since both are structures a config can be rebuilt from and a placeholder string would hydrate as a
+real value of the wrong type. `repr` reports that a value is set without its contents, because
+nothing is rebuilt from a `repr` and a reader asking why an environment was not applied is
+answered by the key alone.
 
 `copy_runtime_state_to` carries `_runtime_state` shallowly on purpose. `iModel.copy` deep copies
 the config, and a deep copy of a bound callback rebinds it to a copied receiver, so the original
 supervisor would quietly stop hearing from the copy's legs while everything still looked wired.
+
+That transfer only carries what the source is actually holding, which is why `iModel.copy` drains
+the source endpoint *before* copying its config rather than after. A value that arrived through
+`update()` is still sitting in `config.kwargs` and has never been drained, so the source's
+`_runtime_state` is empty: the new endpoint drains the copied `kwargs` correctly at construction,
+and then the transfer overwrites that with the empty mapping. The result is a copy whose child
+gets a default environment and whose spawns are reported to nobody. Draining first means the
+copied config has nothing runtime-only left in it and the live objects move across whole. Reading
+the source's state this way does not take it away — a drain relocates a value without changing
+which one wins in `create_payload` — so the original keeps working after being copied.
 
 **The endpoint-instance route.** `iModel(endpoint=<instance>, ...)` is a supported signature,
 and it takes a branch that keeps the endpoint and discards every other keyword. For most
