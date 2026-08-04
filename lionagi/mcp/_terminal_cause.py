@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -34,10 +35,23 @@ from lionagi.mcp import config
 from lionagi.providers._provider_errors import ProviderError
 
 __all__ = [
+    "STATUS_SOURCES",
     "allowed_cause_classes",
+    "provider_status",
     "read_terminal_cause",
     "write_terminal_cause",
 ]
+
+# How the status question was answered. "absent" is a measurement -- the message
+# was read and named no status -- and "unreadable" is the admission that it was
+# not read at all. Collapsing the two would let a broken extractor report what a
+# working one reports for a connection that never completed.
+STATUS_SOURCES = frozenset({"received", "absent", "unreadable"})
+
+# A provider status code as adapters spell it in a message, e.g.
+# "UNAVAILABLE (code 503)". Only the digits are captured: the surrounding text
+# is the provider's own prose and is exactly what must not be stored.
+_STATUS_CODE_RE = re.compile(r"\(code\s+(?P<code>\d{3})\)")
 
 # Anything else is reported as this: a terminal exception that was not one of
 # our typed provider errors. Deliberately still recorded, because "the cause was
@@ -67,13 +81,49 @@ def allowed_cause_classes() -> frozenset[str]:
     return frozenset(walk(ProviderError) | {UNKNOWN_CAUSE})
 
 
+def provider_status(exc: BaseException) -> tuple[str, int | None]:
+    """Whether a provider status code reached us, and which one.
+
+    The class alone does not separate the two ways a provider call ends badly.
+    One adapter raises the same class with the same message prefix for a service
+    that answered ``UNAVAILABLE (code 503)`` and for a DNS lookup that never
+    resolved, and those are opposite facts: the first is the provider's own
+    answer, the second means no round trip happened and the fault is on this
+    side. A status code is what tells them apart, and unlike the message it
+    cannot carry a credential.
+
+    Returns the state first because it is the part that must not be inferred
+    from the number. ``"received"`` carries an int; ``"absent"`` means the
+    message was read and held no status, which is itself the signal that no
+    round trip completed; ``"unreadable"`` means this function could not look.
+    Absent and unreadable are separate for the same reason a missing status is
+    not a zero: an instrument that did not run must never report what a working
+    one reports when it finds nothing.
+    """
+    try:
+        text = str(exc)
+    except Exception:  # noqa: BLE001 — an exception whose str() raises is unreadable, not statusless
+        return ("unreadable", None)
+    match = _STATUS_CODE_RE.search(text)
+    if match is None:
+        return ("absent", None)
+    try:
+        return ("received", int(match.group("code")))
+    except (ValueError, IndexError):  # pragma: no cover — the pattern only matches digits
+        return ("unreadable", None)
+
+
 def write_terminal_cause(exc: BaseException) -> None:
-    """Record *exc*'s class and retry hint, if this run has a cause file.
+    """Record *exc*'s class, retry hint and provider status, if this run has a cause file.
 
     Called from the CLI's terminal exception path, where raising would replace
     the run's real failure with this one, so every failure here is silent by
     design: no cause file configured, an unwritable directory, and a serialisation
     failure all end the same way, with the record simply not gaining a cause.
+
+    ``provider_status`` is written only when one was received. A caller reads
+    ``status_source`` to know which question it is answering, and never has to
+    decide what a missing number means.
     """
     target = os.environ.get(config.CAUSE_FILE_ENV_VAR)
     if not target:
@@ -85,7 +135,17 @@ def write_terminal_cause(exc: BaseException) -> None:
         cls = type(exc)
         name = cls.__name__ if issubclass(cls, ProviderError) else UNKNOWN_CAUSE
         retryable = bool(getattr(cls, "retryable", False)) if name != UNKNOWN_CAUSE else False
-        Path(target).write_text(json.dumps({"class": name, "retryable": retryable}))
+        source, code = provider_status(exc)
+        record: dict[str, Any] = {
+            "class": name,
+            "retryable": retryable,
+            "status_source": source,
+        }
+        # Present only for "received", so an absent status cannot be read as a
+        # code and a code can never be confused with its own absence.
+        if code is not None:
+            record["provider_status"] = code
+        Path(target).write_text(json.dumps(record))
     except Exception:  # noqa: BLE001, S110 — see docstring: this must not raise
         pass
 
@@ -114,4 +174,23 @@ def read_terminal_cause(path: str | os.PathLike[str] | None) -> dict[str, Any] |
     name = loaded.get("class")
     if not isinstance(name, str) or name not in allowed_cause_classes():
         name = UNKNOWN_CAUSE
-    return {"class": name, "retryable": loaded.get("retryable") is True}
+    # A status_source this reader does not recognise is "unreadable" rather than
+    # "absent": an unrecognised value means the two processes disagree about the
+    # schema, and that is a failure to read, not a measurement that found none.
+    source = loaded.get("status_source")
+    if not isinstance(source, str) or source not in STATUS_SOURCES:
+        source = "unreadable"
+    cause: dict[str, Any] = {
+        "class": name,
+        "retryable": loaded.get("retryable") is True,
+        "status_source": source,
+    }
+    code = loaded.get("provider_status")
+    # A code is carried only alongside the state that claims one, and only as an
+    # int. `isinstance(True, int)` is True in Python, so bools are excluded
+    # explicitly or a `true` in that field would be read back as status 1.
+    if source == "received" and isinstance(code, int) and not isinstance(code, bool):
+        cause["provider_status"] = code
+    elif source == "received":
+        cause["status_source"] = "unreadable"
+    return cause

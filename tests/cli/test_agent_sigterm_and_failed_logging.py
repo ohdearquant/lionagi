@@ -304,6 +304,7 @@ class TestTheTerminalPathReachesTheCauseWriter:
         assert json.loads(cause.read_text()) == {
             "class": "ProviderQuotaError",
             "retryable": True,
+            "status_source": "absent",
         }
 
     @pytest.mark.asyncio
@@ -361,4 +362,8 @@ class TestTheTerminalPathReachesTheCauseWriter:
         assert cause.exists(), "the timeout path never reached the cause writer"
         # `unknown` rather than nothing: a reader must be able to tell a cause
         # that was looked at from a run where nobody looked.
-        assert json.loads(cause.read_text()) == {"class": "unknown", "retryable": False}
+        assert json.loads(cause.read_text()) == {
+            "class": "unknown",
+            "retryable": False,
+            "status_source": "absent",
+        }
