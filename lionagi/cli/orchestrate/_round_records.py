@@ -53,6 +53,8 @@ __all__ = (
     "write_leg_dispatch",
     "complete_leg_record",
     "read_leg_records",
+    "ControlGroupDomain",
+    "control_group_domain",
     "recorded_control_groups",
     "write_round_summary",
     "read_round_summary",
@@ -233,7 +235,30 @@ def read_leg_records(run_dir: Path | str) -> dict[str, dict[str, Any] | None]:
     return records
 
 
-def recorded_control_groups(run_dir: Path | str) -> list[int]:
+@dataclass(frozen=True)
+class ControlGroupDomain:
+    """The groups a sweep may observe, and what it was not given.
+
+    ``groups`` is what can be swept. ``unpinned`` and ``unreadable`` count the
+    leg records that contributed nothing, and they exist because a sweep over a
+    domain nobody joined looks exactly like a clean sweep: three quiet groups
+    out of three recorded legs and three quiet groups out of nine are the same
+    sentence unless the shortfall is carried alongside. A caller that publishes
+    on the strength of a sweep must read them.
+    """
+
+    groups: tuple[int, ...]
+    unpinned: int
+    unreadable: int
+    records: int
+
+    @property
+    def complete(self) -> bool:
+        """Whether every recorded leg contributed a sweepable group."""
+        return not self.unpinned and not self.unreadable
+
+
+def control_group_domain(run_dir: Path | str) -> ControlGroupDomain:
     """Process groups a quiescence sweep must observe empty, read from disk.
 
     Read from the run directory rather than from any live process's memory, so
@@ -244,21 +269,37 @@ def recorded_control_groups(run_dir: Path | str) -> list[int]:
     process that led it. Without that, the group id names whatever the kernel
     has since put at that number, and observing it "not empty" would report a
     stranger as this run's straggler while observing it empty would certify
-    nothing. Such a record contributes nothing here, and its absence is the
-    caller's to report: a sweep cannot certify a group it was never told about,
+    nothing. Such a record contributes nothing to the domain, and it is counted
+    rather than dropped: a sweep cannot certify a group it was never told about,
     and it must not pretend a bare number is a domain.
     """
     groups: list[int] = []
-    for record in read_leg_records(run_dir).values():
+    unpinned = 0
+    unreadable = 0
+    records = read_leg_records(run_dir)
+    for record in records.values():
         if not record:
+            unreadable += 1
             continue
         pgid = record.get("pgid")
         created = record.get("pid_create_time")
-        if not isinstance(created, int | float):
+        if not isinstance(created, int | float) or not isinstance(pgid, int) or pgid <= 0:
+            unpinned += 1
             continue
-        if isinstance(pgid, int) and pgid > 0 and pgid not in groups:
+        if pgid not in groups:
             groups.append(pgid)
-    return groups
+    return ControlGroupDomain(
+        groups=tuple(groups),
+        unpinned=unpinned,
+        unreadable=unreadable,
+        records=len(records),
+    )
+
+
+def recorded_control_groups(run_dir: Path | str) -> list[int]:
+    """The sweepable groups alone. See :func:`control_group_domain` for what a
+    caller publishing on the strength of a sweep also has to read."""
+    return list(control_group_domain(run_dir).groups)
 
 
 def write_round_summary(
