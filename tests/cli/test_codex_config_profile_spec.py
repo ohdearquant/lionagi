@@ -16,6 +16,8 @@ looks like a working leg producing worse answers.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from lionagi.cli._providers import (
@@ -72,6 +74,75 @@ class TestWhatCountsAsAProfileName:
 
     def test_an_absent_profile_leaves_the_name_alone(self, codex_home):
         assert resolve_codex_config_profile("no-such-profile") is None
+
+    def test_a_symlink_whose_target_is_unreadable_is_not_an_absent_profile(
+        self, codex_home, tmp_path
+    ):
+        """``is_file()`` follows the link and answers False for a broken one
+        exactly as it does for nothing at all, so the two would otherwise
+        collapse into the same silent fall-through to a model id — with a file
+        sitting in CODEX_HOME that the operator can see.
+
+        The link is planted pointing at a real path that is then removed, so it
+        is genuinely a dangling symlink rather than merely a missing name.
+        """
+        target = tmp_path / "gone.config.toml"
+        target.write_text('model = "vendor/m"\n')
+        link = codex_home / "dangling.config.toml"
+        link.symlink_to(target)
+        assert link.is_file()  # the plant landed and resolves while the target exists
+        target.unlink()
+        assert link.is_symlink() and not link.is_file()  # now genuinely dangling
+
+        with pytest.raises(ValueError, match="is a symlink whose target"):
+            resolve_codex_config_profile("dangling")
+
+    def test_a_symlink_that_resolves_is_read_normally(self, codex_home, tmp_path):
+        """The other half: linking is not itself suspicious, so a working link
+        must still resolve. Without this the arm above would be satisfied by
+        refusing every symlink."""
+        target = tmp_path / "real.config.toml"
+        target.write_text('model = "vendor/m"\nmodel_provider = "openrouter"\n')
+        (codex_home / "linked.config.toml").symlink_to(target)
+        assert resolve_codex_config_profile("linked") == (
+            "vendor/m",
+            {"model_provider": "openrouter"},
+        )
+
+
+class TestASuccessfulResolutionSaysWhatItRan:
+    def test_the_substituted_model_is_reported(self, codex_home, caplog):
+        """One name goes in and a different model runs. Doing that without a
+        word is the quiet half of the failure this resolver exists to fix."""
+        _write(codex_home, "deepseek-flash", 'model = "deepseek/deepseek-v4-flash-0731"\n')
+        # The CLI progress channel sets propagate=False, so caplog's root
+        # handler never sees it. Attaching to that logger directly is what
+        # makes an empty capture mean "nothing was logged" rather than "the
+        # instrument cannot reach this channel" — the two read identically.
+        logger = logging.getLogger("lionagi.cli.progress")
+        logger.addHandler(caplog.handler)
+        try:
+            with caplog.at_level(logging.INFO, logger="lionagi.cli.progress"):
+                resolved = resolve_codex_config_profile("deepseek-flash")
+        finally:
+            logger.removeHandler(caplog.handler)
+        # The line only runs on a successful resolution, so an arm that never
+        # resolved would assert on a log that was never reached and read as a
+        # missing log rather than a missing call.
+        assert resolved is not None
+        assert "deepseek-flash" in caplog.text
+        assert "deepseek/deepseek-v4-flash-0731" in caplog.text
+
+    def test_a_name_carrying_a_dot_is_not_resolved_at_all(self, codex_home):
+        """Bare excludes dots, so this file is never read. Planted so the
+        assertion is about the name rule rather than about an absent file, and
+        stated because the same name resolves once the dot is gone."""
+        _write(codex_home, "gpt-5.6-sol", 'model = "deepseek/deepseek-v4-flash-0731"\n')
+        assert (codex_home / "gpt-5.6-sol.config.toml").is_file()
+        assert resolve_codex_config_profile("gpt-5.6-sol") is None
+
+        _write(codex_home, "gpt-56-sol", 'model = "deepseek/deepseek-v4-flash-0731"\n')
+        assert resolve_codex_config_profile("gpt-56-sol") is not None
 
 
 class TestAProfileThatCannotBeHonouredFailsLoudly:

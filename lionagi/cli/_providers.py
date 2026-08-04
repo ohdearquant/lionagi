@@ -51,7 +51,6 @@ __all__ = (
     "build_imodel_from_spec",
     "parse_model_spec",
     "resolve_codex_config_profile",
-    "resolve_model_spec",
     "resolve_persisted_effort",
     "AgentProfile",
     "AgentProfileNotFoundError",
@@ -88,7 +87,12 @@ def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | Non
     Two deliberate limits, both narrowing rather than widening:
 
     * Only a bare name is looked up, so an ordinary vendor model id such as
-      ``deepseek/deepseek-v4-flash-0731`` is never treated as a path.
+      ``deepseek/deepseek-v4-flash-0731`` is never treated as a path. Bare
+      excludes dots as well as separators, so a profile must be named like
+      ``deepseek-flash`` and one named ``gpt-5.6-sol`` is not resolved at all.
+      That cuts the other way usefully: model ids carry dots and version
+      numbers, so a profile name cannot collide with a real one and quietly
+      stand in for it.
     * Table-valued keys (notably ``mcp_servers``) are not applied, and are
       logged. lionagi decides a leg's MCP server set explicitly, and quietly
       re-introducing servers from a config file would go around that.
@@ -104,6 +108,19 @@ def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | Non
     codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     profile_path = codex_home / f"{model}.config.toml"
     if not profile_path.is_file():
+        # A symlink whose target is unreadable is not the same as no profile.
+        # `is_file()` follows the link and answers False for both, so falling
+        # through here would send the name to codex as a model id — the exact
+        # silent substitution this function exists to prevent, arriving through
+        # a file the operator can see sitting right there.
+        broken_target = _unreadable_symlink_target(profile_path)
+        if broken_target is not None:
+            raise ValueError(
+                f"codex config profile {str(profile_path)!r} is a symlink whose "
+                f"target {broken_target!r} is unreadable. Repair or remove the "
+                f"link; running without it would send {model!r} to codex as a "
+                f"model id and silently run something else."
+            )
         return None
 
     import toml
@@ -143,6 +160,14 @@ def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | Non
             "— lionagi applies a profile's model and scalar settings, and sets "
             "a leg's MCP servers itself"
         )
+
+    # Say which model is actually being run. A profile whose name collides with
+    # a real model id would otherwise substitute without a word, which is the
+    # quiet half of the same failure this function fixes: the caller asks for
+    # one thing, a different thing runs, and the leg looks healthy either way.
+    from ._logging import progress
+
+    progress(f"codex profile {model!r} resolves to model {resolved!r}")
     return resolved, overrides
 
 
@@ -306,14 +331,6 @@ def resolve_persisted_effort(
     if provider in PROVIDERS_NO_EFFORT:
         effort = None
     return effort
-
-
-def resolve_model_spec(spec: str) -> tuple[str, str]:
-    """Legacy compat — returns (provider, model) by splitting on /."""
-    ms = parse_model_spec(spec)
-    if "/" in ms.model:
-        return ms.model.split("/", 1)
-    return ms.model, ms.model
 
 
 # ── CLI common args ───────────────────────────────────────────────────────
