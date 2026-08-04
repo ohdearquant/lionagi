@@ -50,6 +50,7 @@ __all__ = (
     "build_chat_model",
     "build_imodel_from_spec",
     "parse_model_spec",
+    "resolve_codex_config_profile",
     "resolve_model_spec",
     "resolve_persisted_effort",
     "AgentProfile",
@@ -66,6 +67,83 @@ __all__ = (
 )
 
 # ── iModel construction ───────────────────────────────────────────────────
+
+
+def resolve_codex_config_profile(model: str) -> tuple[str, dict[str, Any]] | None:
+    """Resolve a codex model part that names a codex config profile.
+
+    codex reaches models from other providers through a config profile:
+    ``-p <name>`` layers ``$CODEX_HOME/<name>.config.toml`` over the base
+    config, and such a file names a ``model`` and the ``model_provider`` that
+    serves it. So ``codex/<name>`` should mean "run that profile", not "run a
+    model literally called ``<name>``".
+
+    lionagi cannot forward this by passing ``-p``. codex accepts exactly one
+    profile per invocation and lionagi already spends that slot on a generated
+    profile carrying MCP server secrets, which is why supplying both is
+    refused outright. The file is therefore read here and its settings applied
+    directly: the profile's ``model`` becomes the model, and its remaining
+    scalars become ``-c`` overrides, which outrank config either way.
+
+    Two deliberate limits, both narrowing rather than widening:
+
+    * Only a bare name is looked up, so an ordinary vendor model id such as
+      ``deepseek/deepseek-v4-flash-0731`` is never treated as a path.
+    * Table-valued keys (notably ``mcp_servers``) are not applied, and are
+      logged. lionagi decides a leg's MCP server set explicitly, and quietly
+      re-introducing servers from a config file would go around that.
+
+    Returns ``None`` when no such profile file exists, leaving the name to be
+    treated as a model id exactly as before.
+    """
+    try:
+        validate_bare_name(model, label="codex config profile name")
+    except ValueError:
+        return None
+
+    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    profile_path = codex_home / f"{model}.config.toml"
+    if not profile_path.is_file():
+        return None
+
+    import toml
+
+    try:
+        data = toml.loads(profile_path.read_text())
+    except (OSError, toml.TomlDecodeError) as exc:
+        raise ValueError(
+            f"codex config profile {str(profile_path)!r} could not be read "
+            f"({type(exc).__name__}: {exc}). Fix or remove the file; running "
+            f"without it would send {model!r} as a model id instead."
+        ) from exc
+
+    resolved = data.get("model")
+    if not isinstance(resolved, str) or not resolved:
+        raise ValueError(
+            f"codex config profile {str(profile_path)!r} declares no 'model'. "
+            f"Add one, or use a model id instead of the profile name — "
+            f"without it {model!r} would be sent to codex as a model id and "
+            f"silently run something other than the profile."
+        )
+
+    overrides: dict[str, Any] = {}
+    skipped: list[str] = []
+    for key, value in data.items():
+        if key == "model":
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            overrides[key] = value
+        else:
+            skipped.append(key)
+    if skipped:
+        from ._logging import warn
+
+        warn(
+            f"codex config profile {model!r}: ignoring {', '.join(sorted(skipped))} "
+            "— lionagi applies a profile's model and scalar settings, and sets "
+            "a leg's MCP servers itself"
+        )
+    return resolved, overrides
 
 
 def build_imodel_from_spec(
@@ -87,6 +165,16 @@ def build_imodel_from_spec(
     # Resolve provider for yolo/effort kwarg lookup
     provider_raw = ms.model.split("/")[0] if "/" in ms.model else ms.model
     resolved_model = ms.model
+
+    # Before the effort clamp below, whose ceilings are keyed on the model: a
+    # profile names a different model than the spec did.
+    codex_profile_overrides: dict[str, Any] = {}
+    if provider_raw == "codex" and "/" in ms.model:
+        resolved_profile = resolve_codex_config_profile(ms.model.split("/", 1)[1])
+        if resolved_profile is not None:
+            profile_model, codex_profile_overrides = resolved_profile
+            resolved_model = f"codex/{profile_model}"
+            ms = ModelSpec(model=resolved_model, effort=ms.effort)
 
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(provider_raw, {}))
@@ -114,6 +202,11 @@ def build_imodel_from_spec(
             bare_model = ms.model.split("/", 1)[1] if "/" in ms.model else ms.model
             resolved_model = f"{provider_raw}/{resolve_agy_model(bare_model, effort=effort)}"
 
+    if codex_profile_overrides:
+        merged = dict(codex_profile_overrides)
+        merged.update(extra.get("config_overrides") or {})
+        extra["config_overrides"] = merged
+
     return iModel(
         model=resolved_model,
         endpoint="query_cli",
@@ -136,6 +229,14 @@ def build_chat_model(
     """Legacy: for agent.py compat. Returns bare spec string when no flags."""
     effort = normalize_effort(effort)
     extra: dict = {}
+    # Before anything keyed on the model — the effort clamp below included,
+    # since its ceilings belong to specific models and a profile names a
+    # different one than the spec did.
+    codex_profile_overrides: dict[str, Any] = {}
+    if provider == "codex":
+        resolved_profile = resolve_codex_config_profile(model)
+        if resolved_profile is not None:
+            model, codex_profile_overrides = resolved_profile
     if mcp_servers is not None:
         from lionagi.agent.factory import apply_forwarded_mcp_servers
 
@@ -170,6 +271,14 @@ def build_chat_model(
             from lionagi.providers.google.gemini_code import resolve_agy_model
 
             model = resolve_agy_model(model, effort=effort)
+
+    if codex_profile_overrides:
+        # Merged, never assigned: MCP server forwarding may already have put
+        # its own overrides here, and replacing the dict would drop a leg's
+        # server set on the floor.
+        merged = dict(codex_profile_overrides)
+        merged.update(extra.get("config_overrides") or {})
+        extra["config_overrides"] = merged
 
     if extra:
         return iModel(
