@@ -27,11 +27,17 @@ that fail toward reassuring if left implicit:
   scan incomplete. That is reported as its own verdict and never as emptiness.
 
 What this cannot close, stated rather than papered over: a descendant that
-leaves its leg's recorded session keeps running outside every group here; a
-member that forks during the sweep can leave a child the verification pass
-never saw; and identification and signal are two syscalls, so a group observed
-empty was empty when it was read. The round record is what a consumer reads,
-and writes that land after the sweep simply miss the round.
+leaves its leg's recorded process GROUP keeps running outside every group
+here, and leaving the group is all it takes — ``setpgid(0, 0)`` is enough and
+stays in the same session, so this is not confined to the descendants that
+call ``setsid``, which is the narrower class an earlier wording of this
+paragraph named. Membership is the only thing read (``getpgid(pid) != pgid``),
+so nothing group-based can see a process that has left, and no change here
+would fix it. A member that forks during the sweep can likewise leave a child
+the verification pass never saw; and identification and signal are two
+syscalls, so a group observed empty was empty when it was read. The round
+record is what a consumer reads, and writes that land after the sweep simply
+miss the round.
 """
 
 from __future__ import annotations
