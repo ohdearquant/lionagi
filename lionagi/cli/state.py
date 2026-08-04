@@ -664,10 +664,13 @@ async def _print_stats(*, content_bytes: bool = False) -> None:
         print("  oldest          (no messages)")
     else:
         print(f"  oldest       {oldest:>10.1f}d")
-        # The comparison a reader would otherwise have to make by hand, and the
-        # one that decides whether `li state prune` can free anything: its
-        # keep-window is in the same unit as this number.
-        print("  a prune keeping more days than that reclaims nothing")
+        # Said about MESSAGES, deliberately, and not about the prune as a whole.
+        # Message lifetime and session lifetime are independent here: `li state
+        # prune` selects by session age and then frees only messages nothing
+        # surviving still references, so it can delete thousands of old sessions
+        # and free no message rows at all. Since messages hold nearly all the
+        # bytes, "sessions deleted" is not a claim about space.
+        print("  (messages only — prune selects by SESSION age, see prune's own output)")
     print()
 
     print("Sessions by status:")
@@ -1343,7 +1346,16 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
             "Delete sessions older than --keep-days (default 30), keeping "
             "the most recent --keep-n (default 100). Foreign key cascades "
             "drop branches; messages are dropped if no other session "
-            "references them via progression. Use --dry-run to preview."
+            "references them via progression. Use --dry-run to preview.\n\n"
+            "SESSIONS ARE THE AXIS, AND MESSAGES HOLD THE BYTES. A message a "
+            "surviving progression still names is kept whatever its age, so a "
+            "run can delete thousands of sessions and free no message rows. "
+            "Read the message counts, not the session count, to judge whether "
+            "this reclaimed space; `li state stats` shows both distributions.\n\n"
+            "--dry-run is not a read. It runs the real deletes and rolls the "
+            "transaction back, which is what makes its counts exact rather "
+            "than estimated, and which means it takes the same write lock for "
+            "the same duration as the real thing."
         ),
     )
     prune.add_argument(
