@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -15,6 +16,7 @@ from typing import Any
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.ln._json_dump import raise_if_non_finite
+from lionagi.studio.config import MIRROR_PREVIEW_CHARS
 
 from ._logging import hint, log_error, progress, warn
 
@@ -278,8 +280,15 @@ def _since_window(spec: str) -> float:
     return secs
 
 
-def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]], int, int]:
-    """Read complete JSONL lines past the cursor; return (events, new_offset, unreadable).
+def _read_new_events(
+    path: Path, state: _FileState
+) -> tuple[list[dict[str, Any]], list[tuple[int, int, str]], int, int]:
+    """Read complete JSONL lines past the cursor.
+
+    Returns ``(events, sources, new_offset, unreadable)``. ``sources`` is the
+    per-event ``(byte_offset, byte_count, sha256)`` of each raw line, in the
+    same order as ``events`` — the basis for a resolvable mirror source pointer
+    (see ``_mirror_common.bound_mirror_content``).
 
     The cursor is NOT advanced here — the caller only commits it after the batch
     is durably mirrored, so a write failure re-reads the same lines next pass.
@@ -297,12 +306,16 @@ def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]
         fh.seek(state.offset)
         chunk = fh.read()
     if b"\n" not in chunk:
-        return [], state.offset, 0
+        return [], [], state.offset, 0
     body, _, _ = chunk.rpartition(b"\n")
     new_offset = state.offset + len(body) + 1
-    events = []
+    events: list[dict[str, Any]] = []
+    sources: list[tuple[int, int, str]] = []
     unreadable = 0
+    pos = state.offset
     for raw in body.split(b"\n"):
+        line_offset = pos
+        pos += len(raw) + 1  # +1 for the newline consumed by split
         if not raw.strip():
             continue
         try:
@@ -312,9 +325,10 @@ def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]
             continue
         if isinstance(obj, dict):
             events.append(obj)
+            sources.append((line_offset, len(raw), hashlib.sha256(raw).hexdigest()))
         else:
             unreadable += 1
-    return events, new_offset, unreadable
+    return events, sources, new_offset, unreadable
 
 
 _COMMAND_NOISE = ("<command-", "<local-command-")
@@ -414,7 +428,7 @@ def _first_prompt(events: list[dict[str, Any]]) -> str | None:
 async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> int:
     from lionagi.state.claude_mirror import mirror_session
 
-    events, new_offset, unreadable = _read_new_events(path, state)
+    events, sources, new_offset, unreadable = _read_new_events(path, state)
     if unreadable:
         warn(f"{path.name}: {unreadable} unreadable line(s) skipped")
     if not events:
@@ -439,6 +453,9 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
         model=state.model,
         name=state.name,
         status="running",
+        source_path=str(path),
+        event_sources=sources,
+        max_preview_chars=MIRROR_PREVIEW_CHARS,
     )
     # Advance the cursor only after the batch is durably mirrored, so a failed
     # write re-reads (idempotently) rather than losing the batch.
@@ -609,7 +626,7 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
     if not state.session_uid:
         state.session_uid = path.stem
 
-    records, new_offset, unreadable = _read_new_events(path, state)
+    records, sources, new_offset, unreadable = _read_new_events(path, state)
     if not records:
         state.offset = new_offset
         return 0
@@ -638,6 +655,8 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         source_path=str(path),
         turn=state.turn,
         unparseable=unreadable,
+        event_sources=sources,
+        max_preview_chars=MIRROR_PREVIEW_CHARS,
     )
     # Advance only after a durable write, so a failed batch is re-read next pass.
     state.offset = new_offset
@@ -745,8 +764,8 @@ async def mirror_forever(
     want_claude = source in ("both", "claude")
     want_codex = source in ("both", "codex")
 
-    root = Path(root).expanduser() if root else CLAUDE_PROJECTS_DIR
-    codex_root = Path(codex_root).expanduser() if codex_root else CODEX_SESSIONS_DIR
+    root = Path(root).expanduser().resolve() if root else CLAUDE_PROJECTS_DIR
+    codex_root = Path(codex_root).expanduser().resolve() if codex_root else CODEX_SESSIONS_DIR
     if not (want_claude and root.exists()) and not (want_codex and codex_root.exists()):
         return
     since_secs = _parse_window(since) if since else None
@@ -809,9 +828,9 @@ async def _run(args: argparse.Namespace) -> int:
     want_claude = source in ("both", "claude")
     want_codex = source in ("both", "codex")
 
-    root = Path(args.root).expanduser() if args.root else CLAUDE_PROJECTS_DIR
+    root = Path(args.root).expanduser().resolve() if args.root else CLAUDE_PROJECTS_DIR
     codex_root = (
-        Path(args.codex_root).expanduser()
+        Path(args.codex_root).expanduser().resolve()
         if getattr(args, "codex_root", None)
         else CODEX_SESSIONS_DIR
     )
