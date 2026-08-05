@@ -9,7 +9,14 @@ import ReactFlow, {
   useNodesState,
   useEdgesState,
 } from "reactflow";
-import type { Connection, Edge, Node, NodeMouseHandler, EdgeMouseHandler } from "reactflow";
+import type {
+  Connection,
+  Edge,
+  Node,
+  NodeMouseHandler,
+  EdgeMouseHandler,
+  ReactFlowInstance,
+} from "reactflow";
 import "reactflow/dist/style.css";
 
 import StepNodeComponent from "./StepNode";
@@ -54,6 +61,10 @@ interface WorkerCanvasProps {
    * panel). Suppresses the MiniMap — at that size it reads as a floating
    * cluster of gray nodes rather than a useful overview. */
   compact?: boolean;
+  /** Reports the laid-out graph's bounding-box height (px) after each layout,
+   * so an embedding container can size itself to the graph's real shape
+   * instead of guessing from node count. */
+  onLayoutHeight?: (height: number) => void;
 }
 
 // ─── Conversion helpers ─────────────────────────────────
@@ -167,6 +178,7 @@ export default function WorkerCanvas({
   currentStep = null,
   onChange,
   compact = false,
+  onLayoutHeight,
 }: WorkerCanvasProps) {
   const initialised = useRef(false);
 
@@ -177,13 +189,36 @@ export default function WorkerCanvas({
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selection, setSelection] = useState<Selection>({ type: "none" });
 
+  // The fitView PROP fits once, on init — before an async graph load has laid
+  // anything out, and before an embedding container has grown to the layout's
+  // reported height. Both arrive later, so the fit is re-run from the
+  // instance when the laid-out nodes land and when the container resizes.
+  const flowRef = useRef<ReactFlowInstance | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const refit = useCallback(() => {
+    requestAnimationFrame(() => flowRef.current?.fitView({ padding: 0.15, maxZoom: 1 }));
+  }, []);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(refit);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [refit]);
+
   // Layout on mount or when graph changes
   useEffect(() => {
-    const { nodes: ln, edges: le } = getLayoutedElements(initialFlowNodes, initialFlowEdges, "LR");
+    const {
+      nodes: ln,
+      edges: le,
+      height,
+    } = getLayoutedElements(initialFlowNodes, initialFlowEdges, "LR");
     setNodes(ln);
     setEdges(le);
     initialised.current = true;
-  }, [initialFlowNodes, initialFlowEdges, setNodes, setEdges]);
+    onLayoutHeight?.(height);
+    refit();
+  }, [initialFlowNodes, initialFlowEdges, setNodes, setEdges, onLayoutHeight, refit]);
 
   // Apply execution status to nodes. nodeStatuses (live signal-derived, keyed
   // by authored step id) takes priority per node; nodes it doesn't cover fall
@@ -349,10 +384,13 @@ export default function WorkerCanvas({
   }, [nodes, edges, setNodes, setEdges]);
 
   return (
-    <div className="flex h-full">
+    <div className="relative flex h-full">
       {/* Canvas */}
-      <div className="relative flex-1">
+      <div ref={containerRef} className="relative flex-1">
         <ReactFlow
+          onInit={(instance) => {
+            flowRef.current = instance;
+          }}
           nodes={nodes}
           edges={edges}
           onNodesChange={editable ? onNodesChange : undefined}
@@ -432,9 +470,18 @@ export default function WorkerCanvas({
       </div>
 
       {/* Side Panel — clicking the empty pane deselects, which closes it in
-          the read-only embed */}
+          the read-only embed. In that embed the panel OVERLAYS the canvas
+          instead of docking beside it: docking shrinks the flow container the
+          moment a node is clicked, which slides the canvas sideways and can
+          bury the clicked node under the panel it just opened. */}
       {shouldShowSidePanel(editable, selection.type) && (
-        <div className="w-80 shrink-0 border-l border-edge bg-surface-overlay overflow-y-auto">
+        <div
+          className={
+            editable
+              ? "w-80 shrink-0 border-l border-edge bg-surface-overlay overflow-y-auto"
+              : "absolute inset-y-0 right-0 z-10 w-80 border-l border-edge bg-surface-overlay overflow-y-auto shadow-card"
+          }
+        >
           <SidePanel
             selection={selection}
             editable={editable}

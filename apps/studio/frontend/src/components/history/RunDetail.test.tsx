@@ -244,9 +244,11 @@ describe("history/RunDetail.tsx — shouldRenderAuthoredGraph", () => {
   // the authored graph still renders — and WorkerCanvas maps over `edges`,
   // so the decode site must normalize an omitted field to [] or that valid
   // combination crashes the run-detail graph instead of rendering it.
-  it("decode site normalizes omitted graph.edges to [] before setRunGraph", () => {
+  it("decode site resolves graph.edges (numeric-ref repair + omitted → []) before setRunGraph", () => {
     const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
-    expect(src).toMatch(/edges:\s*graph\.edges\s*\?\?\s*\[\]/);
+    // resolveGraphEdges handles both concerns: null/undefined edges become []
+    // and planner step-number refs are mapped onto node ids.
+    expect(src).toMatch(/edges:\s*resolveGraphEdges\(graph\.nodes,\s*graph\.edges\)/);
   });
 
   it("omitted edges + no runtime edges renders the authored graph, and normalized edges survive a WorkerCanvas-style map", async () => {
@@ -700,5 +702,86 @@ describe("stale-write guard predicate (mirrors the done handler's merge conditio
 
   it("no-ops when there is no current session", () => {
     expect(mergeIfSameSession(null, { id: "run-a", status: "completed" })).toBeNull();
+  });
+});
+
+// ─── resolveGraphEdges — planner step numbers become node ids ────────────────
+// The planner persists depends_on endpoints as 1-based step numbers ("1")
+// while the graph's nodes are keyed by role name ("explorer"). Passed through
+// unresolved, every edge dangles: dagre invents phantom zero-size nodes and
+// the layout shatters into disconnected clusters (measured 125/125 edges
+// unresolvable on a live 30-node run). resolveGraphEdges maps numeric refs
+// onto the node at that position and drops what it cannot resolve.
+
+describe("history/RunDetail.tsx — resolveGraphEdges", () => {
+  const graphNodes = (...ids: string[]) =>
+    ids.map((id) => ({ id })) as unknown as import("@/lib/types").WorkerGraph["nodes"];
+  const edge = (id: string, source: string, target: string) =>
+    ({ id, source, target, mode: "simple" }) as const;
+
+  it("resolves 1-based numeric refs to the node at that position", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic", "synth");
+    const out = resolveGraphEdges(nodes, [edge("e1", "1", "2"), edge("e2", "2", "3")]);
+    expect(out).toEqual([
+      { id: "e1", source: "explorer", target: "critic", mode: "simple" },
+      { id: "e2", source: "critic", target: "synth", mode: "simple" },
+    ]);
+  });
+
+  it("keeps refs that already match node ids, mixed with numeric refs", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic");
+    const out = resolveGraphEdges(nodes, [edge("e1", "explorer", "2")]);
+    expect(out).toEqual([{ id: "e1", source: "explorer", target: "critic", mode: "simple" }]);
+  });
+
+  it("prefers an exact id match over positional reading for a numeric node id", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    // A node literally named "2": the ref must mean THAT node, not position 2.
+    const nodes = graphNodes("2", "critic");
+    const out = resolveGraphEdges(nodes, [edge("e1", "2", "critic")]);
+    expect(out).toEqual([{ id: "e1", source: "2", target: "critic", mode: "simple" }]);
+  });
+
+  it("drops edges whose endpoints resolve to nothing", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic");
+    const out = resolveGraphEdges(nodes, [
+      edge("e1", "99", "critic"), // position out of range
+      edge("e2", "phantom", "critic"), // unknown name
+      edge("e3", "1", "2"), // resolvable — must survive the same pass
+    ]);
+    expect(out).toEqual([{ id: "e3", source: "explorer", target: "critic", mode: "simple" }]);
+  });
+
+  it("drops an edge whose endpoints resolve to the same node", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic");
+    // "1" and "explorer" are the same node spelled two ways.
+    const out = resolveGraphEdges(nodes, [edge("e1", "1", "explorer")]);
+    expect(out).toEqual([]);
+  });
+
+  it("returns [] for null, undefined, or empty edges", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer");
+    expect(resolveGraphEdges(nodes, null)).toEqual([]);
+    expect(resolveGraphEdges(nodes, undefined)).toEqual([]);
+    expect(resolveGraphEdges(nodes, [])).toEqual([]);
+  });
+
+  it("preserves the edge's other properties through resolution", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic");
+    const conditional = { id: "e1", source: "1", target: "2", condition: "score > 0.8" };
+    const out = resolveGraphEdges(nodes, [
+      conditional,
+    ] as unknown as import("@/lib/types").WorkerGraph["edges"]);
+    expect(out[0]).toMatchObject({
+      source: "explorer",
+      target: "critic",
+      condition: "score > 0.8",
+    });
   });
 });

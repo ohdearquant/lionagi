@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from "vitest";
 import type { Node, Edge } from "reactflow";
-import { estimateNodeHeight, getLayoutedElements } from "./useLayout";
+import { estimateNodeHeight, getLayoutedElements, wrapWideRanks } from "./useLayout";
 
 const bare = (id: string): Node => ({
   id,
@@ -189,5 +189,64 @@ describe("getLayoutedElements — a wide fan-out wraps instead of becoming a str
   it("keeps every node through the wrap", () => {
     const { nodes } = getLayoutedElements(fanNodes(), fanEdges, "LR");
     expect(nodes.map((n) => n.id).sort()).toEqual(["root", ...workers, "sink"].sort());
+  });
+
+  it("reports a bounding-box height that tracks the wrapped grid, not the strip", () => {
+    const { nodes, height } = getLayoutedElements(fanNodes(), fanEdges, "LR");
+    const top = Math.min(...nodes.map((n) => n.position.y));
+    const bottom = Math.max(...nodes.map((n) => n.position.y + estimateNodeHeight(n)));
+    expect(height).toBeGreaterThanOrEqual(bottom - top);
+    expect(height).toBeLessThan(bottom - top + 100);
+  });
+
+  it("reports zero height for an empty graph", () => {
+    expect(getLayoutedElements([], [], "LR").height).toBe(0);
+  });
+});
+
+describe("wrapWideRanks — the grid preserves dagre's cross-axis order", () => {
+  // A wrapped rank read column-major (columns left to right, each top to
+  // bottom) must reproduce the order dagre stacked the strip in. The
+  // gap-based arms above sort by y before asserting, so they stay green even
+  // if the wrap inverted rows or shuffled siblings — this arm reads the grid
+  // in its own order and compares against the input order directly.
+  function stripRank(count: number): Node[] {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `w${i + 1}`,
+      position: { x: 300, y: i * 120 },
+      data: { label: `w${i + 1}` },
+    }));
+  }
+
+  function columnMajorIds(nodes: Node[]): string[] {
+    const byX = new Map<number, Node[]>();
+    for (const n of nodes) {
+      const key = Math.round(n.position.x);
+      const col = byX.get(key);
+      if (col) col.push(n);
+      else byX.set(key, [n]);
+    }
+    return [...byX.entries()]
+      .sort(([a], [b]) => a - b)
+      .flatMap(([, col]) => [...col].sort((a, b) => a.position.y - b.position.y))
+      .map((n) => n.id);
+  }
+
+  it("column-major reading of the wrapped grid equals the strip order", () => {
+    const wrapped = wrapWideRanks(stripRank(24));
+    expect(columnMajorIds(wrapped)).toEqual(Array.from({ length: 24 }, (_, i) => `w${i + 1}`));
+  });
+
+  it("holds when the count does not divide evenly into the grid", () => {
+    const wrapped = wrapWideRanks(stripRank(23));
+    expect(columnMajorIds(wrapped)).toEqual(Array.from({ length: 23 }, (_, i) => `w${i + 1}`));
+  });
+
+  it("leaves a rank at the wrap threshold untouched", () => {
+    const strip = stripRank(7);
+    const wrapped = wrapWideRanks(strip);
+    expect(wrapped.map((n) => ({ id: n.id, ...n.position }))).toEqual(
+      strip.map((n) => ({ id: n.id, ...n.position })),
+    );
   });
 });

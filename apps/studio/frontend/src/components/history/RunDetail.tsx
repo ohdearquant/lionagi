@@ -74,6 +74,39 @@ export function shouldRenderAuthoredGraph(
   return !(isEdgeless && opGraph.edges.length > 0);
 }
 
+// The planner persists depends_on endpoints as 1-BASED STEP NUMBERS while
+// nodes are keyed by role name, so a persisted edge can arrive as
+// {source: "1", target: "tester"}. Fed to dagre unresolved, every numeric
+// endpoint becomes a phantom zero-size node and the layout shatters into
+// disconnected clusters (measured on a live 30-node run: 125/125 edges
+// unresolvable). Resolve numeric endpoints by position in the nodes array —
+// assignment order — and drop edges that resolve nowhere: a missing edge
+// degrades to a sparser DAG, a phantom node corrupts the whole layout.
+export function resolveGraphEdges(
+  nodes: WorkerGraph["nodes"],
+  edges: WorkerGraph["edges"] | null | undefined,
+): WorkerGraph["edges"] {
+  if (!edges || edges.length === 0) return [];
+  const ids = new Set(nodes.map((n) => n.id));
+  const resolve = (ref: string): string | null => {
+    if (ids.has(ref)) return ref;
+    if (/^\d+$/.test(ref)) {
+      const byPosition = nodes[Number(ref) - 1];
+      if (byPosition) return byPosition.id;
+    }
+    return null;
+  };
+  const out: WorkerGraph["edges"] = [];
+  for (const edge of edges) {
+    const source = resolve(edge.source);
+    const target = resolve(edge.target);
+    if (source !== null && target !== null && source !== target) {
+      out.push({ ...edge, source, target });
+    }
+  }
+  return out;
+}
+
 // Raw SSE payloads arrive as an untyped Record — this is the boundary where
 // an event is asserted to be a SessionMessage. SessionMessage.timestamp is a
 // required number (the server column is REAL NOT NULL), so a malformed or
@@ -834,6 +867,12 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
 
 // ── Public component ──────────────────────────────────────────────────────────
 
+// Bounds for the execution-graph panel. The floor keeps a tiny pipeline from
+// collapsing into a sliver; the cap keeps a huge fan-out from swallowing the
+// page — past it the canvas pans/zooms inside the panel.
+const DAG_MIN_HEIGHT = 280;
+const DAG_MAX_HEIGHT = 560;
+
 export interface RunDetailProps {
   /** Session ID to load. */
   id: string;
@@ -843,6 +882,27 @@ export default function RunDetail({ id }: RunDetailProps) {
   const t = useTranslations("history.detail");
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [runGraph, setRunGraph] = useState<WorkerGraph | null>(null);
+  // Execution-graph panel height, driven by the LAYOUT's bounding box rather
+  // than node count: a linear pipeline stays short however many steps it has,
+  // and a wrapped fan-out gets the room its grid needs. Grow-only while the
+  // run streams (shrinking mid-stream would jump the page under the reader).
+  // The state carries the run id it was measured for, so switching runs falls
+  // back to the floor by derivation instead of a reset effect.
+  const [dagHeightFor, setDagHeightFor] = useState<{ id: string; height: number }>({
+    id,
+    height: DAG_MIN_HEIGHT,
+  });
+  const dagHeight = dagHeightFor.id === id ? dagHeightFor.height : DAG_MIN_HEIGHT;
+  const onDagLayoutHeight = useCallback(
+    (height: number) => {
+      const clamped = Math.min(DAG_MAX_HEIGHT, Math.max(DAG_MIN_HEIGHT, Math.ceil(height)));
+      setDagHeightFor((prev) => ({
+        id,
+        height: Math.max(prev.id === id ? prev.height : DAG_MIN_HEIGHT, clamped),
+      }));
+    },
+    [id],
+  );
   const [live, setLive] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -914,7 +974,7 @@ export default function RunDetail({ id }: RunDetailProps) {
             nodes: graph.nodes,
             // A persisted graph may omit edges entirely; WorkerCanvas maps
             // over the array, so an absent field must normalize to empty.
-            edges: graph.edges ?? [],
+            edges: resolveGraphEdges(graph.nodes, graph.edges),
           });
         }
       })
@@ -1366,16 +1426,13 @@ export default function RunDetail({ id }: RunDetailProps) {
         <div id="run-dag" className="scroll-mt-4">
           <SectionHeader label={t("sectionExecutionGraph")} count={runGraph.nodes.length} />
           {/* A fan-out of dozens of workers cannot be legible in the same
-              280px that fits a five-step pipeline — the panel grows with the
-              graph so fitView has room to keep nodes readable. */}
+              280px that fits a five-step pipeline — the panel takes its height
+              from the laid-out graph's bounding box so fitView has room to
+              keep nodes readable, and a linear pipeline stays short no matter
+              how many steps it has. */}
           <div
-            className={`${
-              runGraph.nodes.length > 24
-                ? "h-[560px]"
-                : runGraph.nodes.length > 10
-                  ? "h-[420px]"
-                  : "h-[280px]"
-            } rounded border border-edge bg-surface-raised shadow-card overflow-hidden`}
+            style={{ height: dagHeight }}
+            className="rounded border border-edge bg-surface-raised shadow-card overflow-hidden"
           >
             <Suspense fallback={null}>
               <WorkerCanvas
@@ -1384,6 +1441,7 @@ export default function RunDetail({ id }: RunDetailProps) {
                 execSteps={execSteps}
                 nodeStatuses={nodeStatuses}
                 compact
+                onLayoutHeight={onDagLayoutHeight}
               />
             </Suspense>
           </div>

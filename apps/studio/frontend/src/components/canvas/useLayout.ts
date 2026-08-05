@@ -59,7 +59,7 @@ const WRAP_COL_GAP = 28;
 // columns, shifting every rank to its right by the width the wrap added.
 // Sibling order within the grid preserves dagre's cross-axis order, so nodes
 // dagre placed adjacent stay adjacent.
-function wrapWideRanks(nodes: Node[]): Node[] {
+export function wrapWideRanks(nodes: Node[]): Node[] {
   const byRankX = new Map<number, Node[]>();
   for (const node of nodes) {
     const key = Math.round(node.position.x);
@@ -121,7 +121,7 @@ export function getLayoutedElements(
   nodes: Node[],
   edges: Edge[],
   direction: "LR" | "TB" = "LR",
-): { nodes: Node[]; edges: Edge[] } {
+): { nodes: Node[]; edges: Edge[]; height: number } {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
@@ -156,7 +156,21 @@ export function getLayoutedElements(
 
   // The wrap keys ranks by their shared x, which holds only for LR (constant
   // node width). TB ranks share y instead; no caller lays out TB today.
-  return { nodes: direction === "LR" ? wrapWideRanks(layoutedNodes) : layoutedNodes, edges };
+  const finalNodes = direction === "LR" ? wrapWideRanks(layoutedNodes) : layoutedNodes;
+
+  // Bounding-box height of the laid-out graph (post-wrap), so containers can
+  // size to what the layout actually needs — a linear pipeline is one rank
+  // tall no matter how many nodes it has, and a wrapped fan-out is exactly as
+  // tall as its grid.
+  let top = Infinity;
+  let bottom = -Infinity;
+  for (const node of finalNodes) {
+    top = Math.min(top, node.position.y);
+    bottom = Math.max(bottom, node.position.y + estimateNodeHeight(node));
+  }
+  const height = finalNodes.length === 0 ? 0 : bottom - top + 2 * 24;
+
+  return { nodes: finalNodes, edges, height };
 }
 
 export function useAutoLayout() {
