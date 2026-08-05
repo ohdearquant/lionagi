@@ -236,6 +236,8 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
         "ON sessions(run_id) WHERE run_id IS NOT NULL",
         *_MESSAGE_POINTER_INDEXES,
+        "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
+        "ON branches(session_id, created_at)",
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
@@ -245,5 +247,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
         "ON sessions(run_id) WHERE run_id IS NOT NULL",
         *_MESSAGE_POINTER_INDEXES,
+        "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
+        "ON branches(session_id, created_at)",
     ),
 }
