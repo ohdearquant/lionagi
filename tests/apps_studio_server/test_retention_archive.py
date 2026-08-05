@@ -127,6 +127,36 @@ def test_write_archive_chunk_round_trips_blob_columns_exactly(tmp_path):
     assert isinstance(decoded["tables"]["messages"][0]["embedding"], bytes)
 
 
+def test_write_archive_chunk_does_not_misread_marker_shaped_json_as_bytes(tmp_path):
+    """A JSON column whose stored value is literally ``{"__bytes_b64__": ...}``
+    (drivers like asyncpg hand JSON/JSONB columns back as dicts) must restore
+    as that dict, not be silently decoded into bytes. The escape wrapper must
+    itself round-trip when a value collides with it."""
+    dest = tmp_path / "archive"
+    dest.mkdir()
+    marker_shaped = {"__bytes_b64__": "aGVsbG8="}
+    escape_shaped = {"__archive_escaped__": {"nested": True}}
+    real_bytes = b"\x00\xff"
+    tables = {
+        "sessions": [
+            {
+                "id": "s1",
+                "status_evidence_refs": marker_shaped,
+                "artifact_contract_json": escape_shaped,
+                "blob_col": real_bytes,
+            }
+        ]
+    }
+    path = write_archive_chunk(dest, "prune-1-000000-coll0001", tables)
+
+    row = read_archive_chunk(path)["tables"]["sessions"][0]
+    assert row["status_evidence_refs"] == marker_shaped
+    assert isinstance(row["status_evidence_refs"], dict)
+    assert row["artifact_contract_json"] == escape_shaped
+    assert row["blob_col"] == real_bytes
+    assert isinstance(row["blob_col"], bytes)
+
+
 def test_write_archive_chunk_captures_preimages_as_sibling_members(tmp_path):
     dest = tmp_path / "archive"
     dest.mkdir()

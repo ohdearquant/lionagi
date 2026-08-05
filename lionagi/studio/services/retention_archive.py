@@ -32,6 +32,7 @@ from typing import Any
 _FORMAT_VERSION = 1
 _MANIFEST_NAME = "manifest.json"
 _BYTES_MARKER = "__bytes_b64__"
+_ESCAPE_MARKER = "__archive_escaped__"
 
 
 class ArchiveWriteError(Exception):
@@ -67,16 +68,37 @@ def _json_default(value: Any) -> Any:
     return str(value)
 
 
-def _decode_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Invert :func:`_json_default`'s bytes marker back into raw ``bytes``."""
+def _encode_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Escape column values that would collide with the bytes marker.
+
+    On backends whose driver deserializes JSON columns (asyncpg returns
+    ``dict`` for JSON/JSONB), a legitimate stored value of exactly
+    ``{"__bytes_b64__": ...}`` would otherwise be misread as encoded bytes
+    on restore. Wrapping any dict whose sole key is one of the markers makes
+    the encoding unambiguous; ``_decode_row`` unwraps exactly one level.
+    """
     return {
         k: (
-            base64.b64decode(v[_BYTES_MARKER])
-            if isinstance(v, dict) and set(v) == {_BYTES_MARKER}
+            {_ESCAPE_MARKER: v}
+            if isinstance(v, dict) and (set(v) == {_BYTES_MARKER} or set(v) == {_ESCAPE_MARKER})
             else v
         )
         for k, v in row.items()
     }
+
+
+def _decode_value(v: Any) -> Any:
+    if isinstance(v, dict):
+        if set(v) == {_BYTES_MARKER}:
+            return base64.b64decode(v[_BYTES_MARKER])
+        if set(v) == {_ESCAPE_MARKER}:
+            return v[_ESCAPE_MARKER]
+    return v
+
+
+def _decode_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Invert :func:`_encode_row` / :func:`_json_default` marker wrapping."""
+    return {k: _decode_value(v) for k, v in row.items()}
 
 
 def _declare_zip64(zf: zipfile.ZipFile, member_name: str) -> None:
@@ -108,7 +130,9 @@ def _write_member_stream(
     with zf.open(member_name, mode="w", force_zip64=True) as fh:
         for r in rows:
             line = (
-                json.dumps(dict(r), default=_json_default, sort_keys=True, separators=(",", ":"))
+                json.dumps(
+                    _encode_row(r), default=_json_default, sort_keys=True, separators=(",", ":")
+                )
                 + "\n"
             ).encode("utf-8")
             fh.write(line)

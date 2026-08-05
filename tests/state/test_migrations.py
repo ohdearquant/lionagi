@@ -430,13 +430,30 @@ async def test_statedb_upgrade_adds_branches_session_created_index(tmp_path: Pat
                 "updated_at": 1.0,
             },
         )
+        # Populate branches so the EXPLAIN runs against a table with rows —
+        # a plan over an empty table is weaker evidence that the index is
+        # actually chosen for the shape the listing query uses.
+        for i in range(3):
+            await state.execute(
+                "INSERT INTO branches (id, created_at, session_id, progression_id) "
+                "VALUES (:id, :created_at, :session_id, :progression_id)",
+                {
+                    "id": f"branch-idx-{i}",
+                    "created_at": float(i),
+                    "session_id": "session-idx",
+                    "progression_id": "progression-idx",
+                },
+            )
         async with state._read() as conn:
             indexes = (await conn.execute(text("PRAGMA index_list(branches)"))).mappings().all()
+            # Same query shape as the live branch listing (SELECT * ... ORDER BY
+            # created_at): the index's win is the equality seek plus sort
+            # elimination, not covering — SELECT * can never be index-only.
             plan = (
                 (
                     await conn.execute(
                         text(
-                            "EXPLAIN QUERY PLAN SELECT id, name, created_at FROM branches "
+                            "EXPLAIN QUERY PLAN SELECT * FROM branches "
                             "WHERE session_id = :session_id ORDER BY created_at"
                         ),
                         {"session_id": "session-idx"},
