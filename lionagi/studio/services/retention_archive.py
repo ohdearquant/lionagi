@@ -68,36 +68,49 @@ def _json_default(value: Any) -> Any:
     return str(value)
 
 
-def _encode_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Escape column values that would collide with the bytes marker.
+def _encode_value(v: Any) -> Any:
+    """Escape values that would collide with the codec markers, at any depth.
 
     On backends whose driver deserializes JSON columns (asyncpg returns
-    ``dict`` for JSON/JSONB), a legitimate stored value of exactly
-    ``{"__bytes_b64__": ...}`` would otherwise be misread as encoded bytes
-    on restore. Wrapping any dict whose sole key is one of the markers makes
-    the encoding unambiguous; ``_decode_row`` unwraps exactly one level.
+    ``dict``/``list`` for JSON/JSONB), a legitimate stored value of exactly
+    ``{"__bytes_b64__": ...}`` (or the escape wrapper itself) would otherwise
+    be misread on restore. Escaping must reach every depth because
+    ``json.dumps(default=_json_default)`` converts ``bytes`` into marker
+    dicts at every depth — a shallow escape paired with the deep bytes
+    conversion would leave nested collisions ambiguous.
     """
-    return {
-        k: (
-            {_ESCAPE_MARKER: v}
-            if isinstance(v, dict) and (set(v) == {_BYTES_MARKER} or set(v) == {_ESCAPE_MARKER})
-            else v
-        )
-        for k, v in row.items()
-    }
+    if isinstance(v, dict):
+        encoded = {k: _encode_value(x) for k, x in v.items()}
+        if set(v) == {_BYTES_MARKER} or set(v) == {_ESCAPE_MARKER}:
+            return {_ESCAPE_MARKER: encoded}
+        return encoded
+    if isinstance(v, (list, tuple)):
+        return [_encode_value(x) for x in v]
+    return v
+
+
+def _encode_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply :func:`_encode_value` to every column of one row."""
+    return {k: _encode_value(v) for k, v in row.items()}
 
 
 def _decode_value(v: Any) -> Any:
+    """Invert :func:`_encode_value` / :func:`_json_default`, at any depth."""
     if isinstance(v, dict):
-        if set(v) == {_BYTES_MARKER}:
+        if set(v) == {_BYTES_MARKER} and isinstance(v[_BYTES_MARKER], str):
             return base64.b64decode(v[_BYTES_MARKER])
-        if set(v) == {_ESCAPE_MARKER}:
-            return v[_ESCAPE_MARKER]
+        if set(v) == {_ESCAPE_MARKER} and isinstance(v[_ESCAPE_MARKER], dict):
+            # The wrapped dict IS the (marker-shaped) user value: decode its
+            # children but never re-interpret the dict itself as a marker.
+            return {k: _decode_value(x) for k, x in v[_ESCAPE_MARKER].items()}
+        return {k: _decode_value(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_decode_value(x) for x in v]
     return v
 
 
 def _decode_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Invert :func:`_encode_row` / :func:`_json_default` marker wrapping."""
+    """Apply :func:`_decode_value` to every column of one row."""
     return {k: _decode_value(v) for k, v in row.items()}
 
 

@@ -136,6 +136,11 @@ def test_write_archive_chunk_does_not_misread_marker_shaped_json_as_bytes(tmp_pa
     dest.mkdir()
     marker_shaped = {"__bytes_b64__": "aGVsbG8="}
     escape_shaped = {"__archive_escaped__": {"nested": True}}
+    # Collisions and real bytes below the top level: json.dumps converts
+    # bytes into marker dicts at every depth, so escape/decode must be just
+    # as deep or nested values become ambiguous.
+    nested = {"refs": [marker_shaped, {"deep": escape_shaped}], "ok": 1}
+    nested_bytes = [b"\x00\x01", {"inner": b"\xfe"}]
     real_bytes = b"\x00\xff"
     tables = {
         "sessions": [
@@ -143,6 +148,8 @@ def test_write_archive_chunk_does_not_misread_marker_shaped_json_as_bytes(tmp_pa
                 "id": "s1",
                 "status_evidence_refs": marker_shaped,
                 "artifact_contract_json": escape_shaped,
+                "artifact_verification_json": nested,
+                "nested_blobs": nested_bytes,
                 "blob_col": real_bytes,
             }
         ]
@@ -153,6 +160,10 @@ def test_write_archive_chunk_does_not_misread_marker_shaped_json_as_bytes(tmp_pa
     assert row["status_evidence_refs"] == marker_shaped
     assert isinstance(row["status_evidence_refs"], dict)
     assert row["artifact_contract_json"] == escape_shaped
+    assert row["artifact_verification_json"] == nested
+    assert row["nested_blobs"] == [b"\x00\x01", {"inner": b"\xfe"}]
+    assert isinstance(row["nested_blobs"][0], bytes)
+    assert isinstance(row["nested_blobs"][1]["inner"], bytes)
     assert row["blob_col"] == real_bytes
     assert isinstance(row["blob_col"], bytes)
 
