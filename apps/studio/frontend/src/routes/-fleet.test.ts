@@ -58,4 +58,40 @@ describe("validateFleetSearch", () => {
   it("returns an empty object for no search", () => {
     expect(validateFleetSearch({})).toEqual({});
   });
+
+  // ─── project / project_null / q — Fleet filter state (URL-persisted) ──────
+
+  it("parses a project filter to a clean string", () => {
+    expect(validateFleetSearch({ project: "org/alpha" })).toEqual({ project: "org/alpha" });
+  });
+
+  it("takes the first non-empty string when project arrives as an array", () => {
+    expect(validateFleetSearch({ project: ["", "org/alpha", "org/beta"] })).toEqual({
+      project: "org/alpha",
+    });
+  });
+
+  it("parses project_null from a real boolean or the string 'true'", () => {
+    expect(validateFleetSearch({ project_null: true })).toEqual({ project_null: true });
+    expect(validateFleetSearch({ project_null: "true" })).toEqual({ project_null: true });
+  });
+
+  it("drops project_null when false or absent", () => {
+    expect(validateFleetSearch({ project_null: false })).toEqual({});
+    expect(validateFleetSearch({})).not.toHaveProperty("project_null");
+  });
+
+  it("parses the search text as q", () => {
+    expect(validateFleetSearch({ q: "flaky login" })).toEqual({ q: "flaky login" });
+  });
+
+  it("drops an empty q rather than carrying an empty-string filter", () => {
+    expect(validateFleetSearch({ q: "" })).toEqual({});
+  });
+
+  it("combines s, project, project_null, and q together", () => {
+    expect(
+      validateFleetSearch({ s: "run-1", project: "org/alpha", project_null: true, q: "flaky" }),
+    ).toEqual({ s: "run-1", project: "org/alpha", project_null: true, q: "flaky" });
+  });
 });

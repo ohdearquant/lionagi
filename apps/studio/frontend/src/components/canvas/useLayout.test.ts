@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from "vitest";
 import type { Node, Edge } from "reactflow";
-import { estimateNodeHeight, getLayoutedElements } from "./useLayout";
+import { estimateNodeHeight, getLayoutedElements, wrapWideRanks } from "./useLayout";
 
 const bare = (id: string): Node => ({
   id,
@@ -117,5 +117,136 @@ describe("getLayoutedElements — populated nodes do not overlap", () => {
     const input = [full(parent), ...siblings.map(full)];
     const { nodes } = getLayoutedElements(input, edges, "LR");
     expect(nodes.map((n) => n.id).sort()).toEqual([parent, ...siblings].sort());
+  });
+});
+
+describe("getLayoutedElements — a wide fan-out wraps instead of becoming a strip", () => {
+  // The shape from live fleet runs: one orchestrator fanning dozens of
+  // workers, all of which feed one sink. dagre puts every worker in one rank,
+  // stacked into a single cross-axis column ~4000px tall, which fitView can
+  // only show as an unreadable sliver.
+  const workers = Array.from({ length: 24 }, (_, i) => `w${i + 1}`);
+  const fanEdges: Edge[] = [
+    ...workers.map((w) => ({ id: `root-${w}`, source: "root", target: w })),
+    ...workers.map((w) => ({ id: `${w}-sink`, source: w, target: "sink" })),
+  ];
+  const fanNodes = () => [full("root"), ...workers.map(full), full("sink")];
+
+  function rect(n: Node) {
+    return {
+      left: n.position.x,
+      right: n.position.x + 210,
+      top: n.position.y,
+      bottom: n.position.y + estimateNodeHeight(n),
+    };
+  }
+
+  it("splits an over-tall rank into several columns", () => {
+    const { nodes } = getLayoutedElements(fanNodes(), fanEdges, "LR");
+    const xs = new Set(workers.map((id) => nodes.find((n) => n.id === id)!.position.x));
+    expect(xs.size).toBeGreaterThan(1);
+  });
+
+  it("keeps the wrapped block far shorter than the unwrapped strip", () => {
+    const { nodes } = getLayoutedElements(fanNodes(), fanEdges, "LR");
+    const ys = workers.map((id) => nodes.find((n) => n.id === id)!.position.y);
+    const height = Math.max(...ys) - Math.min(...ys);
+    // Unwrapped, 24 populated nodes stack to ~24 × (height + gap) ≈ 3200px.
+    expect(height).toBeLessThan(1400);
+  });
+
+  it("never overlaps any two nodes, wrapped columns included", () => {
+    const { nodes } = getLayoutedElements(fanNodes(), fanEdges, "LR");
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = rect(nodes[i]);
+        const b = rect(nodes[j]);
+        const overlaps =
+          a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+        expect(overlaps, `${nodes[i].id} overlaps ${nodes[j].id}`).toBe(false);
+      }
+    }
+  });
+
+  it("keeps the downstream rank to the right of every wrapped column", () => {
+    const { nodes } = getLayoutedElements(fanNodes(), fanEdges, "LR");
+    const sinkX = nodes.find((n) => n.id === "sink")!.position.x;
+    for (const id of workers) {
+      expect(sinkX).toBeGreaterThan(nodes.find((n) => n.id === id)!.position.x);
+    }
+  });
+
+  it("leaves a small rank in the single column dagre chose", () => {
+    // The existing five-sibling suite above pins the same thing; this arm
+    // pins the threshold from the wrap side so lowering it to 1 fails here.
+    const few = ["a", "b", "c", "d"];
+    const edges: Edge[] = few.map((s) => ({ id: `root-${s}`, source: "root", target: s }));
+    const { nodes } = getLayoutedElements([full("root"), ...few.map(full)], edges, "LR");
+    const xs = new Set(few.map((id) => nodes.find((n) => n.id === id)!.position.x));
+    expect(xs.size).toBe(1);
+  });
+
+  it("keeps every node through the wrap", () => {
+    const { nodes } = getLayoutedElements(fanNodes(), fanEdges, "LR");
+    expect(nodes.map((n) => n.id).sort()).toEqual(["root", ...workers, "sink"].sort());
+  });
+
+  it("reports a bounding-box height that tracks the wrapped grid, not the strip", () => {
+    const { nodes, height } = getLayoutedElements(fanNodes(), fanEdges, "LR");
+    const top = Math.min(...nodes.map((n) => n.position.y));
+    const bottom = Math.max(...nodes.map((n) => n.position.y + estimateNodeHeight(n)));
+    expect(height).toBeGreaterThanOrEqual(bottom - top);
+    expect(height).toBeLessThan(bottom - top + 100);
+  });
+
+  it("reports zero height for an empty graph", () => {
+    expect(getLayoutedElements([], [], "LR").height).toBe(0);
+  });
+});
+
+describe("wrapWideRanks — the grid preserves dagre's cross-axis order", () => {
+  // A wrapped rank read column-major (columns left to right, each top to
+  // bottom) must reproduce the order dagre stacked the strip in. The
+  // gap-based arms above sort by y before asserting, so they stay green even
+  // if the wrap inverted rows or shuffled siblings — this arm reads the grid
+  // in its own order and compares against the input order directly.
+  function stripRank(count: number): Node[] {
+    return Array.from({ length: count }, (_, i) => ({
+      id: `w${i + 1}`,
+      position: { x: 300, y: i * 120 },
+      data: { label: `w${i + 1}` },
+    }));
+  }
+
+  function columnMajorIds(nodes: Node[]): string[] {
+    const byX = new Map<number, Node[]>();
+    for (const n of nodes) {
+      const key = Math.round(n.position.x);
+      const col = byX.get(key);
+      if (col) col.push(n);
+      else byX.set(key, [n]);
+    }
+    return [...byX.entries()]
+      .sort(([a], [b]) => a - b)
+      .flatMap(([, col]) => [...col].sort((a, b) => a.position.y - b.position.y))
+      .map((n) => n.id);
+  }
+
+  it("column-major reading of the wrapped grid equals the strip order", () => {
+    const wrapped = wrapWideRanks(stripRank(24));
+    expect(columnMajorIds(wrapped)).toEqual(Array.from({ length: 24 }, (_, i) => `w${i + 1}`));
+  });
+
+  it("holds when the count does not divide evenly into the grid", () => {
+    const wrapped = wrapWideRanks(stripRank(23));
+    expect(columnMajorIds(wrapped)).toEqual(Array.from({ length: 23 }, (_, i) => `w${i + 1}`));
+  });
+
+  it("leaves a rank at the wrap threshold untouched", () => {
+    const strip = stripRank(7);
+    const wrapped = wrapWideRanks(strip);
+    expect(wrapped.map((n) => ({ id: n.id, ...n.position }))).toEqual(
+      strip.map((n) => ({ id: n.id, ...n.position })),
+    );
   });
 });

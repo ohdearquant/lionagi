@@ -15,6 +15,8 @@ from lionagi.protocols.messages.action_response import ActionResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponse
 from lionagi.protocols.messages.instruction import Instruction
 
+from ._mirror_common import SourceLine, bound_mirror_content
+
 if TYPE_CHECKING:
     from lionagi.protocols.messages.message import RoledMessage
 
@@ -206,17 +208,42 @@ async def mirror_session(
     provider: str | None = "anthropic",
     name: str | None = None,
     status: str = "running",
+    source_path: str | None = None,
+    event_sources: list[tuple[int, int, str]] | None = None,
+    max_preview_chars: int | None = None,
 ) -> int:
     """Idempotently write a batch of Claude events for one session; returns msgs written.
-    Live/idle transitions are owned by ``reconcile_session_status``, not this writer."""
+    Live/idle transitions are owned by ``reconcile_session_status``, not this writer.
+
+    ``event_sources`` is the per-event ``(byte_offset, byte_count, sha256)`` of each
+    raw JSONL line in ``events`` (same order/length), and ``source_path`` is the
+    transcript file they came from. When both are given together with
+    ``max_preview_chars``, every message's content is bounded via
+    ``bound_mirror_content`` before it is written, with a resolvable source pointer
+    on ``node_metadata.mirror_source``. Omitting them keeps the legacy unbounded
+    write, for callers with no live transcript file behind the events.
+    """
     sid = session_db_id(session_uid)
     branch_id = _det(session_uid, "branch")
     bprog = _det(session_uid, "bprog")
     sprog = _det(session_uid, "sprog")
 
     messages: list[RoledMessage] = []
-    for ev in events:
-        messages.extend(messages_for_event(ev, session_uid, tool_names))
+    message_sources: list[SourceLine | None] = []
+    for idx, ev in enumerate(events):
+        produced = messages_for_event(ev, session_uid, tool_names)
+        src: SourceLine | None = None
+        if produced and event_sources is not None and idx < len(event_sources):
+            offset, byte_count, sha = event_sources[idx]
+            src = SourceLine(
+                value=ev,
+                source_path=source_path or "",
+                source_offset=offset,
+                source_byte_count=byte_count,
+                source_sha256=sha,
+            )
+        messages.extend(produced)
+        message_sources.extend([src] * len(produced))
 
     existing = await db.get_session(sid)
     if existing is None and not messages:
@@ -273,8 +300,21 @@ async def mirror_session(
         }
     )
 
-    for m in messages:
+    for m, src in zip(messages, message_sources, strict=False):
         md = m.to_dict(mode="db")
+        if max_preview_chars is not None and src is not None:
+            preview, pointer = bound_mirror_content(
+                md["content"],
+                md["id"],
+                src,
+                source_kind="claude_jsonl",
+                source_session_uid=session_uid,
+                max_preview_chars=max_preview_chars,
+            )
+            md["content"] = preview
+            nm = dict(md.get("node_metadata") or {})
+            nm["mirror_source"] = pointer
+            md["node_metadata"] = nm
         await db.insert_message(md)
         await db.append_to_progression(bprog, md["id"])
         await db.append_to_progression(sprog, md["id"])

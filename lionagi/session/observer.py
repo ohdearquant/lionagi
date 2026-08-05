@@ -79,8 +79,8 @@ def _sanitize_signal_payload(sig: Any) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         payload = {"sanitize_error": repr(sig)[:256]}
 
-    # Byte cap applies to the FINAL serialized form (re-serializing the
-    # truncation marker can 2x the size) — see strategy in the batch report.
+    # Byte cap applies to the FINAL serialized form: re-serializing the
+    # truncation marker can nearly double the size.
     try:
         if original_bytes is None:
             original_bytes = _jdb(payload, safe_fallback=True)
@@ -210,7 +210,7 @@ class SessionObserver(Observer):
         return self
 
     async def authorize(self, action: Any) -> bool:
-        """Pre-invoke gate. Returns True when no gate set; denials recorded as GateDenied. Routed through the shared GateResult adapter (ADR-0086) for a consistent fail-closed verdict shape."""
+        """Pre-invoke gate. Returns True when no gate set; denials recorded as GateDenied."""
         if self._gate is None:
             return True
         from lionagi.agent.gate import adapt_session_gate
@@ -303,8 +303,6 @@ class SessionObserver(Observer):
         """Register a subscription persisting every Signal to StateDB; pass db to reuse an open connection."""
         import time as _time
 
-        # Caller-supplied db: in production this is the long-lived StateDB
-        # from setup_agent_persist/setup_orchestration_persist (reused for message writes).
         _bound_db = db
 
         async def _persist(event: Any, _ctx: Any = None) -> None:

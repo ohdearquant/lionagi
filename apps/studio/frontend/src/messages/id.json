@@ -97,7 +97,11 @@
       "send": "Could not send this instruction.",
       "stop": "Could not stop the current turn.",
       "decision": "Could not record that decision.",
-      "effect": "Could not acknowledge this interface action."
+      "effect": "Could not acknowledge this interface action.",
+      "rename": "Could not rename this conversation.",
+      "pin": "Could not update this conversation.",
+      "archive": "Could not update this conversation.",
+      "fork": "Could not fork this conversation."
     },
     "composer": {
       "label": "Instruction",
@@ -156,7 +160,34 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "Default",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "Usaha",
+      "default": "Default"
+    },
+    "list": {
+      "toggle": "Conversations",
+      "ariaLabel": "Conversations",
+      "ariaLabelSelected": "Conversations: {title}",
+      "filter": {
+        "active": "Active",
+        "archived": "Archived",
+        "all": "All"
+      },
+      "pin": "Pin",
+      "unpin": "Unpin",
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "fork": "Fork",
+      "forking": "Forking…",
+      "rename": "Rename",
+      "renameAriaLabel": "Rename {title}",
+      "renamePlaceholder": "Conversation title",
+      "empty": "No conversations yet",
+      "untitled": "Untitled conversation"
     }
   },
   "playfield": {
@@ -287,7 +318,42 @@
     },
     "tabsAria": "Tab pustaka",
     "masterAria": "Katalog pustaka",
-    "detailAria": "Detail item"
+    "detailAria": "Detail item",
+    "filterMcp": "MCP Server",
+    "newMcpServer": "New MCP Server",
+    "mcp": {
+      "transport": "Transport",
+      "transportStdio": "Command (stdio)",
+      "transportHttp": "URL (http)",
+      "command": "Command",
+      "commandPlaceholder": "e.g. npx",
+      "args": "Arguments",
+      "argsPlaceholder": "One argument per line",
+      "env": "Environment",
+      "envPlaceholder": "KEY=value, one per line",
+      "envHint": "Values are never shown once saved. Leave a KEY= line as-is to keep it, or delete the line to remove that key.",
+      "envValuesHidden": "Values are never sent back to the browser once saved.",
+      "noEnv": "No environment variables configured.",
+      "url": "URL",
+      "timeout": "Timeout (seconds)",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "checkConnection": "Check connection",
+      "checking": "Checking…",
+      "lastCheck": "Last connection check",
+      "neverChecked": "Never checked",
+      "connectionOk": "Connected",
+      "connectionFailed": "Failed",
+      "validationOk": "Configuration is valid.",
+      "remove": "Remove",
+      "confirmDelete": "Remove MCP server \"{name}\"? This cannot be undone.",
+      "createTitle": "New MCP Server",
+      "createName": "Server name",
+      "createNamePlaceholder": "my-server",
+      "creating": "Creating…",
+      "create": "Create",
+      "createError": "Could not create this server."
+    }
   },
   "history": {
     "title": "Riwayat",
@@ -374,7 +440,9 @@
       "statToolCallsRecent": "Pemanggilan alat (terbaru)",
       "statErrorsRecent": "Kesalahan (terbaru)",
       "noBranchErrorsPartial": "Tidak ada kesalahan dalam pesan yang dimuat.",
-      "noFilesPartial": "Tidak ada operasi file terdeteksi dalam pesan yang dimuat."
+      "noFilesPartial": "Tidak ada operasi file terdeteksi dalam pesan yang dimuat.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "Daftar riwayat",
     "detailAria": "Detail item"
@@ -392,8 +460,6 @@
       "stateDbSuffix": "DB state",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "WAL tertunda",
-      "walPendingSuffix": "WAL tertunda",
       "phantoms": "Sesi phantom",
       "phantomsNone": "Tidak ada yang terdeteksi",
       "manageLink": "Kelola di Pemeliharaan →",
@@ -724,6 +790,14 @@
       "empty": "Tidak ada sesi lampau yang cocok dengan filter ini.",
       "loadMore": "Muat lebih banyak",
       "loadingMore": "Memuat…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {
@@ -754,7 +828,17 @@
       "durationStatus": "aktif {duration} · aktivitas terakhir {age} lalu",
       "empty": "Tidak ada eksekusi atau invokasi aktif.",
       "emptyHint": "Luncurkan satu dengan CLI li, atau tekan ⌘K untuk lompat ke mana saja.",
-      "fleetLink": "Armada agen →"
+      "fleetLink": "Armada agen →",
+      "viewCards": "Kartu",
+      "viewTable": "Tabel",
+      "table": {
+        "colName": "Nama",
+        "colStatus": "Status",
+        "colUptime": "Waktu aktif",
+        "colLastActivity": "Aktivitas terakhir",
+        "colKind": "Jenis",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "Terbaru",

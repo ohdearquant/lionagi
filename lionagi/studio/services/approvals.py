@@ -18,12 +18,9 @@ from typing import Any, Literal
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from lionagi.state.db import DEFAULT_DB_PATH
-
 from ..registry import studio_route
 from ._db import open_db as _open_db
-
-_DB = str(DEFAULT_DB_PATH)
+from ._db import require_file_store, store_path
 
 APPROVAL_TTL_SECONDS = 5 * 60
 
@@ -158,7 +155,8 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 
 
 async def _fetch_row(approval_id: str) -> dict[str, Any] | None:
-    async with _open_db(_DB) as db:
+    require_file_store()
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         cur = await db.execute(
             "SELECT id, action_kind, params_hash, session_id, status, "
@@ -256,9 +254,10 @@ async def _write_evidence(
 
 async def verify_evidence_chain() -> dict[str, Any]:
     """Replay the evidence chain end to end and report whether it is intact."""
+    require_file_store()
     errors: list[str] = []
     total = 0
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_evidence_table(db)
         cur = await db.execute(
             "SELECT id, sequence, event_type, approval_id, action_kind, status_from, "
@@ -323,7 +322,7 @@ async def _lazy_expire(approval_id: str, row: dict[str, Any], *, now: float) -> 
     """CAS the row to 'expired' if it is past its TTL and still pending/granted."""
     if row["status"] not in ("pending", "granted") or now <= row["expires_at"]:
         return row
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")
         cur = await db.execute(
@@ -357,10 +356,11 @@ async def create_approval(
     *, action_kind: str, params: dict[str, Any], session_id: str | None = None
 ) -> dict[str, Any]:
     """Propose a mutating action; returns the pending approval row."""
+    require_file_store()
     now = time.time()
     approval_id = uuid.uuid4().hex
     params_hash = compute_params_hash(params)
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")
@@ -396,7 +396,7 @@ async def grant_approval(approval_id: str) -> dict[str, Any]:
             detail=f"approval {approval_id!r} is not pending (status={row['status']!r})",
         )
     now = time.time()
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")
@@ -440,7 +440,7 @@ async def deny_approval(
             status_code=409,
             detail=f"approval {approval_id!r} is not pending (status={row['status']!r})",
         )
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")
@@ -499,7 +499,7 @@ async def require_approval(
             detail=f"approval {approval_id!r} params do not match the action being executed",
         )
     now = time.time()
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         await _ensure_evidence_table(db)
         await db.execute("BEGIN IMMEDIATE")

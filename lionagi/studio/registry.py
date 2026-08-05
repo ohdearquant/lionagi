@@ -51,6 +51,7 @@ _STUDIO_ROUTE_MODULES: tuple[str, ...] = (
     "lionagi.studio.services.shows",
     "lionagi.studio.services.skills",
     "lionagi.studio.services.plugins",
+    "lionagi.studio.services.mcp_servers",
     "lionagi.studio.services.teams",
     "lionagi.studio.services.invocations",
     "lionagi.studio.services.launches",

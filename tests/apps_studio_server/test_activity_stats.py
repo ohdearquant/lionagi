@@ -40,11 +40,8 @@ async def _seed_session(
 
 def _make_client(monkeypatch, db_path: Path) -> TestClient:
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.stats as stats_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(stats_mod, "_DB", str(db_path))
 
     from lionagi.studio.app import app
 

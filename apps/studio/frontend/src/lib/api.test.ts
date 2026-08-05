@@ -475,3 +475,98 @@ describe("engine defs API", () => {
     expect(body.action_prompt).toBe("build a crawler");
   });
 });
+
+// ─── Runs/sessions query construction (Fleet filters, cursor pagination) ─────
+
+describe("runs/sessions query construction", () => {
+  type FetchCall = { url: string; init?: RequestInit };
+
+  function stubFetch(response: unknown, status = 200): FetchCall[] {
+    const calls: FetchCall[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return Promise.resolve(
+          new Response(JSON.stringify(response), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+    return calls;
+  }
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    vi.stubGlobal("window", {
+      ...window,
+      __STUDIO_API_BASE__: undefined,
+      location: { ...window.location, port: "8765", hostname: "localhost", protocol: "http:" },
+    });
+  });
+
+  it("listRuns sends search and project_null (project_null wins over project)", async () => {
+    const calls = stubFetch({
+      runs: [],
+      page: 1,
+      per_page: 20,
+      total: 0,
+      total_pages: 0,
+      has_next: false,
+      has_prev: false,
+    });
+    const { listRuns } = await import("./api");
+    await listRuns({ search: "50%off", project: "org/alpha", project_null: true });
+    const url = new URL(calls[0]!.url, "http://localhost");
+    expect(url.searchParams.get("search")).toBe("50%off");
+    expect(url.searchParams.get("project_null")).toBe("true");
+    expect(url.searchParams.has("project")).toBe(false);
+  });
+
+  it("listRuns sends project when project_null is not set", async () => {
+    const calls = stubFetch({
+      runs: [],
+      page: 1,
+      per_page: 20,
+      total: 0,
+      total_pages: 0,
+      has_next: false,
+      has_prev: false,
+    });
+    const { listRuns } = await import("./api");
+    await listRuns({ project: "org/alpha" });
+    const url = new URL(calls[0]!.url, "http://localhost");
+    expect(url.searchParams.get("project")).toBe("org/alpha");
+    expect(url.searchParams.has("project_null")).toBe(false);
+  });
+
+  it("listRunProjects — GET /api/runs/projects", async () => {
+    const payload = { projects: [{ project: "org/alpha", count: 3, last_activity: 1 }], total: 3 };
+    const calls = stubFetch(payload);
+    const { listRunProjects } = await import("./api");
+    const result = await listRunProjects();
+    expect(result).toEqual(payload);
+    expect(calls[0]?.url).toMatch(/\/api\/runs\/projects/);
+  });
+
+  it("getSession sends message_cursor, not message_offset, when a cursor is given", async () => {
+    const calls = stubFetch({ id: "s1", name: "s", created_at: 1, updated_at: 1, branches: [] });
+    const { getSession } = await import("./api");
+    await getSession("s1", { messageCursor: "cursor-1", messageLimit: 50 });
+    const url = new URL(calls[0]!.url, "http://localhost");
+    expect(url.searchParams.get("message_cursor")).toBe("cursor-1");
+    expect(url.searchParams.get("message_limit")).toBe("50");
+    expect(url.searchParams.has("message_offset")).toBe(false);
+  });
+
+  it("getSession omits message_cursor entirely when not given (first page)", async () => {
+    const calls = stubFetch({ id: "s1", name: "s", created_at: 1, updated_at: 1, branches: [] });
+    const { getSession } = await import("./api");
+    await getSession("s1");
+    const url = new URL(calls[0]!.url, "http://localhost");
+    expect(url.searchParams.has("message_cursor")).toBe(false);
+  });
+});

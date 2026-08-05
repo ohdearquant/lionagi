@@ -98,21 +98,12 @@ class FunctionCalling(Event):
                     self.arguments, **self.func_tool.preprocessor_kwargs
                 )
 
-        # Re-validate after any pre-stage rewrite (hook layer or preprocessor
-        # above) so a rewrite can never bypass the tool's declared schema.
-        # Keys outside the schema (e.g. an audit marker a preprocessor adds)
-        # are not covered by that validation -- pydantic's default
-        # extra="ignore" would otherwise drop them from model_dump, so they
-        # are carried through untouched rather than silently discarded.
-        #
-        # "Outside the schema" must be judged against the model's declared
-        # input names (field names + aliases), not against the *serialized*
-        # validated dump: a declared field that is aliased and left unset
-        # (e.g. `Field(default=0, validation_alias="a_alias")`) is absent
-        # from `model_dump(exclude_unset=True)` even though it is a real,
-        # schema-covered field. Classifying it as "extra" would let a
-        # preprocessor set it by name and forward the raw, unvalidated
-        # value straight to the callable -- a schema bypass.
+        # Re-validate after any pre-stage rewrite so it can never bypass the
+        # declared schema; keys outside the schema are carried through
+        # untouched rather than silently dropped. See
+        # docs/internals/core.md#functioncalling-schema-revalidation for why
+        # "outside the schema" is judged against declared input names, not
+        # the serialized dump.
         if self.func_tool.request_options:
             try:
                 validated = self.func_tool.request_options(**self.arguments)

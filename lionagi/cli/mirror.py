@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -15,6 +16,7 @@ from typing import Any
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.ln._json_dump import raise_if_non_finite
+from lionagi.studio.config import MIRROR_PREVIEW_CHARS
 
 from ._logging import hint, log_error, progress, warn
 
@@ -112,6 +114,11 @@ class _FileState:
     # produced it rather than to nothing.
     turn: dict[str, str] = field(default_factory=dict)
     barren_reported: bool = False  # whether "read records, mirrored none" was surfaced
+    # Rollout spawned headlessly by an orchestrator (originator in
+    # SKIPPED_ORIGINATORS): never mirrored — the spawning run already has a
+    # session of its own. Derived from the head peek, so it is re-derived after
+    # a restart rather than persisted.
+    orchestrated: bool = False
 
 
 @dataclass
@@ -273,8 +280,15 @@ def _since_window(spec: str) -> float:
     return secs
 
 
-def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]], int, int]:
-    """Read complete JSONL lines past the cursor; return (events, new_offset, unreadable).
+def _read_new_events(
+    path: Path, state: _FileState
+) -> tuple[list[dict[str, Any]], list[tuple[int, int, str]], int, int]:
+    """Read complete JSONL lines past the cursor.
+
+    Returns ``(events, sources, new_offset, unreadable)``. ``sources`` is the
+    per-event ``(byte_offset, byte_count, sha256)`` of each raw line, in the
+    same order as ``events`` — the basis for a resolvable mirror source pointer
+    (see ``_mirror_common.bound_mirror_content``).
 
     The cursor is NOT advanced here — the caller only commits it after the batch
     is durably mirrored, so a write failure re-reads the same lines next pass.
@@ -292,24 +306,29 @@ def _read_new_events(path: Path, state: _FileState) -> tuple[list[dict[str, Any]
         fh.seek(state.offset)
         chunk = fh.read()
     if b"\n" not in chunk:
-        return [], state.offset, 0
+        return [], [], state.offset, 0
     body, _, _ = chunk.rpartition(b"\n")
     new_offset = state.offset + len(body) + 1
-    events = []
+    events: list[dict[str, Any]] = []
+    sources: list[tuple[int, int, str]] = []
     unreadable = 0
+    pos = state.offset
     for raw in body.split(b"\n"):
+        line_offset = pos
+        pos += len(raw) + 1  # +1 for the newline consumed by split
         if not raw.strip():
             continue
         try:
             obj = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             unreadable += 1
             continue
         if isinstance(obj, dict):
             events.append(obj)
+            sources.append((line_offset, len(raw), hashlib.sha256(raw).hexdigest()))
         else:
             unreadable += 1
-    return events, new_offset, unreadable
+    return events, sources, new_offset, unreadable
 
 
 _COMMAND_NOISE = ("<command-", "<local-command-")
@@ -409,7 +428,7 @@ def _first_prompt(events: list[dict[str, Any]]) -> str | None:
 async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> int:
     from lionagi.state.claude_mirror import mirror_session
 
-    events, new_offset, unreadable = _read_new_events(path, state)
+    events, sources, new_offset, unreadable = _read_new_events(path, state)
     if unreadable:
         warn(f"{path.name}: {unreadable} unreadable line(s) skipped")
     if not events:
@@ -434,6 +453,9 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
         model=state.model,
         name=state.name,
         status="running",
+        source_path=str(path),
+        event_sources=sources,
+        max_preview_chars=MIRROR_PREVIEW_CHARS,
     )
     # Advance the cursor only after the batch is durably mirrored, so a failed
     # write re-reads (idempotently) rather than losing the batch.
@@ -490,20 +512,34 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window, line
     return total
 
 
-def _peek_codex_meta(path: Path) -> dict[str, Any] | None:
-    """Read a rollout's session_meta (its first line) without consuming the tail."""
+def _peek_codex_head(path: Path) -> tuple[str, dict[str, Any] | None]:
+    """Classify a rollout's first line without consuming the tail.
+
+    Returns ``("meta", meta)`` for a parsed session_meta header,
+    ``("headerless", None)`` for a complete first line that is not one, and
+    ``("torn", None)`` when the line is still being written or unreadable.
+    Completeness is decided by the trailing newline BEFORE any parse attempt:
+    rollouts are append-only JSONL, so a line without its newline is still
+    arriving and defers even when the bytes so far happen to parse — later
+    appends can extend or corrupt it. A newline-terminated line that cannot
+    parse is permanently corrupt and settles as headerless; the normal reader
+    accounts for the bad line.
+    """
     from lionagi.state.codex_mirror import session_meta
 
     try:
         with path.open("rb") as fh:
             line = fh.readline()
     except OSError:
-        return None
+        return "torn", None
+    if not line.endswith(b"\n"):
+        return "torn", None
     try:
         rec = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    return session_meta(rec) if isinstance(rec, dict) else None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return "headerless", None
+    meta = session_meta(rec) if isinstance(rec, dict) else None
+    return ("meta", meta) if meta else ("headerless", None)
 
 
 def _derive_codex_metadata(state: _FileState, records: list[dict[str, Any]]) -> None:
@@ -536,20 +572,61 @@ def _first_codex_prompt(records: list[dict[str, Any]]) -> str | None:
 
 async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str, str]) -> int:
     """Mirror new records from one rollout file; returns messages written."""
-    from lionagi.state.codex_mirror import link_session_lineage, mirror_session
+    from lionagi.state.codex_mirror import (
+        SKIPPED_ORIGINATORS,
+        absorb_orchestrated_session,
+        link_session_lineage,
+        mirror_session,
+    )
 
-    records, new_offset, unreadable = _read_new_events(path, state)
+    if state.orchestrated:
+        return 0
 
     meta: dict[str, Any] | None = None
     if not state.head_checked:
+        head_status, meta = _peek_codex_head(path)
+        if head_status == "torn":
+            # The first line is still being written (or unreadable), so the
+            # rollout's identity is unknown. Mirroring waits along with the
+            # classification: writing records now would key them under the path
+            # stem while the header's real UID arrives next pass, splitting one
+            # rollout into two sessions — and committing head_checked would let
+            # an orchestrated rollout slip past the skip forever.
+            return 0
+        if meta and meta.get("originator") in SKIPPED_ORIGINATORS:
+            # An orchestrator's own run (e.g. a lionagi agent leg) — its
+            # session already exists under the agent's name; importing the
+            # rollout too is the double entry. Absorb what an older version
+            # may have imported (under either id this file was ever keyed
+            # by), then never read this file again.
+            prior_uid = state.session_uid  # a stem fallback from a pre-header pass
+            resolved_uid = meta["rollout_uid"] or path.stem
+            await absorb_orchestrated_session(db, resolved_uid)
+            if prior_uid and prior_uid != resolved_uid:
+                await absorb_orchestrated_session(db, prior_uid)
+            # Nothing is committed to the state until both absorptions return,
+            # so a failed attempt leaves exactly what the next one needs to
+            # repeat it. Committing head_checked would stop the header being
+            # re-read, and the rollout would then be mirrored after all —
+            # the same failure the torn-header branch above declines to cause.
+            # Committing orchestrated would retire the file with a row nobody
+            # ever tore down. Overwriting session_uid would lose the stem the
+            # second absorption call needs. Absorption fails for an ordinary
+            # reason now that a contended teardown gives up rather than waiting,
+            # so this path carries real traffic.
+            state.session_uid = resolved_uid
+            state.head_checked = True
+            state.orchestrated = True
+            return 0
         state.head_checked = True
-        meta = _peek_codex_meta(path)
         if meta:
             state.session_uid = meta["rollout_uid"] or path.stem
             if meta.get("cwd"):
                 state.project, state.project_source = _resolve_project_for_mirror(meta["cwd"])
     if not state.session_uid:
         state.session_uid = path.stem
+
+    records, sources, new_offset, unreadable = _read_new_events(path, state)
     if not records:
         state.offset = new_offset
         return 0
@@ -578,6 +655,8 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         source_path=str(path),
         turn=state.turn,
         unparseable=unreadable,
+        event_sources=sources,
+        max_preview_chars=MIRROR_PREVIEW_CHARS,
     )
     # Advance only after a durable write, so a failed batch is re-read next pass.
     state.offset = new_offset
@@ -622,7 +701,7 @@ async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, th
                 states[key] = state
             total += await _mirror_one_codex(db, path, state, threads)
             offsets[key] = state.offset
-            if state.session_uid:
+            if state.session_uid and not state.orchestrated:
                 seen.add(state.session_uid)
         except FileNotFoundError:
             continue
@@ -631,6 +710,32 @@ async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, th
     for uid in seen:
         await reconcile_session_status(db, uid, now=now, live_window=live_window)
     return total
+
+
+async def _absorb_backfill(db) -> bool:
+    """Remove previously-imported rows for orchestrator-spawned rollouts.
+
+    It reads recorded provenance rather than the rollout tree, so it also
+    reaches rows whose files fall outside the sweep window; per-file absorption
+    in ``_mirror_one_codex`` covers the rest. Returns whether the sweep
+    completed cleanly — a caller that runs this once per process must only
+    stand down on True, else one bad pass would retire the backfill for the
+    process lifetime. Errors are logged, never raised: reconciliation must not
+    keep the mirror down.
+    """
+    from lionagi.state.codex_mirror import absorb_orchestrated_backfill
+
+    try:
+        removed, failed = await absorb_orchestrated_backfill(db)
+    except Exception:
+        _log.exception("codex mirror orchestrated-session backfill failed")
+        return False
+    if removed:
+        progress(f"  mirror: absorbed {removed} orchestrator-spawned codex session(s)")
+    if failed:
+        warn(f"codex mirror backfill: {failed} row(s) failed to reconcile; will retry")
+        return False
+    return True
 
 
 async def mirror_forever(
@@ -659,8 +764,8 @@ async def mirror_forever(
     want_claude = source in ("both", "claude")
     want_codex = source in ("both", "codex")
 
-    root = Path(root).expanduser() if root else CLAUDE_PROJECTS_DIR
-    codex_root = Path(codex_root).expanduser() if codex_root else CODEX_SESSIONS_DIR
+    root = Path(root).expanduser().resolve() if root else CLAUDE_PROJECTS_DIR
+    codex_root = Path(codex_root).expanduser().resolve() if codex_root else CODEX_SESSIONS_DIR
     if not (want_claude and root.exists()) and not (want_codex and codex_root.exists()):
         return
     since_secs = _parse_window(since) if since else None
@@ -671,11 +776,14 @@ async def mirror_forever(
     _seed_lineage(lineage, states)
     # The connection lives inside the supervise loop so a failure to open it (e.g. a
     # locked/half-migrated state.db at studio startup) is retried, not fatal.
+    backfilled = False
     while not stop.is_set():
         try:
             async with StateDB() as db:
                 while not stop.is_set():
                     try:
+                        if want_codex and not backfilled:
+                            backfilled = await _absorb_backfill(db)
                         if want_claude and root.exists():
                             await _one_pass(
                                 db,
@@ -720,9 +828,9 @@ async def _run(args: argparse.Namespace) -> int:
     want_claude = source in ("both", "claude")
     want_codex = source in ("both", "codex")
 
-    root = Path(args.root).expanduser() if args.root else CLAUDE_PROJECTS_DIR
+    root = Path(args.root).expanduser().resolve() if args.root else CLAUDE_PROJECTS_DIR
     codex_root = (
-        Path(args.codex_root).expanduser()
+        Path(args.codex_root).expanduser().resolve()
         if getattr(args, "codex_root", None)
         else CODEX_SESSIONS_DIR
     )
@@ -749,7 +857,13 @@ async def _run(args: argparse.Namespace) -> int:
     hint(f"li mirror: {mode} over {trees}")
 
     async with StateDB() as db:
+        # Retried every pass until one sweep completes cleanly, same as the
+        # studio's mirror_forever — a transient failure on the first attempt
+        # must not retire the backfill for the process lifetime.
+        backfilled = not want_codex
         while True:
+            if not backfilled:
+                backfilled = await _absorb_backfill(db)
             n = 0
             if want_claude:
                 n += await _one_pass(

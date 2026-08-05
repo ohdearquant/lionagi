@@ -369,10 +369,8 @@ class CodingRun(ChainRun):
         """Render each CodeResultRecorded as a ResultRecorded input dict for hypothesis ingestion."""
         seeds: list[dict[str, Any]] = []
         for k in self.events_of(CodeResultRecorded):
-            # The measurements are the likeliest place for a division by zero to
-            # surface, and they are serialized into a string that lands inside a
-            # durable artifact — a NaN token there breaks the nested document
-            # for every reader but Python's own.
+            # NaN in measurements would serialize into a durable artifact that
+            # breaks for every reader but Python's own json module.
             raise_if_non_finite(k.measurements, default=str)
             seeds.append(
                 {
@@ -836,9 +834,8 @@ class CodingEngine(Engine):
                 emits=emits,
                 retries=self.repair_retries,
             )
-            # Soft watchdog: verify is advisory (the pass/fail verdict is the
-            # test result, not this note) and runs after the abort gate, so a
-            # hung verifier is bounded but must not set run._aborted.
+            # Soft watchdog: verify is advisory (the test result is the real
+            # verdict), so a hung verifier is bounded but must not set run._aborted.
             await self._run_stage_with_watchdog(run, stage_coro, "verify", hard=False)
         return run.last(VerifyResult)
 

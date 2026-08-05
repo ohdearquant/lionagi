@@ -131,11 +131,8 @@ def to_list(
                     out.append(i)
             except TypeError:
                 # Unhashable item (e.g. a dict): bucket by structural hash, then
-                # confirm identity-or-equality within the bucket. This mirrors the
-                # identity-first check that set membership gives the fast path, so a
-                # repeated same instance is still a duplicate while two unequal items
-                # whose structural hashes collide are both kept. Hashable items stay
-                # on the native set above rather than rehashing every element.
+                # confirm identity-or-equality within the bucket, mirroring the
+                # identity-first fast path native set membership gives above.
                 if isinstance(i, _MAP_LIKE):
                     hash_value = hash_dict(i)
                 else:

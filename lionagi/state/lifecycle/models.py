@@ -70,12 +70,7 @@ class EdgePolicy:
     to_status: str
     actor_types: frozenset[ActorType] | None = None
     required_patch_fields: frozenset[str] = frozenset()
-    # Columns this edge requires a race guard on (e.g. dispatch's
-    # delivering -> delivering crash-recovery claim, guarded on `attempt`).
-    # The service accepts either an equivalent expected_version guard or an
-    # extra_guard covering these exact columns — never neither — so a
-    # same-status claim edge can never be taken by two racing claimants
-    # holding the same snapshot. Empty means no such guard is required.
+    # columns a race guard must cover for this edge; see docs/internals/runtime.md
     required_guard_fields: frozenset[str] = frozenset()
 
 
@@ -90,7 +85,5 @@ class LifecyclePolicy:
     same_status: SameStatusRule
     patch_fields: frozenset[str]
     reason_prefixes: frozenset[str]
-    # Whether the entity's own table carries status_reason_* denormalized
-    # columns; tables without them (dispatch_outbox) must skip that SET
-    # clause or every transition fails at the database.
+    # False for tables without status_reason_* columns (e.g. dispatch_outbox)
     reason_columns: bool = True

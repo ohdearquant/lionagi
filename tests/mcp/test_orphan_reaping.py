@@ -11,6 +11,7 @@ being checked is that the lock serializes — a doubled lock would prove nothing
 
 from __future__ import annotations
 
+import json
 import threading
 from typing import Any
 
@@ -694,3 +695,105 @@ def test_a_recorded_kill_names_the_kill_as_what_ended_the_run(sandbox, monkeypat
     on_disk = jobs._read_job(rid)
     assert on_disk["status"] == "killed"
     assert on_disk["terminal_source"] == jobs.TERMINAL_SOURCE_KILL
+
+
+# --- reap reason-code split (docs/internals/mcp.md#reap-reason-code-split) ----
+
+
+def test_reap_upgrades_the_reason_code_when_the_run_recorded_an_undelivered_notice(
+    sandbox, monkeypatch, no_delivery
+):
+    """A run whose own directory says its terminal notice never arrived is not
+    pure silence, and the reap it gets should say so.
+
+    This is the shape `deliver_flow_notify_now` (`lionagi/cli/orchestrate/
+    _notify.py`) and the pre-existing `record_notify_rejection_to_run` both
+    leave behind for a run that lost its persistence: `notify_outcome.json`
+    with `ok: false`.
+    """
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+
+    run_dir = config.run_dir(rid)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "notify_outcome.json").write_text(
+        json.dumps(
+            {
+                "ok": False,
+                "exit_code": None,
+                "stderr_path": None,
+                "reason": "run_has_no_persisted_session_to_notify_on",
+            }
+        )
+    )
+
+    st = jobs.status(rid)
+
+    assert st["terminal"] is True
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
+    assert st["reason_code"] == jobs.LOST_REASON_NOTICE_RECORDED_UNDELIVERED
+
+
+def test_reap_keeps_true_silence_when_nothing_was_recorded(sandbox, monkeypatch, no_delivery):
+    """No file at all -- never wrote one, or retention pruned it -- reaps to
+    the pre-existing reason code. Absence is never read as evidence either
+    way; it is the same signal a genuinely silent run produces."""
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+
+    st = jobs.status(rid)
+
+    assert st["reason_code"] == jobs.LOST_REASON
+
+
+def test_reap_ignores_a_delivered_outcome_file(sandbox, monkeypatch, no_delivery):
+    """`ok: true` never upgrades the reason code. Moot for a real MCP-spawned
+    run (a delivered `--notify` already set `finished_at` via `mark_terminal`,
+    disqualifying it from reaping before this file is even read) but must not
+    misclassify a record that somehow reaches here anyway."""
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+
+    run_dir = config.run_dir(rid)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "notify_outcome.json").write_text(
+        json.dumps({"ok": True, "exit_code": 0, "stderr_path": None})
+    )
+
+    st = jobs.status(rid)
+
+    assert st["reason_code"] == jobs.LOST_REASON
+
+
+def test_a_child_recorded_end_wins_over_a_later_reaper_observation(
+    sandbox, monkeypatch, no_delivery
+):
+    """Ties the general hook-wins-over-reaper guarantee (see
+    ``test_a_hook_end_that_lands_first_survives_the_reaper`` above) to the
+    concrete mechanism the CLI's direct-path notice delivery depends on:
+    `--notify` for an MCP-spawned run always resolves to
+    `lionagi.mcp._notify_hook`, so calling it IS how a run records its own
+    end, whichever of the two CLI-side notify paths (registered callback, or
+    a run that lost its persistence and delivers directly) triggered it.
+
+    Ordering matters here specifically: the child's hook runs and wins the
+    write BEFORE the reaper ever observes this run, and the reap that follows
+    must decline rather than overwrite it with `indeterminate`.
+    """
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+
+    terminal = _notify_hook.main(["--run-id", rid, "--status", "completed"])
+    assert terminal == 0
+    assert jobs._read_job(rid)["terminal_source"] == jobs.TERMINAL_SOURCE_HOOK
+    assert len(no_delivery) == 1, "the hook's own delivery attempt"
+
+    st = jobs.status(rid)
+
+    assert st["status"] == "completed"
+    assert st["terminal"] is True
+    assert st["outcome"] == "succeeded"
+    assert st["reason_code"] != jobs.LOST_REASON
+    assert st["reason_code"] != jobs.LOST_REASON_NOTICE_RECORDED_UNDELIVERED
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_HOOK
+    assert len(no_delivery) == 1, "the reaper must not attempt its own delivery over a recorded end"

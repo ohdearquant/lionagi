@@ -249,22 +249,12 @@ class ScheduleSetError(ValueError):
 class _ScheduleSetLoader(yaml.SafeLoader):
     """SafeLoader variant scoped to this parse boundary only: a mapping key
     that YAML 1.1's *implicit* bool resolver would collapse (bare on/off/
-    yes/no/true/false) keeps its original text instead. Values are
-    untouched -- only keys, so `enabled: yes` still resolves to `True`.
-
-    Without this, a hand-authored `notify:\n  on: [...]` parses its own
-    `on` key as the bool `True`, and the closed-schema (extra="forbid")
-    rejection then names `True` instead of the quoting workaround.
-
-    A key that is *explicitly* tagged (`!!bool on:`, in any property order,
-    e.g. `&a !!bool on:`) is left alone and still constructs as the real
-    bool `True` -- the leniency here is only for the surprising implicit
-    YAML 1.1 resolution, not for an author who asked for a bool key on
-    purpose. Explicitness is recorded while composing: the parser's scalar
-    event carries a non-None ``tag`` exactly when the source wrote one, so
-    the composer override below stamps that fact onto the node before the
-    resolver fills in the implicit tag. Aliases reuse the anchored node and
-    therefore inherit its explicitness.
+    yes/no/true/false) keeps its original text instead; values are
+    untouched. Without this, `notify:\n  on: [...]` parses its `on` key as
+    `True`, and the closed-schema rejection names `True` instead of pointing
+    at the quoting workaround. A key with an *explicit* bool tag
+    (`!!bool on:`) is left alone -- explicitness is tracked by stamping
+    each composed node with whether the source scalar event carried a tag.
     """
 
     def compose_scalar_node(self, anchor):
@@ -498,16 +488,10 @@ def _resolve_command_target(target: CommandTarget) -> dict[str, Any]:
 
     _validate_action_command(target.executable)
     _validate_command_allowlisted(target.executable)
-    # These args are persisted as ``action_command_args``, so they are held to
-    # that field's contract and not to ``action_extra_args``'. A command launch
-    # spawns the executable directly and never accepts action_extra_args at all,
-    # so the leading-'-' rejection that field carries does not apply here: a
-    # literal ``--repo`` is author-written, which is the point of a command
-    # runner. Flag safety for a ``{{var}}`` element is enforced against the
-    # rendered value at fire time, where a trigger-supplied value could actually
-    # inject one. Calling the same check the imperative create path calls is
-    # deliberate — the two used different validators for this one field, and
-    # nothing failed when they diverged.
+    # Persisted as action_command_args, held to that field's contract, not
+    # action_extra_args' leading-'-' rejection: a literal `--repo` here is
+    # author-written, the point of a command runner. Flag safety for a
+    # `{{var}}` element is enforced against the rendered value at fire time.
     _svc_validate_command_args(list(target.args))
     return {"kind": "command", "executable": target.executable, "args": list(target.args)}
 

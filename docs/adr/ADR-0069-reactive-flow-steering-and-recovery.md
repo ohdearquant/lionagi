@@ -4,7 +4,11 @@
 - **Kind**: Retrospective
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0085, v0-0088
+- **Relations**: supersedes v0-0085, v0-0088; amended by ADR-0108, which widens the
+  `message` verb's consumer set to the `agent` invocation kind, so this document's
+  rule that an invocation kind outside `{"flow", "play"}` fails without inserting a
+  row no longer holds for that verb, and widens the terminal `result` vocabulary
+  below, which is no longer a closed list of three
 
 ## Context
 
@@ -56,7 +60,7 @@ Out of scope:
 
 ### D1 — Ordered session-control rows are the live transport
 
-The public writers are:
+The public writers that create rows are:
 
 ```python
 # lionagi/cli/orchestrate/_control.py
@@ -68,6 +72,18 @@ async def _enqueue_control_inner(
     *, entity_id: str, verb: str, payload: dict[str, Any] | None
 ) -> tuple[str, int]: ...
 ```
+
+One further public writer does not create rows but closes them, and a reader who takes the
+list above as the whole set will not find it:
+
+```python
+# lionagi/cli/orchestrate/_control.py
+def run_ctl_resolve(args: argparse.Namespace) -> int: ...
+```
+
+It is how a person records the outcome of a control whose claimant never came back. It is
+covered in the result-vocabulary table below and in ADR-0108; it is named here because this
+is the section a reader consults for the set of writers.
 
 Their persisted contract is:
 
@@ -100,6 +116,10 @@ Exact addressing and queue semantics:
   check.
 - A missing state database, unknown id, non-`running` session, or invocation kind outside
   `{"flow", "play"}` fails without inserting a row.
+  **Amended by ADR-0108:** the `message` verb also accepts the `agent` kind, so the
+  invocation-kind half of this rule no longer holds for it. `pause` and `resume` are
+  unchanged. This marker is here rather than only in the header because a reader who
+  reaches this rule by search or cross-reference never passes the header.
 - The insert is bounded by `_DB_BUSY_TIMEOUT_S = 10.0`; timeout reports a busy database. The value
   mirrors the status surface and prevents an unbounded CLI hang; no empirical rationale for ten
   seconds is recorded in source.
@@ -113,9 +133,34 @@ Exact addressing and queue semantics:
 - If a successful effect cannot be terminally stamped, the poller stops that tick so a later
   control cannot overtake the unstamped row.
 
-Terminal `result` values are `applied`, `applying`, or `rejected:<reason>`. The poller records a
+Terminal `result` values are `applied` or `rejected:<reason>`. `applying` is not one of them:
+it is a claim, written to say a consumer has taken the row and not yet reported an outcome, and
+a row still carrying it is a row whose result nobody knows. The poller records a
 compact control log in session `node_metadata`, but `session_controls` remains the authoritative
 request/application row.
+
+**This list is no longer closed — ADR-0108 extends it, and a reader checking equality against
+the three values above will miss rows.** The current stored forms, taken from the code rather
+than from this list:
+
+| form | written by |
+|---|---|
+| `applying` | a claimant that named no owner |
+| `applying:<owner>` | a claimant that named one, so a second consumer can tell "someone else holds this" from "I hold this" |
+| `applied` | an ordinary successful apply |
+| `rejected:no-pending-ops`, `rejected:unsupported-verb:<verb>`, `rejected:error:<exc>` | the flow poller |
+| `rejected: <sentence>` | run teardown, prose after the colon rather than a token |
+| `<applied\|abandoned>: resolved by <who> after the claim '<prior>' was taken and never reported back` | `li o ctl resolve`, a person closing a control whose claimant never came back |
+
+Two consequences for anyone reading this column. **Match by prefix, not equality**: every
+consumer of the claim check in the tree uses `startswith("applying")` for exactly this reason,
+and equality would stop matching the claims that identify who holds them. And `abandoned` is a
+terminal outcome that this ADR never contemplated, reachable only through a human resolution.
+
+Unrelated despite the name: `lionagi/state/lifecycle/` carries its own `result` with the values
+`applied`, `rejected`, and `conflict`. That is the session-status transition service and it never
+touches `session_controls`; the shared field name is a coincidence and the vocabularies are not
+the same one.
 
 Why this way: a database row lets a separate CLI process address a live flow without a process-wide
 handle registry. Restricting insertion to running flow/play sessions prevents controls from sitting

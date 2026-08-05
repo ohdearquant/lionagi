@@ -2,26 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """The verb namespace behind the single dispatch tool.
 
-The server advertises one tool. Everything it can do is a namespaced verb
-registered here, and a verb is reachable only because it appears in this file —
-adding a command to the CLI does not widen this surface. Reachability and
-authorization are separate on purpose: the projector can read a parser for any
-command in the CLI, and reading a parser is not permission to run it.
-
-A verb is registered only when its underlying path can answer a machine caller
-honestly. That is three different things depending on the verb:
-
-* the spawn and job verbs run through :mod:`lionagi.mcp.jobs`, which spawns the
-  ``li`` CLI as a detached subprocess and keeps its own record of the job;
-* a long-tail verb runs ``li <path> --machine`` as a subprocess and returns the
-  versioned envelope that command emits;
-* a command that only prints prose for a human reader has no such envelope, so
-  it is listed here as absent with the reason, rather than reached by scraping
-  its console output.
-
-The absent entries are part of the catalog. A caller that asks what exists gets
-the name and the reason it cannot be called, which is a different answer from
-the verb never having been considered.
+A verb is reachable only because it appears in this file — adding a command
+to the CLI does not widen this surface (the projector can read any parser,
+but reading is not permission to run). Depending on the verb: spawn/job verbs
+run through :mod:`lionagi.mcp.jobs`; long-tail verbs run
+``li <path> --machine`` and return its versioned envelope; a command with no
+machine envelope is listed as absent, with a reason, rather than reached by
+scraping its console output — the absent entries are part of the catalog.
 """
 
 from __future__ import annotations
@@ -43,14 +30,11 @@ __all__ = (
     "catalog_names",
 )
 
-# The one place the synonym sunset lives, so retiring them is one edit rather
-# than a search. After this date the old spellings are removed outright.
+# Old spellings are removed outright after this date.
 SYNONYM_REMOVAL_DATE = "2026-09-30"
 
-# The names the previous tool-per-operation surface used. They are accepted
-# inside `ops` and resolved before dispatch, and they are deliberately absent
-# from the catalog: they exist for callers already scripted against them, not as
-# something new callers should learn.
+# Previous tool-per-operation names, resolved before dispatch and deliberately
+# absent from the catalog — for callers already scripted against them, not new ones.
 SYNONYMS: Mapping[str, str] = {
     "submit_agent": "agent.submit",
     "submit_flow": "flow.submit",
@@ -64,21 +48,15 @@ SYNONYMS: Mapping[str, str] = {
     "server_info": "server.info",
 }
 
-# Operations that grant privilege to the caller. Every caller here is an agent,
-# so trusting a plugin or a hook bundle would let the thing being granted a right
-# be the thing that grants it, and migrating the store rewrites what every other
-# verb reports on. No verb resolves to these paths, and no verb accepts opaque
-# argv, so there is no route to them through this surface at all.
+# Operations that grant privilege to the caller (every caller is an agent, so
+# trusting a plugin/hook bundle would let the grantee also be the granter). No
+# verb resolves to these paths and none accepts opaque argv, so unreachable.
 FENCED_PATHS = ("state migrate", "plugin trust", "hooks trust")
 
-# How many ops one call may carry. Exceeding it is an error naming the count,
-# never a truncation that would run some of a caller's batch and report success.
+# Exceeding this is an error naming the count, never a silent truncation.
 MAX_OPS = 8
 
-# The reason the remaining long-tail commands share: `--machine` answers for the
-# commands registered above, and the rest print for a human reader. The fix
-# belongs in the CLI — the command gains a machine-result seam — not in a parser
-# of its console text, which would make its wording an API contract.
+# Shared reason for long-tail commands with no `--machine` seam.
 _NO_MACHINE_SEAM = (
     "the CLI path emits no versioned machine result (`li <path> --machine`), so "
     "there is nothing to return that is not scraped console text"
@@ -89,12 +67,10 @@ _NO_MACHINE_SEAM = (
 class Verb:
     """One reachable operation.
 
-    ``cli_path`` names the parser the schema is projected from; a verb with none
-    is owned by this server (it reads the job sidecar) and carries ``own_schema``
-    instead. ``admits`` lists the projected parameters the verb passes through —
-    ``None`` means all of them except ``refuses``. ``server_params`` are this
-    server's own parameters, merged over the projection, and they win a name
-    collision because the server, not the CLI, implements them.
+    ``cli_path`` names the parser the schema is projected from; a verb with
+    none carries ``own_schema`` instead. ``admits`` lists passthrough
+    parameters (``None`` = all except ``refuses``). ``server_params`` win a
+    name collision since the server, not the CLI, implements them.
     """
 
     name: str
@@ -114,11 +90,9 @@ class Verb:
 class AbsentVerb:
     """A verb the catalog names and cannot run, with why.
 
-    ``cli_path`` is the command this entry speaks for. It is stated rather than
-    derived from ``name`` because a verb name is not a dotted spelling of its
-    path — ``orchestrate fanout`` is registered as ``fanout.submit`` — so a
-    coverage check that guessed one from the other would need a table of
-    exceptions, and the table is what goes stale.
+    ``cli_path`` is stated rather than derived from ``name`` — a verb name
+    isn't a dotted spelling of its path (``orchestrate fanout`` registers as
+    ``fanout.submit``).
     """
 
     name: str
@@ -212,9 +186,7 @@ _FLOW_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {
     "playbook_fingerprint": _PLAYBOOK_FINGERPRINT,
 }
 
-# Flags a detached run cannot honour. Each is refused by name with its reason
-# rather than accepted and dropped, because a caller who passes one believes it
-# took effect.
+# Flags a detached run cannot honour; refused by name rather than silently dropped.
 _SPAWN_REFUSALS: Mapping[str, str] = {
     "verbose": "streams to a terminal nobody is attached to; read the run with job.output",
     "theme": "colours terminal output; a detached run writes to a plain log file",
@@ -334,9 +306,6 @@ _JOB_WAIT_SCHEMA = _own(
 
 _SERVER_INFO_SCHEMA = _own({})
 
-# Profile resolution reads the working directory live, and a submitted run's
-# working directory is this same argument. Answering under the server's own
-# directory instead would be accurate about the wrong roster.
 _ROSTER_CWD = {
     "type": "string",
     "description": (
@@ -433,8 +402,7 @@ _REGISTERED: tuple[Verb, ...] = (
         executor="spawn",
         cli_path="orchestrate flow",
         job_kind="play",
-        # The playbook is the subject of this verb; flow.submit is the same
-        # command with the playbook optional.
+        # flow.submit is the same command with the playbook optional.
         requires=("playbook",),
         refuses=_FLOW_REFUSALS,
         server_params=_FLOW_SERVER_PARAMS,
@@ -454,7 +422,13 @@ _REGISTERED: tuple[Verb, ...] = (
     ),
     Verb(
         name="job.list",
-        summary="Recent background jobs, newest first, optionally filtered by status.",
+        summary=(
+            "Recent background jobs, newest first, optionally filtered by status. "
+            "Each row carries notify_delivery_state (none/delivered/"
+            "delivered_unverified/failed) — sweeping for terminal notices that "
+            "never arrived means reading this column and acting on 'failed'; no "
+            "prior suspicion about any particular run is needed."
+        ),
         executor="job",
         own_schema=_JOB_LIST_SCHEMA,
     ),
@@ -506,9 +480,6 @@ _REGISTERED: tuple[Verb, ...] = (
         summary="Environment checks and which of them failed.",
         executor="machine",
         cli_path="doctor",
-        # The machine path for this command takes no arguments; --json shapes the
-        # human printout only, so passing it through would be accepted by the
-        # parser and then refused by the machine dispatcher.
         admits=(),
     ),
     Verb(
@@ -545,9 +516,6 @@ _REGISTERED: tuple[Verb, ...] = (
         summary="Did it work: the schedule header, its latest run, and that run's verdict.",
         executor="machine",
         cli_path="schedule status",
-        # `--wait` blocks for as long as the run takes, past any caller's call;
-        # `--json` shapes the human printout only. Both are refused by the
-        # machine path rather than accepted and ignored.
         admits=("id",),
     ),
     Verb(
@@ -612,8 +580,6 @@ _REGISTERED: tuple[Verb, ...] = (
         summary=("Fire a schedule now: reports the run id allocated, never that the run ran."),
         executor="machine",
         cli_path="schedule trigger",
-        # `--wait` blocks until the fired run is terminal, which outlives the
-        # call; the outcome is read with schedule.status or schedule.runs.
         admits=("id",),
     ),
     Verb(
@@ -642,16 +608,9 @@ _REGISTERED: tuple[Verb, ...] = (
         summary="Convert schedule rows into ScheduleSet documents, returned inline.",
         executor="machine",
         cli_path="schedule export",
-        # `--output` and `--report` write files relative to the dispatching
-        # process's directory, which is not the caller's; the documents and the
-        # conversion report come back in the result instead.
         admits=("legacy",),
     ),
     # ── observability reads ──────────────────────────────────────────────────
-    # Each of these admits only the parameters its machine path honours. A flag
-    # that shapes a human printout is left out: the parser would take it and the
-    # machine dispatcher would then refuse it, so admitting it advertises a
-    # parameter that cannot work.
     Verb(
         name="monitor",
         summary="Entities in flight right now: sessions, invocations, shows, plays.",
@@ -730,15 +689,11 @@ _REGISTERED: tuple[Verb, ...] = (
         executor="machine",
         cli_path="dispatch purge",
         admits=("id", "dry_run"),
-        # The parser leaves `id` optional because omitting it is how a terminal
-        # asks for a sweep. Here a sweep is refused, so an absent id is never a
-        # valid call, and stating that in the schema beats letting the caller make
-        # a request that cannot succeed.
+        # Omitting `id` is how a terminal asks for a sweep; sweeps are refused
+        # here, so `id` is required rather than merely optional.
         requires=("id",),
-        # Named as refused rather than left out of `admits`. Both keep the sweep
-        # unreachable, but an unadmitted parameter is reported as unknown, and
-        # these are not unknown: they exist, they are spelled correctly, and they
-        # are declined. A caller told "unknown parameter" looks for a typo.
+        # Refused (not left out of `admits`): these exist and are spelled
+        # correctly, so "unknown parameter" would send a caller looking for a typo.
         refuses=_PURGE_SWEEP_REFUSALS,
     ),
     Verb(
@@ -777,9 +732,8 @@ def _absent(
 ) -> tuple[AbsentVerb, ...]:
     """Absent entries sharing a prefix, a summary and a reason.
 
-    The CLI path is the prefix and name spelled with spaces, which is how every
-    grouped entry happens to read. An entry whose path does not follow from its
-    name is written out in full below instead of forced through here.
+    An entry whose ``cli_path`` doesn't follow from ``prefix``+name is written
+    out in full below instead of forced through here.
     """
     return tuple(
         AbsentVerb(
@@ -792,31 +746,33 @@ def _absent(
     )
 
 
-# Granting a right to the caller. Every caller here is an agent, so a verb that
-# trusts a bundle, enables a plugin, or imports a hook command lets the thing
-# being granted a right be the thing that grants it. This reason does not expire
-# when the CLI grows a machine seam, which is why it is written separately from
-# _NO_MACHINE_SEAM: a seam would make these callable, not safe to call.
+# Kept separate from _NO_MACHINE_SEAM: a machine seam would make these
+# callable, not safe to call — the reason doesn't expire when the CLI grows one.
 _PRIVILEGE = (
     "it widens what this caller can reach — trusting a bundle, enabling a plugin "
     "or importing a hook command grants a right to the agent asking for it, so no "
     "machine seam would make it available here"
 )
 
-# Rewriting or deleting from the store every other verb reports on. A caller
-# cannot see from a machine result which of its own earlier reads a checkpoint,
-# prune or vacuum has since invalidated.
 _STORE_MUTATION = (
     "it rewrites or removes rows in the lifecycle store that every read verb "
     "reports on, and nothing in a machine result tells a caller which of its own "
     "earlier answers the write invalidated"
 )
 
-# Occupying the process for as long as it runs. A verb returns one result; these
-# are the process, not a call within it.
 _LONG_RUNNING = (
     "it runs for as long as the process lives rather than returning a result, so "
     "it is a process to start, not a call to make"
+)
+
+# Separate from _STORE_MUTATION, whose objection is that a write invalidates
+# answers the caller already holds. That one is about consistency and would be
+# answerable by a better result shape. This one is not: the content is gone, and
+# no reply a machine seam could return would undo the call that asked for it.
+_IRREVERSIBLE_LOSS = (
+    "it destroys message content permanently — the rows and their references "
+    "survive but the bodies do not, and nothing a machine result could say would "
+    "give a caller back what its own call removed"
 )
 
 
@@ -848,13 +804,9 @@ ABSENT: tuple[AbsentVerb, ...] = (
         ("doctor",),
         "Read-only inspection of the lifecycle store.",
     ),
-    # `dispatch ack`, `retry` and `purge` are registered above rather than named
-    # absent here. They are the queue's writes, and the caller that reads the queue
-    # from this surface is the one that has to resolve what it finds.
-    # `plugin trust` and `hooks trust` are deliberately not here. A fenced path is
-    # accounted for by FENCED_PATHS, and naming it in the catalog would advertise
-    # the capability to the caller it is fenced from; that is a different silence
-    # from the one the absent entries exist to end.
+    # `plugin trust`/`hooks trust` are deliberately absent from this list too:
+    # they're accounted for by FENCED_PATHS, and naming them here would
+    # advertise the capability to the caller it's fenced from.
     *_absent(
         "plugin",
         ("enable", "disable"),
@@ -872,6 +824,12 @@ ABSENT: tuple[AbsentVerb, ...] = (
         ("checkpoint", "prune", "vacuum", "import", "import-teams"),
         "Writes against the lifecycle store.",
         _STORE_MUTATION,
+    ),
+    *_absent(
+        "state",
+        ("null-content",),
+        "Reclaiming the space held by old message bodies.",
+        _IRREVERSIBLE_LOSS,
     ),
     *_absent(
         "studio",
@@ -941,6 +899,22 @@ ABSENT: tuple[AbsentVerb, ...] = (
         cli_path="orchestrate ctl status",
     ),
     AbsentVerb(
+        name="orchestrate.ctl.resolve",
+        summary="Close a control whose consumer claimed it and never reported back.",
+        # Not a missing seam. This command exists because whether a claimed
+        # message reached the model is not recoverable from anything the system
+        # kept, so the row waits for a person who went and found out. A machine
+        # caller has exactly the knowledge the row is missing, which is none, so
+        # exposing it here would turn a human's finding into an automated guess
+        # -- the same guess the design already refuses to make on a timer.
+        reason=(
+            "it records what a human established about a delivery the system "
+            "cannot determine; a machine caller would be asserting the fact the "
+            "row is waiting for rather than reporting one"
+        ),
+        cli_path="orchestrate ctl resolve",
+    ),
+    AbsentVerb(
         name="casts",
         summary="The built-in roles and modes an agent can be composed from.",
         reason=_NO_MACHINE_SEAM,
@@ -970,9 +944,8 @@ VERBS: Mapping[str, Verb] = {verb.name: verb for verb in _REGISTERED}
 def resolve(name: Any) -> str:
     """The namespaced verb *name* refers to, following a previous-surface synonym.
 
-    A synonym resolves silently rather than warning: it is accepted precisely so
-    a caller already scripted against the old spelling keeps working, and a
-    warning in a machine result is noise to the only kind of reader there is.
+    Resolves silently rather than warning — a machine-result reader has no use
+    for a deprecation warning.
     """
     if not isinstance(name, str):
         raise TypeError("op must be a string")

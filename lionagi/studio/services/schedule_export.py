@@ -358,22 +358,15 @@ def _group_into_documents(
     """Split *ready* rows into one ``ScheduleSet`` document per distinct
     effective project (``_effective_project``: stored column, else the
     qualified name's prefix; bare-named rows share a single
-    *base_name*-keyed group). Grouping *before* computing member keys
+    *base_name*-keyed group). Grouping before computing member keys
     guarantees a row's effective project always matches its document's
-    project, so ``_member_key`` never has to fall back for a mismatch --
-    this is what fixes
-    mixed-project double-qualification: a single document spanning multiple
-    projects used to key a mismatched row by its already-qualified name, and
-    re-applying then prepended the document's project a second time,
-    producing e.g. ``alpha/beta/task`` instead of ``beta/task``.
+    project, avoiding double-qualification on re-apply.
 
     Also returns a ``{row_name: reconstructed_qualified_name}`` map -- the
-    name a later apply actually produces (``f"{doc_project}/{local_key}"``)
-    for every ready row, computed from the same project + key this function
-    assigns. Callers compare this against the row's stored name to decide
-    whether a rename needs disclosing; checking the *actual* assignment this
-    way (rather than re-deriving intent from row fields, which is what a
-    prior version of this code did) means a mismatch can never be missed."""
+    name a later apply actually produces for every ready row, so callers can
+    compare it against the row's stored name to decide whether a rename
+    needs disclosing.
+    """
     grouped: dict[str, list[tuple[dict[str, Any], ScheduleMember]]] = {}
     for row, member in ready:
         proj = _effective_project(row) or base_name

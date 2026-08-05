@@ -13,6 +13,15 @@
  *
  * Terminal/idle entries are excluded — Fleet is live-only.
  * History owns the past.
+ *
+ * Invocations carry no project/search scope of their own — only the runs
+ * projection is filtered server-side. So when a project or search filter is
+ * active, an invocation group is shown only if it has at least one matching
+ * child in the (already-scoped) runs page; otherwise the group is dropped
+ * rather than rendered empty. This is a client-side approximation: a live
+ * child that exists beyond the polled runs page (200 rows) can still be
+ * hidden. With no filter active, every active invocation renders as before,
+ * including one with zero children yet (e.g. just started).
  */
 
 import type { RunSummary } from "@/lib/types";
@@ -85,6 +94,11 @@ export type FleetAction =
       runs: RunSummary[];
       runsHasNext: boolean;
       nowSec: number;
+      /** Same filters just sent to listRuns() — determines whether an
+       *  invocation group with no matching child should be suppressed. */
+      project?: string;
+      projectNull?: boolean;
+      search?: string;
     }
   | { type: "DATA_ERROR"; message: string }
   | { type: "MARK_STALE" };
@@ -134,10 +148,18 @@ function needsAttention(row: AgentRow): boolean {
 
 // ─── Derivation ───────────────────────────────────────────────────────────────
 
+/** True when the runs projection is scoped to less than "everything live" —
+ *  the same condition useFleet uses to decide what to send listRuns(). */
+function isScopeActive(project?: string, projectNull?: boolean, search?: string): boolean {
+  return Boolean(project) || Boolean(projectNull) || Boolean(search);
+}
+
 function buildOrgUnits(
   invocations: InvocationSummary[],
   runs: RunSummary[],
   nowSec: number,
+  scoped: boolean,
+  runsHasNext: boolean,
 ): OrgUnit[] {
   const activeInvocations = invocations.filter((inv) => isActive(inv));
 
@@ -184,7 +206,20 @@ function buildOrgUnits(
 
   const units: OrgUnit[] = [];
 
+  // Absence from the runs page is only evidence of absence when the page is the
+  // whole scoped set. The invocations request carries no scope of its own, so
+  // an invocation with no child here has either genuinely nothing in scope, or
+  // a matching child on a page we did not ask for -- and dropping it in the
+  // second case hides live work the filter was supposed to include. Suppressing
+  // an empty heading is a cosmetic win; hiding a running orchestration is not,
+  // so the cure only applies where the evidence actually supports it.
+  const runsAreExhaustive = !runsHasNext;
   for (const unit of invMap.values()) {
+    if (scoped && runsAreExhaustive && unit.agents.length === 0) continue;
+    // A scoped view reports the children it is showing. The invocation's own
+    // session_count is global, so rendering it beside a filtered child list
+    // states a total that belongs to a different question.
+    if (scoped) unit.session_count = unit.agents.length;
     unit.needsAttention =
       ATTENTION_STATUSES.has(unit.status.toLowerCase()) ||
       unit.agents.some((a) => needsAttention(a));
@@ -311,8 +346,9 @@ export function fleetReducer(state: FleetState, action: FleetAction): FleetState
       return { ...state, nowSec: action.nowSec };
 
     case "DATA_OK": {
-      const { invocations, runs, runsHasNext, nowSec } = action;
-      const orgUnits = buildOrgUnits(invocations, runs, nowSec);
+      const { invocations, runs, runsHasNext, nowSec, project, projectNull, search } = action;
+      const scoped = isScopeActive(project, projectNull, search);
+      const orgUnits = buildOrgUnits(invocations, runs, nowSec, scoped, runsHasNext);
       const counts = deriveCounts(orgUnits);
       return {
         ...state,

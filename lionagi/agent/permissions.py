@@ -13,6 +13,8 @@ from typing import Any
 
 from lionagi.tools._subprocess import _SHELL_CONTROL
 
+from .gate import ControlUnavailableError
+
 __all__ = (
     "PermissionDecision",
     "PermissionPolicy",
@@ -160,7 +162,16 @@ class PermissionPolicy:
                         return None
                     if isinstance(result, dict):
                         return result
-                raise PermissionError(
+                    # A handler ran and turned it down. That is an answer, and
+                    # the same one a deny rule gives.
+                    raise PermissionError(
+                        f"Permission escalation for {tool_name}.{action} was declined: "
+                        f"{decision.reason}"
+                    )
+                # Nobody can be asked, so there is no answer to have. Refused
+                # either way, but as a configuration fault rather than as a
+                # decision about this call.
+                raise ControlUnavailableError(
                     f"Permission escalation required for {tool_name}.{action}: "
                     f"{decision.reason}. No escalation handler configured."
                 )

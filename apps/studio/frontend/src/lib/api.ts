@@ -13,6 +13,7 @@ import type {
   OperatorConversationSnapshot,
   OperatorFrame,
   OperatorFrameType,
+  OperatorModelCatalog,
   OperatorProposalResult,
   OperatorTurnAccepted,
   OperatorTurnRequest,
@@ -265,6 +266,7 @@ function normalizeOperatorConversation(value: unknown): OperatorConversation {
   return {
     id,
     status,
+    pinned: raw.pinned === true,
     project: typeof raw.project === "string" ? raw.project : null,
     title: typeof raw.title === "string" ? raw.title : null,
     nextSequence: readNumber("nextSequence", "next_sequence"),
@@ -304,13 +306,69 @@ export async function createOperatorConversation(input?: {
   return normalizeOperatorConversation(raw.conversation ?? raw);
 }
 
-export async function listOperatorConversations(): Promise<OperatorConversation[]> {
-  const response = await fetchJson<unknown>("/api/operator/conversations");
+export async function listOperatorConversations(options?: {
+  status?: "active" | "archived" | "all";
+}): Promise<OperatorConversation[]> {
+  const query = options?.status ? `?status=${encodeURIComponent(options.status)}` : "";
+  const response = await fetchJson<unknown>(`/api/operator/conversations${query}`);
   const raw = asRecord(response);
   if (!Array.isArray(raw.conversations)) {
     throw new Error("Operator conversation list response was invalid.");
   }
   return raw.conversations.map(normalizeOperatorConversation);
+}
+
+export interface OperatorConversationPatch {
+  title?: string | null;
+  pinned?: boolean;
+  status?: "active" | "archived";
+}
+
+export async function updateOperatorConversation(
+  conversationId: string,
+  patch: OperatorConversationPatch,
+): Promise<OperatorConversation> {
+  const body: Record<string, unknown> = {};
+  if ("title" in patch) body.title = patch.title;
+  if ("pinned" in patch) body.pinned = patch.pinned;
+  if ("status" in patch) body.status = patch.status;
+  const response = await fetchJson<unknown>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  const raw = asRecord(response);
+  return normalizeOperatorConversation(raw.conversation ?? raw);
+}
+
+export async function forkOperatorConversation(
+  conversationId: string,
+  options?: { upToSequence?: number; title?: string },
+): Promise<OperatorConversationSnapshot> {
+  const body: Record<string, unknown> = {};
+  if (options?.upToSequence != null) body.upToSequence = options.upToSequence;
+  if (options?.title != null) body.title = options.title;
+  const response = await fetchJson<unknown>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}/fork`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  const raw = asRecord(response);
+  const conversation = normalizeOperatorConversation(raw.conversation ?? raw);
+  const framesValue = raw.frames;
+  const page = Array.isArray(framesValue) ? framesValue : [];
+  for (const frame of page) {
+    if (!isOperatorFrame(frame)) {
+      throw new Error("Operator fork response contains an unsupported protocol frame.");
+    }
+  }
+  return { conversation, frames: page };
 }
 
 export async function getOperatorConversation(
@@ -368,6 +426,9 @@ export async function submitOperatorTurn(
         context: request.context,
         expected_last_sequence: request.expectedLastSequence,
         ...(request.model ? { model: request.model } : {}),
+        ...(request.provider ? { provider: request.provider } : {}),
+        ...(request.effort ? { effort: request.effort } : {}),
+        ...(request.clearSelection ? { clear_selection: true } : {}),
       }),
     },
   );
@@ -393,6 +454,10 @@ export async function reportOperatorView(
       body: JSON.stringify(context),
     },
   );
+}
+
+export async function fetchOperatorModelCatalog(): Promise<OperatorModelCatalog> {
+  return fetchJson<OperatorModelCatalog>("/api/operator/models");
 }
 
 export async function cancelOperatorRequest(
@@ -634,6 +699,8 @@ export interface RunListParams {
   status?: string[];
   playbook?: string;
   project?: string;
+  project_null?: boolean;
+  search?: string;
 }
 
 export interface RunListResponse {
@@ -651,7 +718,12 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
   if (params?.page != null) query.set("page", String(params.page));
   if (params?.per_page != null) query.set("per_page", String(params.per_page));
   if (params?.playbook) query.set("playbook", params.playbook);
-  if (params?.project) query.set("project", params.project);
+  if (params?.project_null) {
+    query.set("project_null", "true");
+  } else if (params?.project) {
+    query.set("project", params.project);
+  }
+  if (params?.search) query.set("search", params.search);
   for (const value of params?.status ?? []) query.append("status", value);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   // The daemon registers this list route with a trailing slash (unlike
@@ -659,6 +731,23 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
   // absolute-Location, which the browser then blocks as cross-origin
   // whenever the frontend is served from a different origin than the daemon.
   return fetchJson<RunListResponse>(`/api/runs/${suffix}`);
+}
+
+export interface RunProjectCount {
+  project: string | null;
+  count: number;
+  last_activity: number | null;
+}
+
+export interface RunProjectsResponse {
+  projects: RunProjectCount[];
+  total: number;
+}
+
+/** Per-project run counts, sorted by last activity — feeds the fleet project
+ * filter's option list without requiring a full unfiltered run scan. */
+export async function listRunProjects(): Promise<RunProjectsResponse> {
+  return fetchJson<RunProjectsResponse>("/api/runs/projects");
 }
 
 export async function getRun(runId: string): Promise<RunDetail> {
@@ -1000,6 +1089,12 @@ export async function updateAgent(name: string, data: AgentProfile): Promise<unk
   });
 }
 
+export async function deleteAgent(name: string): Promise<{ deleted: boolean; name: string }> {
+  return fetchJson<{ deleted: boolean; name: string }>(`/api/agents/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
 // ─── Shows ────────────────────────────────────────────────────────────────────
 
 export async function listShows(): Promise<ShowSummary[]> {
@@ -1059,6 +1154,10 @@ export interface SessionBranch {
   /** Full progression length; messages is a tail window of it. */
   message_total?: number;
   message_offset?: number;
+  /** Whether this branch has messages older than the current window — the
+   * server's own signal, independent of the message_total/messages.length
+   * diff the client also computes. */
+  message_has_older?: boolean;
   model?: string | null;
   provider?: string | null;
   agent_name?: string | null;
@@ -1073,6 +1172,10 @@ export interface SessionDetail {
   started_at?: number | null;
   ended_at?: number | null;
   branches: SessionBranch[];
+  // Opaque anchor cursor for the "load older" page, one page further back
+  // than what `branches[].messages` currently carries. Absent/null once every
+  // branch's progression has been fully paged.
+  message_next_cursor?: string | null;
   // ADR-0022: provenance disclosure — mirrors what list_sessions() exposes.
   model?: string | null;
   provider?: string | null;
@@ -1108,13 +1211,18 @@ export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
 
 export const SESSION_MESSAGE_PAGE = 200;
 
+// message_cursor pages backward from the tail (server: services/sessions.py
+// _window_message_ids) — each older page's anchor is stable against new
+// messages landing at the tail, unlike a fixed offset that shifts under a
+// live session. The offset param still exists server-side for legacy callers
+// but this client only ever asks for a page by cursor.
 export async function getSession(
   id: string,
-  params?: { messageLimit?: number; messageOffset?: number },
+  params?: { messageLimit?: number; messageCursor?: string },
 ): Promise<SessionDetail> {
   const query = new URLSearchParams();
   if (params?.messageLimit != null) query.set("message_limit", String(params.messageLimit));
-  if (params?.messageOffset != null) query.set("message_offset", String(params.messageOffset));
+  if (params?.messageCursor != null) query.set("message_cursor", params.messageCursor);
   const qs = query.toString();
   return fetchJson<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
 }
@@ -1452,6 +1560,127 @@ export async function getPlugin(name: string): Promise<PluginDetail> {
   return fetchJson<PluginDetail>(`/api/plugins/${encodeURIComponent(name)}`);
 }
 
+// ─── MCP servers ────────────────────────────────────────────────────────────
+
+export type McpServerTransport = "stdio" | "http";
+
+export interface McpServerLastCheck {
+  ok: boolean;
+  error: string | null;
+  checked_at: number;
+}
+
+export interface McpServerSummary {
+  name: string;
+  transport: McpServerTransport;
+  command?: string;
+  args?: string[];
+  url?: string;
+  timeout?: number;
+  env_keys: string[];
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+  last_check: McpServerLastCheck | null;
+}
+
+/** Fields a client may submit for register/update. `env` values are only
+ * ever sent up (to be stored), never returned by the server — see
+ * McpServerSummary, which carries `env_keys` instead. A `null` value for a
+ * key is the explicit way to remove it; the server never infers a deletion
+ * from a key's mere absence, since env merges key-by-key onto what's
+ * already stored. */
+export interface McpServerConfigInput {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string | null>;
+  url?: string;
+  /** `null` clears a stored timeout. Absent leaves it as it was, the same
+   * merge rule `env` follows. */
+  timeout?: number | null;
+  enabled?: boolean;
+}
+
+export interface McpServerValidationResult {
+  ok: boolean;
+  errors?: string[] | null;
+  connection_checked: boolean;
+  connection_ok: boolean | null;
+  connection_error: string | null;
+}
+
+export async function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
+  return fetchJson<{ servers: McpServerSummary[] }>("/api/mcp/servers/");
+}
+
+export async function getMcpServer(name: string): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(`/api/mcp/servers/${encodeURIComponent(name)}`);
+}
+
+export async function registerMcpServer(
+  name: string,
+  data: McpServerConfigInput,
+): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>("/api/mcp/servers/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, ...data }),
+  });
+}
+
+export async function updateMcpServer(
+  name: string,
+  data: McpServerConfigInput,
+): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function setMcpServerEnabled(
+  name: string,
+  enabled: boolean,
+): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(
+    `/api/mcp/servers/${encodeURIComponent(name)}/${enabled ? "enable" : "disable"}`,
+    { method: "POST" },
+  );
+}
+
+export async function deleteMcpServer(name: string): Promise<{ ok: boolean }> {
+  return fetchJson<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/** Attempt a real connection to an already-registered server and persist
+ * the result (surfaced afterwards via `last_check` on the summary). */
+export async function checkMcpServer(name: string): Promise<McpServerSummary> {
+  return fetchJson<McpServerSummary>(`/api/mcp/servers/${encodeURIComponent(name)}/check`, {
+    method: "POST",
+  });
+}
+
+/** Validate a config before saving. Shape is always checked; pass
+ * `check_connection: true` to also attempt a real connection (the result
+ * distinguishes "not checked" from "checked and failed" via
+ * `connection_checked`). */
+export async function validateMcpServer(
+  name: string,
+  data: McpServerConfigInput & { check_connection?: boolean },
+): Promise<McpServerValidationResult> {
+  return fetchJson<McpServerValidationResult>(
+    `/api/mcp/servers/${encodeURIComponent(name || "new")}/validate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, ...data }),
+    },
+  );
+}
+
 export async function getPluginSkill(
   pluginName: string,
   skillName: string,
@@ -1477,7 +1706,6 @@ export interface AdminDoctorResponse {
   db_health: {
     size_bytes: number;
     wal_bytes: number;
-    wal_pending: number;
   };
   diagnostic_run_at: string;
 }
@@ -1512,6 +1740,11 @@ export interface MaintenanceResult {
   busy?: number | null;
   log_pages?: number | null;
   checkpointed?: number | null;
+  // How much WAL the checkpoint was asked to drain and how long it took. The
+  // three counters above read zero on every successful TRUNCATE regardless of
+  // size, so they cannot separate a long drain from an idle one.
+  wal_bytes_before?: number | null;
+  elapsed_ms?: number | null;
   // prune
   sessions_pruned?: number;
   runs_pruned?: number;

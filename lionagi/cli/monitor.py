@@ -15,6 +15,8 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from lionagi.state.engine import mask_credentials
+
 from ._project import detect_project
 from ._runs import RUNS_ROOT
 from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
@@ -216,12 +218,8 @@ async def _query_running_plays(
         params.append(since)
     else:
         # `gated` is deliberately absent: a play parked on a gate decision is
-        # not in flight. It has stopped, and nothing it does can move it — only
-        # a decision can. Counting it here left every undecided play on the
-        # live view indefinitely, which is the one thing the default view is
-        # supposed to rule out. Such a play is still reachable through
-        # `--since`, through `li monitor <id>`, and through the show detail
-        # view, which marks it as waiting.
+        # stopped until a human decides, so it must not sit on the live view
+        # indefinitely. Still reachable via --since, `li monitor <id>`, or show detail.
         running_statuses = ("running", "running_complete", "redoing", "prepared")
         placeholders = ",".join("?" * len(running_statuses))
         query += f" AND status IN ({placeholders})"
@@ -690,13 +688,8 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
     if plays:
         lines.append("")
         lines.append(_dim("  -- plays --"))
-        # Every terminal play status the lifecycle declares. A play here has
-        # finished and cannot move again without an override, so it reads
-        # [done] even when it finished badly. Read from the lifecycle
-        # vocabulary rather than restated as a literal here: the policy owns
-        # which statuses are terminal, and a copy of it in this view goes
-        # stale silently — the day the policy grows a terminal status this
-        # view keeps calling a finished play [wait].
+        # Read from the lifecycle vocabulary, not restated as a literal here,
+        # so a new terminal status doesn't silently stay [wait] in this view.
         terminal = PLAY_TERMINAL_STATUSES
         # Executing right now, which is narrower than "not finished". `gated`
         # and `pending` fall through to [wait] because waiting is what they are
@@ -713,14 +706,9 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
             elif pstatus in PLAY_ACTIVE_STATUSES:
                 marker = _yellow("  [wait]  ")
             else:
-                # Neither terminal, nor executing, nor a status the lifecycle
-                # declares in-flight at all. It is not [wait]: waiting claims
-                # the play will continue and nothing here can support that
-                # claim for a status this view does not know. It is not
-                # [done] either: reading an unknown status as terminal is how
-                # live work gets swept. It gets its own marker so the row
-                # reads as a data problem instead of being sorted into a
-                # bucket that answers a question nobody can answer.
+                # An unrecognized status: not [wait] (unsupported claim it will
+                # continue) and not [done] (would sweep live work as finished).
+                # Its own marker flags a data problem instead of guessing.
                 marker = _red("  [????]  ")
             pelapsed = _elapsed(play.get("started_at"), play.get("ended_at"))
             pname = _trunc(play.get("name") or play["id"][:12], 24)
@@ -911,7 +899,9 @@ async def _run_table(
             )
         return _format_table(rows)
     except Exception as exc:  # noqa: BLE001
-        return _red(f"error reading state.db: {exc}")
+        # A catch-all around a store open, so the message can be one that names
+        # the store. Masked here for the same reason the envelope sinks are.
+        return _red(f"error reading state.db: {mask_credentials(str(exc))}")
 
 
 async def _run_detail(entity_id: str) -> str:
@@ -939,7 +929,7 @@ async def _run_detail(entity_id: str) -> str:
         # turn into a non-success exit code, not a rendered detail body.
         raise
     except Exception as exc:  # noqa: BLE001
-        return _red(f"error: {exc}")
+        return _red(f"error: {mask_credentials(str(exc))}")
 
 
 # ── Watch loop ────────────────────────────────────────────────────────────────

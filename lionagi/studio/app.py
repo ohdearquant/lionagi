@@ -16,9 +16,12 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 
 from lionagi._errors import LionError
+from lionagi.version import __version__
 
+from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
 from .config import CORS_ORIGINS, HOST
 from .registry import iter_studio_routes, load_studio_route_modules
+from .services._db import StoreNotAddressableError
 
 _log = logging.getLogger(__name__)
 
@@ -184,6 +187,10 @@ async def lifespan(app_instance):
     # verdict on top.
     await asyncio.to_thread(snapshot_git_position)
 
+    # Off unless LIONAGI_STUDIO_TRACEBACK_DUMP names a path. Armed here rather
+    # than later so a hang anywhere in the rest of startup is still captured.
+    arm_traceback_dump()
+
     _emit_startup_warnings()
     # The second of the two settings-driven notify bootstrap points (CLI is the first).
     from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
@@ -201,6 +208,7 @@ async def lifespan(app_instance):
     yield
     from .services.launches import shutdown_launches
 
+    disarm_traceback_dump()
     await _finalize_warmup(warmup_task)
     await _stop_claude_mirror(mirror_stop, mirror_task)
     await operator_shutdown()
@@ -320,7 +328,11 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
 def create_app() -> FastAPI:
     """Build and return a fresh Studio FastAPI app instance, so callers
     (notably tests) can get a clean one without `importlib.reload`."""
-    application = FastAPI(title="Lion Studio Server", lifespan=lifespan)
+    # The served OpenAPI document is a surface that states a version, and a
+    # client reading it to decide what the server supports gets whatever it
+    # says. Left unset, FastAPI supplies its own default, which is the same
+    # string for every release and so tells a client nothing.
+    application = FastAPI(title="Lion Studio Server", version=__version__, lifespan=lifespan)
 
     @application.exception_handler(LionError)
     async def _lion_error_handler(request: Request, exc: LionError) -> JSONResponse:
@@ -328,6 +340,31 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.message},
+        )
+
+    @application.exception_handler(StoreNotAddressableError)
+    async def _store_not_addressable_handler(
+        request: Request, exc: StoreNotAddressableError
+    ) -> JSONResponse:
+        """Map a route asking for rows it structurally cannot fetch to 501.
+
+        Handles exactly :class:`StoreNotAddressableError` and nothing wider --
+        a path-resolution bug raising something else must not land here and be
+        reported as this specific, permanent condition. Not 503: the store
+        being server-backed does not change while this process runs, so
+        retrying buys nothing and shouldn't be implied.
+        """
+        return JSONResponse(
+            status_code=501,
+            content={
+                "detail": (
+                    f"{request.url.path} cannot answer: the configured store "
+                    f"is {exc.backend}-backed, and this route can only read "
+                    "from a local SQLite file."
+                ),
+                "route": request.url.path,
+                "backend": exc.backend,
+            },
         )
 
     @application.middleware("http")

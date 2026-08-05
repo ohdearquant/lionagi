@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -26,11 +28,9 @@ def _make_client(monkeypatch, fake_db: Path | None = None) -> TestClient:
     shared lionagi.studio.app.app singleton other code still imports.
     """
     import lionagi.studio.app as app_mod
-    import lionagi.studio.services.stats as stats_mod
 
     if fake_db is not None:
-        monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
-        monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
+        monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
     app = app_mod.create_app()
     return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")

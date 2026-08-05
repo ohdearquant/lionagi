@@ -55,105 +55,72 @@ class TestListDefinitionsNPlusOne:
             (agents_dir / f"agent{i}.md").write_text(f"# Agent {i}\ncontent")
 
         fake_db = tmp_path / "state.db"
-        fake_db.touch()  # exists → _ensure_db() returns True
-
-        monkeypatch.setattr(defs_mod, "LIONAGI_HOME", fake_home)
-        monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
-        monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", fake_home / "playbooks")
-        monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir})
-        monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
-        # Patch DEFAULT_DB_PATH on BOTH the source module and definitions'
-        # local import — _ensure_db() uses the latter (from-import binding).
-        monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-        monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-
-        return defs_mod
-
-    def test_single_db_connect_for_multiple_definitions(self, tmp_path, monkeypatch):
-        """list_definitions() must open exactly one DB connection regardless of file count."""
-        defs_mod = self._setup(tmp_path, monkeypatch, n_agents=3)
-
-        connect_count = 0
-
-        def fake_connect(path):
-            nonlocal connect_count
-            connect_count += 1
-            return _FakeDB()
-
-        monkeypatch.setattr("aiosqlite.connect", fake_connect)
-
-        result = _run(defs_mod.list_definitions("agent"))
-
-        assert len(result) == 3, f"Expected 3 definitions, got {len(result)}"
-        assert connect_count == 1, (
-            f"Expected exactly 1 DB connection for {len(result)} definitions, got {connect_count}"
-        )
-
-    def test_no_db_connect_when_no_definitions(self, tmp_path, monkeypatch):
-        """list_definitions() must not open any DB connection when no files exist."""
-        defs_mod = self._setup(tmp_path, monkeypatch, n_agents=0)
-
-        connect_count = 0
-
-        def fake_connect(path):
-            nonlocal connect_count
-            connect_count += 1
-            return _FakeDB()
-
-        monkeypatch.setattr("aiosqlite.connect", fake_connect)
-
-        result = _run(defs_mod.list_definitions("agent"))
-        assert result == []
-        assert connect_count == 0, "No DB connect expected when no definitions found"
-
-    def test_version_info_populated_from_batch_query(self, tmp_path, monkeypatch):
-        """Batch query results must be mapped back to the correct entry."""
-        import lionagi.state.db as state_db_mod
-        import lionagi.studio.services.definitions as defs_mod
-
-        fake_home = tmp_path / "lionagi_home"
-        agents_dir = fake_home / "agents"
-        agents_dir.mkdir(parents=True)
-        (agents_dir / "myagent.md").write_text("# Agent\ncontent")
-
-        fake_db = tmp_path / "state.db"
         fake_db.touch()
 
         monkeypatch.setattr(defs_mod, "LIONAGI_HOME", fake_home)
         monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
         monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", fake_home / "playbooks")
         monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir})
-        monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
-        monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
         monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
-        class _RowLike:
-            def __init__(self, data):
-                self._data = data
+        return defs_mod
 
-            def __getitem__(self, key):
-                return self._data[key]
+    @staticmethod
+    def _count_history_reads(monkeypatch, rows=()):
+        """Count the history reads a listing makes, whatever the store is.
 
-        class _CursorWithRow:
-            async def fetchall(self):
-                return [_RowLike({"kind": "agent", "name": "myagent", "v": 7, "ts": 9999.0})]
+        Anchored to the portable reader rather than to a SQLite connection:
+        history moved to StateDB so that a server-backed deployment answers
+        from the store it is configured for, and a test that counts
+        `aiosqlite.connect` calls stops measuring anything at that point while
+        continuing to pass.
+        """
+        from lionagi.state.db import StateDB
 
-        class _DBWithRow:
-            row_factory = None
+        calls = []
 
-            async def execute(self, sql, params=None):
-                return _CursorWithRow()
+        async def _fake(self):
+            calls.append(1)
+            return list(rows)
 
-            async def __aenter__(self):
-                return self
+        monkeypatch.setattr(StateDB, "list_latest_definition_versions", _fake)
+        return calls
 
-            async def __aexit__(self, *args):
-                pass
+    def test_single_history_read_for_multiple_definitions(self, tmp_path, monkeypatch):
+        """One history read regardless of how many definitions are on disk."""
+        defs_mod = self._setup(tmp_path, monkeypatch, n_agents=3)
+        calls = self._count_history_reads(monkeypatch)
 
-        monkeypatch.setattr("aiosqlite.connect", lambda path: _DBWithRow())
+        result = _run(defs_mod.list_definitions("agent"))
+
+        assert len(result) == 3, f"Expected 3 definitions, got {len(result)}"
+        assert len(calls) == 1, (
+            f"Expected exactly 1 history read for {len(result)} definitions, got {len(calls)}"
+        )
+
+    def test_no_history_read_when_no_definitions(self, tmp_path, monkeypatch):
+        """Nothing on disk means nothing to enrich, so the store is not touched."""
+        defs_mod = self._setup(tmp_path, monkeypatch, n_agents=0)
+        calls = self._count_history_reads(monkeypatch)
+
+        result = _run(defs_mod.list_definitions("agent"))
+        assert result == []
+        assert len(calls) == 0, "No history read expected when no definitions were found"
+
+    def test_version_info_populated_from_batch_query(self, tmp_path, monkeypatch):
+        """Batch query results must be mapped back to the correct entry."""
+        defs_mod = self._setup(tmp_path, monkeypatch, n_agents=0)
+        agents_dir = defs_mod.KIND_DIRS["agent"]
+        (agents_dir / "myagent.md").write_text("# Agent\ncontent")
+
+        self._count_history_reads(
+            monkeypatch,
+            rows=[{"kind": "agent", "name": "myagent", "version": 7, "created_at": 9999.0}],
+        )
 
         result = _run(defs_mod.list_definitions("agent"))
         assert len(result) == 1
         assert result[0]["has_versions"] is True
         assert result[0]["version"] == 7
         assert result[0]["updated_at"] == 9999.0
+        assert result[0]["history_available"] is True

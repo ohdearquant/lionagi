@@ -208,35 +208,12 @@ def make_options(
 
 # --------- non-finite float detection -----------------------------------------
 
-# orjson writes inf, -inf and nan as `null`, which is indistinguishable from a
-# genuine null on read: the value silently changes and no consumer can detect it.
-# JSON has no representation for these, so callers that ask for the check get a
-# loud failure instead.
-#
-# Detection walks the object the way orjson does. That means covering every form
-# orjson encodes natively, because those never reach default(); a walk that follows
-# only default() sees nothing inside a dataclass, an Enum or a numpy array and
-# reports the payload clean. The forms orjson encodes natively and that can carry a
-# float are: float, dict, list, tuple (and their subclasses), dataclass instances,
-# Enum members (written by value), and numpy arrays and scalars under
-# OPT_SERIALIZE_NUMPY. The remaining native forms -- str, int, bool, None, bytes,
-# datetime, date, time and UUID -- cannot contain a float.
-#
-# Two forms are outside what any walk can decide:
-#
-# * orjson.Fragment holds pre-serialized bytes that orjson copies into the output
-#   verbatim, without parsing them and without calling default(). A `null` inside a
-#   Fragment is indistinguishable from a `null` a non-finite float would have
-#   produced, because neither exists as a Python float by the time the Fragment is
-#   built. Fragment contents are the caller's to validate; the walk skips them.
-# * A future orjson may encode a container type natively that this list does not
-#   name, and the declared dependency floor is a minimum rather than an exact
-#   version, so a newer orjson can be installed. The list is written against the
-#   native types orjson documents; it is not enforced against the installed
-#   version at run time.
-#
-# Everything else reaches orjson through default(), and the walk follows that
-# conversion.
+# orjson writes inf, -inf and nan as `null`, indistinguishable from a genuine
+# null on read. Detection below walks the object the way orjson does, so it
+# sees every native form (not just what default() sees). See
+# docs/internals/agent-runtime.md#non-finite-float-detection for the full
+# coverage argument and the two forms no walk can decide (Fragment, future
+# orjson-native types).
 
 
 def _numpy_non_finite(obj: Any, path: str) -> str | None | Literal[False]:
@@ -267,9 +244,8 @@ def _locate_non_finite(
 ) -> str | None:
     """Return the path of the first non-finite float reachable from obj, else None.
 
-    Mirrors how orjson traverses the object, including the natively-encoded forms
-    that bypass default() and the default() hook itself, so the reported path
-    matches what would have been written.
+    Mirrors orjson's own traversal (native forms and the default() hook) so
+    the reported path matches what would have been written.
     """
     typ = obj.__class__
     # Concrete types first: isinstance against the collections ABCs is an order of
@@ -375,17 +351,13 @@ def raise_if_non_finite(
 ) -> None:
     """Raise ValueError naming the path of the first non-finite float in *obj*.
 
-    For callers that persist a payload through a serializer other than
-    json_dumpb -- notably the standard library's ``json``, which writes inf,
-    -inf and nan as the tokens ``Infinity``/``NaN``. Python reads those tokens
-    back, so the writer never notices; every strict parser rejects them, so the
-    file breaks at whatever boundary reads it next. Check before writing and the
-    refusal names the offending field instead.
+    For callers persisting through a serializer other than json_dumpb —
+    notably stdlib ``json``, which writes inf/-inf/nan as ``Infinity``/``NaN``
+    tokens that Python reads back but strict parsers reject downstream.
 
-    ``default`` should be the conversion the writer itself applies to values it
-    cannot encode (``str`` for a stdlib ``json.dumps(..., default=str)``). When
-    supplied, the walk follows the standard-library encoder and checks the
-    converted value. When omitted, the orjson default and traversal are used.
+    ``default`` should be the conversion the writer itself applies (e.g.
+    ``str`` for ``json.dumps(..., default=str)``); when supplied, the walk
+    follows the standard-library encoder instead of orjson's.
     """
     if default is None:
         default = _cached_default(False, False, False, False, False, 2048)
@@ -400,20 +372,12 @@ def _dumpb(
 ) -> bytes:
     """orjson.dumps, optionally rejecting payloads whose non-finite floats become null.
 
-    The check is off by default because it costs a full Python-level traversal of
-    the object and there is no cheaper sound trigger for it. A non-finite float and
-    a `None` both emit the literal `null`, so the output cannot say which produced
-    it, and orjson exposes no hook that sees floats -- they are encoded natively and
-    never reach default(). Measured on a 200-item object with one legitimate null,
-    the traversal costs roughly 20x the dump it guards; even scanning the output for
-    `null` first costs about half a dump again, so gating on it does not help a
-    payload that has any null at all, which is most of them. Callers that persist a
-    value ask for the check explicitly; see json_dumpb.
+    check_non_finite is off by default: it costs a full Python traversal
+    (~20x the dump itself). See docs/internals/agent-runtime.md#non-finite-float-detection
+    for the measurement and why a null-prescan doesn't help.
     """
     out = orjson.dumps(obj, default=default, option=opt)
-    # Every non-finite float produces a literal `null`, so a null-free result is
-    # provably clean and the walk is skipped. This only pays off once the caller has
-    # already opted into the check; as a gate on every dump it costs more than it saves.
+    # A null-free result is provably clean, so the traversal is skipped.
     if check_non_finite and b"null" in out:
         _raise_non_finite(_locate_non_finite(obj, default, opt))
     return out
@@ -443,19 +407,10 @@ def json_dumpb(
 ) -> bytes:
     """Serialize to bytes via orjson (fast path); safe_fallback=True for logging only.
 
-    orjson writes inf, -inf and nan as `null`, which a reader cannot tell apart from
-    a genuine null, so those values are lost silently. Pass check_non_finite=True to
-    raise ValueError instead, naming the path of the first offending value. Prefer it
-    wherever the result is persisted or handed to another system, where the loss is
-    durable and undetectable after the fact.
-
-    The check costs a full traversal of the payload -- roughly 20x the dump on an
-    object of a few thousand nodes -- which is why it is off by default. It covers
-    floats in mappings and sequences, dataclass fields, Enum values, numpy float
-    arrays and scalars when `options` carries OPT_SERIALIZE_NUMPY, and anything the
-    `default` hook converts into those. It cannot cover orjson.Fragment: those bytes
-    are copied into the output unparsed, so a `null` inside one is opaque to any
-    caller-side check and remains the responsibility of whoever built the Fragment.
+    Pass check_non_finite=True to raise ValueError instead of silently
+    writing inf/-inf/nan as `null` — prefer it wherever the result is
+    persisted or handed to another system. See
+    docs/internals/agent-runtime.md#non-finite-float-detection for cost and coverage.
     """
     if default is None:
         default = _cached_default(

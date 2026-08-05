@@ -69,16 +69,11 @@ def apply_hooks_from_settings(
 ) -> AgentSpec:
     """Resolve hook specs from settings and register them on the AgentSpec; returns config.
 
-    Handles two independent settings blocks: the legacy ``hooks:``
-    ``{pre,post,on_error}`` shape (in-process callables, resolved and
-    attached to ``config.hook_handlers`` right here), and the
-    ``hooks_external:`` block (external commands, parsed and validated here
-    but attached to ``config.external_hooks`` for ``create_agent`` to wire
-    once a ``Branch`` -- and its ``ActionManager``/``HookBus`` -- exists).
-    ``hooks_external:`` here is unrelated to the field of the same name on a
-    plugin manifest (``lionagi.plugins.manifest.Capabilities.hooks_external``),
-    which is parsed as inert data only; this is the block that actually loads
-    and executes.
+    Handles two independent blocks: legacy ``hooks:`` (in-process callables,
+    attached to ``config.hook_handlers`` here) and ``hooks_external:``
+    (external commands, attached to ``config.external_hooks`` for
+    ``create_agent`` to wire once a ``Branch`` exists). Unrelated to the
+    same-named field on a plugin manifest, which is inert data only.
     """
     if settings is None:
         settings = load_settings()

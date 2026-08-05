@@ -271,15 +271,10 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
         imported_count += sum(len(g["hooks"]) for g in groups)
 
     if imported_count and _POSIX_FD_WALK:
-        # fd-anchored component walk: the up-front is_symlink() check above
-        # only covers the final component and only at check time, not
-        # write time -- it gives a clearer error for the common case but
-        # enforces nothing. The real guard is here: `project_dir` itself is
-        # the trusted anchor (opened once, never re-traversed by path), and
-        # every subsequent component is opened relative to that anchor's fd
-        # with O_NOFOLLOW, so a symlink at ANY intermediate component --
-        # not just the final one -- fails the open instead of being
-        # silently followed outside the project.
+        # The real guard: project_dir is opened once as a trusted anchor and
+        # every subsequent component is opened relative to its fd with
+        # O_NOFOLLOW, so a symlink at ANY intermediate component fails the
+        # open instead of being silently followed outside the project.
         root_fd = os.open(str(project_dir), os.O_RDONLY | os.O_DIRECTORY)
         lion_fd = None
         try:
@@ -322,17 +317,11 @@ def _run_import(source: str, path: str | None, cwd: str | None) -> int:
                 os.close(lion_fd)
             os.close(root_fd)
     elif imported_count:
-        # Non-POSIX fallback (no O_DIRECTORY/O_NOFOLLOW, e.g. Windows): the
-        # atomic fd-anchored walk above isn't available there, so this
-        # enforces the strongest check available without it -- refuse
-        # outright if either path component is a symlink, and require the
-        # resolved `.lionagi` directory's realpath to still be directly
-        # under the project root's realpath (catches a directory
-        # junction/reparse point redirecting it elsewhere; `realpath`
-        # resolves Windows junctions too) -- then a normal open+write.
-        # This is weaker than the POSIX walk (the check and the write are
-        # not atomic), but it is the correct enforcement available on a
-        # platform without O_NOFOLLOW.
+        # Non-POSIX fallback (e.g. Windows, no O_NOFOLLOW): refuse if either
+        # path component is a symlink and require the resolved `.lionagi`
+        # realpath to still sit directly under the project root's realpath
+        # (catches a junction/reparse point). Weaker than the POSIX walk —
+        # check and write are not atomic — but the best available here.
         if lionagi_dir.is_symlink() or settings_path.is_symlink():
             log_error(
                 f"refusing to write through a symlinked .lionagi path: "

@@ -263,6 +263,106 @@ async def test_message_stamped_applying_but_unapplied_is_not_reapplied(tmp_path:
         assert still_row["result"] == "applying"
 
 
+class _ResolvedByHandRightAfterTheClaim:
+    """Puts a hand resolution in the one window where it can be overwritten.
+
+    `ctl resolve` exists for a claimant that never reported back, so the
+    dangerous ordering is not a rare race: it is a slow claimant, which is
+    exactly the state a human resolves. Injecting the resolution rather than
+    racing for it makes that ordering the only one the test can produce.
+    """
+
+    def __init__(self, db, *, outcome: str, actor: str) -> None:
+        self._db = db
+        self._outcome = outcome
+        self._actor = actor
+        self.resolution: str | None = None
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+    async def mark_session_control_applying(self, control_id, **kwargs):
+        claim = await self._db.mark_session_control_applying(control_id, **kwargs)
+        if claim is not None:
+            self.resolution = await self._db.resolve_claimed_session_control(
+                control_id, outcome=self._outcome, actor=self._actor
+            )
+        return claim
+
+
+async def test_the_poller_does_not_overwrite_a_hand_resolution(tmp_path: Path) -> None:
+    """A human's finding about a delivery is the one outcome here that nothing
+    can reconstruct, so a poller that comes back late must lose to it."""
+    async with StateDB(tmp_path / "state.db") as real_db:
+        sid = await _make_session(real_db)
+        control_id = await real_db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "steer"}
+        )
+        row = await real_db.get_session_control(control_id)
+        nodes = Pile(item_type={Operation})
+        nodes.include(_pending_operation())
+        executor = _FakeExecutor(nodes=nodes)
+        db = _ResolvedByHandRightAfterTheClaim(real_db, outcome="applied", actor="ops@example.com")
+
+        result = await _apply_session_control(db, executor, row)
+
+        assert db.resolution is not None, "the injected hand resolution did not land"
+        assert result is None, "the poller reported an outcome it did not record"
+        final = await real_db.get_session_control(control_id)
+        assert final["result"] == db.resolution, (
+            "the poller overwrote the hand resolution: "
+            f"{final['result']!r} replaced {db.resolution!r}"
+        )
+        assert "resolved by ops@example.com" in final["result"]
+
+
+async def test_the_poller_does_not_reject_over_a_hand_resolution(tmp_path: Path) -> None:
+    """The worse direction of the same defect. Here the poller's own answer is a
+    rejection, so an unguarded write would flip a delivery a person recorded as
+    applied into one the record says never happened."""
+    async with StateDB(tmp_path / "state.db") as real_db:
+        sid = await _make_session(real_db)
+        control_id = await real_db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "steer"}
+        )
+        row = await real_db.get_session_control(control_id)
+        # No pending operation, so the poller's verdict is rejected:no-pending-ops.
+        executor = _FakeExecutor()
+        db = _ResolvedByHandRightAfterTheClaim(real_db, outcome="applied", actor="ops@example.com")
+
+        result = await _apply_session_control(db, executor, row)
+
+        assert db.resolution is not None, "the injected hand resolution did not land"
+        assert result is None
+        final = await real_db.get_session_control(control_id)
+        assert final["result"] == db.resolution
+        assert "rejected" not in final["result"]
+
+
+async def test_the_poller_still_records_its_own_outcome_when_nobody_intervenes(
+    tmp_path: Path,
+) -> None:
+    """The guard must not cost the ordinary path its stamp. Without this arm,
+    a finalize that never writes anything would pass the test above."""
+    async with StateDB(tmp_path / "state.db") as db:
+        sid = await _make_session(db)
+        control_id = await db.insert_session_control(
+            session_id=sid, verb="message", payload={"text": "steer"}
+        )
+        row = await db.get_session_control(control_id)
+        nodes = Pile(item_type={Operation})
+        nodes.include(_pending_operation())
+        executor = _FakeExecutor(nodes=nodes)
+
+        result = await _apply_session_control(db, executor, row)
+
+        assert result == "applied"
+        final = await db.get_session_control(control_id)
+        assert final["result"] == "applied"
+        assert final["applied_at"] is not None
+        assert executor.context.content["operator_messages"][-1]["text"] == "steer"
+
+
 # ── unsupported verb / stop (schema-reserved, no CLI verb emits it) ────────
 
 

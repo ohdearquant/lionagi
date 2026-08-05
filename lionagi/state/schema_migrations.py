@@ -93,6 +93,11 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("status_reason_summary", "TEXT"),
         ("status_evidence_refs", "JSON"),
     ],
+    "session_controls": [
+        # When a consumer claimed the row. NULL on rows created before this
+        # migration and on rows no consumer has claimed.
+        ("claimed_at", "REAL"),
+    ],
     "artifacts": [
         # Nullable in ALTER TABLE because expressions aren't valid
         # column defaults there; insert_artifact() always sets this.
@@ -174,9 +179,8 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # has been captured for this run.
         ("resume_packet", "JSON"),
     ],
-    # Phase C Move 2: engine run persistence.
-    # New table created via schema.sql; these columns allow ALTER TABLE on
-    # existing databases that pre-date this table (rare, but handled uniformly).
+    # engine run persistence; created via schema.sql, these columns allow
+    # ALTER TABLE on existing databases that pre-date this table
     "engine_runs": [
         ("id", "TEXT NOT NULL"),
         ("kind", "TEXT NOT NULL"),
@@ -188,9 +192,7 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("export_dir", "TEXT"),
         ("error", "TEXT"),
     ],
-    # ADR-0059: durable dispatch outbox.
-    # New table created via schema.sql; these columns allow ALTER TABLE on
-    # existing databases that pre-date this table (rare, but handled uniformly).
+    # ADR-0059: durable dispatch outbox; see engine_runs above re ALTER TABLE
     "dispatch_outbox": [
         ("id", "TEXT NOT NULL"),
         ("kind", "TEXT NOT NULL"),
@@ -212,12 +214,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
-# metadata.create_all() skips indexes when their table already exists. Keep
-# dialect-specific, idempotent DDL here for indexes introduced after deployment.
-# Child keys of messages(id). Without an index on the referring column,
-# deleting a message costs a scan of the referring table per deleted row, so
-# a prune pays for the whole store once per message it removes. These exist
-# for that search, not for any query. See schema.sql for the measurement.
+# metadata.create_all() skips indexes when their table already exists, so
+# idempotent DDL for indexes introduced after deployment lives here instead.
+# These index the child keys of messages(id) for prune's delete-scan cost,
+# not for any query -- see schema.sql for the measurement.
 _MESSAGE_POINTER_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_sessions_first_msg_id ON sessions(first_msg_id)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_last_msg_id ON sessions(last_msg_id)",
@@ -236,6 +236,8 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
         "ON sessions(run_id) WHERE run_id IS NOT NULL",
         *_MESSAGE_POINTER_INDEXES,
+        "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
+        "ON branches(session_id, created_at)",
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
@@ -245,5 +247,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
         "ON sessions(run_id) WHERE run_id IS NOT NULL",
         *_MESSAGE_POINTER_INDEXES,
+        "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
+        "ON branches(session_id, created_at)",
     ),
 }

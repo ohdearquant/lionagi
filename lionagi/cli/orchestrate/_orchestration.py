@@ -647,12 +647,9 @@ async def setup_orchestration(
 
     cache_cancelled_exc_class()
 
-    # Naming no agent and no model is a request to orchestrate, not an
-    # incomplete command: orchestration is what this entry point does, so the
-    # orchestrator profile is the answer rather than a question to ask back.
-    # Only the fully unspecified case defaults. A caller who named either one
-    # gets it honoured, and still gets the refusal below if it cannot resolve
-    # to a model, because there the caller did choose and we could not comply.
+    # Naming neither agent nor model defaults to the orchestrator profile;
+    # naming either one is honoured as-is (and still refused below if it
+    # can't resolve to a model).
     defaulted_agent = not agent_name and not model_spec
     if defaulted_agent:
         agent_name = DEFAULT_ORCHESTRATOR_AGENT
@@ -664,14 +661,8 @@ async def setup_orchestration(
         except AgentProfileNotFoundError as exc:
             if not defaulted_agent:
                 raise
-            # The caller never mentioned this profile, so an error naming it as
-            # if they had asked for it explains nothing. Say what was assumed
-            # and what would satisfy it instead.
-            #
-            # Only the not-found case is translated. The loader reads the file
-            # once it has found one, and a file that disappears between those
-            # two steps raises the same builtin type — reported as a missing
-            # default profile it would send the reader somewhere else entirely.
+            # The caller never named this profile, so report it as the
+            # assumed default rather than a profile they asked for.
             raise ConfigurationError(
                 "Naming neither an agent nor a model orchestrates under the "
                 f"{DEFAULT_ORCHESTRATOR_AGENT!r} agent profile, and no such profile "
@@ -898,12 +889,9 @@ async def build_worker_branch(
         messenger_names=getattr(env, "messenger_names", None),
     )
 
-    # Casts-role workers route through the factory; verbatim-prompt workers set
-    # the string directly (no Role to compose from). A profile takes the
-    # verbatim path only when it authored a body — one that just sets a model
-    # or an effort has no body to run, and leaves the role composing as usual.
-    #
-    # Retarget authored prompts so they name this worker's artifact destination.
+    # Verbatim path applies only when the profile authored a body (one that
+    # just sets a model/effort has no body and composes via Role as usual).
+    # Retarget authored prompts to name this worker's artifact destination.
     verbatim_system: str | None = None
     if system_prompt_override is not None:
         verbatim_system = retarget_artifact_section(
@@ -926,12 +914,9 @@ async def build_worker_branch(
 
     log_config = DataLoggerConfig(auto_save_on_exit=False)
     if verbatim_system is None:
-        # Casts-role path: factory prepends LION_SYSTEM and renders the policy
-        # block; grant_emissions off — spawn rights granted below if needed.
-        # A casts-role worker composes its prompt from the role body and never
-        # sees `bare_worker_system`, so the artifact directive is appended here
-        # too — otherwise the default (non-`--bare`) worker, which is the
-        # common case, would still be told nothing about where output belongs.
+        # Casts-role worker never sees bare_worker_system, so the artifact
+        # directive is appended here too, or it would learn nothing about
+        # where output belongs.
         artifact_section = worker_artifact_section(
             artifact_dir,
             workspace_assigned=is_cli,
@@ -1022,12 +1007,9 @@ class TeamLifecycleCoordinator:
     # In-process Exchange (env.exchange); messenger `send` lands here, not
     # in the team file. None for CLI-only teams.
     exchange: Any = None
-    # Index into the team file's `messages` at the moment this run attached
-    # (0 for a freshly created team). `check_round` passes this to
-    # `compute_quiescence` as `history_boundary` so a prior run's done/
-    # finished/wakeup signals — left behind by `--team-attach` reusing the
-    # same team file and role-derived worker names — never mark this run's
-    # workers idle/retired before they post a signal of their own.
+    # Index into the team file's `messages` at attach time, so a prior run's
+    # leftover signals (from `--team-attach` reusing the same worker names)
+    # never mark this run's workers idle/retired prematurely.
     message_boundary: int = 0
     rounds_run: int = field(default=0, init=False)
 
@@ -1176,12 +1158,9 @@ class TeamLifecycleCoordinator:
             node.branch_id = branch.id
             round_id = f"{worker}-round{self.rounds_run + 1}"
             node.metadata["reference_id"] = round_id
-            # Stamp the same assignee/spawn_id pair role_node_builder stamps
-            # on every reactively-injected node (patterns.py) — flow.py's
-            # finalize-time result scan and checkpoint capture both key off
-            # these two fields to attribute a spawned node back to its
-            # worker/round instead of falling through to a generic
-            # "spawned"/"spawn-N" entry.
+            # Same assignee/spawn_id pair role_node_builder stamps on every
+            # reactively-injected node — flow.py's result scan and checkpoint
+            # capture key off these to attribute the node to its worker/round.
             node.metadata["assignee"] = worker
             node.metadata["spawn_id"] = round_id
             with contextlib.suppress(FileNotFoundError):
@@ -1216,34 +1195,23 @@ def make_team_lifecycle_coordinator(
 def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
     """List what each worker actually wrote, one entry per worker the run expected.
 
-    The roster comes from the directories the run handed out, not from a scan
-    for non-empty ones, so a worker that wrote nothing is still an entry — with
-    an empty ``files`` list — rather than an absence. A run where nothing was
-    written therefore reports every worker as having produced nothing, instead
-    of rendering as a clean report with no rows.
+    The roster comes from the directories the run handed out, not a scan for
+    non-empty ones, so a worker that wrote nothing is still an entry (empty
+    ``files``) rather than an absence. A worker the run expected but never
+    registered a directory for is emitted as ``unregistered`` rather than
+    dropped, since that failure looks identical to "fewer workers" if omitted.
 
-    That roster is then checked against the workers the run said it would have.
-    A worker the run expected but never registered a directory for is emitted as
-    an ``unregistered`` entry rather than dropped: the failure it represents —
-    a code path that launches a worker without giving it a directory — is
-    exactly the one an omission would hide, because an omission and a run that
-    simply had fewer workers look identical in the output.
-
-    Each entry carries a ``status``, because the ways a directory can fail to
-    yield files are not interchangeable:
+    ``status`` per entry:
 
     ``unreadable``
-        traversal raised — we could not look.
+        traversal raised — could not look.
     ``missing``
-        the path is gone. Registration creates the directory, so a registered
-        path that no longer exists was removed after the fact; that is a
-        different event from a worker declining to write, and reporting it as
-        "produced nothing" would attribute someone else's deletion to the
-        worker.
+        the registered path is gone (removed after registration, not a worker
+        declining to write).
     ``unregistered``
-        the run expected this worker and no directory was ever recorded for it.
+        expected but no directory was ever recorded.
     ``reported``
-        we looked and ``files`` is what was there, empty or not.
+        looked, and ``files`` is what was there, empty or not.
     """
     entries: list[dict] = []
     registered = env.worker_artifact_dirs

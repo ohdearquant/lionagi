@@ -45,18 +45,13 @@ def classify_session_health(
     has_stale_locks: bool,
 ) -> SessionHealth:
     """Classify a session dict into a SessionHealth level; pure function, caller
-    supplies liveness signals. ``process_alive`` is tri-state — see docs/internals/runtime.md."""
+    supplies liveness signals. Decision order matters — see docs/internals/runtime.md."""
     status = session.get("status") or "completed"
 
-    # Terminal sessions: done means done, unless they left litter.
     if status in {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}:
         if has_stale_locks:
             return SessionHealth.ZOMBIE
-        # has_artifacts alone isn't zombie evidence — stale locks are the signal.
         return SessionHealth.HEALTHY
-
-    # Below here: status == 'running' (or legacy NULL → treated as
-    # completed above). Active sessions classify along live/dead axes.
 
     last_activity = (
         session.get("last_message_at")
@@ -73,7 +68,6 @@ def classify_session_health(
         if not has_artifacts and (session.get("message_count") or 0) == 0:
             return SessionHealth.ORPHANED
         if process_alive is False:
-            # Confirmed dead outranks the activity guard below.
             return SessionHealth.STALE
         # Unknown liveness: activity is the stronger life-evidence here — see docs/internals/runtime.md.
         if not is_stale:

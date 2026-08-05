@@ -14,6 +14,9 @@ from lionagi import iModel
 from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
+from lionagi.providers.openai._codex_profile import (
+    resolve_codex_config_profile,
+)
 from lionagi.service.providers import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
@@ -50,7 +53,7 @@ __all__ = (
     "build_chat_model",
     "build_imodel_from_spec",
     "parse_model_spec",
-    "resolve_model_spec",
+    "resolve_codex_config_profile",
     "resolve_persisted_effort",
     "AgentProfile",
     "AgentProfileNotFoundError",
@@ -66,6 +69,13 @@ __all__ = (
 )
 
 # ── iModel construction ───────────────────────────────────────────────────
+
+
+# Re-exported from the provider layer, where it now lives so the LIBRARY entry
+# point reaches it too. It sat here, under cli/, and a codex request built with
+# Branch(chat_model="codex/<profile>") therefore never resolved: the profile
+# NAME went to codex as a model id and codex rejected a model nobody asked for.
+# Kept in this module's namespace and __all__ because callers import it here.
 
 
 def build_imodel_from_spec(
@@ -87,6 +97,20 @@ def build_imodel_from_spec(
     # Resolve provider for yolo/effort kwarg lookup
     provider_raw = ms.model.split("/")[0] if "/" in ms.model else ms.model
     resolved_model = ms.model
+
+    # Before the effort clamp below, whose ceilings are keyed on the model: a
+    # profile names a different model than the spec did.
+    codex_profile_overrides: dict[str, Any] = {}
+    if provider_raw == "codex" and "/" in ms.model:
+        from ._logging import progress
+
+        profile_name = ms.model.split("/", 1)[1]
+        resolved_profile = resolve_codex_config_profile(profile_name)
+        if resolved_profile is not None:
+            profile_model, codex_profile_overrides = resolved_profile
+            progress(f"codex profile {profile_name!r} resolves to model {profile_model!r}")
+            resolved_model = f"codex/{profile_model}"
+            ms = ModelSpec(model=resolved_model, effort=ms.effort)
 
     if bypass:
         extra.update(PROVIDER_BYPASS_KWARGS.get(provider_raw, {}))
@@ -114,6 +138,11 @@ def build_imodel_from_spec(
             bare_model = ms.model.split("/", 1)[1] if "/" in ms.model else ms.model
             resolved_model = f"{provider_raw}/{resolve_agy_model(bare_model, effort=effort)}"
 
+    if codex_profile_overrides:
+        merged = dict(codex_profile_overrides)
+        merged.update(extra.get("config_overrides") or {})
+        extra["config_overrides"] = merged
+
     return iModel(
         model=resolved_model,
         endpoint="query_cli",
@@ -136,15 +165,25 @@ def build_chat_model(
     """Legacy: for agent.py compat. Returns bare spec string when no flags."""
     effort = normalize_effort(effort)
     extra: dict = {}
+    # Before anything keyed on the model — the effort clamp below included,
+    # since its ceilings belong to specific models and a profile names a
+    # different one than the spec did.
+    codex_profile_overrides: dict[str, Any] = {}
+    if provider == "codex":
+        from ._logging import progress
+
+        resolved_profile = resolve_codex_config_profile(model)
+        if resolved_profile is not None:
+            profile_name = model
+            model, codex_profile_overrides = resolved_profile
+            progress(f"codex profile {profile_name!r} resolves to model {model!r}")
     if mcp_servers is not None:
         from lionagi.agent.factory import apply_forwarded_mcp_servers
 
-        # Whether this provider can be given a set at all is one question with
-        # one answer, and applying it is that answer's implementation — a lane
-        # that carries a set over a different transport (codex, via config
-        # overrides) is a lane this caller must not decide about itself.
-        # An empty set is the caller stating the whole set; a non-empty one is
-        # added to whatever the provider finds for itself.
+        # Whether/how this provider accepts a server set (e.g. codex via config
+        # overrides) is decided by apply_forwarded_mcp_servers, not here. An
+        # empty set means the caller states the whole set; non-empty adds to
+        # whatever the provider finds for itself.
         apply_forwarded_mcp_servers(
             extra, mcp_servers, provider=provider, exclusive=not mcp_servers
         )
@@ -173,6 +212,14 @@ def build_chat_model(
 
             model = resolve_agy_model(model, effort=effort)
 
+    if codex_profile_overrides:
+        # Merged, never assigned: MCP server forwarding may already have put
+        # its own overrides here, and replacing the dict would drop a leg's
+        # server set on the floor.
+        merged = dict(codex_profile_overrides)
+        merged.update(extra.get("config_overrides") or {})
+        extra["config_overrides"] = merged
+
     if extra:
         return iModel(
             provider=provider,
@@ -199,14 +246,6 @@ def resolve_persisted_effort(
     if provider in PROVIDERS_NO_EFFORT:
         effort = None
     return effort
-
-
-def resolve_model_spec(spec: str) -> tuple[str, str]:
-    """Legacy compat — returns (provider, model) by splitting on /."""
-    ms = parse_model_spec(spec)
-    if "/" in ms.model:
-        return ms.model.split("/", 1)
-    return ms.model, ms.model
 
 
 # ── CLI common args ───────────────────────────────────────────────────────

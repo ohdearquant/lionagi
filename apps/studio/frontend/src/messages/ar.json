@@ -97,7 +97,11 @@
       "send": "Could not send this instruction.",
       "stop": "Could not stop the current turn.",
       "decision": "Could not record that decision.",
-      "effect": "Could not acknowledge this interface action."
+      "effect": "Could not acknowledge this interface action.",
+      "rename": "Could not rename this conversation.",
+      "pin": "Could not update this conversation.",
+      "archive": "Could not update this conversation.",
+      "fork": "Could not fork this conversation."
     },
     "composer": {
       "label": "Instruction",
@@ -156,7 +160,34 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "افتراضي",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "الجهد",
+      "default": "افتراضي"
+    },
+    "list": {
+      "toggle": "Conversations",
+      "ariaLabel": "Conversations",
+      "ariaLabelSelected": "Conversations: {title}",
+      "filter": {
+        "active": "Active",
+        "archived": "Archived",
+        "all": "All"
+      },
+      "pin": "Pin",
+      "unpin": "Unpin",
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "fork": "Fork",
+      "forking": "Forking…",
+      "rename": "Rename",
+      "renameAriaLabel": "Rename {title}",
+      "renamePlaceholder": "Conversation title",
+      "empty": "No conversations yet",
+      "untitled": "Untitled conversation"
     }
   },
   "playfield": {
@@ -287,7 +318,42 @@
     },
     "tabsAria": "تبويبات المكتبة",
     "masterAria": "فهرس المكتبة",
-    "detailAria": "تفاصيل العنصر"
+    "detailAria": "تفاصيل العنصر",
+    "filterMcp": "MCP Server",
+    "newMcpServer": "New MCP Server",
+    "mcp": {
+      "transport": "Transport",
+      "transportStdio": "Command (stdio)",
+      "transportHttp": "URL (http)",
+      "command": "Command",
+      "commandPlaceholder": "e.g. npx",
+      "args": "Arguments",
+      "argsPlaceholder": "One argument per line",
+      "env": "Environment",
+      "envPlaceholder": "KEY=value, one per line",
+      "envHint": "Values are never shown once saved. Leave a KEY= line as-is to keep it, or delete the line to remove that key.",
+      "envValuesHidden": "Values are never sent back to the browser once saved.",
+      "noEnv": "No environment variables configured.",
+      "url": "URL",
+      "timeout": "Timeout (seconds)",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "checkConnection": "Check connection",
+      "checking": "Checking…",
+      "lastCheck": "Last connection check",
+      "neverChecked": "Never checked",
+      "connectionOk": "Connected",
+      "connectionFailed": "Failed",
+      "validationOk": "Configuration is valid.",
+      "remove": "Remove",
+      "confirmDelete": "Remove MCP server \"{name}\"? This cannot be undone.",
+      "createTitle": "New MCP Server",
+      "createName": "Server name",
+      "createNamePlaceholder": "my-server",
+      "creating": "Creating…",
+      "create": "Create",
+      "createError": "Could not create this server."
+    }
   },
   "history": {
     "title": "السجل",
@@ -374,7 +440,9 @@
       "statToolCallsRecent": "استدعاءات الأدوات (الأخيرة)",
       "statErrorsRecent": "الأخطاء (الأخيرة)",
       "noBranchErrorsPartial": "لا توجد أخطاء في الرسائل المحمّلة.",
-      "noFilesPartial": "لم تُكتشف عمليات على الملفات في الرسائل المحمّلة."
+      "noFilesPartial": "لم تُكتشف عمليات على الملفات في الرسائل المحمّلة.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "قائمة السجل",
     "detailAria": "تفاصيل العنصر"
@@ -392,8 +460,6 @@
       "stateDbSuffix": "قاعدة بيانات الحالة",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "WAL معلّق",
-      "walPendingSuffix": "WAL معلّق",
       "phantoms": "الجلسات الوهمية",
       "phantomsNone": "لم يُكتشف شيء",
       "manageLink": "إدارة في الصيانة ←",
@@ -724,6 +790,14 @@
       "empty": "لا توجد جلسات سابقة تطابق هذا العامل.",
       "loadMore": "تحميل المزيد",
       "loadingMore": "جارٍ التحميل…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {
@@ -754,7 +828,17 @@
       "durationStatus": "قيد التشغيل منذ {duration} · آخر نشاط منذ {age}",
       "empty": "لا توجد تشغيلات أو استدعاءات نشطة.",
       "emptyHint": "شغّل واحدًا باستخدام li CLI، أو اضغط ⌘K للانتقال إلى أي مكان.",
-      "fleetLink": "أسطول الوكلاء ←"
+      "fleetLink": "أسطول الوكلاء ←",
+      "viewCards": "بطاقات",
+      "viewTable": "جدول",
+      "table": {
+        "colName": "الاسم",
+        "colStatus": "الحالة",
+        "colUptime": "مدة التشغيل",
+        "colLastActivity": "آخر نشاط",
+        "colKind": "النوع",
+        "colId": "المعرف"
+      }
     },
     "recent": {
       "title": "الأخيرة",

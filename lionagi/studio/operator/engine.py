@@ -353,7 +353,11 @@ class BranchOperatorEngine:
         return self._stream(turn)
 
     async def _stream(self, turn: OperatorEngineTurn):
-        provider = os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+        # Preflight the provider this turn will actually run on, not the
+        # environment default. Once a turn can carry its own selection, reading
+        # the environment here refuses a valid Codex or Gemini turn because an
+        # unselected Claude installation is missing.
+        provider, _ = resolve_operator_provider_model(turn)
         if provider == "claude_code":
             from lionagi.providers.anthropic.claude_code import CLAUDE_CLI
 
@@ -477,15 +481,59 @@ class BranchOperatorEngine:
                 await task
 
 
+def resolve_operator_provider_model(turn: OperatorEngineTurn) -> tuple[str, str]:
+    """Resolve (provider, model) for a turn.
+
+    The turn's own selection wins; the environment variables remain the
+    default for a turn that specifies neither, so an unmigrated caller (or a
+    conversation that never chose a provider) keeps its old behavior exactly.
+    """
+    provider = turn.provider or os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+    model_name = turn.model or os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
+    return provider, model_name
+
+
+def _apply_operator_effort(
+    provider: str, model_name: str, effort: str | None, model_kwargs: dict[str, Any]
+) -> str:
+    """Fold ``effort`` into ``model_kwargs`` (or the model name) the way each
+    provider actually accepts it; returns the (possibly rewritten) model name.
+
+    See ``lionagi/service/providers.py`` for the per-provider tables this
+    mirrors: Claude and Codex take effort as a request kwarg (with model-
+    dependent clamping); the gemini-code CLI has no effort kwarg at all and
+    instead folds it into the resolved ``--model`` display name.
+    """
+    if not effort:
+        return model_name
+    from lionagi.service.providers import (
+        PROVIDER_EFFORT_KWARG,
+        PROVIDERS_EFFORT_VIA_MODEL_NAME,
+        _clamp_claude_effort,
+        _clamp_codex_effort,
+    )
+
+    kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+    if kwarg is not None:
+        if provider == "codex":
+            effort = _clamp_codex_effort(effort, model_name)
+        elif provider == "claude_code":
+            effort = _clamp_claude_effort(effort, model_name)
+        model_kwargs[kwarg] = effort
+        return model_name
+    if provider in PROVIDERS_EFFORT_VIA_MODEL_NAME:
+        from lionagi.providers.google.gemini_code import resolve_agy_model
+
+        return resolve_agy_model(model_name, effort=effort)
+    return model_name
+
+
 def build_operator_branch(turn: OperatorEngineTurn):
     """Build the real, permission-gated Branch used by a canonical turn run."""
     from lionagi.service.manager import iModel
     from lionagi.session.branch import Branch
 
-    provider = os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
-    # The conversation's own selection wins; the environment is the default for
-    # a conversation that has never chosen one.
-    model_name = turn.model or os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
+    provider, model_name = resolve_operator_provider_model(turn)
     model_kwargs: dict[str, Any] = {}
     if provider == "claude_code":
         from .store import OperatorStore
@@ -531,5 +579,21 @@ def build_operator_branch(turn: OperatorEngineTurn):
                 },
             },
         }
+    elif provider == "codex":
+        # Codex's CLI request model has no MCP-server / permission-prompt-tool
+        # fields (those are Claude Code CLI-specific) and no session-resume
+        # field either, so a Codex-backed turn starts fresh each time and
+        # runs without the Operator's application MCP tools.
+        model_kwargs = {"endpoint": "query_cli", "api_key": "dummy"}
+    elif provider == "gemini_code":
+        # Same MCP/permission-tool limitation as Codex; agy does support
+        # conversation resume via --conversation, so that continuity carries
+        # over even though tool access does not.
+        model_kwargs = {
+            "endpoint": "query_cli",
+            "api_key": "dummy",
+            **({"resume": turn.provider_session_id} if turn.provider_session_id else {}),
+        }
+    model_name = _apply_operator_effort(provider, model_name, turn.effort, model_kwargs)
     chat_model = iModel(provider=provider, model=model_name, **model_kwargs)
     return Branch(system=_SYSTEM_PROMPT, chat_model=chat_model)

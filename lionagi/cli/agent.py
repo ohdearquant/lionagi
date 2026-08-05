@@ -55,6 +55,7 @@ from ._runs import (
     allocate_run,
     find_branch,
     load_last_branch,
+    resolve_run_reason,
     save_last_branch_pointer,
     setup_agent_persist,
     teardown_agent_persist,
@@ -270,6 +271,11 @@ def _form_to_context_block(form) -> str:
     return "\n".join(lines)
 
 
+# Heartbeat tick interval. Module-level so a test can shrink it rather than
+# waiting out a real 60s tick.
+_HEARTBEAT_INTERVAL_S = 60
+
+
 class _ProgressReport:
     """Heartbeat text that distinguishes a working agent from a merely live one.
 
@@ -303,13 +309,10 @@ class _ProgressReport:
     def line(self, now: float) -> str:
         elapsed = int(now - self._start)
         current = self._counts()
-        # Two different unreadable states, kept apart because they license
-        # different claims. The baseline is taken once and never retried, so a
-        # baseline that failed to read means no delta is computable for the rest
-        # of this run; a single unreadable snapshot may be one bad tick, and
-        # widening it past this tick claims more than was measured. Neither
-        # falls back to the previous reading, which would present a stale count
-        # as current.
+        # An unreadable baseline (never retried) means no delta for the rest
+        # of this run; a single unreadable snapshot is only this tick's own
+        # gap. Neither falls back to the previous reading — that would
+        # present a stale count as current.
         if self._base is None:
             return (
                 f"[progress] {elapsed}s elapsed — progress is not observable for "
@@ -376,6 +379,206 @@ def _report_mcp_resolution(
         "a checkout silently loses them. Pass --mcp-config PATH, or --no-mcp-config "
         "to state that this is intended."
     )
+
+
+"""Framing for a steer delivered as a continuation turn.
+
+Deliberately mirrors the flow-side operator-steer vocabulary and, like it,
+claims no authority to override: the operator's own words say what to change.
+An earlier draft announced that the steer "supersedes conflicting parts of the
+original instruction", and a live leg correctly refused it — a banner asserting
+override authority reads exactly like injected content trying to redirect the
+model away from what its user asked for. The channel already carries the
+operator's authority (this is the same instruction slot the original prompt
+arrived through), so the framing only has to say who is speaking and when.
+"""
+_AGENT_STEER_TEMPLATE = """\
+[OPERATOR STEER]
+The operator who started this run sent this while it was running. It is a live
+correction to the task you are already working on, from the same person who
+gave you that task — not a message from a third party. Attend to it before
+continuing. Most recent last.
+{lines}
+[/OPERATOR STEER]
+"""
+
+
+async def _drain_pending_steers(
+    live: dict | None,
+    branch,
+    *,
+    operate_kwargs: dict,
+    deadline: float | None,
+    owner: str | None = None,
+) -> object | None:
+    """Consume queued `message` session controls as warm continuation turns.
+
+    Called after a successful operate() and before the run finalizes. Each
+    drain batch joins all pending steers (arrival order) into one continuation
+    turn on the same branch; steers enqueued during a continuation are caught
+    by the next iteration. Continuations spend the leg's original wall clock:
+    past *deadline* the loop stops without consuming (teardown tombstones the
+    remainder), so steering can never keep a leg alive past its budget.
+
+    *owner* names this leg on the rows it claims, so a concurrent leg and the
+    teardown can both tell this leg's in-flight work from their own.
+
+    Returns the last continuation result, or None if nothing was consumed.
+    """
+    if not live or not live.get("session_id"):
+        return None
+    import time as _time
+
+    from lionagi.cli._logging import hint, log_error, warn
+
+    db = live.get("db")
+    if db is None:
+        # A persistence context carrying a session but no handle to read it
+        # with. Nothing can be drained, and returning quietly would make that
+        # indistinguishable from "no steers were queued" -- so say which one
+        # this is. setup_agent_persist always supplies both.
+        log_error("steer: session is persisted but no database handle came with it; not draining")
+        return None
+    session_id = live["session_id"]
+    last_res = None
+    while True:
+        if deadline is not None and _time.monotonic() >= deadline:
+            break
+        pending = await db.list_pending_session_controls(session_id)
+        steers = [row for row in pending if row.get("verb") == "message"]
+        if not steers:
+            break
+        if str(steers[0].get("result") or "").startswith("applying"):
+            # A consumer stamped this row and did not finish. Re-applying it
+            # could deliver the same operator message a second time, so it is
+            # left untouched, and the rows behind it wait rather than jumping
+            # it. This is the rule the flow poller already follows. It holds
+            # whoever the claimant is, including this leg on a later pass:
+            # a claim that outlived its apply is exactly the case where nobody
+            # can say whether the message landed.
+            break
+        # The deadline was checked before the queue read above, and that read is
+        # I/O that can cross it. Rechecking here, before anything is claimed or
+        # sent, is what keeps the run inside the timeout the caller gave it.
+        remaining = None
+        if deadline is not None:
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                break
+        texts = []
+        claimed = []
+        for row in steers:
+            # Carry the claim the database actually wrote rather than rebuilding
+            # it here: the finalize below is only guarded if the two agree, and
+            # two copies of the same expression are what stop agreeing.
+            claim_token = await db.mark_session_control_applying(row["id"], owner=owner)
+            if claim_token is None:
+                # Another consumer claimed it between the read and here.
+                continue
+            claimed.append((row, claim_token))
+            payload = row.get("payload") or {}
+            texts.append(str(payload.get("text") or ""))
+        if not claimed:
+            break
+        joined = "\n".join(f"- {t}" for t in texts if t.strip())
+        hint(f"[steer] applying {len(claimed)} queued operator message(s) as a continuation turn")
+        kwargs = dict(operate_kwargs)
+        if remaining is not None:
+            # What is actually left, never a floor. Flooring the budget would
+            # hand the continuation a fresh second that the caller's deadline
+            # has already spent.
+            kwargs["timeout"] = remaining
+        last_res = await branch.operate(
+            instruction=_AGENT_STEER_TEMPLATE.format(lines=joined),
+            **kwargs,
+        )
+        for row, claim_token in claimed:
+            # Unconditional on the clock, deliberately. The deadline gates when
+            # new provider work may start, which the recheck above enforces;
+            # recording the outcome of work already performed is exempt, because
+            # a skipped finalize would leave a delivered message on record as
+            # undelivered. The claim token is the guard here instead: this write
+            # lands only while the row still carries this leg's claim.
+            stamped = await db.finalize_session_control(
+                row["id"], result="applied", expect_claim=claim_token
+            )
+            if not stamped:
+                # Somebody resolved the row while the continuation was running.
+                # Their outcome stands, which is the point of the guard, but the
+                # message was already delivered to the branch by then, so the
+                # record now disagrees with what happened. Say so: the delivery
+                # cannot be taken back, and a silent refusal here is the same
+                # defect as the overwrite, one level up.
+                warn(
+                    f"operator message {row['id']} was delivered, but the control row "
+                    f"was resolved by someone else first and now records their outcome "
+                    f"instead of 'applied'. The message reached the agent."
+                )
+    return last_res
+
+
+async def _tombstone_pending_steers(live: dict | None) -> None:
+    """Finalize never-claimed session controls as rejected at run teardown.
+
+    A steer enqueued while the run was live but never drained must not sit
+    pending forever. Best-effort: a failure here logs and leaves the row
+    visibly pending — the status surface independently renders a pending
+    control on a terminal run as never-landed, so the operator still sees
+    the truth.
+
+    Only rows no consumer ever claimed are tombstoned, and that is enforced at
+    the write rather than read off the snapshot. A claimed row belongs to the
+    leg that took it, which may be another leg still inside its provider call,
+    or one that died between the claim and the apply. Rejecting either would
+    assert that the message was not delivered, which nothing here knows; the row
+    stays visible as claimed, carrying its owner and its age, for an operator to
+    resolve. Called after the run's teardown, so a control admitted against a
+    still-running session is normally already committed and visible to the read
+    below, and one arriving later is refused at the writer; the terminal check
+    at the top of this function is what makes that hold when teardown failed to
+    persist the transition it was asked for.
+    """
+    if not live or not live.get("session_id"):
+        return
+    try:
+        from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+        session = await live["db"].get_session(live["session_id"])
+        if (session or {}).get("status") not in SESSION_TERMINAL_STATUSES:
+            # The precondition this sweep's correctness rests on, asserted
+            # rather than assumed. Rejecting a control on a session that is
+            # still running would destroy a steer a live consumer was about to
+            # take, and the sweep only closes the terminal race at all because
+            # the transition it follows is what stops new controls being
+            # admitted. Refusing here rather than sweeping keeps a call-site
+            # ordering mistake from turning into a deleted operator message.
+            log_error(
+                "steer tombstone skipped: session "
+                f"{str(live['session_id'])[:8]} is not terminal, so a pending "
+                "control may still have a consumer"
+            )
+            return
+        stale = await live["db"].list_pending_session_controls(live["session_id"])
+        for row in stale:
+            if row.get("result") is not None:
+                continue
+            # The snapshot above says the row was unclaimed when it was read,
+            # which is not the same as unclaimed when this writes. Another leg
+            # that read the row at its own turn boundary can claim it and hand
+            # the steer to the model in between, so the guard has to travel with
+            # the write: only_if_unclaimed makes the database re-check, and a
+            # row that got claimed in the window is left alone rather than
+            # recorded as never delivered.
+            await live["db"].finalize_session_control(
+                row["id"],
+                result=(
+                    "rejected: run reached terminal status before "
+                    "the steer could land — use `li agent -r`"
+                ),
+                only_if_unclaimed=True,
+            )
+    except Exception as exc:  # noqa: BLE001 — teardown must not raise
+        log_error(f"steer tombstone write failed: {exc!r}")
 
 
 async def _run_agent(
@@ -651,13 +854,10 @@ async def _run_agent(
 
                 register_profile_injection(branch, agent_name, profile)
 
-        # Fail fast: `li agent` only drives CLI-backed providers. The `run` op
-        # raises this same error deep inside once streaming — catching it here,
-        # before allocate_run/setup_agent_persist, keeps a bad provider prefix
-        # (e.g. 'gpt-5.3-codex-spark' vs 'codex/gpt-5.3-codex-spark') from
-        # persisting a run/session that would be recorded as a failed reliability
-        # event. New-branch only: a resume model override swaps only the model
-        # under the branch's existing (already-CLI) provider, never the provider.
+        # Fail fast, before allocate_run/setup_agent_persist: a bad provider
+        # prefix (e.g. 'gpt-5.3-codex-spark' vs 'codex/gpt-5.3-codex-spark')
+        # must not persist a run/session recorded as a failed reliability event.
+        # New-branch only — a resume model override never swaps the provider.
         if not branch.chat_model.is_cli:
             cli_provider = getattr(branch.chat_model.endpoint.config, "provider", provider)
             raise ConfigurationError(
@@ -727,15 +927,13 @@ async def _run_agent(
             forwarded=request_kwargs_carry_forwarded_mcp(cfg),
         )
 
-    # Add the profile system prompt for every leg EXCEPT one whose branch carries
-    # (or, on a brand-new leg, would carry) a create_agent-composed system message
-    # (role header + policy block) — full rationale in docs/internals/cli.md.
-    # Brand-new branch: `took_create_agent_path` is authoritative (preset can't
-    # combine with resume). Resumed branch: only the immutable
-    # CREATE_AGENT_BRANCH_ORIGIN_KEY marker counts as create_agent provenance —
-    # never re-derive it from persisted system-message content (Markdown
-    # headings are user-authored prompt text, not proof of origin, and a
-    # markerless branch with an explicitly requested role must get that role's
+    # Skip the profile system prompt for a branch that carries (or would carry)
+    # a create_agent-composed system message — full rationale in
+    # docs/internals/cli.md. Brand-new branch: `took_create_agent_path` is
+    # authoritative. Resumed branch: only the immutable
+    # CREATE_AGENT_BRANCH_ORIGIN_KEY marker counts as provenance — never
+    # re-derived from persisted content (a markerless branch with an
+    # explicitly requested role must get that role's
     # system prompt rather than have it silently dropped).
     if is_resumed_branch:
         from lionagi.agent.factory import CREATE_AGENT_BRANCH_ORIGIN_KEY
@@ -782,6 +980,10 @@ async def _run_agent(
         provider=provider,
         effort=effort,
         project=project,
+        # This runner drains queued operator messages at turn end and
+        # tombstones whatever it did not take, so controls aimed at it have a
+        # consumer.
+        drains_controls=True,
     )
     if seed_injection_totals:
         await _seed_injection_stats(live, _injection_totals)
@@ -789,6 +991,17 @@ async def _run_agent(
     # Session-scoped: teardown_agent_persist terminalizes only the session;
     # invocation records are finalized externally and would never fire. Deferred
     # auto-resume legs unregister without firing; the recursed leg registers anew.
+    #
+    # Persistence setup failing leaves no session entity to fire a terminal
+    # transition on, so the registered path below (register_flow_notify_scope)
+    # cannot be used. That used to mean the notice was silently unreachable;
+    # this run now delivers it itself once its own terminal status is known,
+    # in the `finally` block below (see `deliver_flow_notify_now`) — same
+    # resolution, same payload, run directly instead of registered for a
+    # transition that will never happen. The refusal record this run can still
+    # write applies only once delivery is actually attempted and genuinely
+    # cannot be completed (nothing configured to run, or the config itself is
+    # unusable), never merely because persistence failed.
     _notify_scope_name: str | None = None
     _notify_session_id = live.get("session_id") if live else None
     if notify and _notify_session_id is not None:
@@ -819,12 +1032,9 @@ async def _run_agent(
             on_rejection=_notify_override_refused,
         )
 
-    # notify.on_terminal (settings-driven, independent of --notify) outcome
-    # attribution: bind this run into the handler at registration time so a
-    # late-arriving outcome for this session lands here or nowhere -- never
-    # on a different run this process later allocates. Skipped when --notify
-    # already owns this same entity as an exclusive override (registering a
-    # second override for the same entity would fire the adapter twice).
+    # Bind this run into the notify.on_terminal handler at registration time so
+    # a late outcome lands here or nowhere, never on a later run. Skipped when
+    # --notify already owns this entity (a second override would double-fire).
     _notify_outcome_scope_name: str | None = None
     if not notify and _notify_session_id is not None:
         from lionagi.state.lifecycle.notify_settings import (
@@ -841,24 +1051,94 @@ async def _run_agent(
 
     _terminal_status = "completed"
     _terminal_exc: BaseException | None = None
+    _propagating = False
+    _direct_notice_sent = False
 
+    async def _deliver_direct_notice() -> None:
+        """Send this run's one terminal notice on the no-persistence route.
+
+        No session entity ever existed for this run, so the registered path
+        was never reached and nothing else will ever deliver for it. Which
+        makes *when* this is called the whole question: it reads
+        ``_terminal_status`` at call time, and a status is not this run's
+        answer until every later line that can still change it has run.
+
+        Shielded, because the guarantee it exists to provide is that a
+        terminal notice arrives, and the caller is a teardown path where a
+        cancellation is exactly what is expected to arrive.
+
+        Idempotent by flag rather than by the caller being careful: it is
+        reached from a ``finally`` and from the ordinary tail, and those two
+        overlap on nothing today, which is the sort of thing that stays true
+        only until someone adds a branch.
+        """
+        nonlocal _direct_notice_sent
+
+        if not notify or _notify_session_id is not None or _direct_notice_sent:
+            return
+        _direct_notice_sent = True
+        import anyio as _anyio
+
+        with _anyio.CancelScope(shield=True):
+            try:
+                from lionagi.cli.orchestrate._notify import deliver_flow_notify_now
+
+                _reason_code, _, _ = resolve_run_reason(
+                    status=_terminal_status, exception=_terminal_exc
+                )
+                await deliver_flow_notify_now(
+                    override=notify,
+                    run=run,
+                    entity_kind="session",
+                    entity_id=branch_id,
+                    invocation_id=invocation_id,
+                    flow_kind="agent",
+                    playbook=None,
+                    save_dir=str(run.artifact_root),
+                    cwd=cwd or os.getcwd(),
+                    started_at=run_manifest["started_at"],
+                    terminal_status=_terminal_status,
+                    reason_code=_reason_code,
+                    occurred_at=time.time(),
+                )
+            except Exception as _notify_exc:  # noqa: BLE001 — a notifier failure must never affect the run
+                log_error(f"direct-path notify.on_terminal delivery failed: {_notify_exc!r}")
+
+    # Armed unconditionally, not only when --timeout is set: the steer receipt
+    # ack below is the operator's only signal that a queued message was
+    # received (vs. lost) before the turn ends, and a leg spawned without a
+    # timeout is exactly the case where a turn can run long enough for that
+    # distinction to matter. The extra task is one sleeping coroutine per leg,
+    # negligible next to the provider call it watches.
     _heartbeat_task = None
-    if timeout is not None:
-        import asyncio as _asyncio
-        import time as _hb_time
+    import asyncio as _asyncio
+    import time as _hb_time
 
-        _hb_report = _ProgressReport(branch, _hb_time.monotonic())
+    _hb_report = _ProgressReport(branch, _hb_time.monotonic())
 
-        async def _heartbeat_loop():
-            while True:
-                await _asyncio.sleep(60)
-                hint(_hb_report.line(_hb_time.monotonic()))
+    async def _heartbeat_loop():
+        while True:
+            await _asyncio.sleep(_HEARTBEAT_INTERVAL_S)
+            line = _hb_report.line(_hb_time.monotonic())
+            # Steer receipt ack: a queued operator message cannot land
+            # mid-turn, so tell the operator it was received and when it
+            # will apply. Fail-safe — the heartbeat never crashes the leg.
+            if live and live.get("session_id"):
+                try:
+                    _pending = await live["db"].list_pending_session_controls(live["session_id"])
+                    _n = sum(1 for c in _pending if c.get("verb") == "message")
+                    if _n:
+                        line += f"  [steer queued x{_n} — lands at end of current turn]"
+                except Exception:  # noqa: BLE001, S110 — ack is best-effort color
+                    pass
+            hint(line)
 
-        try:
-            _heartbeat_task = _asyncio.ensure_future(_heartbeat_loop())
-        except RuntimeError:
-            _heartbeat_task = None
+    try:
+        _heartbeat_task = _asyncio.ensure_future(_heartbeat_loop())
+    except RuntimeError:
+        _heartbeat_task = None
 
+    _leg_deadline = (time.monotonic() + timeout) if timeout is not None else None
     try:
         res = await branch.operate(
             instruction=prompt,
@@ -869,9 +1149,35 @@ async def _run_agent(
             **({"images": images} if images else {}),
             **({"repo": cwd} if cwd else {}),
         )
+        steer_res = await _drain_pending_steers(
+            live,
+            branch,
+            operate_kwargs={
+                "stream_persist": True,
+                "persist_dir": str(run.stream_dir),
+                "snapshot_dir": str(run.branches_dir),
+                "timeout": timeout,
+                **({"repo": cwd} if cwd else {}),
+            },
+            deadline=_leg_deadline,
+            # The run id, because it is what identifies THIS leg. The branch is
+            # shared with every leg that resumes it, so a branch-keyed claim
+            # could not tell two legs apart, which is the whole point of naming
+            # the claimant.
+            owner=run.run_id,
+        )
+        if steer_res is not None:
+            res = steer_res
     except (TimeoutError, LionTimeoutError) as exc:
         _terminal_status = "timed_out"
         _terminal_exc = exc
+        from lionagi.mcp._terminal_cause import write_terminal_cause
+
+        # Written on the timeout path too, even though a timeout is never one of
+        # the typed provider errors. A recorded `unknown` says the cause was
+        # looked at and was not a provider error; no record at all says nobody
+        # looked, and a reader cannot tell those apart after the fact.
+        write_terminal_cause(exc)
         from lionagi.cli._logging import warn
 
         warn(f"agent timed out after {timeout}s")
@@ -880,6 +1186,16 @@ async def _run_agent(
     except BaseException as exc:
         _terminal_status = classify_exception(exc)
         _terminal_exc = exc
+        from lionagi.mcp._terminal_cause import write_terminal_cause
+
+        # Before the re-raise: this is the last point that still holds the
+        # exception object, and the hook that records the run's end runs in a
+        # different process where only its own class name would survive.
+        write_terminal_cause(exc)
+        # Nothing after this try block runs, so the teardown below is this
+        # run's last chance to notify. Every other path falls through to the
+        # tail, where the status is still being decided.
+        _propagating = True
         if _terminal_status == "failed":
             # Default traceback printing is unreliable under SIGTERM/process
             # death — leave a one-line diagnostic before it propagates.
@@ -925,6 +1241,43 @@ async def _run_agent(
                 defer_terminal=will_auto_resume,
                 **telemetry_kw,
             )
+            # Terminal-race tombstone, ordered after the teardown above rather
+            # than before it (skipped when auto-resume keeps the run alive — the
+            # resumed leg's drain will consume the steer). When that teardown
+            # does persist the terminal transition, this ordering is what leaves
+            # no gap for a control to slip through: the writer admits one only
+            # while the session reads 'running', so a control that got in is
+            # committed before the transition and is therefore visible to the
+            # sweep below, and one arriving after it is refused at the writer
+            # instead of landing on a terminal run with nobody left to consume
+            # it. Teardown can also fail and return the requested status without
+            # having written it, which is why the sweep re-reads the stored
+            # session and declines a non-terminal one rather than trusting the
+            # call order.
+            # That ordering also means the handle in `live` is gone by now:
+            # teardown closes it in its own `finally`. The sweep is given a
+            # fresh one rather than the corpse, because a sweep that fails on a
+            # closed engine fails into its own must-not-raise catch, which turns
+            # the entire tombstone path into one log line on every run while the
+            # rows it exists to close stay pending forever. The connection is
+            # opened here rather than inside the sweep so callers that hand it a
+            # handle of their own, including the tests, keep doing so.
+            # Opening it is inside the same best-effort boundary as the sweep,
+            # not outside it. The sweep swallows its own failures on purpose so
+            # a finished run is not turned into an error by bookkeeping, and
+            # acquiring the connection can fail for exactly the reasons the
+            # sweep already tolerates: another writer holding the lock, a busy
+            # timeout, a migration. StateDB re-raises out of __aenter__, so an
+            # unguarded `async with` here would escape this teardown and report
+            # an infrastructure exception for a run that actually completed.
+            if not will_auto_resume and live:
+                from lionagi.state.db import StateDB
+
+                try:
+                    async with StateDB() as _sweep_db:
+                        await _tombstone_pending_steers({**live, "db": _sweep_db})
+                except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
+                    log_error(f"steer tombstone write failed: {_sweep_exc!r}")
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
             from lionagi.state.db import SESSION_TERMINAL_STATUSES
@@ -934,6 +1287,15 @@ async def _run_agent(
                 run_manifest["ended_at"] = time.time()
             if _write_run_manifest is not None:
                 _write_run_manifest(run_manifest)
+            # Only when an exception is on its way out, because then this is
+            # the last code this run executes. On every other path the status
+            # is not settled yet: an empty resumed stream becomes `failed`
+            # below, and a leg about to auto-resume has no terminal answer of
+            # its own at all — the resumed leg carries the notice. Sending
+            # from here regardless is how a notifier was told `timed_out`
+            # about a run that went on to complete.
+            if _propagating:
+                await _deliver_direct_notice()
             # Unregister after teardown fires the terminal transition.
             if _notify_scope_name is not None:
                 unregister_flow_notify_scope(_notify_scope_name)
@@ -957,6 +1319,10 @@ async def _run_agent(
         if _write_run_manifest is not None:
             _write_run_manifest(run_manifest)
 
+    # Bookkeeping, and the terminal notice below has not gone out yet. This call
+    # reports its own failures rather than raising for exactly that reason: a
+    # run that finished still owes its answer to whoever asked to be told, and
+    # an unwritable convenience pointer is not a reason to withhold it.
     save_last_branch_pointer(run.run_id, branch_id)
 
     session_id = live.get("session_id") if live else None
@@ -964,6 +1330,12 @@ async def _run_agent(
     if _terminal_status == "timed_out" and resume_on_timeout and not _auto_resumed:
         from lionagi.cli._logging import warn
 
+        # Deliberately keyed on this branch rather than on the `will_auto_resume`
+        # the teardown computed: that one is read before the effective status is
+        # applied, so the two can disagree, and a notice suppressed on a
+        # recursion that then does not happen is a leg that never reports at all.
+        # The recursive call owns the notice, which is what makes it the final
+        # status rather than an interim one.
         warn(
             f"[auto-resume] session {session_id or branch_id} timed out after "
             f"{timeout}s — resuming once with 'continue and conclude the task'"
@@ -994,6 +1366,10 @@ async def _run_agent(
             _auto_resumed=True,
             _injection_totals=_injection_totals,
         )
+
+    # Past every line that can still move the status, and past the recursion
+    # that would have made this leg an interim one, so this is the run's answer.
+    await _deliver_direct_notice()
 
     return res or "", provider, branch_id, _terminal_status, session_id
 

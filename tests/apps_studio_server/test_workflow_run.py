@@ -108,18 +108,14 @@ def _mock_chat_branch(name: str = "workflow-default"):
 def patched_env(tmp_path: Path, monkeypatch):
     import lionagi.state.db as db_mod
     import lionagi.studio.services.engine_defs as engine_defs_svc
-    import lionagi.studio.services.sessions as sessions_svc
     import lionagi.studio.services.workflow_defs as wf_svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     # sessions.py freezes `_DB = str(DEFAULT_DB_PATH)` at import time (module
     # constant, not re-read per call) — both attrs need patching, matching the
     # convention already established in test_admin.py.
-    monkeypatch.setattr(sessions_svc, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_svc, "_DB", str(db_path))
 
     import lionagi.cli.engine as cli_engine
 

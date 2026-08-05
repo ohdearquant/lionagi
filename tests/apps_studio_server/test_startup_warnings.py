@@ -20,6 +20,8 @@ from typing import NamedTuple
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 import anyio  # noqa: E402
@@ -103,11 +105,9 @@ def _lifespan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generat
     Bare TestClient(app, base_url="http://127.0.0.1:8765") construction does NOT trigger the lifespan.
     """
     import lionagi.studio.app as app_mod
-    import lionagi.studio.services.stats as stats_mod
 
     fake_db = tmp_path / "state.db"
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
     # A fresh app instance (via create_app()) instead of importlib.reload(app_mod):
     # reload mutates the shared module singleton every other importer holds a
@@ -131,11 +131,9 @@ def _bare_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[T
     response headers.
     """
     import lionagi.studio.app as app_mod
-    import lionagi.studio.services.stats as stats_mod
 
     fake_db = tmp_path / "state.db"
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
     app = app_mod.create_app()
     client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")

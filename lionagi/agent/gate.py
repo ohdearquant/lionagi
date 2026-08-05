@@ -17,6 +17,7 @@ from typing import Any
 from lionagi.ln.concurrency import maybe_await
 
 __all__ = (
+    "ControlUnavailableError",
     "GateDeniedError",
     "GateEvaluator",
     "GateResult",
@@ -44,11 +45,29 @@ class GateResult:
 GateEvaluator = Callable[[str, str, dict], Awaitable[GateResult]]
 
 
+class ControlUnavailableError(PermissionError):
+    """A control could not reach a verdict about this call.
+
+    Raised when the thing standing in the way is the control's own
+    configuration rather than anything about the call: no escalation handler
+    where a decision needs one, a backend that is not reachable, a rule set
+    that could not be loaded. The call is still refused, because a control
+    that cannot answer must not be read as an approval.
+
+    It subclasses ``PermissionError`` so that everything already failing
+    closed on that keeps doing so unchanged. What it adds is a way to tell
+    "your configuration cannot answer this" from "the answer is no", which
+    an operator acts on differently and which the two are otherwise
+    indistinguishable in.
+    """
+
+
 class GateDeniedError(PermissionError):
     """Raised when a gate evaluation pass denies a call; carries the verdict."""
 
     def __init__(self, result: GateResult) -> None:
-        super().__init__(f"{result.control}: {result.reason}")
+        prefix = f"{result.control} could not evaluate" if result.errored else result.control
+        super().__init__(f"{prefix}: {result.reason}")
         self.result = result
 
 
@@ -62,6 +81,12 @@ def adapt_legacy_hook(control: str, hook: Callable) -> GateEvaluator:
     async def evaluate(tool_name: str, action: str, args: dict) -> GateResult:
         try:
             result = await maybe_await(hook(tool_name, action, args))
+        except ControlUnavailableError as e:
+            # Caught before PermissionError, which it subclasses: a control
+            # saying it cannot answer is a fault, and reporting it as a
+            # verdict is what makes a misconfiguration look like policy.
+            logger.warning("gate control %r could not evaluate: %s", control, e)
+            return GateResult(False, control, tool_name, action, str(e), errored=True)
         except PermissionError as e:
             return GateResult(False, control, tool_name, action, str(e))
         except Exception as e:  # noqa: BLE001 - fail-closed on any evaluator error
@@ -117,6 +142,18 @@ async def run_gate_pass(
     for evaluate in evaluators:
         result = await evaluate(tool_name, action, args)
         if not result.allowed:
+            if result.errored:
+                # The pass is where a refusal becomes final, so it is where the
+                # difference between a broken control and a working one has to
+                # be visible. A denial is routine and logs nothing; a control
+                # that could not answer is an operator's problem.
+                logger.error(
+                    "gate control %r refused %s.%s without reaching a verdict: %s",
+                    result.control,
+                    tool_name,
+                    action,
+                    result.reason,
+                )
             return args, result
         if result.mutated_args is not None:
             args = result.mutated_args

@@ -24,12 +24,8 @@ if TYPE_CHECKING:
 
 HandleValidation = Literal["raise", "return_value", "return_none"]
 
-# Why a response could not be turned into the requested model. These two need
-# opposite fixes from the caller — "extraction" means the text never yielded
-# JSON, so the prompt or the model is at fault; "validation" means the JSON was
-# recovered intact and the schema refused it, so the schema or the data is.
-# Collapsing them into one string return makes a schema mismatch look like a
-# parsing bug, which costs a diagnostic round trip.
+# "extraction": the text never yielded JSON (prompt/model at fault).
+# "validation": JSON was recovered but the schema refused it (schema/data at fault).
 ParseFailureKind = Literal["extraction", "validation"]
 
 
@@ -87,12 +83,8 @@ class UnparsedResponse(str):
         return obj
 
     def __getnewargs_ex__(self) -> tuple[tuple[str], dict[str, Any]]:
-        # copy, deepcopy and pickle all rebuild a str subclass by calling
-        # __new__ with the arguments this returns. Without it they call
-        # __new__(text) alone and raise on the keyword-only argument -- so a
-        # plain str survives being copied while this one would not, which is
-        # exactly the kind of difference "it is still a str" is meant to rule
-        # out.
+        # Without this, copy/deepcopy/pickle call __new__(text) alone and
+        # raise on the keyword-only arguments.
         return (str(self),), {
             "failure_kind": self.failure_kind,
             "validation_error": self.validation_error,

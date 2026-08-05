@@ -108,13 +108,10 @@ def _zone_file_for_name(name: str) -> Path | None:
 def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
     """Express *path* as a zone name that reopens *path*.
 
-    Containment alone is not enough. When several roots are configured, an
-    earlier one holding the same key shadows a later one, so a name derived
-    from the root that happens to contain the file can load a different
-    tzfile with different rules — the same silent-wrong-zone failure this
-    resolver exists to prevent, one level in. A candidate is therefore
-    accepted only if resolving it the way the stdlib will arrives back at the
-    file we started from.
+    Containment alone isn't enough: with several roots configured, an
+    earlier one holding the same key can shadow a later one, so a candidate
+    is accepted only if resolving it the way the stdlib will arrives back at
+    the same file.
     """
     for root in roots:
         try:
@@ -130,22 +127,10 @@ def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
 def _localtime_is_readable() -> bool:
     """Whether the host's localtime file exists and can actually be read.
 
-    This is the line between the two failure modes. A host with no readable
-    localtime file has no zone opinion to lose, and UTC is a reasonable
-    default for it. A host whose localtime file opens fine but yields no
-    loadable zone name does have an opinion, and substituting UTC there
-    misreads it rather than defaulting.
-
-    Opening follows the symlink deliberately: a dangling or looping link and
-    an unreadable file are all "nothing to read here", which is the fallback
-    case, not the failure case.
-
-    The path must be a regular file before it is opened at all. A timezone
-    file is one, and the others are not merely uninteresting: opening a FIFO
-    with no writer blocks, and this runs while a module constant is being
-    resolved, so the process would hang at import with neither an error nor a
-    fallback ever reached. Anything that is not a regular file is therefore
-    "nothing to read here" without being touched.
+    Distinguishes "no zone opinion" (fallback to UTC) from "has an opinion
+    that couldn't be read" (raise, don't misread it as UTC). Requires a
+    regular file before opening: a FIFO with no writer would block forever
+    here, mid-import, with no fallback ever reached.
     """
     try:
         if not stat.S_ISREG(SYSTEM_LOCALTIME_LINK.stat().st_mode):
@@ -160,25 +145,15 @@ def _localtime_is_readable() -> bool:
 def _resolve_system_local_tz() -> TimezoneResolution:
     """Resolve the system's IANA timezone name, with its provenance.
 
-    Checks ``$TZ`` first, then reads the ``/etc/localtime`` symlink — the
-    standard way Unix hosts point at their zoneinfo entry — and expresses it
-    relative to the zoneinfo roots the stdlib searches.
+    Checks ``$TZ`` first, then reads the ``/etc/localtime`` symlink and
+    expresses it as a name relative to the zoneinfo roots the stdlib
+    searches (see ``_zone_name_from_path``), rather than guessing from a
+    directory name.
 
-    Deriving the name from the search roots rather than from a directory name
-    removes a whole class of guessing: the tree is called ``zoneinfo`` on most
-    hosts and something else on others, so any test against the name either
-    misses real trees or accepts directories that merely look like one.
-    Containment has neither failure, but it is not sufficient on its own —
-    with several roots configured, a name the containing root justifies can
-    still reopen an earlier root's file, so the name is additionally required
-    to round-trip back to the same tzfile.
-
-    Falls back to UTC only when there was nothing to read. When the localtime
-    file reads fine but no loadable zone name comes out of it, this raises
-    instead: the host stated a zone the resolver could not express, and a
-    silent UTC would run every cron row on an hour nobody chose. Setting
-    ``LIONAGI_SCHEDULER_TZ`` short-circuits this whole path, so an operator
-    always has a way past a host the resolver cannot read.
+    Falls back to UTC only when there was nothing to read. When the
+    localtime file reads fine but yields no loadable zone name, raises
+    instead — a silent UTC there would run every cron row on an hour nobody
+    chose. ``LIONAGI_SCHEDULER_TZ`` short-circuits this whole path.
     """
     tz_env = os.environ.get("TZ")
     if tz_env:
@@ -282,40 +257,26 @@ PHANTOM_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_PHANTOM_STALE_
 # whose child session process is still alive is never reaped regardless of
 # this value; it only bites orphaned/dead-runner rows.
 PLAY_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_PLAY_STALE_HOURS", "6.0"))
-# Staleness threshold for the schedule_run reaper -- a schedule_run row can be
-# left at status="running" forever when the scheduler process dies after its
-# occurrence-insert transaction commits but before its own terminal write
-# lands (e.g. mid-spawn). There is no process-liveness signal to check
-# against for a schedule_run row the way sessions/plays have (the scheduler
-# daemon itself is the "process"; its own restart is what triggers reaping),
-# so this is a pure wall-clock backstop, deliberately generous rather than a
-# tight SLA.
+# Staleness threshold for the schedule_run reaper. Unlike sessions/plays,
+# there's no per-row process-liveness signal, so this is a pure wall-clock
+# backstop for a row stuck at status="running" after a scheduler crash --
+# deliberately generous rather than a tight SLA.
 SCHEDULE_RUN_STALE_HOURS: float = float(
     os.environ.get("LIONAGI_STUDIO_SCHEDULE_RUN_STALE_HOURS", "24.0")
 )
-# Staleness threshold for the show-level reaper. A show's status is derived
-# only once, at mirror-row creation (`shows.import_shows()`); a show
-# mirrored while its plays are still in flight is never re-evaluated once
-# those plays later merge or abort on disk. This reaper re-derives the
-# terminal state from on-disk play/verdict evidence past this staleness
-# window. Liveness-first means a show with any child play whose session
-# process is still alive is never reaped regardless of this value.
+# Staleness threshold for the show-level reaper, which re-derives terminal
+# state from on-disk play/verdict evidence since a show's status is derived
+# only once, at mirror-row creation. Liveness-first: never reaps a show with
+# any child play whose session process is still alive.
 SHOW_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_SHOW_STALE_HOURS", "6.0"))
 # Minimum seconds between consecutive periodic reaper runs (throttle).
 REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
 
 # ── Scheduler cron timezone ───────────────────────────────────────────────────
 # Cron expressions (trigger_type="cron") are interpreted in this IANA timezone;
-# the stored next_fire_at column always remains a UTC epoch regardless. Defaults
-# to the system's local timezone (resolved from $TZ, else /etc/localtime);
-# override for deployments where the daemon host's timezone doesn't match
-# operator intent.
-#
-# Resolved once, here, and frozen for the life of the process — so a host whose
-# timezone configuration changes, or a source tree that learns to read it
-# better, changes nothing until the daemon is restarted. That is why the
-# resolution is reported on /api/admin/health rather than only logged at start:
-# the running process is the only place the effective value exists.
+# next_fire_at is always stored as a UTC epoch regardless. Resolved once here
+# and frozen for the process lifetime, so it's reported on /api/admin/health
+# rather than only logged at start.
 _SCHEDULER_TZ_RESOLUTION = _resolve_scheduler_tz()
 SCHEDULER_TZ: str = _SCHEDULER_TZ_RESOLUTION.name
 SCHEDULER_TZ_SOURCE: str = _SCHEDULER_TZ_RESOLUTION.source
@@ -368,6 +329,17 @@ CHECKPOINT_INTERVAL_SECONDS: int = int(
 )
 # Sessions/runs older than this many days (with terminal status) will be pruned.
 PRUNE_KEEP_DAYS: int = int(os.environ.get("LIONAGI_STUDIO_PRUNE_KEEP_DAYS", "30"))
+# Directory to archive pruned rows to before deletion. Unset (default) preserves
+# the pre-archive prune behaviour exactly. When set, prune refuses to delete any
+# row unless the archive for that pass was written and verified first.
+_PRUNE_ARCHIVE_DIR_RAW = os.environ.get("LIONAGI_STUDIO_PRUNE_ARCHIVE_DIR", "").strip()
+PRUNE_ARCHIVE_DIR: Path | None = (
+    Path(_PRUNE_ARCHIVE_DIR_RAW).expanduser() if _PRUNE_ARCHIVE_DIR_RAW else None
+)
+# Max session ids deleted per committed chunk during prune. Bounds each
+# transaction so the write lock is released between chunks and an interrupted
+# prune keeps the chunks that already committed.
+PRUNE_CHUNK_ROWS: int = max(1, int(os.environ.get("LIONAGI_STUDIO_PRUNE_CHUNK_ROWS", "100")))
 
 # dispatch_outbox retention (ADR-0059 delta 3). Two windows: terminal-success
 # rows (delivered/acked) are low-signal once past the window, so they use a
@@ -398,3 +370,11 @@ _MIRROR_SOURCE_RAW: str = os.environ.get("LIONAGI_STUDIO_MIRROR_SOURCE", "both")
 MIRROR_SOURCE: str = (
     _MIRROR_SOURCE_RAW if _MIRROR_SOURCE_RAW in ("both", "claude", "codex") else "both"
 )
+# Bounded display preview stored in messages.content for mirror-ingested rows
+# (Unicode code points, not bytes). 0 is valid (empty preview + pointer only).
+# Negative values are a configuration error — there is no "unbounded" sentinel.
+MIRROR_PREVIEW_CHARS: int = int(os.environ.get("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", "500"))
+if MIRROR_PREVIEW_CHARS < 0:
+    raise ValueError(
+        f"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS must be >= 0, got {MIRROR_PREVIEW_CHARS}"
+    )

@@ -8,610 +8,610 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from "./routes/__root";
-import { Route as SystemRouteImport } from "./routes/system";
-import { Route as ShowsRouteImport } from "./routes/shows";
-import { Route as RoutingRouteImport } from "./routes/routing";
-import { Route as OutcomesRouteImport } from "./routes/outcomes";
-import { Route as MissionRouteImport } from "./routes/mission";
-import { Route as LibraryRouteImport } from "./routes/library";
-import { Route as HistoryRouteImport } from "./routes/history";
-import { Route as FleetRouteImport } from "./routes/fleet";
-import { Route as DesignerRouteImport } from "./routes/designer";
-import { Route as CanvasRouteImport } from "./routes/canvas";
-import { Route as AgentsRouteImport } from "./routes/agents";
-import { Route as IndexRouteImport } from "./routes/index";
-import { Route as SkillsIndexRouteImport } from "./routes/skills/index";
-import { Route as SchedulesIndexRouteImport } from "./routes/schedules/index";
-import { Route as RunsIndexRouteImport } from "./routes/runs/index";
-import { Route as PluginsIndexRouteImport } from "./routes/plugins/index";
-import { Route as PlayfieldIndexRouteImport } from "./routes/playfield/index";
-import { Route as PlaybooksIndexRouteImport } from "./routes/playbooks/index";
-import { Route as KanbanIndexRouteImport } from "./routes/kanban/index";
-import { Route as InvocationsIndexRouteImport } from "./routes/invocations/index";
-import { Route as EnginesIndexRouteImport } from "./routes/engines/index";
-import { Route as AdminIndexRouteImport } from "./routes/admin/index";
-import { Route as RunsIdRouteImport } from "./routes/runs/$id";
-import { Route as InvocationsIdRouteImport } from "./routes/invocations/$id";
-import { Route as PlaybooksNewIndexRouteImport } from "./routes/playbooks/new/index";
-import { Route as PlaybooksNameIndexRouteImport } from "./routes/playbooks/$name/index";
-import { Route as AdminMaintenanceIndexRouteImport } from "./routes/admin/maintenance/index";
-import { Route as AdminHealthIndexRouteImport } from "./routes/admin/health/index";
-import { Route as PlaybooksNameEditIndexRouteImport } from "./routes/playbooks/$name/edit/index";
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as SystemRouteImport } from './routes/system'
+import { Route as ShowsRouteImport } from './routes/shows'
+import { Route as RoutingRouteImport } from './routes/routing'
+import { Route as OutcomesRouteImport } from './routes/outcomes'
+import { Route as MissionRouteImport } from './routes/mission'
+import { Route as LibraryRouteImport } from './routes/library'
+import { Route as HistoryRouteImport } from './routes/history'
+import { Route as FleetRouteImport } from './routes/fleet'
+import { Route as DesignerRouteImport } from './routes/designer'
+import { Route as CanvasRouteImport } from './routes/canvas'
+import { Route as AgentsRouteImport } from './routes/agents'
+import { Route as IndexRouteImport } from './routes/index'
+import { Route as SkillsIndexRouteImport } from './routes/skills/index'
+import { Route as SchedulesIndexRouteImport } from './routes/schedules/index'
+import { Route as RunsIndexRouteImport } from './routes/runs/index'
+import { Route as PluginsIndexRouteImport } from './routes/plugins/index'
+import { Route as PlayfieldIndexRouteImport } from './routes/playfield/index'
+import { Route as PlaybooksIndexRouteImport } from './routes/playbooks/index'
+import { Route as KanbanIndexRouteImport } from './routes/kanban/index'
+import { Route as InvocationsIndexRouteImport } from './routes/invocations/index'
+import { Route as EnginesIndexRouteImport } from './routes/engines/index'
+import { Route as AdminIndexRouteImport } from './routes/admin/index'
+import { Route as RunsIdRouteImport } from './routes/runs/$id'
+import { Route as InvocationsIdRouteImport } from './routes/invocations/$id'
+import { Route as PlaybooksNewIndexRouteImport } from './routes/playbooks/new/index'
+import { Route as PlaybooksNameIndexRouteImport } from './routes/playbooks/$name/index'
+import { Route as AdminMaintenanceIndexRouteImport } from './routes/admin/maintenance/index'
+import { Route as AdminHealthIndexRouteImport } from './routes/admin/health/index'
+import { Route as PlaybooksNameEditIndexRouteImport } from './routes/playbooks/$name/edit/index'
 
 const SystemRoute = SystemRouteImport.update({
-  id: "/system",
-  path: "/system",
+  id: '/system',
+  path: '/system',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const ShowsRoute = ShowsRouteImport.update({
-  id: "/shows",
-  path: "/shows",
+  id: '/shows',
+  path: '/shows',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const RoutingRoute = RoutingRouteImport.update({
-  id: "/routing",
-  path: "/routing",
+  id: '/routing',
+  path: '/routing',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const OutcomesRoute = OutcomesRouteImport.update({
-  id: "/outcomes",
-  path: "/outcomes",
+  id: '/outcomes',
+  path: '/outcomes',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const MissionRoute = MissionRouteImport.update({
-  id: "/mission",
-  path: "/mission",
+  id: '/mission',
+  path: '/mission',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const LibraryRoute = LibraryRouteImport.update({
-  id: "/library",
-  path: "/library",
+  id: '/library',
+  path: '/library',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const HistoryRoute = HistoryRouteImport.update({
-  id: "/history",
-  path: "/history",
+  id: '/history',
+  path: '/history',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const FleetRoute = FleetRouteImport.update({
-  id: "/fleet",
-  path: "/fleet",
+  id: '/fleet',
+  path: '/fleet',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const DesignerRoute = DesignerRouteImport.update({
-  id: "/designer",
-  path: "/designer",
+  id: '/designer',
+  path: '/designer',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const CanvasRoute = CanvasRouteImport.update({
-  id: "/canvas",
-  path: "/canvas",
+  id: '/canvas',
+  path: '/canvas',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const AgentsRoute = AgentsRouteImport.update({
-  id: "/agents",
-  path: "/agents",
+  id: '/agents',
+  path: '/agents',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const IndexRoute = IndexRouteImport.update({
-  id: "/",
-  path: "/",
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const SkillsIndexRoute = SkillsIndexRouteImport.update({
-  id: "/skills/",
-  path: "/skills/",
+  id: '/skills/',
+  path: '/skills/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const SchedulesIndexRoute = SchedulesIndexRouteImport.update({
-  id: "/schedules/",
-  path: "/schedules/",
+  id: '/schedules/',
+  path: '/schedules/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const RunsIndexRoute = RunsIndexRouteImport.update({
-  id: "/runs/",
-  path: "/runs/",
+  id: '/runs/',
+  path: '/runs/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const PluginsIndexRoute = PluginsIndexRouteImport.update({
-  id: "/plugins/",
-  path: "/plugins/",
+  id: '/plugins/',
+  path: '/plugins/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const PlayfieldIndexRoute = PlayfieldIndexRouteImport.update({
-  id: "/playfield/",
-  path: "/playfield/",
+  id: '/playfield/',
+  path: '/playfield/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const PlaybooksIndexRoute = PlaybooksIndexRouteImport.update({
-  id: "/playbooks/",
-  path: "/playbooks/",
+  id: '/playbooks/',
+  path: '/playbooks/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const KanbanIndexRoute = KanbanIndexRouteImport.update({
-  id: "/kanban/",
-  path: "/kanban/",
+  id: '/kanban/',
+  path: '/kanban/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const InvocationsIndexRoute = InvocationsIndexRouteImport.update({
-  id: "/invocations/",
-  path: "/invocations/",
+  id: '/invocations/',
+  path: '/invocations/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const EnginesIndexRoute = EnginesIndexRouteImport.update({
-  id: "/engines/",
-  path: "/engines/",
+  id: '/engines/',
+  path: '/engines/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const AdminIndexRoute = AdminIndexRouteImport.update({
-  id: "/admin/",
-  path: "/admin/",
+  id: '/admin/',
+  path: '/admin/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const RunsIdRoute = RunsIdRouteImport.update({
-  id: "/runs/$id",
-  path: "/runs/$id",
+  id: '/runs/$id',
+  path: '/runs/$id',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const InvocationsIdRoute = InvocationsIdRouteImport.update({
-  id: "/invocations/$id",
-  path: "/invocations/$id",
+  id: '/invocations/$id',
+  path: '/invocations/$id',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const PlaybooksNewIndexRoute = PlaybooksNewIndexRouteImport.update({
-  id: "/playbooks/new/",
-  path: "/playbooks/new/",
+  id: '/playbooks/new/',
+  path: '/playbooks/new/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const PlaybooksNameIndexRoute = PlaybooksNameIndexRouteImport.update({
-  id: "/playbooks/$name/",
-  path: "/playbooks/$name/",
+  id: '/playbooks/$name/',
+  path: '/playbooks/$name/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const AdminMaintenanceIndexRoute = AdminMaintenanceIndexRouteImport.update({
-  id: "/admin/maintenance/",
-  path: "/admin/maintenance/",
+  id: '/admin/maintenance/',
+  path: '/admin/maintenance/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const AdminHealthIndexRoute = AdminHealthIndexRouteImport.update({
-  id: "/admin/health/",
-  path: "/admin/health/",
+  id: '/admin/health/',
+  path: '/admin/health/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 const PlaybooksNameEditIndexRoute = PlaybooksNameEditIndexRouteImport.update({
-  id: "/playbooks/$name/edit/",
-  path: "/playbooks/$name/edit/",
+  id: '/playbooks/$name/edit/',
+  path: '/playbooks/$name/edit/',
   getParentRoute: () => rootRouteImport,
-} as any);
+} as any)
 
 export interface FileRoutesByFullPath {
-  "/": typeof IndexRoute;
-  "/agents": typeof AgentsRoute;
-  "/canvas": typeof CanvasRoute;
-  "/designer": typeof DesignerRoute;
-  "/fleet": typeof FleetRoute;
-  "/history": typeof HistoryRoute;
-  "/library": typeof LibraryRoute;
-  "/mission": typeof MissionRoute;
-  "/outcomes": typeof OutcomesRoute;
-  "/routing": typeof RoutingRoute;
-  "/shows": typeof ShowsRoute;
-  "/system": typeof SystemRoute;
-  "/invocations/$id": typeof InvocationsIdRoute;
-  "/runs/$id": typeof RunsIdRoute;
-  "/admin/": typeof AdminIndexRoute;
-  "/engines/": typeof EnginesIndexRoute;
-  "/invocations/": typeof InvocationsIndexRoute;
-  "/kanban/": typeof KanbanIndexRoute;
-  "/playbooks/": typeof PlaybooksIndexRoute;
-  "/playfield/": typeof PlayfieldIndexRoute;
-  "/plugins/": typeof PluginsIndexRoute;
-  "/runs/": typeof RunsIndexRoute;
-  "/schedules/": typeof SchedulesIndexRoute;
-  "/skills/": typeof SkillsIndexRoute;
-  "/admin/health/": typeof AdminHealthIndexRoute;
-  "/admin/maintenance/": typeof AdminMaintenanceIndexRoute;
-  "/playbooks/$name/": typeof PlaybooksNameIndexRoute;
-  "/playbooks/new/": typeof PlaybooksNewIndexRoute;
-  "/playbooks/$name/edit/": typeof PlaybooksNameEditIndexRoute;
+  '/': typeof IndexRoute
+  '/agents': typeof AgentsRoute
+  '/canvas': typeof CanvasRoute
+  '/designer': typeof DesignerRoute
+  '/fleet': typeof FleetRoute
+  '/history': typeof HistoryRoute
+  '/library': typeof LibraryRoute
+  '/mission': typeof MissionRoute
+  '/outcomes': typeof OutcomesRoute
+  '/routing': typeof RoutingRoute
+  '/shows': typeof ShowsRoute
+  '/system': typeof SystemRoute
+  '/invocations/$id': typeof InvocationsIdRoute
+  '/runs/$id': typeof RunsIdRoute
+  '/admin/': typeof AdminIndexRoute
+  '/engines/': typeof EnginesIndexRoute
+  '/invocations/': typeof InvocationsIndexRoute
+  '/kanban/': typeof KanbanIndexRoute
+  '/playbooks/': typeof PlaybooksIndexRoute
+  '/playfield/': typeof PlayfieldIndexRoute
+  '/plugins/': typeof PluginsIndexRoute
+  '/runs/': typeof RunsIndexRoute
+  '/schedules/': typeof SchedulesIndexRoute
+  '/skills/': typeof SkillsIndexRoute
+  '/admin/health/': typeof AdminHealthIndexRoute
+  '/admin/maintenance/': typeof AdminMaintenanceIndexRoute
+  '/playbooks/$name/': typeof PlaybooksNameIndexRoute
+  '/playbooks/new/': typeof PlaybooksNewIndexRoute
+  '/playbooks/$name/edit/': typeof PlaybooksNameEditIndexRoute
 }
 export interface FileRoutesByTo {
-  "/": typeof IndexRoute;
-  "/agents": typeof AgentsRoute;
-  "/canvas": typeof CanvasRoute;
-  "/designer": typeof DesignerRoute;
-  "/fleet": typeof FleetRoute;
-  "/history": typeof HistoryRoute;
-  "/library": typeof LibraryRoute;
-  "/mission": typeof MissionRoute;
-  "/outcomes": typeof OutcomesRoute;
-  "/routing": typeof RoutingRoute;
-  "/shows": typeof ShowsRoute;
-  "/system": typeof SystemRoute;
-  "/invocations/$id": typeof InvocationsIdRoute;
-  "/runs/$id": typeof RunsIdRoute;
-  "/admin": typeof AdminIndexRoute;
-  "/engines": typeof EnginesIndexRoute;
-  "/invocations": typeof InvocationsIndexRoute;
-  "/kanban": typeof KanbanIndexRoute;
-  "/playbooks": typeof PlaybooksIndexRoute;
-  "/playfield": typeof PlayfieldIndexRoute;
-  "/plugins": typeof PluginsIndexRoute;
-  "/runs": typeof RunsIndexRoute;
-  "/schedules": typeof SchedulesIndexRoute;
-  "/skills": typeof SkillsIndexRoute;
-  "/admin/health": typeof AdminHealthIndexRoute;
-  "/admin/maintenance": typeof AdminMaintenanceIndexRoute;
-  "/playbooks/$name": typeof PlaybooksNameIndexRoute;
-  "/playbooks/new": typeof PlaybooksNewIndexRoute;
-  "/playbooks/$name/edit": typeof PlaybooksNameEditIndexRoute;
+  '/': typeof IndexRoute
+  '/agents': typeof AgentsRoute
+  '/canvas': typeof CanvasRoute
+  '/designer': typeof DesignerRoute
+  '/fleet': typeof FleetRoute
+  '/history': typeof HistoryRoute
+  '/library': typeof LibraryRoute
+  '/mission': typeof MissionRoute
+  '/outcomes': typeof OutcomesRoute
+  '/routing': typeof RoutingRoute
+  '/shows': typeof ShowsRoute
+  '/system': typeof SystemRoute
+  '/invocations/$id': typeof InvocationsIdRoute
+  '/runs/$id': typeof RunsIdRoute
+  '/admin': typeof AdminIndexRoute
+  '/engines': typeof EnginesIndexRoute
+  '/invocations': typeof InvocationsIndexRoute
+  '/kanban': typeof KanbanIndexRoute
+  '/playbooks': typeof PlaybooksIndexRoute
+  '/playfield': typeof PlayfieldIndexRoute
+  '/plugins': typeof PluginsIndexRoute
+  '/runs': typeof RunsIndexRoute
+  '/schedules': typeof SchedulesIndexRoute
+  '/skills': typeof SkillsIndexRoute
+  '/admin/health': typeof AdminHealthIndexRoute
+  '/admin/maintenance': typeof AdminMaintenanceIndexRoute
+  '/playbooks/$name': typeof PlaybooksNameIndexRoute
+  '/playbooks/new': typeof PlaybooksNewIndexRoute
+  '/playbooks/$name/edit': typeof PlaybooksNameEditIndexRoute
 }
 export interface FileRoutesById {
-  __root__: typeof rootRouteImport;
-  "/": typeof IndexRoute;
-  "/agents": typeof AgentsRoute;
-  "/canvas": typeof CanvasRoute;
-  "/designer": typeof DesignerRoute;
-  "/fleet": typeof FleetRoute;
-  "/history": typeof HistoryRoute;
-  "/library": typeof LibraryRoute;
-  "/mission": typeof MissionRoute;
-  "/outcomes": typeof OutcomesRoute;
-  "/routing": typeof RoutingRoute;
-  "/shows": typeof ShowsRoute;
-  "/system": typeof SystemRoute;
-  "/invocations/$id": typeof InvocationsIdRoute;
-  "/runs/$id": typeof RunsIdRoute;
-  "/admin/": typeof AdminIndexRoute;
-  "/engines/": typeof EnginesIndexRoute;
-  "/invocations/": typeof InvocationsIndexRoute;
-  "/kanban/": typeof KanbanIndexRoute;
-  "/playbooks/": typeof PlaybooksIndexRoute;
-  "/playfield/": typeof PlayfieldIndexRoute;
-  "/plugins/": typeof PluginsIndexRoute;
-  "/runs/": typeof RunsIndexRoute;
-  "/schedules/": typeof SchedulesIndexRoute;
-  "/skills/": typeof SkillsIndexRoute;
-  "/admin/health/": typeof AdminHealthIndexRoute;
-  "/admin/maintenance/": typeof AdminMaintenanceIndexRoute;
-  "/playbooks/$name/": typeof PlaybooksNameIndexRoute;
-  "/playbooks/new/": typeof PlaybooksNewIndexRoute;
-  "/playbooks/$name/edit/": typeof PlaybooksNameEditIndexRoute;
+  __root__: typeof rootRouteImport
+  '/': typeof IndexRoute
+  '/agents': typeof AgentsRoute
+  '/canvas': typeof CanvasRoute
+  '/designer': typeof DesignerRoute
+  '/fleet': typeof FleetRoute
+  '/history': typeof HistoryRoute
+  '/library': typeof LibraryRoute
+  '/mission': typeof MissionRoute
+  '/outcomes': typeof OutcomesRoute
+  '/routing': typeof RoutingRoute
+  '/shows': typeof ShowsRoute
+  '/system': typeof SystemRoute
+  '/invocations/$id': typeof InvocationsIdRoute
+  '/runs/$id': typeof RunsIdRoute
+  '/admin/': typeof AdminIndexRoute
+  '/engines/': typeof EnginesIndexRoute
+  '/invocations/': typeof InvocationsIndexRoute
+  '/kanban/': typeof KanbanIndexRoute
+  '/playbooks/': typeof PlaybooksIndexRoute
+  '/playfield/': typeof PlayfieldIndexRoute
+  '/plugins/': typeof PluginsIndexRoute
+  '/runs/': typeof RunsIndexRoute
+  '/schedules/': typeof SchedulesIndexRoute
+  '/skills/': typeof SkillsIndexRoute
+  '/admin/health/': typeof AdminHealthIndexRoute
+  '/admin/maintenance/': typeof AdminMaintenanceIndexRoute
+  '/playbooks/$name/': typeof PlaybooksNameIndexRoute
+  '/playbooks/new/': typeof PlaybooksNewIndexRoute
+  '/playbooks/$name/edit/': typeof PlaybooksNameEditIndexRoute
 }
 export interface FileRouteTypes {
-  fileRoutesByFullPath: FileRoutesByFullPath;
+  fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | "/"
-    | "/agents"
-    | "/canvas"
-    | "/designer"
-    | "/fleet"
-    | "/history"
-    | "/library"
-    | "/mission"
-    | "/outcomes"
-    | "/routing"
-    | "/shows"
-    | "/system"
-    | "/invocations/$id"
-    | "/runs/$id"
-    | "/admin/"
-    | "/engines/"
-    | "/invocations/"
-    | "/kanban/"
-    | "/playbooks/"
-    | "/playfield/"
-    | "/plugins/"
-    | "/runs/"
-    | "/schedules/"
-    | "/skills/"
-    | "/admin/health/"
-    | "/admin/maintenance/"
-    | "/playbooks/$name/"
-    | "/playbooks/new/"
-    | "/playbooks/$name/edit/";
-  fileRoutesByTo: FileRoutesByTo;
+    | '/'
+    | '/agents'
+    | '/canvas'
+    | '/designer'
+    | '/fleet'
+    | '/history'
+    | '/library'
+    | '/mission'
+    | '/outcomes'
+    | '/routing'
+    | '/shows'
+    | '/system'
+    | '/invocations/$id'
+    | '/runs/$id'
+    | '/admin/'
+    | '/engines/'
+    | '/invocations/'
+    | '/kanban/'
+    | '/playbooks/'
+    | '/playfield/'
+    | '/plugins/'
+    | '/runs/'
+    | '/schedules/'
+    | '/skills/'
+    | '/admin/health/'
+    | '/admin/maintenance/'
+    | '/playbooks/$name/'
+    | '/playbooks/new/'
+    | '/playbooks/$name/edit/'
+  fileRoutesByTo: FileRoutesByTo
   to:
-    | "/"
-    | "/agents"
-    | "/canvas"
-    | "/designer"
-    | "/fleet"
-    | "/history"
-    | "/library"
-    | "/mission"
-    | "/outcomes"
-    | "/routing"
-    | "/shows"
-    | "/system"
-    | "/invocations/$id"
-    | "/runs/$id"
-    | "/admin"
-    | "/engines"
-    | "/invocations"
-    | "/kanban"
-    | "/playbooks"
-    | "/playfield"
-    | "/plugins"
-    | "/runs"
-    | "/schedules"
-    | "/skills"
-    | "/admin/health"
-    | "/admin/maintenance"
-    | "/playbooks/$name"
-    | "/playbooks/new"
-    | "/playbooks/$name/edit";
+    | '/'
+    | '/agents'
+    | '/canvas'
+    | '/designer'
+    | '/fleet'
+    | '/history'
+    | '/library'
+    | '/mission'
+    | '/outcomes'
+    | '/routing'
+    | '/shows'
+    | '/system'
+    | '/invocations/$id'
+    | '/runs/$id'
+    | '/admin'
+    | '/engines'
+    | '/invocations'
+    | '/kanban'
+    | '/playbooks'
+    | '/playfield'
+    | '/plugins'
+    | '/runs'
+    | '/schedules'
+    | '/skills'
+    | '/admin/health'
+    | '/admin/maintenance'
+    | '/playbooks/$name'
+    | '/playbooks/new'
+    | '/playbooks/$name/edit'
   id:
-    | "__root__"
-    | "/"
-    | "/agents"
-    | "/canvas"
-    | "/designer"
-    | "/fleet"
-    | "/history"
-    | "/library"
-    | "/mission"
-    | "/outcomes"
-    | "/routing"
-    | "/shows"
-    | "/system"
-    | "/invocations/$id"
-    | "/runs/$id"
-    | "/admin/"
-    | "/engines/"
-    | "/invocations/"
-    | "/kanban/"
-    | "/playbooks/"
-    | "/playfield/"
-    | "/plugins/"
-    | "/runs/"
-    | "/schedules/"
-    | "/skills/"
-    | "/admin/health/"
-    | "/admin/maintenance/"
-    | "/playbooks/$name/"
-    | "/playbooks/new/"
-    | "/playbooks/$name/edit/";
-  fileRoutesById: FileRoutesById;
+    | '__root__'
+    | '/'
+    | '/agents'
+    | '/canvas'
+    | '/designer'
+    | '/fleet'
+    | '/history'
+    | '/library'
+    | '/mission'
+    | '/outcomes'
+    | '/routing'
+    | '/shows'
+    | '/system'
+    | '/invocations/$id'
+    | '/runs/$id'
+    | '/admin/'
+    | '/engines/'
+    | '/invocations/'
+    | '/kanban/'
+    | '/playbooks/'
+    | '/playfield/'
+    | '/plugins/'
+    | '/runs/'
+    | '/schedules/'
+    | '/skills/'
+    | '/admin/health/'
+    | '/admin/maintenance/'
+    | '/playbooks/$name/'
+    | '/playbooks/new/'
+    | '/playbooks/$name/edit/'
+  fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute;
-  AgentsRoute: typeof AgentsRoute;
-  CanvasRoute: typeof CanvasRoute;
-  DesignerRoute: typeof DesignerRoute;
-  FleetRoute: typeof FleetRoute;
-  HistoryRoute: typeof HistoryRoute;
-  LibraryRoute: typeof LibraryRoute;
-  MissionRoute: typeof MissionRoute;
-  OutcomesRoute: typeof OutcomesRoute;
-  RoutingRoute: typeof RoutingRoute;
-  ShowsRoute: typeof ShowsRoute;
-  SystemRoute: typeof SystemRoute;
-  InvocationsIdRoute: typeof InvocationsIdRoute;
-  RunsIdRoute: typeof RunsIdRoute;
-  AdminIndexRoute: typeof AdminIndexRoute;
-  EnginesIndexRoute: typeof EnginesIndexRoute;
-  InvocationsIndexRoute: typeof InvocationsIndexRoute;
-  KanbanIndexRoute: typeof KanbanIndexRoute;
-  PlaybooksIndexRoute: typeof PlaybooksIndexRoute;
-  PlayfieldIndexRoute: typeof PlayfieldIndexRoute;
-  PluginsIndexRoute: typeof PluginsIndexRoute;
-  RunsIndexRoute: typeof RunsIndexRoute;
-  SchedulesIndexRoute: typeof SchedulesIndexRoute;
-  SkillsIndexRoute: typeof SkillsIndexRoute;
-  AdminHealthIndexRoute: typeof AdminHealthIndexRoute;
-  AdminMaintenanceIndexRoute: typeof AdminMaintenanceIndexRoute;
-  PlaybooksNameIndexRoute: typeof PlaybooksNameIndexRoute;
-  PlaybooksNewIndexRoute: typeof PlaybooksNewIndexRoute;
-  PlaybooksNameEditIndexRoute: typeof PlaybooksNameEditIndexRoute;
+  IndexRoute: typeof IndexRoute
+  AgentsRoute: typeof AgentsRoute
+  CanvasRoute: typeof CanvasRoute
+  DesignerRoute: typeof DesignerRoute
+  FleetRoute: typeof FleetRoute
+  HistoryRoute: typeof HistoryRoute
+  LibraryRoute: typeof LibraryRoute
+  MissionRoute: typeof MissionRoute
+  OutcomesRoute: typeof OutcomesRoute
+  RoutingRoute: typeof RoutingRoute
+  ShowsRoute: typeof ShowsRoute
+  SystemRoute: typeof SystemRoute
+  InvocationsIdRoute: typeof InvocationsIdRoute
+  RunsIdRoute: typeof RunsIdRoute
+  AdminIndexRoute: typeof AdminIndexRoute
+  EnginesIndexRoute: typeof EnginesIndexRoute
+  InvocationsIndexRoute: typeof InvocationsIndexRoute
+  KanbanIndexRoute: typeof KanbanIndexRoute
+  PlaybooksIndexRoute: typeof PlaybooksIndexRoute
+  PlayfieldIndexRoute: typeof PlayfieldIndexRoute
+  PluginsIndexRoute: typeof PluginsIndexRoute
+  RunsIndexRoute: typeof RunsIndexRoute
+  SchedulesIndexRoute: typeof SchedulesIndexRoute
+  SkillsIndexRoute: typeof SkillsIndexRoute
+  AdminHealthIndexRoute: typeof AdminHealthIndexRoute
+  AdminMaintenanceIndexRoute: typeof AdminMaintenanceIndexRoute
+  PlaybooksNameIndexRoute: typeof PlaybooksNameIndexRoute
+  PlaybooksNewIndexRoute: typeof PlaybooksNewIndexRoute
+  PlaybooksNameEditIndexRoute: typeof PlaybooksNameEditIndexRoute
 }
 
-declare module "@tanstack/react-router" {
+declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    "/system": {
-      id: "/system";
-      path: "/system";
-      fullPath: "/system";
-      preLoaderRoute: typeof SystemRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/shows": {
-      id: "/shows";
-      path: "/shows";
-      fullPath: "/shows";
-      preLoaderRoute: typeof ShowsRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/routing": {
-      id: "/routing";
-      path: "/routing";
-      fullPath: "/routing";
-      preLoaderRoute: typeof RoutingRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/outcomes": {
-      id: "/outcomes";
-      path: "/outcomes";
-      fullPath: "/outcomes";
-      preLoaderRoute: typeof OutcomesRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/mission": {
-      id: "/mission";
-      path: "/mission";
-      fullPath: "/mission";
-      preLoaderRoute: typeof MissionRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/library": {
-      id: "/library";
-      path: "/library";
-      fullPath: "/library";
-      preLoaderRoute: typeof LibraryRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/history": {
-      id: "/history";
-      path: "/history";
-      fullPath: "/history";
-      preLoaderRoute: typeof HistoryRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/fleet": {
-      id: "/fleet";
-      path: "/fleet";
-      fullPath: "/fleet";
-      preLoaderRoute: typeof FleetRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/designer": {
-      id: "/designer";
-      path: "/designer";
-      fullPath: "/designer";
-      preLoaderRoute: typeof DesignerRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/canvas": {
-      id: "/canvas";
-      path: "/canvas";
-      fullPath: "/canvas";
-      preLoaderRoute: typeof CanvasRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/agents": {
-      id: "/agents";
-      path: "/agents";
-      fullPath: "/agents";
-      preLoaderRoute: typeof AgentsRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/": {
-      id: "/";
-      path: "/";
-      fullPath: "/";
-      preLoaderRoute: typeof IndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/skills/": {
-      id: "/skills/";
-      path: "/skills";
-      fullPath: "/skills/";
-      preLoaderRoute: typeof SkillsIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/schedules/": {
-      id: "/schedules/";
-      path: "/schedules";
-      fullPath: "/schedules/";
-      preLoaderRoute: typeof SchedulesIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/runs/": {
-      id: "/runs/";
-      path: "/runs";
-      fullPath: "/runs/";
-      preLoaderRoute: typeof RunsIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/plugins/": {
-      id: "/plugins/";
-      path: "/plugins";
-      fullPath: "/plugins/";
-      preLoaderRoute: typeof PluginsIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/playfield/": {
-      id: "/playfield/";
-      path: "/playfield";
-      fullPath: "/playfield/";
-      preLoaderRoute: typeof PlayfieldIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/playbooks/": {
-      id: "/playbooks/";
-      path: "/playbooks";
-      fullPath: "/playbooks/";
-      preLoaderRoute: typeof PlaybooksIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/kanban/": {
-      id: "/kanban/";
-      path: "/kanban";
-      fullPath: "/kanban/";
-      preLoaderRoute: typeof KanbanIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/invocations/": {
-      id: "/invocations/";
-      path: "/invocations";
-      fullPath: "/invocations/";
-      preLoaderRoute: typeof InvocationsIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/engines/": {
-      id: "/engines/";
-      path: "/engines";
-      fullPath: "/engines/";
-      preLoaderRoute: typeof EnginesIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/admin/": {
-      id: "/admin/";
-      path: "/admin";
-      fullPath: "/admin/";
-      preLoaderRoute: typeof AdminIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/runs/$id": {
-      id: "/runs/$id";
-      path: "/runs/$id";
-      fullPath: "/runs/$id";
-      preLoaderRoute: typeof RunsIdRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/invocations/$id": {
-      id: "/invocations/$id";
-      path: "/invocations/$id";
-      fullPath: "/invocations/$id";
-      preLoaderRoute: typeof InvocationsIdRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/playbooks/new/": {
-      id: "/playbooks/new/";
-      path: "/playbooks/new";
-      fullPath: "/playbooks/new/";
-      preLoaderRoute: typeof PlaybooksNewIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/playbooks/$name/": {
-      id: "/playbooks/$name/";
-      path: "/playbooks/$name";
-      fullPath: "/playbooks/$name/";
-      preLoaderRoute: typeof PlaybooksNameIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/admin/maintenance/": {
-      id: "/admin/maintenance/";
-      path: "/admin/maintenance";
-      fullPath: "/admin/maintenance/";
-      preLoaderRoute: typeof AdminMaintenanceIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/admin/health/": {
-      id: "/admin/health/";
-      path: "/admin/health";
-      fullPath: "/admin/health/";
-      preLoaderRoute: typeof AdminHealthIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/playbooks/$name/edit/": {
-      id: "/playbooks/$name/edit/";
-      path: "/playbooks/$name/edit";
-      fullPath: "/playbooks/$name/edit/";
-      preLoaderRoute: typeof PlaybooksNameEditIndexRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
+    '/system': {
+      id: '/system'
+      path: '/system'
+      fullPath: '/system'
+      preLoaderRoute: typeof SystemRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/shows': {
+      id: '/shows'
+      path: '/shows'
+      fullPath: '/shows'
+      preLoaderRoute: typeof ShowsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/routing': {
+      id: '/routing'
+      path: '/routing'
+      fullPath: '/routing'
+      preLoaderRoute: typeof RoutingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/outcomes': {
+      id: '/outcomes'
+      path: '/outcomes'
+      fullPath: '/outcomes'
+      preLoaderRoute: typeof OutcomesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/mission': {
+      id: '/mission'
+      path: '/mission'
+      fullPath: '/mission'
+      preLoaderRoute: typeof MissionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/library': {
+      id: '/library'
+      path: '/library'
+      fullPath: '/library'
+      preLoaderRoute: typeof LibraryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/history': {
+      id: '/history'
+      path: '/history'
+      fullPath: '/history'
+      preLoaderRoute: typeof HistoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/fleet': {
+      id: '/fleet'
+      path: '/fleet'
+      fullPath: '/fleet'
+      preLoaderRoute: typeof FleetRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/designer': {
+      id: '/designer'
+      path: '/designer'
+      fullPath: '/designer'
+      preLoaderRoute: typeof DesignerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/canvas': {
+      id: '/canvas'
+      path: '/canvas'
+      fullPath: '/canvas'
+      preLoaderRoute: typeof CanvasRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/agents': {
+      id: '/agents'
+      path: '/agents'
+      fullPath: '/agents'
+      preLoaderRoute: typeof AgentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/skills/': {
+      id: '/skills/'
+      path: '/skills'
+      fullPath: '/skills/'
+      preLoaderRoute: typeof SkillsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/schedules/': {
+      id: '/schedules/'
+      path: '/schedules'
+      fullPath: '/schedules/'
+      preLoaderRoute: typeof SchedulesIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/runs/': {
+      id: '/runs/'
+      path: '/runs'
+      fullPath: '/runs/'
+      preLoaderRoute: typeof RunsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/plugins/': {
+      id: '/plugins/'
+      path: '/plugins'
+      fullPath: '/plugins/'
+      preLoaderRoute: typeof PluginsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/playfield/': {
+      id: '/playfield/'
+      path: '/playfield'
+      fullPath: '/playfield/'
+      preLoaderRoute: typeof PlayfieldIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/playbooks/': {
+      id: '/playbooks/'
+      path: '/playbooks'
+      fullPath: '/playbooks/'
+      preLoaderRoute: typeof PlaybooksIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/kanban/': {
+      id: '/kanban/'
+      path: '/kanban'
+      fullPath: '/kanban/'
+      preLoaderRoute: typeof KanbanIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/invocations/': {
+      id: '/invocations/'
+      path: '/invocations'
+      fullPath: '/invocations/'
+      preLoaderRoute: typeof InvocationsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/engines/': {
+      id: '/engines/'
+      path: '/engines'
+      fullPath: '/engines/'
+      preLoaderRoute: typeof EnginesIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/': {
+      id: '/admin/'
+      path: '/admin'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AdminIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/runs/$id': {
+      id: '/runs/$id'
+      path: '/runs/$id'
+      fullPath: '/runs/$id'
+      preLoaderRoute: typeof RunsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/invocations/$id': {
+      id: '/invocations/$id'
+      path: '/invocations/$id'
+      fullPath: '/invocations/$id'
+      preLoaderRoute: typeof InvocationsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/playbooks/new/': {
+      id: '/playbooks/new/'
+      path: '/playbooks/new'
+      fullPath: '/playbooks/new/'
+      preLoaderRoute: typeof PlaybooksNewIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/playbooks/$name/': {
+      id: '/playbooks/$name/'
+      path: '/playbooks/$name'
+      fullPath: '/playbooks/$name/'
+      preLoaderRoute: typeof PlaybooksNameIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/maintenance/': {
+      id: '/admin/maintenance/'
+      path: '/admin/maintenance'
+      fullPath: '/admin/maintenance/'
+      preLoaderRoute: typeof AdminMaintenanceIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/health/': {
+      id: '/admin/health/'
+      path: '/admin/health'
+      fullPath: '/admin/health/'
+      preLoaderRoute: typeof AdminHealthIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/playbooks/$name/edit/': {
+      id: '/playbooks/$name/edit/'
+      path: '/playbooks/$name/edit'
+      fullPath: '/playbooks/$name/edit/'
+      preLoaderRoute: typeof PlaybooksNameEditIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -645,7 +645,7 @@ const rootRouteChildren: RootRouteChildren = {
   PlaybooksNameIndexRoute: PlaybooksNameIndexRoute,
   PlaybooksNewIndexRoute: PlaybooksNewIndexRoute,
   PlaybooksNameEditIndexRoute: PlaybooksNameEditIndexRoute,
-};
+}
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
-  ._addFileTypes<FileRouteTypes>();
+  ._addFileTypes<FileRouteTypes>()

@@ -51,14 +51,8 @@ async def _seed_stale_session(
 
 def _make_admin_client(tmp_path, monkeypatch, db_path):
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.sessions as sessions_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
 
     from fastapi.testclient import TestClient
 
@@ -94,8 +88,6 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
     import lionagi.studio.services.admin as adm
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(adm, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(adm, "_DB", str(db_path))
 
     # Synchronous fake classifier bumps last_message_at via sqlite3 directly
     # (aiosqlite is a thread-executor wrapper; sqlite3 write here is safe because
@@ -194,8 +186,6 @@ def test_transition_sessions_leaves_already_terminal_session_untouched(tmp_path,
     import lionagi.studio.services.admin as adm
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(adm, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(adm, "_DB", str(db_path))
 
     result = _run(
         adm.transition_sessions(

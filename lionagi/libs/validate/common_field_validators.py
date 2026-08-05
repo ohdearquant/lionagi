@@ -41,7 +41,9 @@ def validate_same_dtype_flat_list(
     return value
 
 
-def validate_nullable_string_field(cls, value, field_name: str = None, strict=True) -> str | None:
+def validate_nullable_string_field(
+    cls, value, field_name: str | None = None, strict=True
+) -> str | None:
     """Return value if non-empty string; None on blank/None; raises ValueError if strict and not a string."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return None

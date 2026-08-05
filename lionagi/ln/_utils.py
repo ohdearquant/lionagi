@@ -56,10 +56,8 @@ def now_utc() -> datetime:
 class _SafePath(NamedTuple):
     """Caller-facing spelling paired with the validated resolved candidate.
 
-    Filesystem side effects (mkdir, existence checks) must act on
-    ``resolved``, the symlink-safe candidate that was actually validated —
-    never on ``caller_facing``, which can still be redirected by a symlink
-    swapped in after validation but before use.
+    Filesystem side effects must act on ``resolved`` (symlink-safe), never
+    ``caller_facing`` (redirectable by a symlink swapped in post-validation).
     """
 
     caller_facing: StdPath
@@ -77,22 +75,8 @@ def _build_safe_path(
 ) -> _SafePath:
     """Shared, symlink-safe path construction for create_path/acreate_path.
 
-    Validates the filename and resolves the final target without touching the
-    filesystem. Both the sync and async constructors call this so they share
-    identical traversal/containment semantics (ADR-0050 D5) — fix the check
-    once, here, rather than per-variant.
-
-    Containment is always checked against the resolved (symlink-safe)
-    candidate. The returned pair carries that resolved candidate — the only
-    path callers may use for mkdir/existence side effects — alongside the
-    caller-facing spelling to return to the caller: a relative ``directory``
-    yields a relative caller-facing path, an absolute one yields an absolute
-    caller-facing path.
-
-    Validation happens once, here, at call time — nothing is reserved
-    against later filesystem changes, so a relative ``directory`` is only
-    race-safe against concurrent mutation for as long as the caller resolves
-    it the same way create_path/acreate_path did.
+    See docs/internals/agent-runtime.md#safe-path-construction for the
+    containment/race-safety contract both constructors rely on.
     """
     from lionagi.libs.path_safety import contain_and_resolve
 
@@ -181,14 +165,10 @@ async def acreate_path(
 ) -> AsyncPath:
     """Async create_path: same validation, same return contract.
 
-    Returns a path in the caller's own representation: relative in, relative
-    out; absolute in, absolute out. Containment/traversal checks always run
-    against the fully resolved (symlink-safe) candidate regardless.
-
-    The returned path is validated at creation time only — it is not reserved
-    against filesystem changes that happen afterward. Callers that need
-    race-safety against a concurrently mutating relative `directory` should
-    pass an absolute directory instead.
+    Returns a path in the caller's own representation (relative in/out,
+    absolute in/out); pass an absolute directory for race-safety against a
+    concurrently mutating relative one. See
+    docs/internals/agent-runtime.md#safe-path-construction.
     """
     from .concurrency import move_on_after
 
@@ -246,8 +226,8 @@ def get_bins(input_: list[str], upper: int) -> list[list[int]]:
 
 def import_module(
     package_name: str,
-    module_name: str = None,
-    import_name: str | list = None,
+    module_name: str | None = None,
+    import_name: str | list | None = None,
 ) -> Any:
     try:
         full_import_path = f"{package_name}.{module_name}" if module_name else package_name
@@ -418,15 +398,10 @@ def async_synchronized(
 ) -> Callable[P, Awaitable[R]]:
     """Async-safe method decorator; requires ``self._async_lock``.
 
-    When the instance also carries a ``self._lock`` (threading lock), the
-    wrapper acquires BOTH — the async lock first, then the threading lock via
-    a non-blocking spin — so async-decorated methods mutually exclude
-    ``@synchronized`` sync callers running in other threads. The async lock
-    serializes async callers, so at most one task ever contends for the
-    threading lock per instance, which keeps RLock thread-ownership semantics
-    intact and lets the decorated body reenter ``@synchronized`` methods.
-    Lock order is strictly async-then-sync; sync holders never await, so the
-    spin is bounded by a sync critical section and never deadlocks.
+    If the instance also carries ``self._lock``, acquires both (async lock
+    first, then a non-blocking spin on the threading lock) so this mutually
+    excludes ``@synchronized`` sync callers. See
+    docs/internals/agent-runtime.md#dual-lock-ordering for the deadlock argument.
     """
 
     @wraps(func)
@@ -517,7 +492,7 @@ def union_members(
 def create_path(
     directory: StdPath | str,
     filename: str,
-    extension: str = None,
+    extension: str | None = None,
     timestamp: bool = False,
     dir_exist_ok: bool = True,
     file_exist_ok: bool = False,
@@ -527,19 +502,8 @@ def create_path(
 ) -> StdPath:
     """Generate a file path under directory with optional timestamp and random suffix.
 
-    Shares symlink-safe traversal/containment validation with acreate_path
-    (see _build_safe_path) — a filename with `..`/absolute components, or a
-    directory reached only through a symlink escape, is rejected here just as
-    it is in the async constructor.
-
-    Returns a path in the caller's own representation: relative in, relative
-    out; absolute in, absolute out. Containment/traversal checks always run
-    against the fully resolved (symlink-safe) candidate regardless.
-
-    The returned path is validated at creation time only — it is not reserved
-    against filesystem changes that happen afterward. Callers that need
-    race-safety against a concurrently mutating relative `directory` should
-    pass an absolute directory instead.
+    Shares symlink-safe traversal/containment validation with acreate_path;
+    see docs/internals/agent-runtime.md#safe-path-construction.
     """
     safe_path = _build_safe_path(
         StdPath(directory),

@@ -47,7 +47,7 @@ class iModelManager(Manager):  # noqa: N801 — mirrors iModel naming
 
         async def _close_one(name: str, model: iModel) -> None:
             try:
-                # TODO(#1043 Phase 2): migrate to anyio cancel scope for timeout
+                # TODO: migrate to anyio cancel scope for timeout
                 await asyncio.wait_for(model.close(), timeout=per_model_timeout)
             except asyncio.TimeoutError:
                 log.warning(

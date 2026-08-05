@@ -39,11 +39,9 @@ class IssueFound(Finding):
 class DimensionClean(EngineEvent):
     """Reviewer's affirmative all-clear for one dimension; no casts twin.
 
-    A separate type rather than a sentinel IssueFound: IssueFound extends
-    Finding, so a severity="none" sentinel would surface as a phantom finding
-    to every by_type(Finding) consumer. With this event, a dimension that
-    emits nothing is a transport failure, never a verdict — silence and
-    "reviewed, clean" are distinguishable downstream.
+    A separate type rather than a sentinel IssueFound, so a "clean" dimension
+    never surfaces as a phantom finding to a by_type(Finding) consumer, and
+    silence stays distinguishable from an affirmed clean.
     """
 
     dimension: str = Field(description="The review lens that found no concrete problems.")
@@ -107,13 +105,19 @@ def _verify_key(issue: IssueFound) -> str:
 def _verify_ref(issue: IssueFound) -> str:
     """Short engine-assigned token the verifier echoes back (``ref='V-1a2b3c4d'``).
 
-    Arrival detection keys on this instead of a verbatim echo of the issue
-    description: the description is long free text the model routinely
-    paraphrases, and every paraphrase failed the old exact match and burned
-    repair rounds on emissions that had in fact arrived. A fixed short token
-    is echoable exactly — the same shape as the judge's ``subject='{eid}'``.
+    Arrival detection keys on this rather than a verbatim echo of the (long,
+    paraphrase-prone) issue description.
     """
     return f"V-{hashlib.sha256(_verify_key(issue).encode()).hexdigest()[:8]}"
+
+
+def _clean_ref(dimensions: tuple[str, ...]) -> str:
+    """Ref token for the clean-verdict audit — one per run, derived from the
+    dimension set so the verdict stage can partition clean-audit VerifyResults
+    from issue verifications by ref alone (the ``issue`` field is model-filled
+    free text and paraphrases)."""
+    key = "verify-clean:" + ",".join(sorted(dimensions))
+    return f"V-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
 
 
 def _dimension_instruction(artifact: str, dimension: str) -> str:
@@ -139,6 +143,27 @@ def _verify_instruction(issue: IssueFound, ref: str) -> str:
     )
 
 
+def _verify_clean_instruction(artifact: str, clean: list[DimensionClean], ref: str) -> str:
+    claims = "\n".join(f"- {c.dimension}: {c.rationale or 'affirmed clean'}" for c in clean) or (
+        "- (no affirmative clean events on record; the review surfaced no "
+        "issues severe enough to verify)"
+    )
+    return (
+        "Adversarially audit this review's CLEAN verdict — try to REFUTE it. "
+        "You MUST execute at least one concrete check against the artifact "
+        "before answering: resolve one central claim or citation the artifact "
+        "makes, or run the check it claims passes. Your rationale MUST name "
+        "the exact command you ran or the specific claim you resolved and "
+        "what you observed — a rationale naming no executed check is invalid "
+        "and will be rejected. Emit a verify_result with issue='CLEAN: review "
+        f"affirmed no blocking issues', ref='{ref}' exactly as given, holds "
+        "(true only if the clean verdict survives your strongest refutation) "
+        "and rationale (what you executed, what you observed, why the clean "
+        "verdict does or does not hold).\n\n"
+        f"# Clean claims under audit\n{claims}\n\n# Artifact\n{artifact}"
+    )
+
+
 def _verdict_instruction(
     artifact: str,
     dimensions: tuple[str, ...],
@@ -158,10 +183,26 @@ def _verdict_instruction(
             f"\n## {i}. [{it.dimension}/{it.severity}] {it.description}"
             f"{(' @ ' + it.location) if it.location else ''}"
         )
-    if verifications:
-        parts.append(f"\n\n# Adversarial verifications ({len(verifications)})")
-        for v in verifications:
+    # Clean-verdict audits carry the run's clean ref; their polarity is the
+    # OPPOSITE of an issue verification — holds=false refutes the review's
+    # clean verdict, not an issue — so they get their own section and their
+    # own weighing guidance rather than riding the "weigh refuted issues
+    # down" line, which would read them backwards.
+    clean_ref = _clean_ref(dimensions)
+    issue_verifications = [v for v in verifications if v.ref != clean_ref]
+    clean_audits = [v for v in verifications if v.ref == clean_ref]
+    if issue_verifications:
+        parts.append(f"\n\n# Adversarial verifications ({len(issue_verifications)})")
+        for v in issue_verifications:
             parts.append(f"\n- holds={v.holds}: {v.issue} — {v.rationale}")
+    if clean_audits:
+        parts.append(f"\n\n# Clean-verdict audit ({len(clean_audits)})")
+        for v in clean_audits:
+            parts.append(f"\n- holds={v.holds}: {v.rationale}")
+        parts.append(
+            "\nIn this section holds=false means the review's CLEAN verdict "
+            "was REFUTED — weigh that AGAINST approval."
+        )
     parts.append(
         "\n\nWeigh refuted issues down. Decide APPROVE / APPROVE-WITH-FIXES / "
         "REQUEST-CHANGES / REJECT with a grounded rationale and the list of "
@@ -181,6 +222,7 @@ class ReviewEngine(Engine):
         verifier_role: str = "critic",
         synthesis_role: str = "synthesizer",
         verify_severities: tuple[str, ...] = ("critical", "major"),
+        verify_clean: bool = True,
         repair_retries: int = 1,
         **kwargs: Any,
     ) -> None:
@@ -190,6 +232,7 @@ class ReviewEngine(Engine):
         self.verifier_role = verifier_role
         self.synthesis_role = synthesis_role
         self.verify_severities = set(verify_severities)
+        self.verify_clean = verify_clean
         self.repair_retries = repair_retries
 
     # -- lifecycle --------------------------------------------------------------
@@ -197,19 +240,9 @@ class ReviewEngine(Engine):
     async def _partial_export(  # type: ignore[override]
         self, run: EngineRun, artifact: str, *, dimensions: tuple[str, ...] | None = None
     ) -> str:
-        """Return an already-computed verdict after budget/deadline exhaustion
-        instead of discarding it.
+        """Return an already-computed verdict after budget/deadline exhaustion instead of discarding it.
 
-        A synthesis agent's structured emission is captured onto the session
-        bus via the branch's async signal-emission side channel (on_message_
-        added -> fire-and-forget emit_message()) independently of whether the
-        ``synth.operate()`` call in ``_verdict`` itself ever returns — so a
-        ReviewVerdict can already exist in ``run.by_type(ReviewVerdict)`` even
-        though the deadline watchdog cancelled ``_run_task`` before ``_verdict``
-        reached its ``return`` statement (e.g. a CLI-backed worker still
-        retrying its emission). The base ``Engine._partial_export`` no-op
-        would silently drop that verdict; this surfaces it, flagged via the
-        normal EngineResult degrade signal.
+        See docs/internals/providers.md#review-engine-partial-export-on-deadline.
         """
         verdicts = run.by_type(ReviewVerdict)
         if not verdicts:
@@ -242,6 +275,14 @@ class ReviewEngine(Engine):
             raise
         # Drain any adversarial verifiers spawned by high-severity issues.
         await run.wait_quiescence()
+        # A clean or minor-only review spawns no issue verifiers, so it would
+        # reach the verdict with zero VerifyResult — and a downstream evidence
+        # floor then refuses the APPROVE as evidence-empty, structurally.
+        # Gate on zero VerifyResult (not zero issues) so both shapes instead
+        # carry one adversarial audit of the clean verdict itself: positive
+        # executed evidence rather than absence.
+        if self.verify_clean and not run.by_type(VerifyResult):
+            await self._verify_clean(run, artifact, dims)
         return await self._verdict(run, artifact, dims)
 
     # -- reactions ------------------------------------------------------------
@@ -298,6 +339,28 @@ class ReviewEngine(Engine):
                 arrived=lambda: any(
                     v.ref == ref or v.issue == issue.description for v in run.by_type(VerifyResult)
                 ),
+                emits=emits,
+                retries=self.repair_retries,
+            )
+
+    async def _verify_clean(
+        self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]
+    ) -> None:
+        emits = (VerifyResult,)
+        ref = _clean_ref(dimensions)
+        clean = run.by_type(DimensionClean)
+        async with run._sem:
+            verifier = await run.make_agent(
+                self.verifier_role,
+                name="verify-clean",
+                modes=["adversarial"],
+                model=self.model_for("verify"),
+                emits=emits,
+            )
+            await run.operate_with_repair(
+                verifier,
+                _verify_clean_instruction(artifact, clean, ref),
+                arrived=lambda: any(v.ref == ref for v in run.by_type(VerifyResult)),
                 emits=emits,
                 retries=self.repair_retries,
             )

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -48,13 +50,7 @@ def spa_client(
     """
     fake_db = tmp_path / "state.db"
 
-    import lionagi.studio.services.sessions as sessions_mod
-    import lionagi.studio.services.stats as stats_mod
-
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(sessions_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
     monkeypatch.setenv("LIONAGI_STUDIO_FRONTEND_DIST", str(dist_dir))
 
     import lionagi.studio.app as app_mod
@@ -71,13 +67,7 @@ def no_dist_client(
     """TestClient in API-only mode (no dist dir), backed by a fresh app instance."""
     fake_db = tmp_path / "state.db"
 
-    import lionagi.studio.services.sessions as sessions_mod
-    import lionagi.studio.services.stats as stats_mod
-
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(sessions_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
     # Ensure no dist is resolved (env var must be absent so _resolve_frontend_dist
     # returns None and the 404 exception handler is not registered).
     monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST", raising=False)

@@ -109,12 +109,8 @@ class Exchange(Element):
                     deliveries.append((message.recipient, message))
             self._mark_in_flight(deliveries, increment=True)
         if deliveries:
-            # _deliver_to removes each entry from in-flight on a successful
-            # delivery and leaves it in place if the inbox write raises. Do not
-            # unconditionally clear in-flight afterwards: that dropped a failed
-            # delivery from every recovery surface (outbox and items are already
-            # emptied), silently losing the message. Leaving it in-flight keeps
-            # it recoverable via drain_pending().
+            # _deliver_to clears an entry from in-flight only on success, so a
+            # raising inbox write stays recoverable via drain_pending().
             await gather(
                 *[self._deliver_to(recipient_id, message) for recipient_id, message in deliveries],
                 return_exceptions=True,
@@ -223,9 +219,8 @@ class Exchange(Element):
             elif message.recipient is not None and message.recipient in self._owner_index:
                 deliveries.append((message.recipient, message))
 
-        # Track in-flight before delivering (as the async path does) so a raising
-        # inbox write leaves the message recoverable via drain_pending() rather
-        # than dropping it; the outbox and items entries are already gone.
+        # Track in-flight before delivering (as the async path does) so a
+        # raising inbox write stays recoverable via drain_pending().
         self._mark_in_flight(deliveries, increment=True)
         for recipient_id, message in deliveries:
             with self._in_flight_lock:
@@ -252,13 +247,9 @@ class Exchange(Element):
     async def run(self, interval: float = 1.0) -> None:
         """Continuous sync loop; call stop() to exit.
 
-        One-shot: raises RuntimeError if called a second time on the same
-        instance, whether or not the first call already exited. Does not
-        reset ``_stop`` on entry — a stop() issued before this coroutine's
-        first turn (e.g. the DAG it watches over failed immediately) must
-        make this first call return right away rather than clearing that
-        signal and looping forever. Construct a fresh Exchange for a new
-        run instead of reusing one that has already been run.
+        One-shot: raises RuntimeError on a second call. Does not reset
+        ``_stop`` on entry, so a stop() issued before the first turn makes
+        this call return immediately instead of looping forever.
         """
         if self._run_started:
             raise RuntimeError(

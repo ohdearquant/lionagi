@@ -4,10 +4,12 @@ import {
   acknowledgeOperatorEffect,
   consumeOperatorSse,
   decideOperatorProposal,
+  forkOperatorConversation,
   getOperatorConversation,
   isOperatorFrame,
   listOperatorConversations,
   submitOperatorTurn,
+  updateOperatorConversation,
 } from "./api";
 import type { OperatorFrame } from "./types";
 
@@ -64,12 +66,139 @@ describe("Operator API v1", () => {
         project: null,
         title: "Release check",
         status: "active",
+        pinned: false,
         nextSequence: 4,
         activeRequestId: null,
         createdAt: 10,
         updatedAt: 20,
       },
     ]);
+  });
+
+  it("requests the active/archived/all filter as a query param", async () => {
+    let url = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string) => {
+        url = input;
+        return Promise.resolve(json({ conversations: [] }));
+      }),
+    );
+
+    await listOperatorConversations({ status: "archived" });
+    expect(url).toContain("status=archived");
+  });
+
+  it("PATCHes only the fields included in a conversation rename/pin/archive", async () => {
+    let captured: RequestInit | undefined;
+    let method = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        captured = init;
+        method = String(init?.method);
+        return Promise.resolve(
+          json({
+            conversation: {
+              id: "conversation-1",
+              title: "Renamed",
+              status: "active",
+              pinned: true,
+            },
+          }),
+        );
+      }),
+    );
+
+    const updated = await updateOperatorConversation("conversation-1", {
+      title: "Renamed",
+      pinned: true,
+    });
+
+    expect(method).toBe("PATCH");
+    expect(JSON.parse(String(captured?.body))).toEqual({ title: "Renamed", pinned: true });
+    expect(updated).toMatchObject({ id: "conversation-1", title: "Renamed", pinned: true });
+  });
+
+  it("surfaces a 404 when renaming a conversation that does not exist", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          json({ detail: { code: "not_found", message: "Operator conversation not found" } }, 404),
+        ),
+      ),
+    );
+
+    await expect(
+      updateOperatorConversation("missing-conversation", { title: "New title" }),
+    ).rejects.toMatchObject({
+      name: "ApiError",
+      status: 404,
+      code: "not_found",
+    } satisfies Partial<ApiError>);
+  });
+
+  it("surfaces a 422 when a rename exceeds the title field limit", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          json({ detail: [{ msg: "String should have at most 512 characters" }] }, 422),
+        ),
+      ),
+    );
+
+    await expect(
+      updateOperatorConversation("conversation-1", { title: "x".repeat(513) }),
+    ).rejects.toMatchObject({ name: "ApiError", status: 422 } satisfies Partial<ApiError>);
+  });
+
+  it("forks a conversation and normalizes the returned conversation and frames", async () => {
+    let url = "";
+    let captured: RequestInit | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string, init?: RequestInit) => {
+        url = input;
+        captured = init;
+        return Promise.resolve(
+          json({
+            conversation: {
+              id: "conversation-fork",
+              title: "Source (fork)",
+              status: "active",
+              pinned: false,
+            },
+            frames: [frame(1)],
+          }),
+        );
+      }),
+    );
+
+    const snapshot = await forkOperatorConversation("conversation-1", { upToSequence: 4 });
+
+    expect(url).toContain("/conversations/conversation-1/fork");
+    expect(JSON.parse(String(captured?.body))).toEqual({ upToSequence: 4 });
+    expect(snapshot.conversation.id).toBe("conversation-fork");
+    expect(snapshot.frames).toHaveLength(1);
+  });
+
+  it("surfaces a 404 when forking a conversation that does not exist", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          json({ detail: { code: "not_found", message: "Operator conversation not found" } }, 404),
+        ),
+      ),
+    );
+
+    await expect(forkOperatorConversation("missing-conversation")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 404,
+      code: "not_found",
+    } satisfies Partial<ApiError>);
   });
 
   it("pages every retained frame instead of truncating history at 1000", async () => {

@@ -97,13 +97,9 @@ async def _ack_outcome(db: Any, dispatch_id: str, ack_token: str) -> dict[str, A
 
     if applied:
         return {"outcome": "acked"}
-    # The transition was refused because the row left the status it was read in.
-    # Its current status is the useful thing to report, so it is re-read rather
-    # than described. A row that is gone by the time of the re-read is not a
-    # conflict with a missing status; it is an absence, and reporting it as
-    # `status_changed` with a null status would give one value two meanings and
-    # leave the caller unable to tell a surviving conflicting row from a deleted
-    # one. Same answer the exception path above gives for the same state.
+    # Re-read the row's current status rather than describe the refusal: a row
+    # gone by re-read time is reported as `not_found`, not `status_changed`
+    # with a null status, so the two cases stay distinguishable to the caller.
     row = await get_dispatch(db, dispatch_id)
     if row is None:
         return {"outcome": "not_found"}
@@ -437,6 +433,7 @@ async def _writable_state_db() -> AsyncIterator[Any]:
     body's bug and surfaces as the crash it is.
     """
     from lionagi.state.db import StateDB, state_db_known_absent
+    from lionagi.state.engine import mask_credentials, mask_db_url
 
     from .machine import MachineError
 
@@ -445,7 +442,8 @@ async def _writable_state_db() -> AsyncIterator[Any]:
     # this command would not have written to.
     if state_db_known_absent():
         raise MachineError(
-            "not_found", f"{StateDB().url} does not exist; there are no dispatches to act on"
+            "not_found",
+            f"{mask_db_url(StateDB().url)} does not exist; there are no dispatches to act on",
         )
     async with AsyncExitStack() as stack:
         try:
@@ -457,7 +455,16 @@ async def _writable_state_db() -> AsyncIterator[Any]:
         except MachineError:
             raise
         except Exception as exc:  # noqa: BLE001 — an unopenable store is a refusal, not a crash
-            raise MachineError("unavailable", f"{StateDB().url}: {type(exc).__name__}") from exc
+            # The message goes in `detail` rather than into the refusal text,
+            # so what a reader parses today is unchanged and the discriminator
+            # between two failures sharing a type is still there. Masked on
+            # both channels: the message can quote the store as readily as the
+            # URL field does.
+            raise MachineError(
+                "unavailable",
+                f"{mask_db_url(StateDB().url)}: {type(exc).__name__}",
+                {"cause": mask_credentials(str(exc))},
+            ) from exc
         yield db
 
 

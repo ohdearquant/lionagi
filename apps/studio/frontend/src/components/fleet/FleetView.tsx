@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
-import { listRuns } from "@/lib/api";
+import { listRuns, listRunProjects } from "@/lib/api";
+import type { RunProjectCount } from "@/lib/api";
 import { useFleet } from "./useFleet";
 import { createHistoryPager } from "./fleetReducer";
 import type { HistoryPager } from "./fleetReducer";
@@ -12,6 +13,7 @@ import SplitPane from "@/components/ui/SplitPane";
 import StatusDot from "@/components/ui/StatusDot";
 import { deriveDisplayStatus } from "@/lib/runStatus";
 import { Route } from "@/routes/fleet";
+import type { RetiredSearchValue } from "@/lib/retiredRoutes";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -415,7 +417,87 @@ function HistorySection({
   );
 }
 
+// ─── Filter bar (project scope + text search) ─────────────────────────────────
+
+function FilterBar({
+  searchDraft,
+  onSearchDraftChange,
+  project,
+  projectNull,
+  onProjectChange,
+  projectOptions,
+  onClear,
+}: {
+  searchDraft: string;
+  onSearchDraftChange: (v: string) => void;
+  project: string | null;
+  projectNull: boolean;
+  onProjectChange: (next: { project?: string; projectNull?: boolean }) => void;
+  projectOptions: RunProjectCount[];
+  onClear: () => void;
+}) {
+  const t = useTranslations("fleet");
+  const hasFilter = Boolean(searchDraft) || Boolean(project) || projectNull;
+  return (
+    <div className="flex items-center gap-2 border-b border-edge px-4 py-2">
+      <input
+        type="search"
+        value={searchDraft}
+        onChange={(e) => onSearchDraftChange(e.target.value)}
+        placeholder={t("filters.searchPlaceholder")}
+        aria-label={t("filters.searchAria")}
+        className="min-w-0 flex-1 rounded border border-edge bg-surface-base px-2 py-1 font-data text-[length:var(--t-xs)] text-content-primary placeholder:text-content-muted focus:border-accent/50 focus:outline-none"
+      />
+      <select
+        aria-label={t("filters.projectAria")}
+        value={projectNull ? "__none__" : (project ?? "")}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === "") onProjectChange({});
+          else if (v === "__none__") onProjectChange({ projectNull: true });
+          else onProjectChange({ project: v });
+        }}
+        className="shrink-0 rounded border border-edge bg-surface-base px-2 py-1 font-data text-[length:var(--t-xs)] text-content-primary focus:border-accent/50 focus:outline-none"
+      >
+        <option value="">{t("filters.allProjects")}</option>
+        <option value="__none__">{t("filters.noProject")}</option>
+        {projectOptions
+          .filter((p): p is RunProjectCount & { project: string } => p.project != null)
+          .map((p) => (
+            <option key={p.project} value={p.project}>
+              {p.project} ({p.count})
+            </option>
+          ))}
+      </select>
+      {hasFilter && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted transition-colors hover:text-content-secondary"
+        >
+          {t("filters.clear")}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── First agent id across all units ─────────────────────────────────────────
+
+// FleetSearch's index signature is `RetiredSearchValue` (no `undefined`), so
+// an explicit `undefined` in a patch must delete the key rather than be
+// assigned — otherwise the object no longer satisfies the router's search type.
+export function patchSearch(
+  base: Record<string, unknown>,
+  patch: Record<string, string | boolean | undefined>,
+): Record<string, RetiredSearchValue> {
+  const next = { ...base } as Record<string, RetiredSearchValue>;
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+  }
+  return next;
+}
 
 function firstAgentId(orgUnits: OrgUnit[]): string | null {
   for (const unit of orgUnits) {
@@ -428,9 +510,8 @@ function firstAgentId(orgUnits: OrgUnit[]): string | null {
 
 export default function FleetView() {
   const t = useTranslations("fleet");
-  const state = useFleet();
 
-  // URL-synced selection: ?s=<runId>
+  // URL-synced selection and filters: ?s=<runId>&project=<name>&project_null=true&q=<text>
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const urlRunId = (search as { s?: string }).s ?? null;
@@ -441,12 +522,78 @@ export default function FleetView() {
       : Array.isArray(rawInvocationId) && typeof rawInvocationId[0] === "string"
         ? rawInvocationId[0]
         : null;
+  const urlProject = (search as { project?: string }).project ?? null;
+  const urlProjectNull = (search as { project_null?: boolean }).project_null ?? false;
+  const urlSearchText = (search as { q?: string }).q ?? "";
+
+  const state = useFleet({
+    project: urlProject ?? undefined,
+    projectNull: urlProjectNull,
+    search: urlSearchText || undefined,
+  });
 
   // A deep link is already an explicit selection. This matters when the
   // Operator dock narrows Fleet below the split-pane breakpoint: opening a run
   // must reveal its detail instead of landing back on the master list.
   const [narrowExplicit, setNarrowExplicit] = useState(() => Boolean(urlRunId));
   const [histFilter, setHistFilter] = useState<HistFilter>("all");
+
+  // Text search is debounced into the URL (and from there into the poll and
+  // pager) so every keystroke doesn't fire a request — the input itself stays
+  // instant, only the committed value lags by SEARCH_DEBOUNCE_MS.
+  const SEARCH_DEBOUNCE_MS = 300;
+  const [searchDraft, setSearchDraft] = useState(urlSearchText);
+  useEffect(() => {
+    // Resync the draft from an external URL change (back/forward nav,
+    // Clear) — typing itself must not be fought by this effect on every
+    // keystroke, so urlSearchText is the sole dependency.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- external->local resync, not a derived-from-props computation the render body could do instead
+    setSearchDraft(urlSearchText);
+  }, [urlSearchText]);
+  useEffect(() => {
+    if (searchDraft === urlSearchText) return;
+    const timer = window.setTimeout(() => {
+      void navigate({
+        search: patchSearch(search, { q: searchDraft || undefined }),
+        replace: true,
+      });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchDraft]);
+
+  const handleProjectChange = useCallback(
+    (next: { project?: string; projectNull?: boolean }) => {
+      void navigate({
+        search: patchSearch(search, {
+          project: next.project,
+          project_null: next.projectNull || undefined,
+        }),
+      });
+    },
+    [navigate, search],
+  );
+  const handleClearFilters = useCallback(() => {
+    setSearchDraft("");
+    void navigate({
+      search: patchSearch(search, { project: undefined, project_null: undefined, q: undefined }),
+    });
+  }, [navigate, search]);
+
+  const [projectOptions, setProjectOptions] = useState<
+    Awaited<ReturnType<typeof listRunProjects>>["projects"]
+  >([]);
+  useEffect(() => {
+    let active = true;
+    listRunProjects()
+      .then((r) => {
+        if (active) setProjectOptions(r.projects);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // History pagination. The 3s poll covers page 1 (200 runs); older pages are
   // fetched on demand and kept here — polls never clobber them. The visible
@@ -462,11 +609,40 @@ export default function FleetView() {
   const [loadingMore, setLoadingMore] = useState(false);
   // The pager serializes fetches with a synchronous guard so a sentinel fire
   // and a click in the same tick can't fetch one page twice and skip the next.
+  // Rebuilt (via the effect below) whenever the filter scope changes, so an
+  // in-flight or already-fetched older page from a different filter can never
+  // be appended to the newly-filtered result set.
   const pagerRef = useRef<HistoryPager | null>(null);
   if (pagerRef.current === null) {
-    pagerRef.current = createHistoryPager((page) => listRuns({ page, per_page: HIST_PAGE_SIZE }));
+    pagerRef.current = createHistoryPager((page) =>
+      listRuns({
+        page,
+        per_page: HIST_PAGE_SIZE,
+        project: urlProject ?? undefined,
+        project_null: urlProjectNull,
+        search: urlSearchText || undefined,
+      }),
+    );
   }
   const pager = pagerRef.current;
+
+  useEffect(() => {
+    pagerRef.current = createHistoryPager((page) =>
+      listRuns({
+        page,
+        per_page: HIST_PAGE_SIZE,
+        project: urlProject ?? undefined,
+        project_null: urlProjectNull,
+        search: urlSearchText || undefined,
+      }),
+    );
+    // Filter scope changed - the previous page's older-history cache/cursor
+    // belongs to a different result set and must not be appended to this one.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- external filter change, not a render-derivable value
+    setOlderRows([]);
+    setPagedHasMore(null);
+    setHistVisible(HIST_VISIBLE_STEP);
+  }, [urlProject, urlProjectNull, urlSearchText]);
 
   // Polled rows win on id collision (fresher status); older pages fill the tail.
   const historyRows = useMemo(() => {
@@ -532,8 +708,12 @@ export default function FleetView() {
     if (urlRunId) return; // URL already has a selection
     if (autoSelectedRef.current === first) return;
     autoSelectedRef.current = first;
-    void navigate({ search: { s: first }, replace: true });
-  }, [state.orgUnits, historyRows, urlRunId, navigate]);
+    // Patched onto the current search, not written over it: the router takes an
+    // object-valued search as the whole next search, so selecting a row with a
+    // bare `{ s }` would drop the project and text filters that produced the
+    // row in the first place, and the next poll would come back unscoped.
+    void navigate({ search: patchSearch(search, { s: first }), replace: true });
+  }, [state.orgUnits, historyRows, urlRunId, navigate, search]);
 
   // Resolved selected id: validated URL param, fallback to first (pre-auto-select)
   const selectedRunId: string | null = urlIdValid ? requestedRunId : null;
@@ -541,9 +721,9 @@ export default function FleetView() {
   const handleSelectAgent = useCallback(
     (id: string) => {
       setNarrowExplicit(true);
-      void navigate({ search: { s: id } });
+      void navigate({ search: patchSearch(search, { s: id }) });
     },
-    [navigate],
+    [navigate, search],
   );
 
   const handleBack = useCallback(() => {
@@ -566,6 +746,19 @@ export default function FleetView() {
           />
         </div>
       </div>
+
+      {/* Filter bar — project scope + text search, both URL-persisted and
+          applied server-side so they compose with pagination instead of
+          filtering an already-truncated page. */}
+      <FilterBar
+        searchDraft={searchDraft}
+        onSearchDraftChange={setSearchDraft}
+        project={urlProject}
+        projectNull={urlProjectNull}
+        onProjectChange={handleProjectChange}
+        projectOptions={projectOptions}
+        onClear={handleClearFilters}
+      />
 
       {/* Counts strip */}
       {state.dataState !== "loading" && state.dataState !== "error" && (

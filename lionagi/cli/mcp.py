@@ -50,13 +50,9 @@ def run_mcp(args: argparse.Namespace) -> int:
         log_error(f"unknown mcp action: {args.action}")
         return 2
     try:
-        # `lionagi.mcp` is deliberately dependency-free, so importing it proves
-        # nothing about whether the server can run. The server module is what
-        # needs the extra, so it is imported here, explicitly and before
-        # serving. That keeps the classification below on the import, where
-        # "nothing was started" is true, rather than wrapping the serve loop,
-        # where a lazy import failing mid-session would be misreported as an
-        # installation that never started.
+        # `lionagi.mcp` is dependency-free; the server module needs the extra,
+        # so it's imported here explicitly, before serving, so a failure here
+        # (not mid-session) is what gets classified as "nothing was started".
         import lionagi.mcp.server  # noqa: F401
         from lionagi.mcp import serve
     except ModuleNotFoundError as exc:

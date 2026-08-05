@@ -42,13 +42,9 @@ def _make_client(
     import lionagi.state.db as state_db_mod
     import lionagi.studio.config as config_mod
     import lionagi.studio.services.agents as agents_mod
-    import lionagi.studio.services.definitions as defs_mod
     import lionagi.studio.services.playbooks as playbooks_mod
-    import lionagi.studio.services.runs as runs_mod
-    import lionagi.studio.services.sessions as sessions_mod
     import lionagi.studio.services.shows as shows_mod
     import lionagi.studio.services.skills as skills_mod
-    import lionagi.studio.services.stats as stats_mod
 
     monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
@@ -57,14 +53,6 @@ def _make_client(
     monkeypatch.setattr(skills_mod, "SKILLS_ROOT", skills_root)
     monkeypatch.setattr(cli_runs_mod, "RUNS_ROOT", runs_root)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(sessions_mod, "_DB", str(fake_db))
-    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
     if with_run:
         run_dir = runs_root / "20240101T000000-abc123"
@@ -146,10 +134,9 @@ def test_run_detail_reads_from_statedb(tmp_path: Path, monkeypatch: pytest.Monke
     finally:
         loop.close()
 
-    import lionagi.studio.services.sessions as sessions_mod
+    import lionagi.state.db as state_db_mod
 
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     client = _make_client(tmp_path, monkeypatch)
     r = client.get(f"/api/runs/{run_id}")

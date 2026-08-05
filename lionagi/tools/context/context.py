@@ -196,12 +196,12 @@ class ContextTool(LionTool):
 
         async def context_tool(
             action: str,
-            start: int = None,
-            end: int = None,
-            keep_last: int = None,
-            summary: str = None,
-            mode: str = None,
-            scope: str = None,
+            start: int | None = None,
+            end: int | None = None,
+            keep_last: int | None = None,
+            summary: str | None = None,
+            mode: str | None = None,
+            scope: str | None = None,
             auto: bool = False,
         ) -> dict:
             """Engineer your own conversation context — check usage, browse, evict, restore, and compact messages.

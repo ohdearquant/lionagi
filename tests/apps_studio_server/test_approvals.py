@@ -27,11 +27,8 @@ def _run(coro):
 
 def _patch_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.approvals as approvals_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(approvals_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(approvals_mod, "_DB", str(db_path))
 
 
 def _make_client(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:

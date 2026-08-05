@@ -166,25 +166,10 @@ class ActionManager(Manager):
         return FunctionCalling(func_tool=tool, arguments=args)
 
     def _warn_if_plugin_tool_shadowed(self, name: str) -> None:
-        """ADR-0088 D6: a plugin tool must never silently replace a name
-        already present in this manager's registry. Log a named diagnostic
-        (once per plugin+tool identity) when an active plugin also declares
-        *name* -- the already-registered tool wins and the plugin declaration
-        is rejected.
-
-        Purely diagnostic: a peer collision between two *other* plugins
-        declaring *name* is irrelevant to a tool that already resolved
-        locally, so it is swallowed here rather than raised -- a
-        locally-registered tool must never fail to resolve because of this
-        diagnostic.
-
-        `PluginRegistry.resolve_tool_target` rescans every installed
-        plugin's manifest from disk on every call; since this check is a
-        diagnostic only (never changes which tool actually runs), the
-        resolution is cached per registered-tool name for the lifetime of
-        the current plugin-registry generation, so repeated hits are free.
-        A `PluginRegistry.reset()` bumps the generation and forces exactly
-        one fresh resolution on the next call."""
+        """Log a named diagnostic (once per plugin+tool identity) when an active
+        plugin also declares *name* already in this manager's registry -- purely
+        diagnostic, never raised. See docs/internals/core.md for the resolution
+        caching and generation-invalidation contract."""
         from lionagi.plugins.registry import PluginRegistry, PluginToolCollisionError
 
         if not PluginRegistry.list_plugins():
@@ -235,22 +220,11 @@ class ActionManager(Manager):
         self,
         func_call: BaseModel | ActionRequest,
     ) -> FunctionCalling:
-        """Match, run tool-pre hooks, invoke, then run tool-post hooks.
-
-        Bypassing this manager (constructing ``FunctionCalling`` directly)
-        skips the hook layer entirely. See docs/internals/core.md.
-
-        A denying tool-pre hook fails the call closed the same way every
-        other denial/validation-failure path in this module does: the
-        returned ``FunctionCalling`` ends up ``FAILED`` with the denial
-        captured as its error, never raised out of ``invoke()``.
-
-        Non-empty tool-post-hook reasons are attached to the returned event
-        at ``metadata["tool_post_hook_notes"]`` and logged, on success and
-        failure paths alike. Tool-post hooks are skipped while a
-        cancellation (or other non-``Exception`` ``BaseException``) is
-        unwinding, so a slow or hanging hook can never delay that propagation.
-        """
+        """Match, run tool-pre hooks, invoke, then run tool-post hooks. Bypassing
+        this manager (constructing ``FunctionCalling`` directly) skips the hook
+        layer entirely. A denying pre-hook fails the call closed (``FunctionCalling``
+        ends up ``FAILED``, never raised); tool-post hooks are skipped while a
+        cancellation is unwinding. See docs/internals/core.md."""
         function_calling = self.match_tool(func_call)
         tool_name = function_calling.function
 

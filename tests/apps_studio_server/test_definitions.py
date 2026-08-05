@@ -40,8 +40,6 @@ async def test_save_definition_creates_db_row_and_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -97,8 +95,6 @@ async def test_save_definition_increments_version(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -131,8 +127,6 @@ async def test_save_new_playbook_definition_lands_in_playbook_catalog(tmp_path, 
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -193,8 +187,6 @@ def _make_patched_client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -293,8 +285,6 @@ async def test_save_definition_accepts_safe_names(name, tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", fake_home / "playbooks")
     monkeypatch.setattr(
@@ -325,8 +315,6 @@ async def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -364,8 +352,6 @@ async def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypat
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -424,8 +410,6 @@ async def test_save_definition_db_failure_does_not_write_file(tmp_path, monkeypa
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -462,8 +446,6 @@ def test_save_definition_db_failure_returns_500_from_router(tmp_path, monkeypatc
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -526,8 +508,6 @@ async def test_get_definition_follows_symlink(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -570,8 +550,6 @@ async def test_save_definition_writes_through_symlink(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -651,8 +629,6 @@ async def test_get_definition_finds_nested_dir_listed_by_list_definitions(tmp_pa
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
@@ -688,8 +664,6 @@ async def test_save_definition_fresh_home_no_kind_dir(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
     monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
     monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})

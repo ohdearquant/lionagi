@@ -22,12 +22,7 @@ from ._helpers import run_async
 
 def _monkey_db(monkeypatch, db_path: Path) -> None:
     """Point all relevant modules at a temp DB path."""
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.lifecycle as lifecycle_mod
 
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
@@ -630,10 +625,6 @@ def test_admin_prune_all_phantom_transitions_not_deletes(tmp_path, monkeypatch):
 
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
-    import lionagi.studio.services.sessions as sessions_mod
-
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
 
     missing_dir = str(tmp_path / "ghost_arts")
     stale_time = time.time() - 7200
@@ -674,11 +665,7 @@ def test_stats_includes_phantom_count(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
-    import lionagi.studio.services.sessions as sessions_mod
-
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
 
     from lionagi.studio.app import app
 

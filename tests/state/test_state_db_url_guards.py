@@ -233,6 +233,32 @@ def test_the_absent_reason_names_the_store_that_was_consulted(moved_sqlite_url, 
     assert "moved" in detail
 
 
+# ── the open mode a schedules read route asks for ─────────────────────────────
+# Which stores the predicate answers True for is pinned above, beside the
+# predicate. What is left to check here is that a schedules read route actually
+# routes through it, since a route that hardcoded True would pass every one of
+# those tests and still be a total outage on a server-backed store.
+
+
+async def test_a_server_url_read_fails_on_the_connection_not_on_the_open_mode(
+    absent_default, monkeypatch
+):
+    """The failure a server URL produces here must stay the one it produced
+    before the read routes changed open mode: the driver is absent or the host
+    refuses. If a read route asks for read-only mode on a server store the open
+    is rejected before any connection is attempted, and that rejection would
+    reach a real Postgres deployment as a total outage of the route rather than
+    as the connection error this asserts.
+    """
+    _set_url(monkeypatch, _SERVER_URL)
+    from lionagi.studio.services import schedules as svc
+
+    with pytest.raises(Exception) as excinfo:  # noqa: B017 — the message is the assertion
+        await svc.list_schedules()
+
+    assert "only supports sqlite" not in str(excinfo.value)
+
+
 def test_reported_sizes_describe_the_configured_store(moved_sqlite_url, tmp_path):
     from lionagi.cli.state import _db_sizes
 
@@ -253,3 +279,90 @@ def test_a_store_with_no_file_reports_no_size_rather_than_zero(absent_default, m
     assert sizes["is_file"] is False
     assert sizes["size_bytes"] is None
     assert sizes["wal_size_bytes"] is None
+
+
+# ---------------------------------------------------------------------------
+# Read-only mode is SQLite-only, so asking for it unconditionally is not a
+# degradation on a server-backed store, it is a failure to open at all. These
+# pin the predicate and the two shapes the failure used to take.
+#
+# Note what an assertion here cannot be: `pytest.raises(Exception)` passes
+# whether the store refused the read-only MODE or refused the CONNECTION, and
+# only the first is the defect. Every test below asserts the failure REASON.
+
+
+def test_read_only_is_supported_for_an_on_disk_sqlite_store(moved_sqlite_url, tmp_path):
+    from lionagi.state.db import read_only_open_supported
+
+    assert read_only_open_supported() is True
+
+
+def test_read_only_is_not_supported_for_a_server_store(absent_default, monkeypatch):
+    from lionagi.state.db import read_only_open_supported
+
+    _set_url(monkeypatch, _SERVER_URL)
+
+    assert read_only_open_supported() is False
+
+
+def test_read_only_is_not_supported_for_an_in_memory_store(absent_default, monkeypatch):
+    # There is no file to reopen in mode=ro, so the read-only open has nothing
+    # to attach to even though the dialect is sqlite.
+    from lionagi.state.db import read_only_open_supported
+
+    _set_url(monkeypatch, "sqlite+aiosqlite:///:memory:")
+
+    assert read_only_open_supported() is False
+
+
+@pytest.mark.asyncio
+async def test_the_readonly_seam_on_a_server_url_fails_on_the_connection_not_the_mode(
+    absent_default, monkeypatch
+):
+    """A server store must fail to CONNECT here, never fail to open read-only.
+
+    The seam reports a failed open as an answer rather than raising, so an
+    unconditional read-only open turned every server-backed store into a
+    considered-looking "unreadable" verdict about a store that reads fine. The
+    sibling test above asserts the reason is not NOT_FOUND, which the defect
+    satisfied: it produced UNREADABLE. Only the detail separates them.
+
+    The assertion is on the exception TYPE because that is all the seam records:
+    its detail is the URL and ``type(exc).__name__``, with the message dropped.
+    So the two failures read as ``ValueError`` (the read-only engine refusing a
+    dialect it never supported, a fact about the flag) and
+    ``ConnectionRefusedError`` (a fact about the store). An earlier version of
+    this test asserted on the message text, which cannot appear in that channel
+    at all -- it passed with the defect restored, which is how it was caught.
+    """
+    from lionagi.cli.machine import readonly_state_db
+
+    _set_url(monkeypatch, _SERVER_URL)
+
+    async with readonly_state_db() as (db, why):
+        if db is None:
+            assert not why["detail"].endswith(": ValueError"), (
+                "the seam refused its own read-only flag and reported it as the store "
+                f"being unreadable: {why}"
+            )
+
+
+@pytest.mark.asyncio
+async def test_a_resume_read_on_a_server_url_fails_on_the_connection_not_the_mode(
+    absent_default, monkeypatch
+):
+    """The same defect in its raising form, on the resume path.
+
+    Nothing reaches the database: the URL points at a closed port, so the open
+    fails either way. What it must not fail with is the read-only engine's own
+    refusal, which never touches the network and so cannot be a fact about the
+    store.
+    """
+    from lionagi.studio.services import run_resume
+
+    _set_url(monkeypatch, _SERVER_URL)
+
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 — the reason is the assertion
+        await run_resume._run_status("run-that-cannot-be-reached")
+
+    assert "only supports sqlite" not in str(excinfo.value)

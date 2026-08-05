@@ -2,23 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Dispatch for the single tool: validate an op, run it, envelope the result.
 
-The advertised tool describes ``ops`` and ``help`` and nothing else, so a
-caller's only route to a verb's parameters is to ask for them. That makes two
-things load-bearing here.
-
-The catalog carries a signature — the verb, what it requires, one line of
-summary — rather than a bare name, because a list of names tells a caller what
-exists and not how to call it, which forces a second round-trip before any first
-call.
-
-A rejected op comes back with the schema it was judged against. Validation is
-closed, so a misspelled parameter is refused by name; pairing that refusal with
-the schema means the first mistake costs one round-trip and teaches the shape,
-instead of costing a rejection and then a separate help call.
-
-Every schema is generated from the parser the CLI itself builds, at the moment it
-is asked for. Nothing here keeps a copy of a command's parameters, so a flag that
-moves in the CLI moves here with it.
+The advertised tool describes only ``ops`` and ``help``, so the catalog
+carries a full signature per verb (not a bare name) and a rejected op comes
+back with the schema it was judged against — each costs one round-trip
+instead of forcing a second help call. Every schema is generated from the
+CLI's own parser at the moment it's asked for, so a flag renamed in the CLI
+moves here with it.
 """
 
 from __future__ import annotations
@@ -139,17 +128,11 @@ def verb_schema(verb: Verb, *, playbook: str | None = None) -> dict[str, Any]:
 def catalog() -> dict[str, Any]:
     """Every verb, with enough of a signature to write the common invocation.
 
-    "Enough" is measured against the gate the call actually meets. A verb whose
-    ops must carry a ``schema_fingerprint`` gets that fingerprint here, because
-    an entry that lists a verb's parameters and withholds the one thing without
-    which the call is refused describes a call that cannot be made. The schema is
-    built anyway to read ``required`` off it, so the fingerprint is a hash of a
-    document already in hand and costs no extra work.
-
-    Where the schema depends on an argument, no fingerprint is quoted: the one
-    for the argument-free schema would be a value that never matches. The entry
-    names the parameter it varies with instead, so the caller knows to ask help
-    for that spelling rather than to retry with a stale string.
+    A verb whose ops must carry a ``schema_fingerprint`` gets it here (the
+    schema is already built to read ``required`` off it, so the hash costs
+    nothing extra). Where the schema depends on an argument, no fingerprint is
+    quoted — it would never match — and the entry instead names the parameter
+    it varies with.
     """
     entries: list[dict[str, Any]] = []
     for verb in VERBS.values():
@@ -159,10 +142,6 @@ def catalog() -> dict[str, Any]:
             entry["required"] = list(schema.get("required", []))
             unenforced = list(schema.get("x-required-unenforced", []))
             if unenforced:
-                # Named apart from `required` because the parser will not refuse a
-                # call that omits these, and the schema may offer another way to
-                # supply the same thing. Reporting them inside `required` would
-                # make the schema and what is admitted two different contracts.
                 entry["required_unenforced"] = unenforced
             if verb.executor == "spawn":
                 _describe_fingerprint(entry, verb, schema)
@@ -224,16 +203,10 @@ def _describe_fingerprint(
 ) -> None:
     """Say what a fingerprint-gated verb's ops have to carry.
 
-    A playbook-aware verb is projected again once a playbook is named, so its
-    fingerprint is a function of that argument. When the playbook is optional the
-    argument-free schema is a real call and its fingerprint is quoted; when the
-    verb requires a playbook there is no such call, so quoting anything would
-    hand the caller a string that is guaranteed to be refused.
-
-    Naming the playbook resolves that argument, so the schema is a real one and
-    its fingerprint is quoted. Both help surfaces route through here rather than
-    each deciding: the catalog withheld the unusable value while targeted help
-    returned it, which is one contract answered two ways by two callers.
+    A playbook-aware verb's fingerprint is a function of the playbook argument.
+    When the playbook is optional, the argument-free schema is a real call and
+    its fingerprint is quoted; when the verb requires one, quoting anything
+    would hand the caller a string guaranteed to be refused.
     """
     varies = ["playbook"] if verb.playbook_aware else []
     if varies:
@@ -253,27 +226,16 @@ def _require_fingerprint(
 ) -> None:
     """Spawn ops carry the fingerprint targeted help returned for them.
 
-    What this establishes is agreement: the schema the caller validated against is
-    the schema about to run. For a caller that fetched it, it also means the
-    parameters were in that caller's context first, which is the whole reason a
-    wide spawn surface is discoverable at all rather than merely documented. It
-    does not establish that in general — a fingerprint is a string and can be
-    inherited from someone who did read the schema.
-
-    The refusal carries its own remedy, because a rejection that only says
-    "stale" strands exactly the caller this exists to help. The remedy has to name
-    the playbook the call resolved: a playbook's own arguments are part of the
-    schema, so the fingerprint below is already qualified by it, and a help
-    pointer that named the verb alone would send a caller who re-fetches to the
-    argument-free schema and back into this same refusal.
+    Establishes that the schema the caller validated against is the schema
+    about to run (not, in general, that the caller itself read it — a
+    fingerprint is a string and can be inherited). The refusal's remedy names
+    the resolved playbook, since a pointer to the verb alone would send a
+    re-fetching caller to the argument-free schema and back into this refusal.
     """
     if playbook is None and verb.playbook_aware and "playbook" in verb.requires:
-        # The fingerprint this call would need is the argument-free schema's, and
-        # help does not hand that one out precisely because no successful call
-        # carries it. Complaining about it here would leave the caller with
-        # nothing to fetch. The real defect is the missing playbook, so let
-        # validation say that: it is the error the caller can act on, and no run
-        # starts either way.
+        # help never hands out the argument-free schema's fingerprint (no
+        # successful call carries it); let validation report the missing
+        # playbook instead — the error the caller can actually act on.
         return
     current = schema_fingerprint(schema)
     if supplied == current:
@@ -285,10 +247,8 @@ def _require_fingerprint(
     else:
         source = name
     remedy = {"help": source, "schema_fingerprint": current}
-    # Where the key goes is the part a caller gets wrong: put it inside `args`
-    # and it is simply not read, so this refusal repeats verbatim and the
-    # failure reads as idempotent rather than as a misplaced key. Spelling the
-    # whole op is the only form of the instruction that cannot be misread.
+    # Spelled as the whole op: `schema_fingerprint` inside `args` is silently
+    # unread, so a misplaced key would repeat this refusal forever.
     shape = f"{{'op': {name!r}, 'args': {{...}}, 'schema_fingerprint': {current!r}}}"
     ask = f"help={source!r}"
     if supplied is None:
@@ -330,10 +290,8 @@ def _describes(spec: dict[str, Any]) -> str:
 def _check_value(name: str, spec: dict[str, Any], value: Any) -> list[str]:
     problems: list[str] = []
     if "anyOf" in spec:
-        # A flag that is legal bare: either its value, or true for the bare form.
-        # Each branch is checked, and the value has to satisfy one of them —
-        # accepting whatever arrives because the schema has two shapes would make
-        # the advertised schema and what is admitted two different contracts.
+        # A flag legal bare (its value, or true for the bare form) — value
+        # must satisfy one branch, checked explicitly rather than admitted.
         branches = spec["anyOf"]
         if any(not _check_value(name, branch, value) for branch in branches):
             return problems
@@ -373,12 +331,7 @@ def _check_value(name: str, spec: dict[str, Any], value: Any) -> list[str]:
 
 
 def _validate(schema: dict[str, Any], args: dict[str, Any], verb: Verb) -> None:
-    """Refuse anything the schema does not describe, naming what was wrong.
-
-    Silently ignoring an unrecognized argument turns a typo into a call that
-    succeeds while doing something other than what was asked, so an unknown name
-    is echoed back rather than dropped.
-    """
+    """Refuse anything the schema does not describe, naming what was wrong."""
     properties = schema.get("properties", {})
     problems: list[str] = []
 
@@ -388,11 +341,6 @@ def _validate(schema: dict[str, Any], args: dict[str, Any], verb: Verb) -> None:
             continue
         reason = verb.refuses.get(name)
         if reason is not None:
-            # Every refusal used to be on a spawn verb, so the message could say
-            # why in general terms: nobody is attached to the terminal. A refusal
-            # on a synchronous verb has nothing to do with detachment, and saying
-            # so would send the caller looking for a background run that is not
-            # what they invoked.
             where = "on a background run" if verb.executor in ("job", "spawn") else "here"
             problems.append(f"{name!r} is not accepted {where}: {reason}")
         else:
@@ -417,11 +365,9 @@ def _validate(schema: dict[str, Any], args: dict[str, Any], verb: Verb) -> None:
 def _tokens(name: str, value: Any) -> list[str]:
     """The argv token(s) *value* becomes, refused if it cannot be one.
 
-    A command line is a list of NUL-terminated strings all the way down to
-    ``execve``, so a string carrying a NUL is not a value the platform can pass
-    at all. Refusing it here — before any record of the run exists — is the
-    difference between the caller learning its input was wrong and the spawn
-    failing later with a job record nothing can terminalise.
+    A NUL byte can't appear in a command line at all (execve terminates on
+    it), so it's refused here — before a job record exists — rather than
+    failing the spawn later with a record nothing can terminalise.
     """
     if isinstance(value, bool):
         return [str(value).lower()]
@@ -437,17 +383,15 @@ def _tokens(name: str, value: Any) -> list[str]:
 def _flag_tokens(name: str, flag: str, value: Any) -> list[str]:
     """One flag and its value, spelled so the value cannot become an option.
 
-    ``--flag value`` puts a caller's string in argv's option position: a value of
-    ``--machine`` is then read as a switch by the parser, and by anything that
-    scans argv ahead of the parser. ``--flag=value`` binds the two into a single
-    token, which no scan can split back apart.
+    ``--flag=value`` (not ``--flag value``) binds the two into one token, so a
+    value like ``--machine`` can't be read as a switch by the parser or by
+    anything scanning argv ahead of it.
     """
     token = _tokens(name, value)[0]
     if flag.startswith("--"):
         return [f"{flag}={token}"]
-    # A short-only flag has no `=` form: `-f=x` parses as the value `=x`. Nothing
-    # on the surface is short-only today, so this refuses rather than inventing a
-    # spelling for a case that would need its own decision.
+    # A short-only flag has no `=` form (`-f=x` parses as value `=x`); nothing
+    # here is short-only today, so this refuses rather than inventing a spelling.
     if token.startswith("-"):
         raise OpError(
             "invalid_input",
@@ -458,12 +402,7 @@ def _flag_tokens(name: str, flag: str, value: Any) -> list[str]:
 
 
 def render_argv(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
-    """The CLI tokens *args* becomes, spelled the way the projected parser reads.
-
-    Every token comes from the schema the parser produced — its flag string, its
-    aliases, its position — so a flag that is renamed in the CLI is renamed here
-    without an edit.
-    """
+    """The CLI tokens *args* becomes, spelled the way the projected parser reads."""
     properties = schema["properties"]
     flags: list[str] = []
     positional: dict[str, Any] = {}
@@ -477,13 +416,10 @@ def render_argv(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
             continue
         flag = spec["x-flag"]
         if spec.get("x-json-encoded"):
-            # The parser decodes this flag's single token from JSON, so the
-            # value the caller sent has to reach it encoded.
             flags += _flag_tokens(name, flag, json.dumps(value))
         elif spec.get("type") == "boolean":
-            # A store_false action defaults to true and its flag turns it off, so
-            # the flag belongs on the line exactly when the value differs from
-            # what the parser would have chosen on its own.
+            # store_false defaults to true; the flag belongs on the line only
+            # when the value differs from the parser's own default.
             if bool(value) != bool(spec.get("default", False)):
                 flags.append(flag)
         elif spec.get("type") == "array":
@@ -505,10 +441,8 @@ def render_argv(schema: dict[str, Any], args: dict[str, Any]) -> list[str]:
             tail += _tokens(name, value)
     if not tail:
         return flags
-    # Everything after `--` is a positional, to the parser and to every scan that
-    # runs ahead of it. Without it a positional whose text begins with a dash is
-    # read as an option, and a prompt is exactly the kind of value that legitimately
-    # begins with one.
+    # `--` marks everything after it positional to the parser and any scan
+    # ahead of it — needed since a prompt may legitimately begin with a dash.
     return [*flags, "--", *tail]
 
 
@@ -528,10 +462,8 @@ def _refuse_too_many_positionals(
     args: dict[str, Any],
     prompt: str | None,
 ) -> None:
-    """Refuse a positional bucket the receiving CLI would reject.
-
-    Admission runs before any job record or child process can be created.
-    """
+    """Refuse a positional bucket the receiving CLI would reject, before any
+    job record or child process can be created."""
     limit = _POSITIONAL_LIMITS.get(verb.job_kind)
     query = args.get("query") or []
     prompt_count = int(prompt is not None)
@@ -574,41 +506,27 @@ def _resolve_prompt(args: dict[str, Any]) -> str | None:
     return text
 
 
-# The kinds whose command treats naming neither a model nor an agent as a
-# request to orchestrate, and answers it with the default orchestrator profile
-# instead of refusing. Named by kind rather than inferred from the absence of
-# the others, so a spawning command added later is refused as before until it
-# is known to carry the same default.
+# Kinds whose command treats naming neither a model nor an agent as a request
+# to orchestrate, answered with the default orchestrator profile instead of a
+# refusal. Named explicitly (not inferred from absence of the others) so a
+# spawning command added later is refused as before until known to match.
 _ORCHESTRATING_KINDS = frozenset({"flow", "fanout", "play"})
 
 
 def _has_model_source(kind: str, args: dict[str, Any], prompt: str | None) -> bool:
     """Whether this submission gives the run any way to obtain a model.
 
-    Every spawning command refuses to start without one, and it refuses within
-    its first second — long after the handle describing a started run has gone
-    back to the caller. The same question is answerable from the arguments
-    alone, so it is answered before anything is spawned.
-
-    Answered conservatively: true whenever any source of a model is present,
-    false only when none is. A profile, a spec file and a playbook each name one
-    in content this does not read, so any of them present makes the question the
-    command's to answer, not this one's. The orchestrating commands' implicit
-    default is the same kind of claim and gets the same treatment: naming
-    neither a model nor an agent is a request to orchestrate, so those commands
-    resolve the default orchestrator profile themselves, and that profile is a
-    source this does not read either. That default answers this question and no
-    other: those commands still require a prompt, which is a separate question
-    with its own check below.
-
-    Where the model would sit in the positional bucket does not differ by
-    command, though the reason it lands there does. Every one of these commands
-    reads its positionals as ``[MODEL] PROMPT``, so a lone positional is the
-    prompt and a model is present only when a second value accompanies it.
-    Flow and fanout receive the prompt as that second positional; an agent
-    receives it through ``--prompt-file`` and so leaves the bucket one shorter,
-    which is why the prompt is counted alongside the positionals rather than
-    only within them.
+    Answered conservatively (true whenever any source is present) from the
+    arguments alone, before anything is spawned — every spawning command
+    otherwise refuses within its first second, after the handle has already
+    gone back to the caller. A profile/spec-file/playbook each may name a
+    model in content this doesn't read, so any of them present settles it.
+    Orchestrating kinds get the same treatment via their implicit default
+    profile (that default answers only the model question — prompt is checked
+    separately below). Every command reads positionals as ``[MODEL] PROMPT``,
+    so a lone positional is the prompt; the resolved prompt is counted
+    alongside the positional bucket since an agent's prompt goes through
+    ``--prompt-file`` instead, leaving that bucket one shorter.
     """
     if args.get("agent") or args.get("resume") or args.get("continue_last"):
         return True
@@ -627,11 +545,8 @@ _FLOW_MODEL_SOURCES = (
     "'agent', a spec with 'file', or a playbook with 'playbook'"
 )
 
-# What each command can be handed to obtain a model, spelled the way that command
-# accepts it. A remediation that named a source the receiving command has no
-# argument for would send the caller straight into a second refusal, this time
-# from argument validation, so the sources are stated per command rather than
-# once for all of them. A play runs the flow command and takes its arguments.
+# Per-command (not shared) so a remediation never names a source that
+# command's argument validation would then refuse. Play runs flow's argv.
 _MODEL_SOURCES = {
     "agent": (
         "pass a model as the first value of 'query' with the prompt in 'prompt' or as a "
@@ -646,11 +561,9 @@ _MODEL_SOURCES = {
     "play": _FLOW_MODEL_SOURCES,
 }
 
-# What the check above accepts as a model source when it has no per-command
-# entry to consult, spelled the way the sources above spell it. Resuming an
-# existing run also satisfies the check, and is deliberately not offered here:
-# it supplies a model by continuing a run that already has one, which is not a
-# correction to the submission the caller is making.
+# Fallback when a kind has no per-command entry above. Resuming an existing
+# run also satisfies the check but is deliberately not offered here — it
+# continues a run that already has a model rather than correcting this one.
 _GENERIC_MODEL_SOURCES = (
     ("query", "pass a model as the first value of 'query' with the prompt after it"),
     ("agent", "name a profile with 'agent'"),
@@ -662,22 +575,10 @@ _GENERIC_MODEL_SOURCES = (
 def _unlisted_model_sources(kind: str, verb: Verb, schema: dict[str, Any]) -> str:
     """The remediation for a command kind the sources table does not name.
 
-    Every spawning command registered today has an entry above, and a test holds
-    the two together so a new one cannot arrive without its sources. A kind with
-    no entry is still answered rather than raised past the caller, and the answer
-    still has to be one the caller can act on, so it is assembled from the two
-    things this refusal does know about a command it was not written for: which
-    arguments the check that refused would have accepted, and which of those the
-    command's own schema declares. The intersection is the correction — every
-    name in it is one the check takes as a model source and one this command
-    admits, so it cannot send the caller into a second refusal from argument
-    validation. No argument is named on the strength of a guess about the
-    command; a name absent from its schema is not offered.
-
-    That intersection can be empty, and then the refusal says so rather than
-    reaching for words: a command declaring none of these arguments has no
-    correction this server can state, and needs its own entry in the table above
-    before this message can direct anyone.
+    Assembled from the intersection of "arguments the check accepts as a model
+    source" and "arguments this command's own schema declares", so no name is
+    offered on a guess about a command it wasn't written for. An empty
+    intersection is reported as such — that command needs its own table entry.
     """
     declared = schema.get("properties", {})
     offered = [text for name, text in _GENERIC_MODEL_SOURCES if name in declared]
@@ -701,11 +602,9 @@ def _refuse_without_model(
 ) -> None:
     """Refuse a submission the command would reject on start, naming the fix.
 
-    A run rejected for its arguments dies before it can report anything: it
-    never reaches the terminal hook that records an end, so the job stays
-    non-terminal, no terminal notice is ever delivered, and a caller waiting for
-    one waits on a run that is already over. Refusing here costs the caller a
-    dictionary lookup and gives them the reason in the result.
+    A run rejected for its arguments dies before reaching the terminal hook, so
+    the job stays non-terminal forever and a caller waits on a run already
+    over — refusing here instead costs one dictionary lookup.
     """
     kind = verb.job_kind
     if kind is None or _has_model_source(kind, args, prompt):
@@ -721,33 +620,14 @@ def _refuse_without_model(
 def _has_prompt_source(kind: str, args: dict[str, Any], prompt: str | None) -> bool:
     """Whether this submission gives an orchestrating run any way to obtain a prompt.
 
-    Asked only of the kinds whose model question the default orchestrator
-    profile answers for them. For every other kind the positional bucket carries
-    both, so the model check above already refuses a submission carrying
-    neither; here the model is never missing and the prompt can be.
-
-    A prompt reaches these commands by two routes and both are read: ``prompt``
-    and ``prompt_file`` are resolved before this runs, while a prompt passed
-    positionally arrives in ``query`` — where a lone value is the prompt and a
-    second one is the model ahead of it. A resolved ``prompt`` is appended
-    behind the ``query`` values, so whichever of them comes last is the one the
-    command reads as its prompt.
-
-    That last value is tested for truth rather than for presence, because the
-    command tests it for truth: it assigns the positionals and then refuses on
-    a prompt that is falsy, not on one that is absent. An empty string is
-    present and not true, so a check asking only whether a prompt was passed
-    admits a submission the command refuses on start — the same stranded
-    non-terminal run this refusal exists to prevent, arriving as a value
-    instead of as a gap.
-
-    Beyond those, each command is taken at its parser's word. Flow also accepts
-    a spec file and a playbook, either of which may carry a ``prompt`` key this
-    does not read, so their presence makes the question the command's to answer
-    — including when a positional is present but empty, since the command reads
-    the file after assigning the positionals and lets it supply the prompt. A
-    play is that same command with the playbook required, so it always has one.
-    Fanout takes neither and has only the two routes.
+    Asked only of kinds whose model question the default orchestrator profile
+    answers, since for every other kind the model check above already covers
+    both. The last of ``prompt``/``prompt_file`` (resolved earlier) or a
+    positional ``query`` value is tested for truth, not presence — the command
+    itself refuses on a falsy prompt, so an empty string must fail this check
+    too. Flow (and play, which requires a playbook) also accept a spec file or
+    playbook that may carry its own ``prompt`` key this doesn't read, so their
+    presence settles the question too; fanout has only the two routes.
     """
     query = args.get("query") or []
     last_positional = prompt if prompt is not None else (query[-1] if query else None)
@@ -763,10 +643,7 @@ _FLOW_PROMPT_SOURCES = (
     "name a spec with 'file' or a playbook with 'playbook' that carries one"
 )
 
-# What each orchestrating command accepts as a prompt, spelled the way that
-# command accepts it and stated per command for the same reason the model
-# sources are: naming a source the receiving command has no argument for would
-# send the caller into a second refusal from argument validation.
+# Per-command, same reason as _MODEL_SOURCES above.
 _PROMPT_SOURCES = {
     "fanout": "pass the prompt in 'prompt' or 'prompt_file', or as the last value of 'query'",
     "flow": _FLOW_PROMPT_SOURCES,
@@ -777,16 +654,9 @@ _PROMPT_SOURCES = {
 def _refuse_without_prompt(verb: Verb, args: dict[str, Any], prompt: str | None) -> None:
     """Refuse a promptless orchestrating submission, naming the fix.
 
-    The same class of refusal as the missing model beside it, for the same
-    reason: the command checks its prompt before either runner is entered, so
-    the run dies without reaching the hook that records an end and the caller
-    holds a handle to a run that will never reach a terminal status or notify.
-
-    A sibling of that check rather than a clause inside it because the two
-    refusals differ in what they can tell the caller. The correction for a
-    missing model names model sources; naming them for a submission that has a
-    model and no prompt would be a correction the caller cannot act on. Keeping
-    them apart also keeps each remediation table answering one question.
+    Same class of refusal as the missing-model check, kept separate since the
+    two corrections are for different questions and mixing them would give a
+    caller with a model and no prompt a fix they can't act on.
     """
     kind = verb.job_kind
     if kind not in _ORCHESTRATING_KINDS or _has_prompt_source(kind, args, prompt):
@@ -801,22 +671,12 @@ def _refuse_without_prompt(verb: Verb, args: dict[str, Any], prompt: str | None)
 def _resolve_cwd(args: dict[str, Any]) -> str | None:
     """The caller's working directory, resolved the way it will be used.
 
-    ``~`` is a shell convention rather than a path the kernel resolves, so
-    whoever hands the value on has to expand it — and every verb taking a ``cwd``
-    has to expand it the same way, or one argument name means two things on one
-    server. It did: a roster read resolved under ``~/project`` while a submit
-    handed the tilde straight to the spawn, which cannot chdir to it.
-
-    Checked here rather than left to the spawn because a directory that is not
-    there is the caller's to fix, and a refused spawn is reported as
-    ``unavailable`` — the kind that says the machine is momentarily unable and
-    to come back later. Retrying a path that never existed is the one response
-    that cannot help. Checking first also means no run record is minted for a
-    run that was never going to start.
-
-    What stays on the spawn's own error path is genuinely the platform's: a
-    permission, an exhausted resource, an interpreter that is not there, and the
-    directory removed in the window between this check and the spawn.
+    ``~`` expansion happens here so every verb taking a ``cwd`` expands it the
+    same way — previously a roster read resolved under ``~/project`` while
+    submit handed the tilde straight to the spawn, which can't chdir to it.
+    Checked before spawning (a missing directory is the caller's to fix, not
+    an ``unavailable`` retry-later error) so no run record is minted for a run
+    that was never going to start.
     """
     cwd = args.get("cwd")
     if cwd is None:
@@ -866,9 +726,6 @@ def _server_info() -> dict[str, Any]:
     return {
         "lionagi_version": __version__,
         "contract_version": CONTRACT_VERSION,
-        # The verb count below is this process's registration; `code_identity`
-        # says which tree that registration was read from and whether that tree
-        # is behind what it should be serving.
         "code_identity": code_identity(),
         "started_at": _STARTED_AT,
         "uptime_seconds": round(time.time() - _STARTED_MONOTONIC, 3),
@@ -903,12 +760,9 @@ async def _run_job(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
 def _run_roster(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
     """Answer a roster verb through the resolver a run itself uses.
 
-    Called in this process rather than spawned, because there is nothing here to
-    drift from: the profile loader is one function, and it is the same one the
-    spawned `li agent` calls. The one thing the subprocess boundary would have
-    carried for free is the working directory, so that is taken as an argument
-    and checked here — a roster read of a cwd should not answer for a different
-    directory, and a submit carrying the same cwd is checked the same way.
+    Called in-process (not spawned) since it's the same profile loader
+    `li agent` calls — nothing to drift from. `cwd` is taken and checked
+    explicitly since the subprocess boundary would otherwise supply it for free.
     """
     cwd = _resolve_cwd(args)
     try:
@@ -916,8 +770,6 @@ def _run_roster(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
             return roster.profile_list(cwd=cwd, names=args.get("names"), fields=args.get("fields"))
         return roster.profile_show(args["name"], cwd=cwd)
     except FileNotFoundError as exc:
-        # The loader's own miss already names every available profile; re-listing
-        # them here would be a second answer that could disagree with it.
         raise OpError("not_found", str(exc)) from exc
     except ValueError as exc:
         raise OpError("invalid_input", str(exc)) from exc
@@ -926,10 +778,9 @@ def _run_roster(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
 def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     """Run the verb's CLI path as a subprocess and return its versioned envelope.
 
-    The command is spawned rather than called in this process on purpose: a
-    second in-process route would carry its own parser defaults, settings and
-    project resolution, and the two would drift without either one being wrong
-    enough to notice.
+    Spawned rather than called in-process: an in-process route would carry its
+    own parser defaults/settings/project resolution and drift from the CLI
+    without either one being wrong enough to notice.
     """
     assert verb.cli_path is not None
     argv = [*config.li_command(), *verb.cli_path.split(), "--machine", *render_argv(schema, args)]
@@ -981,12 +832,8 @@ def _run_machine(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> di
             error.get("detail"),
         )
     if completed.returncode != 0:
-        # The envelope is the authoritative answer for a command that speaks this
-        # contract, and such a command exits 0 whenever it emitted one. A success
-        # envelope beside a non-zero exit is therefore not a success reported
-        # twice, it is two channels contradicting each other, and nothing here can
-        # tell which one is right. A refusal is left alone: there both channels
-        # agree that something went wrong, and the envelope says more about it.
+        # A success envelope beside a non-zero exit is two channels
+        # contradicting each other, not a success reported twice.
         raise OpError(
             "internal",
             f"`{verb.cli_path}` reported success but exited {completed.returncode}",
@@ -1081,17 +928,12 @@ async def _run_one(entry: Any) -> dict[str, Any]:
             absent = _unknown_verb(raw_op, name)
         except ValueError as exc:
             return _op_error(name, OpError("not_found", str(exc)), None)
-        # A named-but-unavailable verb answers with why, which is a different
-        # fact from a name nobody ever registered.
         return _op_error(
             name, OpError("unavailable", absent["reason"], {"summary": absent["summary"]}), None
         )
 
-    # Absent and null both mean "no arguments"; anything else is judged on its
-    # type. `or {}` would have collapsed every falsy value — an empty list, an
-    # empty string, false — into the no-arguments case, so a caller passing the
-    # wrong shape was told its op succeeded and its input was dropped, which is
-    # the one answer closed validation exists to make impossible.
+    # Absent/null mean "no arguments"; `or {}` would also collapse a wrongly
+    # typed falsy value (empty list/string, false) into that same case.
     args = entry.get("args")
     if args is None:
         args = {}
@@ -1124,18 +966,9 @@ async def _run_one(entry: Any) -> dict[str, Any]:
     except OpError as exc:
         return _op_error(name, exc, schema)
     except jobs.SpawnError as exc:
-        # A run whose child could not be started. The caller asked for a run and
-        # does not have one, so this is their answer rather than an exception
-        # that takes the whole batch down with it — SpawnError is a RuntimeError
-        # and fell outside every clause here, discarding the results of ops
-        # beside it that had already succeeded. The run_id rides along because a
-        # record was written before the failure and its log holds the cause.
-        #
-        # `unavailable`, not `invalid_input`: the arguments were already accepted
-        # by the schema, and what failed is this machine's ability to start a
-        # process — a denied permission, an exhausted resource, a missing
-        # interpreter. A caller told its input was wrong will rewrite the request
-        # and send it again, which is the one response that cannot help here.
+        # `unavailable`, not `invalid_input`: arguments were already accepted
+        # by the schema; what failed is this machine's ability to start a
+        # process. run_id rides along since a record was written before failure.
         return _op_error(
             name,
             OpError("unavailable", str(exc), detail={"run_id": exc.run_id}),
@@ -1150,16 +983,11 @@ async def _run_one(entry: Any) -> dict[str, Any]:
 
 async def request(ops: list[dict[str, Any]] | None = None, help: Any = None) -> dict[str, Any]:  # noqa: A002 — `help` is the parameter name the surface advertises
     """Run a batch of ops, or answer a help request. Never raises for one bad op."""
-    # Shape first, before the help branch: otherwise a malformed ops is judged on
-    # truthiness, so an empty dict slips past as "no ops" and is discarded in
-    # silence, while a non-empty one is reported as a help conflict rather than
-    # as the wrong type it is.
+    # Shape checked before the help branch, or a malformed `ops` is judged on
+    # truthiness (an empty dict would slip past as "no ops").
     if ops is not None and not isinstance(ops, list):
         raise ValueError(f"ops is a list of {{op, args}} objects, got {type(ops).__name__}")
     if help is not None and help is not False:
-        # A catalog and a set of op results are different shapes, so one reply
-        # cannot carry both, and answering half of the request would look like
-        # success to a caller whose other half never ran.
         if ops:
             raise ValueError(
                 "help and ops cannot be combined in one call: help returns the catalog "

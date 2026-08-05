@@ -38,6 +38,23 @@ the SPA fallback: a catch-all `/{full_path:path}` route would intercept
 `/api/shows` before FastAPI's trailing-slash redirect fires, whereas an
 exception handler runs only after every route has been tried and missed.
 
+**Startup and the 501 store guard** — `StoreNotAddressableError` becomes a 501
+at the route, which only helps if startup gets far enough for routes to be
+reachable at all. A subsystem that can read only a local SQLite file must
+therefore skip itself during `lifespan` rather than raise: `operator_startup`
+checks `require_file_store()` and returns empty against a server-backed or
+in-memory store, because raising there aborts the whole lifespan and the
+daemon serves nothing, including the routes whose whole job is to say this
+condition cannot be served. `OperatorStore.path()` raises the same
+`StoreNotAddressableError` as the rest of the SQLite-direct layer rather than
+an `OperatorStoreError`, so the routes that open the store answer 501
+(permanent) instead of 503 (retryable), and the definition of which stores this
+layer can open stays in one place. The qualifier is doing work: a route that
+never opens the store is unaffected and answers normally in every mode.
+`GET /operator/models` returns its catalog from `operator/catalog.py` and so
+returns 200 against a server-backed store like any other, which is worth
+knowing before reading a 200 there as evidence that the store is reachable.
+
 ## lionagi/studio/cli.py
 
 **`_validate_chain_action_node`** — Validates one `chain_action` node, recursing
@@ -234,6 +251,33 @@ message ids) must not fall through to `0 or fallback`.
 - **`_find_definition_file`** — Candidates are literal-path joins, not glob
   patterns. Symlinks outside `base` are intentionally left unresolved and
   unrestricted — restricting them would break symlinked agent definitions.
+- **The mixed-source reads** — `list_definitions` and `get_definition` answer
+  from two places at once: current content from disk, version history from the
+  store. Both halves now resolve the same way, because history is read through
+  `StateDB` exactly as `save_definition` writes it. Reading SQLite directly was
+  the failure this replaces: writes went through `StateDB` and landed in the
+  configured server while reads fell back to the default local path, so an old
+  local database left over from a previous deployment was reported as this
+  definition's versions, laid over content read live from disk. Nothing in that
+  payload looks wrong; the two halves simply came from different stores.
+
+  When the store cannot be read at all, the disk half is still answered and the
+  history half is null rather than empty. The distinction is the point: an
+  empty history is a claim about the definition, and a caller told there are no
+  versions concludes nothing was ever saved. The true statement is about the
+  store, so `get_definition` returns `versions: null` with
+  `history_available: false`, and `list_definitions` reports `has_versions:
+  null` for the same reason. A client that does not handle it fails on a null
+  instead of quietly believing the definition was never versioned.
+
+  Routes whose whole answer *is* history have no disk half to fall back on, so
+  they refuse: `get_version` and `rollback_definition` raise
+  `HistoryUnavailableError` and the routes map it to 503. 503 rather than the 501
+  the Operator routes use, and the two are not interchangeable — every store
+  this deployment can be configured for is one `StateDB` reads, so failing to
+  read it is an operational condition a retry can outlive, where the Operator's
+  SQLite-only store makes the refusal permanent for that deployment. The
+  refusal body is a fixed string and carries nothing the driver said.
 
 ## lionagi/studio/services/playbooks.py
 
@@ -326,3 +370,105 @@ vocabulary into four Pulse-sparkline buckets: `timed_out` joins `failed`
 stops). `get_stats_route` intentionally reads the runs count from SQLite
 sessions (not `runs_svc.list_runs()`, which reads filesystem dirs and returns
 a different count) so the dashboard matches the Runs list page.
+
+## lionagi/studio/scheduler/admit.py
+
+ADR-0071 D3: `admit(row, worker, db) -> AdmissionDecision` is the worker
+claim loop's admission predicate, extracted to one named, StateDB-backed,
+unit-testable function. It borrows `Processor.handle_denied`'s
+terminal-vs-deferred return *shape* only (`True` = terminal, `False` =
+deferred/re-enqueue) — never the `Processor` class itself, which is
+`asyncio.Queue`-backed and in-process only, useless for a fleet of
+independent CLI processes claiming from a shared `schedule_runs` table.
+
+Conditions evaluated, in this order:
+
+1. Duration guard (D6) — a job declaring `max_duration_seconds` at or above
+   the worker's lease TTL is terminal-rejected: lease renewal is not yet
+   shipped (ADR-0071 delta #5), so an admitted long-runner would just lose
+   its lease mid-flight.
+2. Capability match (`capabilities.worker_can_serve`) — a mismatch defers
+   (row left `queued`, never faked).
+3. Concurrency-key block — a matching key currently `running` (this pass or
+   a prior one) defers the row to the next tick.
+4. Waiter cap (D-Cap) — per `concurrency_key`, at most `key_concurrency *
+   waiter_cap_multiplier` rows may sit `queued`/`retry_wait` behind a
+   running holder. Over cap is a terminal rejection unless the submission
+   opted into deferred/parked semantics (D-Reject).
+
+GPU/bench-window locks are never consulted here: `admit()` only ever reads
+StateDB. Machine-local lock acquisition and arbitration stay a worker-side
+execution responsibility (ADR-0071 D5's own stated limit, reaffirmed by D3).
+
+`action_args["admission"]` payload convention (documented shape inside the
+existing free-form `args`/`action_args` dict, no schema change):
+
+```text
+{
+    "max_duration_seconds": <float>,       # duration guard input
+    "allow_deferred_over_cap": <bool>,     # opt out of terminal rejection
+                                            # when the waiter cap is hit
+    "notify": {
+        "deliver_to": <str>,                # required, non-empty
+        "kind": <str>,                      # optional, default "terminal_notify"
+        "dedup_key": <str | None>,          # optional
+    },
+}
+```
+
+A `notify` payload with a field of the wrong type (e.g. `deliver_to` as an
+int) is dropped by `notify_request()` rather than surfaced — it must never
+crash the claim loop for a row that is already correctly skipped. A
+claim-time terminal rejection must still surface observably even though the
+submitter is no longer on the wire by then: `worker.py`'s claim loop, on a
+terminal `AdmissionDecision`, transitions the row `queued -> skipped`
+carrying the reason and — whenever `notify_request()` finds a notify
+payload — emits a `dispatch_outbox` row via
+`lionagi.dispatch.outbox.enqueue_dispatch`.
+
+## lionagi/studio/scheduler/worker.py
+
+`claim_and_execute`'s D4 match rule: row R is claimable iff its capability
+tokens are a subset of `advertised_capabilities` AND its `execution_target`
+is in `execution_targets` (NULL/empty target = claimable by anyone).
+Candidates are paged oldest-first through a `(queued_at, id)` keyset cursor
+until `limit` eligible candidates are found or the queue is exhausted,
+bounded by `_MAX_CLAIM_SCAN_ROWS` (a fairness/latency cap, not a correctness
+cap — a later pass resumes the same order); a long prefix of unservable rows
+never permanently hides an eligible row behind it, unlike a fixed-size
+prefetch window.
+
+If `worker_id`'s heartbeat is older than `heartbeat_ttl`, the pass claims
+nothing (in-flight leases still recover via `reap_expired_leases`); a worker
+with no heartbeat history yet is not treated as stale.
+
+Returns the number of rows claimed, regardless of execution outcome. Each
+claim is one guarded CAS (`queued -> running`); a lost race or a row another
+caller already moved is skipped, not retried within this pass. A terminal
+admission rejection never counts toward the returned total.
+
+## lionagi/studio/scheduler/signals.py
+
+Mint site: `SchedulerEngine._fire_inner()`, immediately after each of the
+three `_guarded_terminal_status("schedule_run", ...)` calls returns `True` —
+the one choke point every scheduled run's terminal write already passes
+through (in-process, synchronous with the commit, no polling latency). The
+module stays agnostic about *where* that mint happens: the signal classes
+and `SchedulerSignalBus` only need the same status/reason_code/entity_id
+fields a generic post-commit hook on `LifecycleService.transition()` would
+eventually carry, so promoting the mint site later is a call-site move, not
+a redesign of this module. `LifecycleService` and `StateDB` schema are
+untouched by this module — it imitates the shape of the existing in-run DAG
+signal bus (`lionagi.session.signal`/`observer`) without reusing its
+Flow/route/stream machinery, none of which a scheduler daemon process needs
+(`schedule_runs` is already the durable record).
+
+Failure semantics: `SchedulerSignalBus.emit` never swallows a handler
+exception. Handlers run concurrently with `return_exceptions=True`; any
+failures are raised together as an `ExceptionGroup` after every handler has
+had a chance to run. A handler-raised `CancelledError` cannot be nested in
+`ExceptionGroup`, so it is surfaced as the distinct
+`SchedulerHandlerCancelled` marker instead — the mint call site (`engine.py`)
+records either form. Cancellation of the emitter task remains a plain
+`CancelledError` and propagates, so a broken handler is visible without
+stopping unrelated schedules or swallowing scheduler shutdown.

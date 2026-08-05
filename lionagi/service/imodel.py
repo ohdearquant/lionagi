@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from lionagi.ln import is_coro_func, now_utc
 from lionagi.protocols.generic import ID, Event, EventStatus, Log
+from lionagi.providers._agentic_handlers import RUNTIME_STATE_NAMES
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
 from .hooks import (
@@ -46,21 +47,21 @@ class iModel:  # noqa: N801
 
     def __init__(
         self,
-        provider: str = None,
-        base_url: str = None,
+        provider: str | None = None,
+        base_url: str | None = None,
         endpoint: str | Endpoint = "chat",
-        api_key: str = None,
+        api_key: str | None = None,
         queue_capacity: int | None = None,
         capacity_refresh_time: float = 60,
         interval: float | None = None,
-        limit_requests: int = None,
-        limit_tokens: int = None,
+        limit_requests: int | None = None,
+        limit_tokens: int | None = None,
         concurrency_limit: int | None = None,
-        streaming_process_func: Callable = None,
+        streaming_process_func: Callable | None = None,
         provider_metadata: dict | None = None,
         hook_registry: HookRegistry | dict | None = None,
         exit_hook: bool = False,
-        id: UUID | str = None,  # noqa: A002
+        id: UUID | str | None = None,  # noqa: A002
         created_at: float | None = None,
         **kwargs,
     ) -> None:
@@ -118,6 +119,23 @@ class iModel:  # noqa: N801
             kwargs["api_key"] = api_key
         if isinstance(endpoint, Endpoint):
             self.endpoint = endpoint
+            # A finished endpoint missed the window where these are lifted off
+            # the caller's config, so they are placed now. Refusing the ones
+            # that have nowhere to go is the point: dropping them silently
+            # hands the child a default environment and leaves the supervisor
+            # hearing nothing, which is indistinguishable from working.
+            adopt = getattr(self.endpoint, "adopt_runtime_state", None)
+            unplaced = (
+                adopt(kwargs)
+                if callable(adopt)
+                else tuple(n for n in RUNTIME_STATE_NAMES if kwargs.get(n) is not None)
+            )
+            if unplaced:
+                raise TypeError(
+                    f"{type(self.endpoint).__name__} has no runtime state to hold "
+                    f"{', '.join(unplaced)}. These configure a spawned child process "
+                    "and only a CLI endpoint has one."
+                )
         else:
             match_kwargs = dict(kwargs)
             if base_url:
@@ -160,15 +178,15 @@ class iModel:  # noqa: N801
     async def create_event(
         self,
         create_event_type: type[Event] = APICalling,
-        create_event_exit_hook: bool = None,
+        create_event_exit_hook: bool | None = None,
         create_event_hook_timeout: float = 10.0,
-        create_event_hook_params: dict = None,
-        pre_invoke_event_exit_hook: bool = None,
+        create_event_hook_params: dict | None = None,
+        pre_invoke_event_exit_hook: bool | None = None,
         pre_invoke_event_hook_timeout: float = 30.0,
-        pre_invoke_event_hook_params: dict = None,
-        post_invoke_event_exit_hook: bool = None,
+        pre_invoke_event_hook_params: dict | None = None,
+        post_invoke_event_exit_hook: bool | None = None,
         post_invoke_event_hook_timeout: float = 30.0,
-        post_invoke_event_hook_params: dict = None,
+        post_invoke_event_hook_params: dict | None = None,
         **kwargs,
     ) -> APICalling:
         h_ev = None
@@ -356,7 +374,7 @@ class iModel:  # noqa: N801
                 EventStatus.PENDING,
             ):
                 try:
-                    # TODO(#1043 Phase 2): migrate to anyio cancel scope for timeout
+                    # TODO: migrate to anyio cancel scope for timeout
                     await asyncio.wait_for(
                         api_call.completion_event.wait(),
                         timeout=10.0,
@@ -403,6 +421,14 @@ class iModel:  # noqa: N801
         """Create a new iModel with the same config but a fresh ID. See
         docs/internals/runtime.md for what state is/isn't shared with the copy."""
         endpoint_cls = type(self.endpoint)
+        # Drain before the deep copy, not after. A runtime value that arrived
+        # after construction is still sitting in config.kwargs, so a deep copy
+        # takes it along: a child environment gets duplicated, and a bound
+        # callback is rebound to a copied receiver, leaving the caller's own
+        # supervisor to hear nothing from the copy's legs. Draining first means
+        # the copied config has nothing runtime-only in it and the live objects
+        # transfer whole, just below.
+        self.endpoint.drain_runtime_state()
         new_endpoint = endpoint_cls(
             config=self.endpoint.config.model_copy(deep=True),
             circuit_breaker=self.endpoint.circuit_breaker,

@@ -208,6 +208,7 @@ def test_update_agent_writes_yolo_field(tmp_path, monkeypatch):
         provider: claude
         model: claude-sonnet-4-6
         yolo: true
+        lion_system: false
         ---
         System prompt here.
         """,
@@ -305,6 +306,7 @@ def test_update_agent_canonicalises_model_with_provider(tmp_path, monkeypatch):
         ---
         provider: claude
         model: claude-sonnet-4-6
+        lion_system: false
         ---
         Agent body.
         """,

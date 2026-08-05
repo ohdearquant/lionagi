@@ -6,7 +6,428 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-08-04
+
+### Upgrading from 0.32.0
+
+**There was no 0.32.1 release.** A version bump to 0.32.1 was committed on
+2026-07-31 and never tagged or published, so 0.32.0 remained the latest release
+on PyPI while the repository read 0.32.1 for four days. The fix it documented
+ships here, in Fixed below, and no `0.32.1` section is retained: a changelog
+heading for a version that never existed on PyPI is a false record. If you
+installed from a git checkout during that window you were running code that
+reported itself as 0.32.1; nothing else about it differs from what is released
+here.
+
+Separately, `v0.23.3` has been tagged retroactively. That release was published
+to PyPI on 2026-05-03 with no corresponding git tag. The tag was created only
+after verifying that all 314 Python files in the published sdist are
+byte-identical to the commit it names, and its tag message records that it was
+applied on 2026-08-04 rather than at release time.
+
+Four changes are visible to existing callers.
+
+**A Claude Code session that ends in error now raises on the streaming path.**
+Previously the terminal error flag was recorded on the session object and read
+by nothing on the stream, so a session that failed after producing partial text
+returned that text as an ordinary result, indistinguishable from success. The
+stream now yields an error chunk, which is treated as a real failure
+downstream: already-delivered text is flushed and then a classified provider
+error is raised through the run, collect and operate paths. If you were relying
+on the partial return, that is the change. The non-streaming path is unchanged,
+and `ReAct`'s final-answer turn still returns partial text because it catches
+broadly, which predates this and is not altered.
+
+**A denied tool permission is now its own error type.** A headless CLI cannot
+prompt for a tool permission, so an ungranted tool call is denied and the turn
+returns empty. That used to arrive as a bare `ProviderError`, which is also
+what an unclassified provider failure arrives as, and the two demand opposite
+responses: one is worth retrying, the other reproduces exactly and forever.
+`ProviderPermissionError` carries `retryable = False`. Callers branching on
+`ProviderError` still catch it.
+
+**Operator controls are admitted by declared drain capability rather than by
+run ownership.** A runner now declares whether it consumes operator controls
+when it starts a session, and admission asks for that declaration. Absence of a
+declaration is refused, which does refuse one case that used to be admitted and
+would have worked: a CLI agent run whose session row predates the declaration.
+That is deliberate, because no field on a pre-existing row says what its runner
+will do. Controls already queued are not rewritten.
+
+**A store URL with credentials and no scheme is now refused.** A value like
+`user:secret@db.internal/lionagi` has no `://`, so it used to resolve as a
+filesystem path: a SQLite file appeared at a path built out of the credential,
+the server it named was never contacted, and every command downstream reported
+on an empty store as though it were the store. It is refused rather than
+warned about. The message names the target host, carries no part of the
+credential, and names the `./` prefix for a path that really does look like
+this.
+
+Also removed: `wal_pending` from the `db_health` response and the Studio System
+panel. It returned a second copy of `wal_bytes`, and a field named for pending
+WAL frames cannot be answered by the WAL file's size — SQLite leaves a
+checkpointed WAL at its allocated size, so a fully checkpointed store reported
+a large pending count forever, in the alarming direction. It is dropped rather
+than populated because the only source for the number is `PRAGMA
+wal_checkpoint`, which does not read the pending count, it performs a
+checkpoint, turning a health read into a writer against the store it reports
+on.
+
 ### Added
+
+#### Studio
+
+- **Agent create and delete**, with role and mode validated against the cast
+  catalog and the validated value being the value stored. The system agent
+  cannot be edited or deleted and the default agent cannot be deleted, enforced
+  on the existing `lion_system` flag rather than a second notion of "system",
+  so the guard and the runtime cannot disagree about what a system agent is.
+- **MCP servers as a first-class Library resource**: register, edit, enable or
+  disable, remove, and test a connection, with the registry kept in step with
+  the standard `.mcp.json` that CLIs read. The registry and the generated
+  `.mcp.json` are written with private permissions since they hold secret env
+  values. Env values are never returned to the client, so a save merges onto
+  the stored config key by key and deleting a displayed key is an explicit null
+  rather than an omission. A stored connection result always describes the
+  configuration it was obtained for: the check re-reads the registry after
+  probing and writes its result only if the configuration is still the one it
+  probed. Switching a server between stdio and http drops every field belonging
+  to the transport being left.
+- **Rename, pin, archive, and fork for Operator conversations.** They could be
+  created but never managed.
+- **Search, project scoping, and cursor-paged history for the fleet session
+  list.** Conversation scrollback pages backward by the stable cursor the
+  backend already returned; the previous offset paging repeated or skipped rows
+  on a live session.
+- **A stable creation-ordered mission board** with a bounded table view. Cards
+  reshuffled while being read, because the board inherited `ORDER BY
+  updated_at DESC` and `updated_at` bumps on every message while the page
+  polls.
+- **The Operator model catalog is served by the backend**, so the picker offers
+  exactly the providers, models, and effort levels the daemon can run instead
+  of a hardcoded frontend list that could disagree with it. A selection pins
+  provider and model as one pair on the conversation.
+- **Optional periodic all-thread stack dump**, off unless
+  `LIONAGI_STUDIO_TRACEBACK_DUMP` names a path. A daemon that stops answering
+  on one route is asking a question only a stack can answer, and the usual
+  instrument needs root on macOS, which makes it unavailable at exactly the
+  moment the process is wedged. This answers it from inside the process with no
+  attach and no privileges. It refuses out loud, naming the reason, for a path
+  inside a git working tree, an unwritable path, or an unusable interval.
+
+#### CLI and orchestration
+
+- **`li o ctl msg <id> "text"` now steers a running `li agent` leg**, draining
+  at the next turn boundary as a warm continuation turn rather than a context
+  merge. Targets resolve by run id as well as session, invocation, play or
+  branch id. Delivery is at most once. Whether a claimed message reached the
+  model is not recoverable from anything the system keeps, so a claim whose
+  consumer died is left standing rather than guessed at: `li agent status`
+  shows the owner and the age, and `li o ctl resolve <id> --as
+  applied|abandoned [--by <who>]` is how a person who has found out closes it.
+  The command is deliberately absent from the MCP surface, where a machine
+  caller has exactly the knowledge the row is missing.
+- **`li state null-content --older-than DAYS [--role ROLE] [--dry-run]`**
+  reclaims message bodies on the axis the bytes are actually on. `li state
+  prune` selects sessions, and a message any surviving progression still names
+  is kept whatever its age, so a store can be almost entirely message content,
+  have every message inside the keep-window, and give the prune nothing to
+  delete. Measured read-only on a 6.8 GiB store of 1,685,541 messages: at the
+  prune's default `--keep-days 30` it reaches zero bytes of message content,
+  while 3.06 GiB of bodies are older than seven days. The row, its id, role,
+  timestamp, sender and every progression reference survive; only the body
+  goes, and reclaiming is not reversible. A reclaimed body is replaced by a
+  marker rather than emptied, because an empty body is exactly what a turn that
+  genuinely produced nothing writes and nothing downstream has a second source
+  for that distinction. The command is excluded from the MCP surface as an
+  irreversible write.
+- **`li state prune` and `li state stats` report what a retention window can
+  actually reach**, including a per-role and per-age breakdown of message
+  bodies, so the gap between what the window selects and where the bytes live
+  is visible before running anything.
+- **Manifest schema v1 loader** for declarative round fan-out, per ADR-0110.
+  Unknown keys are refused by name at every mapping level and `manifest_version`
+  is required as the exact integer, using a strict YAML loader that refuses
+  merge keys, duplicate mapping keys and unhashable keys at construction, with
+  a matching JSON duplicate-key hook — so the schema validates what the author
+  wrote rather than what the parser produced. Every brief is read once through
+  a single descriptor with `fstat` binding the device and inode identity to the
+  bytes actually read.
+- **A manifest round is proven quiet before anything publishes it complete.**
+  Finishing used to mean the legs had returned, and a leg that returned can
+  still have left a process group running, so "complete" was a statement about
+  the runner's bookkeeping rather than about the machine. Quiescence is
+  established against the process groups the round actually recorded, with
+  durable per-leg and per-round records written as the round happens.
+- **A caller can hand lionagi the identity of a CLI process it started
+  itself**, instead of that identity being available only to the code that
+  spawned it. Cancelling such a leg ends the whole process group, identified by
+  evidence both ways it can be established rather than assumed from the leader
+  pid.
+- **`secrets.lookup` in `~/.lionagi/settings.yaml`** resolves declared secrets
+  into a spawned CLI leg's environment from a keychain or vault, for the case
+  where a CLI provider authenticates from its child's own environment and the
+  value is not exported. It is wired at the single spawn seam shared by all four
+  CLI providers. Global settings only: a repository must not get to name the
+  program that reads this machine's secret store. Purely additive, an exported
+  value always wins, and the value reaches the child's environment and nowhere
+  else — never a file, never an argv, never a log line.
+- **A failed job record now carries why**, not just that it failed. The
+  exception class that ended the run reaches the record as `failure_cause`. The
+  message is deliberately not carried: provider messages quote whatever the
+  provider said, which routinely includes an API key, and copying that into a
+  file the observer verbs read and forward opens a second channel onto the same
+  secret. A run whose cause file is absent leaves the field off entirely, so a
+  caller can tell a run that reported no typed cause from one that predates the
+  field.
+
+#### Configuration
+
+- **`LIONAGI_SQLITE_BUSY_TIMEOUT_MS`** makes the SQLite busy timeout a
+  deployment property. The 5000ms constant was chosen so tests holding a write
+  lock fail fast, and it was also, with nothing deciding it, the production
+  value on every connection any process opens. Unusable values fall back to the
+  default with a warning naming the rejected value; `busy_timeout=0` means
+  never wait, which no deployment that bothered to set the variable wants.
+- **Each process says once which busy timeout it is actually using and where
+  that came from** — the built-in default, the environment variable, an
+  unusable value, or an in-process override. Previously the only way to find
+  out was to read the config that launched the process, from outside it.
+
+#### CI
+
+- A **CVE audit gate** exporting the fully-pinned runtime dependency closure and
+  failing on any advisory, with a second non-blocking job over the wider dev and
+  extras closure that distinguishes "audited and clean" from "did not
+  complete".
+- **Import guards** on the merge-blocking aggregate. They previously ran in
+  their own workflow, so `import lionagi` staying light and free of eager heavy
+  imports was measured on every PR and blocked none of them.
+- A **frontend formatting gate**, and a **durable 14-day traffic ledger** on its
+  own long-lived data branch, since GitHub retains that data for only 14 days.
+
+### Changed
+
+- **`codex/<name>` names a codex config profile.** A profile at
+  `$CODEX_HOME/<name>.config.toml` names a model and the provider that serves
+  it, and is how the codex CLI reaches models from other vendors. The name used
+  to be passed to codex as a model id, so the profile was never consulted and
+  codex ran something else — silently, since the leg succeeds and answers from
+  a model nobody chose. Only a bare name is looked up, table-valued keys are
+  not adopted, and a profile that exists but declares no usable model raises
+  rather than falling back to the name. Resolution runs on the request model,
+  so library callers (`Branch(chat_model="codex/<profile>")`) get it as well as
+  CLI callers.
+- **A model configured behind codex may bring its own effort vocabulary.**
+  `reasoning_effort` and `plan_mode_reasoning_effort` were a closed set of the
+  eight words lionagi itself produces; codex and the provider behind it are the
+  authority on what is valid, and a closed set here rejected working
+  configurations before the CLI ever saw them.
+- **An engine can grant its CLI legs the tools they were given.** The
+  per-provider permission table was reachable only under `spec.yolo`, which the
+  engine never passed, so a leg spawned this way was denied every tool call and
+  returned success carrying nothing. The default stays off: what was broken is
+  that asking was impossible from this path, not that the answer was no.
+- **Long narrative comment blocks move into a `docs/internals/` reference set**,
+  leaving a short summary and a cross-reference at each site. The executable
+  code is unchanged, verified by comparing the parsed syntax tree of every
+  touched file against its previous version. Docstrings read at runtime are
+  excluded, since the MCP request tool's docstring is published as that tool's
+  advertised description.
+- **Parameter annotations admit their `None` defaults** across `lionagi/`, with
+  `RUF013` enabled so the simple form cannot come back. No behaviour changes;
+  every edit widens an annotation to match a default the code already had.
+- **Dependency floors raised** on four advisories: `cryptography` to 50.0.0,
+  `GitPython` to 3.1.57, `aiohttp` to 3.14.3, and in the VS Code extension an
+  `undici` override at 7.29.0 with `fast-uri` at 3.1.5. `brace-expansion` moves
+  to 5.0.9, and that one was not reported: the override written to remediate its
+  advisory was pinned at `^5.0.8`, inside the affected range, so the pin was
+  resolving to a vulnerable version.
+
+### Fixed
+
+#### Studio and mirroring
+
+- **One agent run no longer shows up twice.** The codex mirror imported every
+  rollout under `~/.codex/sessions`, including the rollouts written by headless
+  `codex exec` runs that lionagi itself had spawned as agent legs, so a single
+  run appeared once under its agent's name and again as an extra "Codex
+  session". Rollouts whose originator marks them as headless are no longer
+  imported. Interactive Codex history (desktop app, TUI, IDE) mirrors exactly as
+  before. Rows imported by earlier versions are absorbed on the mirror's next
+  start, so existing double entries heal on upgrade, and the removal is scoped
+  to importer-written rows and can never touch a live run's session.
+- **An unreadable definition history is no longer reported as an empty one.**
+  Definition reads answer from two places at once, current content from disk and
+  version history from the store, and history was read from SQLite directly
+  while saves go through StateDB — so a server-backed deployment had its writes
+  land in the server while reads fell back to an old local file, reported as
+  this definition's versions over content read live from disk. An empty history
+  is a claim about the definition and a caller told there are no versions
+  concludes nothing was ever saved; the true statement is about the store.
+- **Data routes a server-backed store cannot answer now return 501** instead of
+  an empty list indistinguishable from "genuinely no rows". Not 503, because the
+  backend does not change while the process runs, so retrying should not be
+  implied. `/admin/readiness` is deliberately unguarded, since the store's
+  condition is that route's subject.
+- **The store is resolved once, where the services open it.** Every Studio
+  service named the default path directly, which is right exactly when nothing
+  has moved it; with `LIONAGI_STATE_DB_URL` pointing elsewhere a route read a
+  database the daemon never opens and reported on rows nobody is serving.
+- **Schedule reads no longer take a write lock.** Seven read routes opened the
+  store the ordinary way, reconciling the schema and taking a `BEGIN IMMEDIATE`
+  write lock once per request.
+- **Studio and the state engine wait the same time on a store lock.** Each set
+  its own `busy_timeout` from a number written out by hand.
+- **A WAL checkpoint records what it actually drained.** `PRAGMA
+  wal_checkpoint(TRUNCATE)` returns zeros on every success by definition, so the
+  audit event could only say that a checkpoint succeeded; someone investigating
+  a stall read it as "there was nothing to drain", which the row does not say
+  and cannot say. The WAL size going in and the elapsed wall time are now
+  recorded alongside.
+
+#### State and persistence
+
+- **Store credentials are masked in every operator-facing string.** A store URL
+  is a credential when the store is a server, and every command reporting which
+  store it consulted printed it whole into terminal scrollback, CI logs and
+  machine-mode JSON. Two channels carried it: the URL field, and an exception's
+  own message, which is separate code unaffected by masking the field beside it.
+  The masker also grows the arm it was missing, where a value with no scheme
+  parses as a path so the function whose whole job is to remove credentials
+  returned one verbatim.
+- **The read-only open is taken only where the backend supports it.** Read-only
+  mode is a SQLite URI open of an existing file, so an unconditional request
+  does not degrade on a server-backed store, it fails at open — which would have
+  turned seven call sites asking for it as an optimisation into hard errors the
+  moment the store moved to a server.
+- **The imported-session teardown is locked against concurrent writers.** Its
+  retention check and the deletes it authorises could straddle a concurrent
+  writer committing a new reference on PostgreSQL.
+- **A late writer can no longer overwrite a session-control outcome someone
+  else recorded**, which used to turn a delivery an operator had resolved into
+  one the record said never arrived. A refused finalize is now reported rather
+  than discarded.
+- **The steer tombstone is given a database handle that is still open.** The
+  sweep that closes controls at run teardown was handed a connection the
+  teardown had already closed, on every ordinary agent run, and it swallows its
+  own errors so bookkeeping cannot fail a finished run — leaving the whole path
+  collapsed to one logged line while the controls it exists to close stayed
+  pending.
+- **A threshold-metric comment claimed an invariant the code does not hold**,
+  sending a reader auditing it to look for a bug that was not there.
+
+#### Providers and runs
+
+- **A codex session failure is reported once, and the chunk carries
+  `is_error`.** Two objects described one failure and disagreed about whether it
+  was one: a real `turn.failed` reached a consumer twice, and neither chunk set
+  the flag, so a consumer reading the flag instead of the type saw no failure at
+  all. The flag follows the classification rather than the type, because a
+  resumed session that ends normally emits an error-typed chunk with an empty
+  payload that has to keep reading as success.
+- **A resumed provider session follows what actually ran.** A session belongs to
+  the provider and model pair that created it, and only a caller changing the
+  pin invalidated one — so an unpinned conversation ran on whatever the
+  environment resolved to and then resumed that session under a different pair
+  once the default moved.
+- **A run that asked for a terminal notice it can never get now says so.**
+  `--notify` fires on a session entity's terminal transition, so when
+  persistence setup failed there was no entity, the registration was skipped,
+  and the run did all of its work and finished in silence — which is exactly
+  what a run that never asked for a notifier produces. Consumers here are
+  automated: the MCP server takes the notice as the run's end and otherwise
+  publishes `outcome=indeterminate`, so a run that completed and wrote its
+  report read to the caller as a run that vanished. 44 job records on one
+  machine carried that outcome.
+- **A child that lost its persistence now delivers its own terminal notice**,
+  directly against a synthesized envelope once the run's real terminal status is
+  known, rather than registering for a transition that can never happen.
+- **A spawn going ahead without its declared secrets is now said out loud.** A
+  configured-but-refused lookup returned the environment unchanged and said
+  nothing, and an absent lookup returns the same value, so someone who
+  misconfigured a lookup saw only their child dying on a missing key with
+  nothing pointing back at their own configuration.
+- **A control that cannot answer is no longer reported as a policy verdict.** A
+  denial means the policy is working and a fault means the policy is not
+  running, and an operator does entirely different things about them.
+  `ControlUnavailableError` subclasses `PermissionError`, so everything already
+  failing closed on that keeps doing so. It also separates a handler that ran
+  and declined from no handler being configured, which used to be reported as
+  the latter.
+- **Messages a teardown flush could not save are now reported.** The last
+  attempt reported failure only by returning a boolean that every caller
+  discarded, and the state log stays quiet when nothing changed, so the last
+  attempt those events ever got was exactly the attempt that emitted nothing.
+  The count is included because it is the part nobody can reconstruct
+  afterwards.
+- **A notify refusal caused by a sender-identity mismatch has its own class**,
+  rather than being stored as `unknown` and indistinguishable from a genuinely
+  novel failure, though it is a configuration fact with exactly one fix.
+- **Recalled memories are dated and name the serving profile** in the block
+  injected into an agent's prompt. That block is deliberately wrapped as
+  untrusted context, but an undated bullet inside it gives the reader no way to
+  tell a genuine record written a year ago from something invented, so a true
+  old memory read as suspect.
+
+## [0.32.0] - 2026-07-30
+
+### Upgrading from 0.31.1
+
+**The browser-credential system is gone.** Studio is a single-user tool that
+binds to loopback by default, and before the Operator workspace landed its only
+access control was the optional bearer token set through
+`LIONAGI_STUDIO_AUTH_TOKEN`. The credential system introduced alongside that
+workspace is removed again, so there is no login step, no stored browser
+credential, and nothing to rotate. The bearer token is unchanged and is still
+the way to protect a Studio you bind to a non-loopback host with `--host` or
+`LIONAGI_STUDIO_HOST`. Anything that worked before the Operator arrived is
+unaffected. If you stored a credential during that window, discard it.
+
+**The Studio marketplace bundle now leads with its MCP server** and no longer
+ships a `.mcp.json`. The manifest declares the server inline, so there is no
+precedence question between two carriers. `uv` on PATH is the only prerequisite.
+The bundle version moves to 1.1.0, which is what makes an already installed
+plugin pick any of this up. A plugin-provided server's tools are namespaced, so
+the tool a plugin user calls is `mcp__plugin_orchestrate_lion__request` rather
+than the unscoped name. The `li` CLI stays documented as the path for someone
+working inside a lionagi checkout.
+
+### Added
+
+- **An Operator workspace in Studio.** A conversational way to ask for work,
+  watch it run, and approve what it proposes, without having to learn the rest
+  of the Studio UI first. Everything that changes state is permission gated: the
+  Operator proposes, and the change happens when you approve it.
+
+- **The Operator keeps its session and can answer questions about the app.** A
+  conversation persists its provider session id and resumes it, so the second
+  message no longer meets a stranger and continuity is no longer faked by
+  replaying earlier frames as prompt text. The id is re-read every turn rather
+  than pinned on first write, because a resumed session is free to hand back a
+  new id and pinning would silently stop resuming the moment it did. The page
+  snapshot the browser already sent with every turn is now rendered into the
+  prompt, bounded per value the same way history frames are. Five read-only
+  tools answer questions the panel previously could not: run statistics over a
+  window, the current view, the schedule list with next fire and recent health,
+  the agent library, and the playbook names that launching one requires. Each is
+  a bounded, explicitly projected read, and project paths go through the same
+  leaf-name redaction as the existing run list.
+
+- **A model selector in the Operator header.** Switching models starts a fresh
+  provider session for that conversation, because a provider session belongs to
+  the model that opened it and resuming one under a different model is
+  undefined. Tool calls render compactly instead of dominating the transcript,
+  and agent definitions render as markdown rather than raw preformatted text.
+
+- **Codex sessions appear in Studio.** `~/.codex/sessions/**/rollout-*.jsonl` is
+  mirrored into StateDB the way `~/.claude/projects` already was, and enough
+  import provenance is recorded that a mirrored row can be told apart from a run
+  lionagi executed itself.
+
+- **khive context-injection counters in session detail.** A bare agent run
+  recorded no context-injection telemetry, so the counters lived only as long as
+  the process and `li monitor` had nothing to show.
 
 - A run reports which MCP servers it gave its workers. `mcp_config_servers` names
   them on the submit handle, and `job.status` now carries the whole `mcp_config`
@@ -20,20 +441,188 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   reports what was resolved, which is not a claim that the child's provider then
   started each server.
 
+### Changed
+
+- **The Studio marketplace bundle's primary interface is its MCP server.** The
+  nine skills and the README lead with it, and the manifest carries the server
+  declaration inline. See the upgrade note above for what an installed plugin
+  needs in order to receive this.
+
+- Markdown artifacts render through a guard that replaces an absolute or
+  protocol-relative image target with a visible placeholder naming the alt text.
+  Opening an artifact could otherwise issue requests to hosts named inside it.
+  Markdown rendered elsewhere is unchanged.
+
+### Removed
+
+- **The browser-credential system.** See the upgrade note above.
+
 ### Fixed
 
-- Resuming a codex leg that was given MCP servers with `env` or `http_headers`
+- Resuming a codex agent that was given MCP servers with `env` or `http_headers`
   no longer fails before spawn. Those fields are handed to codex through a
   generated config profile rather than the command line, and codex takes one
   profile per invocation, so the code refuses to add a second one when the
-  caller already asked for a profile of their own. A resumed leg re-spawns from
+  caller already asked for a profile of their own. A resumed agent re-spawns from
   its persisted request, which carries the profile the first run generated, and
   that was being read as a caller's profile. A profile named in the generated
   shape, `lionagi-mcp-` followed by 32 hex characters, is now replaced instead,
-  which is also what the resumed leg needs: the first run deleted its profile
+  which is also what the resumed agent needs: the first run deleted its profile
   file on the way out, so the inherited name pointed at nothing. That shape is
   reserved. Any other profile name, including another name under the same
   prefix, is the caller's and is still refused.
+
+- **A spawn that never resolved is no longer reported as still running.** A job
+  record whose spawn phase is still preparing names a spawn that was never
+  attempted, or one whose result was never written. The classifier makes no
+  claim about its fate, because no bound on the record can tell a loaded machine
+  from a dead spawn, and it now says so instead of presenting the row with the
+  signature of a live one. The job listing likewise says which running rows
+  never started, and no longer lists a directory that was reserved but whose
+  record has not been published: reserving a directory happens before the
+  command is prepared, and publishing the record is the boundary that turns a
+  reservation into a job. A record that exists but cannot be read is still
+  listed, along with the state of that read, rather than hidden.
+
+- **A spawn command rejects excess positionals before it submits.** These
+  commands take at most a model and a prompt positionally. An extra value used
+  to be accepted at the request layer and to fail later during argument parsing,
+  after a job record and a child process already existed, with the error visible
+  only in a console log rather than in the response.
+
+- **The fingerprint a help surface quotes is the one the call can send.** A
+  spawn verb's `schema_fingerprint` hashes the schema the call resolves, and for
+  the playbook and flow submissions that schema includes the named playbook's
+  own declared arguments, so the fingerprint is a function of the playbook. Two
+  surfaces disagreed about that.
+
+- **A terminal notice is signed by the seat that submitted the run.** The
+  delivery command was spawned without a working directory and inherited the
+  caller's, so a notifier that resolves its own identity from its working
+  directory signed with whoever owns the directory the run executed in.
+  Separately, a failed terminal notice is now classified without storing what it
+  said.
+
+- **Worker artifact directories are described only where they exist.** The
+  initial worker setup set CLI-only endpoint settings for every worker, so an
+  API-backed worker was told in its prompt that the artifact directory was its
+  working directory, which is not true for it. Reactively spawned workers on
+  non-CLI providers get an output-only artifact path for the same reason: tools
+  falling back to their own default working directory could otherwise write
+  relative output outside the named path.
+
+- **A generated profile name is matched at both ends.** A prefix match treated a
+  caller-supplied name that merely started like a generated one, such as one
+  with a trailing newline, as this code's own to overwrite.
+
+- **A job lock reports a release that did not happen.** Release failures were
+  suppressed unconditionally. Suppression now applies only when the protected
+  section itself failed, where a release failure must not answer in place of the
+  real one. When the section succeeded, a failure to unlock or close is the only
+  failure there is, and it reaches the caller.
+
+- **A caller-supplied working directory is resolved before it is checked.** The
+  directory check answers about the submitting process's own directory, and the
+  value was recorded unresolved, so a relative path was checked against one
+  directory and read back against whatever directory a later reader was in.
+
+- **Provider capability tables are complete and guarded at import.** The
+  per-provider yolo and bypass tables are keyed by provider spelling and were
+  maintained by hand, so they had drifted: three CLI provider spellings were
+  absent from both. Naming MCP servers for a gemini provider now raises rather
+  than being silently dropped, since the CLI behind it cannot carry them, and a
+  spawn is refused only when servers were actually named. Explicit MCP
+  configurations that are not supported are rejected outright. The agy print
+  mode gets a cap derived from the caller's timeout, validated before it reaches
+  argv, and an unrepresentable Antigravity deadline is rejected rather than
+  encoded.
+
+- **Scheduler and Studio startup.** Studio inspected Git state on the event
+  loop, so a slow repository read blocked the loop before the server began
+  serving; the inspection now runs in a worker thread and is still awaited in
+  place, which keeps the guarantee it exists for. A scheduled run exported an
+  invocation id to its children, but the child CLI had no way to read it, so
+  budget accounting saw zero spend for work that had really run. The one-time
+  dispatch-timestamp backfill ran in the same transaction as the statement that
+  added the column, so a database that gained the column in an earlier release
+  without the backfill never got one; it is now gated on a durable marker
+  claimed with an insert-if-absent, so it happens exactly once per database
+  regardless of when the column arrived. A failing scheduler subprocess now
+  carries its diagnostic instead of discarding stdout. Claim-time candidates
+  sort duration-valid first, so a row that can never run no longer consumes a
+  cap slot ahead of a valid one.
+
+- **A declarative command target's arguments are held to their own field's
+  contract.** They were validated against a different field's validator and
+  persisted to a destination whose imperative path validates it differently.
+
+- **State persistence backlog.** Standard-library `default=` conversions are
+  honored while non-finite values are still refused on the durable JSON path.
+  Schema inspection and migration are serialized under backend-appropriate
+  locks. Messages referenced only by owners that were deleted are pruned.
+  Inherited run identity is consumed after a single child allocation. Session
+  retention is based on the latest update and rechecked under the prune lock.
+  Float-list message embeddings are encoded as little-endian float32 blobs with
+  parity across backends.
+
+- **Concurrent streams no longer report each other's ending.** A stream's
+  terminal state was held in a plain attribute on the event, so two streams
+  running concurrently on one event overwrote each other and a post-stream hook
+  could be told how the other stream ended. The state now lives in a per-event
+  context variable for the duration of that hook, and is retained on the event
+  afterwards so a parent reading the property later still sees the last terminal
+  state.
+
+- **An explicitly supplied model that happens to be falsy is preserved.**
+  `chat()` resolved its model with an `or`, which discarded it. It now asks the
+  parameter class whether the argument is a sentinel, which is the policy that
+  decides every other omitted field on that class.
+
+- **The public message projection is nullable again.** `Message.chat_msg` is
+  documented to contain any projection failure and return `None`. A prior change
+  removed that guard, so a failure while reading the role or rendering content
+  escaped to callers that rely on the nullable result to skip an unrenderable
+  message.
+
+- **An artifact verdict that was never recorded is distinguishable from one that
+  failed.** Verification carried a single shape for three situations: checked
+  and passed, checked and failed, and never checked. Consumers indexed the
+  failure fields unconditionally, so a session with no stored verdict read as a
+  session that had missed its artifacts.
+
+- **`li kill` recognizes macOS framework Python launchers.** Framework builds
+  present argv[0] with a capital P, and the match was case-sensitive, so a
+  shebang-launched `li` started by a framework interpreter was not recognized as
+  ours and `li kill` declined to act on its own process. Team wakeup rounds are
+  also now told the artifact contract their result has to meet.
+
+- **The full-page graph editor's MiniMap uses its default dimensions.** It
+  rendered at a fixed size intended for a compact embed that no surface actually
+  renders.
+
+- **The served OpenAPI document states the running version.** The Studio app was
+  built without one, so the framework supplied its own default and every release
+  served the same string. A client reading that document to decide what the
+  server supports was reading a constant, which made two servers on different
+  releases indistinguishable and left a version-keyed feature gate unable to
+  move. Note that the published Python package carries the backend only: the
+  browser interface ships in the container image and in the hosted deployment,
+  both built from the same release.
+
+- **Packaging.** The VS Code extension no longer ships a source map that a
+  negation had re-included after `.vscodeignore` excluded it. The marketplace
+  manifest lint accepts only frontmatter a YAML parser can read, so a file can
+  no longer pass the lint and still fail to load in a plugin host.
+  `datamodel-code-generator` is floored at the patched release.
+
+### Internal
+
+- Two consecutive releases published no container image. Buildx setup is now
+  retried, since it pulls from a registry outside this project,
+  and the release now reads the tag back from the registry rather than trusting
+  the push step. Workflows also run when a draft pull request is marked ready,
+  which raises no event under GitHub's default activity types, and a pull
+  request's own in-flight runs are superseded instead of queueing beside them.
 
 ## [0.31.1] - 2026-07-28
 

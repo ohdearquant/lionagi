@@ -81,10 +81,8 @@ _ROLE_PROFILE_CACHE: dict[tuple[str, str], tuple[str | None, str | None]] = {}
 
 
 def _profile_cache_key(role: str) -> tuple[str, str]:
-    # Profile resolution is project-local (load_agent_profile searches from
-    # Path.cwd() outward), so the cache key must include the resolved project
-    # dir — a role-only key lets a long-lived process retain the first
-    # project's routing after a cwd change.
+    # Profile resolution is project-local; a role-only key would retain the
+    # first project's routing after a cwd change in a long-lived process.
     return (role, os.getcwd())
 
 
@@ -102,15 +100,11 @@ def role_profile_route(role: str) -> tuple[str | None, str | None]:
 
         prof = load_agent_profile(role)
     except FileNotFoundError:
-        # No profile configured for this role. Do not cache: a profile added
-        # later (or a cwd change back to a project that has one) must be
-        # picked up on the very next call, not masked by a stale (None, None).
+        # Not cached: a profile added later must be picked up on the next call.
         logger.debug("role_profile_route(%r): no agent profile found", role)
         return (None, None)
     except Exception as exc:
-        # Malformed profile or a transient filesystem error — same
-        # do-not-cache rule, distinguished only in the log line so a parse
-        # failure isn't confused with "no profile configured".
+        # Same do-not-cache rule; distinguished only in the log line.
         logger.warning("role_profile_route(%r): profile failed to parse: %s", role, exc)
         return (None, None)
     route = (prof.model, prof.effort)
@@ -404,11 +398,8 @@ class EngineRun:
             cwd = self.engine.agent_cwd
         if extra_prompt is None:
             extra_prompt = self.engine.agent_extra_prompt
-        # Resolution order: explicit call > engine-wide > the role's agent
-        # profile. An effort baked into the model spec's suffix outranks the
-        # profile default too — only apply prof_effort when the resolved
-        # model has no suffix of its own, so a profile can't silently
-        # override an explicit `codex/gpt-5.6-luna-high`-style effort.
+        # Resolution order: explicit call > engine-wide > role profile. An
+        # effort suffix baked into the model spec outranks prof_effort too.
         prof_model, prof_effort = role_profile_route(role)
         resolved_model = model or self.engine.model or prof_model
         resolved_effort = effort or self.engine.effort
@@ -417,8 +408,7 @@ class EngineRun:
 
             if not parse_model_spec(resolved_model).effort:
                 resolved_effort = prof_effort
-        # Same precedence for khive injection; an explicit False at any level
-        # disables and stops the profile fallback.
+        # Same precedence for khive injection; explicit False stops the profile fallback.
         injection = khive_injection
         if injection is None:
             injection = self.engine.khive_injection
@@ -438,6 +428,12 @@ class EngineRun:
             cwd=cwd,
             system_prompt=extra_prompt,
             khive_injection=injection,
+            # Read off the engine rather than defaulted here: create_agent is
+            # the single grant site, and a grant this path could not express
+            # was the whole defect -- a headless CLI cannot prompt for a tool
+            # permission, so a leg spawned without this is denied every tool
+            # call and reports success with nothing in it.
+            yolo=self.engine.yolo,
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
@@ -445,8 +441,7 @@ class EngineRun:
             from lionagi.agent.spec import _wire_secure_guards
 
             _wire_secure_guards(spec, cwd)
-        # create_agent is the single grant site: emits is threaded through the
-        # spec above, so capabilities are granted once during construction.
+        # create_agent is the single grant site; capabilities are granted once here.
         branch = await create_agent(spec, load_settings=False)
         if name:
             branch.name = name
@@ -473,16 +468,13 @@ class EngineRun:
         model only gets lionagi's registered tool schemas, and therefore only
         invokes them, when ``branch.operate(actions=True)``.
         """
-        # CLI workers emit prose, not fenced JSON — they need the full example form.
+        # CLI workers emit prose, not fenced JSON — front-load the full example
+        # form; waiting for the repair pass costs a whole extra CLI process.
         is_cli = bool(getattr(getattr(branch, "chat_model", None), "is_cli", False))
         hint = emission_keys(emits)
         if is_cli:
-            # Front-load the contract: waiting for the repair pass costs a whole
-            # extra CLI process per worker that defaults to prose.
             instruction = f"{instruction}{_cli_emission_primer(hint, emits)}"
-        # actions=False is branch.operate()'s own default: omit the kwarg
-        # entirely in that (common) case rather than passing it explicitly,
-        # so a minimal test double's operate(self, *, instruction) still works.
+        # Omit actions entirely when False so a minimal test double still works.
         operate_kwargs: dict[str, Any] = {"actions": True} if actions else {}
         res = await branch.operate(instruction=instruction, **operate_kwargs)
         attempt = 0
@@ -757,12 +749,21 @@ class Engine:
         agent_cwd: str | None = None,
         agent_extra_prompt: str | None = None,
         khive_injection: Any = None,
+        yolo: bool = False,
     ) -> None:
         # Run-wide agent defaults: pin every agent to a working directory (e.g. a
         # provisioned worktree) and/or a shared standards prompt; per-call
         # make_agent(cwd=..., extra_prompt=...) still wins.
         self.agent_cwd = agent_cwd
         self.agent_extra_prompt = agent_extra_prompt
+        # Auto-approve tool permission requests for every agent this engine
+        # spawns, applied per provider from the same table the CLI and profile
+        # paths use. Default False: auto-approving tool execution is not
+        # something a caller should receive without asking for it. What this
+        # switch buys is that asking is now POSSIBLE from here -- without it the
+        # table is unreachable on this path, and a CLI that cannot prompt for a
+        # permission has no way to be granted one.
+        self.yolo = yolo
         # Run-wide khive context-injection default for every stage agent
         # (True/mapping/policy enable, False disables even a profile opt-in,
         # None defers to each stage role's agent profile).

@@ -51,10 +51,11 @@ def test_fast_mode_preserves_reasoning_effort():
     """fast_mode=True does not cap or remove reasoning_effort."""
     req = CodexCodeRequest(prompt="hello", fast_mode=True, reasoning_effort="xhigh")
     args = req.as_cmd_args()
-    # Both service_tier=fast and reasoning_effort=xhigh must appear
+    # Both overrides must appear. The effort is emitted as a TOML value, like
+    # every other `-c` override, so the quotes are part of the wire form.
     flat = " ".join(args)
     assert "service_tier=fast" in flat
-    assert "reasoning_effort=xhigh" in flat
+    assert 'reasoning_effort="xhigh"' in flat
 
 
 # ── 4. Profile frontmatter fast_mode:true propagates via build_imodel ────

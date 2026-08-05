@@ -597,14 +597,10 @@ def _result_question_gen(run: HypothesisRun, r: ResultRecorded) -> int:
 
 
 def _derive_finding_gen(run: HypothesisRun, parent_ref: str) -> int | None:
-    """The generation a FindingPosted must carry, derived from its indexed
-    parent rather than trusted from the emission — closes the bypass where an
-    omitted, stale, or forged ``gen`` field defeats the recursion bound. Seeds
-    (``parent_ref`` empty) and findings raised off validation (``parent_ref``
-    an ExperimentDesigned id) are the only two legitimate routes. Returns
-    ``None`` when a non-empty ``parent_ref`` does not resolve to a legitimate
-    parent — the caller must reject the emission rather than default to
-    gen 0, which would restart the depth budget for a forged reference."""
+    """The generation a FindingPosted must carry, derived from its indexed parent rather than
+    trusted from the emission — closes the bypass where a forged ``gen`` defeats the recursion
+    bound. ``None`` means ``parent_ref`` didn't resolve; the caller must reject, never default to 0.
+    """
     if not parent_ref:
         return 0
     parent = run.find(parent_ref)
@@ -614,12 +610,9 @@ def _derive_finding_gen(run: HypothesisRun, parent_ref: str) -> int | None:
 
 
 def _derive_question_gen(run: HypothesisRun, parent_ref: str) -> int | None:
-    """The generation a QuestionRaised must carry, derived from its indexed
-    parent rather than trusted from the emission. A question raised directly
-    off a finding (extraction) shares that finding's cycle; a question raised
-    off another question (research) or off a result (validate -> conclude)
-    starts the next cycle. Returns ``None`` for a non-empty ``parent_ref``
-    that does not resolve — see ``_derive_finding_gen``."""
+    """The generation a QuestionRaised must carry, derived from its indexed parent. A question off
+    a finding shares its cycle; off another question or a result, it starts the next cycle.
+    ``None`` when ``parent_ref`` doesn't resolve — see ``_derive_finding_gen``."""
     if not parent_ref:
         return 0
     parent = run.find(parent_ref)
@@ -696,18 +689,13 @@ class HypothesisEngine(Engine):
         repair_retries: int = 1,
         **kwargs: Any,
     ) -> None:
-        # Recursion default: two cycles. Cycle 1 catches what execution
-        # surfaces; deeper cycles trade quadratic agent spend for tail findings
-        # and are opt-in via max_depth.
+        # Default two cycles: cycle 1 catches what execution surfaces; deeper
+        # cycles are opt-in via max_depth (quadratic agent spend for tail findings).
         kwargs.setdefault("max_depth", 2)
         kwargs.setdefault("judge_model", self.DEFAULT_JUDGE_MODEL)
-        # Context injection is opt-in (pass khive_injection=True, a policy
-        # mapping, or a KhiveInjectionPolicy to the engine constructor): a
-        # default-on gate would writeback and recall raw content across
-        # runs/projects with no isolation. Leaving this unset here means
-        # each stage falls through to its role's agent profile (see
-        # EngineRun.make_agent / role_profile_injection), same as any other
-        # Engine subclass.
+        # Context injection stays opt-in here (unset falls through to each
+        # stage's agent profile) — a default-on gate would recall/writeback
+        # raw content across runs/projects with no isolation.
         super().__init__(**kwargs)
         self.question_role = question_role
         self.research_role = research_role
@@ -850,13 +838,11 @@ class HypothesisEngine(Engine):
     # -- reactions ------------------------------------------------------------
 
     def _on_finding(self, run: HypothesisRun, f: FindingPosted) -> None:
-        # Never trust the emitted gen — derive it from the indexed parent so
-        # an omitted, stale, or forged value cannot bypass the recursion bound.
+        # Never trust the emitted gen — derive it from the indexed parent.
         gen = _derive_finding_gen(run, f.parent_ref)
         if gen is None:
-            # Non-empty parent_ref that doesn't resolve to a real parent: a
-            # forged/unroutable reference must never be treated as a fresh
-            # gen-0 seed, since that would restart the depth budget.
+            # An unroutable parent_ref must never fall back to a fresh gen-0
+            # seed, since that would restart the depth budget.
             run.notify(
                 "unroutable_parent_ref", eid=f.eid, parent_ref=f.parent_ref, event="FindingPosted"
             )

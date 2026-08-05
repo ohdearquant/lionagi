@@ -918,8 +918,8 @@ def add_orchestrate_subparser(
     ctl_status.add_argument(
         "id",
         help=(
-            "Session, invocation or play id to report on — full, or an unambiguous prefix. "
-            "Required here: this command has no 'latest run' default."
+            "Session, invocation, play, or run id to report on — full, or an unambiguous "
+            "prefix. Required here: this command has no 'latest run' default."
         ),
     )
     ctl_status.add_argument(
@@ -940,8 +940,8 @@ def add_orchestrate_subparser(
     ctl_pause.add_argument(
         "id",
         help=(
-            "Running flow to pause, by session, invocation or play id (full, or an unambiguous "
-            "prefix). The pause lands at the next op boundary, not mid-op."
+            "Running flow to pause, by session, invocation, play, or run id (full, or an "
+            "unambiguous prefix). The pause lands at the next op boundary, not mid-op."
         ),
     )
 
@@ -953,25 +953,28 @@ def add_orchestrate_subparser(
     ctl_resume.add_argument(
         "id",
         help=(
-            "Paused flow to release, by session, invocation or play id (full, or an unambiguous "
-            "prefix)."
+            "Paused flow to release, by session, invocation, play, or run id (full, or an "
+            "unambiguous prefix)."
         ),
     )
 
     ctl_msg = ctl_sub.add_parser(
         "msg",
-        help="Queue an operator message for a running flow (context mode only).",
+        help="Queue an operator message for a running flow, playbook run, or agent leg.",
         description=(
-            "Queues a message control row; the control poller deep-merges it into "
-            "the flow's workspace context, visible to any op not yet started. "
-            "Op-mode injection (--as-op) is not supported by this command yet."
+            "Queues a message control row. A flow or playbook run's control poller "
+            "deep-merges it into the workspace context, visible to any op not yet "
+            "started (context mode only; --as-op is not supported by this command "
+            "yet). A running `li agent` leg instead drains it at its next turn "
+            "boundary, landing as a warm continuation turn rather than a context "
+            "merge — check `li o ctl status` for which happened."
         ),
     )
     ctl_msg.add_argument(
         "id",
         help=(
-            "Running flow to message, by session, invocation or play id (full, or an unambiguous "
-            "prefix)."
+            "Running flow, playbook run, or agent leg to message, by session, "
+            "invocation, play, or run id (full, or an unambiguous prefix)."
         ),
     )
     ctl_msg.add_argument(
@@ -979,6 +982,43 @@ def add_orchestrate_subparser(
         help=(
             "Message merged into the flow's workspace context. Ops already started will not see "
             "it; every op that has not started yet will."
+        ),
+    )
+
+    ctl_resolve = ctl_sub.add_parser(
+        "resolve",
+        help="Close a control whose consumer claimed it and never reported back.",
+        description=(
+            "A `msg` control is delivered at most once, so a consumer claims it "
+            "before attempting the delivery. If that consumer dies in between, "
+            "nothing left behind can say whether the message reached the model, "
+            "and the row is deliberately left standing rather than guessed at. "
+            "`li o ctl status` shows who claimed it and when. Use this once you "
+            "have found out which it was; the claim is preserved in the record."
+        ),
+    )
+    ctl_resolve.add_argument(
+        "control_id",
+        help="The control id shown by `li o ctl status` (full, no prefix matching).",
+    )
+    ctl_resolve.add_argument(
+        "--as",
+        dest="outcome",
+        required=True,
+        choices=("applied", "abandoned"),
+        help=(
+            "What you established actually happened: 'applied' if the message "
+            "reached the run, 'abandoned' if it did not and will not."
+        ),
+    )
+    ctl_resolve.add_argument(
+        "--by",
+        dest="actor",
+        default=None,
+        help=(
+            "Who resolved it, recorded beside the claim. Defaults to the OS "
+            "account running the command; pass this when that is not the person "
+            "who found out."
         ),
     )
 
@@ -1035,10 +1075,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             return 1
         args.model, args.prompt = resolved
 
-        # Naming neither a model nor an agent is not an incomplete command here:
-        # setup_orchestration reads it as a request to orchestrate and resolves
-        # the default orchestrator profile. A prompt is still required, because
-        # nothing downstream can supply one.
+        # Naming neither model nor agent defaults to the orchestrator profile
+        # (setup_orchestration); a prompt is still required regardless.
         if not args.prompt:
             log_error("prompt is required")
             return 1
@@ -1207,10 +1245,8 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             args.prompt = args.model
             args.model = None
 
-        # Naming neither a model nor an agent is not an incomplete command here:
-        # setup_orchestration reads it as a request to orchestrate and resolves
-        # the default orchestrator profile. A prompt is still required, because
-        # nothing downstream can supply one.
+        # Naming neither model nor agent defaults to the orchestrator profile
+        # (setup_orchestration); a prompt is still required regardless.
         if not args.prompt:
             log_error("prompt is required (positional or via -f spec file)")
             return 1
@@ -1341,6 +1377,10 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             from ._control import run_ctl_msg
 
             return run_ctl_msg(args)
+        if args.ctl_command == "resolve":
+            from ._control import run_ctl_resolve
+
+            return run_ctl_resolve(args)
         log_error(f"Unknown ctl command: {args.ctl_command}")
         return 1
 

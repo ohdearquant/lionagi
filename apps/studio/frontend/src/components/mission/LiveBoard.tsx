@@ -12,6 +12,7 @@
  * "quiet — check?" flag; duration alone never does.
  */
 
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
@@ -21,6 +22,7 @@ import Skeleton from "@/components/ui/Skeleton";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { runDeepLink, invocationDeepLink } from "@/lib/runDeepLink";
+import { runCreationKey, invocationCreationKey } from "./boardReducer";
 
 /**
  * Health states meaning the process is gone even though the run is
@@ -193,9 +195,172 @@ export function LiveBoardSkeleton() {
   );
 }
 
+// The board is one grid of cards, not "runs, then invocations" — a card's
+// position is its creation order regardless of which kind it is, so a run
+// that started a minute ago sits before an invocation that started just now,
+// not after every run. Both key functions live in boardReducer.ts (the same
+// rule that orders activeRuns/activeInvocations individually), so the merge
+// below can't drift from the per-list order the reducer already guarantees.
+type LiveCard =
+  | { kind: "run"; id: string; sortKey: number; run: RunSummary }
+  | { kind: "invocation"; id: string; sortKey: number; invocation: InvocationSummary };
+
+function buildLiveCards(runs: RunSummary[], invocations: InvocationSummary[]): LiveCard[] {
+  const cards: LiveCard[] = [
+    ...runs.map((run) => ({
+      kind: "run" as const,
+      id: run.run_id,
+      sortKey: runCreationKey(run),
+      run,
+    })),
+    ...invocations.map((inv) => ({
+      kind: "invocation" as const,
+      id: inv.id,
+      sortKey: invocationCreationKey(inv),
+      invocation: inv,
+    })),
+  ];
+  cards.sort((a, b) => a.sortKey - b.sortKey || a.id.localeCompare(b.id));
+  return cards;
+}
+
+// ─── View preference (cards / table) ───────────────────────────────────────
+// Same direct-localStorage pattern as lib/theme.ts / SplitPane / AppShell —
+// no separate persistence mechanism for one more UI toggle.
+
+type BoardView = "cards" | "table";
+
+const BOARD_VIEW_STORAGE_KEY = "studio:mission-board-view";
+
+function getStoredBoardView(): BoardView {
+  if (typeof window === "undefined") return "cards";
+  return window.localStorage.getItem(BOARD_VIEW_STORAGE_KEY) === "table" ? "table" : "cards";
+}
+
+function BoardViewToggle({
+  view,
+  onChange,
+}: {
+  view: BoardView;
+  onChange: (view: BoardView) => void;
+}) {
+  const t = useTranslations("mission");
+  const seg = (v: BoardView, label: string) => (
+    <button
+      type="button"
+      onClick={() => onChange(v)}
+      aria-pressed={view === v}
+      className={[
+        "h-6 shrink-0 rounded px-2 font-data text-[length:var(--t-xs)] font-medium transition-colors duration-100",
+        view === v
+          ? "bg-surface-overlay text-content-primary"
+          : "text-content-muted hover:text-content-primary",
+      ].join(" ")}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="flex shrink-0 items-center gap-0.5 rounded border border-edge p-0.5">
+      {seg("cards", t("liveBoard.viewCards"))}
+      {seg("table", t("liveBoard.viewTable"))}
+    </div>
+  );
+}
+
+// Bounds the board's footprint regardless of how many runs are active — the
+// board scrolls internally instead of pushing Pulse/Recent Runs off screen.
+const BOARD_MAX_HEIGHT = "max-h-[420px]";
+
+function BoardTableRow({ card, nowSec }: { card: LiveCard; nowSec: number }) {
+  const t = useTranslations("mission");
+  const isRun = card.kind === "run";
+  const name = isRun
+    ? (card.run.playbook_name ?? card.run.agent_name ?? card.run.run_id.slice(-12))
+    : card.invocation.skill;
+  const startedAt = isRun ? (card.run.started_at ?? undefined) : card.invocation.started_at;
+  const elapsed = elapsedSec(startedAt, nowSec);
+  const lastActivityAt = isRun
+    ? (card.run.last_message_at ?? card.run.started_at ?? undefined)
+    : (card.invocation.updated_at ?? card.invocation.started_at);
+  const lastActivity = elapsedSec(lastActivityAt, nowSec);
+  const dead = isRun && isDeadHealth(card.run.effective_health);
+  const status = isRun ? card.run.status : card.invocation.status;
+  const linkProps = isRun ? runDeepLink(card.run.run_id) : invocationDeepLink();
+
+  return (
+    <tr className="border-b border-edge transition-colors duration-100 hover:bg-surface-overlay/60">
+      <td className="max-w-0 px-3 py-2">
+        <Link
+          {...linkProps}
+          className="block truncate font-data text-[length:var(--t-sm)] font-medium text-content-primary hover:opacity-80"
+        >
+          {name}
+        </Link>
+      </td>
+      <td className="px-3 py-2">
+        <span className="flex items-center gap-1.5">
+          <StatusDot status={dead ? "stale" : status} />
+          <span className="font-data text-[length:var(--t-xs)] text-content-secondary">
+            {dead ? t("liveBoard.staleLabel") : status}
+          </span>
+        </span>
+      </td>
+      <td className="px-3 py-2 font-data tabular-nums text-[length:var(--t-xs)] text-content-secondary">
+        {formatElapsed(elapsed)}
+      </td>
+      <td className="px-3 py-2 font-data tabular-nums text-[length:var(--t-xs)] text-content-secondary">
+        {formatElapsed(lastActivity)}
+      </td>
+      <td className="px-3 py-2">
+        <Chip mono>{isRun ? "run" : "invoke"}</Chip>
+      </td>
+      <td className="px-3 py-2 font-data text-[length:var(--t-xs)] text-content-muted">
+        {card.id.slice(-16)}
+      </td>
+    </tr>
+  );
+}
+
+function BoardTable({ cards, nowSec }: { cards: LiveCard[]; nowSec: number }) {
+  const t = useTranslations("mission");
+  return (
+    <div className={`${BOARD_MAX_HEIGHT} overflow-auto rounded border border-edge`}>
+      <table className="w-full text-left" style={{ borderCollapse: "collapse" }}>
+        <thead>
+          <tr
+            className="border-b border-edge bg-surface-raised text-[length:var(--t-xs)] uppercase tracking-[0.08em] text-content-muted"
+            style={{ position: "sticky", top: 0, zIndex: 1 }}
+          >
+            <th className="px-3 py-2 font-medium">{t("liveBoard.table.colName")}</th>
+            <th className="px-3 py-2 font-medium">{t("liveBoard.table.colStatus")}</th>
+            <th className="px-3 py-2 font-medium">{t("liveBoard.table.colUptime")}</th>
+            <th className="px-3 py-2 font-medium">{t("liveBoard.table.colLastActivity")}</th>
+            <th className="px-3 py-2 font-medium">{t("liveBoard.table.colKind")}</th>
+            <th className="px-3 py-2 font-medium">{t("liveBoard.table.colId")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cards.map((card) => (
+            <BoardTableRow key={card.id} card={card} nowSec={nowSec} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function LiveBoard({ activeRuns, activeInvocations, nowSec }: Props) {
   const t = useTranslations("mission");
   const total = activeRuns.length + activeInvocations.length;
+  const [view, setView] = useState<BoardView>(getStoredBoardView);
+
+  function changeView(next: BoardView) {
+    setView(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(BOARD_VIEW_STORAGE_KEY, next);
+    }
+  }
 
   return (
     <section aria-labelledby="live-board-heading">
@@ -214,6 +379,7 @@ export default function LiveBoard({ activeRuns, activeInvocations, nowSec }: Pro
                   {total}
                 </span>
               )}
+              {total > 0 && <BoardViewToggle view={view} onChange={changeView} />}
               <Link
                 to="/fleet"
                 className="font-data text-[length:var(--t-xs)] text-content-muted transition-colors duration-100"
@@ -233,14 +399,19 @@ export default function LiveBoard({ activeRuns, activeInvocations, nowSec }: Pro
             {t("liveBoard.empty")} {t("liveBoard.emptyHint")}
           </p>
         </div>
+      ) : view === "table" ? (
+        <BoardTable cards={buildLiveCards(activeRuns, activeInvocations)} nowSec={nowSec} />
       ) : (
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-          {activeRuns.map((run) => (
-            <RunCard key={run.run_id} run={run} nowSec={nowSec} />
-          ))}
-          {activeInvocations.map((inv) => (
-            <InvocationCard key={inv.id} inv={inv} nowSec={nowSec} />
-          ))}
+        <div
+          className={`${BOARD_MAX_HEIGHT} grid grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4`}
+        >
+          {buildLiveCards(activeRuns, activeInvocations).map((card) =>
+            card.kind === "run" ? (
+              <RunCard key={card.id} run={card.run} nowSec={nowSec} />
+            ) : (
+              <InvocationCard key={card.id} inv={card.invocation} nowSec={nowSec} />
+            ),
+          )}
         </div>
       )}
     </section>

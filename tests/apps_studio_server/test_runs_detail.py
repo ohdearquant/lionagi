@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
@@ -91,11 +93,9 @@ async def seed_branch(
 @pytest.fixture
 def patched_runs_svc(tmp_path: Path, monkeypatch: Any):
     """Patch sessions service to point at a tmp DB; return (svc, db_path)."""
-    import lionagi.studio.services.sessions as sessions_mod
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     import lionagi.studio.services.runs as runs_svc
 
@@ -314,11 +314,8 @@ async def test_get_run_steps_is_none_with_no_branches(patched_runs_svc):
 def test_get_run_endpoint_returns_404_for_missing(tmp_path, monkeypatch):
     fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
-    import lionagi.studio.services.sessions as sessions_mod
-
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from fastapi.testclient import TestClient
 

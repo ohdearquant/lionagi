@@ -34,6 +34,7 @@ async def _seed_sessions(db_path: Path, sessions: list[dict]) -> None:
                 "name": s.get("name"),
                 "status": s.get("status", "completed"),
                 "playbook_name": s.get("playbook_name"),
+                "agent_name": s.get("agent_name"),
                 "started_at": s.get("started_at", time.time()),
                 "project": s.get("project"),
             }
@@ -46,11 +47,8 @@ async def _seed_sessions(db_path: Path, sessions: list[dict]) -> None:
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.sessions as sessions_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
 
     from lionagi.studio.app import app
 
@@ -199,6 +197,124 @@ def test_runs_list_project_null_filter(tmp_path, monkeypatch):
     # A positive project filter returns only that project's runs.
     r2 = client.get("/api/runs?project=org/alpha")
     assert r2.json()["total"] == 2
+
+
+# ─── GET /api/runs?search= — session/agent name contains filter ─────────────
+
+
+def test_runs_list_search_matches_name_or_agent_name(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    sessions = [
+        {"id": str(uuid.uuid4()), "name": "fix flaky login test"},
+        {"id": str(uuid.uuid4()), "name": "unrelated", "agent_name": "flaky-hunter"},
+        {"id": str(uuid.uuid4()), "name": "totally different"},
+    ]
+    _run(_seed_sessions(db_path, sessions))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs?search=flaky")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 2
+    names = {run["name"] for run in data["runs"]}
+    assert names == {"fix flaky login test", "unrelated"}
+
+
+def test_runs_list_search_is_case_insensitive(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    sessions = [{"id": str(uuid.uuid4()), "name": "Deploy Pipeline"}]
+    _run(_seed_sessions(db_path, sessions))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs?search=DEPLOY")
+    assert r.json()["total"] == 1
+
+
+def test_runs_list_search_no_match_returns_empty(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    sessions = [{"id": str(uuid.uuid4()), "name": "alpha"}]
+    _run(_seed_sessions(db_path, sessions))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs?search=zzz-no-such-thing")
+    assert r.status_code == 200
+    assert r.json()["total"] == 0
+    assert r.json()["runs"] == []
+
+
+def test_runs_list_search_escapes_percent_wildcard(tmp_path, monkeypatch):
+    """A literal '%' in the query must not act as a SQL LIKE wildcard — searching
+    for "50%" should match only names containing that literal substring, not
+    every row in the store."""
+    db_path = tmp_path / "state.db"
+    sessions = [
+        {"id": str(uuid.uuid4()), "name": "hit rate 50% today"},
+        {"id": str(uuid.uuid4()), "name": "completely unrelated"},
+    ]
+    _run(_seed_sessions(db_path, sessions))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs", params={"search": "50%"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 1
+    assert data["runs"][0]["name"] == "hit rate 50% today"
+
+
+def test_runs_list_search_escapes_underscore_wildcard(tmp_path, monkeypatch):
+    """A literal '_' must match only itself, not SQL LIKE's any-single-char
+    wildcard — "job_1" must not also match "jobX1"."""
+    db_path = tmp_path / "state.db"
+    sessions = [
+        {"id": str(uuid.uuid4()), "name": "job_1 run"},
+        {"id": str(uuid.uuid4()), "name": "jobX1 run"},
+    ]
+    _run(_seed_sessions(db_path, sessions))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs", params={"search": "job_1"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 1
+    assert data["runs"][0]["name"] == "job_1 run"
+
+
+def test_runs_list_playbook_filter_also_escapes_wildcards(tmp_path, monkeypatch):
+    """The pre-existing playbook contains-filter shares the same LIKE-building
+    code path and had the same unescaped-wildcard hole — covering it here so a
+    future refactor can't silently reopen it."""
+    db_path = tmp_path / "state.db"
+    sessions = [
+        {"id": str(uuid.uuid4()), "playbook_name": "release_50%"},
+        {"id": str(uuid.uuid4()), "playbook_name": "unrelated-playbook"},
+    ]
+    _run(_seed_sessions(db_path, sessions))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs", params={"playbook": "50%"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 1
+    assert data["runs"][0]["playbook_name"] == "release_50%"
+
+
+def test_runs_list_search_composes_with_pagination(tmp_path, monkeypatch):
+    """Search must be applied in SQL before paging, not to an already-truncated
+    page — seed more matches than one page and confirm total/pagination reflect
+    the full filtered result set."""
+    db_path = tmp_path / "state.db"
+    matching = [{"id": str(uuid.uuid4()), "name": f"target-{i}"} for i in range(25)]
+    noise = [{"id": str(uuid.uuid4()), "name": f"noise-{i}"} for i in range(10)]
+    _run(_seed_sessions(db_path, matching + noise))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs?search=target&per_page=20")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 25
+    assert len(data["runs"]) == 20
+    assert data["has_next"] is True
+    assert all("target" in run["name"] for run in data["runs"])
 
 
 # ─── ADR-0057/FIX-1: UNRESPONSIVE maps to 'stale' in runs list ───────────────

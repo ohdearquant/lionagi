@@ -21,12 +21,7 @@ from ._helpers import run_async  # noqa: E402
 
 
 def _monkey_db(monkeypatch, db_path: Path) -> None:
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.lifecycle as lifecycle_mod
 
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
@@ -355,7 +350,6 @@ def test_1173_prune_does_not_touch_running_old_sessions(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     ancient = time.time() - 365 * 86400  # 1 year old
 
@@ -389,7 +383,6 @@ def test_1173_prune_status_transitions_cleanup(tmp_path, monkeypatch):
 
     db_path = tmp_path / "state.db"
 
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     old_ts = time.time() - 40 * 86400
@@ -440,7 +433,6 @@ def test_1173_prune_preserves_recent_terminal_sessions(tmp_path, monkeypatch):
 
     db_path = tmp_path / "state.db"
 
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     recent_ts = time.time() - 5 * 86400  # 5 days ago, within 30-day keep window

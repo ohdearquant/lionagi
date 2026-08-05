@@ -109,8 +109,8 @@ def role_node_builder(
 ):
     """Return a node_builder closure that routes SpawnRequests to role branches.
     *decorate_instruction* customizes child instruction text (CLI artifact injection); *start* seeds spawn-id past prior-generation ordinals to avoid collisions on resume."""
-    # Closure-scoped monotonic sequence: the ONLY correct source of a spawned
-    # node's stable id — must be allocated here (construction time), not at completion (see batch report for the bug this fixes).
+    # Closure-scoped monotonic sequence: must be allocated at construction
+    # time, not at completion, or spawn_id is not a stable correlation key.
     _next_spawn_seq = itertools.count(start)
 
     def build(req: SpawnRequest, emitter: Operation) -> Operation:
@@ -147,7 +147,7 @@ def role_node_builder(
             parameters={"instruction": instruction},
         )
         # Stamped so post-run callers can attribute a spawned node back to its
-        # role after branch_id gets overwritten; spawn_id is the stable correlation key (see batch report).
+        # role after branch_id gets overwritten.
         node.metadata["spawn_id"] = spawn_id
         node.metadata["reference_id"] = spawn_id
         if target is not None:

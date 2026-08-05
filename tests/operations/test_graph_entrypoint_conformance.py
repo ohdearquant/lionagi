@@ -1123,7 +1123,7 @@ class _SinkVisitor(ast.NodeVisitor):
     def __init__(
         self,
         kernel_names: set[str] = frozenset(),
-        constructor_aliases: dict[str, str] = None,  # type: ignore[assignment]
+        constructor_aliases: dict[str, str] | None = None,
         flow_env: _FlowModuleEnv | None = None,
     ) -> None:
         self._stack: list[str] = []
@@ -4255,15 +4255,11 @@ async def test_run_workflow_def_delegates_to_session_flow_with_progress_wrapper(
 
     import lionagi.state.db as db_mod
     import lionagi.studio.services.engine_defs as engine_defs_svc
-    import lionagi.studio.services.sessions as sessions_svc
     import lionagi.studio.services.workflow_defs as wf_svc
 
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_svc, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_svc, "_DB", str(db_path))
 
     import lionagi.cli.engine as cli_engine
     from tests.apps_studio_server.test_workflow_run import _FakeEngine, _mock_chat_branch, _spec

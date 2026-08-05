@@ -131,10 +131,9 @@ class DependencyAwareExecutor:
         self._alcall = alcall_params or AlcallParams()
         self._default_branch = default_branch
         self.on_progress = None
-        # Persistence-only seam: a caller (e.g. Studio's workflow_run) can
-        # pass a sync callback invoked with every branch this executor clones
-        # during pre-allocation, to wire per-branch persistence on branches
-        # that didn't exist when the caller set up the session's initial ones.
+        # Persistence-only seam: invoked with every branch cloned during
+        # pre-allocation, so a caller can wire persistence onto branches that
+        # didn't exist when it set up the session's initial ones.
         self._on_branch_created = on_branch_created
         self.results = {}
         self.completion_events = {}
@@ -142,17 +141,15 @@ class DependencyAwareExecutor:
         self.skipped_operations = set()
         self._op_start_times = {}
         self._pause_event: ConcurrencyEvent | None = None
-        # Fire-and-forget flow signal tasks (NodePaused / NodeEscalated /
-        # NodeSpawned), retained until each finishes so a weakly referenced
-        # task can't disappear before it runs. See _emit_best_effort().
+        # Fire-and-forget flow signal tasks, retained until each finishes so a
+        # weakly referenced task can't disappear before it runs.
         self._signal_tasks: set[asyncio.Task[Any]] = set()
-        # AnyIO task group backing the current execute()/execute_stream() run,
-        # if any — lets _emit_best_effort() schedule signals through anyio
-        # (Trio-safe) instead of the asyncio-only loop.create_task() fallback.
+        # AnyIO task group backing the current run, if any — lets
+        # _emit_best_effort() schedule through anyio (Trio-safe) instead of
+        # the asyncio-only loop.create_task() fallback.
         self._tg: Any = None
-        # Out-of-band handle for a control poller running alongside this flow
-        # to reach pause()/resume()/context/graph; set synchronously before
-        # any awaiting so it's available the instant execute() starts.
+        # Set synchronously so a control poller can reach pause()/resume() the
+        # instant execute() starts.
         if executor_ref is not None:
             executor_ref["executor"] = self
         for node in graph.internal_nodes.values():
@@ -833,15 +830,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
                     await send.aclose()
             driver_done.set()
 
-        # flow_stream needs a detached task for the driver coroutine so the
-        # generator can yield events as they arrive. anyio's create_task_group
-        # cannot be used here because the generator must outlive any single
-        # task group scope (yielding across a task group's `async with` is
-        # unsafe on Trio once the consumer can close the generator early).
-        # asyncio has no structured-concurrency requirement, so a plain task
-        # suffices there; Trio requires a system task, which is immune to
-        # any enclosing cancel scope and is stopped via driver_cancel_scope
-        # instead.
+        # The driver needs a detached task: the generator must outlive any single
+        # anyio task-group scope, which is unsafe on Trio once the consumer can
+        # close the generator early. See docs/internals/providers.md#flow-stream-driver-task.
         if sniffio.current_async_library() == "trio":
             import trio  # noqa: PLC0415
 
@@ -1247,7 +1238,9 @@ async def flow_stream(
         yield event
 
 
-def cleanup_flow_results(result: dict[str, Any], keep_only: list[str] = None) -> dict[str, Any]:
+def cleanup_flow_results(
+    result: dict[str, Any], keep_only: list[str] | None = None
+) -> dict[str, Any]:
     """Clean up flow results to reduce memory usage."""
     if not isinstance(result, dict) or "operation_results" not in result:
         return result

@@ -43,8 +43,6 @@ def patched_app(shows_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
 
     from lionagi.studio.app import app
 
@@ -180,8 +178,6 @@ def sqlite_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
 
     # Create the show directory on disk so safe_path_join() passes and
     # show_dir.is_dir() is True inside get_show().
@@ -258,8 +254,6 @@ def docker_patched_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
 
     topic = "overnight-sweep"
     # Deliberately do NOT create shows_root / topic on disk.

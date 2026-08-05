@@ -2,23 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """External-hook exec adapter: compatibility profile v1 wire envelope + executor.
 
-Turns one ``hooks_external:`` config entry (an event, an argv command, a
-matcher, and a timeout) into an async callable shaped for whichever internal
-seam that event maps to: the tool pre/post hook chain at
-``ActionManager.invoke`` for ``PreToolUse``/``PostToolUse``, or a
-``HookBus`` handler for ``SessionStart``/``SessionEnd``/``UserPromptSubmit``/
-``PostToolUseFailure``. The callable spawns the configured command as a real
-subprocess, writes the JSON envelope to its stdin, and parses its stdout/exit
-code back into a decision.
+Turns one ``hooks_external:`` config entry (event, argv command, matcher,
+timeout) into an async callable for whichever internal seam the event maps
+to: the tool pre/post hook chain for ``PreToolUse``/``PostToolUse``, or a
+``HookBus`` handler for the rest. Spawns the configured command as a real
+subprocess, writes the JSON envelope to stdin, parses stdout/exit code back
+into a decision.
 
-This is a different executor from ``lionagi.agent.settings._make_shell_hook``,
-which stays wired to the legacy ``hooks: {pre,post,on_error}`` shape, never
-reads stdout, and collapses every nonzero exit to one ``PermissionError``.
-
-Also distinct from the ``hooks_external`` field on a plugin manifest
-(``lionagi.plugins.manifest.Capabilities.hooks_external``): that field is
-parsed as inert data only, for trust disclosure, and nothing there executes a
-command. This module is the thing that actually runs one.
+Distinct from ``lionagi.agent.settings._make_shell_hook`` (legacy
+``hooks: {pre,post,on_error}`` shape, never reads stdout) and from the
+``hooks_external`` field on a plugin manifest (parsed as inert disclosure
+data only — this module is what actually runs a command).
 """
 
 from __future__ import annotations
@@ -138,15 +132,12 @@ def compute_command_hash(command: list[str]) -> str:
 
 def resolve_hook_executable(command: list[str], cwd: str) -> Path:
     """Resolve ``command[0]`` to the absolute executable path that will
-    actually spawn, using the same lookup rule ``create_subprocess_exec``
-    delegates to ``execvp``: a name containing a path separator resolves
-    relative to *cwd* and is never PATH-searched; a bare name is searched on
-    ``PATH`` only (never implicitly relative to *cwd*).
+    actually spawn, using the same lookup rule ``execvp`` uses: a name with a
+    path separator resolves relative to *cwd*, never PATH-searched; a bare
+    name is PATH-searched only.
 
     Raises :class:`ExternalHookConfigError` when the resolved path does not
-    exist, is not a file, is not executable, or (for a bare name) is not
-    found on ``PATH`` -- an unresolvable command can never be pinned or
-    trusted.
+    exist, is not a file, is not executable, or isn't found on ``PATH``.
     """
     name = command[0]
     if os.sep in name or (os.altsep and os.altsep in name):
@@ -163,12 +154,9 @@ def resolve_hook_executable(command: list[str], cwd: str) -> Path:
 
 
 def compute_executable_digest(path: Path) -> str:
-    """``sha256`` over the resolved executable's file bytes -- the content
-    half of the trust pin. A same-path substitution (the file at *path* is
-    replaced after approval, e.g. a repo's ``./guard`` swapped for an
-    attacker's binary, or a PATH entry reordered onto a different same-named
-    binary) changes this digest even though ``resolve_hook_executable``
-    returns the same path string."""
+    """``sha256`` over the resolved executable's file bytes — the content
+    half of the trust pin, so a same-path substitution after approval
+    changes this digest even though the resolved path string doesn't."""
     digest = hashlib.sha256()
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
@@ -177,11 +165,9 @@ def compute_executable_digest(path: Path) -> str:
 
 
 def compute_trust_record(command: list[str], cwd: str) -> dict[str, str]:
-    """Build the full content-pinned trust record for one approval: the argv
-    hash (identifies the approval request), plus the resolved executable's
-    absolute path and content digest (identifies what will actually run).
-    Raises :class:`ExternalHookConfigError` if *command* cannot be resolved
-    to an executable right now.
+    """The trust record for one approval: argv hash (identifies the request)
+    plus the resolved executable's path and content digest (identifies what
+    will actually run). Raises if *command* cannot be resolved right now.
     """
     resolved = resolve_hook_executable(command, cwd)
     return {
@@ -193,25 +179,13 @@ def compute_trust_record(command: list[str], cwd: str) -> dict[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class _BoundExecutable:
-    """A private copy of *some* snapshot of the resolved executable's
-    bytes, made by :func:`_materialize_private_copy` directly from the
-    open fd -- never a fresh read of the resolved path. The trust digest
-    is computed AFTER this copy exists, by re-hashing the copy itself
-    (see :func:`_hash_private_copy`), never the source fd or path again --
-    so the bytes that get compared against the trust record and the bytes
-    that get exec'd on a match are always the exact same physical file.
-    ``path`` (inside ``private_dir``) is what actually gets exec'd; the
-    configured/approved path is never spawned. Because the copy already
-    exists in a directory nothing but this process has a handle on, there
-    is no window in which a swap at the configured path -- an in-place
-    overwrite or a symlink retarget -- can change what runs: by the time
-    exec happens, the executed bytes are already physically separate from
-    that path.
+    """A private, single-process-owned copy of the resolved executable's
+    bytes; ``path`` (inside ``private_dir``) is what actually gets exec'd,
+    never the configured/approved path. See
+    docs/internals/mcp.md#hooks-private-copy-trust-pinning.
 
-    ``private_dir`` is removed by the caller once the hook process has
-    exited (see :func:`external_hook_adapter`'s ``_guarded_execute``), or
-    immediately by :func:`_prepare_trusted_execution` itself if the copy's
-    digest turns out not to match the trust record."""
+    ``private_dir`` is removed once the hook process exits, or immediately
+    if the copy's digest doesn't match the trust record."""
 
     path: Path
     private_dir: str
@@ -222,18 +196,12 @@ _POSIX_NOFOLLOW_OPEN = hasattr(os, "O_NOFOLLOW")
 
 def _open_executable_fd(path: Path) -> int:
     """Open *path* for execution without following a symlink at its final
-    path component, and verify what was opened is a regular file.
+    component, and verify what was opened is a regular file.
 
-    ``os.O_NOFOLLOW`` is POSIX-only and does not exist on Windows -- on a
-    platform without it, this falls back to a non-atomic pre-check
-    (``path.is_symlink()``) before a plain open; weaker than the atomic
-    POSIX flag (a race between the check and the open is not closed there),
-    but the strongest enforcement available without it.
-
-    Raises :class:`ExternalHookConfigError` (never lets a bare ``OSError``
-    escape) if *path* cannot be opened this way or is not a regular file --
-    the caller is expected to treat this exactly like an unresolvable
-    command. The returned fd is the caller's to close.
+    ``os.O_NOFOLLOW`` is POSIX-only; on Windows this falls back to a
+    non-atomic ``path.is_symlink()`` pre-check, weaker but the best
+    available. Raises :class:`ExternalHookConfigError` (never a bare
+    ``OSError``) on failure. The returned fd is the caller's to close.
     """
     if _POSIX_NOFOLLOW_OPEN:
         open_flags = os.O_RDONLY | os.O_NOFOLLOW
@@ -262,12 +230,9 @@ def _open_executable_fd(path: Path) -> int:
 
 
 def _hash_fd(fd: int) -> str:
-    """``sha256`` over an open fd's full content, read from offset 0 --
-    the same bytes :func:`compute_executable_digest` would hash from a
-    path, but read from an already-open descriptor rather than a fresh
-    path lookup that could resolve to a different file by the time it
-    runs. Used both by :func:`_hash_private_copy` (the trust-gating call)
-    and internally wherever a caller already holds an fd it wants hashed."""
+    """``sha256`` over an open fd's full content, read from offset 0 —
+    reads the already-open descriptor rather than a fresh path lookup
+    that could resolve to a different file by the time it runs."""
     os.lseek(fd, 0, os.SEEK_SET)
     digest = hashlib.sha256()
     while True:
@@ -280,26 +245,14 @@ def _hash_fd(fd: int) -> str:
 
 
 def _materialize_private_copy(fd: int, basename: str) -> _BoundExecutable:
-    """Copy the bytes at *fd*, read from offset 0 of *fd* itself -- never a
-    fresh path lookup -- into a fresh file in a private directory nothing
-    but this process holds a handle on.
+    """Copy the bytes at *fd* (from offset 0, never a fresh path lookup)
+    into a fresh, single-process-owned private directory, run BEFORE any
+    trust digest is computed. See
+    docs/internals/mcp.md#hooks-private-copy-trust-pinning for why copy-then-hash
+    (not hash-then-copy) is what closes the TOCTOU window.
 
-    This runs BEFORE any trust digest is computed: an open fd pins the
-    INODE, not the content, so hashing *fd* and then separately re-reading
-    *fd* to build the copy would leave a window in which an in-place
-    overwrite between those two reads poisons the copy with unverified
-    bytes while the (already-read) digest still matches the trust record.
-    Copying first and hashing the resulting private copy afterward (see
-    :func:`_hash_private_copy`) closes that window: whatever bytes existed
-    at *fd* at the moment of THIS call are what get frozen, hashed, and
-    (on a match) exec'd -- a source overwrite after this call can only
-    ever affect the source, never the copy.
-
-    *basename* matches the original executable's name so a shebang-
-    interpreted script's argv[0]/error messages stay readable. The private
-    directory is ``mkdtemp``'d (mode 0700, single-user-readable) and the
-    copy is written ``O_EXCL`` into a fresh path inside it, so no other
-    process can have raced onto the same name."""
+    *basename* matches the original so a shebang script's argv[0] stays
+    readable. Directory is ``mkdtemp``'d (mode 0700); copy is ``O_EXCL``."""
     private_dir = tempfile.mkdtemp(prefix="lionagi-hook-")
     private_path = Path(private_dir) / basename
     os.lseek(fd, 0, os.SEEK_SET)
@@ -317,14 +270,9 @@ def _materialize_private_copy(fd: int, basename: str) -> _BoundExecutable:
 
 
 def _hash_private_copy(path: Path) -> str:
-    """``sha256`` over the private copy at *path* -- opened fresh,
-    read-only, from the private directory nothing but this process can
-    write into. The trust digest is always computed over this copy, never
-    the source path or fd again: by the time this runs, whatever bytes
-    existed at the source at copy time (see :func:`_materialize_private_copy`)
-    are already frozen inside *path*, so a source overwrite before,
-    during, or after this call cannot change what gets compared or, on a
-    match, exec'd."""
+    """``sha256`` over the private copy at *path*, opened fresh read-only
+    from the private directory — never the source path or fd again, so a
+    source overwrite at any point can't change what gets compared/exec'd."""
     fd = os.open(str(path), os.O_RDONLY)
     try:
         return _hash_fd(fd)
@@ -336,26 +284,13 @@ def _prepare_trusted_execution(
     command: list[str], *, source: str, cwd: str
 ) -> tuple[_BoundExecutable | None, str]:
     """Resolve, open, privately copy, and THEN content-verify *command*
-    for a source-having (imported) entry.
+    for a source-having (imported) entry — never hash the mutable source
+    itself, only the frozen private copy. See
+    docs/internals/mcp.md#hooks-private-copy-trust-pinning.
 
-    An open fd pins the INODE, not the content -- hashing the fd and
-    separately re-reading it to build the executed copy leaves a window in
-    which an in-place overwrite between those two reads is copied and
-    executed as trusted, even though the digest read earlier still
-    matches. Closing that window means never hashing
-    the mutable source at all: the private copy is made first, from
-    whatever bytes are at the fd right now (:func:`_materialize_private_copy`),
-    and the trust digest is computed by re-hashing that immutable,
-    single-process-owned copy (:func:`_hash_private_copy`) -- never the
-    source fd or path again. A source overwrite at any point relative to
-    this call can therefore only ever affect the source, never the copy
-    that gets compared or exec'd.
-
-    Returns ``(bound, "")`` on a match, or ``(None, reason)`` when the
-    command cannot be resolved/opened or does not match an approved trust
-    record (the private copy, if one was made, is removed before
-    returning); the caller must never fall back to spawning the raw argv
-    in the failure case.
+    Returns ``(bound, "")`` on a match, or ``(None, reason)`` on failure
+    (the private copy, if made, is removed first); the caller must never
+    fall back to spawning the raw argv in the failure case.
     """
     try:
         resolved_path = resolve_hook_executable(command, cwd)
@@ -453,10 +388,8 @@ def _trust_status(command: list[str], *, source: str | None, cwd: str) -> tuple[
 
 
 def is_command_trusted(command: list[str], *, source: str | None, cwd: str | None = None) -> bool:
-    """Boolean form of :func:`_trust_status` -- see its docstring for the
-    content-pinned matching rule. *cwd* defaults to the process's current
-    working directory when omitted (only reached when *source* is falsy,
-    where no resolution happens at all)."""
+    """Boolean form of :func:`_trust_status`; *cwd* defaults to the current
+    working directory when omitted."""
     trusted, _ = _trust_status(
         command, source=source, cwd=cwd if cwd is not None else str(Path.cwd())
     )
@@ -490,18 +423,13 @@ def build_envelope(
 ) -> dict[str, Any]:
     """Build the stdin envelope for *hook_event_name*.
 
-    Common fields (``session_id``, ``cwd``, ``hook_event_name``, ``harness``)
-    are always present. Per-event fields follow the field-guarantee table:
-    ``tool_name``/``tool_input`` always present for tool events;
-    ``tool_response`` always present for ``PostToolUse``/``PostToolUseFailure``
-    -- "the tool result as JSON where serializable, else its string form"
-    (ADR-0048 D1's field table), applied here via :func:`_json_safe` so a
-    non-JSON-serializable tool result becomes a string at envelope
-    construction time rather than surfacing later as a ``json.dumps`` failure
-    after a hook subprocess has already spawned;
-    ``prompt``/``model``/``permission_mode`` always present for
-    ``UserPromptSubmit`` (``permission_mode`` defaults to ``"default"`` when no
-    policy is attached).
+    Common fields are always present; per-event fields follow the
+    field-guarantee table (ADR-0048 D1): tool events get
+    ``tool_name``/``tool_input``, plus ``tool_response`` (via
+    :func:`_json_safe`, so a non-serializable result becomes a string here
+    rather than failing ``json.dumps`` after the hook has spawned) for
+    ``PostToolUse``/``PostToolUseFailure``; ``UserPromptSubmit`` gets
+    ``prompt``/``model``/``permission_mode`` (defaulting to ``"default"``).
     """
     envelope: dict[str, Any] = {
         "session_id": session_id,
@@ -540,22 +468,20 @@ class HookVerdict:
 @dataclass(frozen=True, slots=True)
 class _CappedRead:
     """The retained bytes from one pipe drain, plus whether the pipe
-    exceeded its cap. ``truncated`` must survive alongside ``data`` all the
-    way to the decision point -- a caller that only sees the (silently
-    shortened) bytes cannot tell a complete short response from the first
-    N bytes of a longer one, and exit-0 stdout parsing must never treat the
-    latter as the former (see ``_execute_hook``)."""
+    exceeded its cap — ``truncated`` must survive to the decision point so a
+    complete short response is never mistaken for a truncated longer one."""
 
     data: bytes
     truncated: bool
 
 
 async def _read_capped(stream: Any, cap: int, label: str) -> _CappedRead:
-    """Read *stream* to EOF, keeping at most the first *cap* bytes. Bytes
-    beyond the cap are still read off the pipe (so the child never blocks
-    writing into a full, un-drained pipe) but discarded immediately rather
-    than buffered -- a verbose hook cannot force unbounded allocation on
-    either stdout or stderr. *label* names the stream in the truncation log.
+    """Read *stream* to EOF, keeping at most the first *cap* bytes.
+
+    Bytes beyond the cap are still drained off the pipe (so the child never
+    blocks on a full pipe) but discarded immediately, not buffered — a
+    verbose hook can't force unbounded allocation. *label* names the stream
+    in the truncation log.
     """
     if stream is None:
         return _CappedRead(data=b"", truncated=False)
@@ -592,9 +518,8 @@ async def _write_stdin(proc: Any, data: bytes) -> None:
 
 
 async def _drain(proc: Any, envelope_bytes: bytes) -> tuple[_CappedRead, _CappedRead]:
-    """Write the envelope and read both pipes concurrently -- never stdin
-    fully before stdout/stderr -- so a hook that writes output before
-    consuming all of stdin cannot deadlock on a full pipe in either
+    """Write the envelope and read both pipes concurrently — a hook that
+    writes output before consuming all of stdin can't deadlock either
     direction. Reaps the process once both streams hit EOF."""
     _, stdout, stderr = await asyncio.gather(
         _write_stdin(proc, envelope_bytes),
@@ -606,21 +531,15 @@ async def _drain(proc: Any, envelope_bytes: bytes) -> tuple[_CappedRead, _Capped
 
 
 async def _spawn(argv: list[str], bound: _BoundExecutable | None, cwd: str) -> Any:
-    """Spawn *argv* in *cwd* -- the same directory the command was resolved
-    against for approval (ADR-0048's cwd-consistency contract; see
-    :func:`resolve_hook_executable`), never whichever directory the calling
-    process happens to be in.
+    """Spawn *argv* in *cwd* — the same directory the command was resolved
+    against for approval, never whichever directory the calling process
+    happens to be in.
 
-    When *bound* is set (a source-having/imported command that went through
-    :func:`_prepare_trusted_execution`), execution targets ``bound.path`` --
-    the private, hash-verified copy made by
-    :func:`_materialize_private_copy` -- never the configured/approved
-    path. The configured path is never spawned on this route, so a swap at
-    that path after approval (in-place overwrite or symlink retarget) has
-    nothing to affect: the executed bytes were already copied away before
-    this call. *bound* is ``None`` for a project/user-authored command (no
-    separate resolution or pinning applies to it); it still spawns in
-    *cwd*, just via the raw argv.
+    When *bound* is set (an imported command that went through
+    :func:`_prepare_trusted_execution`), execution targets ``bound.path``,
+    the private hash-verified copy, never the configured/approved path.
+    *bound* is ``None`` for a project/user-authored command; it still spawns
+    in *cwd*, via the raw argv.
     """
     common = {
         "stdin": asyncio.subprocess.PIPE,
@@ -648,11 +567,8 @@ async def _run_hook_process(
             timeout=timeout,
         )
     except (TimeoutError, asyncio.TimeoutError) as err:
-        # asyncio.wait_for raises asyncio.TimeoutError, which is a distinct
-        # class from the builtin TimeoutError before Python 3.11 (they only
-        # became aliases in 3.11) -- catch both so the teardown below runs on
-        # every supported interpreter, not just 3.11+.
-        # Kill the whole process group so a hung hook's children cannot
+        # Catches both since they're distinct classes before Python 3.11.
+        # Kill the whole process group so a hung hook's children can't
         # continue side effects after the timeout is declared.
         await aterminate_process_group(proc, grace=None)
         with contextlib.suppress(Exception):
@@ -666,30 +582,10 @@ def _parse_stdout_decision(
     stdout_bytes: bytes,
 ) -> tuple[str | None, str, dict[str, Any] | None, bool]:
     """Parse exit-0 stdout into ``(permission_decision, reason,
-    updated_input, malformed)``.
-
-    Empty stdout is the ONLY case that legitimately means "no structured
-    output" (the documented no-opinion convention -- allow). Every other
-    case that fails to yield a recognized decision form sets
-    ``malformed=True`` instead of silently reusing the empty-stdout
-    convention: non-empty stdout that fails to parse as JSON, a JSON value
-    that isn't an object, an object with neither a ``hookSpecificOutput.
-    permissionDecision`` nor a top-level ``decision`` field (including
-    ``{}`` and ``{"hookSpecificOutput": {}}``), and an explicit
-    ``hookSpecificOutput.permissionDecision: null`` (present but null,
-    unlike the key being absent) -- the caller must deny these on a
-    blocking seam rather than treat them the same as a genuinely empty
-    response.
-
-    A top-level ``decision`` of ``"block"`` normalizes to ``"deny"``;
-    ``"allow"``/``"approve"`` (or an explicit top-level ``null``) normalize
-    to ``None`` (allow) -- this is the one place an explicit null is a
-    documented convention rather than a malformed response, since the
-    top-level shape's null means "no decision" the same way an absent
-    field would. Any other explicit value -- including ``"ask"`` or an
-    unrecognized string -- passes through unchanged so the caller's
-    decision switch fails it closed, matching the nested shape's handling
-    of unrecognized values.
+    updated_input, malformed)``. See
+    docs/internals/mcp.md#hooks-stdout-decision-parsing for the malformed
+    vs. empty-stdout distinction and the top-level ``decision`` null
+    convention.
     """
     text = stdout_bytes.decode(errors="replace").strip()
     if not text:
@@ -732,11 +628,8 @@ def _parse_stdout_decision(
             return None, reason, None, False
         if decision == "block":
             return "deny", reason, None, False
-        # Any other explicit value (e.g. "ask", or an unrecognized string) is
-        # handed through as-is so `_execute_hook`'s decision switch applies
-        # the same fail-closed handling it uses for the nested
-        # `hookSpecificOutput.permissionDecision` shape -- an explicit but
-        # unrecognized top-level decision must never fall through to allow.
+        # Any other value (e.g. "ask") passes through as-is so the caller's
+        # decision switch fails it closed, same as the nested shape.
         return decision, reason, None, False
     return None, "hook stdout was valid JSON but had no recognized decision field", None, True
 
@@ -753,29 +646,15 @@ async def _execute_hook(
     """Spawn *argv*, exchange *envelope*, and normalize the exit-code + stdout
     contract into a :class:`HookVerdict`.
 
-    *envelope* is serialized to JSON before any subprocess is spawned: a
-    non-JSON-serializable field (in practice unreachable for ``tool_response``,
-    which :func:`build_envelope` already string-falls-back via
-    :func:`_json_safe`, but not otherwise guaranteed for every field) fails
-    here and never spawns a process, so no path can orphan a running hook
-    subprocess whose handle was lost to a serialization error.
+    *envelope* is serialized to JSON before any subprocess is spawned, so a
+    serialization failure never orphans a spawned hook process.
 
-    *bound* and *cwd* are threaded straight to :func:`_spawn` -- see that
-    function's docstring for the fd-binding and cwd-consistency contract
-    this enforces; both default to values that never matter to a caller
-    that fails closed before spawning (i.e. the serialization-error case
-    below never reaches ``_spawn`` at all).
-
-    Exit 0 -- stdout parsed as JSON if non-empty, UNLESS stdout hit the
-    read cap: a truncated response is never parsed (the retained prefix
-    could coincidentally read as a complete, benign decision while the
-    discarded remainder said something else entirely) -- it is a hook
-    failure like any other, deny on a blocking seam. Exit 2 -- block;
-    stderr is the reason (truncation there only shortens the displayed
-    reason, since the decision is already deny). Any other exit, or a
-    spawn/IO error -- hook failure (deny on a blocking seam,
-    error/log-and-continue on an advisory one). A timeout is treated the
-    same way after the process group is torn down.
+    Exit 0 — stdout parsed as JSON if non-empty, UNLESS truncated (a
+    truncated response is never parsed, since the retained prefix could
+    coincidentally read as a complete but wrong decision) — treated as a
+    hook failure like any other. Exit 2 — block, stderr is the reason. Any
+    other exit, spawn/IO error, or timeout — hook failure (deny on a
+    blocking seam, error/log-and-continue on an advisory one).
     """
     try:
         envelope_bytes = json.dumps(envelope).encode()
@@ -818,11 +697,9 @@ async def _execute_hook(
 
     decision, reason, updated_input, malformed = _parse_stdout_decision(stdout.data)
     if malformed:
-        # A response that couldn't be understood as a decision at all is a
-        # hook-response failure, not a policy choice -- treat it like the
-        # other failure-shaped outcomes above (nonzero exit, timeout):
-        # deny on a blocking seam, error/log-and-continue on an advisory
-        # one. Never the same as a genuinely empty stdout's "no opinion".
+        # A response that couldn't be understood as a decision is a
+        # hook-response failure, not a policy choice — never the same as a
+        # genuinely empty stdout's "no opinion".
         return HookVerdict(
             outcome="deny" if blocking else "error",
             reason=reason or "hook stdout did not contain a recognized decision; failing closed",
@@ -856,13 +733,11 @@ def external_hook_adapter(
     """Turn one ``hooks_external`` entry into an async callable for its seam.
 
     ``event`` selects the shape: ``PreToolUse``/``PostToolUse`` return a
-    :class:`ToolPreHook`/:class:`ToolPostHook`-shaped callable for
-    ``ActionManager``; the remaining supported events return a
-    ``HookBus``-shaped ``**kwargs`` handler. ``source`` carries D6's
+    tool-hook-shaped callable for ``ActionManager``; the remaining events
+    return a ``HookBus``-shaped ``**kwargs`` handler. ``source`` carries the
     provenance field (``None`` for project/user-authored entries,
-    ``"imported:claude"``/``"imported:codex"`` for imported ones) -- an
-    untrusted non-empty-``source`` command never executes (see
-    :func:`is_command_trusted`).
+    ``"imported:claude"``/``"imported:codex"`` for imported ones) — an
+    untrusted non-empty-``source`` command never executes.
     """
     if event not in SUPPORTED_EVENTS:
         raise ExternalHookConfigError(

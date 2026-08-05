@@ -8,13 +8,14 @@ import contextlib
 import logging
 import re
 import warnings
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
 
 import toml
 from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe, check_paths_safe
@@ -22,10 +23,13 @@ from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_r
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
+    Redacted,
+    SpawnedProcess,
     build_declarative_cli_args,
     discover_cli,
     ndjson_from_cli,
     print_readable,
+    raise_if_env_is_not_a_string_map,
     resolve_cli_workspace,
     validate_message_prompt,
 )
@@ -61,7 +65,15 @@ CodexApprovalMode = Literal[
 
 CodexColorMode = Literal["always", "never", "auto"]
 
-CodexReasoningEffort = Literal[
+# The effort words lionagi itself produces. Deliberately a tuple of strings
+# and not a Literal on the request fields: codex reaches models other than
+# OpenAI's through the `model_providers` tables in ~/.codex/config.toml, and
+# each of those models carries its own effort vocabulary. The value is emitted
+# verbatim as `-c reasoning_effort=<val>` for the CLI to interpret, so codex
+# and the provider it is configured against are the authority on what is
+# valid — a closed set here would reject a working configuration before the
+# CLI ever saw it, and would need editing every time a model is added.
+CODEX_REASONING_EFFORTS: tuple[str, ...] = (
     "none",
     "minimal",
     "low",
@@ -70,21 +82,27 @@ CodexReasoningEffort = Literal[
     "xhigh",
     "max",
     "ultra",
-]
+)
 
 __all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
 
 
 # --------------------------------------------------------------------------- -c value serialization
-# codex's `-c key=value` parses `value` as TOML, falling back to a raw string
-# literal only when TOML parsing fails (see `codex exec --help`). A
-# JSON-style dump of a dict/list is NOT valid TOML (`:` instead of `=`,
-# unquoted-key rules differ) — it either mis-parses into the fallback literal
-# string (breaking any override whose target field expects a table, e.g.
-# `mcp_servers.<name>.env`) or, worse, coincidentally parses into a
-# different-than-intended TOML value. Every override value must therefore be
-# emitted as syntactically valid TOML instead.
+# codex's `-c key=value` parses `value` as TOML; a JSON-style dump is not
+# valid TOML and either mis-parses or silently produces the wrong value. See
+# docs/internals/providers.md#codex-c-override-toml-serialization.
 _TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+# The CLI's mid-stream retry announcement, e.g. "Reconnecting... 1/5 (stream
+# disconnected before completion: ...)". Anchored to the observed prefix on
+# purpose: a message that doesn't match falls through to the terminal-error
+# branch, so a wording change in the CLI degrades to the old (fail-closed)
+# behaviour rather than misclassifying a real failure as a notice. The
+# trailing "(" is load-bearing: the retry notice always carries a
+# parenthesized reason, and requiring it keeps terminal messages that merely
+# BEGIN with the retry prefix ("Reconnecting... 5/5 failed") on the terminal
+# path.
+_RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
 
 
 def _toml_scalar(value: str | int | float | bool) -> str:
@@ -180,6 +198,88 @@ class CodexCodeRequest(BaseModel):
         json_schema_extra=_cli("--add-dir", 30, "repeat"),
     )
 
+    # ── process (runtime-only, never rendered as CLI args) ─────────
+    # Runtime-only, and kept out of the generated JSON schema as well as out
+    # of serialization: this model's schema describes the request payload, and
+    # a callable has no JSON schema at all — asking for one raises.
+    env: SkipJsonSchema[dict[str, str] | None] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description=(
+            "Complete environment for the CLI process. None inherits this "
+            "process's environment; a mapping REPLACES it wholesale, so a "
+            "caller setting one variable supplies the rest itself."
+        ),
+    )
+    on_spawn: SkipJsonSchema[Callable[[SpawnedProcess], None | Awaitable[None]] | None] = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description=(
+            "Called once with a SpawnedProcess as soon as the CLI process "
+            "exists, for a caller that must record the identity of a process "
+            "it did not spawn itself. May be a coroutine function."
+        ),
+    )
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _env_is_a_string_map(cls, value):
+        """Reject a malformed environment without printing anything from it.
+
+        A child environment routinely holds credentials, and a pydantic
+        ValidationError quotes the whole rejected input into its message, so
+        letting the ordinary string check fail here would print every value in
+        the map beside the one bad entry. TypeError is the escape: pydantic
+        converts ValueError and AssertionError into validation errors and lets
+        anything else propagate untouched, so nothing from the mapping reaches
+        a traceback or a log line. It is also the right exception for a wrongly
+        typed mapping.
+
+        The value arrives wrapped when it came through a model-level validator,
+        which is what keeps it off that validator's error. This is the code that
+        needs to look at it, so this is where it is unwrapped; what the model
+        then stores is an ordinary mapping, kept out of dumps by ``exclude`` and
+        out of the request's representation by ``repr=False``.
+        """
+        if isinstance(value, Redacted):
+            value = value.reveal()
+        if value is None:
+            return value
+        if not isinstance(value, Mapping):
+            # Not "leave it for pydantic": pydantic quotes the rejected value,
+            # and for a wrongly shaped env the value IS the credential.
+            raise TypeError(
+                f"env must be a mapping of strings to strings, got {type(value).__name__}"
+            )
+        raise_if_env_is_not_a_string_map(value)
+        return dict(value)
+
+    @field_validator("on_spawn", mode="before")
+    @classmethod
+    def _unwrap_on_spawn(cls, value):
+        """Undo the wrapping a model-level validator applied.
+
+        The callback is wrapped there for the same reason the environment is: a
+        BOUND callback carries its receiver into its own ``repr``, so a
+        supervisor holding a credential would print it from an error about some
+        unrelated field. Nothing but this validator needs the wrapper gone, and
+        pydantic rejects it outright as not callable if it survives — which is
+        the failure mode this method exists to prevent, and the one a test that
+        only checks for leaks would never see.
+        """
+        if isinstance(value, Redacted):
+            value = value.reveal()
+        if value is None or callable(value):
+            return value
+        # Rejected HERE rather than handed back for pydantic to reject, because
+        # unwrapping is what re-exposes the value: pydantic renders a failing
+        # field's input, and an object with a credential-bearing __repr__ is
+        # exactly the shape this carrier exists to keep out of an error. A
+        # TypeError names the type and never the object.
+        raise TypeError(f"on_spawn must be callable, got {type(value).__name__}")
+
     # ── system prompt (order 40) ──────────────────────────────────
     system_prompt: str | None = None
 
@@ -239,13 +339,21 @@ class CodexCodeRequest(BaseModel):
     )
 
     # ── reasoning (order 75, emitted as -c overrides) ───────────
-    reasoning_effort: CodexReasoningEffort | None = Field(
+    reasoning_effort: str | None = Field(
         default=None,
-        description="Reasoning effort level (emitted as -c reasoning_effort=<val>)",
+        description=(
+            "Reasoning effort level (emitted as -c reasoning_effort=<val>). "
+            f"lionagi produces one of {', '.join(CODEX_REASONING_EFFORTS)}, but any "
+            "string is accepted so that a model configured behind codex can be "
+            "given the effort vocabulary it expects."
+        ),
     )
-    plan_mode_reasoning_effort: CodexReasoningEffort | None = Field(
+    plan_mode_reasoning_effort: str | None = Field(
         default=None,
-        description="Plan-mode reasoning effort (emitted as -c plan_mode_reasoning_effort=<val>)",
+        description=(
+            "Plan-mode reasoning effort (emitted as -c plan_mode_reasoning_effort=<val>). "
+            "Open to any string for the same reason as reasoning_effort."
+        ),
     )
 
     # ── fast mode (fast service tier) ────────────────────────────
@@ -260,19 +368,70 @@ class CodexCodeRequest(BaseModel):
         ),
     )
 
+    @classmethod
+    def _resolve_config_profile(cls, values):
+        """Turn a model that names a codex config profile into the profile.
+
+        Runs at the REQUEST level so both entry points reach it. The CLI
+        resolves this too, and did so alone for a while: a request built
+        through the library -- ``Branch(chat_model="codex/deepseek-flash")`` --
+        carried the profile NAME all the way to the spawn, codex read it as a
+        model id, and every leg died with an unsupported-model error naming a
+        model nobody had asked for.
+
+        Idempotent by construction, so the CLI path is unaffected: it has
+        already replaced the name with the profile's model id, and a real model
+        id carries dots or a slash, which the bare-name check rejects.
+
+        NOT a validator of its own, and that is deliberate. It has to run
+        before the effort clamp, whose ceilings are keyed on the model -- a
+        profile names a different model than the caller did, so clamping first
+        applies one model's ceiling to another's effort. Two ``mode="before"``
+        validators looked like the way to order that, and it is the wrong way:
+        pydantic runs them in REVERSE definition order, so the one written
+        first runs last. Written that way the clamp saw the profile NAME, and
+        the test that caught it is the one asserting a clamped OUTCOME rather
+        than that the effort survived. Called explicitly from the single
+        validator below, the order is stated rather than inherited.
+
+        Caller-supplied ``config_overrides`` WIN over the profile's. An
+        override passed at the call site is an explicit instruction; the
+        profile is a default sitting in a file.
+        """
+        from ._codex_profile import resolve_codex_config_profile
+
+        model = values.get("model")
+        if not isinstance(model, str) or not model:
+            return values
+        resolved = resolve_codex_config_profile(model)
+        if resolved is None:
+            return values
+        profile_model, profile_overrides = resolved
+        values["model"] = profile_model
+        if profile_overrides:
+            merged = dict(profile_overrides)
+            merged.update(values.get("config_overrides") or {})
+            values["config_overrides"] = merged
+        return values
+
     @model_validator(mode="before")
     @classmethod
-    def _clamp_effort(cls, values):
-        """Clamp max/ultra down to the target model's supported ceiling (model-dependent: the gpt-5.6 family accepts max, sol/terra also ultra; earlier models top out at xhigh).
+    def _resolve_profile_then_clamp_effort(cls, values):
+        """Resolve a config-profile model, THEN clamp effort against it.
 
-        `values` is the raw constructor input — a caller who omits `model=`
-        (relying on the field default) leaves the key absent here, since
-        Pydantic v2 applies field defaults after `mode="before"` validators
-        run. Falling back to the field's own default keeps the clamp
-        consistent between an omitted `model` and that same default passed
-        explicitly.
+        One validator running two steps in a written order, rather than two
+        validators relying on pydantic's. The clamp's ceilings are keyed on the
+        model id and a profile names a different model than the caller did, so
+        the sequence is load-bearing rather than cosmetic.
+
+        `values` is the raw constructor input, which omits `model` when the
+        caller relies on the field default (Pydantic v2 applies defaults
+        after `mode="before"` validators) — fall back to the field's own
+        default so the clamp is consistent either way.
         """
         from lionagi.service.providers import _clamp_codex_effort
+
+        values = cls._resolve_config_profile(values)
 
         model = values.get("model", cls.model_fields["model"].default)
         for key in ("reasoning_effort", "plan_mode_reasoning_effort"):
@@ -387,13 +546,19 @@ class CodexCodeRequest(BaseModel):
         if self.system_prompt:
             args.extend(["-c", f"developer_instructions={self.system_prompt}"])
 
+        # Encoded like every other `-c` override below. While these fields were
+        # a closed Literal of eight bare words, emitting them unencoded was
+        # safe by construction; now that any string is accepted, what keeps an
+        # arbitrary value inside its own override is codex's own leniency about
+        # the right-hand side, which is not a contract lionagi owns.
         if self.reasoning_effort:
-            args.extend(["-c", f"reasoning_effort={self.reasoning_effort}"])
+            args.extend(["-c", f"reasoning_effort={toml_override_value(self.reasoning_effort)}"])
         if self.plan_mode_reasoning_effort:
             args.extend(
                 [
                     "-c",
-                    f"plan_mode_reasoning_effort={self.plan_mode_reasoning_effort}",
+                    "plan_mode_reasoning_effort="
+                    f"{toml_override_value(self.plan_mode_reasoning_effort)}",
                 ]
             )
 
@@ -409,12 +574,9 @@ class CodexCodeRequest(BaseModel):
         # Working directory (always emit)
         args.extend(["-C", str(self.cwd())])
 
-        # The prompt goes to the child's stdin, not the command line: a whole
-        # conversation easily exceeds the OS limit on total argument length,
-        # and the spawn then fails with "Argument list too long" instead of
-        # running. `-` is codex's documented way to say "read the
-        # instructions from stdin"; it stays after `--` so it is parsed as
-        # the prompt argument and never as a flag.
+        # Prompt goes to stdin, not argv (a whole conversation can exceed the
+        # OS arg-length limit). `-` is codex's stdin marker; it stays after
+        # `--` so it's parsed as the prompt argument, never as a flag.
         args.extend(["--", "-"])
 
         return args
@@ -436,7 +598,14 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     cmd = [CODEX_CLI, *request.as_cmd_args()]
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
     # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.
-    async with contextlib.aclosing(ndjson_from_cli(cmd, stdin_data=request.prompt)) as stream:
+    async with contextlib.aclosing(
+        ndjson_from_cli(
+            cmd,
+            env=request.env,
+            stdin_data=request.prompt,
+            on_spawn=request.on_spawn,
+        )
+    ) as stream:
         async for obj in stream:
             yield obj
 
@@ -508,13 +677,9 @@ async def stream_codex_cli(
     _start_monotonic = asyncio.get_running_loop().time()
 
     # turn.completed reports usage/cost as a running total-to-date, not a
-    # per-turn delta. run.py stamps each "result" chunk's metadata onto
-    # whichever AssistantResponse it next flushes, and _collect_branch_usage
-    # SUMS that metadata across every message on the branch -- if a tool call
-    # flushes a message between two turn.completed events, each cumulative
-    # snapshot lands on a different message and earlier turns get counted
-    # again. Track the last-seen cumulative values here so only the marginal
-    # (this-turn-only) delta is ever exposed per event.
+    # per-turn delta; track the last-seen cumulative values so only the
+    # marginal delta is ever exposed per event. See
+    # docs/internals/providers.md#codex-turn-completed-usage-delta.
     _prev_input_tokens = 0
     _prev_output_tokens = 0
     _prev_cost: float = 0.0
@@ -699,17 +864,8 @@ async def stream_codex_cli(
                 session.total_cost_usd = turn_cost
                 session.num_turns = (session.num_turns or 0) + 1
 
-                # Terminal usage/cost/turns -- the only channel run.py reads
-                # provider-reported usage from (persisted onto model_response,
-                # see run.py's "result" chunk handling; mirrors claude_code's
-                # "result" event). turn.completed can fire more than once per
-                # run() call for multi-turn codex sessions, and each event's
-                # usage/cost is cumulative-to-date, not a per-turn delta --
-                # emit only the marginal contribution since the previous
-                # event (clamped at 0 in case a provider quirk ever reports a
-                # lower running total) so summing across every flushed
-                # message reconstructs the true total exactly once, not N
-                # times over.
+                # Emit only the marginal delta since the previous event, clamped
+                # at 0 — see docs/internals/providers.md#codex-turn-completed-usage-delta.
                 cur_input = int(
                     turn_usage.get("input_tokens", turn_usage.get("prompt_tokens", 0)) or 0
                 )
@@ -732,10 +888,8 @@ async def stream_codex_cli(
                     _prev_cost = float(turn_cost)
                     _seen_cost = True
                     result_meta["total_cost_usd"] = max(delta_cost, 0.0)
-                # Each turn.completed occurrence is exactly one new turn --
-                # unlike usage/cost this is already a delta, never a running
-                # total (num_turns is incremented locally above, not read off
-                # the event), so it is always safe to emit as 1.
+                # Unlike usage/cost, num_turns is already a per-event delta (incremented
+                # locally above, not read off the event) — always safe to emit as 1.
                 result_meta["num_turns"] = 1
                 rsc = StreamChunk(type="result", metadata=result_meta)
                 session.chunks.append(rsc)
@@ -743,14 +897,13 @@ async def stream_codex_cli(
 
             # -- turn.failed / error --
             elif typ in ("turn.failed", "error"):
-                session.is_error = True
                 err = obj.get("error", {})
                 # Error message location varies by event type; capture the raw
                 # value pre-normalization for the benign-EOS check below.
                 _raw_err = err
                 if err is None:
                     err = {}
-                session.result = (
+                _err_message = (
                     (
                         err.get("message")
                         or obj.get("message")
@@ -763,6 +916,34 @@ async def stream_codex_cli(
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
+                # The CLI announces its OWN retry of a dropped provider stream
+                # as an error-typed event ("Reconnecting... 1/5 (...)") and then
+                # keeps going. Treating that notice as terminal kills the leg
+                # before the CLI's second attempt ever runs, so it is surfaced
+                # as a non-error chunk and the stream keeps consuming. A retry
+                # that ultimately fails produces a real terminal event (or the
+                # process exits), which still takes the branch below — and an
+                # unrecognized notice text fails toward terminal, the direction
+                # that loses a leg rather than the one that hangs it.
+                if (
+                    typ == "error"
+                    and isinstance(_err_message, str)
+                    and _RECONNECT_NOTICE_RE.match(_err_message)
+                ):
+                    if request.verbose_output:
+                        log.warning("Codex reconnecting mid-stream: %s", _err_message)
+                    sc = StreamChunk(
+                        type="error",
+                        content=_err_message,
+                        is_error=False,
+                        metadata={**obj, "reconnect_notice": True},
+                    )
+                    session.chunks.append(sc)
+                    yield sc
+                    continue
+
+                session.is_error = True
+                session.result = _err_message
                 # Benign-EOS sentinel on resumed sessions — see docs/internals/runtime.md
                 # for the exact 3-condition classification.
                 _is_benign_eos = (
@@ -778,7 +959,17 @@ async def stream_codex_cli(
                 else:
                     if request.verbose_output:
                         log.error("Codex error: %s", session.result)
-                sc = StreamChunk(type="error", content=session.result, metadata=chunk_meta)
+                # The flag follows the classification above, so a consumer
+                # reading it sees the same verdict as one reading the metadata.
+                # Benign end-of-stream keeps `is_error` false: the type is
+                # "error" only because that is the event the CLI sends, and the
+                # three conditions above are what say it is not one.
+                sc = StreamChunk(
+                    type="error",
+                    content=session.result,
+                    is_error=not _is_benign_eos,
+                    metadata=chunk_meta,
+                )
                 session.chunks.append(sc)
                 yield sc
 
@@ -903,14 +1094,18 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
     _handler_params = _CODEX_HANDLER_PARAMS
     _handler_kwarg = "codex_handlers"
     _request_model = CodexCodeRequest
+    _runtime_state_fields = ("env", "on_spawn")
     # Codex streams a "thread.started"/"system" event right after spawn —
     # see stream_codex_cli() above.
     streams_first_output_early = True
 
     def __init__(self, config: EndpointConfig = None, **kwargs):
         handlers = kwargs.pop("codex_handlers", None)
+        # Before super(), which deep-copies a supplied config: see
+        # take_supplied_runtime_state for what that copy does to a bound method.
+        supplied = self.take_supplied_runtime_state(config, kwargs)
         super().__init__(config=config, **kwargs)
-        self._init_handlers(handlers)
+        self._init_handlers(handlers, supplied=supplied)
 
     @property
     def codex_handlers(self):
@@ -930,10 +1125,16 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         async with contextlib.aclosing(stream_codex_cli(request_obj, **handlers)) as gen:
             async for item in gen:
                 if isinstance(item, CLISession):
-                    if item.is_error:
+                    # The parser already yields an error chunk for a failed
+                    # turn, so without the guard a single failure is reported
+                    # twice — once as it happens and once as the session ends.
+                    # This is the session-terminal verdict; per-tool failures
+                    # have their own carriers and are not what this counts.
+                    if item.is_error and not any(c.type == "error" for c in item.chunks):
                         yield StreamChunk(
                             type="error",
                             content=item.result or "Codex session failed",
+                            is_error=True,
                         )
                     continue
                 yield item

@@ -2,8 +2,10 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { AgentDetail } from "@/components/library/AgentDetail";
+import { CreateAgentPanel } from "@/components/library/CreateAgentPanel";
 import { WorkflowDetail, CreateWorkflowPanel } from "@/components/library/WorkflowDetail";
 import { PlaybookTemplateDetail } from "@/components/library/PlaybookTemplateDetail";
+import { McpServerDetail, CreateMcpServerPanel } from "@/components/library/McpServerDetail";
 import { KindBadge } from "@/components/library/KindBadge";
 import SplitPane from "@/components/ui/SplitPane";
 import TabBar from "@/components/shell/TabBar";
@@ -23,12 +25,22 @@ import {
   listInvocations,
   listBuiltinPlaybooks,
   listPlaybooks,
+  listMcpServers,
 } from "@/lib/api";
 import type { InvocationSummary } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
 import type { EngineDef } from "@/lib/api";
 
-const LIBRARY_TABS = ["all", "agent", "workflow", "playbook", "skill", "plugin", "engine"] as const;
+const LIBRARY_TABS = [
+  "all",
+  "agent",
+  "workflow",
+  "playbook",
+  "skill",
+  "plugin",
+  "engine",
+  "mcp",
+] as const;
 type LibraryTab = (typeof LIBRARY_TABS)[number];
 
 // Kinds whose surfaces are not finished yet. They stay in LIBRARY_TABS so an
@@ -84,8 +96,18 @@ function useLibraryData() {
       listSkills(),
       listPlugins(),
       listEngineDefs(),
+      listMcpServers(),
     ]).then(
-      ([agentsRes, builtinsRes, playbooksRes, workflowsRes, skillsRes, pluginsRes, enginesRes]) => {
+      ([
+        agentsRes,
+        builtinsRes,
+        playbooksRes,
+        workflowsRes,
+        skillsRes,
+        pluginsRes,
+        enginesRes,
+        mcpRes,
+      ]) => {
         if (!alive) return;
 
         const out: LibraryItem[] = [];
@@ -97,6 +119,7 @@ function useLibraryData() {
           skillsRes,
           pluginsRes,
           enginesRes,
+          mcpRes,
         ];
 
         if (agentsRes.status === "fulfilled") {
@@ -190,6 +213,18 @@ function useLibraryData() {
           }
         }
 
+        if (mcpRes.status === "fulfilled") {
+          for (const s of mcpRes.value.servers) {
+            out.push({
+              key: `mcp:${s.name}`,
+              kind: "mcp",
+              name: s.name,
+              description: s.command ?? s.url ?? undefined,
+              meta: s.enabled ? s.transport : `${s.transport} · disabled`,
+            });
+          }
+        }
+
         setItems(out);
         if (results.some((result) => result.status === "rejected")) {
           setError("degraded");
@@ -214,7 +249,15 @@ function useLibraryData() {
 }
 
 const PLAYBOOK_SUB_KINDS: PlaybookSubKind[] = ["builtin", "custom"];
-const LIBRARY_KINDS: LibraryKind[] = ["agent", "workflow", "playbook", "skill", "plugin", "engine"];
+const LIBRARY_KINDS: LibraryKind[] = [
+  "agent",
+  "workflow",
+  "playbook",
+  "skill",
+  "plugin",
+  "engine",
+  "mcp",
+];
 
 /**
  * Parse a ?sel param into kind + name (+ subKind for "playbook" items, which
@@ -295,6 +338,7 @@ function LibraryPage() {
     { value: "skill", label: t("filterSkill") },
     { value: "plugin", label: t("filterPlugin") },
     { value: "engine", label: t("filterEngine") },
+    { value: "mcp", label: t("filterMcp") },
   ];
   const KIND_TABS = ALL_KIND_TABS.filter((tab) => !UNFINISHED_KINDS.has(tab.value));
 
@@ -421,7 +465,12 @@ function LibraryPage() {
             });
           }}
         >
-          + {t("newWorkflow")}
+          +{" "}
+          {kindFilter === "mcp"
+            ? t("newMcpServer")
+            : kindFilter === "agent"
+              ? "New Agent"
+              : t("newWorkflow")}
         </Button>
       </div>
 
@@ -546,7 +595,43 @@ function LibraryPage() {
 
   let detailPane: ReactNode;
 
-  if (showCreate) {
+  if (showCreate && kindFilter === "mcp") {
+    detailPane = (
+      <div className="flex h-full flex-col overflow-hidden">
+        <CreateMcpServerPanel
+          onCreated={(name) => {
+            setShowCreate(false);
+            void reload();
+            void navigate({
+              search: (prev) => ({ ...prev, sel: encodeSel("mcp", name) }),
+              replace: false,
+            });
+          }}
+          onCancel={() => {
+            setShowCreate(false);
+            setDetailActive(false);
+          }}
+        />
+      </div>
+    );
+  } else if (showCreate && kindFilter === "agent") {
+    detailPane = (
+      <CreateAgentPanel
+        onCreated={(name) => {
+          setShowCreate(false);
+          void reload();
+          void navigate({
+            search: (prev) => ({ ...prev, sel: encodeSel("agent", name) }),
+            replace: false,
+          });
+        }}
+        onCancel={() => {
+          setShowCreate(false);
+          setDetailActive(false);
+        }}
+      />
+    );
+  } else if (showCreate) {
     detailPane = (
       <div className="flex h-full flex-col overflow-hidden">
         <CreateWorkflowPanel
@@ -565,8 +650,44 @@ function LibraryPage() {
         />
       </div>
     );
+  } else if (parsed?.kind === "mcp") {
+    detailPane = (
+      <McpServerDetail
+        name={parsed.name}
+        onBack={handleBack}
+        onDeleted={() => {
+          void reload();
+          handleBack();
+          void navigate({
+            search: (prev) => {
+              const next = { ...prev };
+              delete next.sel;
+              return next;
+            },
+            replace: false,
+          });
+        }}
+      />
+    );
   } else if (parsed?.kind === "agent" && selectedAgent) {
-    detailPane = <AgentDetail agent={selectedAgent} onBack={handleBack} />;
+    detailPane = (
+      <AgentDetail
+        agent={selectedAgent}
+        onBack={handleBack}
+        onDeleted={() => {
+          setDetailActive(false);
+          void reload();
+          void navigate({
+            search: (prev) => {
+              const next = { ...prev };
+              delete next.sel;
+              return next;
+            },
+            replace: false,
+          });
+        }}
+      />
+    );
   } else if (parsed?.kind === "workflow" && selectedWorkflowId) {
     detailPane = <WorkflowDetail id={selectedWorkflowId} onBack={handleBack} />;
   } else if (parsed?.kind === "playbook") {

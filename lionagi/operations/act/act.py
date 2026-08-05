@@ -94,11 +94,9 @@ async def _act(
         if verbose_action:
             logger.debug("Action %s invoked, status: %s.", _request["function"], func_call.status)
 
-        # ActionManager.invoke() is total: governance denials, schema
-        # revalidation failures, and ordinary tool exceptions are captured as
-        # FAILED status + execution.error rather than raised. Every captured
-        # failure must take the error path; otherwise it emits TOOL_POST and is
-        # persisted as if a tool legitimately returned None.
+        # ActionManager.invoke() is total: failures are captured as FAILED
+        # status, not raised. Every captured failure must take the error path
+        # below, or it emits TOOL_POST and persists as if the tool returned None.
         if func_call.status == EventStatus.FAILED:
             failure = func_call.execution.error
             if not isinstance(failure, BaseException):
@@ -175,10 +173,8 @@ async def _act(
             )
 
         if suppress_errors:
-            # Ordinary tool failures historically degrade to output=None when
-            # suppressed. Keep that caller contract while persisting the
-            # error-bearing ActionResponse above. Governance denials remain
-            # visible in the returned response so the model can adapt.
+            # Ordinary failures degrade to output=None when suppressed; governance
+            # denials stay visible in the returned response so the model can adapt.
             if captured_failure and not isinstance(e, ActionGovernanceDeniedError):
                 return ActionResponseModel(
                     function=_request.get("function", "unknown"),

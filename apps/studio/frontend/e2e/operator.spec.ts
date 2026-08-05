@@ -1,29 +1,37 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function selectFreshConversation(page: Page): Promise<void> {
-  const conversationId = await page.evaluate(async () => {
+async function createConversation(page: Page): Promise<string> {
+  const title = await page.evaluate(() => crypto.randomUUID());
+  await page.evaluate(async (conversationTitle) => {
     const response = await fetch("/api/operator/conversations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ title: conversationTitle }),
     });
     if (!response.ok) {
       throw new Error(`Failed to create an isolated conversation: ${response.status}`);
     }
-    const payload = (await response.json()) as { conversation?: { id?: unknown } };
-    if (typeof payload.conversation?.id !== "string") {
-      throw new Error("Conversation response did not include an id");
-    }
-    return payload.conversation.id;
-  });
+  }, title);
+  return title;
+}
+
+async function selectFreshConversation(page: Page): Promise<void> {
+  // The conversation switcher is a disclosure button ("Conversations") that
+  // reveals a list of conversation rows, each a labeled button rather than a
+  // <select>/<option> pair. The fixture conversation is created with a unique
+  // title so its row can be found by accessible name instead of relying on a
+  // DOM identifier the UI no longer exposes.
+  const title = await createConversation(page);
 
   await page.reload();
-  const switcher = page.getByRole("combobox", {
-    name: "Operator conversation",
-    exact: true,
-  });
-  await expect(switcher.locator(`option[value="${conversationId}"]`)).toHaveCount(1);
-  await switcher.selectOption(conversationId);
+  // The trigger's accessible name carries the selected conversation's title
+  // after it (e.g. "Conversations: My chat"), so match on the stable
+  // "Conversations" prefix rather than the whole string.
+  const toggle = page.getByRole("button", { name: /^Conversations/ });
+  await toggle.click();
+  const row = page.getByRole("button", { name: title, exact: true });
+  await expect(row).toHaveCount(1);
+  await row.click();
   await expect(page.getByLabel("Instruction")).toBeEnabled();
 }
 
@@ -212,4 +220,48 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
   ).toHaveCount(2);
   await expect(page.getByRole("button", { name: "Allow", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Deny", exact: true })).toHaveCount(0);
+});
+
+test("a conversation can be renamed using only the keyboard", async ({ page }) => {
+  test.setTimeout(30_000);
+  await page.goto("/");
+  const title = await createConversation(page);
+  await page.reload();
+
+  const toggle = page.getByRole("button", { name: /^Conversations/ });
+  await toggle.click();
+  const row = page.getByRole("button", { name: title, exact: true });
+  await expect(row).toHaveCount(1);
+
+  // Reach the rename control by accessible name and activate it with the
+  // keyboard, the way a screen-reader or keyboard-only user would — never a
+  // pointer double-click.
+  const renamed = `${title}-renamed`;
+  const renameButton = page.getByRole("button", { name: `Rename ${title}`, exact: true });
+  await renameButton.focus();
+  await page.keyboard.press("Enter");
+
+  const input = page.getByPlaceholder("Conversation title");
+  await expect(input).toBeFocused();
+  await input.fill(renamed);
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByRole("button", { name: renamed, exact: true })).toBeVisible();
+});
+
+test("the conversation trigger's accessible name announces the selection", async ({ page }) => {
+  await page.goto("/");
+  await selectFreshConversation(page);
+
+  // selectFreshConversation generates its own title, so read the selected
+  // name back off the trigger rather than hardcoding it. toHaveAttribute
+  // auto-retries, unlike a one-shot getAttribute() read, so this doesn't
+  // race the render that follows conversation selection.
+  const trigger = page.getByRole("button", { name: /^Conversations/ });
+  await expect(trigger).toHaveAttribute("aria-label", /^Conversations: .+/);
+  const closedName = await trigger.getAttribute("aria-label");
+
+  await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(trigger).toHaveAttribute("aria-label", closedName!);
 });

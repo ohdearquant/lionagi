@@ -509,6 +509,7 @@ async def list_runs(
     project_null: bool = False,
     tag: list[str] | None = None,
     *,
+    search: str | None = None,
     limit: int = _sessions_svc.MAX_SESSION_PAGE,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -523,6 +524,7 @@ async def list_runs(
         project=project,
         project_null=project_null,
         tags=tag,
+        search=search,
     )
     sessions = await _sessions_svc.list_sessions(limit=limit, offset=offset, where=where)
     now = time.time()
@@ -715,6 +717,10 @@ async def list_runs_route(
     tag: list[str] | None = Query(  # noqa: B008
         default=None, description="Repeated tag filter (AND-composed)"
     ),
+    search: str | None = Query(
+        default=None,
+        description="Case-insensitive contains match on session name or agent name",
+    ),
 ) -> dict[str, Any]:
     where = _sessions_svc.SessionFilter(
         playbook=playbook,
@@ -722,6 +728,7 @@ async def list_runs_route(
         project=project,
         project_null=project_null,
         tags=tag,
+        search=search,
     )
     runs = await list_runs(
         playbook=playbook,
@@ -729,6 +736,7 @@ async def list_runs_route(
         project=project,
         project_null=project_null,
         tag=tag,
+        search=search,
         limit=per_page,
         offset=(page - 1) * per_page,
     )

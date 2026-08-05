@@ -133,15 +133,44 @@ def _first_result_id(khive_response: Any) -> str | None:
 
 
 def _render_recall(khive_response: Any) -> str | None:
+    """Render recalled memories, each dated, under a header naming the serving
+    profile.
+
+    A bullet with no date is a claim a reader cannot place in time, and the
+    block it lands in is explicitly labelled untrusted, so an undated but
+    genuine record from a year ago reads exactly like something fabricated.
+    The date is what lets a reader weigh it; the profile is where it came
+    from. Both are already in the recall response, and neither used to be
+    carried across.
+
+    Fields are rendered when present rather than assumed: a store that does
+    not stamp a record must still produce a bullet, not a ``[None]``.
+    """
     op_result = _first_op_result(khive_response)
     if not op_result:
         return None
-    lines = ["# khive recall"]
+
+    served_by = ""
+    if isinstance(op_result, list):
+        profiles = {
+            item.get("served_by_profile_id")
+            for item in op_result
+            if isinstance(item, dict) and item.get("served_by_profile_id")
+        }
+        # One recall is served by one profile, so this is a header line rather
+        # than the same string repeated down every bullet. Rendered only when
+        # the response actually agrees on it.
+        if len(profiles) == 1:
+            served_by = f" (served by {profiles.pop()})"
+
+    lines = [f"# khive recall{served_by}"]
     for item in op_result:
-        if isinstance(item, dict):
-            lines.append(f"- {item.get('content', item)}")
-        else:
+        if not isinstance(item, dict):
             lines.append(f"- {item}")
+            continue
+        content = item.get("content", item)
+        created_at = item.get("created_at")
+        lines.append(f"- [{created_at}] {content}" if created_at else f"- {content}")
     return "\n".join(lines)
 
 
@@ -250,14 +279,10 @@ class KhiveInjectionProvider:
         truncated = _truncate(text, cap)
         if not truncated:
             return None
-        # Recalled content originates from prior (possibly attacker-influenced)
-        # tool output and repo content; wrap it as clearly-labeled untrusted
-        # reference material so it cannot be mistaken for an instruction.
-        # Two layers keep the wrapper from being escaped: (1) any literal
-        # closing-tag substring inside the recalled text is neutralized so it
-        # can't terminate the block early, and (2) a per-call random nonce on
-        # both tags means even an attacker who knows this scheme can't guess
-        # the string that will actually close the block.
+        # Recalled content may be attacker-influenced, so it's wrapped as
+        # untrusted: the closing tag is neutralized inside the text and a
+        # per-call random nonce is required to actually close the block. See
+        # docs/internals/agent-runtime.md#untrusted-recall-wrapper.
         neutralized = _UNTRUSTED_CLOSE_RE.sub(r"<\\/untrusted-context", truncated)
         nonce = uuid.uuid4().hex[:16]
         return (

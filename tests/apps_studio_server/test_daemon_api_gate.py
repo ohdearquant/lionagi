@@ -61,6 +61,7 @@ _DOCS_PATHS = frozenset({"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redir
 _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/api/agents/{name}"),
     ("DELETE", "/api/engine-defs/{def_id}"),
+    ("DELETE", "/api/mcp/servers/{name}"),
     ("DELETE", "/api/operator/conversations/{conversation_id}"),
     ("DELETE", "/api/playbooks/{name}"),
     ("DELETE", "/api/projects/{name}"),
@@ -87,9 +88,12 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/engine-runs/{run_id}"),
     ("GET", "/api/invocations/"),
     ("GET", "/api/invocations/{invocation_id}"),
+    ("GET", "/api/mcp/servers/"),
+    ("GET", "/api/mcp/servers/{name}"),
     ("GET", "/api/operator/conversations"),
     ("GET", "/api/operator/conversations/{conversation_id}"),
     ("GET", "/api/operator/conversations/{conversation_id}/stream"),
+    ("GET", "/api/operator/models"),
     ("GET", "/api/playbook-templates/"),
     ("GET", "/api/playbook-templates/{name}"),
     ("GET", "/api/playbooks/"),
@@ -126,6 +130,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/workflow-defs/"),
     ("GET", "/api/workflow-defs/{def_id}"),
     ("GET", "/health"),
+    ("PATCH", "/api/operator/conversations/{conversation_id}"),
     ("PATCH", "/api/schedules/{schedule_id}"),
     ("POST", "/api/admin/maintenance"),
     ("POST", "/api/admin/prune"),
@@ -142,8 +147,14 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/engine-defs/"),
     ("POST", "/api/invocations/{invocation_id}/cancel"),
     ("POST", "/api/launches/"),
+    ("POST", "/api/mcp/servers/"),
+    ("POST", "/api/mcp/servers/{name}/check"),
+    ("POST", "/api/mcp/servers/{name}/disable"),
+    ("POST", "/api/mcp/servers/{name}/enable"),
+    ("POST", "/api/mcp/servers/{name}/validate"),
     ("POST", "/api/operator/conversations"),
     ("POST", "/api/operator/conversations/{conversation_id}/effects/{effect_id}/ack"),
+    ("POST", "/api/operator/conversations/{conversation_id}/fork"),
     (
         "POST",
         "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/confirm",
@@ -175,6 +186,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/workflow-defs/{def_id}/run"),
     ("PUT", "/api/agents/{name}"),
     ("PUT", "/api/engine-defs/{def_id}"),
+    ("PUT", "/api/mcp/servers/{name}"),
     ("PUT", "/api/playbooks/{name}"),
     ("PUT", "/api/projects/{name}"),
     ("PUT", "/api/workflow-defs/{def_id}"),
@@ -256,7 +268,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 110
+    assert len(_GOLDEN_ROUTES) == 122
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -370,10 +382,6 @@ def test_api_prefix_appears_exactly_once_in_every_route_path():
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
     """Point every service module's DB reference at a fresh temp path; must run before any seeding call since StateDB() re-reads DEFAULT_DB_PATH fresh per instantiation, and admin.py/sessions.py additionally cache the path in their own module-level `_DB`."""
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.db_maintenance as db_maintenance_mod
-    import lionagi.studio.services.schedules as schedules_mod
-    import lionagi.studio.services.sessions as sessions_mod
 
     # An environment with LIONAGI_STUDIO_AUTH_TOKEN set (a dev machine, CI)
     # would make every unauthenticated request in this file 401 before it
@@ -391,11 +399,6 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
         "settings",
         state_db_mod.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None}),
     )
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     # db_maintenance imports DEFAULT_DB_PATH by value, so the state_db_mod
     # patch above never reaches its own module-level binding.
@@ -524,7 +527,15 @@ def test_admin_maintenance_checkpoint_response_shape(tmp_path, monkeypatch):
 
     r = client.post("/api/admin/maintenance", json={"action": "checkpoint"})
     assert r.status_code == 200
-    assert sorted(r.json().keys()) == ["action", "busy", "checkpointed", "log_pages", "mode"]
+    assert sorted(r.json().keys()) == [
+        "action",
+        "busy",
+        "checkpointed",
+        "elapsed_ms",
+        "log_pages",
+        "mode",
+        "wal_bytes_before",
+    ]
 
 
 def test_admin_maintenance_malformed_action_422_shape(tmp_path, monkeypatch):

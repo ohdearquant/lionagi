@@ -56,14 +56,8 @@ async def _seed_running_session(
 
 def _make_client(tmp_path, monkeypatch, db_path: Path) -> TestClient:
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.sessions as sessions_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
 
     from lionagi.studio.app import app
 
@@ -103,7 +97,33 @@ def test_admin_doctor_no_db_returns_empty_health(tmp_path, monkeypatch):
     assert data["phantom_sessions"] == []
     assert data["db_health"]["size_bytes"] == 0
     assert data["db_health"]["wal_bytes"] == 0
-    assert data["db_health"]["wal_pending"] == 0
+
+
+def test_db_health_reports_only_numbers_it_can_actually_measure(tmp_path, monkeypatch):
+    """The payload carries no field that merely duplicates another.
+
+    ``wal_pending`` used to be returned as a second copy of ``wal_bytes``. A
+    field named for pending WAL frames invites exactly one inference, that
+    frames are waiting, and the WAL file's size cannot support it: SQLite
+    leaves a checkpointed WAL at its allocated size, so a fully checkpointed
+    store reported a large pending count forever, in the alarming direction.
+
+    It is dropped rather than populated because the only source for the number
+    is ``PRAGMA wal_checkpoint``, which does not read the pending count, it
+    performs a checkpoint. Populating the field would turn a health read into a
+    writer against the store it reports on.
+
+    Pinning the whole key set, not just the absence of that one name, is
+    deliberate: the defect was a duplicate, and the next duplicate will have a
+    different name.
+    """
+    from lionagi.studio.services.admin import db_health
+
+    health = db_health()
+
+    assert set(health) == {"size_bytes", "wal_bytes"}, (
+        f"db_health grew a field; if it reports a real measurement, say so here: {health}"
+    )
 
 
 def test_admin_prune_selected_sessions(tmp_path, monkeypatch):

@@ -633,31 +633,17 @@ def _run(argv: list[str] | None = None) -> int:
     verbose = "-v" in _pre_sentinel or "--verbose" in _pre_sentinel
     configure_cli_logging(verbose)
 
-    # Machine mode is answered here, before any other command path can write to
-    # stdout, and never inferred from the shape of the caller's terminal: the
-    # output shape follows what the caller asked for, not how it was invoked.
-    # The dispatcher owns stdout from this point and emits one JSON object on
-    # it; everything human-facing goes to stderr.
+    # Machine mode is answered before any other path can write to stdout, and
+    # never inferred from the terminal shape. The dispatcher owns stdout from
+    # here and emits one JSON object; everything human-facing goes to stderr.
     if "--machine" in _pre_sentinel:
         machine = _load_machine()
         return machine.dispatch_machine(machine.strip_machine_flag(_argv))
 
-    # From here on the reader is a person, usually with a pager: `li ... | head`
-    # should stop quietly rather than print a BrokenPipeError traceback, which
-    # is what the default disposition buys.
-    #
-    # The machine path above is deliberately left with the interpreter's own
-    # setting, where SIGPIPE is ignored and EPIPE arrives as a catchable OSError.
-    # Its caller reads the whole stream, so there is no pager to be quiet for,
-    # and this surface promises exactly one thing: every call answers with an
-    # envelope. Under the default disposition that promise is not ours to keep —
-    # any EPIPE anywhere in the process kills it outright, with no envelope and
-    # nothing on stderr, and not every write is one the command made. A database
-    # driver's worker thread signalling a result to an event loop that is closing
-    # underneath it writes to that loop's own wakeup socket, and if the loop got
-    # there first the write is on a socket whose other end is already gone. That
-    # is a routine internal race the interpreter absorbs; only the default
-    # disposition turns it into a command that stopped answering.
+    # `li ... | head` should stop quietly rather than print a BrokenPipeError
+    # traceback. The machine path above keeps the interpreter's default SIGPIPE
+    # disposition instead, since not every write there belongs to the command
+    # (e.g. a DB driver's worker thread signalling a closing event loop).
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
     # Same pre-argparse scan, so a project-scoped .lionagi/settings.yaml
@@ -713,14 +699,8 @@ def _run(argv: list[str] | None = None) -> int:
     try:
         parser, selected_parser = _build_parser(selected)
     except ModuleNotFoundError as exc:
-        # A dependency missing from the environment is not a command-scoped
-        # error, even though it surfaces while loading one. Reported below it
-        # would exit 1, which is what a run that started and failed returns, so
-        # a caller could not tell an unusable environment from a real failure.
-        # Only the status changes here: the concise report stays, because a
-        # traceback for a command that never started was judged to be noise and
-        # naming the missing module is the whole diagnosis at this boundary.
-        # Nothing has run at this point — the parser is still being built.
+        # An environment fault, not a command-scoped one — nothing ran, so
+        # exit 78 rather than the 1 a started-and-failed run would return.
         missing = exc.name or "a required module"
         log_error(
             f"command {_argv[0]!r} cannot run: {missing} is not installed in this "

@@ -162,6 +162,13 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
     poller crash). Never raises — failures are recorded as rejected."""
     control_id = row["id"]
     verb = row["verb"]
+    # Set only once this poller has actually claimed the row. Every finalize
+    # below passes it, so a write from this function can never land on an
+    # outcome somebody else recorded while the apply was in flight — including
+    # a hand resolution, which is the one outcome here that nothing can rebuild.
+    # It stays None for the idempotent verbs, which take no claim and want the
+    # unconditional write.
+    claim: str | None = None
     try:
         if verb == "pause":
             executor.pause()
@@ -172,11 +179,20 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
             return await _finalize_applied(db, control_id)
 
         if verb == "message":
-            if row.get("result") == "applying":
-                # Prior poller crashed between stamp and apply; leave it
+            if str(row.get("result") or "").startswith("applying"):
+                # A consumer stamped this row and did not finish; leave it
                 # untouched — re-attempting could double-inject the message.
+                # Prefix rather than equality because a claim may name its
+                # owner ('applying:<run id>'), and an equality check would stop
+                # recognising exactly the claims that identify who holds them.
                 return None
-            await db.mark_session_control_applying(control_id)
+            claim = await db.mark_session_control_applying(control_id)
+            if claim is None:
+                # The row above said unclaimed; this says it is claimed now.
+                # Only the stamp that actually wrote may go on to inject, since
+                # the losing side proceeding is the double-injection the check
+                # above exists to prevent, arrived at by a different route.
+                return None
 
             from lionagi.operations.node import Operation as _Operation  # noqa: PLC0415
             from lionagi.protocols.types import EventStatus as _EventStatus  # noqa: PLC0415
@@ -187,7 +203,10 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
             )
             if not has_pending_op:
                 result = "rejected:no-pending-ops"
-                await db.finalize_session_control(control_id, result=result)
+                if not await db.finalize_session_control(
+                    control_id, result=result, expect_claim=claim
+                ):
+                    return None
                 return result
 
             from lionagi.libs.nested import deep_update  # noqa: PLC0415
@@ -196,18 +215,22 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
             existing = executor.context.content.get("operator_messages", [])
             entry = {"ts": time.time(), "text": payload.get("text", "")}
             deep_update(executor.context.content, {"operator_messages": [*existing, entry]})
-            return await _finalize_applied(db, control_id)
+            return await _finalize_applied(db, control_id, claim)
 
         # 'stop' is schema-reserved for a later slice (checkpoint writer);
         # reject other verbs loudly instead of polling them forever.
         result = f"rejected:unsupported-verb:{verb}"
-        await db.finalize_session_control(control_id, result=result)
+        await db.finalize_session_control(control_id, result=result, expect_claim=claim)
         return result
     except Exception as exc:  # noqa: BLE001 — the poller must never crash the run
         result = f"rejected:error:{exc}"[:500]
         logger.warning("control %s (%s) failed to apply: %s", control_id, verb, exc)
         try:
-            await db.finalize_session_control(control_id, result=result)
+            if not await db.finalize_session_control(control_id, result=result, expect_claim=claim):
+                # The claim moved while this apply was failing, so the row
+                # already carries somebody else's outcome. Recording our error
+                # over it would replace a settled answer with a worse one.
+                return None
         except Exception:  # noqa: BLE001
             # Still pending: signal the poller to end the tick so a later
             # control isn't overtaken by this one re-applying next tick.
@@ -215,13 +238,18 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
         return result
 
 
-async def _finalize_applied(db, control_id: str) -> str:
+async def _finalize_applied(db, control_id: str, claim: str | None = None) -> str | None:
     """Stamp 'applied' after a successful apply; on finalize failure, retry
-    once then return the unstamped sentinel for the next poller tick."""
+    once then return the unstamped sentinel for the next poller tick.
+
+    Returns None when *claim* is given and the row no longer carries it: the
+    apply happened, but somebody else has since recorded the outcome, and
+    theirs stands. Callers read None as "left untouched by us"."""
     for _ in range(2):
         try:
-            await db.finalize_session_control(control_id, result="applied")
-            return "applied"
+            if await db.finalize_session_control(control_id, result="applied", expect_claim=claim):
+                return "applied"
+            return None
         except Exception as exc:  # noqa: BLE001 — the poller must never crash the run
             logger.warning("control %s applied but finalize failed: %s", control_id, exc)
     return _CONTROL_UNSTAMPED
@@ -321,13 +349,9 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
-                # A child can be "completed" (its DAG produced its result) yet
-                # carry COMPLETED_FINALIZE_ERROR because a guarded best-effort
-                # teardown step (team post, snapshot, resume pointer, graph)
-                # failed. Collapsing that into plain COMPLETED_OK here would
-                # make the invocation report clean success while the child's
-                # own record says a finalize step failed -- surface the same
-                # degraded reason at the invocation level instead of hiding it.
+                # A "completed" child may still carry COMPLETED_FINALIZE_ERROR
+                # (a guarded best-effort teardown step failed) — surface that
+                # degraded reason at the invocation level rather than hiding it.
                 degraded = [
                     s
                     for s in sessions
@@ -1626,25 +1650,13 @@ def _finalize_flow(
 ) -> str:
     """Format output, write the synthesis artifact, then run best-effort teardown.
 
-    The DAG already has its result by the time this runs, so ``output`` is
-    computed first and always returned. The synthesis artifact write happens
-    next, ahead of everything else and outside any guard: it IS the run's
-    output, so a failure there is a real failure of the run, not a finalize
-    hiccup — it's stashed on ``env._artifact_write_error`` for the run's
-    teardown to flip the terminal status to "failed" over, rather than being
-    swallowed alongside best-effort side effects.
-
-    Everything after that — team inbox post, branch snapshots, resume
-    pointer, the DAG graph image — is post-completion persistence/telemetry
-    whose failure should never fail the run. It's caught and stashed on
-    ``env._finalize_error`` for the run's teardown to surface via its own
-    reason code, rather than raising and letting the caller conflate it with
-    the DAG's own outcome.
-
-    Ordering matters: the output write runs first and unguarded, so a
-    telemetry failure below can never prevent the output from being written,
-    and an output failure is recorded on its own field so a later guarded
-    failure can never mask it.
+    The synthesis artifact write runs first and unguarded — it IS the run's
+    output, so its failure is a real run failure, stashed on
+    ``env._artifact_write_error`` for teardown to flip the terminal status to
+    "failed" over. Everything after (team inbox post, branch snapshots, resume
+    pointer, DAG graph image) is best-effort telemetry whose failure is caught
+    and stashed on ``env._finalize_error`` instead, so it can never mask or be
+    conflated with the artifact-write outcome.
     """
     agent_results = exec_result.agent_results
     n_spawned = exec_result.n_spawned
@@ -1909,12 +1921,9 @@ async def _run_flow(
             on_rejection=_notify_override_refused,
         )
 
-    # notify.on_terminal (settings-driven, independent of --notify) outcome
-    # attribution: bind this run into the handler at registration time so a
-    # late-arriving outcome for this entity lands here or nowhere -- never
-    # on a different run this process later allocates. Skipped when --notify
-    # already owns this same entity as an exclusive override (registering a
-    # second override for the same entity would fire the adapter twice).
+    # Bind this run into the notify.on_terminal handler at registration time so
+    # a late outcome lands here or nowhere, never on a later run. Skipped when
+    # --notify already owns this entity (a second override would double-fire).
     from lionagi.state.lifecycle.notify_settings import (
         register_run_notify_outcome_scope,
         unregister_run_notify_outcome_scope,
@@ -2057,21 +2066,14 @@ async def _run_flow(
                     _logging.getLogger("lionagi.cli").exception(
                         "Failed to finalize invocation %s", invocation_id
                     )
-                    # The guarded update_status() above never committed, so
-                    # the terminal-callback registry never emitted for this
-                    # invocation's entity -- any --notify / notify.on_terminal
-                    # handler scoped to it would otherwise be silently
-                    # dropped exactly when a notification is most needed.
-                    # Emit a best-effort envelope directly (mirrors the
-                    # unconditional fire_terminal_notify() call this code path
-                    # replaced). Report the invocation status/reason that
-                    # resolution already settled when it got that far -- the
-                    # failure may have been only in the write, and the resolved
-                    # outcome can differ from the flow's own coarser status
-                    # (a clean flow whose children produced no evidence
-                    # resolves to completed_empty). Fall back to the flow's own
-                    # terminal status only when resolution itself never
-                    # produced one.
+                    # The guarded update_status() above never committed, so the
+                    # terminal-callback registry never fired for this entity;
+                    # emit a best-effort envelope directly instead of silently
+                    # dropping the notification. Prefer the invocation
+                    # status/reason resolution already settled (it can differ
+                    # from the flow's own coarser status, e.g. completed_empty)
+                    # and fall back to the flow's own terminal status only when
+                    # resolution never produced one.
                     try:
                         import uuid as _uuid
 

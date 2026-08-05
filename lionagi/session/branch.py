@@ -131,9 +131,9 @@ class Branch(Element, Relational):
         parse_model: iModel | dict | str = None,
         tools: FuncTool | list[FuncTool] = None,
         log_config: DataLoggerConfig | dict = None,
-        system_datetime: bool | str = None,
+        system_datetime: bool | str | None = None,
         system_template=None,
-        system_template_context: dict = None,
+        system_template_context: dict | None = None,
         logs: Pile[Log] = None,
         use_lion_system_message: bool = False,
         memory: MemoryStore | None = None,
@@ -359,11 +359,9 @@ class Branch(Element, Relational):
         """Wrap a branch-owned bus handler so a shared session bus only
         invokes it for events that originate from this branch.
 
-        Emissions that carry a ``branch_id`` kwarg (e.g. ``UserPromptSubmit``)
-        are matched against this branch's id; emissions that don't (e.g.
-        ``SessionStart``/``SessionEnd``, which are genuinely session-wide)
-        pass through unfiltered. Without this, every branch sharing a
-        session's bus would see every other branch's events.
+        Emissions carrying a ``branch_id`` are matched against this branch's
+        id; session-wide emissions (``SessionStart``/``SessionEnd``) pass
+        through unfiltered.
         """
         from lionagi.ln.concurrency import maybe_await
 
@@ -381,30 +379,11 @@ class Branch(Element, Relational):
         """Set this branch's :class:`HookBus` and (re)register any external
         handlers queued for bus attachment.
 
-        A standalone branch built via ``create_agent`` has no bus yet, so
-        ``hooks_external`` entries bound to bus-only events (``UserPromptSubmit``,
-        ``SessionStart``/``SessionEnd``/``PostToolUseFailure``) cannot attach
-        at config time; ``lionagi.agent.factory._wire_external_hooks`` queues
-        them onto ``_pending_hook_bus_entries`` instead of dropping them.
-        That list is retained for the branch's lifetime, not cleared after
-        the first flush, so a branch moved between sessions (``Session.
-        remove_branch`` then ``include_branches``/``new_branch`` elsewhere)
-        re-registers the same external handlers on its new session's bus
-        instead of silently losing them. Re-attaching the same bus is a
-        no-op for entries already registered on it -- only the entries
-        appended since the last sync onto the current bus are flushed.
-        Every seam that gives this branch a bus -- ``Session.include_branches``
-        and the lazy ``Session.hooks`` property -- must route the assignment
-        through this method so those queued handlers actually attach, rather
-        than a configured guard silently never firing.
-
-        Each registered handler is wrapped with an origin-branch filter (see
-        ``_origin_filtered_handler``) so a bus shared by multiple branches
-        never cross-fires one branch's hook for another branch's event.
-        Switching to a genuinely different bus -- or detaching entirely via
-        ``attach_hook_bus(None)`` -- first unregisters every wrapper this
-        branch put on the old bus, so a reparented or removed branch leaves
-        no stale handler behind.
+        A standalone branch has no bus yet, so bus-only ``hooks_external``
+        entries queue on ``_pending_hook_bus_entries`` instead of being
+        dropped and flush here whenever a bus is (re)attached. Every seam
+        that gives this branch a bus must route through this method. See
+        docs/internals/agent-runtime.md#hook-bus-reattachment.
         """
         old_bus = self._hook_bus_synced_to
         if old_bus is not None and old_bus is not bus:
@@ -623,21 +602,21 @@ class Branch(Element, Relational):
 
     def connect(
         self,
-        provider: str = None,
-        base_url: str = None,
+        provider: str | None = None,
+        base_url: str | None = None,
         endpoint: str | Endpoint = "chat",
         endpoint_params: list[str] | None = None,
-        api_key: str = None,
+        api_key: str | None = None,
         queue_capacity: int = 100,
         capacity_refresh_time: float = 60,
         interval: float | None = None,
-        limit_requests: int = None,
-        limit_tokens: int = None,
+        limit_requests: int | None = None,
+        limit_tokens: int | None = None,
         invoke_with_endpoint: bool = False,
         imodel: iModel = None,
-        name: str = None,
-        request_options: type[BaseModel] = None,
-        description: str = None,
+        name: str | None = None,
+        request_options: type[BaseModel] | None = None,
+        description: str | None = None,
         update: bool = False,
         **kwargs,
     ):
@@ -777,14 +756,14 @@ class Branch(Element, Relational):
         context: JsonValue = None,
         sender: ID.Ref = None,
         recipient: ID.Ref = None,
-        request_fields: list[str] | dict[str, JsonValue] = None,
+        request_fields: list[str] | dict[str, JsonValue] | None = None,
         response_format: type[BaseModel] | BaseModel = None,
         progression: Progression | list[ID[RoledMessage].ID] = None,
         imodel: iModel = None,
-        tool_schemas: list[dict] = None,
-        images: list = None,
-        image_detail: Literal["low", "high", "auto"] = None,
-        plain_content: str = None,
+        tool_schemas: list[dict] | None = None,
+        images: list | None = None,
+        image_detail: Literal["low", "high", "auto"] | None = None,
+        plain_content: str | None = None,
         return_ins_res_message: Literal[False] = False,
         include_token_usage_to_model: bool = False,
         _turn_origin: Any = None,
@@ -799,14 +778,14 @@ class Branch(Element, Relational):
         context: JsonValue = None,
         sender: ID.Ref = None,
         recipient: ID.Ref = None,
-        request_fields: list[str] | dict[str, JsonValue] = None,
+        request_fields: list[str] | dict[str, JsonValue] | None = None,
         response_format: type[BaseModel] | BaseModel = None,
         progression: Progression | list[ID[RoledMessage].ID] = None,
         imodel: iModel = None,
-        tool_schemas: list[dict] = None,
-        images: list = None,
-        image_detail: Literal["low", "high", "auto"] = None,
-        plain_content: str = None,
+        tool_schemas: list[dict] | None = None,
+        images: list | None = None,
+        image_detail: Literal["low", "high", "auto"] | None = None,
+        plain_content: str | None = None,
         return_ins_res_message: Literal[True] = ...,
         include_token_usage_to_model: bool = False,
         _turn_origin: Any = None,
@@ -821,14 +800,14 @@ class Branch(Element, Relational):
         context: JsonValue = None,
         sender: ID.Ref = None,
         recipient: ID.Ref = None,
-        request_fields: list[str] | dict[str, JsonValue] = None,
+        request_fields: list[str] | dict[str, JsonValue] | None = None,
         response_format: type[BaseModel] | BaseModel = None,
         progression: Progression | list[ID[RoledMessage].ID] = None,
         imodel: iModel = None,
-        tool_schemas: list[dict] = None,
-        images: list = None,
-        image_detail: Literal["low", "high", "auto"] = None,
-        plain_content: str = None,
+        tool_schemas: list[dict] | None = None,
+        images: list | None = None,
+        image_detail: Literal["low", "high", "auto"] | None = None,
+        plain_content: str | None = None,
         return_ins_res_message: bool = ...,
         include_token_usage_to_model: bool = False,
         _turn_origin: Any = None,
@@ -842,14 +821,14 @@ class Branch(Element, Relational):
         context: JsonValue = None,
         sender: ID.Ref = None,
         recipient: ID.Ref = None,
-        request_fields: list[str] | dict[str, JsonValue] = None,
+        request_fields: list[str] | dict[str, JsonValue] | None = None,
         response_format: type[BaseModel] | BaseModel = None,
         progression: Progression | list[ID[RoledMessage].ID] = None,
         imodel: iModel = None,
-        tool_schemas: list[dict] = None,
-        images: list = None,
-        image_detail: Literal["low", "high", "auto"] = None,
-        plain_content: str = None,
+        tool_schemas: list[dict] | None = None,
+        images: list | None = None,
+        image_detail: Literal["low", "high", "auto"] | None = None,
+        plain_content: str | None = None,
         return_ins_res_message: bool = False,
         include_token_usage_to_model: bool = False,
         _turn_origin: Any = None,
@@ -905,7 +884,7 @@ class Branch(Element, Relational):
         text: str,
         handle_validation: Literal["raise", "return_value", "return_none"] = "return_value",
         max_retries: int = 3,
-        request_type: type[BaseModel] = None,
+        request_type: type[BaseModel] | None = None,
         operative: "Operative" = None,
         similarity_algo="jaro_winkler",
         similarity_threshold: float = 0.85,
@@ -914,7 +893,7 @@ class Branch(Element, Relational):
         fill_value: Any = None,
         fill_mapping: dict[str, Any] | None = None,
         strict: bool = False,
-        response_format: type[BaseModel] = None,
+        response_format: type[BaseModel] | None = None,
     ) -> BaseModel | dict | str | None:
         """Parse text into a Pydantic model. Does not add messages to context."""
         _pms = {k: v for k, v in locals().items() if k not in ("self", "_pms") and v is not None}
@@ -934,20 +913,20 @@ class Branch(Element, Relational):
         progression: Progression = None,
         chat_model: iModel = None,
         invoke_actions: bool = True,
-        tool_schemas: list[dict] = None,
-        images: list = None,
-        image_detail: Literal["low", "high", "auto"] = None,
+        tool_schemas: list[dict] | None = None,
+        images: list | None = None,
+        image_detail: Literal["low", "high", "auto"] | None = None,
         parse_model: iModel = None,
         skip_validation: bool = False,
         tools: ToolRef = None,
         operative: "Operative" = None,
-        response_format: type[BaseModel] = None,  # alias of operative.request_type
+        response_format: type[BaseModel] | None = None,  # alias of operative.request_type
         actions: bool = False,
         reason: bool = False,
         call_params: AlcallParams = None,
         action_strategy: Literal["sequential", "concurrent"] = "concurrent",
         verbose_action: bool = False,
-        field_models: list[FieldModel] = None,
+        field_models: list[FieldModel] | None = None,
         exclude_fields: list | dict | None = None,
         handle_validation: Literal["raise", "return_value", "return_none"] = "return_value",
         include_token_usage_to_model: bool = False,
@@ -974,17 +953,17 @@ class Branch(Element, Relational):
         *,
         guidance: JsonValue = None,
         context: JsonValue = None,
-        plain_content: str = None,
+        plain_content: str | None = None,
         sender: "SenderRecipient" = None,
         recipient: "SenderRecipient" = None,
         progression: ID.IDSeq = None,
-        response_format: type[BaseModel] = None,
-        request_fields: dict | list[str] = None,
+        response_format: type[BaseModel] | None = None,
+        request_fields: dict | list[str] | None = None,
         chat_model: iModel = None,
         parse_model: iModel = None,
         skip_validation: bool = False,
-        images: list = None,
-        image_detail: Literal["low", "high", "auto"] = None,
+        images: list | None = None,
+        image_detail: Literal["low", "high", "auto"] | None = None,
         num_parse_retries: int = 3,
         clear_messages: bool = False,
         include_token_usage_to_model: bool = False,
@@ -1059,7 +1038,7 @@ class Branch(Element, Relational):
         response_format: type[BaseModel] | BaseModel = None,
         intermediate_response_options: list[BaseModel] | BaseModel = None,
         intermediate_listable: bool = False,
-        reasoning_effort: Literal["low", "medium", "high"] = None,
+        reasoning_effort: Literal["low", "medium", "high"] | None = None,
         extension_allowed: bool = True,
         max_extensions: int | None = 3,
         response_kwargs: dict | None = None,
@@ -1067,7 +1046,7 @@ class Branch(Element, Relational):
         return_analysis: bool = False,
         analysis_model: iModel | None = None,
         verbose: bool = False,
-        verbose_length: int = None,
+        verbose_length: int | None = None,
         include_token_usage_to_model: bool = True,
         **kwargs,
     ):
@@ -1156,14 +1135,14 @@ class Branch(Element, Relational):
         response_format: type[BaseModel] | BaseModel = None,
         intermediate_response_options: list[BaseModel] | BaseModel = None,
         intermediate_listable: bool = False,
-        reasoning_effort: Literal["low", "medium", "high"] = None,
+        reasoning_effort: Literal["low", "medium", "high"] | None = None,
         extension_allowed: bool = True,
         max_extensions: int | None = 3,
         response_kwargs: dict | None = None,
         analysis_model: iModel | None = None,
         verbose: bool = False,
         display_as: Literal["json", "yaml"] = "yaml",
-        verbose_length: int = None,
+        verbose_length: int | None = None,
         include_token_usage_to_model: bool = True,
         **kwargs,
     ) -> AsyncGenerator:

@@ -64,7 +64,6 @@ class Step:
             where="Step.request_operative",
         )
 
-        # Warn on deprecated parameters that are silently ignored
         _deprecated_ignored = {
             "parse_kwargs": parse_kwargs,
             "exclude_fields": exclude_fields,
@@ -82,7 +81,6 @@ class Step:
                     DeprecationWarning,
                     stacklevel=2,
                 )
-        # Handle backward compatibility
         name = name or operative_name
 
         if field_models and not fields:
@@ -147,10 +145,8 @@ class Step:
     ) -> Operative:
         """Extend an operative with optional additional response fields and materialize its response model; follows the same shared-model-type contract as request_operative() — never mutate it."""
         if additional_fields:
-            # Get existing fields
             existing_fields = list(operative.operable.__op_fields__)
 
-            # Add new fields
             for field_name, spec in additional_fields.items():
                 if not spec.name:
                     spec = Spec(
@@ -160,13 +156,11 @@ class Step:
                     )
                 existing_fields.append(spec)
 
-            # Create new Operable
             new_operable = Operable(
                 tuple(existing_fields),
                 name=operative.name,
             )
 
-            # Create new Operative
             return Operative(
                 name=operative.name,
                 adapter=operative.adapter,
@@ -177,7 +171,6 @@ class Step:
                 request_exclude=operative.request_exclude,
             )
 
-        # Otherwise just create response model
         operative.create_response_model()
         return operative
 

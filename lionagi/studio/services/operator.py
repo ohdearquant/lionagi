@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+import logging
+from typing import Any, Literal
 
 from fastapi import HTTPException, Query, Request
 
@@ -15,17 +16,22 @@ from ..operator.store import (
     OperatorConflictError,
     OperatorNotFoundError,
     OperatorStoreError,
+    OperatorValidationError,
 )
 from ..operator.types import (
     AcknowledgeEffectRequest,
     ConfirmProposalRequest,
     CreateConversationRequest,
     DecideProposalRequest,
+    ForkConversationRequest,
     OperatorTurnRequest,
     OperatorViewReport,
+    UpdateConversationRequest,
 )
 from ..registry import studio_route
 from ._sse import sse_response
+
+_log = logging.getLogger(__name__)
 
 
 def _http_error(exc: OperatorStoreError) -> HTTPException:
@@ -33,6 +39,8 @@ def _http_error(exc: OperatorStoreError) -> HTTPException:
         status = 404
     elif isinstance(exc, OperatorConflictError):
         status = 409
+    elif isinstance(exc, OperatorValidationError):
+        status = 400
     else:
         status = 503
     detail: dict[str, Any] = {
@@ -49,6 +57,26 @@ def _http_error(exc: OperatorStoreError) -> HTTPException:
 
 
 async def operator_startup() -> list[str]:
+    """Recover Operator turns interrupted by a previous daemon exit.
+
+    Skipped where the configured store has no file. The Operator's tables live
+    in the local StateDB file and nowhere else, so a server-backed or in-memory
+    store holds nothing for this to recover — and raising here aborts the whole
+    lifespan, so the daemon never starts serving and the 501 the routes would
+    have answered is never reached. A subsystem that cannot run must not take
+    the ones that can down with it.
+    """
+    from ._db import StoreNotAddressableError, require_file_store
+
+    try:
+        require_file_store()
+    except StoreNotAddressableError as exc:
+        _log.warning(
+            "Studio Operator disabled: %s. Its routes answer 501; the rest of "
+            "the daemon is unaffected.",
+            exc,
+        )
+        return []
     return await get_operator_coordinator().startup()
 
 
@@ -59,11 +87,12 @@ async def operator_shutdown() -> None:
 @studio_route("/operator/conversations", method="GET", area="operator")
 async def list_operator_conversations(
     limit: int = Query(default=100, ge=1, le=500),
+    status: Literal["active", "archived", "all"] = Query(default="active"),
 ) -> dict[str, Any]:
     coordinator = get_operator_coordinator()
     try:
         await coordinator.ensure_started()
-        rows = await coordinator.store.list_conversations(limit=limit)
+        rows = await coordinator.store.list_conversations(limit=limit, status=status)
         return {"conversations": rows}
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc
@@ -78,6 +107,53 @@ async def create_operator_conversation(
         return await get_operator_coordinator().create_conversation(
             project=body.project, title=body.title
         )
+    except OperatorStoreError as exc:
+        raise _http_error(exc) from exc
+
+
+@studio_route("/operator/conversations/{conversation_id}", method="PATCH", area="operator")
+async def update_operator_conversation(
+    conversation_id: str, body: UpdateConversationRequest
+) -> dict[str, Any]:
+    coordinator = get_operator_coordinator()
+    fields = body.model_fields_set
+    kwargs: dict[str, Any] = {}
+    if "title" in fields:
+        kwargs["title"] = body.title
+    if "pinned" in fields:
+        kwargs["pinned"] = body.pinned
+    if "status" in fields:
+        kwargs["status"] = body.status
+    try:
+        await coordinator.ensure_started()
+        conversation = await coordinator.store.update_conversation(conversation_id, **kwargs)
+        return {"conversation": conversation}
+    except OperatorStoreError as exc:
+        raise _http_error(exc) from exc
+
+
+@studio_route(
+    "/operator/conversations/{conversation_id}/fork",
+    method="POST",
+    area="operator",
+    status_code=201,
+)
+async def fork_operator_conversation(
+    conversation_id: str, body: ForkConversationRequest | None = None
+) -> dict[str, Any]:
+    coordinator = get_operator_coordinator()
+    body = body or ForkConversationRequest()
+    try:
+        await coordinator.ensure_started()
+        conversation = await coordinator.store.fork_conversation(
+            conversation_id,
+            up_to_sequence=body.up_to_sequence,
+            title=body.title,
+        )
+        frames = await coordinator.store.list_frames(
+            conversation["id"], after_sequence=0, limit=1000
+        )
+        return {"conversation": conversation, "frames": frames}
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc
 
@@ -121,9 +197,21 @@ async def submit_operator_turn(conversation_id: str, body: OperatorTurnRequest) 
             context=body.context.model_dump(by_alias=True),
             expected_last_sequence=body.expected_last_sequence,
             model=body.model,
+            provider=body.provider,
+            effort=body.effort,
+            clear_selection=body.clear_selection,
         )
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc
+
+
+@studio_route("/operator/models", method="GET", area="operator")
+async def list_operator_models() -> dict[str, Any]:
+    """The Operator's model catalog: every model the daemon can actually drive,
+    grouped by provider, with the reasoning-effort levels each accepts."""
+    from ..operator.catalog import catalog_entries
+
+    return {"models": catalog_entries()}
 
 
 @studio_route(

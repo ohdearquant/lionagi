@@ -14,6 +14,7 @@ a row is what there is to subtract against.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -25,6 +26,8 @@ from lionagi.protocols.messages.action_request import ActionRequest
 from lionagi.protocols.messages.action_response import ActionResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponse
 from lionagi.protocols.messages.instruction import Instruction
+
+from ._mirror_common import SourceLine, bound_mirror_content
 
 if TYPE_CHECKING:
     from lionagi.protocols.messages.message import RoledMessage
@@ -38,14 +41,27 @@ __all__ = (
     "mirror_session",
     "reconcile_session_status",
     "link_session_lineage",
+    "absorb_orchestrated_session",
+    "absorb_orchestrated_backfill",
     "RecordTally",
     "turn_context",
     "SOURCE_KIND",
     "ID_FIELD",
+    "SKIPPED_ORIGINATORS",
 )
+
+_log = logging.getLogger(__name__)
 
 # Provenance value for a session this mirror wrote, as opposed to one lionagi ran.
 SOURCE_KIND = "imported_codex"
+
+# Rollout originators this mirror does NOT import. A headless ``codex exec``
+# rollout is some orchestrator's run — lionagi's own agent legs foremost — and
+# that run already persists a first-class session under its own name; importing
+# the rollout as well puts a second "codex" session beside the agent's for the
+# same piece of work. This mirror exists for the interactive Codex surfaces
+# (desktop app, TUI, IDE), whose rollouts have no other representation here.
+SKIPPED_ORIGINATORS = frozenset({"codex_exec"})
 
 # Which of a rollout's identifiers ``cc_session_id`` holds. A rollout carries three,
 # and the column that stores one of them says nothing about which — so the name is
@@ -394,6 +410,8 @@ async def mirror_session(
     source_path: str | None = None,
     turn: dict[str, Any] | None = None,
     unparseable: int = 0,
+    event_sources: list[tuple[int, int, str]] | None = None,
+    max_preview_chars: int | None = None,
 ) -> tuple[int, RecordTally]:
     """Idempotently write a batch of codex records for one rollout.
 
@@ -402,6 +420,13 @@ async def mirror_session(
     file being mirrored across several passes; it is updated in place as records
     are walked. ``source_path`` is the rollout file this batch came from, stamped
     into the session's provenance so any row resolves back to its file.
+
+    ``event_sources`` is the per-record ``(byte_offset, byte_count, sha256)`` of
+    each raw JSONL line in ``records`` (same order/length). When both it and
+    ``max_preview_chars`` are given, every message's content is bounded via
+    ``bound_mirror_content`` before it is written, with a resolvable source
+    pointer on ``node_metadata.mirror_source``. Omitting them keeps the legacy
+    unbounded write, for callers with no live rollout file behind the records.
 
     Live/idle transitions are owned by ``reconcile_session_status``, not this writer.
     """
@@ -413,7 +438,8 @@ async def mirror_session(
     seen: dict[str, int] = {}
     mirrored: dict[str, int] = {}
     messages: list[RoledMessage] = []
-    for rec in records:
+    message_sources: list[SourceLine | None] = []
+    for idx, rec in enumerate(records):
         rtype = str(rec.get("type") or "<untyped>")
         seen[rtype] = seen.get(rtype, 0) + 1
         ctx = turn_context(rec)
@@ -423,7 +449,18 @@ async def mirror_session(
         produced = messages_for_record(rec, rollout_uid, tool_names, turn)
         if produced:
             mirrored[rtype] = mirrored.get(rtype, 0) + len(produced)
+            src: SourceLine | None = None
+            if event_sources is not None and idx < len(event_sources):
+                offset, byte_count, sha = event_sources[idx]
+                src = SourceLine(
+                    value=rec,
+                    source_path=source_path or "",
+                    source_offset=offset,
+                    source_byte_count=byte_count,
+                    source_sha256=sha,
+                )
             messages.extend(produced)
+            message_sources.extend([src] * len(produced))
     tally = RecordTally(seen, mirrored, unparseable)
 
     existing = await db.get_session(sid)
@@ -501,8 +538,21 @@ async def mirror_session(
         }
     )
 
-    for m in messages:
+    for m, src in zip(messages, message_sources, strict=False):
         md = m.to_dict(mode="db")
+        if max_preview_chars is not None and src is not None:
+            preview, pointer = bound_mirror_content(
+                md["content"],
+                md["id"],
+                src,
+                source_kind="codex_jsonl",
+                source_session_uid=rollout_uid,
+                max_preview_chars=max_preview_chars,
+            )
+            md["content"] = preview
+            nm = dict(md.get("node_metadata") or {})
+            nm["mirror_source"] = pointer
+            md["node_metadata"] = nm
         await db.insert_message(md)
         await db.append_to_progression(bprog, md["id"])
         await db.append_to_progression(sprog, md["id"])
@@ -530,6 +580,54 @@ async def reconcile_session_status(
         live_window=live_window,
         actor="codex-mirror-reconcile",
     )
+
+
+async def absorb_orchestrated_session(db: StateDB, rollout_uid: str) -> bool:
+    """Remove the row a previous version imported for a now-skipped rollout.
+
+    Only rows this mirror wrote are deletable (``delete_imported_session``
+    requires this mirror's exact source kind), so absorbing an id that a live
+    run happens to own is a no-op rather than a data loss.
+    """
+    return await db.delete_imported_session(
+        session_db_id(rollout_uid), require_source_kind=SOURCE_KIND
+    )
+
+
+async def absorb_orchestrated_backfill(db: StateDB) -> tuple[int, int]:
+    """One sweep over already-imported rows, deleting those whose recorded
+    originator is in ``SKIPPED_ORIGINATORS``; returns ``(removed, failed)``.
+
+    The originator is read from the provenance each import wrote on its own row
+    (``node_metadata.codex.originator``), so this reaches rows whose rollout
+    files are older than the mirror's sweep window and would otherwise never be
+    revisited. Only a string originator counts, and each row is handled in
+    isolation: one malformed row must not stop the rest of the sweep. Rows with
+    no recorded originator are left alone — absence of provenance is not
+    evidence of orchestration.
+    """
+    removed = 0
+    failed = 0
+    for row in await db.sessions_by_source_kind(SOURCE_KIND):
+        try:
+            meta = row.get("node_metadata")
+            if isinstance(meta, str):
+                meta = json.loads(meta)
+            if not isinstance(meta, dict):
+                continue
+            codex_block = meta.get("codex")
+            originator = codex_block.get("originator") if isinstance(codex_block, dict) else None
+            if isinstance(originator, str) and originator in SKIPPED_ORIGINATORS:
+                if await db.delete_imported_session(row["id"], require_source_kind=SOURCE_KIND):
+                    removed += 1
+        except Exception:
+            # The count alone says a row did not reconcile, never why. A
+            # contended teardown gives up rather than waiting, so this path now
+            # carries an ordinary, recurring cause that an operator watching the
+            # retry warning has no other way to see.
+            _log.exception("codex mirror: absorbing imported session %s failed", row.get("id"))
+            failed += 1
+    return removed, failed
 
 
 async def link_session_lineage(

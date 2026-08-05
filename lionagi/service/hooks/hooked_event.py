@@ -134,32 +134,13 @@ class HookedEvent(Event):
     async def _stream(self):
         """Run pre-hook, yield chunks from ``_core_stream()``, run post-hook.
 
-        The post-hook runs however the stream ends — exhaustion, a source error, an
-        early-stopping consumer, or cancellation — and ``stream_terminal_state`` says
-        which of those it was. Whatever ended the stream still propagates unchanged;
-        post-hook failures are logged, never raised.
-
-        Guaranteed: the caller receives the very same exception object the stream ended
-        with, not a replacement, no matter how the teardown fails — an ordinary
-        exception, a cancellation the hook raises at itself, or a failure in the hook's
-        own logging. A stream that ended normally still ends normally.
-
-        Deliberately not guaranteed: a cancellation actually delivered to the consuming
-        task while the teardown is running is not swallowed. It reaches the caller in
-        place of whatever the stream ended with, because a task that was cancelled from
-        outside must not come back believing it was not. On a stream that was itself
-        ended by cancellation the source is re-raised instead, since the consumer stays
-        cancelled either way. Off asyncio the two kinds of cancellation cannot be told
-        apart at all and both propagate. ``KeyboardInterrupt`` and ``SystemExit`` raised
-        inside the teardown also propagate — they are process-level directives rather
-        than hook failures.
-
-        A consumer that stops early is responsible for closing the stream, with
-        ``aclose()`` or ``contextlib.aclosing``. A bare ``break`` does not close the
-        generator it was iterating, so teardown is deferred to whenever the interpreter
-        finalizes the abandoned generator — it still runs, and still reports the closed
-        state, but not at a point the consumer picked, and during interpreter or loop
-        shutdown the grace bound below can cut it short.
+        The post-hook runs however the stream ends (exhaustion, error, early-stopping
+        consumer, or cancellation); ``stream_terminal_state`` says which. Whatever ended
+        the stream propagates unchanged — the caller always receives the same exception
+        object, never a replacement — except a cancellation actually delivered to the
+        consuming task during teardown, which is honored rather than swallowed. See
+        docs/internals/core.md#hookedevent-stream-teardown-contract for the full
+        guarantee, including the early-`break`-without-`aclose()` case.
         """
         if h_ev := self._pre_invoke_hook_event:
             await h_ev.invoke()
@@ -222,21 +203,17 @@ class HookedEvent(Event):
 
     async def _run_post_stream_hook(self, state: StreamTerminalState) -> None:
         """Invoke and log the post-invocation hook for a stream that ended in ``state``.
-
-        Post-stream hook failure: data already sent, must not reraise — log at WARNING
-        only. HookRegistry.post_invocation() records a handler's raised exception on the
-        HookEvent (status FAILED/CANCELLED/ABORTED) rather than re-raising it out of
-        invoke(), so the failure must be detected via status, not a try/except.
-        """
+        Must not reraise (data already sent) — logs at WARNING only. Detected via the
+        HookEvent's status (FAILED/CANCELLED/ABORTED), not a try/except, since
+        HookRegistry.post_invocation() records a handler's exception on the event
+        rather than re-raising it out of invoke()."""
         h_ev = self._post_invoke_hook_event
         if not h_ev:
             return
 
-        # On the close and cancel paths the teardown is running inside an unwind that is
-        # already cancelling: an unshielded await would be cancelled before the hook
-        # could run, and would replace the exception in flight with a fresh one. Shield
-        # it so the hook actually runs, and bound it so a slow hook cannot hold the
-        # unwind open.
+        # Close/cancel paths run inside an unwind that is already cancelling: an
+        # unshielded await would be cancelled before the hook could run. Shield it
+        # so the hook runs, bound it so a slow hook can't hold the unwind open.
         unwinding = state in (
             StreamTerminalState.Closed,
             StreamTerminalState.Cancelled,
@@ -259,32 +236,14 @@ class HookedEvent(Event):
     async def _invoke_post_stream_hook_isolated(self, h_ev: HookEvent) -> None:
         """Run the post-hook so a cancellation it raises cannot pass for the consumer's.
 
-        Within one task a cancellation raised by the awaited code and one delivered to
-        the task at that await are the same exception arriving at the same place.
-        Shielding does not separate them, since a direct ``Task.cancel()`` reaches a
-        shielded await anyway, and neither does asking afterwards whether the hook has
-        finished: a hook finishing and a cancellation being delivered can be queued in
-        the same loop turn, so that answer is a sample of a race, not a provenance.
-
-        The collision is therefore removed rather than resolved. The hook runs in a child
-        task that CAPTURES whatever ends it and RETURNS it instead of raising it, so that
-        task can never end cancelled because of something the hook did. A cancellation
-        surfacing at the await below then has exactly one possible origin -- delivery to
-        this task -- and is honoured: the hook's task is cancelled, given
-        ``POST_STREAM_HOOK_STOP_GRACE`` seconds to stop, and the cancellation propagates.
-        A hook that will not stop within that grace is abandoned: it is reported at
-        WARNING and left running, held so that it is not destroyed mid-await while the
-        program is still going.
-
-        A cancellation the hook raised at itself comes back as a returned value and is
-        logged; anything else the hook ended with is re-raised for the caller to record,
-        which keeps ``KeyboardInterrupt`` and ``SystemExit`` propagating.
-
-        The backend is decided before any asyncio object exists, because an asyncio task
-        or future is not awaitable on another backend and constructing one there fails at
-        the await rather than at the construction. Off asyncio the hook runs inline: the
-        two kinds of cancellation are genuinely indistinguishable there and both
-        propagate.
+        A cancellation raised by awaited code and one delivered to the task at that
+        await are indistinguishable in place, so the hook runs in a child task that
+        CAPTURES whatever ends it and RETURNS it instead of raising — a cancellation
+        surfacing at the await below then has exactly one possible origin (delivery to
+        this task) and is honored. Off asyncio the hook runs inline, since the two kinds
+        of cancellation can't be told apart there at all. See
+        docs/internals/core.md#hookedevent-stream-teardown-contract for the full
+        reasoning and the abandon-after-grace behavior.
         """
         if sniffio.current_async_library() != "asyncio":
             await self._invoke_post_stream_hook(h_ev)
@@ -365,9 +324,9 @@ class HookedEvent(Event):
     def create_pre_invoke_hook(
         self,
         hook_registry,
-        exit_hook: bool = None,
+        exit_hook: bool | None = None,
         hook_timeout: float = 30.0,
-        hook_params: dict = None,
+        hook_params: dict | None = None,
     ):
         """Attach a PreInvocation HookEvent; hook failure aborts invocation when exit_hook is True."""
         h_ev = HookEvent(
@@ -383,9 +342,9 @@ class HookedEvent(Event):
     def create_post_invoke_hook(
         self,
         hook_registry,
-        exit_hook: bool = None,
+        exit_hook: bool | None = None,
         hook_timeout: float = 30.0,
-        hook_params: dict = None,
+        hook_params: dict | None = None,
     ):
         """Attach a PostInvocation HookEvent; runs even on core failure (post-stream failures are logged, not raised)."""
         h_ev = HookEvent(

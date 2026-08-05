@@ -14,6 +14,7 @@ import pytest
 
 import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB
+from lionagi.studio.services.retention_archive import ArchiveWriteError
 
 from ._helpers import run_async
 
@@ -66,7 +67,6 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
     from lionagi.studio.services import db_maintenance as maint
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
 
 # ── checkpoint tests ──────────────────────────────────────────────────────────
@@ -109,6 +109,110 @@ def test_checkpoint_missing_db_is_noop(tmp_path, monkeypatch):
     assert run_async(maint.get_last_checkpoint_at()) is None
 
 
+def test_checkpoint_result_shape_is_the_same_with_and_without_a_store(tmp_path, monkeypatch):
+    """Both return paths report the same fields.
+
+    The no-store path builds its dict by hand instead of running the PRAGMA,
+    so it is the one that silently falls behind when a field is added. It
+    reaches the admin maintenance API unchanged, and a response that drops a
+    field depending on whether the store happens to exist is a shape a caller
+    cannot rely on.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    _patch_db(monkeypatch, tmp_path / "absent.db")
+    absent = run_async(maint.checkpoint_state_db())
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    run_async(_make_session_in(db_path, status="running", started_at=time.time()))
+    present = run_async(maint.checkpoint_state_db(actor="test"))
+
+    assert sorted(absent) == sorted(present)
+
+
+def test_checkpoint_event_records_the_wal_size_and_the_time_it_took(tmp_path, monkeypatch):
+    """The stored row carries what the PRAGMA counters cannot say.
+
+    A TRUNCATE checkpoint that succeeds reports busy, log_pages and
+    checkpointed all zero however much it drained, so those three cannot
+    separate a long stall from an idle tick. Asserted on the admin_events row
+    rather than on the return value because the row is what an operator reads
+    afterwards; a field that was returned but never stored would satisfy a
+    return-value check and still leave the record useless.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    run_async(_make_session_in(db_path, status="running", started_at=time.time()))
+
+    async def _grow_a_wal_then_checkpoint_it():
+        """Hold a connection open so the WAL is still there when we look.
+
+        SQLite checkpoints and removes the WAL when the last connection
+        closes, so a fixture that writes and then lets go leaves nothing
+        behind to drain and the size going in is zero however much was
+        written. Keeping this connection open is what makes the number under
+        test a real one.
+        """
+        async with StateDB() as db:
+            for i in range(200):
+                await db.insert_admin_event(
+                    action="grow", details={"i": i, "pad": "x" * 400}, actor="fixture"
+                )
+            standing = db_path.with_name(db_path.name + "-wal").stat().st_size
+            await maint.checkpoint_state_db(actor="test")
+            events = await db.list_admin_events(action="checkpoint", limit=5)
+        return standing, _details(events[0])
+
+    standing_wal, details = run_async(_grow_a_wal_then_checkpoint_it())
+
+    # The fixture is what makes this an assertion rather than a formality:
+    # if the WAL were empty the recorded size would be zero either way, and
+    # a checkpoint that never read it would pass.
+    assert standing_wal > 0
+    assert details["wal_bytes_before"] == standing_wal
+
+    # Opening a connection and running a PRAGMA is never free, so a zero here
+    # would mean the clock was never read rather than that the work was fast.
+    assert details["elapsed_ms"] > 0
+
+
+def test_wal_size_is_read_from_the_sidecar_that_is_there(tmp_path, monkeypatch):
+    """Three answers, and the difference between the two that look alike.
+
+    Zero and None both read as "no bytes to drain" at a glance and mean
+    different things: zero is a store whose WAL is genuinely empty, None is a
+    store where the question does not apply. An operator seeing None knows to
+    stop asking about the WAL; one seeing zero knows the checkpoint had
+    nothing to do.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    # Nothing beside the store yet.
+    assert maint._wal_bytes_now() == 0
+
+    # The size comes off the file, so the expected value is the number of
+    # bytes actually written rather than anything this test decided.
+    payload = b"x" * 4096
+    db_path.with_name(db_path.name + "-wal").write_bytes(payload)
+    assert maint._wal_bytes_now() == len(payload)
+
+    # A store with no local file at all.
+    monkeypatch.setattr(
+        state_db_mod,
+        "settings",
+        state_db_mod.settings.model_copy(
+            update={"LIONAGI_STATE_DB_URL": "postgresql+asyncpg://u:p@127.0.0.1:5432/lionagi"}
+        ),
+    )
+    assert maint._wal_bytes_now() is None
+
+
 # ── size alert tests ──────────────────────────────────────────────────────────
 
 
@@ -137,16 +241,9 @@ def test_stats_endpoint_exposes_checkpoint_and_size_fields(tmp_path, monkeypatch
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from fastapi.testclient import TestClient
 
-    import lionagi.studio.services.sessions as sessions_mod
-    import lionagi.studio.services.stats as stats_mod
     from lionagi.studio.services import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(stats_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     run_async(_make_session_in(db_path, status="running", started_at=time.time()))
@@ -483,6 +580,35 @@ def test_prune_writes_admin_event(tmp_path, monkeypatch):
     assert events[0]["action"] == "prune"
 
 
+def test_prune_admin_event_includes_archive_ids(tmp_path, monkeypatch):
+    """The prune admin event must name which archives it wrote, per root kind,
+    so an operator can locate the receipt for what got deleted without
+    grepping the archive directory."""
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=100)
+
+    old_ts = time.time() - 40 * 86400
+    run_async(_make_session_in(db_path, status="completed", started_at=old_ts))
+    run_async(maint.prune_old_data(keep_days=30, actor="test"))
+
+    async def check():
+        async with StateDB(db_path) as db:
+            return await db.list_admin_events(action="prune", limit=5)
+
+    events = run_async(check())
+    details = _details(events[0])
+    archive_ids = details["archive_ids"]
+    assert len(archive_ids["sessions"]) == 1
+    assert archive_ids["runs"] == []
+    assert archive_ids["dispatch"] == []
+    assert (archive_dir / f"{archive_ids['sessions'][0]}.zip").exists()
+
+
 def test_prune_old_schedule_runs(tmp_path, monkeypatch):
     """Prune removes old terminal schedule_runs; preserves running ones."""
     from lionagi.studio.services import db_maintenance as maint
@@ -669,16 +795,9 @@ def test_prune_old_data_endpoint(tmp_path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from fastapi.testclient import TestClient
 
-    import lionagi.studio.services.sessions as sessions_mod
-    import lionagi.studio.services.stats as stats_mod
     from lionagi.studio.services import db_maintenance as maint
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(stats_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     run_async(_make_session_in(db_path, status="completed", started_at=time.time() - 40 * 86400))
@@ -699,3 +818,230 @@ def test_prune_old_data_endpoint(tmp_path, monkeypatch):
 async def _make_session_in(db_path: Path, *, status: str, started_at: float) -> str:
     async with StateDB(db_path) as db:
         return await _make_session(db, status=status, started_at=started_at)
+
+
+def _patch_prune_config(monkeypatch, *, archive_dir: Path | None, chunk_rows: int) -> None:
+    from lionagi.studio.services import db_maintenance as maint
+
+    monkeypatch.setattr(maint, "PRUNE_ARCHIVE_DIR", archive_dir, raising=False)
+    monkeypatch.setattr(maint, "PRUNE_CHUNK_ROWS", chunk_rows, raising=False)
+    # prune_old_data() imports these lazily from config each call; patch the
+    # source module too (see the identical pattern in test_retention_archive.py).
+    import lionagi.studio.config as cfg
+
+    monkeypatch.setattr(cfg, "PRUNE_ARCHIVE_DIR", archive_dir)
+    monkeypatch.setattr(cfg, "PRUNE_CHUNK_ROWS", chunk_rows)
+
+
+# ── schedule_run / dispatch_outbox chunking + whole-plan safety ────────────
+
+
+def test_schedule_run_retention_is_chunked_and_archived(tmp_path, monkeypatch):
+    """schedule_run deletion is bounded per PRUNE_CHUNK_ROWS, each chunk archived first."""
+    from lionagi.studio.services import db_maintenance as maint
+    from lionagi.studio.services.retention_archive import read_archive_chunk
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=2)
+
+    old_ts = time.time() - 40 * 86400
+
+    seen_chunks: list[list[str]] = []
+    original = maint._prune_run_chunk
+
+    async def spy(conn, run_ids, **kwargs):
+        seen_chunks.append(sorted(run_ids))
+        return await original(conn, run_ids, **kwargs)
+
+    monkeypatch.setattr(maint, "_prune_run_chunk", spy)
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            return [
+                await _make_schedule_run(db, status="completed", fired_at=old_ts) for _ in range(5)
+            ]
+
+    ids = run_async(seed())
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+
+    assert result["runs_pruned"] == 5
+    assert [len(c) for c in seen_chunks] == [2, 2, 1]
+    flat = [i for c in seen_chunks for i in c]
+    assert sorted(flat) == sorted(ids)
+    assert len(flat) == len(set(flat))
+
+    run_archives = [p for p in archive_dir.glob("run-*.zip")]
+    assert len(run_archives) == 3  # one per committed chunk
+    archived_ids: set[str] = set()
+    for path in run_archives:
+        decoded = read_archive_chunk(path)
+        archived_ids.update(row["id"] for row in decoded["tables"]["schedule_runs"])
+    assert archived_ids == set(ids)
+
+
+def test_session_prune_archives_preimages_of_nullified_soft_fk_rows(tmp_path, monkeypatch):
+    """artifacts/dispatch_outbox rows whose session_id gets NULLIFIED by a
+    session prune must have their pre-nullify state captured as a
+    ``preimages/<table>.jsonl`` member -- otherwise a restore permanently
+    orphans them (round-1 critic MAJ finding)."""
+    from lionagi.dispatch import enqueue_dispatch
+    from lionagi.studio.services import db_maintenance as maint
+    from lionagi.studio.services.retention_archive import read_archive_chunk
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=100)
+
+    old_ts = time.time() - 40 * 86400
+    recent_ts = time.time() - 1 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            sid = await _make_session(db, status="completed", started_at=old_ts)
+            artifact_id = await db.insert_artifact(
+                kind="note", name="n1", content={"x": 1}, session_id=sid
+            )
+            dispatch_id = await enqueue_dispatch(
+                db, kind="terminal_notify", deliver_to="seat-1", session_id=sid
+            )
+            # young dispatch: survives its own retention window, but its
+            # session_id soft-FK still gets nullified when the session dies.
+            await db.execute(
+                "UPDATE dispatch_outbox SET updated_at = ? WHERE id = ?",
+                (recent_ts, dispatch_id),
+            )
+        return sid, artifact_id, dispatch_id
+
+    sid, artifact_id, dispatch_id = run_async(seed())
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+    assert result["sessions_pruned"] == 1
+
+    session_archives = list(archive_dir.glob("prune-*.zip"))
+    assert len(session_archives) == 1
+    decoded = read_archive_chunk(session_archives[0])
+
+    archived_artifact_preimages = {r["id"]: r for r in decoded["preimages"]["artifacts"]}
+    assert archived_artifact_preimages[artifact_id]["session_id"] == sid
+
+    archived_dispatch_preimages = {r["id"]: r for r in decoded["preimages"]["dispatch_outbox"]}
+    assert archived_dispatch_preimages[dispatch_id]["session_id"] == sid
+
+    async def check():
+        async with StateDB(db_path) as db:
+            dispatch_row = await db.fetch_one(
+                "SELECT session_id FROM dispatch_outbox WHERE id = ?", (dispatch_id,)
+            )
+            artifact_row = await db.fetch_one(
+                "SELECT session_id FROM artifacts WHERE id = ?", (artifact_id,)
+            )
+            return dispatch_row, artifact_row
+
+    dispatch_row, artifact_row = run_async(check())
+    # Confirm the actual nullify happened -- the preimage records what these
+    # rows looked like *before* this, not instead of it.
+    assert dispatch_row["session_id"] is None
+    assert artifact_row["session_id"] is None
+
+
+def test_dispatch_retention_is_chunked_and_archived(tmp_path, monkeypatch):
+    """dispatch_outbox deletion is bounded per PRUNE_CHUNK_ROWS, each chunk archived first."""
+    from lionagi.studio.services import db_maintenance as maint
+    from lionagi.studio.services.retention_archive import read_archive_chunk
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=2)
+
+    old_ts = time.time() - 10 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            return [
+                await _make_dispatch(db, status="delivered", updated_at=old_ts) for _ in range(5)
+            ]
+
+    ids = run_async(seed())
+    result = run_async(maint.prune_old_data(dispatch_success_keep_days=7, actor="test"))
+
+    assert result["dispatch_purged"] == 5
+
+    dispatch_archives = list(archive_dir.glob("dispatch-*.zip"))
+    assert len(dispatch_archives) == 3  # ceil(5/2)
+    archived_ids: set[str] = set()
+    for path in dispatch_archives:
+        decoded = read_archive_chunk(path)
+        archived_ids.update(row["id"] for row in decoded["tables"]["dispatch_outbox"])
+    assert archived_ids == set(ids)
+
+    async def remaining():
+        async with StateDB(db_path) as db:
+            rows = await db.fetch_all("SELECT id FROM dispatch_outbox")
+            return {r["id"] for r in rows}
+
+    assert run_async(remaining()) == set()
+
+
+def test_run_chunk_archive_failure_aborts_dispatch_and_keeps_session_deletes(tmp_path, monkeypatch):
+    """Mid-plan archive failure: sessions already chunked+deleted stay deleted,
+    the failing run chunk is refused, and dispatch retention (later in the
+    plan) is never attempted."""
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=archive_dir, chunk_rows=100)
+
+    old_ts = time.time() - 40 * 86400
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            sid = await _make_session(db, status="completed", started_at=old_ts)
+            run_id = await _make_schedule_run(db, status="completed", fired_at=old_ts)
+            dispatch_id = await _make_dispatch(db, status="delivered", updated_at=old_ts)
+        return sid, run_id, dispatch_id
+
+    sid, run_id, dispatch_id = run_async(seed())
+
+    original_write = maint.write_archive_chunk
+
+    def flaky_write(destination, archive_id, tables, preimages=None):
+        if "schedule_runs" in tables:
+            raise ArchiveWriteError("simulated run-chunk archive failure")
+        return original_write(destination, archive_id, tables, preimages=preimages)
+
+    monkeypatch.setattr(maint, "write_archive_chunk", flaky_write)
+
+    with pytest.raises(ArchiveWriteError):
+        run_async(maint.prune_old_data(keep_days=30, dispatch_success_keep_days=7, actor="test"))
+
+    async def check():
+        async with StateDB(db_path) as db:
+            session_row = await db.get_session(sid)
+            run_row = await db.fetch_one("SELECT id FROM schedule_runs WHERE id = ?", (run_id,))
+            dispatch_row = await db.fetch_one(
+                "SELECT id FROM dispatch_outbox WHERE id = ?", (dispatch_id,)
+            )
+        return session_row, run_row, dispatch_row
+
+    session_row, run_row, dispatch_row = run_async(check())
+    # Session chunk committed before the run chunk ever started: stays deleted.
+    assert session_row is None
+    # Run chunk's archive failed: its delete never ran, row survives.
+    assert run_row is not None
+    # Dispatch retention runs after schedule_run retention in the plan and
+    # was never reached.
+    assert dispatch_row is not None
+
+    # No run/dispatch archives exist; the one session archive that succeeded does.
+    assert list(archive_dir.glob("run-*.zip")) == []
+    assert list(archive_dir.glob("dispatch-*.zip")) == []
+    assert len(list(archive_dir.glob("prune-*.zip"))) == 1

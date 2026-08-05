@@ -9,7 +9,14 @@ import ReactFlow, {
   useNodesState,
   useEdgesState,
 } from "reactflow";
-import type { Connection, Edge, Node, NodeMouseHandler, EdgeMouseHandler } from "reactflow";
+import type {
+  Connection,
+  Edge,
+  Node,
+  NodeMouseHandler,
+  EdgeMouseHandler,
+  ReactFlowInstance,
+} from "reactflow";
 import "reactflow/dist/style.css";
 
 import StepNodeComponent from "./StepNode";
@@ -54,12 +61,36 @@ interface WorkerCanvasProps {
    * panel). Suppresses the MiniMap — at that size it reads as a floating
    * cluster of gray nodes rather than a useful overview. */
   compact?: boolean;
+  /** Reports the laid-out graph's bounding-box height (px) after each layout,
+   * so an embedding container can size itself to the graph's real shape
+   * instead of guessing from node count. */
+  onLayoutHeight?: (height: number) => void;
 }
 
 // ─── Conversion helpers ─────────────────────────────────
 
 const nodeTypes = { step: StepNodeComponent };
 const edgeTypes = { condition: ConditionEdgeComponent };
+
+// Width of the details side panel (the w-80 strips below). The read-only
+// overlay variant covers this much of the canvas's right edge, and the
+// pan-clear-of-panel logic keys off the same number.
+const SIDE_PANEL_WIDTH = 320;
+
+// How far left the viewport must shift for a node to clear the side-panel
+// strip, in screen pixels — 0 when it is already clear. Node coordinates are
+// graph-space; the viewport transform maps them to screen space.
+export function panelClearanceShift(
+  nodeX: number,
+  nodeWidth: number,
+  viewport: { x: number; zoom: number },
+  containerWidth: number,
+  panelWidth: number = SIDE_PANEL_WIDTH,
+): number {
+  const panelLeft = containerWidth - panelWidth;
+  const nodeRight = (nodeX + nodeWidth) * viewport.zoom + viewport.x;
+  return nodeRight > panelLeft ? nodeRight - panelLeft + 16 : 0;
+}
 
 // nodeStatuses only covers nodes it has live signal correlation for — a
 // legacy run (no matching signals, or none at all) still passes a truthy
@@ -75,6 +106,15 @@ const edgeTypes = { condition: ConditionEdgeComponent };
 export function shouldShowMiniMap(compact: boolean, nodeCount: number): boolean {
   if (compact) return false;
   return nodeCount > 10;
+}
+
+// The side panel is an editor surface. In a read-only embed with nothing
+// selected it is 320px of "click a step to inspect" placeholder — a quarter
+// of the canvas spent saying nothing — so it appears only once there is a
+// selection to show. The editor keeps it permanently, since add/edit flows
+// live there.
+export function shouldShowSidePanel(editable: boolean, selectionType: Selection["type"]): boolean {
+  return editable || selectionType !== "none";
 }
 
 export function computeEdgeSourceCompleted(
@@ -158,6 +198,7 @@ export default function WorkerCanvas({
   currentStep = null,
   onChange,
   compact = false,
+  onLayoutHeight,
 }: WorkerCanvasProps) {
   const initialised = useRef(false);
 
@@ -168,13 +209,49 @@ export default function WorkerCanvas({
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selection, setSelection] = useState<Selection>({ type: "none" });
 
+  // The fitView PROP fits once, on init — before an async graph load has laid
+  // anything out, and before an embedding container has grown to the layout's
+  // reported height. Both arrive later, so the fit is re-run from the
+  // instance when the laid-out nodes land and when the container resizes.
+  const flowRef = useRef<ReactFlowInstance | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const refitRaf = useRef<number | null>(null);
+  const refit = useCallback(() => {
+    // One pending frame at a time: a burst of resize callbacks coalesces into
+    // a single fit, and the handle lets unmount cancel a fit that would
+    // otherwise run against a disposed instance.
+    if (refitRaf.current !== null) cancelAnimationFrame(refitRaf.current);
+    refitRaf.current = requestAnimationFrame(() => {
+      refitRaf.current = null;
+      flowRef.current?.fitView({ padding: 0.15, maxZoom: 1 });
+    });
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (refitRaf.current !== null) cancelAnimationFrame(refitRaf.current);
+    };
+  }, []);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(refit);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [refit]);
+
   // Layout on mount or when graph changes
   useEffect(() => {
-    const { nodes: ln, edges: le } = getLayoutedElements(initialFlowNodes, initialFlowEdges, "LR");
+    const {
+      nodes: ln,
+      edges: le,
+      height,
+    } = getLayoutedElements(initialFlowNodes, initialFlowEdges, "LR");
     setNodes(ln);
     setEdges(le);
     initialised.current = true;
-  }, [initialFlowNodes, initialFlowEdges, setNodes, setEdges]);
+    onLayoutHeight?.(height);
+    refit();
+  }, [initialFlowNodes, initialFlowEdges, setNodes, setEdges, onLayoutHeight, refit]);
 
   // Apply execution status to nodes. nodeStatuses (live signal-derived, keyed
   // by authored step id) takes priority per node; nodes it doesn't cover fall
@@ -218,12 +295,34 @@ export default function WorkerCanvas({
     onChange(fromFlowNodes(nodes), fromFlowEdges(edges));
   }, [nodes, edges, onChange]);
 
+  // In read-only embeds the side panel is an absolute overlay on the right
+  // edge of the canvas, so a click on a node under that strip would summon a
+  // panel that hides the very node it describes. Pan the node clear first;
+  // the editable panel is a flex sibling instead, whose mount resizes the
+  // canvas and re-fits through the ResizeObserver.
+  const panClearOfPanel = useCallback((node: Node) => {
+    const instance = flowRef.current;
+    const container = containerRef.current;
+    if (!instance || !container) return;
+    const { x, y, zoom } = instance.getViewport();
+    const shift = panelClearanceShift(
+      node.position.x,
+      node.width ?? 210,
+      { x, zoom },
+      container.clientWidth,
+    );
+    if (shift > 0) {
+      instance.setViewport({ x: x - shift, y, zoom }, { duration: 250 });
+    }
+  }, []);
+
   // Node click
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       const typedNode = node as Node<StepNodeData>;
       const execResult = execSteps.find((s) => s.step === typedNode.id && s.status === "completed");
 
+      if (!editable) panClearOfPanel(node);
       if (execResult?.result) {
         setSelection({
           type: "exec-result",
@@ -235,7 +334,7 @@ export default function WorkerCanvas({
         setSelection({ type: "node", id: typedNode.id, data: typedNode.data });
       }
     },
-    [execSteps],
+    [execSteps, editable, panClearOfPanel],
   );
 
   // Edge click
@@ -340,10 +439,13 @@ export default function WorkerCanvas({
   }, [nodes, edges, setNodes, setEdges]);
 
   return (
-    <div className="flex h-full">
+    <div className="relative flex h-full">
       {/* Canvas */}
-      <div className="relative flex-1">
+      <div ref={containerRef} className="relative flex-1">
         <ReactFlow
+          onInit={(instance) => {
+            flowRef.current = instance;
+          }}
           nodes={nodes}
           edges={edges}
           onNodesChange={editable ? onNodesChange : undefined}
@@ -358,7 +460,12 @@ export default function WorkerCanvas({
           nodesConnectable={editable}
           elementsSelectable={true}
           fitView
-          fitViewOptions={{ padding: 0.3 }}
+          // minZoom must sit below what fitView needs for a large graph —
+          // react-flow's 0.5 default made fitView stop there, showing a
+          // sliver of the graph as if it were the whole thing. maxZoom keeps
+          // a two-node graph from being blown up to fill the panel.
+          minZoom={0.1}
+          fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
           proOptions={{ hideAttribution: true }}
           className="bg-surface-base"
         >
@@ -417,19 +524,31 @@ export default function WorkerCanvas({
         )}
       </div>
 
-      {/* Side Panel */}
-      <div className="w-80 shrink-0 border-l border-edge bg-surface-overlay overflow-y-auto">
-        <SidePanel
-          selection={selection}
-          editable={editable}
-          roles={roles}
-          agentProfiles={agentProfiles}
-          modelOverrides={modelOverrides}
-          onNodeUpdate={onNodeUpdate}
-          onEdgeUpdate={onEdgeUpdate}
-          onDelete={onDeleteElement}
-        />
-      </div>
+      {/* Side Panel — clicking the empty pane deselects, which closes it in
+          the read-only embed. In that embed the panel OVERLAYS the canvas
+          instead of docking beside it: docking shrinks the flow container the
+          moment a node is clicked, which slides the canvas sideways and can
+          bury the clicked node under the panel it just opened. */}
+      {shouldShowSidePanel(editable, selection.type) && (
+        <div
+          className={
+            editable
+              ? "w-80 shrink-0 border-l border-edge bg-surface-overlay overflow-y-auto"
+              : "absolute inset-y-0 right-0 z-10 w-80 border-l border-edge bg-surface-overlay overflow-y-auto shadow-card"
+          }
+        >
+          <SidePanel
+            selection={selection}
+            editable={editable}
+            roles={roles}
+            agentProfiles={agentProfiles}
+            modelOverrides={modelOverrides}
+            onNodeUpdate={onNodeUpdate}
+            onEdgeUpdate={onEdgeUpdate}
+            onDelete={onDeleteElement}
+          />
+        </div>
+      )}
     </div>
   );
 }

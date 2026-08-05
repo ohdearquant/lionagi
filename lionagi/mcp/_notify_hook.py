@@ -2,31 +2,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Terminal hook for background MCP jobs, invoked by the CLI via ``--notify``.
 
-The CLI runs this once a background run reaches a terminal status. It does two
-things, both best-effort (the run has already finished, so nothing here may
-raise into the CLI's terminal path):
+Runs once a background run reaches a terminal status, both steps best-effort
+(the run has already finished; nothing here may raise into the CLI's terminal
+path):
 
 1. Records the terminal status on the MCP job record, so ``job.status`` /
-   ``job.list`` report an authoritative ``completed`` / ``failed`` / ``killed``
-   / ``timeout`` instead of only inferring ``exited`` from a gone pid.
+   ``job.list`` report an authoritative status instead of only inferring
+   ``exited`` from a gone pid.
+2. Delivers a terminal notice through a *configured* command (``--command``
+   override, or lionagi's ``notify.on_terminal`` setting) with ``{run_id}``/
+   ``{status}``/``{label}``/``{target}`` substituted into argv and offered as
+   JSON on stdin. Nothing configured means silent by default; configured but
+   unusable is recorded as a delivery failure, never passed off as silence.
+   Runs in the *submitting* directory (``LIONAGI_MCP_NOTIFY_CWD`` overrides),
+   not wherever the run executed, so the notifier signs as the submitter.
 
-2. Delivers a terminal notice through a *configured command*, never a
-   hardcoded one. The command comes from (in order) an explicit ``--command``
-   override or lionagi's own ``notify.on_terminal`` setting; ``{run_id}``,
-   ``{status}``, ``{label}`` and ``{target}`` are substituted into its argv and
-   the same fields are also offered as a JSON payload on stdin. With nothing
-   configured there is no delivery — the out-of-the-box default is silence.
-   A notifier that *is* configured but cannot be used is recorded as a delivery
-   failure with a named reason, so it never passes for that default silence.
-   The command runs in the directory the run was *submitted* from, which the
-   record carries, because a notifier that resolves its own identity from its
-   working directory would otherwise sign the notice as whoever owns the
-   directory the run happened to execute in. ``LIONAGI_MCP_NOTIFY_CWD``
-   overrides that for a deployment whose notifier wants to be run elsewhere.
-
-The command is run by absolute argv (never through a shell), so a caller wires
-whatever notifier they use (a webhook client, a messaging CLI) without this
-package knowing anything about it.
+Run by absolute argv, never through a shell.
 """
 
 from __future__ import annotations
@@ -40,28 +31,19 @@ from typing import Any
 # The CLI runs this file's module by absolute interpreter path; lionagi is on
 # the path because that interpreter is the one lionagi is installed in.
 from . import config, jobs
+from ._terminal_cause import read_terminal_cause
 
 _DELIVERY_TIMEOUT_S = 30
 
-# A configured notifier's stdout/stderr is free text that can carry a credential
-# the command obtained anywhere, so none of it is ever stored. It used to be
-# discarded at the pipe (DEVNULL), which kept that promise and cost the record
-# any way to tell a failure apart: every failed delivery recorded a bare exit
-# code and a null error, so "the notifier binary is missing" and "the notifier
-# refused the message" were the same row.
-#
-# The output is now read into memory, matched against the closed vocabulary
-# below, and dropped. Only the matched name is stored. That keeps the stored
-# field a bounded enum rather than free text, so the invariant holds by
-# construction instead of by a promise to sanitise.
+# A notifier's stdout/stderr is free text that may carry a credential, so it's
+# read into memory, matched against the closed vocabulary below, and dropped —
+# only the matched name is stored, keeping the field a bounded enum by
+# construction rather than by a promise to sanitise.
 _FAILURE_UNKNOWN = "unknown"
-# First match wins, so the more specific phrase must precede any broader one it
-# contains. "connection refused" sits above the policy class for exactly that
-# reason, and the policy class deliberately does NOT match a bare "refused":
-# that word appears in network errors far more often than in policy ones, and a
-# needle that broad silently reclassifies them. A refusal phrased in a way none
-# of these anticipate falls to `unknown`, which is the correct direction to be
-# wrong in.
+# First match wins, so a more specific phrase must precede a broader one it
+# contains — e.g. "connection refused" above the policy class, which
+# deliberately does NOT match a bare "refused" (too common in network errors).
+# An unanticipated phrasing falls to `unknown`, the correct direction to be wrong.
 _FAILURE_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("command_not_found", ("command not found", "no such file or directory", "not found")),
     ("permission_denied", ("permission denied", "operation not permitted", "eacces")),
@@ -73,17 +55,21 @@ _FAILURE_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("refused_by_policy", ("refused by", "blocked by", "denied by policy", "forbidden", "403")),
     ("target_unknown", ("unknown recipient", "no such actor", "unknown actor", "no such user")),
     ("invalid_usage", ("usage:", "unrecognized argument", "invalid argument", "unknown option")),
+    # A delivery command that verifies who it would be sending AS (kkernel's
+    # --expect-actor) refuses when the working directory resolves to a different
+    # identity than the record's sender. That is a producer-side configuration
+    # fact — the submit named a sender its own directory cannot sign for — and
+    # an operator reading "unknown" cannot tell it from a genuinely novel
+    # failure, though it has exactly one fix (make notify_sender match the
+    # submitting directory's actor, or omit it).
+    ("sender_identity_mismatch", ("expect-actor mismatch",)),
 )
 
 
 _FAILURE_TIMEOUT = "timeout"
 
-# The one allowed set, and the reason it is defined here rather than derived at
-# each use: this field is persisted, so the guarantee that has to hold is about
-# the value that reaches the record, not about what the classifier happens to
-# return today. Every name that can ever be stored appears here -- the classified
-# ones, ``unknown``, and ``timeout``, which is assigned on the exception path and
-# so never passes through the classifier at all.
+# Every name that can ever be stored: the classified ones, `unknown`, and
+# `timeout` (assigned on the exception path, so it never passes the classifier).
 _ALLOWED_FAILURE_CLASSES: frozenset[str] = frozenset(
     {name for name, _ in _FAILURE_CLASSES} | {_FAILURE_UNKNOWN, _FAILURE_TIMEOUT}
 )
@@ -92,15 +78,9 @@ _ALLOWED_FAILURE_CLASSES: frozenset[str] = frozenset(
 def _pin_failure_class(value: str | None) -> str | None:
     """Force a classification into the closed set, at the boundary that stores it.
 
-    ``_classify_failure`` is fail-closed today, and pinning here does not trust
-    that it stays so. A later edit that returns part of the command's output --
-    the change any diagnostics-minded reader is tempted to make -- would
-    otherwise be persisted verbatim and reopen the leak this module exists to
-    close. Placing the check immediately before the record is built means the
-    invariant is enforced where it is needed rather than where it is produced.
-
-    ``None`` is a real value here and passes through: it means the delivery
-    succeeded and there is no failure to name.
+    Enforced here rather than trusted of ``_classify_failure`` — a later edit
+    that starts returning command output would otherwise persist it verbatim.
+    ``None`` passes through unchanged: it means delivery succeeded.
     """
     if value is None:
         return None
@@ -110,10 +90,8 @@ def _pin_failure_class(value: str | None) -> str | None:
 def _classify_failure(text: str) -> str:
     """Map a delivery command's output to one name from the closed set above.
 
-    Fail-closed: anything that does not match is ``unknown``. A fragment of the
-    text is never returned, however diagnostic it looks — the moment an
-    unmatched case is allowed to contribute its own words, the stored field is
-    free text again and the invariant is gone.
+    Fail-closed: unmatched text is ``unknown``, never a fragment of itself —
+    the moment that changes, the stored field is free text again.
     """
     lowered = text.lower()
     for name, needles in _FAILURE_CLASSES:
@@ -141,23 +119,12 @@ def _resolve_command(
 ) -> tuple[list[str] | None, str | None]:
     """The delivery argv template, paired with why there is none.
 
-    Returns ``(argv, None)`` when a template resolved, ``(None, None)`` when
-    nothing is configured, and ``(None, reason)`` when something *was*
-    configured but cannot be used.
-
-    That third case is why this returns a pair. "Nobody asked for a notice" and
-    "a notice was asked for and this hook cannot send it" are opposite
-    situations, and reporting both as no-delivery makes a broken notifier
-    indistinguishable from an unconfigured one — which for a detached run is the
-    worst outcome available, because the caller is waiting on a notice that will
-    never come and nothing anywhere says so. Silence is only ever correct when
-    it was chosen.
-
-    *override* (a JSON argv list) wins outright. Otherwise lionagi's own
-    ``notify.on_terminal`` setting is reused as the single delivery-config
-    surface — its ``exec`` adapter's argv is the template. Nothing here raises:
-    the run has already finished, so a resolution failure is reported through
-    the returned reason, never thrown into the CLI's terminal path.
+    Returns ``(argv, None)`` resolved, ``(None, None)`` nothing configured, or
+    ``(None, reason)`` configured-but-unusable — three-way rather than two, so
+    a broken notifier is never indistinguishable from an unconfigured one
+    (silence is correct only when chosen). *override* (a JSON argv list) wins
+    outright; otherwise lionagi's ``notify.on_terminal`` setting resolves.
+    Nothing here raises — the run has already finished.
     """
     if override:
         try:
@@ -174,21 +141,15 @@ def _resolve_command(
         from lionagi.state.lifecycle.notify_settings import resolve_notify_config
 
         resolution = resolve_notify_config(project_dir=cwd)
-        # Read inside the guard too: a settings problem must never break the
-        # terminal path, whichever step of the resolution it surfaces from.
         reason, resolved = resolution.reason, resolution.handler
     except Exception as exc:  # noqa: BLE001 — a settings problem must never break the terminal path
         return None, f"notify_settings_unreadable:{type(exc).__name__}"
     if reason is not None:
-        # Settings named a notifier and the resolver refused it — a misconfigured
-        # notifier, not an absent one. The reason is what tells the two apart.
-        return None, reason
+        return None, reason  # misconfigured notifier, not an absent one
     if resolved is None:
         return None, None  # no notifier configured — silence by choice
     if resolved.argv is None:
-        # A notifier is configured but is not an exec adapter, so it has no argv
-        # this hook can run. Configured-and-unusable, not unconfigured.
-        return None, "configured_notifier_has_no_delivery_command"
+        return None, "configured_notifier_has_no_delivery_command"  # not an exec adapter
     return list(resolved.argv), None
 
 
@@ -205,17 +166,9 @@ def _substitute(argv: list[str], fields: dict[str, str]) -> list[str]:
 def _delivery_env(sender: str) -> dict[str, str] | None:
     """Environment for the delivery command, carrying an explicit sender.
 
-    A notifier that resolves who it is from its working directory reports the
-    identity of whoever owns that directory, not the identity of whoever
-    submitted the run. That misattribution is silent — the notice arrives, it
-    just arrives signed by the wrong seat, and downstream routing rules act on
-    the signature. Naming the sender here is the caller's answer to that.
-
-    This publishes the value; it does not force any particular notifier to
-    prefer it over its own directory-based resolution. A notifier whose
-    identity precedence puts a working-directory config first has to be given
-    the sender in its command line, which is what the ``{sender}`` placeholder
-    is for.
+    Publishes the value only; doesn't force a notifier to prefer it over its
+    own directory-based resolution (a directory-first notifier needs the
+    ``{sender}`` placeholder in its command line instead).
     """
     if not sender:
         return None
@@ -229,35 +182,17 @@ def _resolve_delivery_cwd(
 ) -> tuple[str | None, str | None]:
     """The directory to run the delivery command in, paired with why there is none.
 
-    Returns ``(cwd, None)`` when one resolved, ``(None, None)`` when the record
-    does not name one, and ``(None, reason)`` when one was named and cannot be
-    used — the same three-way shape as :func:`_resolve_command`, for the same
-    reason: a delivery that runs somewhere other than where it was meant to is
-    not the same event as one with nowhere named, and reporting both as "no cwd"
-    hides the case an operator has to fix.
-
-    The order is *override*, then the run record's ``submit_cwd``. The override
-    is the escape hatch for a deployment whose notifier wants to be run somewhere
-    other than the submitting seat's directory; ``submit_cwd`` is the default
-    because the notice is *about* a run and *from* the seat that submitted it,
-    and a directory-anchored notifier run anywhere else signs it as somebody
-    else. Nothing falls back to the current directory on purpose: inheriting is
-    what the caller happens to have, and the two callers here do not have the
-    same one.
-
-    A named directory that is not there is a refusal, not a fallback. Running
-    somewhere else instead would deliver the notice under an identity nobody
-    chose, which is the outcome this whole path exists to prevent and the one
-    that is invisible afterwards.
-
-    An *absent* ``submit_cwd`` key and a ``submit_cwd`` of ``None`` are different
-    facts and only one of them is allowed to inherit. Absent means the record
-    predates the field, and inheriting is what it always did. Present-and-null
-    means this run's own submission tried to record the anchor and could not —
-    the server's working directory was gone by the time it asked — so the anchor
-    is *unavailable*, not *unasked-for*. Inheriting there would put every job
-    submitted after that moment back on the old caller-dependent behaviour and
-    say nothing, which is the same silence this function exists to refuse.
+    Same three-way shape as :func:`_resolve_command`, for the same reason: a
+    delivery run somewhere other than intended is not the same event as one
+    with nowhere named. Order: *override*, then the record's ``submit_cwd``
+    (the notice is *about* and *from* the submitting seat; nothing falls back
+    to the current directory since the two callers here don't share one). A
+    named directory that doesn't exist is a refusal, not a fallback — running
+    elsewhere would sign the notice under an identity nobody chose. An
+    *absent* ``submit_cwd`` key (pre-field record, inherits as always) and a
+    ``submit_cwd`` of ``None`` (this submission tried to capture it and
+    couldn't — unavailable, not unasked-for) are different facts; only the
+    first inherits.
     """
     if override:
         named: Any = override
@@ -277,15 +212,12 @@ def _resolve_delivery_cwd(
 def _unverifiable_reason(argv: list[str]) -> str | None:
     """Why a zero exit from *argv* would not actually mean delivered.
 
-    Exit code is this hook's only delivery evidence, and for one adapter shape
-    we know that evidence is weak: ``kkernel exec`` returns 0 when *any* op in
-    the request succeeded, so a multi-op notify whose send was refused still
-    exits 0 and records as delivered. ``--strict`` makes a refused op exit 1.
-
-    Scoped to a known adapter shape on purpose. Reading someone else's argv is
-    only defensible where the alternative is recording a lie, and it stops at
-    marking the outcome — the command still runs exactly as configured, because
-    refusing to run what an operator wrote is not this hook's call.
+    ``kkernel exec`` returns 0 when *any* op in the request succeeded, so a
+    multi-op notify whose send was refused still exits 0 (``--strict`` makes a
+    refused op exit 1). Scoped to this one known adapter shape — reading
+    someone else's argv is only defensible where the alternative is recording
+    a lie, and it stops at marking the outcome; the command still runs exactly
+    as configured.
     """
     if not argv:
         return None
@@ -307,27 +239,12 @@ def _deliver(
 ) -> dict[str, Any]:
     """Run the delivery command best-effort; return its outcome for the record.
 
-    The outcome is recorded on the job so a dead completion notice surfaces in
-    ``job_status`` instead of vanishing silently — a completion signal that can
-    fail silently would cost the detached-spawn pattern its reliability.
-
-    The command's stdout/stderr is free text that can carry a credential, so
-    none of it is stored. It is read, matched against the closed vocabulary in
-    ``_FAILURE_CLASSES``, and dropped; only the matched name reaches the record,
-    in ``failure_class``. That is what turns a bare exit code into something
-    actionable while keeping the stored field a bounded enum by construction.
-
-    *program* is recorded alongside it so the record names which notifier this
-    was. It is the program token of the configured argv template, before any run
-    field is substituted into it — operator configuration, which whoever wrote it
-    can already read, and not something the command produced at runtime.
-
-    *cwd* is the directory the command runs in, and it is part of the notice's
-    content rather than an incidental of the process that sent it: a notifier
-    that resolves its own identity from its working directory signs with whoever
-    owns that directory. Passed explicitly so both callers of
-    ``deliver_terminal_notice`` send a notice signed the same way, which they
-    cannot do while each inherits its own.
+    Recorded on the job so a dead completion notice surfaces in ``job_status``
+    instead of vanishing silently. stdout/stderr may carry a credential, so
+    only the matched ``_FAILURE_CLASSES`` name is stored, in ``failure_class``.
+    *program* is the argv template's program token (operator configuration,
+    not runtime output). *cwd* is passed explicitly (not inherited) so both
+    callers of ``deliver_terminal_notice`` sign the notice the same way.
     """
     try:
         proc = subprocess.run(  # noqa: S603 — argv is the operator-configured delivery command, no shell
@@ -341,15 +258,9 @@ def _deliver(
             cwd=cwd,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        # Never fail the run's terminal path; record the failure instead.
-        #
-        # The exception *type* names how the delivery came apart — never
-        # started, or ran past the timeout — and nothing else from the
-        # exception is kept. This matters more than it looks:
-        # subprocess.TimeoutExpired carries the child's captured output on its
-        # own .stdout/.stderr attributes, so logging the exception, or storing
-        # its str(), would put back exactly the free text this function exists
-        # to keep out.
+        # Only the exception *type* is kept — TimeoutExpired carries the
+        # child's captured output on .stdout/.stderr, so str(exc) would leak
+        # exactly the free text this function exists to keep out.
         return {
             "attempted": True,
             "ok": False,
@@ -361,10 +272,6 @@ def _deliver(
             "command": program,
         }
     ok = proc.returncode == 0
-    # Classified here and not retained: `proc` goes out of scope with the
-    # function, and only the returned name outlives it. Pinned on the way into
-    # the record, so what is persisted is a member of the closed set whatever
-    # the classifier returned.
     failure_class = _pin_failure_class(
         None if ok else _classify_quietly(f"{proc.stderr or ''}\n{proc.stdout or ''}")
     )
@@ -378,11 +285,8 @@ def _deliver(
     }
     unverifiable = _unverifiable_reason(argv) if ok else None
     if unverifiable:
-        # Delivered on the only evidence available, and that evidence is known
-        # to be weak for this shape. Recorded as its own state rather than
-        # folded into either "delivered" or "failed": calling it delivered
-        # records a claim this hook cannot support, and calling it failed
-        # reports a failure that probably did not happen.
+        # Its own state, not folded into "delivered" (a claim this can't
+        # support) or "failed" (probably didn't happen).
         outcome["ok"] = True
         outcome["delivery_verified"] = False
         outcome["unverified_reason"] = unverifiable
@@ -392,28 +296,12 @@ def _deliver(
 def _note_delivery_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
     """Append one line to the run's own log when the notice needs an operator's eye.
 
-    The outcome is already on the job record, but that record is only seen by
-    someone who thinks to query it. A run whose notice never arrived is
-    indistinguishable, in its log, from one still working: the log simply ends.
-    Ending it with a stated failure is what lets the log serve as the fallback
-    for a notice that did not.
-
-    Two outcomes qualify, and the second is the reason this is not simply a
-    failure note. A delivery that ran, exited zero, and *could not be verified*
-    is recorded as such on the job record, but an operator reading the log or a
-    job listing would otherwise see an ordinary success. A degraded result that
-    only the record knows about is a degraded result nobody acts on, so it gets
-    a line of its own -- distinct in wording from a failure, because the notice
-    probably did arrive and reporting it as failed would be its own lie.
-
-    Every line carries only names from closed sets: the classified reason, or
-    the fixed ``unverified_reason``. Never anything the command said, so the log
-    stays as free of the command's own text as the job record is -- a log is if
-    anything the easier of the two to read by accident.
-
-    Best-effort like everything else in this hook: the run has already
-    finished, and a log that cannot be appended to must not turn a delivered
-    outcome into a crash.
+    The job record is only seen by someone who queries it; the log is the
+    fallback for a notice that never arrived (which otherwise ends silently,
+    indistinguishable from a still-working run). Two outcomes qualify: an
+    outright failure, and a zero-exit delivery that *could not be verified*
+    (worded distinctly from failure, since the notice probably did arrive).
+    Every line carries only closed-set names, never anything the command said.
     """
     if not outcome.get("attempted") and not outcome.get("error"):
         return  # nothing was configured; silence is the documented default
@@ -448,14 +336,9 @@ def _note_delivery_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
 def _note_persistence_failure(run_id: str, what: str) -> None:
     """Append one line to the run's own log when a record could not be written.
 
-    The same fallback as a failed delivery, for the same reason: the record is
-    where a failure would ordinarily be reported, and this is the case where the
-    record is exactly what could not be written. The log is the one place left,
-    and it is the place someone reading a run that stops mid-sentence looks.
-
-    Best-effort in the same way. This runs in the dying process of a run that is
-    already over, and a log that cannot be appended to must not turn a refusal
-    that was handled into a crash.
+    Same fallback as a failed delivery, for the same reason: the record is
+    exactly what could not be written, so the log is the one place left.
+    Best-effort — must not turn a handled refusal into a crash.
     """
     try:
         path = config.job_dir(run_id) / "console.log"
@@ -479,29 +362,10 @@ def deliver_terminal_notice(
 ) -> dict[str, Any]:
     """Attempt this run's configured terminal notice and report what came of it.
 
-    The whole of the delivery decision lives here: which command is configured,
-    what the run's fields substitute into it, whether a missing sender makes it
-    unusable, and how each of those is recorded. It is written as one function
-    because it has two callers — this hook, running in the run's own dying
-    process, and the job observer that publishes an end for a run whose process
-    never got this far — and a notice sent by the second must be the one the
-    first would have sent. Two resolution paths would mean two answers to
-    "what is configured here", and the run that needs the notice most is the one
-    whose own process is not around to be asked.
-
-    The working directory is part of "what is configured here", which is why it
-    is taken from the run's record and not from whatever this process happens to
-    be sitting in. The two callers never share a directory — the hook runs in the
-    run's, the observer in the server's — so a notifier that resolves its own
-    identity from where it is run would sign the same notice with a different
-    seat depending on which caller got there first, silently, and downstream
-    routing acts on that signature. Reading it from the record is what makes the
-    two callers agree by construction rather than by coincidence.
-
-    Nothing raises: the caller is either a terminal path that has already
-    finished or a read that has already published a durable end, and neither can
-    be failed by a notifier. Every way a delivery does not happen comes back as
-    an outcome describing it.
+    Has two callers (the dying run's own hook, and the job observer for runs
+    whose process never got this far) that must resolve identically; see
+    docs/internals/mcp.md#deliver-terminal-notice-two-callers. Nothing raises —
+    every way a delivery does not happen comes back as an outcome describing it.
     """
     target = target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
     sender = sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
@@ -510,32 +374,21 @@ def deliver_terminal_notice(
         command or os.environ.get("LIONAGI_MCP_NOTIFY_COMMAND"),
         cwd=(job or {}).get("cwd"),
     )
-    # Taken before the sender check below can drop the template: a notifier
-    # refused for want of a sender is one an operator most wants named, and the
-    # program token is the only part of it that survives the refusal.
+    # Taken before a missing sender can drop the template, so a refusal still
+    # names the program that would have run.
     program = template[0] if template else None
     delivery_cwd, cwd_unusable = _resolve_delivery_cwd(
         job, os.environ.get("LIONAGI_MCP_NOTIFY_CWD")
     )
-    # Both identity checks run against the template, and every reason they raise
-    # is reported. Stopping at the first would hand an operator one thing to fix
-    # and then a second failure on the next run for the other, which is two
-    # round-trips to learn what one record could have said. A single reason still
-    # reads exactly as it did: one reason joins to itself.
+    # Both checks run so every blocking reason is reported at once, not one
+    # round-trip per reason.
     blocking: list[str] = []
     if template:
         if cwd_unusable:
-            # The directory decides which identity the notice carries, so a
-            # template that would run in the wrong one is not one this hook can
-            # use. Checked before the delivery rather than after it.
             blocking.append(cwd_unusable)
         if not sender and any("{sender}" in tok for tok in template):
-            # The command asks who the notice is from and there is no answer. An
-            # empty string is not one: it puts a blank where an identity belongs,
-            # and a delivery tool that accepts it — or falls back to resolving a
-            # sender from its own working directory — signs the notice with a seat
-            # that did not send it, silently. Unusable in the same sense as a
-            # template that cannot be parsed, and recorded the same way.
+            # A blank sender would still get signed and sent, silently
+            # misattributing the notice, so it's treated as unusable.
             blocking.append("delivery_command_needs_a_sender_and_none_was_given")
     if blocking:
         template, unusable = None, ", ".join(blocking)
@@ -556,11 +409,8 @@ def deliver_terminal_notice(
             cwd=delivery_cwd,
         )
     if unusable:
-        # Configured but unusable. Recorded as a failure so job_status shows a
-        # notifier that cannot deliver, rather than the silence of one that was
-        # never asked to. ``command`` is None when the configuration never
-        # yielded a program to name — an unparseable override has no program in
-        # it, and saying so beats inventing one.
+        # Configured but unusable — recorded as a failure, not silence.
+        # ``command`` is None when configuration never yielded a program name.
         return {
             "attempted": False,
             "ok": False,
@@ -586,14 +436,18 @@ def main(argv: list[str] | None = None) -> int:
 
     terminal = jobs.mark_terminal(args.run_id, args.status)
     if terminal.refused:
-        # The end is not on disk. A notice sent now would assert a completion
-        # that every reader of the record contradicts, so it is not sent: the
-        # record stays non-terminal and the next observation of this run ends it
-        # the way a run whose hook never ran is ended. The refusal is reported
-        # where the run's own log and this process's exit status are the two
-        # places anything is left to look.
+        # End not on disk — no notice sent, since it would assert a
+        # completion the record contradicts; run stays non-terminal.
         _note_persistence_failure(args.run_id, "terminal status")
         return 1
+
+    # Before the notice: the cause belongs to how the run ended, and a delivery
+    # that hangs or fails must not be what decides whether the reason was kept.
+    # Absent, unreadable and malformed all come back as None, and None leaves
+    # the field off rather than writing a placeholder that reads like an answer.
+    cause = read_terminal_cause(jobs.failure_cause_path(args.run_id))
+    if cause is not None:
+        jobs.record_failure_cause(args.run_id, cause)
 
     outcome = deliver_terminal_notice(
         args.run_id,
@@ -606,9 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     recorded = jobs.record_notify_delivery(args.run_id, outcome)
     _note_delivery_in_console_log(args.run_id, outcome)
     if recorded.refused:
-        # The notice was attempted against a durable end; what is missing is the
-        # record of how it went. Reported the same way, because a delivery
-        # nobody can read back is one an operator has to be told about.
+        # Notice was attempted, but its outcome couldn't be recorded.
         _note_persistence_failure(args.run_id, "delivery result")
         return 1
     return 0

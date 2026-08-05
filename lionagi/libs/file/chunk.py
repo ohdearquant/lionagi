@@ -155,7 +155,7 @@ def chunk_content(
     chunk_size: int = 1024,
     overlap: float = 0,
     threshold: int = 256,
-    metadata: dict[str, Any] = None,
+    metadata: dict[str, Any] | None = None,
     return_tokens: bool = False,
     as_node: bool = False,
     **kwargs: Any,

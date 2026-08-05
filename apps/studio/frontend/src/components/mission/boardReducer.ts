@@ -228,8 +228,28 @@ function buildAttentionItems(
   });
 }
 
+// Board order (Running now): creation order, oldest first — never recency.
+// The API sorts by updated_at (recency), which is right for Recent Runs but
+// wrong here — updated_at bumps on every message, so a recency-ordered board
+// reshuffles mid-conversation. started_at is the moment a run actually began
+// and never changes afterward, so it's the stable key; a run can in principle
+// read "running" before started_at has landed (see the QUEUED/GATED aliases
+// and the unrecognized-status fallback in deriveDisplayStatus), so it falls
+// back to created_at, which the sessions table guarantees is always present.
+// Equal keys (same second, or two undated rows) fall back to id so the order
+// is total, not "whatever the array happened to hold."
+export function runCreationKey(run: RunSummary): number {
+  return run.started_at ?? run.created_at ?? Number.POSITIVE_INFINITY;
+}
+
+export function invocationCreationKey(inv: InvocationSummary): number {
+  return inv.started_at ?? inv.created_at ?? Number.POSITIVE_INFINITY;
+}
+
 function deriveActiveRuns(runs: RunSummary[]): RunSummary[] {
-  return runs.filter((r) => deriveDisplayStatus(r) === "running");
+  return runs
+    .filter((r) => deriveDisplayStatus(r) === "running")
+    .sort((a, b) => runCreationKey(a) - runCreationKey(b) || a.run_id.localeCompare(b.run_id));
 }
 
 function deriveRecentRuns(runs: RunSummary[]): RunSummary[] {
@@ -243,7 +263,11 @@ function deriveRecentRuns(runs: RunSummary[]): RunSummary[] {
 }
 
 function deriveActiveInvocations(invocations: InvocationSummary[]): InvocationSummary[] {
-  return invocations.filter((i) => RUNNING_STATUSES.has(i.status.toLowerCase()));
+  return invocations
+    .filter((i) => RUNNING_STATUSES.has(i.status.toLowerCase()))
+    .sort(
+      (a, b) => invocationCreationKey(a) - invocationCreationKey(b) || a.id.localeCompare(b.id),
+    );
 }
 
 // ─── Initial state ────────────────────────────────────────────────────────────

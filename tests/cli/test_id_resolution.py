@@ -11,6 +11,7 @@ caller never named. These tests hold all four to refusing instead.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -340,3 +341,191 @@ async def test_the_monitor_detail_resolver_still_takes_an_exact_id(db_path: Path
 
         assert (await _find_entity(db, FIRST))[0] == "session"
         assert (await _find_entity(db, SECOND))[0] == "invocation"
+
+
+# ── run id: a separate id space, not part of the generic resolver ─────────────
+#
+# Run ids (cli/_runs.py, one directory per run) are not primary keys
+# `_util.resolve_entity` searches — they are mirrored onto sessions only
+# through the nullable `sessions.run_id` column. `_resolve_any_target` (which
+# backs both `li o ctl status` and `li o ctl msg`) falls back to it the same
+# way it already falls back to branch_id, after the generic sweep comes up
+# empty.
+
+
+async def _seed_session_with_run_id(db: StateDB, session_id: str, run_id: str) -> None:
+    prog_id = str(uuid.uuid4())
+    await db.create_progression(prog_id)
+    await db.create_session(
+        {
+            "id": session_id,
+            "progression_id": prog_id,
+            "status": "running",
+            "started_at": time.time(),
+            "run_id": run_id,
+        }
+    )
+
+
+async def test_run_id_resolves_to_its_session(db_path: Path):
+    from lionagi.cli import status
+
+    run_id = "20260801T070707-idres"
+    async with StateDB(db_path) as db:
+        await _seed_session_with_run_id(db, FIRST, run_id)
+
+        hit = await status._resolve_any_target(db, run_id)
+
+    assert hit == ("session", await _reread(db_path, FIRST))
+
+
+async def _reread(db_path: Path, session_id: str) -> dict:
+    async with StateDB(db_path) as db:
+        return await db.get_session(session_id)
+
+
+async def test_run_id_fallback_ignores_unrelated_sessions_and_invocations(db_path: Path):
+    """Other rows in the database — a plain session, a plain invocation —
+    must not deflect or block the run_id lookup for an id that is neither."""
+    from lionagi.cli import status
+
+    run_id = "20260801T110606-idres"
+    async with StateDB(db_path) as db:
+        await _seed_session(db, FIRST)
+        await _seed_invocation(db, SECOND)
+        await _seed_session_with_run_id(db, "cccccccc-0000-4000-8000-000000000003", run_id)
+
+        hit = await status._resolve_any_target(db, run_id)
+
+    assert hit is not None
+    assert hit[0] == "session"
+    assert hit[1]["id"] == "cccccccc-0000-4000-8000-000000000003"
+
+
+async def test_an_id_matching_nothing_at_all_fails_cleanly(db_path: Path):
+    """No session, invocation, play, branch, or run — the resolver returns
+    None rather than raising or guessing."""
+    from lionagi.cli import status
+
+    async with StateDB(db_path) as db:
+        await _seed_session_with_run_id(db, FIRST, "20260801T080808-idres")
+
+        assert await status._resolve_any_target(db, "20260801T999999-nomatch") is None
+
+
+async def test_an_ambiguous_run_id_prefix_is_refused_not_resolved(db_path: Path):
+    """Two distinct run ids sharing a prefix must raise, mirroring the
+    guarantee every other id kind in this module already gets. A resolver
+    that silently picked one of them would be exactly the regression this
+    module exists to catch."""
+    from lionagi.cli import status
+
+    async with StateDB(db_path) as db:
+        await _seed_session_with_run_id(db, FIRST, "20260801T090909-runA")
+        await _seed_session_with_run_id(db, SECOND, "20260801T090909-runB")
+
+        with pytest.raises(AmbiguousIdError):
+            await status._resolve_any_target(db, "20260801T090909-run")
+
+
+async def test_run_id_fallback_prefers_the_most_recently_updated_session(db_path: Path):
+    """`run_id` carries no uniqueness constraint — `get_sessions_for_run`
+    already documents that one run can persist more than one session; the
+    fallback must not just take whichever row a plain query happens to
+    return first."""
+    from lionagi.cli import status
+
+    run_id = "20260801T101010-idres"
+    async with StateDB(db_path) as db:
+        await _seed_session_with_run_id(db, FIRST, run_id)
+        await db.update_session(FIRST, status="timed_out")
+        await asyncio.sleep(0.01)
+        await _seed_session_with_run_id(db, SECOND, run_id)
+
+        hit = await status._resolve_any_target(db, run_id)
+
+    assert hit[0] == "session"
+    assert hit[1]["id"] == SECOND
+
+
+async def test_a_prefix_matching_both_a_primary_key_and_a_run_id_is_refused(db_path: Path):
+    """A prefix that fits an entity primary key AND a run id is ambiguous, and
+    consulting the run-id space last does not make it less so.
+
+    This resolver searches sessions, invocations and plays together for one
+    reason: the commands built on it act, so letting search order pick between
+    two candidates queues a control against something the caller never named.
+    That reason does not stop at the entity kinds. Ordering the run-id space
+    after them decides the same question by the same means, so the cross-space
+    case is refused and the operator is told what to disambiguate.
+    """
+    from lionagi.cli import status
+
+    shared_prefix = FIRST[:8]
+    colliding_run_id = f"{shared_prefix}-run-for-a-different-session"
+    other_session = "dddddddd-0000-4000-8000-000000000004"
+
+    async with StateDB(db_path) as db:
+        await _seed_session(db, FIRST)
+        await _seed_session_with_run_id(db, other_session, colliding_run_id)
+
+        with pytest.raises(AmbiguousIdError) as raised:
+            await status._resolve_any_target(db, shared_prefix)
+
+    # Both spaces are named, so the refusal is actionable rather than a bare no.
+    candidates = " ".join(raised.value.candidates)
+    assert FIRST in candidates
+    assert colliding_run_id in candidates
+
+
+async def test_a_date_length_run_prefix_that_also_fits_a_session_id_is_refused(db_path: Path):
+    """The realistic shape of that collision, with the values an operator types.
+
+    A run id opens with a date, and every digit of a date is valid hex, so a
+    date-length prefix can prefix a session UUID as well. Nothing longer can
+    collide: position nine of a run id is a `T`, which no UUID contains. The
+    short prefix is therefore the only case worth pinning, and it is the one a
+    synthetic prefix does not exercise.
+    """
+    from lionagi.cli import status
+
+    prefix = "20260802"
+    run_id = f"{prefix}T123456-abcdef"
+    colliding_session = f"{prefix}-0000-4000-8000-00000000000a"
+    run_owner = "ffffffff-0000-4000-8000-00000000000b"
+
+    async with StateDB(db_path) as db:
+        await _seed_session(db, colliding_session)
+        await _seed_session_with_run_id(db, run_owner, run_id)
+
+        with pytest.raises(AmbiguousIdError):
+            await status._resolve_any_target(db, prefix)
+
+        # The full run id carries the `T`, so it stays decisive.
+        hit = await status._resolve_any_target(db, run_id)
+
+    assert hit is not None
+    assert hit[1]["id"] == run_owner
+
+
+async def test_a_full_length_run_id_is_not_shadowed_by_any_primary_key(db_path: Path):
+    """The other half of the same contract: a full-length run id is long enough
+    that no primary key matches it, so the precedence above cannot shadow it.
+    Seeded alongside a session whose id shares the run id's leading characters,
+    which is the only way a primary key could plausibly intercept it.
+    """
+    from lionagi.cli import status
+
+    run_id = "20260801T121212-fullrun"
+    decoy_session = f"{run_id[:8]}-0000-4000-8000-000000000005"
+    owning_session = "eeeeeeee-0000-4000-8000-000000000006"
+
+    async with StateDB(db_path) as db:
+        await _seed_session(db, decoy_session)
+        await _seed_session_with_run_id(db, owning_session, run_id)
+
+        hit = await status._resolve_any_target(db, run_id)
+
+    assert hit is not None
+    assert hit[0] == "session"
+    assert hit[1]["id"] == owning_session

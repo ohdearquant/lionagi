@@ -21,13 +21,10 @@ class GithubPollItem:
 
     ``event`` is always populated, even when ``dispatchable`` is False, so a
     caller can log which PR was seen without firing it. ``updated_at`` is the
-    cursor high-water-mark field for this item -- the PR's raw GitHub
-    ``updated_at``, except under ``github_filter={"event": "pr_merged"}``
-    where it holds ``merged_at`` instead (the event dict's own ``updated_at``
-    key still carries the PR's real ``updated_at`` for template rendering).
-    ``dispatchable`` is False when ``github_filter`` (e.g. a draft filter)
-    excludes the PR from firing -- it is still returned so the caller can
-    advance the cursor past it without re-listing it every poll.
+    cursor field for this item -- the PR's raw ``updated_at``, except under
+    ``github_filter={"event": "pr_merged"}`` where it holds ``merged_at``
+    instead. ``dispatchable`` is False when ``github_filter`` excludes the PR
+    from firing, but it's still returned so the cursor can advance past it.
     """
 
     event: dict[str, Any]
@@ -38,23 +35,15 @@ class GithubPollItem:
 class GithubPollResult(NamedTuple):
     """Return shape of ``github_poll()``.
 
-    ``scan_complete`` is False only when merged-mode pagination stopped for an
-    UNSAFE reason (the ``_MERGED_MODE_MAX_PAGES`` cap hit, or a pagination
-    fetch/status error) rather than a safe boundary (short page, no
-    ``rel="next"``, or the stored cursor reached). ``items`` already has any
-    event that couldn't be proven complete filtered out in that case -- a
-    caller does not need to re-derive that from item counts; the flag exists
-    for observability (e.g. logging that boundary events are held for a
-    later poll).
-
-    ``poll_status`` distinguishes a healthy-but-empty poll from one that
-    couldn't see GitHub -- ``items == []`` alone is ambiguous between
-    "nothing new" and "blind" (a 401 or network failure also returns no
-    items). ``"ok"`` = any 2xx or 304; ``"auth_error"`` = a 401 that survived
-    the gh-CLI-token fallback retry; ``"error"`` = anything else that
-    prevented a real poll. ``SchedulerEngine._tick_github`` uses this to
-    stamp the schedule's observer-self-health columns. Defaults to ``"ok"``
-    so direct-construction call sites (tests, mocks) don't need updating.
+    ``scan_complete`` is False only when merged-mode pagination stopped for
+    an unsafe reason (the ``_MERGED_MODE_MAX_PAGES`` cap, or a fetch/status
+    error) rather than a safe boundary; ``items`` already has any
+    can't-prove-complete event filtered out, so the flag is for observability
+    only. ``poll_status`` distinguishes healthy-but-empty from blind (a 401 or
+    network failure also returns no items): ``"ok"`` = 2xx/304,
+    ``"auth_error"`` = 401 surviving the gh-CLI-token fallback, ``"error"`` =
+    anything else. Used by ``SchedulerEngine._tick_github`` to stamp the
+    schedule's observer-self-health columns.
     """
 
     items: list[GithubPollItem]
@@ -64,37 +53,25 @@ class GithubPollResult(NamedTuple):
 
 _client: httpx.AsyncClient | None = None
 
-# Last token known to have authenticated (set after responses other than
-# 401/403).
-# Checked before _get_gh_token() so a healthy poll skips GITHUB_TOKEN /
-# `gh auth token`; a fresh 401 or 403 clears it to force re-resolution.
+# Last token known to have authenticated. Checked before _get_gh_token() so a
+# healthy poll skips GITHUB_TOKEN / `gh auth token`; a fresh 401/403 clears it.
 _cached_token: str | None = None
 
-# Bounds how many pages github_poll() will fetch hunting for an older,
-# still-undispatched merged PR (merged_at can trail the API's updated_at
-# sort key -- see GithubPollResult.scan_complete). Worst case
-# _MERGED_MODE_MAX_PAGES * per_page PRs inspected per poll, so 500 at the
-# per_page=100 the request sends; anything buried deeper is picked up on a
-# later poll once the noise ages out. Bounded latency, not bounded
-# correctness -- as long as the reach stays ahead of the backlog above the
-# stored cursor. It does not recover on its own if it falls behind: nothing
-# dispatches, so the cursor never advances, so the next scan is no shorter.
+# Bounds pages fetched hunting an older, still-undispatched merged PR
+# (merged_at can trail the API's updated_at sort key). Bounded latency, not
+# bounded correctness: a backlog deeper than this reach is picked up on a
+# later poll, but does not recover on its own if it falls behind.
 _MERGED_MODE_MAX_PAGES = 5
 
-# Page size requested from the API (GitHub's maximum). The page budget above
-# is stated in terms of this, so lowering it shortens the scan's reach by the
-# same factor -- which is how a busy repo ends up with a backlog the scan can
-# never cross. Read it from here rather than restating the literal, so a
-# change to the reach cannot silently disagree with anything measuring it.
+# Page size requested (GitHub's maximum); the page budget above is stated in
+# terms of this.
 _PER_PAGE = 100
 
 _LINK_NEXT_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
 
 # CWE-918 defense-in-depth: github_repo must be exactly "owner/name" (one
-# slash, no traversal/URL-special chars). Owner and repo segments have
-# different rules (verified against the GitHub API -- a repo may start with
-# '.', e.g. github/.github). Single source of truth: services/schedules.py
-# delegates to _validate_github_repo rather than duplicating these.
+# slash, no traversal/URL-special chars). services/schedules.py delegates to
+# _validate_github_repo rather than duplicating these.
 _GITHUB_OWNER_MAX = 39
 _GITHUB_REPO_MAX = 100
 
@@ -434,15 +411,10 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         base_repo_obj = (pr.get("base") or {}).get("repo")
         head_repo = head_repo_obj.get("full_name") if head_repo_obj else None
         head_repo_is_fork = bool(head_repo_obj.get("fork", False)) if head_repo_obj else False
-        # Repository ids are stable and case-independent; the configured
-        # github_repo string and the API's returned full_name may differ
-        # only in case (GitHub repo paths are case-insensitive), which would
-        # false-negative a plain string ``==``. Prefer comparing the PR's own
-        # head/base repo ids -- both come from the same API response, so no
-        # external casing assumption is needed -- falling back to a
-        # casefolded full_name comparison when either id is unavailable, and
-        # failing closed (never same-repo) only when head.repo is missing
-        # entirely.
+        # Prefer comparing repo ids (stable, case-independent) over full_name,
+        # since GitHub repo paths are case-insensitive and a plain string `==`
+        # would false-negative; fall back to casefolded full_name, failing
+        # closed (never same-repo) only when head.repo is missing entirely.
         head_repo_id = head_repo_obj.get("id") if head_repo_obj else None
         base_repo_id = base_repo_obj.get("id") if base_repo_obj else None
         if head_repo_id is not None and base_repo_id is not None:
@@ -472,14 +444,10 @@ async def github_poll(schedule: dict) -> GithubPollResult:
             event["pr_merged_at"] = merged_at
         items.append(GithubPollItem(event=event, updated_at=cursor_at, dispatchable=dispatchable))
 
-    # Holding some events back while returning others is ordinary: the caller
-    # advances the cursor past what it got, so the next scan starts higher and
-    # the held-back band drains. Holding back EVERYTHING is the stuck shape --
-    # an empty result means the caller advances no cursor at all, so the next
-    # scan repeats this one exactly, and it is indistinguishable from a quiet
-    # repo at every other signal (the result is "ok", the schedule keeps a
-    # future fire time, no run is recorded). Only that case warns; a truncation
-    # notice that fires on every truncated poll is not a signal.
+    # Holding back some events is ordinary (the cursor still advances past
+    # what was returned). Holding back everything is the stuck shape: no
+    # cursor advance, and the next scan repeats this one indistinguishably
+    # from a quiet repo -- that's the only case worth warning about.
     if held_back and not items:
         _log.warning(
             "%s: merged-PR scan found %d event(s) past the cursor and dispatched "

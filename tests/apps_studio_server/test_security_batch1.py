@@ -85,8 +85,6 @@ class TestDefinitionsDiskPath:
 
         monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
         monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-        monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-        monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
         monkeypatch.setattr(defs_mod, "LIONAGI_HOME", fake_home)
         monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
         monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", fake_home / "playbooks")
@@ -279,11 +277,11 @@ class TestBearerTokenAuth:
         shared lionagi.studio.app.app singleton other code still imports.
         """
         import lionagi.studio.app as app_mod
-        import lionagi.studio.services.stats as stats_mod
 
         if fake_db is not None:
-            monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
-            monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
+            import lionagi.state.db as state_db_mod
+
+            monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
         app = app_mod.create_app()
         return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")

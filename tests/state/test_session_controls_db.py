@@ -192,7 +192,16 @@ async def test_session_controls_column_present(tmp_path: Path) -> None:
     async with aiosqlite.connect(str(db_path)) as conn:
         async with conn.execute("PRAGMA table_info(session_controls)") as cur:
             cols = {r[1] async for r in cur}
-    assert cols == {"id", "session_id", "verb", "payload", "created_at", "applied_at", "result"}
+    assert cols == {
+        "id",
+        "session_id",
+        "verb",
+        "payload",
+        "created_at",
+        "applied_at",
+        "claimed_at",
+        "result",
+    }
 
     async with aiosqlite.connect(str(db_path)) as conn:
         async with conn.execute(

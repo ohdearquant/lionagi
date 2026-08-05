@@ -186,3 +186,7 @@ ADR_REVIEW*.txt
 ALL_ADRS_COMPILED.txt
 codex_review_*.md
 .lane-*.md
+.reviews/
+
+# perf-loop scratch DB copies — never staged, never committed
+/scratch/

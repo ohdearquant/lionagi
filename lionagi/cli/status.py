@@ -16,7 +16,13 @@ from typing import Any
 
 from ._logging import log_error
 from ._project import detect_project
-from ._util import AmbiguousIdError, fetch_unique_row, resolve_entity
+from ._util import (
+    _CANDIDATES_SHOWN,
+    AmbiguousIdError,
+    _like_prefix_pattern,
+    fetch_unique_row,
+    resolve_entity,
+)
 
 __all__ = (
     "run_agent_status",
@@ -83,6 +89,62 @@ async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, An
     return await db.get_session(branch["session_id"])
 
 
+async def _resolve_session_by_run_id(db: Any, entity_id: str) -> dict[str, Any] | None:
+    """Fallback: resolve *entity_id* as a CLI run id to its most-recent session.
+
+    Run ids are not primary keys `_util.resolve_entity` searches — they live
+    in a separate id space (one directory per run under `LIONAGI_HOME/runs/`,
+    allocated in `cli/_runs.py`) and are only mirrored onto sessions through
+    the nullable `sessions.run_id` column. A run id is the handle an operator
+    actually holds for an agent leg, so this fallback exists for the same
+    reason `_resolve_session_by_branch_id` does: the generic resolver has
+    nothing to look up.
+
+    Exact id wins outright, same as every other resolver here. `run_id` carries
+    no uniqueness constraint (`get_sessions_for_run` already documents that
+    one run can persist more than one session), so the most recently updated
+    one is returned rather than assuming a 1:1 mapping. A prefix that fits
+    more than one *distinct* run id raises `AmbiguousIdError`, for the same
+    reason a colliding table prefix does: there is no correct row to prefer.
+    """
+    entity_id = entity_id.strip()
+    if not entity_id:
+        return None
+
+    exact = await db.get_sessions_for_run(entity_id)
+    if exact:
+        return max(exact, key=lambda s: s.get("updated_at") or 0)
+
+    run_ids = await _run_id_candidates(db, entity_id)
+    if not run_ids:
+        return None
+    if len(run_ids) > 1:
+        raise AmbiguousIdError(entity_id, "run", run_ids)
+
+    sessions = await db.get_sessions_for_run(run_ids[0])
+    return max(sessions, key=lambda s: s.get("updated_at") or 0) if sessions else None
+
+
+async def _run_id_candidates(db: Any, entity_id: str) -> list[str]:
+    """Distinct run ids *entity_id* matches as a prefix, capped for display.
+
+    Separate from the resolver above so a caller can ask whether a string also
+    lands in the run-id space without resolving it to a session and acting on
+    the result.
+    """
+    rows = await db.fetch_all(
+        "SELECT DISTINCT run_id FROM sessions WHERE run_id LIKE ? ESCAPE '\\' "
+        "AND substr(run_id, 1, ?) = ? ORDER BY run_id LIMIT ?",
+        (
+            _like_prefix_pattern(entity_id),
+            len(entity_id),
+            entity_id,
+            _CANDIDATES_SHOWN + 1,
+        ),
+    )
+    return [r["run_id"] for r in rows]
+
+
 async def _resolve_agent_target(
     db: Any, entity_id: str | None, project: str | None
 ) -> tuple[str, dict[str, Any]] | None:
@@ -127,20 +189,44 @@ async def _resolve_play_target(
 
 async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
     """`li o ctl status <id>` resolution: no kind scoping, id required (no
-    latest). Falls back to branch_id last, after sessions/invocations/plays.
+    latest). Falls back to branch_id, then run_id, after sessions/invocations/plays.
 
     The kinds are searched together rather than one after another. Trying each
     in turn and keeping the first hit resolves a prefix that fits a session and
     an invocation to whichever is looked at first, and the commands built on
     this resolver act: `li o ctl pause` would queue a control for a flow the
-    caller never identified. The branch fallback stays last and applies only
-    when no entity matched at all.
+    caller never identified. The branch and run_id fallbacks stay last and
+    apply only when no entity matched at all — run ids are not part of the
+    generic resolver's search space (see `_resolve_session_by_run_id`).
+
+    Searching the run-id space last orders it, which is not the same as keeping
+    it apart: a string that identifies both an entity and a run is ambiguous
+    however late the second space is consulted, so that case is refused rather
+    than resolved.
     """
     hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
     if hit is not None:
         _table, entity_type, row = hit
+        # Keeping run ids out of the generic search space orders the two spaces,
+        # it does not separate them: a run id opens with a date, whose digits are
+        # all valid hex, so a short prefix can fit a run id and a UUID at once.
+        # Taking the entity because it is searched first would let search order
+        # decide a question it cannot answer, and the commands built on this
+        # resolver act on the answer. Only a real double match refuses. A full id
+        # cannot reach here: a run id is shorter than a UUID and carries a `T`,
+        # which no UUID contains.
+        also_runs = await _run_id_candidates(db, entity_id)
+        if also_runs:
+            raise AmbiguousIdError(
+                entity_id,
+                None,
+                [f"{entity_type} {row.get('id')}", *(f"run {r}" for r in also_runs)],
+            )
         return entity_type, row
     row = await _resolve_session_by_branch_id(db, entity_id)
+    if row is not None:
+        return "session", row
+    row = await _resolve_session_by_run_id(db, entity_id)
     if row is not None:
         return "session", row
     return None
@@ -269,7 +355,17 @@ async def _build_view(
         if branches:
             branch_id = max(branches, key=lambda b: b.get("created_at") or 0).get("id")
         pending_controls = [
-            {"id": c["id"], "verb": c["verb"], "created_at": c["created_at"]}
+            {
+                "id": c["id"],
+                "verb": c["verb"],
+                "created_at": c["created_at"],
+                # The claim, verbatim, and when it was taken. A wedged queue is
+                # only an honest degraded state if the operator who finds it can
+                # tell a slow owner from a dead one, and that decision needs the
+                # owner's id and the claim's age at the place the wedge is seen.
+                "result": c.get("result"),
+                "claimed_at": c.get("claimed_at"),
+            }
             for c in await db.list_pending_session_controls(primary_session["id"])
         ]
 
@@ -325,7 +421,18 @@ async def _build_view(
         "status_reason_code": row.get("status_reason_code"),
         "status_reason_summary": row.get("status_reason_summary"),
         "status_evidence_refs": row.get("status_evidence_refs"),
-        "pending_controls": pending_controls,
+        # Computed at read time so the property holds even when the teardown
+        # tombstone write failed: an unclaimed control on a terminal run can
+        # never have been consumed, and this view is the surface an operator
+        # checks to learn whether their steer landed. A CLAIMED row on a
+        # terminal run is a different state and must not be flattened into
+        # this one: a consumer took it and did not report back, so whether the
+        # message reached the model is exactly what nobody knows. Rendering
+        # that as never-landed would be the same fabricated negative the
+        # teardown declines to write.
+        "pending_controls": [
+            {**c, "never_landed": terminal and c.get("result") is None} for c in pending_controls
+        ],
     }
 
 
@@ -365,9 +472,30 @@ def _render_human(view: dict[str, Any]) -> str:
 
     if view["pending_controls"]:
         lines.append("")
-        lines.append(_dim("  -- pending controls --"))
+        if not view["terminal"]:
+            lines.append(_dim("  -- pending controls --"))
+        elif any(
+            str(c.get("result") or "").startswith("applying") for c in view["pending_controls"]
+        ):
+            # The header speaks for every row under it, so it cannot say
+            # "never landed" while one of those rows says the outcome is
+            # unknown. A reader who takes the header at its word resends a
+            # message that may already have been delivered, which is the
+            # fabricated negative this whole path is built to avoid.
+            lines.append(_dim("  -- unresolved controls (run is terminal) --"))
+        else:
+            lines.append(_dim("  -- controls that never landed (run is terminal) --"))
         for ctl in view["pending_controls"]:
-            lines.append(f"    {ctl['verb']:<8} {ctl['id']}  queued {_fmt_ts(ctl['created_at'])}")
+            line = f"    {ctl['verb']:<8} {ctl['id']}  queued {_fmt_ts(ctl['created_at'])}"
+            result = ctl.get("result") or ""
+            if result.startswith("applying"):
+                owner = result.partition(":")[2] or "unknown"
+                line += f"  claimed by {owner} at {_fmt_ts(ctl.get('claimed_at'))}"
+                if view["terminal"]:
+                    line += " — owner never reported back; outcome unknown"
+            elif ctl.get("never_landed"):
+                line += "  never landed — use `li agent -r`"
+            lines.append(line)
 
     if view["degraded"]:
         lines.append("")

@@ -1617,16 +1617,9 @@ class MCPConnectionPool:
     @classmethod
     def set_security_config(cls, config: MCPSecurityConfig) -> None:
         """Set the process-global default security policy for new connections.
-
-        Existing connected clients are unaffected. Once set, every later
-        `get_client()`/`_create_client()` call that omits its own policy uses
-        this one instead of the wrapper's fail-closed `MCPSecurityConfig()`
-        default -- this is a deliberate, explicit, process-owner-level trust
-        decision (there is no production caller of this method today), and
-        is a different act from one caller silently inheriting a policy
-        another caller authorized for the same server identity, which
-        `get_client()`/`_get_reconnect_client()` handle separately.
-        """
+        Existing connected clients are unaffected; every later omitted-policy
+        `get_client()`/`_create_client()` call uses this instead of the
+        fail-closed default. See docs/internals/core.md#mcpconnectionpool-trust-model."""
         cls._security = config
 
     async def __aenter__(self):
@@ -1680,26 +1673,10 @@ class MCPConnectionPool:
         server_config: dict[str, Any],
         security: MCPSecurityConfig | None = None,
     ) -> tuple[dict[str, Any], str, str]:
-        """Resolve a server config to `(config, policy_key, cache_key)`.
-
-        Resolving `{"server": name}` references to their concrete transport
-        config happens FIRST: cache identity must bind to the RESOLVED
-        transport, not the bare logical name -- otherwise reloading a
-        different command/URL under the same name could reconnect using a
-        client that was never authorized for the new one.
-
-        `cache_key` also folds in the FINGERPRINT OF THE EFFECTIVE SECURITY
-        (`security` if given, else the process-global policy, else the
-        fail-closed default -- see `_effective_security`), not just the
-        config. This is the primary fix for cross-caller trust inheritance:
-        a trusted call and a later omitted-policy call to the identical
-        server can never resolve to the same cache entry, because their
-        effective security differs and so does their key. A cache hit can
-        then only ever return a client whose key already encodes the
-        caller's own effective security -- an omitted-policy call misses
-        and goes through `_create_client`'s fail-closed validation instead
-        of silently reusing another caller's connection.
-        """
+        """Resolve a server config to `(config, policy_key, cache_key)`. `cache_key`
+        folds in both the resolved transport and the effective-security fingerprint,
+        so a trusted call and a later omitted-policy call to the same server can never
+        share a cache entry. See docs/internals/core.md#mcpconnectionpool-trust-model."""
         effective_security = cls._effective_security(security)
         security_fp = cls._security_fingerprint(effective_security)
         if "server" in server_config:
@@ -1738,24 +1715,10 @@ class MCPConnectionPool:
         server_config: dict[str, Any],
         security: MCPSecurityConfig | None = None,
     ) -> Any:
-        """Get or create a pooled MCP client.
-
-        `security` accepts only an explicit `MCPSecurityConfig` or `None`.
-        `None` means exactly one thing -- the caller made no trust decision
-        -- and it never recovers a policy some other caller authorized for
-        this identity; recovering a remembered policy is not reachable
-        through this public method at all, by any argument value (see
-        `_get_reconnect_client`, which requires a capability that this
-        method cannot produce or accept). `None` reaches `_create_client`'s
-        fail-closed default only when no process-global policy has been set
-        via `set_security_config()`; a process-global policy, once set, is
-        used for every omitted-policy call until changed, by design -- that
-        is a deliberate process-owner decision, not implicit inheritance
-        between callers. The cache key folds in this call's own effective
-        security (see `_resolve_identity`), so an omitted-policy call can
-        never be satisfied by a cache entry a differently-authorized caller
-        created; it always re-validates through `_create_client`.
-        """
+        """Get or create a pooled MCP client. `security=None` means the caller made
+        no trust decision and never recovers a policy another caller authorized for
+        this identity (see `_get_reconnect_client` for the capability-gated path).
+        See docs/internals/core.md#mcpconnectionpool-trust-model."""
         if security is not None and not isinstance(security, MCPSecurityConfig):
             raise TypeError(
                 "MCPConnectionPool.get_client(security=...) accepts only an "
@@ -1772,19 +1735,10 @@ class MCPConnectionPool:
         server_config: dict[str, Any],
         capability: _MCPRecoveryCapability | None = None,
     ) -> Any:
-        """Capability-gated reconnect: re-enters a transport under the
-        policy a proxy was minted for at authorization time.
-
-        Requires the exact `_MCPRecoveryCapability` instance minted for that
-        proxy (`MCPConnectionPool._mint_capability`) -- not a config, not a
-        server name, not an equal-content capability. A direct call, a
-        stored bound method, a subclass alias, or a proxy rehydrated from
-        persisted `mcp_config` all lack a live reference to that instance
-        and fail closed here with no recovery. This is deliberately not
-        part of `get_client`'s public contract: `create_mcp_tool`'s stored
-        callable is the only caller, re-entering a transport its own
-        closure already holds the capability for.
-        """
+        """Capability-gated reconnect: re-enters a transport under the policy a proxy
+        was minted for at authorization time. Requires the exact `_MCPRecoveryCapability`
+        instance minted for that proxy (identity, not content) — anything else fails
+        closed. See docs/internals/core.md#mcpconnectionpool-trust-model."""
         if not isinstance(capability, _MCPRecoveryCapability):
             raise PermissionError(
                 "MCP client recovery requires the authorization capability "

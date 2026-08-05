@@ -189,39 +189,12 @@ def _validate_collections(value: Any, item_type: set | None, strict_type: bool, 
 
 
 class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
-    """Ordered collection of Observable elements with a two-lock concurrency contract.
+    """Ordered collection of Observable elements with a two-lock concurrency
+    contract (sync under ``_lock``, async under both locks). See
+    docs/internals/core.md#pile-concurrency-contract for the full contract."""
 
-    Concurrency contract:
-
-    - The sync API (``@synchronized`` methods, subscripting, iteration
-      snapshots) is thread-safe under ``_lock``.
-    - The async API (``a``-prefixed ``@async_synchronized`` methods) is
-      task-safe under ``_async_lock`` AND excludes sync callers in other
-      threads: the async wrapper holds both locks (async lock first, then a
-      non-blocking spin on the threading lock) for the duration of the call.
-    - Iteration (``__iter__`` / ``__aiter__``) captures a point-in-time
-      snapshot of the *order* under the lock; item lookup stays live, so
-      removing a not-yet-visited item raises ``KeyError`` at that step
-      (fail-loud) instead of silently yielding a stale object. ``keys`` /
-      ``values`` / ``items`` return fully materialized snapshots.
-    - A Pile is iterable but is NOT itself an iterator, matching ``list`` and
-      ``dict``. Traversal position lives in the object ``iter(pile)`` returns,
-      so concurrent readers each get their own cursor and a copied Pile never
-      inherits a partially consumed one.
-    - The exclusion boundary is CROSS-THREAD, not cross-task. On the event
-      loop's own thread, a sync call made by a different task while an async
-      operation is mid-await re-enters the RLock (thread-owned) and proceeds.
-      Same-thread callers are cooperative by design; enforcing task-level
-      exclusion for sync calls on the loop thread would deadlock the loop.
-      Async-side critical regions (``async with pile``, ``adump``,
-      ``adapt_to_async``, ``__aiter__``) all use the ordered both-lock
-      protocol, so they exclude sync callers running in other threads.
-    """
-
-    # Value type is Any, not T: _validate_collections is the sole admission gate
-    # (structural -- any id-bearing Observable), so pydantic must not re-reject a
-    # duck-typed item it already accepted. The class stays Generic[T] and every
-    # accessor is still typed T; only the stored-field re-validation is relaxed.
+    # Value type is Any, not T: _validate_collections is the sole (structural)
+    # admission gate, so pydantic must not re-reject a duck-typed item it already accepted.
     collections: dict[UUID, Any] = Field(default_factory=dict)
     item_type: set | None = Field(
         default=None,
@@ -245,11 +218,9 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
         "strict_type",
     }
 
-    # Two locks, one ordered protocol: sync methods hold _lock; async methods
-    # hold _async_lock THEN _lock (via @async_synchronized), so the two API
-    # families mutually exclude. _lock is an RLock because sync methods
-    # reenter each other (update -> include, exclude -> pop) and async bodies
-    # may call @synchronized siblings while the wrapper already holds it.
+    # _lock is an RLock: sync methods reenter each other (update -> include,
+    # exclude -> pop) and async bodies call @synchronized siblings while the
+    # wrapper already holds it.
     _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _async_lock: ConcurrencyLock = PrivateAttr(default_factory=ConcurrencyLock)
 
@@ -276,7 +247,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
     def __init__(
         self,
         collections: ID.ItemSeq = None,
-        item_type: set[type[T]] = None,
+        item_type: set[type[T]] | None = None,
         order: ID.RefSeq = None,
         strict_type: bool = False,
         **kwargs,
@@ -990,8 +961,8 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                 # Parquet needs a columnar engine; keep it on the pandas path.
                 self.to_df().to_parquet(fp, engine="pyarrow", index=False, **kw)
             case "json" | "csv":
-                # json/csv use the stdlib serializer, not pandas — reject the
-                # old pandas passthrough kwargs loudly rather than dropping them.
+                # json/csv use the stdlib serializer, not pandas — reject
+                # pandas-only kwargs loudly rather than silently dropping them.
                 if kw:
                     raise TypeError(
                         f"dump(obj_key={obj_key!r}) takes no extra keyword arguments "
@@ -999,8 +970,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                     )
                 text = _serialize_records(self._ordered_records(), obj_key)
                 if fp is None:
-                    # fp=None returns the serialized string, as the old
-                    # DataFrame.to_json/to_csv(path_or_buf=None) did.
+                    # fp=None returns the serialized string.
                     out = text
                 else:
                     with open(fp, mode, encoding="utf-8", newline="") as f:
@@ -1010,8 +980,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
                     f"Unsupported obj_key: {obj_key}. Supported keys are 'json', 'csv', 'parquet'."
                 )
 
-        # Clear only after a successful write, and for every format: the json/csv
-        # branches previously returned early and skipped this.
+        # Clear only after a successful write, for every format.
         if clear:
             self.clear()
         return out

@@ -27,20 +27,8 @@ def _make_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     fake_db = tmp_path / "state.db"
 
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.definitions as defs_mod
-    import lionagi.studio.services.sessions as sessions_mod
-    import lionagi.studio.services.shows as shows_mod
-    import lionagi.studio.services.stats as stats_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(sessions_mod, "_DB", str(fake_db))
-    monkeypatch.setattr(shows_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(shows_mod, "_DB", str(fake_db))
-    monkeypatch.setattr(defs_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(defs_mod, "_DB", str(fake_db))
-    monkeypatch.setattr(stats_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(stats_mod, "_DB", str(fake_db))
 
     from lionagi.studio.app import create_app
 

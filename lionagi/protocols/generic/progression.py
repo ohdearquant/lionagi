@@ -309,5 +309,5 @@ class Progression(Element, Ordering[T], Generic[T]):
         return f"Progression(name={self.name}, order={self.order})"
 
 
-def prog(order: Any, name: str = None, /) -> Progression:
+def prog(order: Any, name: str | None = None, /) -> Progression:
     return Progression(order=order, name=name)

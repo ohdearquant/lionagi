@@ -2,43 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Background job engine for the lionagi MCP server.
 
-``submit()`` spawns a ``li`` command as a detached process and returns immediately
-with the run_id. The id is pre-assigned via ``LIONAGI_RUN_ID`` so it is known
-before the child starts (no polling to discover it). ``status()`` / ``output()`` /
-``kill()`` / ``list_jobs()`` / ``wait()`` then operate on that id by reading the
-run state the CLI persists plus the MCP server's own small per-job record.
-
-The detached child gets its own session/pgid (``start_new_session``), so it
-survives an MCP-server restart and can still be signalled as a group. That is why
-job state lives on disk rather than in server memory.
-
-Every response that carries a run's ``status`` carries ``terminal`` and
-``outcome`` with it, derived here from the durable record. ``status`` itself is an
-open vocabulary passed through verbatim, so a caller never needs — and must never
-keep — a copy of lionagi's status names to tell a finished run from a running one
-or a success from a failure. All of these resolve through one path, ``status()``,
-so no two calls can disagree about the same run at the same moment.
-
-A run's end reaches that path from three writers. The terminal hook the CLI runs
-on ``--notify`` writes it into this package's own job record. A run stopped by
-``li kill`` never reaches that hook — the kill transitions the lifecycle row and
-signals the process, and writes nothing here — so when the process is gone and
-the job record shows no end, the state is read from the CLI itself, via
-``li lifecycle <run_id> --machine``, and cached back onto the job record. A read
-that cannot be made concludes nothing: the run is classified exactly as it would
-have been without it.
-
-The third writer is this module's own orphan observer. A run whose process died
-before the terminal hook ran has no surviving producer at all: nothing will ever
-write its end, and a caller waiting for one waits forever. So when — and only
-when — an observation positively establishes that this run's process is gone,
-``status()`` publishes that end itself, as ``outcome="indeterminate"``, before
-returning it. Every mutation of a job record goes through one per-run lock, and
-the first recorded end wins: a later writer may add what is missing beside it but
-never replaces it, so no two readers of one record can disagree about whether the
-run ended. A mutation that cannot take that lock records nothing and says so —
-the record stays non-terminal and the next observation retries it, rather than a
-terminal fact being announced that no reader can find.
+See docs/internals/mcp.md#jobs-engine for the run lifecycle, the three writers
+of a terminal state, and the per-run locking/outcome contract.
 """
 
 from __future__ import annotations
@@ -61,11 +26,18 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from lionagi.ln._json_dump import raise_if_non_finite
+from lionagi.ln._proc import (
+    CREATE_TIME_TOLERANCE,
+    live_group_members,
+    pinned_member,
+    process_create_time,
+    process_marker,
+    start_time_matches,
+)
 
 from . import config
 
-# The per-run mutation lock is taken with the platform's own advisory file lock,
-# the way every other read-modify-write in this repository takes one.
+# Per-run mutation lock: platform's own advisory file lock.
 if sys.platform == "win32":  # pragma: no cover - POSIX is what CI runs
     _fcntl = None
     try:
@@ -77,16 +49,11 @@ else:
 
     _msvcrt = None
 
-# li subcommand for each job kind. "orchestrate" is the canonical parser name
-# (the `o` alias also works); flow and fanout live under it.
-#
-# "play" is spawned as `orchestrate flow -p NAME`, which is exactly what the CLI's
-# own `li play` sugar rewrites itself into. Going through the expanded form rather
-# than the sugar is deliberate: the sugar has to locate NAME by probing the flow
-# parser when a flag precedes it, and it rejects a playbook's own declared args in
-# that path — while `o flow -p NAME` injects the playbook's arg schema into the
-# parser and accepts them. Since every submit prepends --notify, the sugar would
-# always take the probing path.
+# li subcommand for each job kind ("orchestrate" is the canonical parser name;
+# the `o` alias also works). "play" spawns as `orchestrate flow -p NAME` (the
+# expanded form of `li play`'s sugar) because the sugar's NAME-probing path
+# rejects a playbook's own declared args, which every submit needs since it
+# always prepends --notify.
 _KIND_ARGV: dict[str, list[str]] = {
     "agent": ["agent"],
     "flow": ["orchestrate", "flow"],
@@ -130,37 +97,38 @@ _SPAWN_FAILED_REASON = "spawn_failed"
 OUTCOME_INDETERMINATE = "indeterminate"
 LOST_REASON = "process_gone_without_outcome"
 
-# The outcomes this module publishes. Consulted only to decide whether an
-# `outcome` already recorded on a job record may be reported back, so a damaged
-# record cannot invent a value a caller would branch on.
+# A narrower sibling of LOST_REASON: the run's own directory carries a
+# notify_outcome.json recording that its terminal notice was never delivered
+# (persistence was unavailable, or a direct-delivery attempt itself failed —
+# see lionagi/cli/orchestrate/_notify.py). Unlike LOST_REASON this is not pure
+# silence — the run said something about its own end before going quiet — but
+# it is still not a recorded status, so it stays OUTCOME_INDETERMINATE. Never
+# assigned from the *absence* of that file: retention prunes run directories,
+# and an absent file is exactly what true silence also looks like.
+LOST_REASON_NOTICE_RECORDED_UNDELIVERED = "process_gone_notice_recorded_undelivered"
+
+# Outcome values valid to report back from a job record.
 _OUTCOMES = frozenset({"succeeded", "failed", "cancelled", OUTCOME_INDETERMINATE})
 
-# What made a recorded end. Additive: it answers who wrote the end, which
-# neither `status` (open, and the producer's) nor `reason_code` (why the run
-# came out that way) can answer without becoming two fields at once.
+# Which mechanism wrote a run's terminal state (separate from `status`, the
+# open producer vocabulary, and `reason_code`, why it ended that way).
 TERMINAL_SOURCE_HOOK = "cli_terminal_hook"
 TERMINAL_SOURCE_LIFECYCLE = "lifecycle_cache"
 TERMINAL_SOURCE_SPAWN_FAILURE = "spawn_failure"
 TERMINAL_SOURCE_ORPHAN_REAPER = "mcp_orphan_reaper"
-# The kill path is the fifth writer of an end. Like the four above, the value
-# names the mechanism that made the transition rather than the run's fate.
 TERMINAL_SOURCE_KILL = "mcp_kill"
 
-# Why a guarded mutation has no record to work on. Only the first means the run
-# is unknown; the last means the write was refused rather than attempted, so the
-# record is untouched and the operation is the caller's to retry or report.
+# Why a guarded mutation has no record to work on: RECORD_ABSENT means the run
+# is unknown; LOCK_UNAVAILABLE means the write was refused, so a caller may retry.
 RECORD_ABSENT = "absent"
 LOCK_UNAVAILABLE = "lock_unavailable"
 
-# What the orphan observer records as its evidence. Deliberately bounded to the
-# kind and the named finding: nothing about argv, environment, logs, delivery
-# payloads or secrets belongs on a record any caller may read back.
+# Orphan-observer evidence, deliberately bounded to kind + finding — no argv,
+# environment, logs, or secrets belong on a record any caller may read back.
 EVIDENCE_PROCESS_GONE = "process_identity_conclusively_gone"
 
-# The three observations that positively establish that this run's process is
-# gone, and the only findings that admit a terminal transition. A closed
-# positive set, never a test against an inconclusive one: a finding added to the
-# liveness classifier later is not conclusive until it is named here.
+# The only findings that positively establish a run's process is gone and admit
+# a terminal transition; a finding added later isn't conclusive until listed here.
 FINDING_PID_ABSENT = "pid_absent"
 FINDING_DISAPPEARED_DURING_PROBE = "disappeared_during_probe"
 FINDING_PID_RECYCLED = "pid_recycled"
@@ -168,12 +136,11 @@ CONCLUSIVE_FINDINGS = frozenset(
     {FINDING_PID_ABSENT, FINDING_DISAPPEARED_DURING_PROBE, FINDING_PID_RECYCLED}
 )
 
-# The name of the per-run mutation lock, kept beside the record it guards.
+# Name of the per-run mutation lock, kept beside the record it guards.
 _LOCK_NAME = "job.lock"
 
-# The lifecycle read is a control-plane query against a local store; anything
-# slower than this is treated as unavailable rather than waited on, because it
-# is consulted from inside a caller's own poll.
+# Lifecycle read is a control-plane query against a local store, consulted from
+# inside a caller's own poll; anything slower is treated as unavailable.
 LIFECYCLE_TIMEOUT_SECONDS = 20.0
 
 # The most the lifecycle command may write on its result channel.
@@ -185,87 +152,38 @@ WAIT_MAX_SECONDS = 600.0
 WAIT_MIN_POLL_SECONDS = 0.05
 WAIT_MAX_POLL_SECONDS = 60.0
 
-# How long a spawn may sit unresolved before wait() stops holding its window open.
-# This is a polling decision, not a verdict: nothing here terminalises a run, and
-# the classifier's refusal to resolve such a record stands untouched.
-#
-# The number is WAIT_MAX_SECONDS, and it is a defensible default rather than a
-# derivation. The distinction is worth the words, because calling it a derivation
-# tells a later reader the question is closed.
-#
-# What it can be argued from is one property, and only in the backward direction the
-# measurement actually supports: past this line, a caller who had waited since the
-# run was submitted would already have spent a full maximum window, so the bucket
-# never speaks about a spawn nobody could have waited out yet. That is a floor on
-# when this may report, not a claim about whether the spawn will resolve.
-#
-# What it cannot be argued from is the forward direction. A record aged exactly this
-# long may still resolve a second later, and that is true of any threshold whatever,
-# so no value distinguishes itself by "anything shorter would report spawns a caller
-# could still have waited out" — that holds here too. Choosing the longest window
-# this function will honour is a bet that a spawn which has outlived one is likelier
-# stuck than slow. It is a bet, and it is labelled one so that the next person to
-# question the number is questioning a choice rather than arguing with arithmetic.
-#
-# Not a parameter, because a caller wanting a different line no longer needs one —
-# every entry now carries the spawn phase and the submission time, which are the
-# two facts this constant is drawn from, so a caller can draw its own from the same
-# inputs without this function having to guess whose line to hold.
+# How long a spawn may sit unresolved before wait() stops holding its window
+# open — a polling decision, not a verdict; it never terminalises a run. Chosen
+# as a defensible default (see docs/internals/mcp.md#unresolved-spawn-window),
+# not derived: a caller wanting a different line can compute one from the spawn
+# phase and submission time already on every entry.
 UNRESOLVED_SPAWN_AFTER_SECONDS = WAIT_MAX_SECONDS
 
 # The terminal hook module, invoked by the CLI's --notify by absolute
 # interpreter path so it runs regardless of PATH in the CLI's environment.
 _NOTIFY_MODULE = "lionagi.mcp._notify_hook"
 
-# A process start time is read from the kernel in clock ticks, so two reads of
-# the same process can differ in the last decimal. Compared within this
-# tolerance, the same way the CLI's own kill path compares it.
-_CREATE_TIME_TOLERANCE = 0.1
+# Re-exported so this surface's own comparisons and any sweep that has to agree
+# with them read the same number.
+_CREATE_TIME_TOLERANCE = CREATE_TIME_TOLERANCE
 
-# Reason codes carried by kill(). The human `reason` explains the particular
-# case; the code is what a caller can branch on without matching prose.
+# kill() reason codes: the human `reason` explains the case; the code is what a
+# caller can branch on without matching prose. Distinctions that matter for a
+# caller's next move (retry vs. settled, read-failure vs. damaged-but-parsed) are
+# split into separate codes; see docs/internals/mcp.md#kill-reason-codes.
 KILL_NO_SUCH_JOB = "no_such_job"
-# The record is on disk and cannot be used. Two codes rather than one, on the same
-# axis as everything else here: bytes that could not be read or parsed may read
-# differently on the next call, whereas a record that parsed cleanly into something
-# other than an object will answer identically every time and only a person can
-# resolve it.
 KILL_RECORD_UNREADABLE = "job_record_unreadable"
 KILL_RECORD_WRONG_SHAPE = "job_record_wrong_shape"
-# The record parsed into an object and names a run other than the one asked about.
-# Its own code rather than the shape ones above: those say a file has to be looked
-# at by a person, while this one names the run the record does describe, and acting
-# on it is a call this caller can make on its own.
 KILL_RECORD_FOREIGN_RUN = "job_record_names_another_run"
 KILL_NO_PID = "no_pid_on_record"
 KILL_SIGNALLED = "signalled"
-# The signal went out and the record of it could not be written, because the
-# record could not be serialized. Its own code, and not one of the refusals
-# above: those say nothing was signalled, while this says something was and the
-# durable trace of it is missing, which the caller may want to retry for.
 KILL_NOT_RECORDED = "kill_not_recorded"
 KILL_PROCESS_GONE = "process_gone"
 KILL_PERMISSION_DENIED = "permission_denied"
-# The record carries neither identity field, so the pid on it cannot be told
-# apart from a reused one and nothing can be signalled for it. The code names
-# what was read off the record and not why the fields are absent, which the
-# reading does not establish. Its own code, so a reader can tell this from a
-# refusal decided about a record that does carry an identity.
 KILL_NO_RECORDED_IDENTITY = "no_recorded_process_identity"
-# The identity fields are present and of the right type but hold a value nothing
-# can be compared against where a start time belongs. Its own code rather than the
-# one above: that one says the fields are absent, this one says they are there and
-# damaged, and the two point an operator at different things to do.
 KILL_IDENTITY_UNUSABLE = "recorded_identity_unusable"
-# Identity-bearing records. Split by what a caller would do next: a mismatch or
-# a foreign group is settled and will not change on a retry, while an unreadable
-# probe or an incomplete scan is a measurement that failed and may succeed later.
 KILL_PID_RECYCLED = "pid_recycled"
 KILL_LEADER_UNVERIFIABLE = "leader_identity_unreadable"
-# The leader's start time was read twice around the reads that describe its
-# group, and the two readings are not the same value. Separate from the code
-# above, which says the start time could not be read at all: here it was read,
-# twice, and what came back does not describe one process.
 KILL_LEADER_IDENTITY_CHANGED = "leader_identity_changed"
 KILL_LEADER_GROUP_MISMATCH = "leader_group_mismatch"
 KILL_LEADER_GROUP_UNREADABLE = "leader_group_unreadable"
@@ -274,13 +192,6 @@ KILL_GROUP_FOREIGN = "group_belongs_to_another_run"
 KILL_GROUP_MARKERS_CONFLICT = "group_markers_conflict"
 KILL_GROUP_PREDATES_RUN = "group_predates_run"
 KILL_GROUP_SCAN_INCOMPLETE = "group_scan_incomplete"
-# The group was inspected end to end and simply yielded no evidence of ownership:
-# every member's environment was read and none of them carries a marker. Separate
-# from an incomplete scan, which covers a member whose environment would not open
-# at all, because that
-# one is a measurement that failed and may answer on the next call, while this one
-# is the measurement succeeding and returning nothing — the same call will keep
-# returning it, and only an operator can settle the group.
 KILL_GROUP_OWNERSHIP_UNPROVEN = "group_ownership_unproven"
 
 
@@ -294,17 +205,13 @@ def new_run_id() -> str:
     return f"{ts}-{uuid4().hex[:6]}"
 
 
-# How many ids a submission will mint before giving up. An id is a timestamp to
-# the second plus six random hex digits, so a taken one is already unlikely and
-# a run of them is the shape of something else being wrong — a clock pinned to
-# one second, a directory that reports every name as taken. Retrying without a
-# bound would hang the submission there instead of saying so.
+# A run of taken ids this large is the shape of something else being wrong (a
+# pinned clock, a directory reporting every name as taken) — retry without a
+# bound would hang the submission instead of saying so.
 _RUN_ID_ATTEMPTS = 8
 
-# What a submission writes into its own reserved directory before that directory
-# becomes a job. Named here so the writes and the removal that gives them back
-# cannot drift apart, and so the removal is a fixed list rather than whatever
-# happens to be lying in the directory.
+# Fixed list of what a submission writes into its own reserved directory, so the
+# writes and the cleanup that removes them can't drift apart.
 _PROMPT_FILENAME = "prompt.txt"
 _MCP_SNAPSHOT_FILENAME = "mcp-servers.json"
 _RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME)
@@ -313,18 +220,9 @@ _RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME)
 def _reserve_run_dir() -> tuple[str, Path]:
     """Mint a run_id nobody else holds, and return it with its directory.
 
-    Minting an id and creating its directory are one step, and the creation is
-    the thing that decides: ``mkdir`` without ``exist_ok`` either creates the
-    directory or says the name is taken, in one operation the filesystem makes
-    indivisible. Checking first and creating second would leave a window for
-    another submission between the two answers, and the id is not random enough
-    to leave that to chance — two submissions in the same second can mint the
-    same six hex digits.
-
-    What a taken name would otherwise cost is a whole run, not a retry: the
-    second submission would write its record over the first's and hand its child
-    a log the first is still writing into, and both runs would answer to one id
-    for the rest of their lives.
+    Minting and directory creation are one step: ``mkdir`` without ``exist_ok``
+    atomically creates-or-rejects, closing the check-then-create race window
+    (two submissions in the same second can mint the same six hex digits).
     """
     for _ in range(_RUN_ID_ATTEMPTS):
         run_id = new_run_id()
@@ -397,50 +295,17 @@ def _write_job(record: dict[str, Any]) -> None:
         tmp.write_text(json.dumps(record, indent=2))
         os.replace(tmp, d / "job.json")
     except BaseException:
-        # Do not leave the staging file behind: a run whose writes keep failing
-        # would otherwise accumulate orphans in its job dir. The original error
-        # still propagates.
-        #
-        # Every exception, not the errno family alone, because the caller that
-        # gives a reservation back on a failed publication catches every one and
-        # then removes the directory with rmdir — which refuses a directory
-        # holding anything at all. A staging file left by an interrupt would
-        # therefore survive as the one thing standing between that cleanup and
-        # an empty directory, and the run would be stranded by the file written
-        # to make its record atomic. The two have to answer for the same set of
-        # failures or the narrower one decides the outcome.
-        #
-        # A removal that fails does not get to answer in place of what sent us
-        # here. Widening the catch is what makes that reachable: an interrupt
-        # used to pass straight through, and now it arrives inside a handler
-        # whose own failure would replace it, so a caller waiting on a
-        # KeyboardInterrupt would be handed a PermissionError from the tidying
-        # instead. The rule is _discard_reservation's, not a new one — a removal
-        # that fails leaves a file nobody claimed, which is worth less than the
-        # error that sent us here — and the domain it suppresses is the same one:
-        # OSError, what a filesystem refusal actually looks like.
-        #
-        # Deliberately not everything. An interrupt or an exit arriving WHILE the
-        # removal runs is not this removal failing, it is someone asking for the
-        # process to stop, and swallowing it would answer a cancellation with
-        # whatever the run happened to be failing at already. A refusal to delete
-        # is worth less than the original error; a request to stop is not.
+        # Catch every exception (not just OSError) so a staging file left by an
+        # interrupt doesn't block _discard_reservation's rmdir cleanup later;
+        # only suppress OSError from the cleanup itself so a stop request still
+        # propagates rather than being swallowed by a failed unlink.
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
         raise
 
 
 def _write_mcp_server_snapshot(path: Path, servers: dict[str, Any]) -> None:
-    """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at.
-
-    A server entry is arbitrary nested JSON — whatever the resolved config held —
-    so this is an open-shaped payload despite the closed-looking name. Config
-    resolution already refuses the non-standard constants on the way in, which is
-    where a failure names the config an operator actually wrote. Refusing again
-    here binds the guarantee to the file rather than to today's single source of
-    the map, so it holds for any later path that fills *servers* without going
-    through a config read.
-    """
+    """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at."""
     raise_if_non_finite({"mcpServers": servers})
     path.write_text(json.dumps({"mcpServers": servers}, indent=2))
 
@@ -465,12 +330,10 @@ def _unlock_fd(fd: int) -> None:
 
 @dataclass
 class _GuardedJob:
-    """The record a mutation holds while it is inside the per-run lock.
+    """The record a mutation holds while inside the per-run lock.
 
-    *record* is the record as it stands right now — reread inside the lock, never
-    a snapshot the caller brought in with it — and is the object to mutate.
-    *state* says what the reread found when it found no record, so a caller can
-    tell a run nobody submitted from a file that is on disk and damaged.
+    *record* is reread inside the lock (never a caller-supplied snapshot).
+    *state* distinguishes "no run submitted" from "record on disk and damaged".
     """
 
     record: dict[str, Any] | None
@@ -479,17 +342,12 @@ class _GuardedJob:
 
 @dataclass(frozen=True)
 class WriteResult:
-    """What one guarded mutation came to, said in a way a caller can act on.
+    """Outcome of one guarded mutation.
 
-    *record* is the record as it stands after the attempt, or None when there
-    was no usable one to work on. *state* says which of those it is, so the two
-    reasons a mutation comes back empty stay apart: a run nothing recorded, and
-    a write that was refused because its critical section could not be entered.
-
-    The distinction is the point. A caller told only "no record" has to guess,
-    and the guess that costs something is treating a refused write as a
-    completed one — announcing an end that is not on disk. ``refused`` names
-    that single case so nobody has to compare strings to find it.
+    *record* is None either when nothing was ever recorded, or when the write
+    was refused because its critical section couldn't be entered — ``refused``
+    (below) is what tells those two apart, so a caller never mistakes a refused
+    write for a completed one and announces an end that isn't on disk.
     """
 
     record: dict[str, Any] | None
@@ -505,38 +363,10 @@ class WriteResult:
 def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
     """Read-modify-write one run's record inside one per-run critical section.
 
-    ``os.replace`` publishes a record without ever tearing it, but two writers
-    that read, merge and publish in turn still lose one of the two updates: the
-    second one's merge started from bytes the first one has already replaced.
-    The terminal hook, the pid attachment, the lifecycle cache, the delivery
-    result and the orphan observer all do exactly that, and they run in
-    different processes, so the section that has to be exclusive is the whole
-    reread-merge-publish cycle rather than the publish alone.
-
-    The lock is an advisory file lock on a file of its own beside the record —
-    not on the record, which is replaced rather than written in place, so a lock
-    held on it would be a lock on bytes that are already unlinked. It is taken
-    for the whole ``with`` body and the write that follows it, and the record is
-    reread under it, so what a caller merges into is what is on disk now.
-
-    The record is published on exit only if the body changed it, so a mutation
-    that decides to keep what it found — which is what first-writer-wins looks
-    like from inside — touches nothing.
-
-    A run with no directory is a run nothing has recorded, and no lock is
-    created for it: making one would leave an empty job directory that reads
-    back as a damaged record for a run nobody submitted. A lock that cannot be
-    taken for any other reason yields no record either, and every mutation below
-    is written to do nothing without one — an unserialized write is exactly what
-    this exists to prevent.
-
-    Those two are reported as different states, and the difference is the whole
-    point of reporting them. An absent record is a settled answer about the run;
-    an unavailable lock is no answer at all, and a caller that treats it as one
-    publishes a fact it never wrote. Failing to create the lock file and failing
-    to acquire the lock are the same fact — this section was not entered — so
-    they yield the same state rather than one of them escaping as an exception
-    from a context manager whose contract is that it yields.
+    See docs/internals/mcp.md#locked-job-contract for why the whole
+    reread-merge-publish cycle (not just the final ``os.replace``) must be
+    exclusive across processes, and why RECORD_ABSENT/LOCK_UNAVAILABLE must stay
+    distinguishable states rather than one collapsing into the other.
     """
     try:
         fd = os.open(config.job_dir(run_id) / _LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
@@ -549,12 +379,8 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
     try:
         _lock_fd(fd)
     except OSError:
-        # Giving the descriptor back is tidying up after a lock that was not
-        # taken, and tidying up does not get to answer for it. A close that
-        # fails here would leave this function raising out of a context manager
-        # whose whole contract, stated above, is that it yields a state instead
-        # — and it would report the wrong fact besides: the caller needs to know
-        # the section was not entered, not which descriptor could not be closed.
+        # This context manager's contract is to yield a state, never raise; a
+        # close failure while tidying up an untaken lock must not escape instead.
         with contextlib.suppress(OSError):
             os.close(fd)
         yield _GuardedJob(None, LOCK_UNAVAILABLE)
@@ -569,28 +395,10 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
             _write_job(guard.record)
         section_succeeded = True
     finally:
-        # Two releases that both have to be attempted. When the section failed,
-        # neither is entitled to answer in place of that failure. When it
-        # succeeded, a release failure is the only failure and remains observable.
-        # The close is still attempted when the unlock did not happen, because a
-        # lock nobody released is a worse outcome than either.
-        #
-        # Only what a refusal looks like, though. An interrupt or an exit
-        # arriving while the release runs is not the release failing, it is
-        # someone asking for the process to stop, and it goes on through — the
-        # nested block is what keeps the close attempt on its way out.
-        #
-        # Attempted is the honest word for the close, and the reason it is not
-        # stronger is that nothing here can make it stronger. Whether a close
-        # that fails released the descriptor anyway is unspecified, and the
-        # obvious repair is worse than the problem: by the time a retry ran the
-        # runtime may have handed that number to something else, so it would
-        # close a file belonging to whatever got it next. What bounds the damage
-        # is not this block but the lock itself: if either platform lock is
-        # still held once cleanup has failed, process exit ends it. That ceiling
-        # is the whole of the claim. The two locks arrive at it by different
-        # routes and neither route is described here, because a description that
-        # fits one of them does not fit the other.
+        # Both unlock and close are attempted even if one fails, since a lock
+        # nobody released is worse than either failing alone; a close that fails
+        # must not be retried (the fd number may have been reassigned by then) —
+        # process exit is what bounds a leaked lock.
         if section_succeeded:
             try:
                 _unlock_fd(fd)
@@ -606,13 +414,8 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
 
 
 def _short_repr(value: Any, limit: int = 60) -> str:
-    """A recorded value, shown as written and bounded in length.
-
-    Reporting the value as written rather than as coerced lets a reader see the
-    damage instead of a plausible-looking substitute. It came off disk, though, and
-    a JSON number or string has no length limit, so the record must not get to
-    choose how long an answer is.
-    """
+    """A recorded value, shown as written (not coerced) and bounded in length —
+    it came off disk, so the record itself must not choose how long the answer is."""
     shown = repr(value)
     return shown if len(shown) <= limit else f"{shown[:limit]}… ({len(shown)} characters)"
 
@@ -620,36 +423,13 @@ def _short_repr(value: Any, limit: int = 60) -> str:
 def _read_job_state(run_id: str) -> tuple[dict[str, Any] | None, str]:
     """The job record for *run_id*, and why there isn't one when there isn't.
 
-    ``("absent", "unreadable", "wrong_shape")`` are three different facts and only
-    the first means the run is unknown. A record whose bytes cannot be read or
-    parsed is present and damaged; a record that parses to a JSON value that is not
-    an object — an array, a string, ``null`` — is present, intact and unusable.
-    Reporting either as "no such job" tells an operator to stop looking for a run
-    whose file is sitting on disk.
-
-    The record is returned only in the ``"ok"`` case, so nothing downstream can
-    reach a value this did not admit.
-
-    Absence is established by the read itself rather than by a separate question
-    about whether the path is there. Asking first and reading second answers a
-    question nobody asked — the path may become unreadable between the two — and,
-    more plainly, a path whose directory cannot be searched is not a path that was
-    found to be missing. Only "the file is not there" is absence; every other way
-    the read can fail is a record that is present and could not be got at.
-
-    "Every other way" is meant literally, so the guards are written to be total
-    rather than to list the failures anyone thought of. Bytes are damaged in ways
-    that are not guessable in advance: they fail to be text before they fail to be
-    JSON, and they exhaust the decoder's stack rather than failing to parse at all.
-    Naming those one at a time produces a list that is correct until the next shape
-    arrives, and the caller cannot use a classification that is only mostly total.
-
-    What makes the broad guards safe here is the size of what they cover, not the
-    exceptions they name. Each wraps a single expression that does one thing and
-    holds no logic of its own, so anything raised inside it came from the read or
-    the parse and is a record this function could not establish. A guard this broad
-    over a block with branching in it would be hiding bugs instead of classifying
-    damage; that is the property to preserve if this code grows.
+    ``"absent"`` (no file — run unknown), ``"unreadable"`` (bytes present but
+    unreadable/unparseable), and ``"wrong_shape"`` (parses to non-object JSON)
+    are distinct: only the first means the run is unknown, the other two mean a
+    record is present but damaged. The record is returned only for ``"ok"``.
+    Each guard below wraps one read-or-parse expression with no branching, so a
+    broad except there classifies damage rather than hiding a bug — do not widen
+    a guard to cover more than that if this function grows.
     """
     p = config.job_dir(run_id) / "job.json"
     try:
@@ -670,9 +450,8 @@ def _read_job_state(run_id: str) -> tuple[dict[str, Any] | None, str]:
 def _read_job(run_id: str) -> dict[str, Any] | None:
     """The job record, or None when there is no usable one.
 
-    Every reader that only needs the record goes through here and gets what it
-    always got, including a falsy answer to fall back on. A caller that has to tell
-    an unknown run from a damaged file reads the state alongside it instead.
+    Callers that must tell an unknown run from a damaged file should read
+    ``_read_job_state`` directly instead.
     """
     return _read_job_state(run_id)[0]
 
@@ -680,25 +459,12 @@ def _read_job(run_id: str) -> dict[str, Any] | None:
 def _read_lifecycle(run_id: str) -> dict[str, Any] | None:
     """Ask the CLI what the lifecycle store records about *run_id*.
 
-    Spawned as ``li lifecycle <run_id> --machine``, the same way every other
-    non-job verb reaches the CLI. Going through the command rather than opening
-    the database here keeps one reader of a schema this package does not own.
-
-    Returns the summary the command established, or None when it could not be
-    established for any reason at all — the command missing, refusing, timing
-    out, or answering that the store was unreadable. None is not "no record":
-    a caller must treat it as "did not learn anything" and fall back to what it
-    already knew, because the alternative is calling a run finished on the
-    strength of a read that never happened.
-
-    "Any reason at all" is meant literally, so the two guards below are total
-    rather than lists of the failures anyone thought of. Both are safe for the
-    same reason the record reader's are: each covers a single expression that
-    spawns or parses and holds no logic of its own, so anything raised inside it
-    came from the read. The output arrives from another program, which makes the
-    parse the widest surface here — bytes that exhaust the decoder's stack fail
-    to parse without raising a parse error — and a caller cannot fall back on an
-    answer that is only mostly total.
+    Spawned as ``li lifecycle <run_id> --machine`` rather than opening the
+    database directly, so this package stays the only non-owning reader of a
+    schema it doesn't own. Returns None for any failure at all (missing command,
+    refusal, timeout, unreadable store) — never treat None as "no record"; treat
+    it as "learned nothing" and fall back to what was already known, since the
+    alternative is calling a run finished on a read that never happened.
     """
     argv = [*config.li_command(), "lifecycle", run_id, "--machine"]
     try:
@@ -733,12 +499,7 @@ def _read_lifecycle(run_id: str) -> dict[str, Any] | None:
 
 
 def _read_run_manifest(run_id: str) -> dict[str, Any] | None:
-    """The run manifest, or None when there is not one to be had.
-
-    Total for the same reason the record reader is: the caller is told only whether
-    there is a manifest to show, so every way of not getting one is the same answer,
-    and the guard covers a single expression that reads and parses and nothing else.
-    """
+    """The run manifest, or None when there is not one to be had."""
     try:
         return json.loads(config.run_manifest(run_id).read_text())
     except Exception:
@@ -751,11 +512,9 @@ def _read_run_manifest(run_id: str) -> dict[str, Any] | None:
 def _pid_alive(pid: int | None) -> bool:
     if not pid or pid <= 1:
         return False
-    # A detached child is still OUR child, so once it exits unreaped it lingers
-    # as a zombie and `kill -0` would report it alive. Reap it first: waitpid
-    # returns (pid, _) if it just exited, (0, 0) if still running, and raises
-    # ChildProcessError when it is not our child (e.g. after an MCP-server
-    # restart, where init reaps it and a direct probe is authoritative).
+    # Reap first: an unreaped exited child is a zombie and `kill -0` would still
+    # report it alive. waitpid: (pid, _) just exited, (0, 0) still running,
+    # ChildProcessError if not our child (e.g. after an MCP-server restart).
     try:
         reaped, _ = os.waitpid(pid, os.WNOHANG)
         if reaped == pid:
@@ -778,22 +537,10 @@ def _pid_alive(pid: int | None) -> bool:
 def _askable_pid(value: object) -> int | None:
     """The recorded pid if the OS can be asked about it at all, otherwise None.
 
-    A pid is a C integer to every call that takes one, so a record can carry a
-    perfectly good Python int that no probe can express, and a probe handed one
-    raises before it looks anything up. The bound is the platform's and not ours,
-    so it is established by asking rather than by a constant of our own choosing.
-    Signal 0 asks about a process without disturbing it, which is what the
-    liveness probe does with it too.
-
-    The type check is here rather than at each caller because a record is JSON
-    from disk: the value can be a string, a list, or anything else that survives
-    a parse, and every probe below takes an integer. A bool is an int to
-    isinstance and arrives as 0 or 1, both of which mean something else entirely
-    to a group signal, so it is refused alongside them.
-
-    Only the overflow is caught, because only the overflow is a question about
-    the number. Any other failure of that call is a failure of the probe, and
-    reporting it as an unusable pid would blame the record for it.
+    A record is JSON off disk, so *value* may be a bool, string, or anything
+    else that survives a parse — bools are excluded even though ``isinstance``
+    accepts them, since 0/1 mean something else to a group signal. Only
+    OverflowError is treated as "unusable"; any other failure is the probe's own.
     """
     if not isinstance(value, int) or isinstance(value, bool) or value <= 1:
         return None
@@ -806,46 +553,43 @@ def _askable_pid(value: object) -> int | None:
     return value
 
 
+# The identity-verified process reads live in lionagi.ln._proc, which owns the
+# process-group primitives, and are bound here to this surface's marker. A
+# second copy would be a second thing to keep correct, and these are exactly the
+# reads a quiescence sweep elsewhere has to agree with.
+#
+# Written as wrappers rather than assigned aliases so the shared name is
+# resolved per call. An alias would freeze the original function object here,
+# and a probe substituted in lionagi.ln._proc would then reach the shared scan
+# below while missing this module's own direct calls — two targets with
+# different reach, which is how a substitution silently covers half of what its
+# author believes it covers.
 def _process_create_time(pid: int) -> tuple[str, float | None]:
-    """When the process at *pid* started: ``("found", t)``, ``("gone", None)``
-    or ``("unknown", None)``.
-
-    Three answers, not two. "unknown" is a probe that errored — the process may
-    well be there — and a caller must never read it as death or as licence to
-    signal. A zombie answers "gone": it has exited, holds its pid until it is
-    reaped, and cannot be a recycled pid while it does.
-    """
-    import psutil
-
-    try:
-        proc = psutil.Process(pid)
-        if proc.status() == psutil.STATUS_ZOMBIE:
-            return "gone", None
-        return "found", proc.create_time()
-    except psutil.NoSuchProcess:
-        return "gone", None
-    except (psutil.Error, OSError):
-        return "unknown", None
+    return process_create_time(pid)
 
 
 def _start_time_matches(observed: float, recorded: float) -> bool:
-    """Whether a start time read now is the one recorded for this run at spawn.
+    return start_time_matches(observed, recorded)
 
-    Within a tolerance, because the two are separate reads of a clock the kernel
-    keeps in ticks. Only for a recorded value against a live one: two live reads
-    of the same process must be equal, and letting those drift would weaken the
-    check that tells a recycled pid from the process that held it.
-    """
-    return abs(observed - recorded) <= _CREATE_TIME_TOLERANCE
+
+def _process_marker(pid: int) -> tuple[str, str | None]:
+    return process_marker(pid, config.JOB_MARKER_ENV_VAR)
+
+
+def _pinned_member(pid: int, pgid: int) -> tuple[str, tuple[int, float, str | None, bool] | None]:
+    return pinned_member(pid, pgid, marker_var=config.JOB_MARKER_ENV_VAR)
+
+
+def _live_group_members(pgid: int) -> tuple[list[tuple[int, float, str | None, bool]], bool]:
+    return live_group_members(pgid, marker_var=config.JOB_MARKER_ENV_VAR)
 
 
 def _spawned_pgid(pid: int) -> int:
     """The process group of a just-spawned child.
 
-    Read from the OS, with the child's pid as the fallback: it was started with
-    ``start_new_session``, so it leads its own group and the two are equal by
-    construction. Recorded at spawn because deriving it at kill time is what
-    lets a reused pid resolve to a stranger's group.
+    Falls back to the child's own pid (started via ``start_new_session``, so it
+    leads its own group by construction). Recorded at spawn, not derived at kill
+    time, since a reused pid would otherwise resolve to a stranger's group.
     """
     try:
         return os.getpgid(pid)
@@ -853,162 +597,12 @@ def _spawned_pgid(pid: int) -> int:
         return pid
 
 
-def _pinned_member(pid: int, pgid: int) -> tuple[str, tuple[int, float, str | None, bool] | None]:
-    """Everything *pid* has to say as a member of *pgid*, read as one observation.
-
-    ``("found", (pid, create_time, marker, marker_read))`` when a single process
-    answered all of it, ``("gone", None)`` when the pid holds no live member of
-    this group, and ``("unknown", None)`` when the reads could not be tied to one
-    process.
-
-    Group, start time and marker are three facts, each read by pid, and a pid
-    the OS reassigns between two of those reads answers the later ones as the
-    replacement process. A verdict assembled from those answers would describe
-    no process that ever existed, so the reads are bracketed by the start time:
-    read before, read again after, required to be unchanged. That is the value
-    that tells a recycled pid from the process that held it, and it is what
-    binds the other two to the same process. Failing the bracket is "unknown" —
-    a measurement that did not come off, never evidence about the group.
-
-    *marker_read* travels with the marker because a None marker alone does not
-    say which of two things happened. The environment read and held no marker,
-    and the environment could not be read at all, are the same None; only this
-    flag tells a member that was inspected from one that refused inspection.
-    """
-    state, created = _process_create_time(pid)
-    if state == "gone":
-        return "gone", None
-    if state != "found" or created is None:
-        return "unknown", None
-    try:
-        in_group = os.getpgid(pid) == pgid
-    except ProcessLookupError:
-        return "gone", None
-    except OSError:
-        return "unknown", None
-    marker_state, marker = _process_marker(pid)
-    again, created_again = _process_create_time(pid)
-    if again != "found" or created_again != created:
-        return "unknown", None
-    if not in_group:
-        return "gone", None
-    return "found", (pid, created, marker, marker_state == "found")
-
-
-def _live_group_members(pgid: int) -> tuple[list[tuple[int, float, str | None, bool]], bool]:
-    """Live members of process group *pgid*, and whether the scan was complete.
-
-    Returns ``(members, complete)`` where each member is ``(pid, create_time,
-    marker, marker_read)``. All of it arrives together, from
-    :func:`_pinned_member`, so that a caller weighing a member's marker and a
-    member's age is weighing one process. The group read in the loop below only
-    narrows the process table to candidates; the membership that counts is the
-    one read inside the bracket.
-
-    A process that vanishes mid-scan is simply not a live member; a process
-    whose group or identity could not be read leaves *complete* false, because
-    the group may then hold a member this scan never saw. A member that cannot
-    be pinned is never quietly dropped instead: a scan that reported itself
-    complete while a member went unread would let a live group be answered for
-    as gone. Zombies are excluded: an unreaped corpse still counts as a group
-    member to the kernel, so counting it would report a group that is empty of
-    running work as live.
-
-    *complete* is about membership coverage and nothing else. A member whose
-    marker could not be read was still seen — its pid, group and start time all
-    answered — so it opens no gap in the membership, and it is reported as a
-    member carrying *marker_read* false rather than as a member the scan missed.
-    """
-    import psutil
-
-    members: list[tuple[int, float, str | None, bool]] = []
-    complete = True
-    try:
-        pids = psutil.pids()
-    except (psutil.Error, OSError):
-        return [], False
-
-    for pid in pids:
-        if pid <= 1:
-            continue
-        try:
-            if os.getpgid(pid) != pgid:
-                continue
-        except ProcessLookupError:
-            continue
-        except OSError:
-            complete = False
-            continue
-        state, member = _pinned_member(pid, pgid)
-        if state == "found" and member is not None:
-            members.append(member)
-        elif state == "unknown":
-            complete = False
-    return members, complete
-
-
-def _process_marker(pid: int) -> tuple[str, str | None]:
-    """The run marker carried by the process at *pid*.
-
-    ``("found", value_or_None)`` when the environment was read, ``("unknown",
-    None)`` when it raised — a probe that failed, and never evidence about the
-    process.
-
-    A None value is weaker than it looks and must not be read as "this process
-    does not carry the marker". macOS returns an *empty* environment, without
-    raising, for a process running a protected system binary, so a declined
-    disclosure and a genuinely absent marker arrive identically. That is safe
-    only in one direction: an unreadable environment contributes no marker, and
-    no marker can only ever withhold ownership, never assert it. Nothing here
-    may be inverted into evidence that a group is not this run's.
-    """
-    import psutil
-
-    try:
-        return "found", psutil.Process(pid).environ().get(config.JOB_MARKER_ENV_VAR)
-    except (psutil.Error, OSError, UnicodeDecodeError):
-        return "unknown", None
-
-
 def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str]:
     """Whether the live group *pgid* can be the group this run spawned.
 
-    Returns the verdict and the rule that reached it. Two rules, tried in that
-    order:
-
-    The marker decides positively. Every process the run spawned carries the
-    run id in its environment, so a live member that reads back this run's id
-    identifies the group outright — members share a pgid, so one confirmed
-    member makes the group this run's. A member carrying a *different* run's id
-    is the same evidence pointing the other way: the group number has been
-    reused.
-
-    Every readable marker is collected before the rule is applied, because
-    deciding on the first one read would make the verdict depend on the order
-    the process table happened to be enumerated in — the same group could then
-    be accepted or refused between two calls. Each marker arrives already tied
-    to the member that carries it and to that member's age, so no rule here
-    reasons about a pid, only about processes the scan pinned. Markers that disagree are
-    ``"conflict"``: two runs cannot both own a group, so whatever produced the
-    disagreement is unexplained, and an unexplained group is not signalled.
-
-    The start time can only ever exclude. A member that started before this run
-    did cannot be work this run spawned, so the group number has been handed on
-    and the answer is ``"not_ours"``. The converse does not follow: every member
-    being younger than the run is consistent with the group being ours and
-    equally consistent with an unrelated group that simply started later, so it
-    is not an identification and is never treated as one. A dead leader whose
-    group yields no marker, every member's environment having been read, is
-    ``"unproven"`` — inspected in full, and found to carry no evidence either
-    way.
-
-    ``"gone"`` when nothing live is left in the group, and ``"unknown"`` when
-    the scan itself could not be completed. Two things leave it incomplete: a
-    member it could not read at all, which leaves a group that may hold work the
-    scan never saw, and a member it saw whose environment refused to be read,
-    which leaves the marker rule undecided on a process it did see. Neither is a
-    finding about the group, and both may answer on the next call, so they are
-    the same news and share an answer.
+    Returns the verdict and the rule that reached it (see
+    docs/internals/mcp.md#group-identity-rules for the two-rule ordering and
+    why each verdict means what it does).
     """
     members, complete = _live_group_members(pgid)
 
@@ -1032,13 +626,8 @@ def _group_identity(pgid: int, spawned_at: float, run_id: str) -> tuple[str, str
 
 def _tail(path: str | None, limit: int = 4000) -> str | None:
     """The last *limit* characters of the log, or None when there is no tail to
-    show.
-
-    A log that cannot be read reports as no tail rather than as an error. Unlike
-    the job record, the tail is advisory — the caller has already been told the
-    run exists and what state it is in — so there is nothing an operator would do
-    differently on "no log yet" versus "the log could not be read", and neither is
-    worth failing the surrounding call for.
+    show. Unlike the job record, the tail is advisory — a read failure reports
+    as no tail rather than as an error, since it's not worth failing the call.
     """
     if not path:
         return None
@@ -1052,31 +641,16 @@ def _tail(path: str | None, limit: int = 4000) -> str | None:
 def _list_artifacts(run_id: str) -> tuple[list[str], str]:
     """The persisted artifacts of *run_id*, and whether the traversal completed.
 
-    A traversal that fails answers ``"unreadable"``, never with the empty list
-    alone. "This run wrote no artifacts" is a claim about the run; "the artifacts
-    could not be listed" is a claim about the read, and a caller that is told the
-    first when the second happened has been told something false about the run.
-
-    The walk is asked to report its errors rather than raise them. Denying a read
-    does not always raise: a directory whose own read permission is refused yields
-    nothing at all, so a traversal that only catches exceptions would answer that
-    the run wrote nothing and call that answer complete. A partly readable tree
-    returns the files it did reach, since those are true, alongside the state that
-    says the list is short.
-
-    A directory that is not there is not a failed read. Nothing writes one until a
-    run persists something, so its absence is exactly what an empty list of
-    artifacts means.
-
-    The per-entry check asks for the metadata itself rather than for a verdict
-    about it. The convenience predicates answer a question this function is not
-    asking: they report what the entry is, and report a false when they could not
-    find out, which are two different answers arriving as one value. Which of
-    those a caller gets has changed across interpreter versions, so relying on one
-    to raise makes the shortfall visible on some and invisible on others. Asking
-    for the metadata keeps the distinction in this function, where the difference
-    between "not a file" and "could not be looked at" is exactly what the state is
-    for.
+    A failed traversal answers ``"unreadable"``, never a bare empty list — "no
+    artifacts" is a claim about the run, "couldn't list them" a claim about the
+    read, and conflating them tells the caller something false. A missing
+    artifacts directory is not a failed read: nothing creates one until a run
+    persists something, so absence just means an empty list. Metadata is read
+    directly (`.stat()`) rather than via the `is_file()`-style predicates, since
+    those report `False` both for "not a file" and "couldn't be checked" —
+    indistinguishably, and inconsistently across interpreter versions — which
+    would hide exactly the shortfall this function's `"unreadable"` state exists
+    to report.
     """
     adir = config.run_dir(run_id) / "artifacts"
     unreadable = False
@@ -1093,17 +667,9 @@ def _list_artifacts(run_id: str) -> tuple[list[str], str]:
             try:
                 mode = path.stat().st_mode
             except FileNotFoundError:
-                # Gone between the walk naming it and this look at it. Nothing was
-                # withheld, so there is no shortfall to report, exactly as the
-                # directory-level callback treats the same disappearance.
-                continue
+                continue  # gone between the walk naming it and this stat
             except OSError:
-                # A directory can be listable and still not searchable, so a name
-                # can arrive from the walk and its metadata still be out of reach.
-                # The entry is one the caller will not hear about, which is the
-                # same shortfall the state reports; the walk continues, because
-                # the entries after it are still true.
-                unreadable = True
+                unreadable = True  # listable dir, unreadable entry metadata
                 continue
             if stat.S_ISREG(mode):
                 found.append(str(path.relative_to(adir)))
@@ -1165,11 +731,9 @@ _EXEC_RESERVE_BYTES = 4096
 def _max_single_arg_bytes() -> int | None:
     """The per-argument exec limit, or None where the platform imposes none.
 
-    Linux caps one argument at ``MAX_ARG_STRLEN`` (32 pages) independently of the
-    aggregate limit and exposes no ``sysconf`` for it, so it is derived from the
-    running page size. Other platforms — macOS among them — bound only the total,
-    and happily exec a single argument far larger than this; applying the Linux
-    number there would refuse work the OS would have accepted.
+    Linux caps one argument at ``MAX_ARG_STRLEN`` (32 pages), independently of
+    the aggregate limit and with no ``sysconf`` knob for it, so it's derived
+    from the page size. Other platforms (macOS included) bound only the total.
     """
     if not sys.platform.startswith("linux"):
         return None
@@ -1183,22 +747,15 @@ def _max_single_arg_bytes() -> int | None:
 
 
 def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -> None:
-    """Refuse a command line the OS will not accept, before anything is spawned.
+    """Refuse a command line the OS will not accept, before anything is spawned
+    — ``exec``'s own ``Argument list too long`` arrives too late, after a run id
+    already exists for a process that never started.
 
-    ``exec`` rejects an oversized invocation with ``OSError: [Errno 7] Argument
-    list too long``, which arrives too late to be useful: by then the caller has a
-    run id for a process that never started. There are two independent limits and
-    both have to hold.
-
-    The *aggregate* limit covers argv and the environment together and is readable
-    as ``SC_ARG_MAX``. Alongside the strings themselves the kernel stores a
-    terminator and a pointer per entry, so entries are counted, not just bytes —
-    a flat reserve would be defeated by a long list of short arguments.
-
-    The *per-argument* limit applies to one string on its own, and only where the
-    platform imposes one — see :func:`_max_single_arg_bytes`. It is checked
-    separately because an argument can be under the aggregate limit and still be
-    refused on its own.
+    Two independent limits, both must hold: the *aggregate* (`SC_ARG_MAX`,
+    argv+env together, counting each entry's terminator+pointer so a long list
+    of short arguments can't defeat a flat byte reserve) and the *per-argument*
+    (:func:`_max_single_arg_bytes`, checked separately since an argument can be
+    under the aggregate limit and still be refused on its own).
     """
     try:
         limit = os.sysconf("SC_ARG_MAX")
@@ -1258,10 +815,9 @@ class SpawnError(RuntimeError):
 def _outcome_for(status: Any) -> str:
     """How a terminal run came out, from the status the CLI recorded.
 
-    Used only once a run has been established terminal by a recorded end, never
-    to decide whether it ended. A status this build has never heard of is a
-    failure, because the failure mode of a stale success list is a timeout or an
-    empty completion read back as a success.
+    Used only once a run is already established terminal, never to decide
+    whether it ended. An unrecognized status classifies as failure — a stale
+    success list would otherwise read a timeout back as a success.
     """
     if status in _SUCCEEDED_STATUSES:
         return "succeeded"
@@ -1271,13 +827,9 @@ def _outcome_for(status: Any) -> str:
 
 
 def _recorded_outcome(job: dict[str, Any]) -> str | None:
-    """The outcome a writer recorded on this record, if it published one.
-
-    Checked against the vocabulary this module publishes rather than passed
-    through: the record is JSON from disk, and `outcome` is the field callers
-    branch on, so a damaged or hand-edited record must not be able to put a
-    value there that no producer would ever write.
-    """
+    """The outcome a writer recorded, validated against `_OUTCOMES` rather than
+    passed through — a damaged or hand-edited record must not be able to put a
+    value in the field callers branch on that no producer would ever write."""
     value = job.get("outcome")
     return value if isinstance(value, str) and value in _OUTCOMES else None
 
@@ -1289,30 +841,8 @@ def _derive(
 ) -> dict[str, Any]:
     """Classify a job record into the fields a caller is allowed to branch on.
 
-    ``status`` is an open vocabulary: whatever the CLI recorded is passed through
-    verbatim and is never matched against a local set to decide anything.
-
-    ``terminal`` answers "stop waiting" and comes only from a recorded end — a
-    ``finished_at`` written by the terminal hook or by ``kill``, a spawn failure
-    the producer caught and wrote down, an end recorded in the lifecycle store,
-    which is where a run stopped by ``li kill`` leaves its only trace, or the
-    orphan transition this module publishes for a process it found conclusively
-    gone. Every one of those is a durable record read back from disk: this
-    function never turns a live observation into a latch, which is what keeps
-    two readers of one unchanged record from disagreeing. It
-    is never inferred from the status string and never from a missing pid:
-    between the pre-spawn write and the write that attaches the pid, a perfectly
-    healthy child has no pid yet.
-
-    *lifecycle* is the summary ``li lifecycle`` established for this run, or None
-    when nothing could be established. None never terminalises anything: a read
-    that failed leaves the classification exactly as it was before this argument
-    existed.
-
-    ``outcome`` answers "did the work come out right" and is null whenever
-    ``terminal`` is false — including for a run whose process is gone and whose
-    loss could not be established conclusively, which has stopped looking alive
-    and is still not terminal.
+    See docs/internals/mcp.md#derive-contract for what `terminal` and `outcome`
+    may and may not be derived from.
     """
     if job is None:
         return {
@@ -1341,15 +871,9 @@ def _derive(
         return {
             "status": recorded,
             "terminal": True,
-            # An outcome the writer of the end recorded wins over one derived
-            # from the status string. A run whose process was found gone with
-            # nothing reported has no status to classify — it never said how it
-            # came out — so its outcome is written down at the transition and
-            # read back here rather than guessed at from `"exited"`.
+            # A recorded outcome wins over one derived from the status string.
             "outcome": _recorded_outcome(job) or _outcome_for(recorded),
-            # A reason carried on the record wins: it came from the lifecycle
-            # store, which knows why the run ended, while the status-derived one
-            # is only what the status alone can say.
+            # A recorded reason wins: it came from the lifecycle store.
             "reason_code": job.get("reason_code") or _REASON_BY_STATUS.get(recorded),
             "spawn_state": spawn_state,
             "possibly_orphaned": False,
@@ -1365,10 +889,8 @@ def _derive(
             "possibly_orphaned": False,
         }
 
-    # The process is gone (or was never there) and the sidecar records no end.
-    # The lifecycle store is the other place an end gets written, and the only
-    # place a cancellation does: `li kill` transitions the row and signals the
-    # pid, and writes nothing here.
+    # Process gone (or never there), sidecar records no end. The lifecycle
+    # store is the only place `li kill` records an end (it writes nothing here).
     if lifecycle is not None and lifecycle.get("terminal"):
         lifecycle_status = lifecycle.get("status", recorded)
         return {
@@ -1381,10 +903,8 @@ def _derive(
         }
 
     if spawn_state == "preparing":
-        # The spawn has not been attempted yet, or its result has not been
-        # written. Report the record as it stands and make no claim about the
-        # spawn's fate; a stale one stays non-terminal rather than being resolved
-        # by a bound that cannot tell a loaded machine from a dead spawn.
+        # Spawn not yet attempted or its result not yet written; a stale one
+        # stays non-terminal rather than guessed at by a timeout.
         return {
             "status": recorded,
             "terminal": False,
@@ -1420,21 +940,11 @@ def _derive(
 def _submit_cwd() -> str | None:
     """This process's own directory, or None when it no longer has one.
 
-    This is the submitter's directory because of how the server is reached, and
-    only because of that: it is served over stdio, so the client spawns it and
-    the process inherits that client's environment. One client, one server, one
-    working directory. A transport where several callers share one long-lived
-    server would break the equivalence silently — every notice would sign as the
-    server's owner rather than the caller's — so a transport added later needs
-    the anchor carried on the request instead of read from here.
-
-    Read through a guard because a submission must not be lost to it. A server
-    whose working directory was removed under it cannot answer, and that is a
-    missing field on one record rather than a reason to strand a run: the record
-    is built before the write that publishes it, so anything raising here leaves
-    a reserved directory that reads back as a job with no kind that never
-    finishes. None says the submitter's directory is unknown, which the delivery
-    path treats as the pre-existing case of not knowing it at all.
+    Valid as "the submitter's directory" only because the server is served over
+    stdio (one client spawns one server, inheriting its cwd) — a future
+    multi-caller transport must carry the anchor on the request instead. Errors
+    are swallowed to None rather than raised, since a removed cwd must not
+    strand the run being submitted.
     """
     try:
         return os.getcwd()
@@ -1468,11 +978,9 @@ def submit(
     configured default, the run simply records its status and delivers nothing.
 
     *mcp_config* and *no_mcp_config* are the caller's own answer to where the
-    child's MCP servers come from, handed over as values rather than left to be
-    read back out of *flags*. Both are already rendered into *flags* by the
-    surface; they are repeated here because this function has to decide whether
-    to resolve a set of its own, and that is a decision about intent, not about
-    tokens.
+    child's MCP servers come from, passed as values (not re-parsed out of
+    *flags*, which are already rendered in `--flag=value` form) since this
+    function must decide whether to resolve its own server set.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
@@ -1480,27 +988,13 @@ def submit(
     run_id, d = _reserve_run_dir()
     log_path = d / "console.log"
 
-    # Nothing is written into the reserved directory until the whole command line
-    # is assembled, and a submission that does not become a job gives the
-    # reservation back on its way out. A directory here is not nothing: every
-    # directory under the jobs root is listed as a job, so one left behind reads
-    # back as a job with no kind that never finishes. What that give-back does
-    # and does not promise is _discard_reservation's to say rather than this
-    # block's, exception included — a removal the filesystem refuses leaves the
-    # directory standing, and insisting past a refusal is worse than accepting
-    # it. What this block decides is the reach: it runs to the last write this
-    # function makes before the record exists rather than stopping where the
-    # assembly does, so a failure at the second of two writes gives the
-    # reservation back the same way a failure at the first does.
-    #
-    # It ends at the record. Once _write_job has run the directory is a real job
-    # with real state, and correcting it is the business of the marking that
-    # follows, not of a removal.
+    # Any failure before the record exists (below) gives the reservation back
+    # via _discard_reservation — every directory under the jobs root is listed
+    # as a job, so an abandoned one must not read back as one with no kind.
     try:
-        # `flags` may already carry a `--` sentinel, after which every token is a
-        # positional. Options this function adds have to go in front of it, or they
-        # arrive as text: appending `--prompt-file` past the sentinel would hand the
-        # agent two words of prompt instead of a file to read.
+        # `flags` may carry a `--` sentinel, after which every token is a
+        # positional; options this function adds must go in front or they
+        # arrive as text instead of being parsed.
         options, positionals = _split_at_sentinel(flags)
         prompt_path = None
         if prompt is not None:
@@ -1508,73 +1002,34 @@ def submit(
                 prompt_path = d / _PROMPT_FILENAME
                 options += ["--prompt-file", str(prompt_path)]
             else:
-                # flow/fanout take the prompt as a positional, and a prompt may well
-                # begin with a dash, so it goes behind a sentinel whether or not the
-                # rendered flags already opened one.
+                # flow/fanout take the prompt as a positional; it may begin with a
+                # dash, so it goes behind a sentinel either way.
                 if not positionals:
                     positionals = ["--"]
                 positionals.append(prompt)
 
-        # A run discovers MCP servers from the directory it is told to work in,
-        # which for a detached run is a checkout and not the directory holding this
-        # server's config. Resolve it here, where the submitting directory is still
-        # the one in effect, and hand the resolved set to the child.
-        # Both outcomes are reported on the handle: a run that starts without the
-        # tools its brief assumes should be visible at submit, not deduced later
-        # from its own confused output. An orchestration builds many workers from
-        # the one set its process holds, so leaving the choice to whatever each
-        # provider CLI finds for itself scatters the same question across every
-        # worker and answers it where nobody is looking.
-        #
-        # The servers are read here and written into this run's own directory, and
-        # that copy is what the child is pointed at. Naming the discovered file
-        # instead would leave the run's tool surface tied to a file anyone may edit
-        # between submission and execution — and a run that resumes hours later
-        # would re-read it again, so the same submission could start with a
-        # different set of tools every time. A file only this run writes cannot
-        # change under it, and staying a path keeps the child's existing flag
-        # working. A config that exists but cannot be used fails the submission,
-        # because a child that discovers the problem reports it minutes later and
-        # only in its own log, while the submitter was told the run started.
-        #
-        # A snapshot is taken only when the caller left the choice open. Whether
-        # they did is answered from the values they passed, never by looking through
-        # the tokens for a flag: those tokens are built by the same surface, in a
-        # form (`--flag=value`) chosen so that nothing downstream can take them
-        # apart, so a scan of them reports on spelling rather than on intent.
+        # Resolve MCP servers here (submitting directory still in effect — a
+        # detached run's cwd is a checkout, not this server's own directory) and
+        # snapshot them into this run's own directory, so the child's tool set
+        # can't drift if the discovered file changes or the run resumes later.
+        # A config that exists but can't be used fails the submission now
+        # instead of surfacing minutes later, only in the child's own log.
         mcp_config_path: str | None = None
         mcp_config_source: str | None = None
         mcp_config_reason: str | None = None
         mcp_servers: dict[str, Any] | None = None
-        # Which servers the run gave its workers, by name. Empty list and null are
-        # different answers and neither stands in for the other: `[]` says this run
-        # settled the question and the answer was none, `null` says this run never
-        # resolved a set and cannot speak for one. Collapsing them would make the
-        # case a reader most needs -- a run whose workers got no servers -- read
-        # the same as a run where the question was never asked.
-        #
-        # Two different things settle it as none: a caller disabling MCP, and a
-        # config that was found and declares no servers. Both report `[]`.
-        #
-        # This reports what was RESOLVED. It is not a claim about what the child's
-        # provider then managed to start: a server can be in this list and still
-        # fail to come up in the child's own session. Distinguishing those needs
-        # the child's startup record, which this does not stand in for. What it
-        # does settle, in one read rather than a dig through the snapshot on disk,
-        # is whether a server a run was supposed to have was ever in its set.
+        # Servers resolved for the run's workers, by name. `[]` means this run
+        # settled the question (caller disabled MCP, or a found config declares
+        # no servers) — `None` means it never resolved a set. This reports what
+        # was RESOLVED, not what the child's provider then managed to start.
         mcp_config_servers: list[str] | None = None
         if no_mcp_config:
-            # The caller asked for no servers. That is an answer, not an absence, so
-            # nothing is resolved and the handle says whose decision it was.
             mcp_config_reason = "mcp_disabled_by_caller"
             mcp_config_servers = []
         elif mcp_config is not None:
-            # The caller named the file, and their flag is already on the line. No
-            # snapshot is taken and none is prepended: a second --mcp-config would
-            # let the parser pick between them, and the handle would go on naming
-            # the one the child did not read. What the child reads is what the
-            # handle reports, and its source is the caller's own path, which this
-            # run does not own and cannot promise will hold still.
+            # Caller named the file; their flag is already on the line, so no
+            # snapshot is taken or prepended (a second --mcp-config would let the
+            # parser pick between them, misreporting what the child actually read).
             mcp_config_path = mcp_config
             mcp_config_source = mcp_config
             mcp_config_reason = "mcp_config_named_by_caller"
@@ -1596,25 +1051,18 @@ def submit(
                     else resolution.reason
                 )
                 if resolution.reason == "mcp_config_declares_no_servers":
-                    # A config that was found and declares no servers is a
-                    # settled question whose answer is none, so it reports `[]`.
-                    # The resolver returns a null server map for this and for
-                    # finding no config at all, and only its reason tells the two
-                    # apart -- reading the map alone would report "cannot say"
-                    # about a file that said so explicitly. The source is kept for
-                    # the same reason: a reader is owed the name of the file that
-                    # answered, and an empty set beside a null source would send
-                    # them looking for one that was never consulted.
+                    # A settled "none" (as opposed to "no config found", which
+                    # the resolver reports with the same null server map — only
+                    # the reason string tells the two apart).
                     mcp_config_servers = []
                     mcp_config_source = str(resolution.source) if resolution.source else None
             else:
                 mcp_servers = resolution.servers
                 mcp_config_source = str(resolution.source) if resolution.source else None
                 mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
-                # Sorted so two runs over the same set report the same string and a
-                # reader can compare handles directly; the child reads the snapshot,
-                # never this list, so the order is free to be the readable one.
-                mcp_config_servers = sorted(mcp_servers)
+                mcp_config_servers = sorted(
+                    mcp_servers
+                )  # readable order; child reads the snapshot file, not this list
                 options = ["--mcp-config", mcp_config_path, *options]
 
         # Wire the CLI's terminal hook back to the MCP server so we record a reliable
@@ -1631,24 +1079,18 @@ def submit(
         # environment that claims it is running under an interactive harness.
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         env[config.RUN_ID_ENV_VAR] = run_id
-        # The child carries the run that started it. Every process it goes on to
-        # spawn inherits this, so a live member of the group can later be asked
-        # what it belongs to instead of being guessed at from when it started.
+        # Inherited by every process the child spawns, so a live group member
+        # can later be asked what it belongs to instead of guessed from timing.
         env[config.JOB_MARKER_ENV_VAR] = run_id
+        # Where the run drops the typed class of whatever exception ended it, so
+        # the terminal hook can record a cause instead of leaving the reason to
+        # be read out of console prose.
+        env[config.CAUSE_FILE_ENV_VAR] = str(d / config.CAUSE_FILENAME)
 
-        # Only "agent" hands the instruction over in a file; flow and fanout take it
-        # as a positional, so a long one has to fit in the process argument vector.
-        # Checked before anything is written, because Popen raising this late would
-        # leave a job recorded as "running" for a run that never started.
+        # Checked before anything is written: Popen raising this late would
+        # leave a job recorded "running" for a run that never started.
         _reject_oversized_argv(argv, env, kind=kind)
 
-        # The durable writes sit inside this same block rather than under a
-        # handler of their own. One block, because one question is being asked:
-        # did this submission become a job? Everything from here back to the
-        # reservation answers "no" the same way — a full disk on the second write
-        # strands a run exactly as an argv the platform will not carry does — and
-        # a second handler would only invite the two to be given back
-        # differently, which is the state this block exists to prevent.
         if prompt_path is not None:
             prompt_path.write_text(prompt)
         if mcp_servers is not None and mcp_config_path is not None:
@@ -1716,19 +1158,9 @@ def submit(
         raise
 
     try:
-        # Append mode, not truncate: every write from the child has to land at
-        # end-of-file rather than at an offset the child carries with it. The
-        # terminal hook appends to this same log while the child is still alive
-        # and still holding this descriptor, so with an offset-carrying
-        # descriptor the child's next write — its final output, or just the
-        # flush the interpreter does on its way out — starts back where the
-        # child left off and overwrites whatever was appended behind its back.
-        # What it overwrites is the one line written only when something went
-        # wrong: the notice that a terminal notice could not be delivered.
-        #
-        # There is nothing here to append after: the directory this log sits in
-        # was created for this run and no other, by a creation that fails rather
-        # than accepts a name already taken.
+        # Append mode, not truncate: the terminal hook appends to this same log
+        # while the child is still alive, so a fixed-offset descriptor here
+        # would let the child's own trailing writes overwrite it.
         log_f = open(log_path, "ab")
         try:
             proc = subprocess.Popen(  # noqa: S603 — argv is the resolved li_command + CLI flags, no shell
@@ -1743,35 +1175,17 @@ def submit(
         finally:
             log_f.close()  # child holds its own fd; parent drops its copy
     except Exception as exc:
-        # The record already exists and no process will ever mark it, so the
-        # producer that caught the failure marks it here: without this write the
-        # run claims "running" forever, and nothing in the system can correct it.
-        #
-        # Every exception, not the errno family alone. What a spawn refuses is the
-        # platform's business and does not arrive by one route: an argument the
-        # exec cannot carry raises ValueError, with no errno anywhere in it. The
-        # invariant being kept is about the record — written, therefore marked —
-        # so making it depend on having enumerated the ways a spawn can fail would
-        # leave the next unenumerated one stranding a run exactly as this one did.
+        # Catch every exception, not just OSError — an argv the exec can't carry
+        # raises ValueError with no errno — so the record is always marked
+        # rather than claiming "running" forever for an unenumerated failure mode.
         raise _record_spawn_failure(run_id, exc) from exc
 
-    # Attach the pid without rewriting status: if the hook already recorded a
-    # terminal in the (tiny) spawn window, re-reading here preserves it.
-    #
-    # The pid goes down with the two things that say WHICH process it was: when
-    # that process started, and the group it leads. A pid number on its own is
-    # not an identity — the OS hands it out again once the process is reaped —
-    # so a kill holding only a number cannot tell the run it started from
-    # whatever occupies that number later. The start time is read here, while
-    # the child is certainly the one just spawned; a read that fails leaves it
-    # null, which kill() reads as "no identity was captured" rather than as any
-    # claim about the process.
-    #
-    # The probes are made before the lock is taken, so a process table that is
-    # slow to answer never holds up another observer's mutation of this record.
-    # The merge itself only ever adds the identity fields and the spawn phase:
-    # a terminal the hook recorded, and any delivery result beside it, are on
-    # the record this reads back and are left exactly as they are.
+    # Attach the pid without rewriting status (preserves a terminal the hook
+    # already recorded in the spawn window). Alongside it: start time and pgid,
+    # since a bare pid isn't an identity (the OS recycles it once reaped) — a
+    # failed start-time read leaves it null, which kill() reads as "no identity
+    # captured" rather than as any claim about the process. Probed before the
+    # lock is taken so a slow process table never holds up another mutation.
     _state, created = _process_create_time(proc.pid)
     pgid = _spawned_pgid(proc.pid)
     latest = record
@@ -1785,12 +1199,8 @@ def submit(
         latest["pgid"] = pgid
         latest["spawn_state"] = "started"
 
-    # The handle carries the same three lifecycle fields every other
-    # status-bearing response does, so a caller never has to classify the status
-    # string itself — including in the narrow case where the child reached a
-    # terminal before this line ran.
-    # Popen returned, so the child exists; no liveness probe is taken here, which
-    # would only add a race in which an instant exit reads back as an orphan.
+    # No liveness probe here — Popen returning means the child exists; probing
+    # would only race an instant exit into reading back as an orphan.
     derived = _derive(latest, alive=True)
     return {
         "run_id": run_id,
@@ -1812,10 +1222,8 @@ def submit(
 def _record_spawn_failure(run_id: str, exc: Exception) -> SpawnError:
     """Write the terminal record for a spawn that failed, and build the error.
 
-    Records the spawn phase as ``failed`` and, in the same write, the end itself:
-    a terminal record with a reason naming the spawn failure. Without the second
-    part the phase would say the spawn failed while the lifecycle still said the
-    run was going, which is two answers to one question.
+    Records `spawn_state="failed"` and, in the same write, the terminal end
+    itself — otherwise the phase would say failed while status still said running.
     """
     reason = f"spawn failed: {exc}"
     record: dict[str, Any] = {
@@ -1834,45 +1242,31 @@ def _record_spawn_failure(run_id: str, exc: Exception) -> SpawnError:
                 guard.record = current
             current["spawn_state"] = "failed"
             current["reason"] = reason
-            # The end itself only if nothing recorded one. There is no child to
-            # have written one here, so this is the same first-writer rule every
-            # other mutation keeps rather than a case anyone expects to hit.
+            # First-writer-wins, same rule as every other mutation here.
             if current.get("finished_at") is None:
                 current["status"] = "failed"
                 current["finished_at"] = _now_iso()
                 current["terminal_source"] = TERMINAL_SOURCE_SPAWN_FAILURE
             record = current
     except OSError:
-        # The corrective write can fail on exactly the disk that refused the
-        # spawn. The caller still gets the failure and the run_id; what is lost
-        # is the durable mark, which is why the raise below carries the record.
-        pass
+        pass  # the write can fail on the same disk that refused the spawn
     return SpawnError(run_id, record, f"could not spawn run {run_id}: {exc}")
 
 
 def _record_is_terminal(job: dict[str, Any]) -> bool:
     """Whether the record itself already says the run ended.
 
-    The same notion `_derive` classifies on, and deliberately not a membership
-    test against a set of terminal status strings: the status is whatever the CLI
-    reported, recorded verbatim, so any such set would silently read the statuses
-    it did not happen to list as still running. What marks an end is the presence
-    of ``finished_at``, or a spawn that failed — a run that never started is over
-    however its status reads.
+    Deliberately not a membership test against terminal status strings (status
+    is an open vocabulary passed through verbatim) — an end is marked by
+    ``finished_at`` or a failed spawn, never inferred from the status value.
     """
     return job.get("finished_at") is not None or job.get("spawn_state") == "failed"
 
 
 def _needs_lifecycle_read(job: dict[str, Any] | None, alive: bool) -> bool:
-    """Whether this observation has to go and ask the lifecycle store.
-
-    Only when the sidecar cannot already answer: there is a job, its process is
-    not running, and nothing has recorded an end for it. Those are exactly the
-    records `_derive` would otherwise classify from a dead pid alone. A run
-    whose process is alive, or whose end is already on the record, is answered
-    from the record — so the ordinary poll of a healthy run spawns nothing, and
-    a run observed repeatedly after it ended asks once.
-    """
+    """Whether this observation has to go and ask the lifecycle store: only when
+    there's a job, its process isn't running, and nothing has recorded an end —
+    so a healthy run's poll spawns nothing, and a run asks the store once."""
     if job is None or alive:
         return False
     return not _record_is_terminal(job)
@@ -1883,20 +1277,10 @@ def _cache_lifecycle_end(
 ) -> dict[str, Any] | None:
     """Copy a lifecycle-recorded end onto the sidecar record, once.
 
-    The sidecar is a cache of the end, not a second opinion about it: the
-    lifecycle store and the terminal hook are the two writers, and whichever
-    gets there first is what the record then says. Writing it back is what keeps
-    the next observation from spawning the read again, and what keeps two
-    observations of one unchanged run from answering differently.
-
-    A failed write is not an error here — the record is a cache, so the next
-    observation simply asks again — and the in-memory record is returned either
-    way so this call is what the caller classifies.
-
-    The copy is made under the per-run lock and onto the record as it stands
-    there. A record that already carries an end keeps it: the store and the hook
-    are both reporting the same run, and the one that got there first is the one
-    the run's readers have already been given.
+    The sidecar is a cache of the end, not a second opinion — first writer
+    between the lifecycle store and the terminal hook wins. A failed write here
+    is not an error (it's a cache; the next observation just asks again); the
+    in-memory record is returned either way so this call is what classifies.
     """
     if job is None or lifecycle is None or not lifecycle.get("terminal"):
         return job
@@ -1933,21 +1317,9 @@ def _iso_from_epoch(value: Any) -> str | None:
 
 
 def _server_identity() -> dict[str, str]:
-    """Which implementation answered this call.
-
-    A server imports its code once, at startup, so a caller cannot tell which
-    build is answering from the file on disk: the process may predate it. The
-    tool list does not help either, because two separate implementations can
-    expose the same tool names and differ only in parameters and behaviour. That
-    combination makes a wrong answer look authoritative — a field described from
-    a newer source reads as missing rather than as unsupported, and a caller who
-    trusts the description writes down a rule the running server does not
-    implement.
-
-    Reporting the version and the directory actually imported turns that from an
-    inference into a readable fact. Resolved per call rather than cached at
-    import so it reflects the module that is genuinely loaded.
-    """
+    """Which implementation answered this call: version + directory actually
+    imported, resolved per call (not cached at import) so it reflects the
+    module genuinely loaded rather than the file currently on disk."""
     try:
         from lionagi.version import __version__ as version
     except Exception:  # noqa: BLE001 — identity is diagnostic; never fail a status read
@@ -1962,19 +1334,12 @@ LivenessConclusion = Literal["alive", "process_gone", "unknown"]
 class ProcessLiveness:
     """What one observation of a run's recorded process established.
 
-    ``alive`` is the answer callers have always had: whether this run's process
-    is running, used to decide whether waiting can still help.
-
-    ``conclusion`` is the decision surface. ``"process_gone"`` is a *positive*
-    finding that this run's process no longer exists, and it is the only value
-    that may end a run. ``"unknown"`` is a probe that established nothing — an
-    unaskable pid, a denied read — and can never end one. The three values are
-    the whole vocabulary, so a case added later is inconclusive until it is
-    written down as conclusive, which is the opposite of the property a rule
-    phrased as "not one of these inconclusive names" has.
-
-    ``finding`` names which observation produced the conclusion, so the record
-    of a transition says what was seen rather than only what was decided.
+    ``alive`` decides whether waiting can still help. ``conclusion`` is the
+    decision surface: ``"process_gone"`` is a *positive* finding and the only
+    value that may end a run; ``"unknown"`` (an unaskable pid, a denied read)
+    can never end one — a case added later is inconclusive until explicitly
+    added to `CONCLUSIVE_FINDINGS`, never by exclusion. ``finding`` names which
+    observation produced the conclusion.
     """
 
     alive: bool
@@ -1982,10 +1347,8 @@ class ProcessLiveness:
     finding: str
 
 
-# The findings this classifier can reach, and the public ``pid_identity`` each
-# one has always been reported as. The public field keeps its meanings exactly:
-# this table is where the internal finding is translated into it, so neither
-# vocabulary has to be read through the other.
+# Internal finding -> public `pid_identity` value; keeps the two vocabularies
+# independently readable rather than one inferred from the other.
 _PID_IDENTITY_BY_FINDING: dict[str, str | None] = {
     "unusable_pid": "unusable_pid",
     FINDING_PID_ABSENT: None,
@@ -2002,69 +1365,22 @@ _PID_IDENTITY_BY_FINDING: dict[str, str | None] = {
 def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> ProcessLiveness:
     """Whether the process *this run* spawned is alive, and what settled it.
 
-    A pid number is not an identity. Once the run's process exits and the OS
-    hands its number to something else, a probe of that number answers about a
-    stranger, and a run that ended would report as running for as long as the
-    stranger lives. So where the record captured the start time of the process
-    it spawned, that identity is confirmed here before liveness is reported, and
-    a number now held by a different process reports this run's process as not
-    alive — which is the truth about the run, and what raises
-    ``possibly_orphaned``, the field that exists for a process gone with no end
-    recorded.
+    A pid number is not an identity — once the run's process exits and the OS
+    reassigns it, a probe answers about a stranger, and an ended run would
+    report as running for as long as the stranger lives. Where the record
+    captured a start time, identity is confirmed here before liveness is
+    reported; a number now held by a different process reports this run's
+    process as not alive, raising ``possibly_orphaned``.
 
-    The finding names what was established, so a caller can tell the readings
-    apart rather than infer them, and the conclusion says which of them may end
-    a run. Three are conclusive, and each is a positive observation of this
-    run's process being gone: ``"pid_absent"`` (the pid was askable and held no
-    live process), ``"disappeared_during_probe"`` (it held one at the liveness
-    probe and none at the creation-time probe) and ``"pid_recycled"`` (a live
-    process holds the number and started at a different time than the one this
-    run recorded, so it is a different process). The rest conclude nothing about
-    death: ``"identity_confirmed"``, ``"identity_not_recorded"`` (the record
-    captured no start time), ``"identity_unusable"`` (it captured one that no
-    start time can be compared against), ``"identity_unreadable"`` (the identity
-    probe errored, so nothing was established and the liveness probe stands),
-    ``"unusable_pid"`` (the record's pid is not a number the OS can be asked
-    about, so no probe was made at all) and ``"no_record"`` (a live pid with no
-    record to identify it against).
-
-    The public ``pid_identity`` values are unchanged and are read off
-    :data:`_PID_IDENTITY_BY_FINDING`; nothing here redefines one.
-
-    Two separate questions are settled here in the order their evidence allows.
-    Whether the pid holds a live process at all needs only the pid, so it is
-    asked first and on every path. Whether that live process is *this run's*
-    needs the recorded start time, so it is asked second and only where one was
-    recorded; without it the liveness answer stands alone, because a pid probe is
-    all such a record has for that second question, and calling those runs
-    recycled would be a claim their data does not support. A probe that errored
-    is treated the same way, because a failed read is not evidence of death.
-
-    Keeping the first question ahead of the record matters: the liveness probe
-    reaps only its own children, so a process that exited under a different
-    parent — any job whose server is not the one that spawned it — is a zombie
-    that ``kill -0`` reports as alive. Deciding that from the record would leave
-    every record without a start time reporting an exited run as running, and
-    ``possibly_orphaned``, the field that exists for a process gone with no end
-    recorded, would be false in exactly the case it is meant to catch.
+    See docs/internals/mcp.md#liveness-findings for the full finding taxonomy
+    and the two-question evaluation order (pid-alive, then whose-process).
     """
     asked = _askable_pid(pid)
     if asked is None:
-        # No probe was made, so nothing at all was established about the
-        # process. Reported not alive, as it always has been, and inconclusive:
-        # a record this module cannot ask about is the one case that must never
-        # be ended from here.
         return ProcessLiveness(False, "unknown", "unusable_pid")
     if not _pid_alive(asked):
         return ProcessLiveness(False, "process_gone", FINDING_PID_ABSENT)
 
-    # Whether that pid still holds a live process is settled here, before the
-    # record is consulted, because settling it does not need the record. The
-    # liveness probe reaps only its own children, so a process that exited under
-    # a different parent stays a zombie, and asking the OS whether the pid exists
-    # answers yes for as long as it does. The probe below tells a zombie from a
-    # live process from the pid alone, which is why it runs on every path and not
-    # only where a start time was recorded to compare against.
     state, live_created = _process_create_time(asked)
     if state == "gone":
         return ProcessLiveness(False, "process_gone", FINDING_DISAPPEARED_DURING_PROBE)
@@ -2074,9 +1390,6 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> Proces
     recorded = job.get("pid_create_time")
     if recorded is None:
         return ProcessLiveness(True, "alive", "identity_not_recorded")
-    # The same three values kill() refuses: a bool is an int to isinstance and
-    # arrives as a moment in 1970, a NaN loses every comparison silently, and an
-    # unbounded JSON integer fails the conversion that any comparison needs.
     try:
         spawned_at = float(recorded)
         usable = not isinstance(recorded, bool) and math.isfinite(spawned_at)
@@ -2086,9 +1399,6 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> Proces
         return ProcessLiveness(True, "alive", "identity_unusable")
 
     if state != "found" or live_created is None:
-        # The identity probe was denied or unreadable. The pid holds a live
-        # process, so the run is treated as running; which process it is stayed
-        # unestablished, so this observation concludes nothing either way.
         return ProcessLiveness(True, "unknown", "identity_unreadable")
     if _start_time_matches(live_created, spawned_at):
         return ProcessLiveness(True, "alive", "identity_confirmed")
@@ -2099,16 +1409,10 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> Proces
 class ReapResult:
     """What one attempt to end a conclusively gone run came to.
 
-    ``won_transition`` is true for exactly one caller per run: the one whose
-    guarded write published the end. It is what decides who owns the terminal
-    notice, since the notice must be attempted once and the durable record is
-    the only thing that can say who got there first.
-
-    ``record`` is the record as it stands after the attempt — the transition
-    this call wrote, or the end somebody else had already written — so a loser
-    reports the durable fact rather than its own observation. ``reason`` names
-    why a call did not win, which is diagnostic and never something a caller
-    branches on.
+    ``won_transition`` is true for exactly one caller per run — the one whose
+    guarded write published the end, and therefore owns the terminal notice.
+    ``record`` reflects the durable fact (this call's write, or another's) even
+    for a loser. ``reason`` is diagnostic only, never something to branch on.
     """
 
     won_transition: bool
@@ -2116,38 +1420,37 @@ class ReapResult:
     reason: str
 
 
+def _notice_recorded_undelivered(run_id: str) -> bool:
+    """Whether *run_id*'s own run directory recorded its terminal notice as
+    never delivered (``notify_outcome.json`` with ``ok: false``).
+
+    Best-effort and evidence-only: a missing or unreadable file returns
+    False, the same as a run that never wrote one — see LOST_REASON_
+    NOTICE_RECORDED_UNDELIVERED for why absence must never be read as this.
+    """
+    try:
+        text = config.run_dir(run_id).joinpath("notify_outcome.json").read_text()
+        outcome = json.loads(text)
+    except (OSError, ValueError):
+        return False
+    return isinstance(outcome, dict) and outcome.get("ok") is False
+
+
 def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
     """Publish the end of a run whose process is conclusively gone.
 
-    Idempotent, and safe to call from every observer at once. The whole check is
-    made inside the per-run lock and against a record reread there, because the
-    caller's observation was taken before the lock was held: between the two, the
-    child's terminal hook, a kill, or another observer can have written the end
-    already, and a merge starting from the caller's copy would erase it.
+    Idempotent, safe to call from every observer at once. The whole check runs
+    inside the per-run lock against a record reread there — the caller's
+    observation was taken before the lock, and by now the terminal hook, a
+    kill, or another observer may have already written the end.
 
-    Everything below has to hold under the lock. The record exists and is this
-    run's; the spawn got as far as starting a process, so there is a process
-    identity to have lost — a spawn still preparing acquired none, and a spawn
-    that failed already ended; nothing has recorded an end; and *finding* is one
-    of the three observations that positively establish that this run's process
-    is gone. Membership in that closed set is the whole admission rule: nothing
-    here reads a liveness field, an elapsed time, or the absence of a
-    disqualifying value.
-
-    The winner writes the end, the outcome, the reason, and the attribution in
-    one publication, so no reader ever sees a half-made transition.
-    ``finished_at`` is *observed_at*: the moment the loss was established and
-    recorded, not the unknown moment the process actually exited, which nothing
-    surviving can report.
-
-    Notification is not attempted here. It runs after this returns, outside the
-    lock, so a delivery command can never hold the record of every other run's
-    observer — and it is the winner's to attempt, which is what the returned
-    ``won_transition`` says.
+    All admission checks (record exists and matches, spawn reached "started",
+    no end recorded yet, *finding* is in `CONCLUSIVE_FINDINGS`) hold under the
+    lock. ``finished_at`` is *observed_at* — when the loss was established, not
+    the unknowable moment the process actually exited. Notification runs after
+    this returns, outside the lock, and is the winner's to attempt.
     """
     if finding not in CONCLUSIVE_FINDINGS:
-        # Refused before the lock is taken: a finding that establishes nothing
-        # has no transition to serialize.
         return ReapResult(False, None, "finding_is_not_conclusive")
 
     with _locked_job(run_id) as guard:
@@ -2160,11 +1463,16 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
             return ReapResult(False, job, "spawn_state_is_not_started")
         if job.get("finished_at") is not None:
             return ReapResult(False, job, "already_ended")
+        reason_code = (
+            LOST_REASON_NOTICE_RECORDED_UNDELIVERED
+            if _notice_recorded_undelivered(run_id)
+            else LOST_REASON
+        )
         job.update(
             {
                 "status": "exited",
                 "outcome": OUTCOME_INDETERMINATE,
-                "reason_code": LOST_REASON,
+                "reason_code": reason_code,
                 "finished_at": observed_at,
                 "terminal_source": TERMINAL_SOURCE_ORPHAN_REAPER,
                 "terminal_evidence": {"kind": EVIDENCE_PROCESS_GONE, "finding": finding},
@@ -2174,13 +1482,11 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
 
 
 def _admits_orphan_reap(job: dict[str, Any] | None, liveness: ProcessLiveness) -> bool:
-    """Whether this observation is one that may end the run.
-
-    Only a positive ``process_gone`` conclusion, and only for a run that started
-    a process and has no end recorded. The record checks are made again inside
-    the lock, where they are the ones that count; this is the cheap gate that
-    keeps an ordinary poll of a healthy or already-ended run from opening a lock
-    file at all.
+    """Whether this observation is one that may end the run: a positive
+    ``process_gone`` conclusion for a started run with no end recorded. Cheap
+    gate only — the checks that count are re-made under the lock in
+    :func:`reap_orphan`; this keeps an ordinary healthy/ended poll from opening
+    a lock file at all.
     """
     if job is None or liveness.conclusion != "process_gone":
         return False
@@ -2234,21 +1540,15 @@ def _reap_if_conclusively_gone(
 ) -> dict[str, Any] | None:
     """Turn a conclusive observation into a durable end, then report the record.
 
-    This is the one place a read is allowed to write. What it returns is always
-    a record read back from the transition rather than the observation that
-    caused it, so the terminal answer a caller receives is one an unchanged
-    record already contains — the next reader of those same bytes reaches it
-    without observing anything at all.
+    The one place a read is allowed to write. Always returns a record read back
+    from the transition (or an unchanged one), never the raw observation.
     """
     if not _admits_orphan_reap(job, liveness):
         return job
     try:
         result = reap_orphan(run_id, finding=liveness.finding, observed_at=_now_iso())
     except OSError:
-        # The transition could not be published. The run is classified exactly
-        # as it was before this call, which is the advisory state it has always
-        # had, and the next observation tries again.
-        return job
+        return job  # transition unpublishable; next observation retries
     if result.record is None:
         return job
     if not result.won_transition:
@@ -2259,67 +1559,10 @@ def _reap_if_conclusively_gone(
 def status(run_id: str) -> dict[str, Any]:
     """Current state of *run_id*.
 
-    ``status`` is the recorded status, verbatim and in an open vocabulary — read
-    it, display it, do not match it against a list. Branch on ``terminal`` ("stop
-    waiting") and ``outcome`` ("did the work come out right", null while
-    ``terminal`` is false) instead; both are derived here so a caller never has to
-    keep a copy of the status vocabulary. ``run`` is the raw CLI manifest. Its
-    ``status`` is not advisory in the sense of being unreliable — for a run that
-    reaches its own teardown, the manifest is rewritten with the terminal status
-    and an ``ended_at``, and that write happens after the CLI has finalized the
-    run in the StateDB, so a manifest that says a run ended is telling the truth.
-    What it cannot do is say a run ended when the run's own process did not live
-    to write it: a killed or crashed run leaves a manifest still reading
-    ``running`` forever. It is one-directional evidence, so read ``status`` here,
-    not ``run["status"]``.
-    ``alive`` is about the process this run spawned, not about whatever holds its
-    pid number now: where the record carries the start time captured at spawn, a
-    number the OS has handed on reports as not alive. ``pid_identity`` says how
-    that was settled — ``"confirmed"``, ``"recycled"``, ``"gone"``,
-    ``"unreadable"``, ``"not_recorded"``, ``"unusable"``, ``"unusable_pid"``, or
-    null when there was no live pid to identify — so a caller can tell a process
-    that vanished from a number that now belongs to someone else, which are
-    different things to do next. A record written without a start time still
-    reports a process that has exited as not alive; what it cannot report is
-    whether a live process at that pid is this run's.
-    ``liveness_conclusion`` is what that observation established:
-    ``"process_gone"`` positively identifies this run's process as gone,
-    ``"alive"`` that it is running, and ``"unknown"`` that the probe settled
-    neither. Only ``"process_gone"`` can end a run, and it does so by writing the
-    end down before this call returns it — so a caller reading ``terminal`` here
-    is reading a durable fact rather than this observation.
-    ``terminal_source`` says what wrote that end (``"cli_terminal_hook"``,
-    ``"lifecycle_cache"``, ``"spawn_failure"``, ``"mcp_orphan_reaper"``, or null
-    on a record written before the field existed), and ``terminal_evidence``
-    carries the bounded evidence behind an end nobody reported.
-    ``possibly_orphaned`` flags a run whose process is gone with no end recorded
-    and whose loss was not established conclusively — an unaskable pid, or a
-    transition that could not be published; it is advisory and never makes the
-    run terminal.
-    ``notify_delivery`` reports whether the terminal notice was delivered.
-    ``server`` identifies the implementation that answered, so a caller can tell
-    which build it is talking to rather than inferring it from behaviour.
-
-    The ``mcp_config*`` fields say what tool surface the run was given, and are the
-    same values the submit handle returned, carried here so a caller investigating
-    a finished run reads them rather than opening the record on disk.
-    ``mcp_config_servers`` names the servers by name. ``[]`` and null are different
-    answers: ``[]`` says the question was settled and the answer was none, null says
-    no set was resolved. Three things read as null — the caller named their own
-    config file, which this run does not read; no config was found at or above the
-    launch directory; or the record predates the field. ``mcp_config_reason`` names
-    which of the first two, and a record older than the field carries no reason
-    either. It reports what was RESOLVED, which is not a claim that the child's
-    provider then started each one; a server can be listed here and still fail to
-    come up in the child's own session. What it settles is the prior question,
-    whether a server the run was supposed to have was in its set at all.
-
-    ``known`` says whether a usable record was obtained, and ``record_state`` says
-    what was read to answer that: ``"ok"``, or ``"absent"``, ``"unreadable"`` or
-    ``"wrong_shape"`` when it was not. Only ``"absent"`` means the run is unknown.
-    A record whose bytes cannot be read, or that parses to something other than an
-    object, is a file sitting on disk, and reporting it as an unknown run tells an
-    operator to stop looking for the run it describes.
+    See docs/internals/mcp.md#status-response-contract for the full field
+    reference (``status`` vs ``terminal``/``outcome``, ``run["status"]`` vs the
+    top-level ``status``, ``pid_identity``/``liveness_conclusion``,
+    ``mcp_config*``, and ``record_state``).
     """
     job, record_state = _read_job_state(run_id)
     manifest = _read_run_manifest(run_id)
@@ -2332,9 +1575,8 @@ def status(run_id: str) -> dict[str, Any]:
         lifecycle = _read_lifecycle(run_id)
         job = _cache_lifecycle_end(job, lifecycle)
 
-    # The lifecycle store gets asked first, because an end it recorded is an end
-    # somebody reported and is the better answer: reaping is for a run that no
-    # writer survived to speak for.
+    # Lifecycle store asked first — a reported end is the better answer; reaping
+    # is only for a run no writer survived to speak for.
     job = _reap_if_conclusively_gone(run_id, job, liveness)
 
     derived = _derive(job, alive, lifecycle)
@@ -2370,9 +1612,9 @@ def status(run_id: str) -> dict[str, Any]:
     }
 
 
-# What to tell a caller that asked about a run whose record could not be used.
-# One message per way the read can fail, because "no such job" is true of exactly
-# one of them and sends an operator away from a file that is on disk.
+# One message per way a record read can fail — "no such job" is only true of
+# "absent"; reusing it for a damaged file sends an operator away from a
+# file that's actually on disk.
 _NO_RECORD_ERROR = {
     "absent": "no such job",
     "unreadable": "the record for this job is on disk and could not be read or parsed",
@@ -2382,13 +1624,8 @@ _NO_RECORD_ERROR = {
 
 def output(run_id: str, tail_chars: int = 20000) -> dict[str, Any]:
     """Terminal output of *run_id*: the console (an agent's final response prints
-    here) plus any persisted artifacts.
-
-    ``record_state`` carries what was read, the same way ``status`` reports it, and
-    ``error`` names that state rather than reporting every failed read as an
-    unknown run. ``artifacts_state`` does the same for the artifact traversal, so
-    an empty ``artifacts`` means the run wrote none rather than standing in for a
-    listing that failed.
+    here) plus any persisted artifacts. ``record_state``/``artifacts_state``
+    distinguish "wrote none" from "listing failed", same as ``status()``.
     """
     job, record_state = _read_job_state(run_id)
     if job is None:
@@ -2437,18 +1674,12 @@ def _kill_result(
 def _mark_killed(job: dict[str, Any]) -> WriteResult:
     """Record the kill on the job record.
 
-    A record that already carries an end keeps it. The run really did finish
-    the way it says, and what was signalled here is work that outlived that end
-    — overwriting ``completed`` with ``killed`` would replace how the run came
-    out with how its stragglers were cleaned up.
-
-    Which end that is, is decided under the per-run lock against the record as
-    it stands there rather than against the copy the kill decision was made
-    from: the signal takes time, and an end can be recorded while it is being
-    sent. The kill still happened either way — this write is the record of it,
-    not the act. What the caller is told is whether the record was made: a kill
-    nothing recorded leaves a run that reads as running to everyone who asks,
-    and that is a different thing to report than a kill that was recorded.
+    A record that already carries an end keeps it — overwriting `completed`
+    with `killed` would replace how the run came out with how its stragglers
+    were cleaned up. Decided under the per-run lock against the record as it
+    stands there (not the caller's copy), since an end can be recorded while
+    the signal is still in flight; the kill happened either way, this write is
+    only its record.
     """
     run_id = job.get("run_id")
     if not isinstance(run_id, str):
@@ -2497,10 +1728,9 @@ def _signal_group(
         )
     written = _mark_killed(job)
     if written.refused:
-        # The signal went out and nothing durable says so. Reported as its own
-        # code rather than as a plain success: a caller that reads `killed=True`
-        # and then finds the run still recorded as running has been told two
-        # things, and only one of them is on disk.
+        # Signal went out but nothing durable says so — its own code, not a
+        # plain success, since `killed=True` beside a still-"running" record
+        # would be telling the caller two things and only one is on disk.
         return _kill_result(
             run_id,
             killed=True,
@@ -2519,44 +1749,9 @@ def _signal_leader_group(
 ) -> dict[str, Any]:
     """Signal *pgid*, once the confirmed leader at *pid* is shown to be in it.
 
-    The caller has established that *pid* is the process this run spawned, and
-    *observed_at* is the start time it read to establish it. What is still open is
-    whether the *pgid* on the record is that process's group: the two numbers are
-    stored separately, and a record whose pgid is wrong would otherwise direct a
-    signal at an unrelated group. Read the leader's group and require equality. If
-    they differ, or the group cannot be read, refuse — with different codes,
-    because a mismatch is a settled fact about the record while an unreadable
-    group is a probe that may answer on a later call.
-
-    Then ask the leader itself. Every process a run spawns carries the run id in
-    its environment, so a leader that reads back a *different* run's id says the
-    record does not describe it, whatever its numbers matched — the same evidence
-    the group route acts on when the leader is gone, read here from the one
-    process that has already been identified rather than from the group at large.
-    The group's other rules stay where they are: they answer a different question,
-    which member of a group can speak for it, and that question is settled here.
-
-    The marker only ever withholds a signal. An absent or unreadable one leaves
-    the decision exactly where the numbers left it, because those two arrive
-    identically — a process whose environment is not disclosed reads as carrying
-    no marker — and requiring one to permit a signal would turn every process
-    that cannot be read into a job that can never be reaped.
-
-    Group and marker are read by pid, after the start time that identified the pid
-    was read, so neither is bound to that identification on its own. A run's leader
-    leads its own group, which means the number it holds is at once its pid and its
-    pgid: when it exits and the whole group drains, the OS is free to hand that one
-    number to a new session leader whose group number is the same value — so the
-    equality above can hold of a process this run never spawned, and the marker
-    cannot make up the difference, being able to withhold a signal and never to
-    permit one. So the two reads are bracketed by the start time, exactly as a
-    group member's are: read again afterwards and required to equal *observed_at*
-    exactly. Exactly, not within the tolerance the record is compared under — that
-    tolerance is for a value written to disk at spawn against one read now, while
-    these are two reads of the same kernel value, and allowing them to drift would
-    weaken the one check that tells a recycled number from the process that held
-    it. A re-read that fails, or that answers with a different process, is a
-    measurement that did not come off, and it refuses.
+    See docs/internals/mcp.md#signal-leader-group-safety for why group
+    equality, the run-id marker, and the exact (not tolerance-bounded) start
+    time re-read are all required before this signals.
     """
     try:
         live_pgid = os.getpgid(pid)
@@ -2622,23 +1817,11 @@ def _signal_leader_group(
 def _refuse_record_without_identity(run_id: str, pid: int) -> dict[str, Any]:
     """Refuse a record that carries no process identity at all.
 
-    Such a record carries a pid and nothing that distinguishes it from a pid the
-    OS has since handed to an unrelated process. The missing fields cannot be
-    filled in after the fact — they describe the process that was spawned, and
-    nothing observable now recovers when it started — and deriving a group from
-    the pid at this point is exactly the step that resolves a reused pid to a
-    stranger's group. So nothing is signalled.
-
-    The refusal says only what the read established: both fields are absent, so
-    the pid cannot be told from a reused one and no group was signalled. It does
-    not say when the record was written. That no current writer omits the fields
-    rules out one origin; it does not choose among the others, and a record
-    altered after it was written is absent the same way an old one is. An
-    operator told the record is old would go looking for a different remedy than
-    one told the record cannot identify its process.
-
-    The pid rides along on the refusal, because it is the only handle an operator
-    has for reaping the group by hand, and this is the last place it is reported.
+    Such a record's pid can't be told apart from one the OS has since handed to
+    an unrelated process — deriving a group from it now is exactly the step
+    that resolves a reused pid to a stranger's group, so nothing is signalled.
+    The pid rides along on the refusal as the only handle an operator has left
+    for reaping the group by hand.
     """
     return _kill_result(
         run_id,
@@ -2656,68 +1839,11 @@ def _refuse_record_without_identity(run_id: str, pid: int) -> dict[str, Any]:
 def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
     """Signal the process group *run_id* was spawned into.
 
-    The record carries what the pid alone cannot: when the leader started, and
-    the group it was given at spawn. Those turn the two cases a bare pid
-    confuses into decidable ones — a group still running after its leader
-    exited, which is the case worth reaping, and a pid the OS handed to an
-    unrelated process, which must never be signalled.
-
-    Nothing is signalled that the record does not identify — a statement about
-    what is decided here, not about where the signal lands. Identification and
-    the signal are separate system calls and the interval between them belongs
-    to the OS, so the delivered guarantee is best-effort identification followed
-    by a signal, never an atomic one; the last paragraph of this contract says
-    what that costs, and it is not a caveat on the sentence so much as the
-    sentence's actual scope. A probe that errors is unknown, and unknown
-    refuses: the refusal says which fact was missing, and a refusal with an
-    accurate reason is the outcome being aimed at, not the largest possible
-    number of processes stopped. That holds without exception, including for a
-    record carrying no process identity at all — such a record cannot confirm
-    anything, so it is refused and its group is left for an operator to reap by
-    hand.
-
-    What that buys, stated exactly, because the difference matters to anyone
-    relying on it. Every signal is preceded by a positive identification: either
-    the live leader's start time matches the record and its current group is the
-    recorded one, or a live member of the recorded group carries this run's id in
-    its environment. A group is never signalled because it merely looks young
-    enough. Where a process can be asked which run it belongs to, an answer
-    naming another run refuses on either route; where it cannot be asked, the
-    silence decides nothing, since an environment that is withheld and one that
-    is empty come back the same and treating either as a denial would strand
-    every job whose processes cannot be read.
-
-    What no check here establishes is who wrote the record. The fields are
-    compared against the running process, so they identify a process that is
-    still the one described; they cannot show that this run described it. A
-    record that has been rewritten with a live stranger's numbers, by something
-    already able to write into this user's job store, is refused only when that
-    stranger names a different run of its own. The store's own integrity is the
-    boundary that would settle it, and it is not a boundary a field comparison
-    can draw.
-
-    So the store is a trusted input, and that is a premise of this function
-    rather than an oversight in it. It is also not a weakness worth engineering
-    against: the store lives in the invoking user's own directory, and anything
-    able to rewrite a record there can call ``killpg`` on that user's processes
-    directly, without going through here. Nothing kept beside the record helps,
-    since the same writer reaches it too, and an identifier held only in this
-    process would break the one property the recorded identity exists to
-    provide, which is that a run stays reapable after the server that spawned it
-    restarts. What is claimed, then, is the guarantee relative to a record this
-    run wrote: given that, no signal is sent without a positive identification.
-    Provenance of the record itself is out of scope and is not implied anywhere
-    in the result.
-
-    Identification and the signal are two separate system calls,
-    and there is no way to make them one: ``killpg`` takes a group number, not a
-    reference to the group that was inspected, and there is no "signal this group
-    only if it still holds the process I verified" operation to reach for. So in
-    the window between the two, the identified group can empty and its number be
-    handed to an unrelated group, which would then receive the signal. The window
-    is small and closing it is not possible with process groups alone; it is
-    stated here rather than papered over, because the guarantee is "never signalled
-    without an identification", not "never signals the wrong group".
+    See docs/internals/mcp.md#kill-safety-contract for the exact guarantee
+    (positive identification always precedes a signal; provenance of the
+    record itself is out of scope; a TOCTOU window between identification and
+    the actual `killpg` call is inherent and unclosable with process groups
+    alone).
     """
     job, state = _read_job_state(run_id)
     if state == "absent":
@@ -2747,14 +1873,8 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             reason_code=KILL_RECORD_WRONG_SHAPE,
         )
 
-    # The record names the run it describes, and every write of one puts this
-    # run's own id there. So a record found under one run that names another was
-    # not written for the run being killed — copied, restored over, or edited —
-    # and its numbers describe some other run's process. Unlike every probe below,
-    # this costs nothing when it is wrong about a healthy record: the field is
-    # written here rather than measured, so a disagreement is never a reading that
-    # failed. Checked before the pid is even looked at, because no probe of a
-    # number from a record that does not belong here is worth making.
+    # A record found under one run that names another wasn't written for the
+    # run being killed. Checked before the pid is even looked at.
     recorded_run_id = job.get("run_id")
     if recorded_run_id != run_id:
         return _kill_result(
@@ -2769,13 +1889,8 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             reason_code=KILL_RECORD_FOREIGN_RUN,
         )
 
-    # First, and before any number on the record is probed or dereferenced. A
-    # pid of 0 means the caller's own process group to killpg, and 1 is init;
-    # a record carrying either — a placeholder, a truncated write, a test
-    # double — must never reach a group signal. The same gate settles the shape
-    # and the range, because the record is JSON from disk and the probes below
-    # all take a C integer: a value of the wrong type, or one past what the
-    # platform can express, would raise out of the first probe to touch it.
+    # pid 0 means the caller's own process group to killpg, and 1 is init;
+    # either must never reach a group signal.
     recorded_pid = job.get("pid")
     pid = _askable_pid(recorded_pid)
     if pid is None:
@@ -2865,15 +1980,6 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             )
         if state == "found" and live_created is not None:
             if _start_time_matches(live_created, spawned_at):
-                # The leader is confirmed to be the process this run spawned, so
-                # its group can be read now and required to be the recorded one.
-                # Without that equality the recorded pgid is only a number that
-                # passed a range check, and a damaged or hand-edited record would
-                # aim the signal at whatever group holds that number. The start
-                # time just read goes over with it, because that group read and
-                # the environment read beside it are made by pid and are not
-                # otherwise tied to this comparison; there they are bracketed by
-                # it.
                 return _signal_leader_group(run_id, job, pid, pgid, sig, live_created)
             return _kill_result(
                 run_id,
@@ -2887,17 +1993,12 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
                 pid=pid,
                 pgid=pgid,
             )
-        # "gone": it exited between the liveness probe and this read. Fall
-        # through — its group may well still be running.
+        # "gone": exited between the liveness probe and this read; fall
+        # through — its group may still be running.
 
-    # The leader is gone. Its group can outlive it, and that group is what the
-    # run's work is actually in, so it is reapable — but only once the group
-    # itself is identified, since a pgid is a pid number and is reused like one.
-    #
-    # Identified from the group's own live members, never by looking at the
-    # leader's pid again: the liveness probe reaps an exited child, after which
-    # that pid is free for the OS to hand to an unrelated process, and a second
-    # read of it would describe whoever holds it now.
+    # Leader gone; its group may outlive it and is reapable once identified —
+    # from the group's own live members, never by re-reading the leader's pid
+    # (now free for the OS to hand to an unrelated process).
     verdict, rule = _group_identity(pgid, spawned_at, run_id)
     if verdict == "ours":
         return _signal_group(run_id, job, pid, pgid, sig, KILL_SIGNALLED)
@@ -2910,13 +2011,9 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
             pid=pid,
             pgid=pgid,
         )
-    # Each refusal gets its own code, because they are not the same news, and each
-    # reason reports what the probe saw rather than the history that would explain
-    # it. A foreign marker, a conflict, an older member and a group whose members
-    # were all read and carry no marker are settled and will read the same on every
-    # retry; an incomplete scan is a measurement that failed and may succeed on the
-    # next call, and a member whose environment would not open is such a failure —
-    # the marker it withheld is one the next call may well read.
+    # Each refusal gets its own code: settled verdicts (foreign, conflict,
+    # predates-run, unproven) read the same on every retry; an incomplete scan
+    # is a failed measurement that may succeed next call.
     if verdict == "conflict":
         detail = f"live members of group {pgid} carry different run ids in their environment"
         code = KILL_GROUP_MARKERS_CONFLICT
@@ -2949,33 +2046,16 @@ def kill(run_id: str, sig: int = signal.SIGTERM) -> dict[str, Any]:
 
 
 def _notify_delivery_state(outcome: Any) -> str:
-    """One word for what became of a run's terminal notice: the listing's shape.
+    """One word for what became of a run's terminal notice, for the listing view
+    (``status`` reports the full ``notify_delivery`` object for one-run detail).
 
-    ``status`` reports the whole ``notify_delivery`` object, which is what someone
-    diagnosing one run needs. The listing is scanned, not read: a caller polling
-    several runs wants to spot the one whose notice failed without decoding a
-    four-field object per row, and a listing that carried the object would make
-    every caller write that decoding itself — including the rule for which
-    combinations count as a failure, which is the part worth having in one place.
-    So the listing carries this collapsed state and leaves the detail to ``status``.
-
-    ``"none"`` covers a run that has not reached a terminal yet and a terminal run
-    with no notifier configured. In both, nobody was waiting on a notice: silence
-    is the documented default and is never a failure. ``"delivered"`` is a notice
-    that went out. ``"failed"`` is every way a *configured* notifier came to
-    nothing — refused before it ran, unable to start, timed out, or exited
-    non-zero — because to a caller waiting on the notice those are one fact.
-
-    ``"delivered_unverified"`` is its own state and not a flavour of either. The
-    delivery ran and exited zero, but for that command shape a zero exit is known
-    not to mean the message was sent. Collapsing it into ``"delivered"`` reports a
-    claim we cannot support, and collapsing it into ``"failed"`` reports a failure
-    that probably did not happen. A caller that treats any non-``"delivered"``
-    state as needing attention gets the right behaviour without knowing this
-    distinction; one that wants the distinction has it.
-
-    The record is JSON on disk, so an ``outcome`` that is not an object is read as
-    no delivery rather than allowed to raise through the listing.
+    ``"none"``: not terminal yet, or terminal with no notifier configured —
+    silence is the documented default, never a failure. ``"delivered"``: went
+    out. ``"failed"``: every way a *configured* notifier came to nothing
+    (refused, couldn't start, timed out, non-zero exit) — one fact to a caller
+    waiting on it. ``"delivered_unverified"``: ran and exited zero, but for that
+    command shape a zero exit doesn't mean the message was sent — collapsing it
+    into either neighbor would report a claim this can't support.
     """
     if not isinstance(outcome, dict):
         return "none"
@@ -2991,61 +2071,19 @@ def _notify_delivery_state(outcome: Any) -> str:
 def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[str, Any]]:
     """Recent jobs, newest first (run_id sorts by timestamp).
 
-    ``notify_delivery_state`` says whether each run's terminal notice was
-    delivered, so a run whose notice failed is distinguishable here from one that
-    is still working. Without it this listing — the surface a caller polls while
-    waiting on several runs — reports a failed notice as no notice, and a caller
-    reads that as a run still going. A notice that could not be delivered has to
-    be visible where the waiting is done, not only on the record.
-
-    ``terminal_source`` travels with the end for the same reason: a run this
-    server ended on its own behalf, because its process was found gone with
-    nothing reported, is a different fact from one whose own process reported an
-    end, and a listing that showed only the outcome would hide which of the two
-    a row is. Every entry resolves through ``status``, so a conclusively gone
-    run is ended here exactly as it would be by a direct status read.
-
-    An entry whose record could not be used is listed with the state of that read
-    in ``record_state``, the same field ``status`` reports, so a damaged record is
-    visible here as a damaged record rather than as a job with no kind and an
-    unknown status. That is a per-run failure, and one damaged record must not cost
-    the caller the runs beside it.
-
-    ``spawn_state`` rides along for the same reason those three do, and it is the
-    one that decides what ``running`` means. A record whose spawn was never
-    attempted, or whose result was never written, stays ``running`` on purpose:
-    resolving it would take a bound that cannot tell a loaded machine from a dead
-    spawn, so ``status`` deliberately makes no claim about its fate. That refusal
-    is right, and it is also why the distinction has to be visible here. This
-    listing is what a caller reads to answer "what is in flight right now", and
-    without the spawn state a run that never started is indistinguishable in it
-    from one doing work — same word, two facts. A count that can hold a run that
-    never began is one a caller cannot use as evidence in either direction, so the
-    live run hiding in a listing somebody has learned to discount is the failure
-    this field exists to prevent.
-
-    It is reported as the record carries it, which means null is not one answer.
-    A row whose ``record_state`` is not ``"ok"`` never had a record to read a
-    phase from. A row whose ``record_state`` is ``"ok"`` and whose spawn state is
-    null is a record that parsed and does not name a phase — one written before
-    the field existed. A record that names a phase this code does not recognise
-    is listed with that phase verbatim, not as null: the value is reported as the
-    record carries it. So null reads as "no phase this listing can vouch for",
-    never as "never attempted";
-    the phase that means never-attempted says ``"preparing"`` and says it
-    explicitly. Normalising the value is a change to what ``status`` reports and
-    belongs with it rather than here, where it would make the two disagree.
-
-    A directory without a job record is not listed. Submissions reserve their
-    directory before command preparation, and publishing ``job.json`` is the
-    boundary that turns that reservation into a job.
-
-    The directory read itself is different, and is allowed to fail. A listing has
-    no field in which to say it could not be read, so answering the empty list
-    would say "there are no jobs at all" about a directory nobody could look in.
-    The caller is better served by the error. Only a directory that is not there is
-    answered as no jobs: nothing has written one yet, which is exactly the fact the
-    empty listing states.
+    Every entry resolves through ``status``, so a conclusively gone run is
+    ended here exactly as a direct status read would. ``notify_delivery_state``,
+    ``terminal_source``, ``record_state``, and ``spawn_state`` all ride along
+    for the same reason: this listing is the surface a caller polls while
+    waiting on several runs, and collapsing any of them into the outcome alone
+    would hide a fact this listing exists to surface (a failed notice, a
+    self-ended orphan, a damaged-but-present record, a spawn stuck vs. genuinely
+    running). A directory without a job record is not listed — submissions
+    reserve their directory before `job.json` publishes it, the boundary that
+    makes a reservation a job. Only a missing (not unreadable) jobs directory
+    reports as an empty list; an unreadable one raises, since a listing has no
+    field to say "could not be read" and reporting empty would falsely mean
+    "no jobs at all".
     """
     try:
         entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
@@ -3060,9 +2098,7 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
         except FileNotFoundError:
             continue
         except OSError:
-            # Let status classify an inaccessible record rather than hiding a
-            # directory that may already have crossed the publication boundary.
-            pass
+            pass  # let status() classify an inaccessible record
         st = status(d.name)
         if status_filter and st["status"] != status_filter:
             continue
@@ -3089,13 +2125,9 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
 
 
 def _unresolved_spawn_age(submitted_at: Any) -> float | None:
-    """Seconds since *submitted_at*, or ``None`` when that cannot be established.
-
-    ``None`` is the answer both for a record naming no submission time — one
-    written before the field existed — and for a timestamp that does not parse.
-    Neither is read as an old row. The bucket this feeds says waiting has stopped
-    being useful, and an unreadable timestamp is no evidence for that; treating it
-    as one would resolve a record by the absence of a fact rather than by a fact.
+    """Seconds since *submitted_at*, or ``None`` when that cannot be established
+    (missing or unparseable) — never read as an old row, since an unreadable
+    timestamp is no evidence that waiting has stopped being useful.
     """
     if not isinstance(submitted_at, str) or not submitted_at.strip():
         return None
@@ -3104,8 +2136,7 @@ def _unresolved_spawn_age(submitted_at: Any) -> float | None:
     except ValueError:
         return None
     if stamped.tzinfo is None:
-        # A stamp written without an offset is this writer's own UTC.
-        stamped = stamped.replace(tzinfo=timezone.utc)
+        stamped = stamped.replace(tzinfo=timezone.utc)  # this writer's own UTC
     return (datetime.now(timezone.utc) - stamped).total_seconds()
 
 
@@ -3113,23 +2144,11 @@ def _wait_entry(run_id: Any) -> dict[str, Any]:
     """One observation of *run_id*, resolved through the same path ``status`` uses.
 
     An id that cannot be observed comes back as an entry carrying an ``error``
-    rather than raising, so one bad id never costs the caller the ids beside it.
-    Every entry carries the full lifecycle shape, error or not, so a caller reads
-    the same keys in both cases.
-
-    ``spawn_state`` and ``submitted_at`` are part of that shape. The listing verb
-    already carries both, and its reasoning applies here with more force: this is
-    the surface a caller polls to decide whether to keep waiting, and without the
-    spawn phase a run that never started is indistinguishable in it from one doing
-    work. Reading them here is what lets a caller — or the bucketing below — tell
-    those apart without asking the classifier to resolve what it correctly refuses
-    to resolve.
-
-    An id with no record is ``not_found``; an id whose record is present and
-    unusable is ``record_unusable``, and says which way it is unusable. They are
-    different news — the first is a run nobody submitted, the second is a file to
-    go and look at — and calling both of them not found sends an operator away
-    from the second.
+    rather than raising, so one bad id never costs the caller the ids beside it
+    — every entry carries the full lifecycle shape either way. ``not_found``
+    (no record) and ``record_unusable`` (present but damaged) are different
+    news and get different codes — collapsing them would send an operator away
+    from a file that's actually on disk.
     """
     entry: dict[str, Any] = {
         "run_id": run_id,
@@ -3192,114 +2211,20 @@ async def wait(
 ) -> dict[str, Any]:
     """Observe *run_ids* until they are all terminal or the window closes.
 
-    A bounded observation, not a subscription. It returns one entry per requested
-    id, in the order they were requested, plus ``all_terminal``, ``timed_out``,
-    the ids still ``pending``, the ids ``stopped_without_end`` and the ids whose
-    spawn is ``unresolved_spawn`` — never a bare boolean, because mixed outcomes
-    are the normal case and collapsing them forces the follow-up poll this call
-    exists to replace.
+    A bounded observation, not a subscription: mixed outcomes are the normal
+    case, so the result is never a bare boolean — see
+    docs/internals/mcp.md#wait-result-buckets for the full ``pending`` /
+    ``stopped_without_end`` / ``unresolved_spawn`` / ``all_terminal`` /
+    ``timed_out`` contract, including why ``unresolved_spawn`` exists and the
+    back-off floor paid while any id sits in either special bucket.
 
-    ``max_wait`` is clamped to ``[0, WAIT_MAX_SECONDS]`` and ``poll_interval`` to
-    ``[WAIT_MIN_POLL_SECONDS, WAIT_MAX_POLL_SECONDS]``; the effective values are
-    echoed back beside the requested ones, so a caller can see it was clamped
-    rather than infer it from the elapsed time. ``max_wait=0`` is a legal snapshot
-    request: it observes once and returns.
-
-    Expiry is not an error. A window that closes with ids still running returns
-    what was learned with ``timed_out`` set, so completed ids are not discarded
-    and calling again is safe. Unknown or malformed ids are per-id errors inside
-    the result and never stop the other ids being observed; they are not listed
-    as pending, because waiting longer cannot resolve them.
-
-    A run whose process is gone with no end recorded meets that same criterion:
-    it has stopped, and both writers of an end are past it, so the window is not
-    held open for it either. Where that loss is established conclusively, the
-    observation ends the run — durably, with ``outcome="indeterminate"`` — so the
-    entry comes back terminal like any other and is neither pending nor named below.
-    ``all_terminal`` covers it: the field means every requested run has a
-    recorded end, not that every run succeeded, and a caller reads each entry's
-    ``outcome`` to tell those apart.
-
-    What is left in ``stopped_without_end`` is the id whose loss could not be
-    established — a record whose pid the OS cannot even be asked about — which
-    has stopped looking alive and may still be running for all this can tell.
-    Such ids are not in ``pending``, which is what is still worth waiting for,
-    and not a per-id ``error``, because observing them succeeded. Nothing about
-    the record itself changes: the entry stays non-terminal with a null outcome,
-    and a run that does get an end written afterwards is classified terminal by
-    the next observation as it always was. ``all_terminal`` therefore stays false
-    while any id is here, because a run this cannot account for is not a
-    completed one.
-
-    Because such an id resolves nothing by waiting, a caller looping until
-    ``all_terminal`` would otherwise re-ask as fast as it can. So a call that
-    would return without having waited at all, while at least one id is
-    ``stopped_without_end``, first sleeps one poll interval — bounded by whatever
-    is left of the window — and observes again. This is a floor on the call, not
-    a charge added to it: a call that already waited on a running id has met it,
-    and ``max_wait=0`` is untaxed by construction, having no window to spend. The
-    extra observation is not wasted either, since it is exactly the interval in
-    which a slow end-writer finishes. Pacing belongs here because the boundary
-    can enforce it once for every client, while a documented duty to back off is
-    satisfied only by the clients that read it.
-
-    ``unresolved_spawn`` is the third thing waiting cannot fix, and it was
-    previously indistinguishable from the first. A record whose spawn phase is
-    still ``"preparing"`` names a spawn that was never attempted or whose result
-    was never written, and the classifier deliberately makes no claim about its
-    fate, because no bound on the record can tell a loaded machine from a dead
-    spawn. That refusal is right and nothing here disturbs it. But such a record
-    was landing in ``pending``, which set ``timed_out`` for a run that may never
-    have started, so a caller looping until ``all_terminal`` polled it until the
-    window closed and then did so again.
-
-    Past ``unresolved_spawn_after`` — echoed in the result, so the number is read
-    rather than assumed — those ids are reported here instead. This is a decision
-    about whether to hold a window open, not about how the run ended: no outcome
-    is written, ``terminal`` stays false, the durable record is untouched, and a
-    spawn that does resolve afterwards is classified by the next observation
-    exactly as it always was. ``all_terminal`` stays false while any id is here,
-    for the same reason it does for ``stopped_without_end``: a run this cannot
-    account for is not a completed one.
-
-    One population can never reach this bucket, and it is named here because it
-    looks like an oversight to anyone who notices it. The age is drawn from
-    ``submitted_at``, and a missing or unreadable stamp is read as *no evidence*
-    rather than as evidence of being old — so the records certain to be older than
-    any threshold are exactly the records that can never enter the bucket. That is
-    deliberate twice over. Such a record carries no usable spawn phase either, so
-    the phase test excludes it before the age test is reached; and reading an absent
-    stamp as age would resolve a row by a fact nobody recorded. It also cannot arise
-    from anything this module writes today: ``submitted_at`` and the opening
-    ``spawn_state`` are set in the same record literal and published by one atomic
-    write, so no run this code submits can hold ``"preparing"`` without a stamp. The
-    population is the pre-field one, and it keeps the behaviour it has always had.
-
-    That bucket changes what ``timed_out`` means for the ids in it, and the change
-    is not conservative, so it is stated rather than left to be discovered. These
-    ids leave ``pending``, and ``timed_out`` is ``pending`` being non-empty, so it
-    goes false for them — including for a spawn that is genuinely slow rather than
-    dead, which is exactly the case no bound on the record can tell apart from a
-    dead one. A caller reading ``timed_out`` alone would take such a run for one
-    that is no longer outstanding.
-
-    ``all_terminal`` is the field that does not move: it stays false, because the
-    run has no recorded end. So the reading is the triple, not any one field —
-    ``unresolved_spawn`` non-empty with ``timed_out`` false and ``all_terminal``
-    false says *this is not worth waiting on and it is not finished either, go and
-    look at it*. That is a different instruction from ``timed_out`` true, which
-    says keep waiting, and from ``all_terminal`` true, which says stop. Looking
-    means the two facts each entry now carries, ``spawn_state`` and
-    ``submitted_at``, plus whatever the machine says about the process; this
-    function deliberately does not decide it.
-
-    Observing does not touch the run. This function only reads: a wait that
-    expires, or whose caller cancels or disconnects, leaves the durable record
-    exactly as it was — cancelling an observation is not cancelling the work.
+    Observing leaves the run as it was, with one fenced exception: resolving
+    a status may durably reap a conclusively-gone started orphan (see
+    ``_reap_if_conclusively_gone``). A wait that expires, or whose caller
+    cancels or disconnects, leaves the durable record untouched (cancelling
+    an observation is not cancelling the work).
     """
-    # Imported here rather than at module scope: this module is also imported by
-    # the terminal hook the CLI spawns, and that path stays import-light.
-    import anyio
+    import anyio  # deferred: the CLI's terminal hook also imports this module and stays import-light
 
     ordered = list(run_ids)
     eff_max = _clamp(max_wait, 0.0, WAIT_MAX_SECONDS)
@@ -3315,12 +2240,9 @@ async def wait(
         entries = [_wait_entry(rid) for rid in ordered]
         observed = [e for e in entries if e["error"] is None]
         stopped = [e["run_id"] for e in observed if e["possibly_orphaned"]]
-        # A spawn still in its opening phase past the bound above. Keyed on the
-        # phase equalling `"preparing"` rather than on it differing from it: a
-        # record written before the field existed carries null, which means "no
-        # phase this can vouch for" and never "never attempted", so a not-equal
-        # test would sweep every such record into a bucket that claims the
-        # opposite of what is known about it.
+        # Keyed on spawn_state == "preparing" (never != "started"): a pre-field
+        # record carries null, meaning "no phase this can vouch for", not
+        # "never attempted".
         unresolved = [
             e["run_id"]
             for e in observed
@@ -3341,11 +2263,7 @@ async def wait(
         remaining = deadline - anyio.current_time()
         if remaining <= 0:
             break
-        # Nothing left worth waiting for. Return now unless the only unresolved
-        # ids stopped without an end and this call has not waited at all — that
-        # is the shape a loop-until-all_terminal caller repeats as fast as it can
-        # ask, so the floor is spent here rather than left to every client. An
-        # unresolved spawn earns the same floor for the same reason.
+        # The stopped_without_end/unresolved_spawn back-off floor (see docs).
         if not pending and (waited or not (stopped or unresolved)):
             break
         waited = True
@@ -3370,26 +2288,13 @@ async def wait(
 def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
     """Record a terminal status for *run_id* (called by the CLI notify hook).
 
-    The CLI's terminal status string is authoritative and recorded verbatim. An
-    earlier version matched it against a local set and fell through to
-    ``"completed"`` on any miss, which silently turned every status the set did
-    not list — ``timed_out`` (the CLI's spelling for a timeout), ``cancelled``,
-    ``aborted``, ``completed_empty`` — into a false success. The hook fires only
-    on a genuine terminal, so the incoming status is trusted as-is and
-    ``finished_at`` marks the record terminal.
-
-    The first recorded end wins. A record that already carries one — a kill, an
-    end cached from the lifecycle store, or an observer's orphan transition
-    published while this hook was starting up — keeps it, and this call reports
-    what is there instead of replacing it. The hook's own delivery attempt still
-    goes ahead on the record it read back, so a run whose end was inferred can
-    still have its notice filled in by the child that turned out to be alive
-    enough to send one.
-
-    A record this could not serialize is reported as refused rather than as no
-    record. The end is not on disk in that case, and the caller's next act is to
-    announce one — so the two have to be told apart here or the announcement
-    goes out for a record that still reads as running.
+    The CLI's terminal status is trusted and recorded verbatim, never matched
+    against a local set (an earlier version's fallback-to-`"completed"` on any
+    miss silently turned `timed_out`/`cancelled`/`aborted`/`completed_empty`
+    into a false success). First-writer-wins: a record that already carries an
+    end (a kill, a lifecycle-cached end, an orphan transition published while
+    this hook was starting) keeps it — this call reports what's there rather
+    than replacing it, though its own delivery attempt still goes ahead.
     """
     with _locked_job(run_id) as guard:
         job = guard.record
@@ -3405,24 +2310,11 @@ def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
 def record_notify_delivery(run_id: str, outcome: dict[str, Any]) -> WriteResult:
     """Record whether the terminal notice was delivered (called by the notify hook).
 
-    Surfaced by ``status`` so a completion notice that failed to send is visible
-    rather than silently lost — the detached-spawn pattern relies on that signal.
-
-    Merges the delivery result and nothing else: it is written under the same
-    per-run lock as every other mutation, so it cannot carry a stale copy of the
-    lifecycle fields back over an end recorded while the notice was being sent.
-    A delivery outcome never changes how the run came out — a notice that failed
-    to send is a fact about the notice.
-
-    The last delivery result recorded is the one kept. Only one caller attempts
-    a given run's notice, and where a second one exists — a child hook filling in
-    the notice for an end an observer inferred — the later attempt is the more
-    recent fact about the notice, which is the whole of what this field says.
-
-    Returns the record as it stands afterwards, so a caller that has to report
-    the delivery alongside the run does not have to read it again, and reports a
-    refused write as refused: a delivery whose result was never recorded is not
-    a delivery anyone can read back.
+    Surfaced by ``status`` so a failed completion notice is visible rather than
+    silently lost. Merges only the delivery result, under the same per-run
+    lock as every other mutation, so it never carries a stale copy of the
+    lifecycle fields back over an end recorded while the notice was in flight —
+    a delivery outcome never changes how the run came out.
     """
     with _locked_job(run_id) as guard:
         job = guard.record
@@ -3430,3 +2322,35 @@ def record_notify_delivery(run_id: str, outcome: dict[str, Any]) -> WriteResult:
             return WriteResult(None, guard.state)
         job["notify_delivery"] = outcome
         return WriteResult(job, guard.state)
+
+
+def record_failure_cause(run_id: str, cause: dict[str, Any]) -> WriteResult:
+    """Record the typed class of the exception that ended *run_id*.
+
+    Merged under the same per-run lock as every other mutation, and merged
+    alone: a cause describes how the run ended and must never carry a stale copy
+    of the lifecycle fields back over an end recorded while the hook was
+    starting, for the same reason ``record_notify_delivery`` does not.
+
+    Only called with a cause that was actually read. A run whose cause file is
+    absent leaves this field off the record entirely, so a caller can tell a run
+    that reported no typed cause from one that predates the field.
+    """
+    with _locked_job(run_id) as guard:
+        job = guard.record
+        if job is None:
+            return WriteResult(None, guard.state)
+        job["failure_cause"] = cause
+        return WriteResult(job, guard.state)
+
+
+def failure_cause_path(run_id: str) -> Path | None:
+    """Where *run_id*'s cause file would be, or None if it has no job directory.
+
+    Resolved through ``config.job_dir`` — the same function the submit that set
+    the child's environment used — so the two cannot drift onto different
+    layouts. Reading the path back off the record instead would be checking the
+    value against itself.
+    """
+    d = config.job_dir(run_id)
+    return d / config.CAUSE_FILENAME if d.is_dir() else None

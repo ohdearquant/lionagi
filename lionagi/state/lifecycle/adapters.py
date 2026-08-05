@@ -1,19 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""StateDB and legacy-transition compatibility mapping.
-
-Both existing transition surfaces (`lionagi.state.db.StateDB.update_status()`
-and `lionagi.state.transitions.transition()`) delegate their guarded write
-through `SQLAlchemyLifecycleService`; this module owns the command
-construction and the outcome-to-legacy-return mapping so neither wrapper
-carries independent policy.
-
-`TransitionRejectedError` is defined here (not in `state/db.py`) so this
-module can raise it without importing `state.db` (which imports this
-package) — `state/db.py` re-exports the same class object, so
-``from lionagi.state.db import TransitionRejectedError`` is unchanged for
-existing callers.
-"""
+"""StateDB and legacy-transition compatibility mapping: both existing
+transition surfaces (``StateDB.update_status()``, ``state.transitions.
+transition()``) delegate their guarded write through
+``SQLAlchemyLifecycleService`` via this module's command construction and
+outcome-to-legacy-return mapping, so neither wrapper carries independent
+policy. ``TransitionRejectedError`` lives here (not in ``state/db.py``, which
+imports this package) to avoid a circular import; ``state/db.py`` re-exports
+the same class object. See docs/internals/runtime.md."""
 
 from __future__ import annotations
 
@@ -82,9 +76,7 @@ async def run_update_status(
             evidence_refs=tuple(evidence_refs or []),
             metadata=metadata or {},
         ),
-        # `actor` (the id) is passed through as-is, including None — legacy
-        # update_status() never defaulted a missing actor id to `source`,
-        # and status_transitions.actor stores exactly what was given.
+        # actor id passed through as-is, including None (legacy behavior)
         actor=ActorRecord(type=source, id=actor),  # type: ignore[arg-type]
         expected_statuses=(frozenset(expected_statuses) if expected_statuses is not None else None),
         expected_version=expected_updated_at,
@@ -102,11 +94,8 @@ async def run_update_status(
         return True
     if outcome.result == "rejected":
         raise TransitionRejectedError(entity_type, entity_id, outcome.previous_status, new_status)
-    # conflict: only reachable here for a *guarded* lost race
-    # (expected_statuses/expected_updated_at) — an ordinary skip. An
-    # unguarded zero-row write raises RuntimeError from inside the
-    # transaction instead (see raise_on_unguarded_conflict), rolling back
-    # anything else that happened in the same transaction.
+    # conflict: reachable here only for a guarded lost race; an unguarded
+    # zero-row write raises RuntimeError instead (raise_on_unguarded_conflict)
     return False
 
 
@@ -127,9 +116,8 @@ async def run_legacy_transition(
     patch: dict[str, Any] | None,
 ):
     """Route `lionagi.state.transitions.transition()`'s request through the
-    lifecycle service, preserving its ``guard``/``patch`` per-column CAS
-    (dispatch's ``delivering -> delivering`` crash-recovery claim) via the
-    service's non-public ``extra_guard`` parameter."""
+    lifecycle service, preserving its ``guard``/``patch`` per-column CAS via
+    the service's non-public ``extra_guard`` parameter."""
     command = TransitionCommand(
         entity_type=entity_type,
         entity_id=entity_id,

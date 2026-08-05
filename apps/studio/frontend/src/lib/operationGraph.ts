@@ -3,7 +3,13 @@ import type { SignalEvent } from "./api";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type OperationStatus =
-  "queued" | "running" | "awaiting_approval" | "paused" | "succeeded" | "failed" | "escalated";
+  | "queued"
+  | "running"
+  | "awaiting_approval"
+  | "paused"
+  | "succeeded"
+  | "failed"
+  | "escalated";
 
 export interface OperationNode {
   opId: string;

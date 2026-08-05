@@ -47,14 +47,8 @@ logger = logging.getLogger(__name__)
 async def _write_branch_snapshot(branch: Branch, snapshot_dir: str | Path) -> None:
     """Atomically write ``branch``'s current state to ``snapshot_dir/{branch.id}.json``.
 
-    Writes to a sibling temp file first, then renames it into place. A plain
-    ``open(..., "w") + write`` truncates the target before the new content
-    lands — a process kill (SIGTERM/SIGKILL) mid-write would leave a
-    zero-byte or partially-written snapshot that ``find_branch`` locates but
-    ``json.loads`` can't parse, making the branch unresumable even though a
-    snapshot file exists. ``os.replace`` is atomic on POSIX and Windows, so a
-    reader always sees either the previous complete snapshot or the new one,
-    never a torn write.
+    Writes to a sibling temp file then ``os.replace``s it into place, so a
+    process kill mid-write never leaves a torn, unparseable snapshot behind.
     """
     fp = await acreate_path(
         snapshot_dir,
@@ -73,12 +67,9 @@ async def _write_branch_snapshot(branch: Branch, snapshot_dir: str | Path) -> No
 async def _append_chunk(buffer_path, chunk) -> None:
     """Append one streamed chunk to the live JSONL buffer.
 
-    The buffer is replayed after the run, so a non-finite float is refused here
-    rather than written as `null` — by replay time nothing distinguishes it from
-    a value that was genuinely null.
+    A non-finite float is refused here rather than written as `null`, which
+    a replay reader can't tell apart from a genuine null.
     """
-    # Serialized before the file is opened, so a refused chunk does not leave an
-    # empty buffer behind for a run that never wrote one.
     line = json_dumps(chunk.to_dict(), check_non_finite=True) + "\n"
     async with await anyio.open_file(buffer_path, "a") as f:
         await f.write(line)
@@ -87,12 +78,10 @@ async def _append_chunk(buffer_path, chunk) -> None:
 async def _stream_with_deadline(model, api_call, deadline: float | None):
     """Iterate model.stream(api_call) with per-__anext__ anyio cancel scope; transparent passthrough when deadline is None.
 
-    Closes the underlying stream explicitly so an early exit (exception,
-    consumer abandonment) deterministically closes it instead of leaving it
-    to async-generator GC — for a CLI provider that close cascades down to
-    the subprocess reader's own ``finally`` and terminates the process
-    group; without it, an abandoned generator can leave the CLI subprocess
-    running to completion, orphaned, after the caller already gave up.
+    Explicitly closes the underlying stream on any exit instead of leaving it
+    to async-generator GC — for a CLI provider, that cascades down to the
+    subprocess reader and terminates the process group instead of leaking an
+    orphaned subprocess. See docs/internals/providers.md#run-stream-cleanup-cascade.
     """
     agen = model.stream(api_call=api_call)
     try:
@@ -134,31 +123,11 @@ async def _stream_with_liveness(
     api_call_holder: list,
     max_attempts: int = 2,
 ) -> AsyncGenerator:
-    """Spawn the worker subprocess and enforce a first-output liveness window.
+    """Spawn the worker subprocess and enforce a first-output liveness window, retrying once on miss.
 
-    A worker whose subprocess dies at/near spawn (or otherwise produces
-    nothing) leaves an operation awaiting a stream chunk that never arrives —
-    the leg stays "running" forever and every dependent operation in the flow
-    deadlocks behind it. This guards the *first* chunk only: once any chunk
-    has arrived, the subprocess is alive and the rest of the stream is
-    governed solely by ``stream_deadline`` (via ``_stream_with_deadline``),
-    unchanged.
-
-    On a first-output miss, the subprocess is retried once with an identical
-    invocation (``kw`` unchanged). A second miss raises ``WorkerLivenessError``
-    so the operation transitions to FAILED and releases its dependents,
-    instead of hanging as a zombie "running" leg.
-
-    ``liveness_timeout`` of ``None``/``<=0`` disables the watchdog entirely
-    (deterministic/test runs) and falls through to the legacy single-attempt
-    passthrough. When the caller's own ``stream_deadline`` is tighter than
-    ``liveness_timeout``, the deadline wins and its ``TimeoutError`` is
-    propagated unchanged (not treated as a liveness miss, not retried) —
-    the caller asked for that total-stream budget deliberately.
-
-    ``api_call_holder`` is a caller-owned list; the winning attempt's
-    ``api_call`` is recorded at index 0 for post-stream metadata (the caller
-    cannot see the api_call created inside this generator otherwise).
+    See docs/internals/providers.md#run-worker-liveness-watchdog for the retry
+    and deadline-interaction contract. ``api_call_holder`` is a caller-owned
+    list; the winning attempt's ``api_call`` is recorded at index 0.
     """
     if not liveness_timeout or liveness_timeout <= 0:
         api_call = await model.create_event(**kw)
@@ -169,11 +138,7 @@ async def _stream_with_liveness(
             async for chunk in agen:
                 yield chunk
         finally:
-            # Mirror the watchdog branch's explicit close (see below): GeneratorExit
-            # thrown into this frame while suspended at `yield chunk` does not
-            # implicitly close `agen` — close it explicitly so cleanup cascades
-            # down to the subprocess reader synchronously instead of relying on
-            # async-generator GC finalization.
+            # Explicit close: GeneratorExit at `yield chunk` doesn't implicitly close `agen`.
             _unwinding = sys.exc_info()[1] is not None
             try:
                 await agen.aclose()
@@ -207,10 +172,8 @@ async def _stream_with_liveness(
         remaining_to_deadline = (
             stream_deadline - anyio.current_time() if stream_deadline is not None else None
         )
-        # The liveness window only "owns" the timeout when it is the tighter
-        # bound; otherwise the caller's own stream_deadline was going to fire
-        # first regardless, so a timeout here is that deadline, not a
-        # worker-liveness failure.
+        # Liveness "owns" the timeout only when it's the tighter bound; otherwise
+        # a timeout here is the caller's own stream_deadline, not a liveness miss.
         is_liveness_boundary = (
             remaining_to_deadline is None or liveness_timeout < remaining_to_deadline
         )
@@ -224,8 +187,7 @@ async def _stream_with_liveness(
             with anyio.fail_after(wait_for):
                 first_chunk = await stream_iter.__anext__()
         except StopAsyncIteration:
-            # Stream ended with zero chunks — a legitimate (if unusual) empty
-            # completion, not a hang; let the caller see an empty stream.
+            # Zero chunks is a legitimate empty completion, not a hang.
             return
         except TimeoutError as exc:
             try:
@@ -252,10 +214,8 @@ async def _stream_with_liveness(
             )
             continue
         except BaseException:
-            # Cancellation or GeneratorExit can land while the first chunk is
-            # still pending, before control reaches the post-yield finally
-            # below. Close the owned stream explicitly so subprocess cleanup
-            # runs synchronously, then preserve the original unwind reason.
+            # Cancellation/GeneratorExit can land before the first chunk arrives,
+            # before the post-yield finally below runs — close explicitly here too.
             _unwinding = sys.exc_info()[1] is not None
             try:
                 await agen.aclose()
@@ -280,12 +240,7 @@ async def _stream_with_liveness(
                 async for chunk in agen:
                     yield chunk
             finally:
-                # Mirror _stream_with_deadline's own unwind-preserving close:
-                # a caller that abandons the generator mid-stream (break +
-                # aclose()) throws GeneratorExit in here while suspended at
-                # either yield above, which does not implicitly close
-                # `agen` — close it explicitly so the cascade down to the
-                # subprocess reader's cleanup still runs synchronously.
+                # Same explicit-close reasoning as the passthrough branch above.
                 _unwinding = sys.exc_info()[1] is not None
                 try:
                     await agen.aclose()
@@ -307,21 +262,17 @@ async def _stream_with_liveness(
             return
 
 
-# Fields inside a "result" chunk's metadata that CLI providers may emit as a
-# per-turn delta rather than a running total (see codex.py's turn.completed
-# handler). Every provider that only ever emits one "result" chunk per run()
-# call (claude_code, gemini_code) reports these as the final total, which sums
-# correctly here too since there is nothing else to add it to.
+# Result-chunk metadata fields some CLI providers (codex) emit as a per-turn
+# delta rather than a running total; providers emitting one result chunk per
+# call sum correctly here too since there's nothing else to add.
 _RESULT_META_DELTA_KEYS = ("total_cost_usd", "num_turns")
 
 
 def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
     """Merge a "result" chunk's metadata into the in-progress accumulator.
 
-    Numeric usage/cost/turn fields are summed (codex emits marginal deltas
-    across multiple turn.completed events within one flush window); every
-    other field (e.g. duration_ms, a point-in-time snapshot rather than a
-    delta) is overwritten with the latest value.
+    Numeric usage/cost/turn fields are summed; everything else is overwritten
+    with the latest value.
     """
     for key, value in metadata.items():
         if key == "usage" and isinstance(value, dict):
@@ -348,12 +299,8 @@ async def run(
 ) -> AsyncGenerator[RoledMessage]:
     """Stream a CLI-backed model turn, yielding Instruction/AssistantResponse/ActionRequest/ActionResponse messages.
 
-    Emits at most one terminal signal (RunEnd on clean exit or consumer
-    abandon, RunFailed on any failure) per call when an observer is
-    attached. RunStart precedes it only once the turn has passed the
-    origin guard below — a prompt the guard rejects is recorded as
-    RunFailed with no preceding RunStart and no other lifecycle trace.
-    suppress_lifecycle_var suppresses nested signals inside Branch.ReAct() turns.
+    Emits at most one terminal signal (RunEnd or RunFailed) per call when an
+    observer is attached; see docs/internals/providers.md#run-lifecycle-signal-ordering.
     """
     if not param._is_sentinel(param.imodel):
         branch.chat_model = param.imodel
@@ -369,10 +316,8 @@ async def run(
 
     import time as _time  # noqa: PLC0415
 
-    # Built synchronously and purely from (instruction, param) — no context-
-    # provider I/O, no persistence, no signal emission. This is the only
-    # thing the origin guard below needs, so it happens before any other
-    # awaited operation for this turn.
+    # Built synchronously, no I/O — the origin guard below needs it before any
+    # other awaited operation for this turn.
     ins = _build_instruction(branch, instruction, param)
 
     from lionagi.session._lifecycle_ctx import suppress_lifecycle_var
@@ -386,17 +331,9 @@ async def run(
     _t0_run = _time.monotonic()
 
     try:
-        # Consumed exactly once, as the first awaited operation for this
-        # turn — before context providers run, before RunStart is emitted
-        # (which persists via the observer), before anything is committed
-        # or yielded: fires USER_PROMPT_SUBMIT iff the operation context
-        # carries a turn-origin token (see operations/_turn_origin.py). A
-        # handler that rejects this prompt must leave no lifecycle trace
-        # beyond the rejection itself — no context-provider side effects,
-        # no RunStart, nothing committed to branch.messages, nothing
-        # yielded to a consumer. The rejection is still recorded as this
-        # run's failure (not silently dropped) so the terminal signal below
-        # reports it correctly.
+        # Must run first, before context providers / RunStart / any commit or
+        # yield: a rejection here must leave no lifecycle trace beyond itself.
+        # See docs/internals/providers.md#run-lifecycle-signal-ordering.
         _turn_origin_token = consume_turn_origin(param.turn_origin)
         if _turn_origin_token is not None and branch._hooks is not None:
             from lionagi.hooks.bus import HookPoint
@@ -440,9 +377,8 @@ async def run(
             context_blocks=context_report.blocks if context_report else None,
         )
 
-        # Committed before the yield below: any consumer that receives this
-        # Instruction from the generator must find it already present in
-        # branch.messages, not merely in flight.
+        # Committed before yielding: a consumer receiving this Instruction must
+        # find it already in branch.messages, not merely in flight.
         await branch.msgs.a_add_message(instruction=ins)
 
         yield ins
@@ -456,11 +392,9 @@ async def run(
         bfp = None
 
         if param.stream_persist:
-            # snapshot_dir for find_branch() lookups; persist_dir for the live JSONL buffer.
-            # Written here, before the stream starts, so a branch killed at any
-            # point during a long-running turn (e.g. SIGTERM mid-stream) still
-            # has a resumable checkpoint — the finally block below overwrites
-            # it with the completed turn's state on a clean exit.
+            # snapshot_dir for find_branch() lookups; persist_dir for the live JSONL
+            # buffer. Written before the stream starts so a mid-turn kill still
+            # leaves a resumable checkpoint; the finally block overwrites it on exit.
             snapshot_dir = param.snapshot_dir or param.persist_dir
             await _write_branch_snapshot(branch, snapshot_dir)
 
@@ -486,19 +420,12 @@ async def run(
 
         thinking_parts: list[str] = []
         text_parts: list[str] = []
-        # Provider-reported usage from the terminal "result" chunk (codex: tokens; claude_code: cost/turns/duration).
-        # Stamped onto the final AssistantResponse; re-tokenizing message history undercounts internal tool turns.
+        # Provider-reported usage from the terminal "result" chunk, stamped onto
+        # the final AssistantResponse (re-tokenizing history undercounts tool turns).
         result_meta: dict = {}
-        # Whole-call usage accumulator: never cleared (unlike result_meta,
-        # which resets on every flush so each AssistantResponse only carries
-        # its own window's metadata). Codex splits one run() call into
-        # multiple flush windows (tool-response flushes between "result"
-        # chunks) and emits marginal per-window deltas, so the terminal
-        # API_POST_CALL must sum every window's usage, not just the last
-        # one. _accumulate_result_meta's "usage" branch always adds
-        # (never overwrites), so feeding it every incoming chunk here, in
-        # parallel with result_meta, sums exactly once per chunk — no
-        # double-count regardless of how many flushes land in between.
+        # Whole-call accumulator, never cleared (unlike result_meta, which resets
+        # per flush): codex splits one run() into multiple flush windows with
+        # marginal per-window deltas, so API_POST_CALL must sum every window.
         _total_usage_meta: dict = {}
         last_usage: dict | None = None
 
@@ -511,12 +438,8 @@ async def run(
                 metadata["thinking"] = "\n".join(thinking_parts)
             if result_meta:
                 metadata["model_response"] = dict(result_meta)
-                # Clear after stamping so a later flush within the same run()
-                # call (e.g. a provider that reports usage per internal turn,
-                # with tool calls in between) doesn't restamp already-recorded
-                # usage onto a second AssistantResponse -- _collect_branch_usage
-                # sums across every message on the branch, so a stale/repeated
-                # result_meta here would double-count tokens/cost.
+                # Clear after stamping: a later flush in the same run() call must
+                # not restamp already-recorded usage and double-count it.
                 result_meta.clear()
             res = AssistantResponse(
                 content=AssistantResponseContent(assistant_response=text),
@@ -532,7 +455,7 @@ async def run(
 
         pending_requests: dict[str, ActionRequest] = {}
 
-        # Pop timeout before create_event — CLI providers don't consume it; None/0/negative disables enforcement.
+        # CLI providers don't consume timeout; None/0/negative disables enforcement.
         _timeout = kw.pop("timeout", None)
         _stream_deadline: float | None = None
         if isinstance(_timeout, int | float) and _timeout > 0:
@@ -560,12 +483,10 @@ async def run(
                     default_cap = _app_settings.LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT
                     kw["print_timeout"] = format_print_timeout(default_cap)
 
-        # Pop liveness_timeout before create_event — CLI providers don't consume it either.
-        # Explicit values (including 0/negative-to-disable) are always honored. Absent
-        # falls back to the configured default, but only for endpoints that declare
-        # streams_first_output_early — a buffered transport (e.g. gemini_code, whose
-        # first chunk arrives only once the whole result is in) would have a healthy
-        # long call misdiagnosed as a dead worker under the default watchdog.
+        # Explicit values always honored; absent falls back to the configured
+        # default only for endpoints declaring streams_first_output_early — a
+        # buffered transport (e.g. gemini_code) would misdiagnose a healthy long
+        # call as a dead worker under the default watchdog otherwise.
         _liveness_timeout_explicit = "liveness_timeout" in kw
         _liveness_timeout = kw.pop("liveness_timeout", None)
         if _liveness_timeout is None and not _liveness_timeout_explicit:
@@ -651,24 +572,26 @@ async def run(
                                     last_usage = dict(_total_usage_meta["usage"])
 
                         case "error":
-                            # A CLI provider marks a resumed-session end-of-stream by
-                            # emitting a StreamChunk(type="error", ...,
-                            # metadata={"benign_eos": True}).  Only suppress the error
-                            # when that explicit marker is present; any error chunk
-                            # without it is treated as a real provider failure and
-                            # surfaces as RunFailed.  This prevents genuine empty-error
-                            # objects (turn.failed with no message) from being silently
-                            # swallowed as success.
+                            # Only metadata={"benign_eos": True} marks a resumed-session
+                            # end-of-stream; any other error chunk is a real failure.
                             if chunk.metadata.get("benign_eos"):
                                 logger.debug(
                                     "run: provider end-of-stream sentinel received, "
                                     "ending stream cleanly"
                                 )
                                 break
-                            # Persist text the provider already delivered before
-                            # failing — a late failure (timeout after streaming a
-                            # response) must not destroy content the caller and
-                            # state.db would otherwise have received.
+                            # A reconnect notice is the provider CLI retrying its own
+                            # dropped stream: the process is still running and will
+                            # either resume emitting events or produce a real terminal
+                            # error, so the run keeps consuming instead of raising.
+                            if chunk.metadata.get("reconnect_notice"):
+                                logger.warning(
+                                    "run: provider reconnecting mid-stream (%s); "
+                                    "continuing to consume",
+                                    chunk.content,
+                                )
+                                continue
+                            # Persist text already delivered before a late failure destroys it.
                             if res := await _flush_response():
                                 yield res
                             content = chunk.content or "(empty error)"
@@ -703,22 +626,11 @@ async def run(
                 _run_exc = _exc
                 raise
         finally:
-            # Deterministically close the stream chain on ANY exit (normal
-            # StopAsyncIteration, an "error" chunk raise, a control-signal
-            # _StopStream, GeneratorExit) rather than leaving it to
-            # async-generator GC — for a CLI provider that cascades down to
-            # the subprocess reader's own cleanup and terminates the process
-            # group instead of leaving it running, orphaned, in the background.
-            #
-            # The close chain (ndjson_from_cli -> aterminate_process_group ->
-            # asyncio.wait_for) can raise asyncio.CancelledError, a
-            # BaseException that a plain `except Exception` will not catch —
-            # left unguarded it escapes this finally block and REPLACES
-            # whatever provider/control exception is already propagating
-            # (_run_exc, an in-flight ProviderError, a _StopStream signal).
-            # Preserve the primary: a close failure while already unwinding
-            # is a secondary cleanup failure, logged and swallowed, never
-            # allowed to mask the real reason the stream ended.
+            # Explicit close on ANY exit cascades down to the subprocess reader and
+            # terminates the process group instead of leaking it. The close chain
+            # can raise CancelledError (a BaseException `except Exception` won't
+            # catch) — preserve whatever exception is already propagating instead
+            # of letting a secondary cleanup failure replace it.
             _unwinding = sys.exc_info()[1] is not None
             try:
                 await stream_gen.aclose()
@@ -742,7 +654,7 @@ async def run(
                         await bfp_path.unlink()
 
     except GeneratorExit:
-        # GeneratorExit must never be suppressed — emit RunEnd then re-raise for runtime teardown.
+        # Never suppressed — emit RunEnd then re-raise for runtime teardown.
         await branch.drain_signals()
         if has_observer and not _terminal_emitted:
             _terminal_emitted = True
@@ -755,17 +667,13 @@ async def run(
                 logger.exception("run: observer raised during RunEnd emission on GeneratorExit")
         raise
     except BaseException as _exc:
-        # Catches anything raised in this turn's setup/commit/yield/stream
-        # path that the more specific handlers above didn't already
-        # classify (context providers, kw preparation, message persistence,
-        # pre-stream snapshot/liveness setup) — without this, the finally
-        # below would see _run_exc still None for those failures and emit a
-        # false RunEnd instead of RunFailed.
+        # Catches anything the more specific handlers above didn't classify;
+        # without this the finally below would emit a false RunEnd instead of RunFailed.
         if _run_exc is None:
             _run_exc = _exc
         raise
     finally:
-        # _terminal_emitted guards against double emission on Python <3.11 where finally also runs after GeneratorExit.
+        # _terminal_emitted guards double emission on Python <3.11, where finally also runs after GeneratorExit.
         await branch.drain_signals()
 
         if _api_call_started:

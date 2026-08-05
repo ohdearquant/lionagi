@@ -50,30 +50,30 @@ def _specs_from_fields(field_models: list) -> dict | None:
 def prepare_operate_kw(
     branch: "Branch",
     *,
-    instruct: Instruct = None,
+    instruct: Instruct | None = None,
     instruction: Instruction | JsonValue = None,
     guidance: JsonValue = None,
     context: JsonValue = None,
     sender: SenderRecipient = None,
     recipient: SenderRecipient = None,
-    progression: Progression = None,
-    chat_model: "iModel" = None,
+    progression: Progression | None = None,
+    chat_model: "iModel | None" = None,
     invoke_actions: bool = True,
-    tool_schemas: list[dict] = None,
-    images: list = None,
-    image_detail: Literal["low", "high", "auto"] = None,
-    parse_model: "iModel" = None,
+    tool_schemas: list[dict] | None = None,
+    images: list | None = None,
+    image_detail: Literal["low", "high", "auto"] | None = None,
+    parse_model: "iModel | None" = None,
     skip_validation: bool = False,
     handle_validation: HandleValidation = "return_value",
-    tools: "ToolRef" = None,
-    operative: "Operative" = None,
-    response_format: type[BaseModel] = None,
+    tools: "ToolRef | None" = None,
+    operative: "Operative | None" = None,
+    response_format: type[BaseModel] | None = None,
     actions: bool = False,
     reason: bool = False,
-    call_params: AlcallParams = None,
+    call_params: AlcallParams | None = None,
     action_strategy: Literal["sequential", "concurrent"] = "concurrent",
     verbose_action: bool = False,
-    field_models: list[FieldModel | Spec] = None,
+    field_models: list[FieldModel | Spec] | None = None,
     include_token_usage_to_model: bool = False,
     clear_messages: bool = False,
     stream_persist: bool = False,
@@ -230,12 +230,9 @@ async def operate(
             _pctx = _pctx.with_updates(response_format=response_fmt)
 
     if middle is None:
-        # A model carried on the chat param overrides the branch default for
-        # this call, so transport must follow the effective model's CLI flag
-        # rather than the branch's — otherwise a per-call CLI model on an API
-        # branch takes the non-streaming path.
-        # Sentinel status, not truthiness: a supplied model that defines
-        # __bool__ as False is still a supplied model and must win here.
+        # Transport follows the effective model's CLI flag, not the branch's —
+        # otherwise a per-call CLI model on an API branch takes the non-streaming
+        # path. Sentinel status, not truthiness, decides "supplied".
         effective_imodel = branch.chat_model if _cctx._is_sentinel(_cctx.imodel) else _cctx.imodel
         if isinstance(_cctx, RunParam) or getattr(effective_imodel, "is_cli", False):
             from ..run.run import run_and_collect
@@ -268,10 +265,8 @@ async def operate(
                 expected_name = getattr(model_class, "__name__", repr(model_class))
                 received_snippet = repr(result)[:200]
                 if getattr(result, "failure_kind", None) == "validation":
-                    # JSON came back intact and the schema refused it. The
-                    # generic hint below blames the provider's structured-output
-                    # support, which sends the caller to the wrong place — the
-                    # pydantic error already names the offending field.
+                    # JSON came back intact and the schema refused it — a distinct
+                    # error from the generic hint below, which blames the provider.
                     raise SchemaRejectedError(
                         f"Model response parsed as JSON but did not satisfy "
                         f"'{expected_name}': {result.validation_error}. "

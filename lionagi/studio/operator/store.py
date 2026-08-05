@@ -29,7 +29,7 @@ from typing import Any
 
 from lionagi.state import db as state_db_mod
 
-from ..services._db import open_db
+from ..services._db import open_db, require_file_store
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS studio_operator_conversations (
@@ -44,6 +44,17 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- continues the first instead of starting a stranger.
   provider_session_id TEXT,
   provider_model      TEXT,
+  -- Provider the conversation is currently pinned to; NULL means "use the
+  -- env-var default" (see build_operator_branch), same as provider_model.
+  provider            TEXT,
+  -- What the last turn actually ran on, which is not the same fact as the pin
+  -- above: an unpinned conversation has no pin and still ran on whatever the
+  -- environment resolved to. The provider session belongs to this pair, so
+  -- this is the pair the resume path compares against. NULL means no turn has
+  -- recorded a resolution yet, which is not the same as "it changed".
+  resolved_provider   TEXT,
+  resolved_model      TEXT,
+  pinned             INTEGER NOT NULL DEFAULT 0,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
   archived_at        REAL,
@@ -78,6 +89,9 @@ CREATE TABLE IF NOT EXISTS studio_operator_turns (
   status              TEXT NOT NULL
                       CHECK(status IN ('queued', 'running', 'awaiting_confirmation',
                                        'completed', 'failed', 'cancelled')),
+  -- Effort is per-turn (unlike provider/model, it never invalidates a
+  -- resumed provider session), so it lives on the turn, not the conversation.
+  effort              TEXT,
   error_code          TEXT,
   created_at          REAL NOT NULL,
   started_at          REAL,
@@ -145,6 +159,10 @@ MAX_TURN_PAYLOAD_BYTES = 8 * 1024 * 1024
 MAX_REPORTING_VIEWS_PER_CONVERSATION = 8
 TRUNCATION_FRAME_TYPE = "truncation"
 
+# Distinguishes "field omitted from a partial update" from "field explicitly
+# set to None/False" -- title in particular is legitimately nullable.
+_UNSET: Any = object()
+
 
 class OperatorStoreError(RuntimeError):
     code = "service_failure"
@@ -166,6 +184,10 @@ class OperatorConflictError(OperatorStoreError):
         self.details = details or {}
 
 
+class OperatorValidationError(OperatorStoreError):
+    code = "validation"
+
+
 class OperatorStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._db_path = Path(db_path) if db_path is not None else None
@@ -173,10 +195,23 @@ class OperatorStore:
         self._schema_lock = asyncio.Lock()
 
     def path(self) -> Path:
+        """The StateDB file these tables live in.
+
+        A store with no file at all is refused as
+        :class:`StoreNotAddressableError` rather than as an
+        ``OperatorStoreError``, because those two say different things to a
+        caller. An Operator error is about this subsystem and the routes map it
+        to 503, which invites a retry; a server-backed or in-memory store is
+        not a condition that resolves by waiting, and the app answers 501 for
+        it everywhere else. Reusing the existing refusal also keeps one
+        definition of which stores this SQLite-direct layer can open, instead of
+        a second one here that could drift from it.
+        """
         if self._db_path is not None:
             return self._db_path
+        require_file_store()
         path = state_db_mod.state_db_file()
-        if path is None:
+        if path is None:  # pragma: no cover — require_file_store already refused
             raise OperatorStoreError(
                 "Studio Operator currently requires a local StateDB file; "
                 "no ephemeral fallback is available"
@@ -212,7 +247,16 @@ class OperatorStore:
                     {
                         "provider_session_id": "TEXT",
                         "provider_model": "TEXT",
+                        "provider": "TEXT",
+                        "resolved_provider": "TEXT",
+                        "resolved_model": "TEXT",
+                        "pinned": "INTEGER NOT NULL DEFAULT 0",
                     },
+                )
+                await self._add_missing_columns(
+                    db,
+                    "studio_operator_turns",
+                    {"effort": "TEXT"},
                 )
                 await db.commit()
             stat = path.stat()
@@ -288,10 +332,17 @@ class OperatorStore:
             "project": row["project"],
             "title": row["title"],
             "status": row["status"],
+            "pinned": bool(row["pinned"]),
             "nextSequence": row["next_sequence"],
             "activeRequestId": row["active_request_id"],
             "providerSessionId": row["provider_session_id"],
             "providerModel": row["provider_model"],
+            "provider": row["provider"],
+            # Served beside the pin because a session that resets has to be
+            # explainable: without these, "my conversation started over" has no
+            # visible cause anywhere in the UI or the API.
+            "resolvedProvider": row["resolved_provider"],
+            "resolvedModel": row["resolved_model"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -404,17 +455,218 @@ class OperatorStore:
             await db.commit()
         return await self.get_conversation(conversation_id)
 
-    async def list_conversations(self, *, limit: int = 100) -> list[dict[str, Any]]:
+    async def list_conversations(
+        self, *, limit: int = 100, status: str = "active"
+    ) -> list[dict[str, Any]]:
         await self.ensure_schema()
+        if status not in ("active", "archived", "all"):
+            raise OperatorConflictError(f"Unsupported conversation status filter '{status}'")
         async with open_db(str(self.path())) as db:
-            rows = await (
-                await db.execute(
-                    "SELECT * FROM studio_operator_conversations "
-                    "WHERE status != 'deleted' ORDER BY updated_at DESC LIMIT ?",
-                    (limit,),
+            if status == "all":
+                query = (
+                    "SELECT * FROM studio_operator_conversations WHERE status != 'deleted' "
+                    "ORDER BY pinned DESC, updated_at DESC LIMIT ?"
                 )
-            ).fetchall()
+                params: tuple[Any, ...] = (limit,)
+            else:
+                query = (
+                    "SELECT * FROM studio_operator_conversations WHERE status = ? "
+                    "ORDER BY pinned DESC, updated_at DESC LIMIT ?"
+                )
+                params = (status, limit)
+            rows = await (await db.execute(query, params)).fetchall()
         return [self._conversation(row) for row in rows]
+
+    async def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str | None | object = _UNSET,
+        pinned: bool | object = _UNSET,
+        status: str | object = _UNSET,
+    ) -> dict[str, Any]:
+        """Apply a partial update: rename, pin/unpin, and/or archive/reactivate.
+
+        Only the fields the caller actually names (not left at ``_UNSET``) are
+        touched, so a rename never disturbs the pin state and vice versa.
+        Archiving is refused while a turn is in flight, matching the delete
+        restriction: it removes the conversation from the active list rather
+        than interrupting work in progress.
+        """
+        await self.ensure_schema()
+        if status is not _UNSET and status not in ("active", "archived"):
+            raise OperatorConflictError(f"Unsupported conversation status '{status}'")
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT status, active_request_id FROM studio_operator_conversations "
+                    "WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None or row["status"] == "deleted":
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            if status == "archived" and row["active_request_id"]:
+                await db.rollback()
+                raise OperatorConflictError("Cannot archive a conversation with an active turn")
+            sets: list[str] = []
+            params: list[Any] = []
+            if title is not _UNSET:
+                sets.append("title=?")
+                params.append(title)
+            if pinned is not _UNSET:
+                sets.append("pinned=?")
+                params.append(1 if pinned else 0)
+            if status is not _UNSET:
+                sets.append("status=?")
+                params.append(status)
+                sets.append("archived_at=?")
+                params.append(now if status == "archived" else None)
+            if sets:
+                sets.append("updated_at=?")
+                params.append(now)
+                params.append(conversation_id)
+                await db.execute(
+                    f"UPDATE studio_operator_conversations SET {', '.join(sets)} "  # noqa: S608
+                    "WHERE id=?",
+                    params,
+                )
+            await db.commit()
+        return await self.get_conversation(conversation_id)
+
+    async def fork_conversation(
+        self,
+        conversation_id: str,
+        *,
+        up_to_sequence: int | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        """Copy a conversation's completed turns into a new, independent conversation.
+
+        Only turns that reached a terminal status (completed/failed/cancelled)
+        are copied whole -- forking a conversation with a turn actively
+        streaming therefore ends the fork at the last completed turn instead
+        of copying a half-written one; the original conversation keeps
+        streaming untouched. ``up_to_sequence``, when given, additionally caps
+        the fork at the turn ending at or before that point in the source
+        conversation's history, so a user can branch from any earlier turn
+        rather than always from the tip. The new conversation starts with no
+        provider session of its own, so it does not resume the source's
+        provider-side session.
+        """
+        await self.ensure_schema()
+        source = await self.get_conversation(conversation_id)
+        now = time.time()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            query = (
+                "SELECT t.request_id AS request_id, MIN(f.sequence) AS first_sequence "
+                "FROM studio_operator_turns t "
+                "JOIN studio_operator_frames f ON f.request_id = t.request_id "
+                "WHERE t.conversation_id=? AND t.status IN ('completed','failed','cancelled') "
+            )
+            params: list[Any] = [conversation_id]
+            if up_to_sequence is not None:
+                query += "GROUP BY t.request_id HAVING MAX(f.sequence) <= ? "
+                params.append(up_to_sequence)
+            else:
+                query += "GROUP BY t.request_id "
+            query += "ORDER BY first_sequence ASC"
+            turn_rows = await (await db.execute(query, params)).fetchall()
+            ordered_request_ids = [row["request_id"] for row in turn_rows]
+
+            new_id = str(uuid.uuid4())
+            if title is not None:
+                new_title = title
+            elif source["title"]:
+                new_title = f"{source['title']} (fork)"
+            else:
+                new_title = f"Fork of {conversation_id[:8]}"
+
+            await db.execute(
+                "INSERT INTO studio_operator_conversations "
+                "(id, project, title, status, next_sequence, provider, provider_model, "
+                "created_at, updated_at) VALUES (?, ?, ?, 'active', 1, ?, ?, ?, ?)",
+                (
+                    new_id,
+                    source["project"],
+                    new_title,
+                    # A pin is the provider and the model together. Copying the
+                    # model alone would leave the fork resolving its provider
+                    # from the environment, so a conversation pinned to one
+                    # provider's model would fork into a conversation that runs
+                    # that model name against whatever provider the environment
+                    # names.
+                    source["provider"],
+                    source["providerModel"],
+                    now,
+                    now,
+                ),
+            )
+            next_sequence = 1
+            if ordered_request_ids:
+                placeholders = ",".join("?" for _ in ordered_request_ids)
+                turns = await (
+                    await db.execute(
+                        "SELECT * FROM studio_operator_turns "  # noqa: S608
+                        f"WHERE request_id IN ({placeholders})",
+                        tuple(ordered_request_ids),
+                    )
+                ).fetchall()
+                turns_by_id = {row["request_id"]: row for row in turns}
+                request_id_map = {rid: str(uuid.uuid4()) for rid in ordered_request_ids}
+                for original_request_id in ordered_request_ids:
+                    turn = turns_by_id[original_request_id]
+                    new_request_id = request_id_map[original_request_id]
+                    await db.execute(
+                        "INSERT INTO studio_operator_turns "
+                        "(request_id, conversation_id, instruction, context_json, "
+                        "context_hash, status, error_code, created_at, started_at, ended_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            new_request_id,
+                            new_id,
+                            turn["instruction"],
+                            turn["context_json"],
+                            turn["context_hash"],
+                            turn["status"],
+                            turn["error_code"],
+                            turn["created_at"],
+                            turn["started_at"],
+                            turn["ended_at"],
+                        ),
+                    )
+                    frames = await (
+                        await db.execute(
+                            "SELECT * FROM studio_operator_frames "
+                            "WHERE request_id=? ORDER BY sequence ASC",
+                            (original_request_id,),
+                        )
+                    ).fetchall()
+                    for frame in frames:
+                        await db.execute(
+                            "INSERT INTO studio_operator_frames "
+                            "(conversation_id, sequence, request_id, frame_type, "
+                            "payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                            (
+                                new_id,
+                                next_sequence,
+                                new_request_id,
+                                frame["frame_type"],
+                                frame["payload_json"],
+                                frame["created_at"],
+                            ),
+                        )
+                        next_sequence += 1
+                await db.execute(
+                    "UPDATE studio_operator_conversations SET next_sequence=? WHERE id=?",
+                    (next_sequence, new_id),
+                )
+            await db.commit()
+        return await self.get_conversation(new_id)
 
     async def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         await self.ensure_schema()
@@ -532,39 +784,201 @@ class OperatorStore:
             return None, None
         return json.loads(row["view_json"]), row["observation_seq"]
 
-    async def select_provider_model(self, conversation_id: str, model: str) -> None:
-        """Record the model for this conversation, dropping a stale session.
+    async def claim_resolved_pair(
+        self,
+        conversation_id: str,
+        *,
+        provider: str,
+        model: str,
+    ) -> str | None:
+        """Record what this turn will run on and return the session it may resume.
 
-        A provider session belongs to the model that created it, so resuming
-        one under a different model is undefined. Switching models therefore
-        starts a fresh session on purpose rather than resuming into a mismatch.
+        A provider session belongs to the (provider, model) pair that created
+        it, and until now the only thing that could invalidate one was an
+        explicit pin change. An unpinned conversation has no pin to change: it
+        runs on whatever the environment resolves to, which is re-read every
+        turn, so moving the default silently resumed a session that belonged to
+        the old pair. This compares the pair that is about to run against the
+        pair that last ran, which is the comparison the pin check could never
+        make.
+
+        Returns the session id to resume with, or ``None`` when the pair moved
+        and the stored session no longer belongs to this turn.
+
+        A stored pair of ``NULL`` returns the session unchanged. It means no
+        turn has recorded a resolution yet, which is not evidence that anything
+        changed, and every conversation alive when this ships is in exactly
+        that state -- reading it as a mismatch would drop every live session
+        once, at upgrade, and would look like the check working.
         """
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
-                    "SELECT provider_model FROM studio_operator_conversations WHERE id = ?",
+                    "SELECT provider_session_id, resolved_provider, resolved_model "
+                    "FROM studio_operator_conversations WHERE id = ?",
                     (conversation_id,),
                 )
             ).fetchone()
             if row is None:
                 await db.rollback()
                 raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
-            changed = row["provider_model"] is not None and row["provider_model"] != model
-            if changed:
+            session_id = row["provider_session_id"]
+            known = row["resolved_provider"] is not None
+            moved = known and (row["resolved_provider"], row["resolved_model"]) != (
+                provider,
+                model,
+            )
+            if moved:
                 await db.execute(
                     "UPDATE studio_operator_conversations "
-                    "SET provider_model = ?, provider_session_id = NULL, updated_at = ? "
-                    "WHERE id = ?",
-                    (model, time.time(), conversation_id),
+                    "SET resolved_provider = ?, resolved_model = ?, "
+                    "provider_session_id = NULL, updated_at = ? WHERE id = ?",
+                    (provider, model, time.time(), conversation_id),
                 )
             else:
                 await db.execute(
                     "UPDATE studio_operator_conversations "
-                    "SET provider_model = ?, updated_at = ? WHERE id = ?",
-                    (model, time.time(), conversation_id),
+                    "SET resolved_provider = ?, resolved_model = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (provider, model, time.time(), conversation_id),
                 )
+            await db.commit()
+        return None if moved else session_id
+
+    @staticmethod
+    async def _write_selection(
+        db: Any,
+        conversation_id: str,
+        *,
+        row_provider: str | None,
+        row_model: str | None,
+        provider: str | None,
+        model: str | None,
+    ) -> None:
+        """Apply a provider/model pin inside the caller's open transaction.
+
+        Takes the row's current values rather than re-reading them, so the
+        decision to drop the session is made against the same snapshot the
+        caller validated. Both ``provider`` and ``model`` as ``None`` means
+        clear the pin; otherwise a ``None`` leaves that column untouched.
+        """
+        clearing = provider is None and model is None
+        if clearing:
+            if row_provider is None and row_model is None:
+                return
+            next_provider: str | None = None
+            next_model: str | None = None
+            changed = True
+        else:
+            next_provider = provider if provider is not None else row_provider
+            next_model = model if model is not None else row_model
+            # A provider session belongs to the pair that created it, so any
+            # explicitly supplied value that differs from the stored one
+            # invalidates it. A stored NULL counts as a difference rather than
+            # as "nothing to invalidate": an unpinned conversation still ran on
+            # whatever the environment resolved to, and the session it holds
+            # belongs to that pair, so the first explicit pin is a change of
+            # pair like any other. Re-sending the value already stored is not a
+            # change, which is what keeps a session alive across the turns of a
+            # conversation whose composer submits its pin every time.
+            changed = (provider is not None and row_provider != provider) or (
+                model is not None and row_model != model
+            )
+        if changed:
+            await db.execute(
+                "UPDATE studio_operator_conversations "
+                "SET provider = ?, provider_model = ?, provider_session_id = NULL, "
+                "updated_at = ? WHERE id = ?",
+                (next_provider, next_model, time.time(), conversation_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE studio_operator_conversations "
+                "SET provider = ?, provider_model = ?, updated_at = ? WHERE id = ?",
+                (next_provider, next_model, time.time(), conversation_id),
+            )
+
+    async def select_provider_model(
+        self,
+        conversation_id: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Record the provider and/or model for this conversation, dropping a stale session.
+
+        A provider session belongs to the (provider, model) pair that created
+        it, so resuming one under a different provider or model is undefined.
+        Changing either therefore starts a fresh session on purpose rather
+        than resuming into a mismatch. A ``None`` argument leaves that column
+        untouched -- e.g. selecting only a model on a conversation that
+        already pinned a provider does not clear the provider pin.
+        """
+        if provider is None and model is None:
+            return
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT provider, provider_model FROM studio_operator_conversations "
+                    "WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            await self._write_selection(
+                db,
+                conversation_id,
+                row_provider=row["provider"],
+                row_model=row["provider_model"],
+                provider=provider,
+                model=model,
+            )
+            await db.commit()
+
+    async def clear_provider_model(self, conversation_id: str) -> None:
+        """Drop this conversation's provider/model pin so it runs on the default again.
+
+        Omitting a model on a turn means "leave the pin alone", which is what
+        an unchanged composer sends, so it cannot also mean "remove the pin" --
+        without this there is no way back to the daemon's own default once a
+        conversation has been pinned. The provider session goes with it: a
+        session belongs to the pair that created it, and the next turn resolves
+        its provider from the environment rather than from that pair.
+
+        Clearing a conversation that has no pin does nothing at all. Dropping
+        the session is a consequence of the pin changing, so a repeated clear
+        must not keep discarding sessions that no pin is invalidating.
+        """
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT provider, provider_model FROM studio_operator_conversations "
+                    "WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            if row["provider"] is None and row["provider_model"] is None:
+                await db.rollback()
+                return
+            await self._write_selection(
+                db,
+                conversation_id,
+                row_provider=row["provider"],
+                row_model=row["provider_model"],
+                provider=None,
+                model=None,
+            )
             await db.commit()
 
     async def archive_or_delete(self, conversation_id: str) -> None:
@@ -696,7 +1110,20 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
         instruction: str,
         context: dict[str, Any],
         expected_last_sequence: int,
+        effort: str | None = None,
+        select_provider: str | None = None,
+        select_model: str | None = None,
+        clear_selection: bool = False,
     ) -> dict[str, Any]:
+        """Accept a turn, applying any provider/model change in the same transaction.
+
+        The selection rides here rather than being written before the call
+        because a turn that is refused must not leave the conversation
+        changed. Reserving the turn and moving the pin are decided against one
+        snapshot of the row: either both land or neither does. The pin still
+        applies to this turn, since it is committed before the turn is
+        readable.
+        """
         await self.ensure_schema()
         request_id = str(uuid.uuid4())
         now = time.time()
@@ -706,7 +1133,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             await db.execute("BEGIN IMMEDIATE")
             row = await (
                 await db.execute(
-                    "SELECT status, next_sequence, active_request_id "
+                    "SELECT status, next_sequence, active_request_id, provider, provider_model "
                     "FROM studio_operator_conversations WHERE id=?",
                     (conversation_id,),
                 )
@@ -734,12 +1161,31 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                         "actualLastSequence": actual_last,
                     },
                 )
+            # Past every rejection, so nothing below can refuse the turn after
+            # the pin has moved.
+            if clear_selection or select_provider is not None or select_model is not None:
+                await self._write_selection(
+                    db,
+                    conversation_id,
+                    row_provider=row["provider"],
+                    row_model=row["provider_model"],
+                    provider=None if clear_selection else select_provider,
+                    model=None if clear_selection else select_model,
+                )
             sequence = int(row["next_sequence"])
             await db.execute(
                 "INSERT INTO studio_operator_turns "
                 "(request_id, conversation_id, instruction, context_json, context_hash, "
-                "status, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)",
-                (request_id, conversation_id, instruction, context_json, context_hash, now),
+                "status, effort, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)",
+                (
+                    request_id,
+                    conversation_id,
+                    instruction,
+                    context_json,
+                    context_hash,
+                    effort,
+                    now,
+                ),
             )
             await db.execute(
                 "UPDATE studio_operator_conversations SET active_request_id=?, "
@@ -801,6 +1247,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             "context": json.loads(row["context_json"]),
             "contextHash": row["context_hash"],
             "status": row["status"],
+            "effort": row["effort"],
             "errorCode": row["error_code"],
             "cancelRequestedAt": row["cancel_requested_at"],
         }

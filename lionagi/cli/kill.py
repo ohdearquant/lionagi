@@ -104,24 +104,21 @@ def _check_pid_identity(
 ) -> _IdentityVerdict:
     """Classify the process at *pid* against the run we recorded.
 
-    Four answers, and every caller has to say which of them it accepts:
+    Four answers, every caller must handle all of them:
 
     - "ours": positively identified as the run in the row.
-    - "not_ours": the pid is gone, or a different process holds it now. Killing
-      it would hit a stranger, which is the whole reason this check exists.
-    - "unverifiable": the process is there but could not be inspected (usually
-      permission denied). Callers must read this as still-alive, not as dead:
-      an unattended sweep that read it as dead would cancel the row of a worker
-      it merely lacks permission to look at, while that worker keeps running.
-    - "zombie": our process has exited and has not been reaped yet. A zombie
-      cannot be a recycled pid, because the OS does not hand a pid out again
-      until it is reaped, and it cannot be killed again either. It is a
-      finished termination, not an unidentifiable process, and callers that
-      fold it into "not_ours" refuse to record a cancellation that already
-      happened.
+    - "not_ours": pid is gone or held by a different process — killing it
+      would hit a stranger.
+    - "unverifiable": present but uninspectable (usually permission denied).
+      Callers must treat this as still-alive, never as dead, or an unattended
+      sweep would cancel a worker it merely lacks permission to see.
+    - "zombie": exited, not yet reaped. Not a recycled pid (the OS won't
+      reissue one before reaping) and not killable again — a finished
+      termination, so folding it into "not_ours" loses a cancellation that
+      already happened.
 
-    A recorded create_time still rules first: it is readable on a zombie, so a
-    pid that was reaped, recycled, and died again is reported "not_ours" rather
+    A recorded create_time still rules first, since it's readable on a
+    zombie: a reaped-recycled-and-died-again pid reports "not_ours" rather
     than being mistaken for our own corpse.
     """
     try:
@@ -238,13 +235,9 @@ def _terminate_pid(
     if not _pid_alive(pid) or _pid_is_zombie(pid):
         return "sigterm"
 
-    # Re-check identity before escalating. The check above this function's
-    # SIGTERM ran up to grace_seconds ago, and the whole reason we are here is
-    # that the process did not exit when asked -- which is indistinguishable
-    # from it having exited early and the OS having handed its pid to something
-    # else in the meantime. SIGKILL is not survivable and gives the target no
-    # chance to identify itself, so the one thing this must not do is escalate
-    # onto a stranger. A pid that now belongs to a different process is
+    # Re-check identity before escalating: the pid may have been reused by an
+    # unrelated process in the grace_seconds since SIGTERM, and SIGKILL is not
+    # survivable, so this must not escalate onto a stranger. A pid that now belongs to a different process is
     # reported the same way a mismatch at entry is.
     if expected_cmd is not None:
         verdict = _check_pid_identity(
@@ -286,12 +279,9 @@ async def _list_running_children(
             children.append(("plays", "play", db._row_to_dict(row)))
 
     if entity_type == "play":
-        # `plays.session_id` is the only key connecting a play to the sessions
-        # it started, and it is bound on one path only: the Studio show
-        # importer, which resolves the session by name when it mirrors a show
-        # directory. A play created by a live run leaves it NULL, so this
-        # returns nothing for those and the caller reports the gap rather than
-        # implying a reap that did not happen.
+        # `plays.session_id` is bound only by the Studio show importer; a play
+        # created by a live run leaves it NULL, so this returns nothing for
+        # those and the caller reports the gap rather than a false reap.
         rows = await db.fetch_all(
             "SELECT sessions.* FROM plays "
             "JOIN sessions ON sessions.id = plays.session_id "
@@ -667,12 +657,10 @@ async def _do_kill_all_stale(
                     continue
 
                 pid = _read_pid_from_entity(row_dict)
-                # A live pid alone isn't enough: if the original process died
-                # and the OS reused its pid, `_pid_alive` still reports True.
-                # Correlate against the row's own session id / recorded
-                # create_time — the same fields the direct-kill path uses —
-                # so a recycled pid occupied by a DIFFERENT lionagi process
-                # doesn't pass as "still alive".
+                # A live pid alone isn't enough — the OS may have reused it.
+                # Correlate against the row's own session id/create_time (same
+                # fields the direct-kill path uses) so a recycled pid occupied
+                # by a different lionagi process doesn't pass as "still alive".
                 if pid is not None and _pid_alive(pid):
                     meta = (
                         row_dict.get("node_metadata")

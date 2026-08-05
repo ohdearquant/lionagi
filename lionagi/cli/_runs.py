@@ -342,8 +342,29 @@ def load_last_branch() -> tuple[str | None, str]:
 
 
 def save_last_branch_pointer(run_id: str, branch_id: str) -> None:
-    ensure_lionagi_dir(LIONAGI_HOME)
-    _LAST_BRANCH_POINTER.write_text(json.dumps({"run_id": run_id, "branch_id": branch_id}))
+    """Record which branch `--continue` should pick up next. Best effort.
+
+    This is a convenience pointer, and it is written late — after a run has
+    produced its answer and, in the agent path, before that answer's terminal
+    notice goes out. Letting a filesystem error escape from here would cost the
+    caller the notice and the return value both, to protect a file whose only
+    job is to save someone typing a branch id.
+
+    So the failure is reported and not raised. It is reported rather than
+    swallowed because the next `--continue` will silently pick up an older run,
+    and that is confusing precisely when nobody remembers this warning.
+    """
+    from lionagi.cli._logging import warn
+
+    try:
+        ensure_lionagi_dir(LIONAGI_HOME)
+        _LAST_BRANCH_POINTER.write_text(json.dumps({"run_id": run_id, "branch_id": branch_id}))
+    except Exception as exc:  # noqa: BLE001 — a convenience pointer never fails a run
+        _log.warning("could not write the last-branch pointer: %r", exc, exc_info=exc)
+        warn(
+            f"could not record this run as the last branch ({exc}); "
+            f"`li agent -c` will resume an earlier run instead of this one"
+        )
 
 
 # ── Introspection ───────────────────────────────────────────────────────
@@ -860,25 +881,10 @@ async def teardown_persist(
             except Exception:  # noqa: BLE001, S110
                 pass
 
-            # BRANCH_END: finalize terminal status/ended_at for every branch
-            # this teardown owns. The single-branch agent path (ctx["branch"])
-            # never gets branches.status written anywhere else, so this is its
-            # only finalize. The multi-leg DAG path (ctx["hooks"]) already gets
-            # per-op status from flow.py's NodeCompleted/NodeFailed handlers;
-            # this is the safety net for legs that never reached a terminal
-            # signal (queued-but-never-started, or still "running" when the
-            # DAG itself raised) -- persist_branch_end()/finalize_branch()'s
-            # own guard skips any branch a per-op writer already finalized.
-            #
-            # final_status is only ever a genuine terminal outcome
-            # (SESSION_TERMINAL_STATUSES) EXCEPT for one case: the
-            # linked-engine reconciliation above suppresses a phantom
-            # "failed" back to "running" when the real engine session is
-            # still alive -- this teardown's own view of the branch is not
-            # actually done. Never emit BRANCH_END for that case; a branch
-            # must never be stamped "ended" with a non-terminal status.
-            # finalize_branch() also rejects a non-terminal status outright,
-            # so this is belt-and-suspenders, not the only guard.
+            # BRANCH_END safety net for legs that never reached a terminal
+            # signal; finalize_branch()'s own guard skips branches a per-op
+            # writer already finalized. See docs/internals/cli.md#_runspy-agent-session-setupteardown-adr-0035
+            # for why final_status must stay a genuine terminal outcome here.
             from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
             if final_status in SESSION_TERMINAL_STATUSES:
@@ -1033,13 +1039,23 @@ def _make_message_handler(
     return _on_message
 
 
-async def _flush_pending_message_events(ctx: dict) -> None:
-    """Retry queued messages before teardown reads completion evidence."""
+async def _flush_pending_message_events(ctx: dict) -> bool:
+    """Retry queued messages before teardown reads completion evidence.
+
+    Returns whether every queue emptied. What follows this reads the run's
+    completion evidence, so a queue that gave up here means that evidence is
+    being read against a transcript missing messages the run produced.
+    """
+    flushed = True
     for retry_queue in ctx.get("message_retry_queues", []):
-        await retry_queue.flush()
+        if not await retry_queue.flush_final():
+            flushed = False
+    return flushed
 
 
-async def _reopen_session_for_resume(db, session_id: str, existing_session: dict | None) -> bool:
+async def _reopen_session_for_resume(
+    db, session_id: str, existing_session: dict | None, *, drains_controls: bool = False
+) -> bool:
     """Return a resumed session to ``running`` so its next close is a real change.
 
     A session's closing transition only announces itself when the status
@@ -1066,18 +1082,11 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
         # already describes the session correctly, so there is nothing to reopen.
         return False
 
-    # Liveness is judged from the process markers on the row, and a reopened
-    # session used to carry the markers of the leg that already exited. A
-    # terminal session is never checked for liveness, so those markers were
-    # harmless while it was terminal; a running one is checked, so leaving them
-    # would describe this live leg by a dead process. They move in the same
-    # transaction as the status: the sweeps select on status and then answer
-    # "is it alive" from these markers, so a row that is running for even an
-    # instant with the previous leg's markers is a row they can cancel.
-    # Anything that is not a JSON object is dropped rather than raised on: every
-    # reader of this column already ignores what it cannot read as one, and a
-    # resume must not fail on its own bookkeeping. The markers are the part that
-    # has to be right.
+    # Process-liveness markers move in the same transaction as the status
+    # update below: a running row must never carry the previous (exited)
+    # leg's markers, or a liveness sweep could cancel this live leg.
+    # node_metadata is dropped rather than raised on if unreadable — a resume
+    # must not fail on its own bookkeeping.
     node_metadata = existing_session.get("node_metadata")
     if isinstance(node_metadata, str):
         try:
@@ -1099,7 +1108,21 @@ async def _reopen_session_for_resume(db, session_id: str, existing_session: dict
             expected_statuses=SESSION_TERMINAL_STATUSES,
             extra_fields={
                 "ended_at": None,
-                "node_metadata": json.dumps({**node_metadata, **current_pid_markers()}),
+                # The control-drain declaration rides this same write. It has to:
+                # it describes the leg that is executing now, and so do the
+                # process markers beside it. Written separately afterwards, it
+                # would be a read-modify-write over the row as it was read
+                # *before* this transition, which restores the exited leg's pid
+                # and pid_create_time and hands the stale-session doctor grounds
+                # to terminalize a live leg. One statement, one set of facts
+                # about one leg.
+                "node_metadata": json.dumps(
+                    {
+                        **node_metadata,
+                        **current_pid_markers(),
+                        "drains_controls": bool(drains_controls),
+                    }
+                ),
             },
             override=True,
             override_actor="cli.resume",
@@ -1148,6 +1171,7 @@ async def setup_agent_persist(
     project: str | None = None,
     run_id: str | None = None,
     share_db: bool = True,
+    drains_controls: bool = False,
 ) -> dict | None:
     from lionagi.session.session import Session
     from lionagi.state import provenance as _provenance
@@ -1168,7 +1192,10 @@ async def setup_agent_persist(
         if existing_branch:
             existing_session = await db.get_session(existing_branch["session_id"])
             if existing_session is not None and not await _reopen_session_for_resume(
-                db, existing_branch["session_id"], existing_session
+                db,
+                existing_branch["session_id"],
+                existing_session,
+                drains_controls=drains_controls,
             ):
                 # The reopen declines for three reasons and one of them is that
                 # the session is no longer there — maintenance removes old
@@ -1201,6 +1228,37 @@ async def setup_agent_persist(
                 branch_prog_id = effective or candidate
 
             existing_msg_ids = set(await db.get_progression(branch_prog_id))
+
+            # The adopted row's drain declaration is rewritten by the reopen
+            # above, in the same statement that installs this leg's process
+            # markers. Nothing to do here for a row that was terminal.
+            #
+            # A resume that did NOT reopen adopts a row still reading running,
+            # and that row keeps whatever the earlier leg declared. Three
+            # representations reach here, not two: explicit True, explicit
+            # False, and no declaration at all on a row written before this
+            # field existed. The last one refuses like False at the admission
+            # gate, but it is a third state and not a spelling of the second —
+            # it means nobody ever answered the question, where False means a
+            # runner answered no.
+            #
+            # Of the three, only True is not benign. If that leg is genuinely
+            # alive, its declaration is the right answer: it is the one a
+            # control would reach. If it died without terminalizing, the row
+            # outlives it, and a declaration of True then admits a control for
+            # a drain that is gone. Nothing here can tell those apart — a row
+            # reading running is the only evidence available, and it is exactly
+            # the evidence a dead leg leaves behind. The stale-session doctor is
+            # what resolves it, after the fact.
+            #
+            # So this path is not made correct by leaving it alone; it is left
+            # alone because the alternative is worse. Writing the declaration
+            # here would mean a read-modify-write against a row a live leg may
+            # be updating, which is how the exited leg's process markers got
+            # restored over the live leg's once already. The narrower cost is
+            # the other direction: a row reading False, or carrying no
+            # declaration at all, keeps refusing controls even though this leg
+            # would drain them.
         else:
             session_prog_id = str(uuid.uuid4())
             branch_prog_id = str(uuid.uuid4())
@@ -1213,7 +1271,20 @@ async def setup_agent_persist(
             _proj, _proj_src = _resolve_project(project)
             from lionagi.cli.kill import current_pid_markers
 
-            _node_meta = {**(session_dict.get("node_metadata") or {}), **current_pid_markers()}
+            # Whether this session's runner consumes operator controls, declared
+            # by the caller that starts the run rather than inferred. The
+            # control writer refuses a session whose runner has no drain, and it
+            # has no other way to tell one agent-kind session from another:
+            # every runner that persists through here writes the same kind and
+            # a run_id, so run_id presence stopped distinguishing them the
+            # moment a second caller began supplying one. Default False so a
+            # new runner that forgets to declare it gets a visible refusal
+            # rather than a control nobody will ever read.
+            _node_meta = {
+                **(session_dict.get("node_metadata") or {}),
+                **current_pid_markers(),
+                "drains_controls": bool(drains_controls),
+            }
             await db.create_session(
                 {
                     "id": session_id,

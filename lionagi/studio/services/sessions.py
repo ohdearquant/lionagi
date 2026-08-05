@@ -11,14 +11,13 @@ from fastapi import HTTPException, Query
 
 from lionagi._errors import NotFoundError
 from lionagi.state.claude_mirror import session_db_id
-from lionagi.state.db import DEFAULT_DB_PATH, SESSION_TERMINAL_STATUSES
+from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
+from ._db import require_file_store, store_exists, store_path
 from ._io import parse_json_col as _parse_json_col
 from .artifact_verification import resolve_artifact_verification
-
-_DB = str(DEFAULT_DB_PATH)
 
 SESSION_DONE_STABLE_SECS = 60.0
 
@@ -104,6 +103,22 @@ def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
 MAX_SESSION_PAGE = 500
 
 
+# SQLite LIKE's own wildcards, '%' and '_', are otherwise live inside a
+# contains-filter value: a search for "50%" would match every row instead of
+# rows containing the literal substring "50%". Escaping is applied to every
+# LIKE operand this module builds, not just search — a stray '%'/'_' in a
+# playbook-name filter has the same bug.
+_LIKE_ESCAPE_CHAR = "\\"
+
+
+def _escape_like(value: str) -> str:
+    return (
+        value.replace(_LIKE_ESCAPE_CHAR, _LIKE_ESCAPE_CHAR * 2)
+        .replace("%", f"{_LIKE_ESCAPE_CHAR}%")
+        .replace("_", f"{_LIKE_ESCAPE_CHAR}_")
+    )
+
+
 class SessionFilter:
     """Filters the runs/sessions listings share, pushed into SQL so they select
     the page rather than discard rows after the whole store has been read."""
@@ -116,19 +131,33 @@ class SessionFilter:
         project: str | None = None,
         project_null: bool = False,
         tags: list[str] | None = None,
+        search: str | None = None,
     ) -> None:
         self.playbook = playbook
         self.statuses = statuses
         self.project = project
         self.project_null = project_null
         self.tags = list(dict.fromkeys(tags)) if tags else None
+        self.search = search
 
     def where(self) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         if self.playbook:
-            clauses.append("LOWER(COALESCE(s.playbook_name, '')) LIKE '%' || LOWER(?) || '%'")
-            params.append(self.playbook)
+            clauses.append(
+                "LOWER(COALESCE(s.playbook_name, '')) LIKE '%' || LOWER(?) || '%' "
+                f"ESCAPE '{_LIKE_ESCAPE_CHAR}'"
+            )
+            params.append(_escape_like(self.playbook))
+        if self.search:
+            escaped = _escape_like(self.search)
+            clauses.append(
+                "(LOWER(COALESCE(s.name, '')) LIKE '%' || LOWER(?) || '%' "
+                f"ESCAPE '{_LIKE_ESCAPE_CHAR}' "
+                "OR LOWER(COALESCE(s.agent_name, '')) LIKE '%' || LOWER(?) || '%' "
+                f"ESCAPE '{_LIKE_ESCAPE_CHAR}')"
+            )
+            params.extend([escaped, escaped])
         if self.statuses:
             ordered = sorted(self.statuses)
             placeholders = ",".join("?" for _ in ordered)
@@ -155,10 +184,11 @@ class SessionFilter:
 
 async def count_sessions(where: SessionFilter | None = None) -> int:
     """Total matching sessions, without reading a single branch or progression."""
-    if not DEFAULT_DB_PATH.exists():
+    require_file_store()
+    if not store_exists():
         return 0
     clause, params = (where or SessionFilter()).where()
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             f"SELECT COUNT(*) AS n FROM sessions s {clause}",  # noqa: S608
             params,
@@ -175,14 +205,15 @@ async def list_sessions(
 ) -> list[dict[str, Any]]:
     """One page of sessions, newest first. Cost is proportional to `limit`, not
     to the size of the store."""
-    if not DEFAULT_DB_PATH.exists():
+    require_file_store()
+    if not store_exists():
         return []
 
     limit = max(1, min(int(limit), MAX_SESSION_PAGE))
     offset = max(0, int(offset))
     clause, params = (where or SessionFilter()).where()
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         # run_tags is created lazily on first tag write, so a tag filter would
         # fail on a store that has never been tagged.
         if (where or SessionFilter()).tags:
@@ -304,9 +335,10 @@ async def list_sessions(
 
 async def list_project_counts() -> list[dict[str, Any]]:
     """Per-project run counts via a cheap GROUP BY (no branch/message join)."""
-    if not DEFAULT_DB_PATH.exists():
+    require_file_store()
+    if not store_exists():
         return []
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             """
             SELECT project,
@@ -598,7 +630,8 @@ async def get_session(
     message_offset: int = 0,
     message_cursor: str | None = None,
 ) -> dict[str, Any] | None:
-    if not DEFAULT_DB_PATH.exists():
+    require_file_store()
+    if not store_exists():
         return None
 
     message_limit = max(1, min(message_limit, MAX_MESSAGE_LIMIT))
@@ -609,7 +642,7 @@ async def get_session(
         else None
     )
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             # Include lifecycle and provenance columns (model/provider/effort/agent_hash).
             """SELECT id, name, created_at, updated_at,
@@ -808,10 +841,11 @@ async def get_session(
 
 async def get_session_by_cc_id(cc_uid: str) -> dict[str, Any] | None:
     """Return a mirrored Claude Code session, including legacy unbackfilled rows."""
-    if not DEFAULT_DB_PATH.exists():
+    require_file_store()
+    if not store_exists():
         return None
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             "SELECT id FROM sessions WHERE cc_session_id = ? LIMIT 1",
             (cc_uid,),
@@ -825,10 +859,10 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
     """Poll-friendly tail read for the SSE stream/signals endpoints. Joins via
     json_each rather than binding every message id into an IN (...) clause,
     which would blow past SQLite's 999 bound-variable limit at scale."""
-    if not DEFAULT_DB_PATH.exists():
+    if not store_exists():
         return []
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             """
             SELECT m.id, m.created_at, m.content, m.sender, m.role,
@@ -854,10 +888,11 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
 
 
 async def session_exists(session_id: str) -> bool:
-    if not DEFAULT_DB_PATH.exists():
+    require_file_store()
+    if not store_exists():
         return False
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
             (session_id,),
@@ -868,10 +903,10 @@ async def session_exists(session_id: str) -> bool:
 
 async def get_session_stream_state(session_id: str) -> dict[str, Any] | None:
     """Scalar read for the SSE done-condition check — avoids the full get_session() round-trip."""
-    if not DEFAULT_DB_PATH.exists():
+    if not store_exists():
         return None
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute(
             "SELECT updated_at, status FROM sessions WHERE id = ?",
             (session_id,),

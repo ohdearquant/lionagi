@@ -112,7 +112,7 @@ class Session(Node, Relational):
     def register_operation(self, operation: str, func: Callable, *, update: bool = False):
         self._operation_manager.register(operation, func, update=update)
 
-    def operation(self, name: str = None, *, update: bool = False):
+    def operation(self, name: str | None = None, *, update: bool = False):
         """Decorator to register a function as a named operation."""
 
         def decorator(func: Callable) -> Callable:
@@ -221,7 +221,7 @@ class Session(Node, Relational):
         self,
         system: System | JsonValue = None,
         system_sender: SenderRecipient = None,
-        system_datetime: bool | str = None,
+        system_datetime: bool | str | None = None,
         user: SenderRecipient = None,
         name: str | None = None,
         messages: Pile[RoledMessage] = None,
@@ -259,10 +259,8 @@ class Session(Node, Relational):
         # reparentable state. Branch data (messages/memory/logs) stays with it.
         branch._owning_session_id = None
         branch._observer = None
-        # Routed through attach_hook_bus (not a direct `branch._hooks = None`)
-        # so the branch's handlers are actually unregistered from this
-        # session's bus -- otherwise they keep firing on it forever, even
-        # after the branch has moved to (or become standalone from) it.
+        # Routed through attach_hook_bus (not `branch._hooks = None`) so the
+        # branch's handlers actually unregister from this session's bus.
         branch.attach_hook_bus(None)
         branch._operation_manager = OperationManager()
         if branch.user == self.id:

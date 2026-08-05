@@ -38,6 +38,65 @@ leftover positionals back in order. `li agent status`, `li monitor run
 argparse dispatch, because a positional `id`/free-form-ids slot would
 otherwise swallow a literal token like `"status"` or `"run"`.
 
+## `_code_identity.py` — worktree fingerprint semantics
+
+`_worktree_fingerprint` digests uncommitted state via the status listing, the diff against
+HEAD, and each named path's size/mtime/inode — never file content, so cost doesn't scale with
+file size. A clean tree skips the diff call entirely. Absence (a deletion) is a measured value,
+not a gap; a path that exists but can't be read yields no digest at all ("cannot tell", not
+"unchanged"). The allowance shared with the git calls means a timeout mid-measurement also
+yields no digest, never a partial one — a partial digest would compare unequal to a full one
+taken later and report a phantom edit.
+
+Known blind spots, kept as an explicit list because "only one case" silently goes stale:
+metadata-preserving rewrites (same size/mtime/mode/inode); anything under `.gitignore`;
+ownership and xattrs. The inode is included so a rename-over-file replacement stays visible,
+at the cost of false positives on filesystems (some network/userspace ones) that hand out
+fresh synthetic inodes for unchanged paths.
+
+This asymmetry is deliberate: the surface exists to answer "is the code I'm running the code
+I think I'm running", and a false "nothing changed" defeats that purpose far worse than an
+occasional false "something changed".
+
+## `machine.py` — machine-result envelope contract
+
+Every `li <command> --machine` call answers with exactly one JSON object on stdout and
+nothing else; every human-facing byte goes to stderr — the consumer is a subprocess caller in
+another language that cannot read this file, so the shape is fixed here and `CONTRACT_VERSION`
+is the only thing it has to negotiate. Pieces: `ok`/`failure` are the two envelope constructors
+(`ERROR_KINDS` is closed); `available`/`unavailable` are the availability wrapper, so "there are
+none" and "could not establish whether there are any" never share an encoding; `reserve_stdout`
+takes stdout away from everything except the envelope at the file-descriptor level, so a stray
+`print` (or a child process that inherited the descriptor) lands on stderr instead of corrupting
+the result; `dispatch_machine` runs one machine command and turns any failure into an envelope
+rather than a traceback.
+
+## `_mcp_resolve.py` — MCP server resolution at submit time
+
+A CLI-backed agent otherwise discovers MCP servers by walking up from its own working
+directory, making its tool surface a property of *where it was told to work* rather than of the
+submission — nothing fails or is reported when this yields no servers, the agent just quietly
+has fewer tools than its instructions assume. The submitting side resolves the config from its
+own directory and hands the result to the child explicitly, snapshotted rather than passed as a
+path (a path would be re-read by the child at an unknown later moment, and would have to live
+inside the child's working directory to survive the provider's repo-containment check — exactly
+the directory that doesn't have it). "Nothing was configured" and "something was configured and
+could not be used" are returned as distinct states, so a failed resolution always carries its
+reason.
+
+## `machine_schedule.py` — `li schedule ... --machine` payload rules
+
+Three rules shape every schedule subcommand's machine payload (the envelope contract itself
+lives in `machine.py`): each subcommand's argv is parsed by the CLI's own human-invocation
+parser, never a mirror of it, so a flag unmoved to the machine path is refused by name rather
+than silently parsed and dropped. A mutation reports only what landed, not what may follow:
+`trigger` reports the fire was accepted and its allocated run id, not that anything ran yet;
+`create` reports the written row plus, separately, when the trigger next resolves — computed
+through the scheduler's own resolver, since an echoed cron expression only proves the string
+survived the trip. Reaching the schedule store is itself a fact that can fail — most of these
+commands are HTTP calls to a running Studio, so an unreachable Studio answers with an explicit
+`unavailable` naming the URL, never an empty list that reads as "there are no schedules".
+
 ## `orchestrate/` (`li o fanout` / `li o flow`)
 
 `_common.py`'s `TEAM_COORD_SECTION` / `TEAM_COORD_SECTION_MESSENGER`: two
@@ -74,6 +133,43 @@ terminal event now comes from the guarded lifecycle transition itself
 (`db.update_status()` on the run's session/invocation), so registering here
 and letting the registry's own post-commit push fire it is what prevents
 double delivery.
+
+**`deliver_flow_notify_now`** — the direct-path sibling of
+`register_flow_notify_scope`, for the one case that registered path cannot
+cover: `setup_agent_persist` failing before a session entity exists (`li
+agent`, `agent.py`). With no session there is no terminal transition to
+register against, so the run delivers its own `--notify` adapter itself, at
+process end in the `finally` block, once its own terminal status is already
+known — same `resolve_notify_config` resolution, same legacy payload/argv/env
+shape (`_legacy_argv_env_builders`, shared with the registered path), just
+invoked against a synthesized `RunTerminalEnvelope` instead of one raised by
+a DB transition. This is why the MCP server's job-spawn `--notify` template
+(`lionagi/mcp/jobs.py`, `_notify_template`) still fires for a run whose
+persistence broke: the argv it invokes (`lionagi.mcp._notify_hook`) carries
+its own `run_id` and needs nothing from the session/StateDB path to record
+the job's end and attempt delivery — it is agnostic to which of the two
+notify paths called it.
+
+Idempotence is a single file check, not the per-run lock the MCP job record
+uses: `run.notify_outcome_path.exists()` before attempting delivery, skipping
+if something is already recorded there. This is sufficient (not merely
+convenient) because the two notify paths are mutually exclusive by
+construction within one process — whether a session entity exists is decided
+once, right after `setup_agent_persist` returns, and never changes for the
+rest of the run, so the registered path and the direct path can never both
+fire for the same run. The check exists for re-entrancy safety (a second
+pass through the same `finally` body), not to arbitrate a real race.
+
+The refusal record (`record_notify_rejection_to_run`, `notify_outcome.json`
+with `reason` set) that used to fire unconditionally the moment persistence
+failed now fires only when delivery is actually attempted and genuinely
+cannot be completed — nothing configured to run, or the configured adapter
+itself fails to resolve/build. A `--notify` adapter that resolves and builds
+but fails to *launch or exit cleanly* is recorded by `record_notify_outcome_
+to_run` instead (no `reason` key — see `lionagi/state/lifecycle/
+notify_settings.py`), which is what lets `lionagi/mcp/jobs.py`'s orphan
+reaper (see `docs/internals/mcp.md#reap-reason-code-split`) tell "this run
+said its notice never arrived" from "this run said nothing at all."
 
 ### `_orchestration.py` — team-mode worker/coordinator wiring
 
@@ -523,6 +619,18 @@ the current profile.
 leg is about to fire on this same session, so this leg's teardown must not stamp a terminal
 status the resumed leg would then be blocked from overwriting by the ADR-0035 terminal guard
 (see `_runs.py` `_teardown_common` defer_terminal, below).
+
+The same ownership governs the direct no-persistence notice, and for the same reason: an
+interim leg has no answer to report. It is delivered from the tail rather than from the
+teardown, past every line that can still move the status — the empty-resumed-stream conversion
+to `failed`, and the auto-resume recursion that makes this leg interim. Delivering from the
+teardown reported `timed_out` for a run that went on to complete, and `completed` for one whose
+own return value said `failed`. Only the propagating-exception path still delivers from the
+teardown, because there the status is settled and nothing after the `try` block runs; the
+delivery is idempotent so those two reaches cannot both fire. The condition is the recursion's
+own branch and not the `will_auto_resume` computed earlier in teardown: that one is read before
+the effective status is applied, so suppressing on it could silence a leg that then does not
+recurse.
 
 ## `_agent_depth.py` — inherited agent-depth env marker
 

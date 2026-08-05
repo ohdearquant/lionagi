@@ -50,7 +50,7 @@ class FieldModel(Params):
     base_type: type[Any]
     metadata: tuple[Meta, ...]
 
-    def __init__(self, base_type: type[Any] = None, **kwargs: Any) -> None:
+    def __init__(self, base_type: type[Any] | None = None, **kwargs: Any) -> None:
         if base_type is not None:
             kwargs["base_type"] = base_type
         converted = self._convert_kwargs_to_params(**kwargs)
@@ -414,15 +414,8 @@ class FieldModel(Params):
         return t_
 
     def to_spec(self) -> Spec:
-        # Forward every metadata entry as-is so unknown keys survive, an explicit
-        # default=None is preserved (not gated on `is not None`), and
-        # json_schema_extra stays a nested value rather than being flattened into
-        # field-level kwargs (a "default" key inside it must never become the
-        # runtime default). Metadata is passed as a Meta tuple, not **kwargs, so a
-        # key that collides with a Spec.__init__ parameter (self / base_type /
-        # metadata) survives instead of raising. nullable/listable are derived
-        # flags: supply them explicitly and drop any stored duplicates so
-        # CommonMeta.prepare() sees each key exactly once.
+        # Metadata is forwarded as a Meta tuple, not **kwargs — see
+        # docs/internals/support-libs.md#modelsfield_model-fieldmodelto_spec
         existing = () if self._is_sentinel(self.metadata) else self.metadata
         metas = [m for m in existing if m.key not in ("nullable", "listable")]
         metas.append(Meta("nullable", self.is_nullable))

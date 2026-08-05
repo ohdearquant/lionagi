@@ -220,32 +220,10 @@ class Graph(Element, Relational, Generic[T]):
 
     def get_predecessors_cached(self, node: Any, /) -> tuple[Node, ...]:
         """Plain-tuple predecessor lookup, memoized until a mutator invalidates it.
-
-        Semantically identical to get_predecessors() but returns
-        tuple[Node, ...] instead of Pile[Node], avoiding Pile-construction
-        cost on repeat reads. Memoized per node id; the cache is cleared for
-        affected ids by add_edge/remove_edge/remove_node/replace_node/
-        splice_after. The existence check only runs on a cache miss — a
-        cached entry is proof the node was valid when memoized, and
-        remove_node() always clears its own cache entry in the same call
-        that removes it from internal_nodes, so a stale hit past removal
-        cannot occur.
-
-        Returns a tuple, not a list: the memoized entry is the exact object
-        handed back on every cache hit, so a mutable list would let one
-        caller's in-place edit (append/clear/sort) corrupt what every other
-        concurrent reader of this Graph sees — tuples make that aliasing
-        hazard impossible rather than relying on callers to treat the result
-        as read-only. This is also zero-copy on a cache hit (returns the
-        stored tuple directly, no per-call copy), so it costs nothing extra
-        over returning a list.
-
-        Cache snapshots are never modified after publication, so a hit only
-        dereferences the current snapshot. Misses take the graph lock and
-        publish a copied snapshot after building the result. Mutators evict
-        entries by the same copy-and-replace strategy under that lock, which
-        prevents a concurrent miss from publishing stale adjacency.
-        """
+        Semantically identical to get_predecessors() but avoids Pile-construction
+        cost on repeat reads, and returns a tuple (not a list) so no caller's
+        in-place edit can corrupt what other concurrent readers see. See
+        docs/internals/core.md#graph-adjacency-cache for the cache/lock contract."""
         _id = ID.get_id(node)
         cached = self._predecessor_cache.get(_id)
         if cached is not None:

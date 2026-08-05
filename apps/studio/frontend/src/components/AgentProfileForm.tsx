@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Button from "@/components/ui/Button";
 import SectionLabel from "@/components/ui/SectionLabel";
 import { FieldLabel, Input, Select, TextArea } from "@/components/ui/Field";
+import { getCasts } from "@/lib/api";
+import type { CastMode, CastRole } from "@/lib/api";
 import type { AgentProfile } from "@/lib/types";
 
 interface AgentProfileFormProps {
@@ -75,6 +77,28 @@ export default function AgentProfileForm({
   errors = [],
 }: AgentProfileFormProps) {
   const [form, setForm] = useState<AgentProfile>(initial ? normalizeForm(initial) : emptyForm());
+  const [roles, setRoles] = useState<CastRole[]>([]);
+  const [modes, setModes] = useState<CastMode[]>([]);
+  const [castsError, setCastsError] = useState<string | null>(null);
+
+  // The role/mode dropdowns must reflect what lionagi/casts/roles and
+  // lionagi/casts/roles/modes actually ship, not a hardcoded guess -- fetch
+  // the live catalog once per mount.
+  useEffect(() => {
+    let alive = true;
+    getCasts()
+      .then((catalog) => {
+        if (!alive) return;
+        setRoles(catalog.roles);
+        setModes(catalog.modes);
+      })
+      .catch((e) => {
+        if (alive) setCastsError(e instanceof Error ? e.message : "Failed to load casts catalog");
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const provider = isProvider(form.provider) ? form.provider : "claude_code";
   const availableModels = MODEL_OPTIONS[provider];
@@ -135,6 +159,60 @@ export default function AgentProfileForm({
             placeholder="What does this agent do?"
           />
         </FieldLabel>
+      </section>
+
+      {/* Section 1b: Cast role & mode — multiple named versions of the same role are
+          expected (e.g. two differently-configured "critic" agents), so role/mode
+          are independent per-agent settings, not part of the agent's identity. */}
+      <section className="flex flex-col gap-3">
+        <div>
+          <SectionLabel className="text-label font-semibold text-content-primary">
+            Cast role & mode
+          </SectionLabel>
+          <p className="text-meta text-content-muted">
+            Optionally base this agent on a built-in cast role and cognitive mode
+          </p>
+        </div>
+
+        {castsError ? (
+          <p className="text-meta text-status-error">{castsError}</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <FieldLabel label="Role">
+              <Select
+                id="agent-role"
+                value={form.role ?? ""}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, role: e.target.value || undefined }))
+                }
+              >
+                <option value="">— none —</option>
+                {roles.map((r) => (
+                  <option key={r.name} value={r.name}>
+                    {r.name}
+                  </option>
+                ))}
+              </Select>
+            </FieldLabel>
+
+            <FieldLabel label="Mode">
+              <Select
+                id="agent-mode"
+                value={form.mode ?? ""}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, mode: e.target.value || undefined }))
+                }
+              >
+                <option value="">— none —</option>
+                {modes.map((m) => (
+                  <option key={m.name} value={m.name}>
+                    {m.name}
+                  </option>
+                ))}
+              </Select>
+            </FieldLabel>
+          </div>
+        )}
       </section>
 
       {/* Section 2: Provider & Model */}

@@ -81,10 +81,6 @@ function HealthSection({ doctor }: { doctor: AdminDoctorResponse }) {
           <span className="font-mono text-content-primary">{formatBytes(h.wal_bytes)}</span>{" "}
           {t("health.walSuffix")}
         </span>
-        <span>
-          <span className="font-mono text-content-primary">{h.wal_pending}</span>{" "}
-          {t("health.walPendingSuffix")}
-        </span>
         <span className="text-content-muted">
           {t("health.checked")} <Timestamp value={doctor.diagnostic_run_at} exact />
         </span>

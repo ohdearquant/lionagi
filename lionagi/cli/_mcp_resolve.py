@@ -2,24 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve, at submit time, the MCP servers a spawned leg should be given.
 
-A CLI-backed agent discovers MCP servers by walking up from its own working
-directory. That makes its tool surface a property of *where it was told to
-work* rather than of the submission: the same command, same model and same
-prompt, pointed at a checkout instead of the directory holding the config,
-starts with no MCP servers at all. Nothing fails and nothing is reported — the
-agent simply has fewer tools than its instructions assume, and only its own
-confused output says so, much later.
-
-So the submitting side resolves the config from *its* directory and hands the
-result to the child explicitly. Two consequences are deliberate:
-
-* The servers are read and snapshotted here, not passed on as a path. A path
-  would be re-read by the child at an unknown later moment, and would also have
-  to live inside the child's working directory to survive the provider's
-  repo-containment check — which is exactly the directory that does not have it.
-* "Nothing was configured" and "something was configured and could not be used"
-  are returned as different states. Collapsing them is what makes the original
-  defect silent, so a resolution that fails carries the reason with it.
+A CLI-backed agent otherwise discovers MCP servers by walking up from its own
+working directory, making its tool surface depend on *where it was told to
+work* rather than the submission. See docs/internals/cli.md for why the
+config is snapshotted here (not passed as a path) and why "nothing configured"
+and "something configured but unusable" are returned as distinct states.
 """
 
 from __future__ import annotations

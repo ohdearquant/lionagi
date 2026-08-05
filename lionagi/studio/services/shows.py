@@ -12,18 +12,16 @@ from typing import Any
 from fastapi import HTTPException
 
 from lionagi.libs.path_safety import safe_join
-from lionagi.state.db import DEFAULT_DB_PATH
 
 from ..config import SHOWS_ROOT
 from ..registry import studio_route
 from ._db import open_db as _open_db
+from ._db import store_exists, store_path
 from ._io import read_json_file as _read_json
 from ._path_safety import public_path, safe_path_join
 from ._sse import sse_response
 
 _log = __import__("logging").getLogger(__name__)
-
-_DB = str(DEFAULT_DB_PATH)
 
 
 def _read_text(path: Path) -> str | None:
@@ -68,7 +66,7 @@ def _extract_repo_and_branches(show_md: str | None) -> tuple[str | None, str | N
 
 
 async def _db_available() -> bool:
-    return DEFAULT_DB_PATH.exists()
+    return store_exists()
 
 
 async def list_shows() -> list[dict[str, Any]]:
@@ -81,7 +79,7 @@ async def list_shows() -> list[dict[str, Any]]:
 
 
 async def _list_shows_db() -> list[dict[str, Any]]:
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         cur = await db.execute("""
             SELECT s.id, s.topic, s.goal, s.status, s.show_dir,
                    s.created_at, s.updated_at,
@@ -158,7 +156,7 @@ async def get_show(topic: str) -> dict[str, Any] | None:
     show_row: dict[str, Any] | None = None
     if await _db_available():
         try:
-            async with _open_db(_DB) as db:
+            async with _open_db(store_path()) as db:
                 cur = await db.execute("SELECT * FROM shows WHERE topic = ?", (topic,))
                 row = await cur.fetchone()
                 if row:
@@ -563,7 +561,7 @@ async def watch_show(topic: str) -> AsyncGenerator[str]:
             show_status: str | None = None
             if await _db_available():
                 try:
-                    async with _open_db(_DB) as db:
+                    async with _open_db(store_path()) as db:
                         cur = await db.execute("SELECT status FROM shows WHERE topic = ?", (topic,))
                         row = await cur.fetchone()
                         if row:

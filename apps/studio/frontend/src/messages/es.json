@@ -97,7 +97,11 @@
       "send": "Could not send this instruction.",
       "stop": "Could not stop the current turn.",
       "decision": "Could not record that decision.",
-      "effect": "Could not acknowledge this interface action."
+      "effect": "Could not acknowledge this interface action.",
+      "rename": "Could not rename this conversation.",
+      "pin": "Could not update this conversation.",
+      "archive": "Could not update this conversation.",
+      "fork": "Could not fork this conversation."
     },
     "composer": {
       "label": "Instruction",
@@ -156,7 +160,34 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "Predeterminado",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "Esfuerzo",
+      "default": "Predeterminado"
+    },
+    "list": {
+      "toggle": "Conversations",
+      "ariaLabel": "Conversations",
+      "ariaLabelSelected": "Conversations: {title}",
+      "filter": {
+        "active": "Active",
+        "archived": "Archived",
+        "all": "All"
+      },
+      "pin": "Pin",
+      "unpin": "Unpin",
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "fork": "Fork",
+      "forking": "Forking…",
+      "rename": "Rename",
+      "renameAriaLabel": "Rename {title}",
+      "renamePlaceholder": "Conversation title",
+      "empty": "No conversations yet",
+      "untitled": "Untitled conversation"
     }
   },
   "playfield": {
@@ -287,7 +318,42 @@
     },
     "tabsAria": "Pestañas de biblioteca",
     "masterAria": "Catálogo de biblioteca",
-    "detailAria": "Detalle del elemento"
+    "detailAria": "Detalle del elemento",
+    "filterMcp": "MCP Server",
+    "newMcpServer": "New MCP Server",
+    "mcp": {
+      "transport": "Transport",
+      "transportStdio": "Command (stdio)",
+      "transportHttp": "URL (http)",
+      "command": "Command",
+      "commandPlaceholder": "e.g. npx",
+      "args": "Arguments",
+      "argsPlaceholder": "One argument per line",
+      "env": "Environment",
+      "envPlaceholder": "KEY=value, one per line",
+      "envHint": "Values are never shown once saved. Leave a KEY= line as-is to keep it, or delete the line to remove that key.",
+      "envValuesHidden": "Values are never sent back to the browser once saved.",
+      "noEnv": "No environment variables configured.",
+      "url": "URL",
+      "timeout": "Timeout (seconds)",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "checkConnection": "Check connection",
+      "checking": "Checking…",
+      "lastCheck": "Last connection check",
+      "neverChecked": "Never checked",
+      "connectionOk": "Connected",
+      "connectionFailed": "Failed",
+      "validationOk": "Configuration is valid.",
+      "remove": "Remove",
+      "confirmDelete": "Remove MCP server \"{name}\"? This cannot be undone.",
+      "createTitle": "New MCP Server",
+      "createName": "Server name",
+      "createNamePlaceholder": "my-server",
+      "creating": "Creating…",
+      "create": "Create",
+      "createError": "Could not create this server."
+    }
   },
   "history": {
     "title": "Historial",
@@ -374,7 +440,9 @@
       "statToolCallsRecent": "Llamadas a herramienta (recientes)",
       "statErrorsRecent": "Errores (recientes)",
       "noBranchErrorsPartial": "No hay errores en los mensajes cargados.",
-      "noFilesPartial": "No se detectaron operaciones de archivo en los mensajes cargados."
+      "noFilesPartial": "No se detectaron operaciones de archivo en los mensajes cargados.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "Lista de historial",
     "detailAria": "Detalle del elemento"
@@ -392,8 +460,6 @@
       "stateDbSuffix": "DB de estado",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "WAL pendiente",
-      "walPendingSuffix": "WAL pendiente",
       "phantoms": "Sesiones fantasma",
       "phantomsNone": "No se detectó nada",
       "manageLink": "Gestionar en Mantenimiento →",
@@ -724,6 +790,14 @@
       "empty": "Ninguna sesión anterior coincide con este filtro.",
       "loadMore": "Cargar más",
       "loadingMore": "Cargando…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {
@@ -754,7 +828,17 @@
       "durationStatus": "activo {duration} · última actividad hace {age}",
       "empty": "No hay ejecuciones ni invocaciones activas.",
       "emptyHint": "Lanza una con la li CLI o pulsa ⌘K para saltar a cualquier lugar.",
-      "fleetLink": "Flota →"
+      "fleetLink": "Flota →",
+      "viewCards": "Tarjetas",
+      "viewTable": "Tabla",
+      "table": {
+        "colName": "Nombre",
+        "colStatus": "Estado",
+        "colUptime": "Tiempo activo",
+        "colLastActivity": "Última actividad",
+        "colKind": "Tipo",
+        "colId": "ID"
+      }
     },
     "recent": {
       "title": "Reciente",

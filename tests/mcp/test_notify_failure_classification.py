@@ -118,6 +118,21 @@ def test_a_network_refusal_is_not_read_as_a_policy_refusal():
     assert _classify_failure("request refused by the delivery gate") == "refused_by_policy"
 
 
+def test_an_identity_refusal_is_named_not_unknown():
+    """The needle is the delivery command's own verbatim refusal, not my paraphrase.
+
+    Measured: a notifier run under kkernel --expect-actor from a directory that
+    resolves to a different identity prints
+    '--expect-actor mismatch: expected "agent:x", resolved "lambda:y"' and exits 1.
+    The quoted identities stay out of the record — only the class name is stored —
+    and a text that merely talks about actors without that refusal phrase must
+    stay unknown, because "mismatch" alone appears in too many unrelated errors.
+    """
+    real = 'Error: --expect-actor mismatch: expected "agent:x", resolved "lambda:y"'
+    assert _classify_failure(real) == "sender_identity_mismatch"
+    assert _classify_failure("actor lambda:y sent a mismatched payload") == _FAILURE_UNKNOWN
+
+
 def test_a_delivery_that_says_nothing_useful_is_unknown_not_a_quote():
     out = _deliver(_py("import sys; sys.stderr.write('weird internal burble'); sys.exit(9)"), {})
     assert out["ok"] is False

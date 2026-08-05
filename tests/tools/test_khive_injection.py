@@ -719,3 +719,110 @@ def test_truncate_cap_semantics():
     assert _truncate("hello world", -1) == ""
     assert _truncate("", 5) == ""
     assert _truncate("hi", 10_000) == "hi"
+
+
+# ---------------------------------------------------------------------------
+# Provenance in the rendered block: a bullet a reader can date
+# ---------------------------------------------------------------------------
+
+# Captured from a live `memory.recall`, trimmed to the fields the renderer
+# reads. The dates are in the two forms the store actually returns: an
+# absolute stamp for an older record and a relative one for a recent record.
+_LIVE_RECALL_RESULT = [
+    {
+        "id": "5abc601f",
+        "content": "governance records tool preprocessors as separate local controls",
+        "created_at": "2026-07-09T21:11",
+        "memory_type": "semantic",
+        "salience": 0.9,
+        "served_by_profile_id": "lionagi-recall-v1",
+    },
+    {
+        "id": "b465f64c",
+        "content": "the scope of an identity comparison must match the scope of the binding",
+        "created_at": "20m ago",
+        "memory_type": "semantic",
+        "salience": 0.72,
+        "served_by_profile_id": "lionagi-recall-v1",
+    },
+]
+
+
+def _live_recall_response(result=None):
+    return json.dumps(
+        {
+            "results": [
+                {
+                    "ok": True,
+                    "tool": "memory.recall",
+                    "result": _LIVE_RECALL_RESULT if result is None else result,
+                }
+            ],
+            "summary": {"total": 1, "succeeded": 1, "failed": 0},
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_injected_block_dates_every_bullet(patched_transport):
+    """Read the text that reaches the model, not the template that builds it.
+
+    An undated bullet inside a block labelled untrusted gives a reader no way
+    to tell a genuine year-old record from something invented, so the date has
+    to survive all the way into the injected string.
+    """
+    patched_transport.return_value = _mcp_result(_live_recall_response())
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="lionagi-recall-v1"))
+
+    text = await provider.provide(_FakeBranch(), _FakeInstruction("do the thing"))
+
+    bullets = [line for line in text.splitlines() if line.startswith("- ")]
+    assert len(bullets) == 2, text
+    assert all(re.match(r"- \[[^\]]+\] ", line) for line in bullets), bullets
+    assert "[2026-07-09T21:11]" in text
+    assert "[20m ago]" in text
+
+
+@pytest.mark.asyncio
+async def test_injected_block_names_the_serving_profile(patched_transport):
+    patched_transport.return_value = _mcp_result(_live_recall_response())
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="lionagi-recall-v1"))
+
+    text = await provider.provide(_FakeBranch(), _FakeInstruction("do the thing"))
+
+    assert "# khive recall (served by lionagi-recall-v1)" in text
+    assert text.count("lionagi-recall-v1") == 1, (
+        "the serving profile is one fact about the response, not one per bullet"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_record_with_no_date_still_renders(patched_transport):
+    """A store that does not stamp a record must produce a bullet, not '[None]'."""
+    patched_transport.return_value = _mcp_result(
+        _live_recall_response([{"id": "x", "content": "undated lesson"}])
+    )
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="lionagi-recall-v1"))
+
+    text = await provider.provide(_FakeBranch(), _FakeInstruction("do the thing"))
+
+    assert "- undated lesson" in text
+    assert "None" not in text
+
+
+@pytest.mark.asyncio
+async def test_no_profile_header_when_the_response_does_not_agree_on_one(patched_transport):
+    patched_transport.return_value = _mcp_result(
+        _live_recall_response(
+            [
+                {"id": "a", "content": "one", "served_by_profile_id": "p1"},
+                {"id": "b", "content": "two", "served_by_profile_id": "p2"},
+            ]
+        )
+    )
+    provider = KhiveInjectionProvider(KhiveInjectionPolicy(profile_id="lionagi-recall-v1"))
+
+    text = await provider.provide(_FakeBranch(), _FakeInstruction("do the thing"))
+
+    assert "# khive recall\n" in text
+    assert "served by" not in text

@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from lionagi.state.db import StateDB  # noqa: E402
@@ -153,8 +155,7 @@ def patched_signals_db(tmp_path, monkeypatch):
     import lionagi.studio.services.signals as svc
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(svc, "_DB", str(db_path))
-    monkeypatch.setattr(svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     return svc, db_path
 
 
@@ -230,14 +231,8 @@ def patched_app(tmp_path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.studio.services.sessions as sessions_svc
-    import lionagi.studio.services.signals as signals_svc
-
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(sessions_svc, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_svc, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(signals_svc, "_DB", str(db_path))
-    monkeypatch.setattr(signals_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app
 
@@ -714,14 +709,8 @@ def test_signals_endpoint_requires_bearer_auth(tmp_path, monkeypatch):
     pytest.importorskip("fastapi", reason="studio extra not installed")
     from fastapi.testclient import TestClient
 
-    import lionagi.studio.services.sessions as sessions_svc
-    import lionagi.studio.services.signals as signals_svc
-
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(sessions_svc, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_svc, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(signals_svc, "_DB", str(db_path))
-    monkeypatch.setattr(signals_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "secret-token")
 
     from lionagi.studio.app import app
@@ -761,9 +750,6 @@ async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatc
     pytest.importorskip("fastapi", reason="studio extra not installed")
     pytest.importorskip("httpx", reason="httpx not installed")
 
-    import lionagi.studio.services.sessions as sessions_svc
-    import lionagi.studio.services.signals as signals_svc
-
     db_path = tmp_path / "state.db"
     session_id = "cancel-test-sess"
 
@@ -782,10 +768,7 @@ async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatc
             }
         )
 
-    monkeypatch.setattr(sessions_svc, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_svc, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(signals_svc, "_DB", str(db_path))
-    monkeypatch.setattr(signals_svc, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     # Import the handler directly from the service module.
     from lionagi.studio.services.sessions import stream_signals

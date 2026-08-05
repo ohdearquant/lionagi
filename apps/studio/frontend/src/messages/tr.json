@@ -97,7 +97,11 @@
       "send": "Could not send this instruction.",
       "stop": "Could not stop the current turn.",
       "decision": "Could not record that decision.",
-      "effect": "Could not acknowledge this interface action."
+      "effect": "Could not acknowledge this interface action.",
+      "rename": "Could not rename this conversation.",
+      "pin": "Could not update this conversation.",
+      "archive": "Could not update this conversation.",
+      "fork": "Could not fork this conversation."
     },
     "composer": {
       "label": "Instruction",
@@ -156,7 +160,34 @@
       "open": "Open run"
     },
     "model": {
-      "label": "Model"
+      "label": "Model",
+      "default": "Varsayılan",
+      "unavailable": "{model} (unavailable)"
+    },
+    "effort": {
+      "label": "Çaba",
+      "default": "Varsayılan"
+    },
+    "list": {
+      "toggle": "Conversations",
+      "ariaLabel": "Conversations",
+      "ariaLabelSelected": "Conversations: {title}",
+      "filter": {
+        "active": "Active",
+        "archived": "Archived",
+        "all": "All"
+      },
+      "pin": "Pin",
+      "unpin": "Unpin",
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "fork": "Fork",
+      "forking": "Forking…",
+      "rename": "Rename",
+      "renameAriaLabel": "Rename {title}",
+      "renamePlaceholder": "Conversation title",
+      "empty": "No conversations yet",
+      "untitled": "Untitled conversation"
     }
   },
   "playfield": {
@@ -287,7 +318,42 @@
     },
     "tabsAria": "kitaplık sekmeleri",
     "masterAria": "kitaplık kataloğu",
-    "detailAria": "öğe ayrıntısı"
+    "detailAria": "öğe ayrıntısı",
+    "filterMcp": "MCP Server",
+    "newMcpServer": "New MCP Server",
+    "mcp": {
+      "transport": "Transport",
+      "transportStdio": "Command (stdio)",
+      "transportHttp": "URL (http)",
+      "command": "Command",
+      "commandPlaceholder": "e.g. npx",
+      "args": "Arguments",
+      "argsPlaceholder": "One argument per line",
+      "env": "Environment",
+      "envPlaceholder": "KEY=value, one per line",
+      "envHint": "Values are never shown once saved. Leave a KEY= line as-is to keep it, or delete the line to remove that key.",
+      "envValuesHidden": "Values are never sent back to the browser once saved.",
+      "noEnv": "No environment variables configured.",
+      "url": "URL",
+      "timeout": "Timeout (seconds)",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "checkConnection": "Check connection",
+      "checking": "Checking…",
+      "lastCheck": "Last connection check",
+      "neverChecked": "Never checked",
+      "connectionOk": "Connected",
+      "connectionFailed": "Failed",
+      "validationOk": "Configuration is valid.",
+      "remove": "Remove",
+      "confirmDelete": "Remove MCP server \"{name}\"? This cannot be undone.",
+      "createTitle": "New MCP Server",
+      "createName": "Server name",
+      "createNamePlaceholder": "my-server",
+      "creating": "Creating…",
+      "create": "Create",
+      "createError": "Could not create this server."
+    }
   },
   "history": {
     "title": "geçmiş",
@@ -374,7 +440,9 @@
       "statToolCallsRecent": "araç çağrıları (son)",
       "statErrorsRecent": "hatalar (son)",
       "noBranchErrorsPartial": "yüklenen mesajlarda hata yok.",
-      "noFilesPartial": "yüklenen mesajlarda dosya işlemi algılanmadı."
+      "noFilesPartial": "yüklenen mesajlarda dosya işlemi algılanmadı.",
+      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
+      "reloadConversation": "Reload conversation"
     },
     "masterAria": "geçmiş listesi",
     "detailAria": "öğe ayrıntısı"
@@ -392,8 +460,6 @@
       "stateDbSuffix": "state DB",
       "wal": "WAL",
       "walSuffix": "WAL",
-      "walPending": "bekleyen WAL",
-      "walPendingSuffix": "bekleyen WAL",
       "phantoms": "phantom oturumlar",
       "phantomsNone": "algılanmadı",
       "manageLink": "bakımda yönet →",
@@ -724,6 +790,14 @@
       "empty": "bu filtreyle eşleşen geçmiş oturum yok.",
       "loadMore": "daha fazla yükle",
       "loadingMore": "yükleniyor…"
+    },
+    "filters": {
+      "searchPlaceholder": "Search sessions…",
+      "searchAria": "Search sessions by name or agent",
+      "allProjects": "All projects",
+      "noProject": "No project",
+      "projectAria": "Filter by project",
+      "clear": "Clear filters"
     }
   },
   "mission": {
@@ -754,7 +828,17 @@
       "durationStatus": "{duration} süredir açık · son etkinlik {age} önce",
       "empty": "aktif çalıştırma veya çağrı yok.",
       "emptyHint": "li CLI ile bir tane başlat veya herhangi bir yere atlamak için ⌘K’ye bas.",
-      "fleetLink": "ajan filosu →"
+      "fleetLink": "ajan filosu →",
+      "viewCards": "Kartlar",
+      "viewTable": "Tablo",
+      "table": {
+        "colName": "Ad",
+        "colStatus": "Durum",
+        "colUptime": "Çalışma süresi",
+        "colLastActivity": "Son etkinlik",
+        "colKind": "Tür",
+        "colId": "Kimlik"
+      }
     },
     "recent": {
       "title": "son",

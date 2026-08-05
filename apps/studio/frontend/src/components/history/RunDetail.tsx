@@ -15,13 +15,7 @@ import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
-import {
-  getInvocation,
-  getSession,
-  streamSession,
-  streamSignals,
-  SESSION_MESSAGE_PAGE,
-} from "@/lib/api";
+import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
 import { buildNodeStatusesByName, buildOperationGraph, laneFor } from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
@@ -78,6 +72,69 @@ export function shouldRenderAuthoredGraph(
   const edgeCount = graph.edges?.length ?? 0;
   const isEdgeless = graph.nodes.length >= 2 && edgeCount === 0;
   return !(isEdgeless && opGraph.edges.length > 0);
+}
+
+// The planner persists depends_on endpoints as 1-BASED STEP NUMBERS while
+// nodes are keyed by role name, so a persisted edge can arrive as
+// {source: "1", target: "tester"}. Fed to dagre unresolved, every numeric
+// endpoint becomes a phantom zero-size node and the layout shatters into
+// disconnected clusters (measured on a live 30-node run: 125/125 edges
+// unresolvable). Resolve numeric endpoints by position in the nodes array —
+// assignment order — and drop edges that resolve nowhere: a missing edge
+// degrades to a sparser DAG, a phantom node corrupts the whole layout.
+//
+// Exact id match deliberately wins over positional reading. This function
+// also sees authored graphs whose endpoints ARE node ids, and there a node
+// literally named "2" must resolve to itself — id-first can never break a
+// well-formed graph, while position-first would. The residual ambiguity (a
+// planner graph whose role names are numeric strings) does not occur: roles
+// are words.
+export function resolveGraphEdges(
+  nodes: WorkerGraph["nodes"],
+  edges: WorkerGraph["edges"] | null | undefined,
+): WorkerGraph["edges"] {
+  if (!edges || edges.length === 0) return [];
+  const ids = new Set(nodes.map((n) => n.id));
+  const resolve = (ref: string): string | null => {
+    if (ids.has(ref)) return ref;
+    if (/^\d+$/.test(ref)) {
+      const byPosition = nodes[Number(ref) - 1];
+      if (byPosition) return byPosition.id;
+    }
+    return null;
+  };
+  // Resolution can collapse distinct refs onto one endpoint pair (a numeric
+  // ref and the id it names, arriving as two edges), and a defective producer
+  // can repeat an edge id — either survives as a doubled edge / React
+  // duplicate key. A source === target edge is the degenerate form of the
+  // same collapse: depends_on edges form an acyclic dependency DAG, so a
+  // self-edge is never semantics, only a ref pair naming one node twice.
+  // When a pair collapses, the edge carrying more information wins — the
+  // duplicates differ exactly when one arrived bare (a numeric planner ref)
+  // and the other carries the authored condition/handler/map.
+  const richness = (e: WorkerGraph["edges"][number]): number =>
+    (e.condition ? 1 : 0) + (e.map ? 1 : 0) + (e.handler ? 1 : 0) + (e.mode === "code" ? 1 : 0);
+  const seenIds = new Set<string>();
+  const byPair = new Map<string, WorkerGraph["edges"][number]>();
+  const pairOrder: string[] = [];
+  for (const edge of edges) {
+    const source = resolve(edge.source);
+    const target = resolve(edge.target);
+    if (source === null || target === null || source === target) continue;
+    if (seenIds.has(edge.id)) continue;
+    seenIds.add(edge.id);
+    const pair = `${source}\u0000${target}`;
+    const resolved = { ...edge, source, target };
+    const kept = byPair.get(pair);
+    if (!kept) {
+      byPair.set(pair, resolved);
+      pairOrder.push(pair);
+    } else if (richness(resolved) > richness(kept)) {
+      // Replace in place — the pair keeps its first position in the output.
+      byPair.set(pair, resolved);
+    }
+  }
+  return pairOrder.map((pair) => byPair.get(pair)!);
 }
 
 // Raw SSE payloads arrive as an untyped Record — this is the boundary where
@@ -840,6 +897,12 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
 
 // ── Public component ──────────────────────────────────────────────────────────
 
+// Bounds for the execution-graph panel. The floor keeps a tiny pipeline from
+// collapsing into a sliver; the cap keeps a huge fan-out from swallowing the
+// page — past it the canvas pans/zooms inside the panel.
+const DAG_MIN_HEIGHT = 280;
+const DAG_MAX_HEIGHT = 560;
+
 export interface RunDetailProps {
   /** Session ID to load. */
   id: string;
@@ -849,6 +912,27 @@ export default function RunDetail({ id }: RunDetailProps) {
   const t = useTranslations("history.detail");
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [runGraph, setRunGraph] = useState<WorkerGraph | null>(null);
+  // Execution-graph panel height, driven by the LAYOUT's bounding box rather
+  // than node count: a linear pipeline stays short however many steps it has,
+  // and a wrapped fan-out gets the room its grid needs. Grow-only while the
+  // run streams (shrinking mid-stream would jump the page under the reader).
+  // The state carries the run id it was measured for, so switching runs falls
+  // back to the floor by derivation instead of a reset effect.
+  const [dagHeightFor, setDagHeightFor] = useState<{ id: string; height: number }>({
+    id,
+    height: DAG_MIN_HEIGHT,
+  });
+  const dagHeight = dagHeightFor.id === id ? dagHeightFor.height : DAG_MIN_HEIGHT;
+  const onDagLayoutHeight = useCallback(
+    (height: number) => {
+      const clamped = Math.min(DAG_MAX_HEIGHT, Math.max(DAG_MIN_HEIGHT, Math.ceil(height)));
+      setDagHeightFor((prev) => ({
+        id,
+        height: Math.max(prev.id === id ? prev.height : DAG_MIN_HEIGHT, clamped),
+      }));
+    },
+    [id],
+  );
   const [live, setLive] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -856,10 +940,21 @@ export default function RunDetail({ id }: RunDetailProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const loadingOlderRef = useRef(false);
+  // Set when the server rejects the held anchor as no longer present in the
+  // branch's progression (HTTP 400 MessageCursorError) — the anchor points at
+  // a message id that aged out. Loading older history from this point on is
+  // unrecoverable for the current session load; the reader is offered a full
+  // reconversation reload instead of a dead retry loop.
+  const [olderLoadFailed, setOlderLoadFailed] = useState(false);
   const [resumeWatch, setResumeWatch] = useState<RunResumeResponse | null>(null);
-  const olderOffsetRef = useRef(SESSION_MESSAGE_PAGE);
+  // State rather than a ref because the affordance for loading older history
+  // is rendered from it: a cursor the server stopped handing back means there
+  // is nothing older left to ask for, and the reader has to see that.
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const suppressAutoScrollRef = useRef(false);
   const initialScrollDoneRef = useRef(false);
+  const olderSentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -871,11 +966,14 @@ export default function RunDetail({ id }: RunDetailProps) {
     setError(null);
     setSignalEvents([]);
     setLoadingOlder(false);
-    olderOffsetRef.current = SESSION_MESSAGE_PAGE;
+    loadingOlderRef.current = false;
+    setOlderLoadFailed(false);
+    setOlderCursor(null);
     initialScrollDoneRef.current = false;
     getSession(id)
       .then((s) => {
         setSession(s);
+        setOlderCursor(s.message_next_cursor ?? null);
         const ss = (s.status ?? "").toLowerCase();
         if (
           ss === "completed" ||
@@ -906,7 +1004,7 @@ export default function RunDetail({ id }: RunDetailProps) {
             nodes: graph.nodes,
             // A persisted graph may omit edges entirely; WorkerCanvas maps
             // over the array, so an absent field must normalize to empty.
-            edges: graph.edges ?? [],
+            edges: resolveGraphEdges(graph.nodes, graph.edges),
           });
         }
       })
@@ -1032,21 +1130,35 @@ export default function RunDetail({ id }: RunDetailProps) {
   }, []);
 
   const hiddenOlderCount = useMemo(() => {
-    if (!session) return 0;
+    // The cursor gates the arithmetic instead of sitting beside it. The
+    // per-branch subtraction counts every message not loaded, which is older
+    // history only until the tail grows: after that it also counts newer
+    // messages, which arrive on their own and are not reachable through this
+    // cursor at all. Offering those as older history renders a control that
+    // is enabled and can never do anything, so once the server stops handing
+    // back a cursor there is nothing older to load and the count is zero.
+    if (!session || olderCursor === null) return 0;
     return session.branches.reduce((n, b) => {
       const total = b.message_total ?? b.messages.length;
       return n + Math.max(0, total - b.messages.length);
     }, 0);
-  }, [session]);
+  }, [session, olderCursor]);
 
   const handleLoadOlder = useCallback(() => {
-    if (!id || loadingOlder) return;
+    const cursor = olderCursor;
+    // The in-flight test reads a ref, not the `loadingOlder` state beside it.
+    // The scroll sentinel can deliver two intersections within a single turn,
+    // and React state does not update between them, so both callbacks would
+    // see this handler as idle and issue the same cursor request twice. The
+    // state is still what the UI renders from; only the exclusion has to be
+    // synchronous.
+    if (!id || loadingOlderRef.current || olderLoadFailed || !cursor) return;
+    loadingOlderRef.current = true;
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
-    const offset = olderOffsetRef.current;
-    getSession(id, { messageOffset: offset })
+    getSession(id, { messageCursor: cursor })
       .then((older) => {
-        olderOffsetRef.current = offset + SESSION_MESSAGE_PAGE;
+        setOlderCursor(older.message_next_cursor ?? null);
         setSession((prev) => {
           if (!prev) return prev;
           const olderById = new Map(older.branches.map((b) => [b.id, b]));
@@ -1067,9 +1179,48 @@ export default function RunDetail({ id }: RunDetailProps) {
           };
         });
       })
+      .catch((e: unknown) => {
+        // A stale anchor (HTTP 400) means the branch's progression moved on
+        // and this cursor no longer resolves — surface the dead-end instead
+        // of retrying the same broken request on every scroll-up tick.
+        if (e instanceof ApiError && e.status === 400) {
+          setOlderLoadFailed(true);
+          return;
+        }
+        setError(String(e));
+      })
+      .finally(() => {
+        loadingOlderRef.current = false;
+        setLoadingOlder(false);
+      });
+  }, [id, olderLoadFailed, olderCursor]);
+
+  const handleReloadConversation = useCallback(() => {
+    if (!id) return;
+    suppressAutoScrollRef.current = true;
+    setOlderLoadFailed(false);
+    setLoadingOlder(true);
+    getSession(id)
+      .then((fresh) => {
+        setOlderCursor(fresh.message_next_cursor ?? null);
+        setSession(fresh);
+      })
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setLoadingOlder(false));
-  }, [id, loadingOlder]);
+  }, [id]);
+
+  // Scroll-up trigger: an always-mounted sentinel just above the message
+  // list. handleLoadOlder no-ops without a cursor or mid-flight, so this can
+  // fire freely as the sentinel scrolls in and out of view.
+  useEffect(() => {
+    const el = olderSentinelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) handleLoadOlder();
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [handleLoadOlder]);
 
   const handleResumed = useCallback(
     async (result: RunResumeResponse) => {
@@ -1304,7 +1455,15 @@ export default function RunDetail({ id }: RunDetailProps) {
       {runGraph && shouldRenderAuthoredGraph(runGraph, opGraph) ? (
         <div id="run-dag" className="scroll-mt-4">
           <SectionHeader label={t("sectionExecutionGraph")} count={runGraph.nodes.length} />
-          <div className="h-[280px] rounded border border-edge bg-surface-raised shadow-card overflow-hidden">
+          {/* A fan-out of dozens of workers cannot be legible in the same
+              280px that fits a five-step pipeline — the panel takes its height
+              from the laid-out graph's bounding box so fitView has room to
+              keep nodes readable, and a linear pipeline stays short no matter
+              how many steps it has. */}
+          <div
+            style={{ height: dagHeight }}
+            className="rounded border border-edge bg-surface-raised shadow-card overflow-hidden"
+          >
             <Suspense fallback={null}>
               <WorkerCanvas
                 graph={runGraph}
@@ -1312,6 +1471,7 @@ export default function RunDetail({ id }: RunDetailProps) {
                 execSteps={execSteps}
                 nodeStatuses={nodeStatuses}
                 compact
+                onLayoutHeight={onDagLayoutHeight}
               />
             </Suspense>
           </div>
@@ -1324,17 +1484,34 @@ export default function RunDetail({ id }: RunDetailProps) {
           </div>
         )
       )}
-      {hiddenOlderCount > 0 && (
-        <button
-          type="button"
-          onClick={handleLoadOlder}
-          disabled={loadingOlder}
-          className="self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:opacity-50"
-        >
-          {loadingOlder
-            ? "…"
-            : `${t("loadOlder")} · ${t("olderRemaining", { count: hiddenOlderCount })}`}
-        </button>
+      {/* Scroll-up trigger: reaching the top of the conversation loads the
+          next older page, same handler as the explicit button below. */}
+      <div ref={olderSentinelRef} aria-hidden="true" className="h-px" />
+      {olderLoadFailed ? (
+        <div className="flex items-center gap-2 self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary">
+          <span>{t("olderUnavailable")}</span>
+          <button
+            type="button"
+            onClick={handleReloadConversation}
+            disabled={loadingOlder}
+            className="rounded border border-edge px-2 py-0.5 text-content-primary transition-colors hover:border-accent/50 disabled:opacity-50"
+          >
+            {t("reloadConversation")}
+          </button>
+        </div>
+      ) : (
+        hiddenOlderCount > 0 && (
+          <button
+            type="button"
+            onClick={handleLoadOlder}
+            disabled={loadingOlder}
+            className="self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:opacity-50"
+          >
+            {loadingOlder
+              ? "…"
+              : `${t("loadOlder")} · ${t("olderRemaining", { count: hiddenOlderCount })}`}
+          </button>
+        )
       )}
       <BranchesSection
         steps={steps}

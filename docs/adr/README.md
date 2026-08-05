@@ -51,6 +51,13 @@ but carries a number far outside that block (0062-0067), which was allocated bef
 per-area scheme was applied to it. It is indexed under cli-surface and keeps its number, so
 inbound references stay valid.
 
+From ADR-0104 onward, numbers are in practice allocated **sequentially** rather than from the
+area block, and each such record is indexed under the area it declares. This is a description
+of what the corpus does, not a second scheme competing with the blocks: the blocks still hold
+for 0001-0095, and every number is unique either way. A record numbered past 0104 carries a
+"sequential number" note in the index so a reader is not left to reconcile its number against
+its area block.
+
 ## Index
 
 ### core-data-model (0001-0005)
@@ -169,6 +176,10 @@ inbound references stay valid.
 - [ADR-0060](ADR-0060-run-supervision-terminal-callback-and-orphan-detection.md) — Run
   supervision: generic terminal callback and two-stage orphan detection (superseded by ADR-0095)
 - 0061 — unused (intentional gap)
+- [ADR-0105](ADR-0105-resumed-session-lifecycle-and-terminal-notification.md) — Resumed session
+  lifecycle and terminal notification (sequential number; see Numbering)
+- [ADR-0109](ADR-0109-mirrored-session-idleness-is-not-completion.md) — A mirrored session's
+  idleness is not its completion (sequential number; see Numbering)
 
 ### cli-surface (0062-0067)
 
@@ -182,7 +193,11 @@ inbound references stay valid.
   plus one parser-generated dispatch verb)
 - 0067 — unused (intentional gap)
 - [ADR-0104](ADR-0104-li-kill-detached-play-reaping-and-terminal-notify.md) — `li kill` reaping of
-  detached-play workers and terminal-notify on kill (numbering exception; see Numbering)
+  detached-play workers and terminal-notify on kill (sequential number; see Numbering)
+- [ADR-0106](ADR-0106-lion-machine-result-contract-v1.md) — The lion machine-result contract,
+  v1 (sequential number; see Numbering)
+- [ADR-0107](ADR-0107-conclusive-orphan-terminal-reaping.md) — Conclusive orphan terminal
+  reaping (sequential number; see Numbering)
 
 ### scheduling-control-plane (0068-0075)
 

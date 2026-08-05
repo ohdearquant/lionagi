@@ -10,12 +10,11 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 from lionagi._errors import NotFoundError
-from lionagi.state.db import DEFAULT_DB_PATH, StateDB
+from lionagi.state.db import StateDB
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
-
-_DB = str(DEFAULT_DB_PATH)
+from ._db import require_file_store, store_exists, store_path
 
 # Keep each IN(...) bind list under SQLite's default SQLITE_MAX_VARIABLE_NUMBER
 # (999 on builds older than 3.32) so tag hydration cannot overflow it.
@@ -42,7 +41,8 @@ async def add_tag(session_id: str, tag: str) -> None:
     if not clean:
         raise HTTPException(status_code=422, detail="tag must not be empty")
 
-    if not DEFAULT_DB_PATH.exists():
+    require_file_store()
+    if not store_exists():
         # Apply the full schema first so a tag write never leaves a partial
         # db behind (only run_tags, no sessions/etc).
         _db = StateDB()
@@ -50,7 +50,7 @@ async def add_tag(session_id: str, tag: str) -> None:
         await _db.close()
 
     now = time.time()
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         await db.execute(
             "INSERT OR IGNORE INTO run_tags (session_id, tag, created_at) VALUES (?, ?, ?)",
@@ -61,11 +61,12 @@ async def add_tag(session_id: str, tag: str) -> None:
 
 async def remove_tag(session_id: str, tag: str) -> None:
     """Detach a tag from a run (session)."""
-    if not DEFAULT_DB_PATH.exists():
+    require_file_store()
+    if not store_exists():
         # Nothing to detach; a delete must never create the db file (a bare
         # _ensure_table would leave a run_tags-only db behind).
         return
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         await db.execute(
             "DELETE FROM run_tags WHERE session_id = ? AND tag = ?",
@@ -77,7 +78,7 @@ async def remove_tag(session_id: str, tag: str) -> None:
 async def tags_for_sessions(session_ids: list[str]) -> dict[str, list[str]]:
     """Batch-fetch tags for many sessions in ONE query (no N+1). Returns
     {session_id: [tags...]}; sessions with no tags are absent from the result."""
-    if not DEFAULT_DB_PATH.exists():
+    if not store_exists():
         return {}
     if not session_ids:
         return {}
@@ -85,7 +86,7 @@ async def tags_for_sessions(session_ids: list[str]) -> dict[str, list[str]]:
     # Chunk the IN(...) list so a large run history cannot exceed SQLite's
     # bound-variable limit (SQLITE_MAX_VARIABLE_NUMBER, 999 on older builds).
     out: dict[str, list[str]] = {}
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         for i in range(0, len(session_ids), _MAX_SQL_VARS):
             chunk = session_ids[i : i + _MAX_SQL_VARS]
@@ -104,14 +105,14 @@ async def session_ids_with_tags(tags: list[str]) -> set[str] | None:
     """The F8 SQL pre-filter: session_ids carrying ALL of `tags` (AND-composed).
     Contract: empty/None `tags` returns None ("no filter"), not "no matches" —
     callers must treat None as pass-through."""
-    if not DEFAULT_DB_PATH.exists():
+    if not store_exists():
         return None
     if not tags:
         return None
 
     unique_tags = list(dict.fromkeys(tags))
     placeholders = ",".join("?" for _ in unique_tags)
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         cur = await db.execute(
             f"SELECT session_id FROM run_tags "  # noqa: S608

@@ -21,6 +21,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import lionagi.state.db as state_db_mod
+
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -42,11 +44,9 @@ def _install_resolution(monkeypatch: pytest.MonkeyPatch) -> config.TimezoneResol
 
 def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     import lionagi.studio.app as app_mod
-    import lionagi.studio.services.admin as admin_mod
 
     fake_db = tmp_path / "state.db"
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(admin_mod, "_DB", str(fake_db))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
     app = app_mod.create_app()
     return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")

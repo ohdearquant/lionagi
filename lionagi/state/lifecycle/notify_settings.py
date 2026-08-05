@@ -41,15 +41,16 @@ __all__ = (
     "PayloadBuilder",
     "ResolvedNotifyHandler",
     "build_handler",
+    "record_notify_outcome_to_run",
+    "record_notify_rejection_to_run",
     "register_run_notify_outcome_scope",
     "register_settings_terminal_callback",
     "resolve_notify_config",
     "unregister_run_notify_outcome_scope",
 )
 
-# Matches inside a quoted span are stripped before this runs, so a literal
-# pipe/ampersand/dollar-sign inside a quoted argument is never mistaken for
-# shell syntax -- only bare, unquoted shell metacharacters trip it.
+# quoted spans are stripped first so a literal pipe/&/$ inside quotes never
+# reads as shell syntax -- only bare, unquoted metacharacters trip it.
 _QUOTED_SPAN_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
 _SHELL_FEATURE_RE = re.compile(r"\|\||&&|[|<>;&`]|\$\(|\$\{|\$[A-Za-z_]")
 
@@ -93,16 +94,11 @@ class ResolvedNotifyHandler:
 class NotifyConfigResolution:
     """The outcome of resolving ``notify.on_terminal``: a handler, or why not.
 
-    ``reason`` is set if and only if a notifier was asked for and rejected.
-    Chosen silence -- nothing configured, or notification explicitly turned
-    off -- carries no reason, because nothing was rejected. Collapsing the two
-    into a bare None is what makes a misconfigured notifier indistinguishable
-    from an absent one, and a detached caller then waits on a notice that will
-    never arrive with nothing anywhere saying so.
-
-    Reasons are short stable identifiers, never interpolated user data: they
-    are persisted and read back, so they are a contract. The offending value
-    goes in the matching warning instead.
+    ``reason`` is set iff a notifier was asked for and rejected -- chosen
+    silence (nothing configured, or explicitly off) carries no reason, so a
+    misconfigured notifier stays distinguishable from an absent one. Reasons
+    are short stable identifiers, never interpolated user data (persisted and
+    read back); the offending value goes in the matching warning instead.
     """
 
     handler: ResolvedNotifyHandler | None = None
@@ -319,7 +315,7 @@ def _resolve_mapping(cfg: dict[str, Any], *, scope: str) -> NotifyConfigResoluti
 OutcomeFn = Callable[..., "str | None"]
 
 
-def _record_notify_outcome_to_run(
+def record_notify_outcome_to_run(
     run: RunDir, *, ok: bool, exit_code: int | None, stderr_text: str | None
 ) -> str | None:
     """Best-effort: record the exec adapter's outcome into *run*'s own
@@ -385,18 +381,9 @@ def _warn_adapter_failure(msg: str) -> None:
         logger.debug("failed to emit notify.on_terminal warn-channel line", exc_info=True)
 
 
-# A notify.on_terminal adapter's argv routinely carries secrets (webhook
-# URLs, tokens passed as args), and its stderr is adapter-controlled free
-# text whose most common leak shape is the adapter echoing its own
-# invocation back on failure. No surface -- the warn-channel line, the
-# persisted notify_outcome.json, or the log -- carries the argument values
-# or an unfiltered stderr line: adapters are identified by argv[0]'s
-# basename, and any argument value appearing verbatim in a stderr or
-# exception snippet is replaced before that snippet goes anywhere.
+# Redaction contract for adapter argv/stderr: see docs/internals/runtime.md.
 STDERR_SNIPPET_LIMIT = 200
 
-# Argument values shorter than this are not worth replacing and would
-# corrupt unrelated text (a bare "-v" or "0" occurs everywhere).
 MIN_REDACTABLE_ARG_LEN = 4
 
 
@@ -410,14 +397,8 @@ def _adapter_label(argv: Sequence[str]) -> str:
 
 def _redact_arg_values(text: str, argv: Sequence[str]) -> str:
     """Replace any adapter argument value that appears verbatim in *text*.
-
-    An adapter's own arguments are the one class of secret that can be
-    identified exactly, and an adapter echoing its invocation back on
-    stderr is the realistic way one of them escapes. Longest values are
-    replaced first so a substring never leaves a partial value behind.
-    This is not a general secret scanner: a secret the adapter obtains
-    elsewhere and prints cannot be recognized here.
-    """
+    Longest values first so a substring never leaves a partial value behind;
+    not a general secret scanner, see docs/internals/runtime.md."""
     values = sorted(
         (str(arg) for arg in tuple(argv)[1:] if len(str(arg)) >= MIN_REDACTABLE_ARG_LEN),
         key=len,
@@ -512,9 +493,7 @@ def _make_exec_handler(
             )
             return
         except get_cancelled_exc_class():
-            # The registry's shared deadline races this call's own timeout and
-            # typically wins; the child (its own process group) must still be
-            # reaped, shielded since the enclosing scope is already cancelled.
+            # deadline race: child must still be reaped, shielded since scope is cancelled
             if proc is not None:
                 with CancelScope(shield=True):
                     await aterminate_process_group(proc, grace=None)
@@ -534,12 +513,8 @@ def _make_exec_handler(
             )
             return
         if proc.returncode != 0:
-            # The adapter's own stderr never reaches the log, the warning
-            # channel, or the outcome record: it is free text that can carry
-            # a credential the adapter obtained anywhere (an inherited env
-            # var, a file it read), which no value-matching redaction can
-            # recognize. It is captured to an owner-only file and referenced
-            # by path instead.
+            # raw stderr never reaches log/warn/outcome -- captured to an owner-only
+            # file and referenced by path instead, see docs/internals/runtime.md
             stderr_text = stderr_bytes.decode(errors="replace").strip()
             stderr_path = outcome_fn(
                 ok=False, exit_code=proc.returncode, stderr_text=stderr_text or None
@@ -639,12 +614,8 @@ def register_settings_terminal_callback(
 ) -> bool:
     """Resolve ``notify.on_terminal`` from settings once and register it (the
     CLI entry point and Studio service startup each call this once per
-    process). Returns ``True`` iff a handler was installed.
-    """
-    # A rejected configuration is already reported through the resolver's
-    # warning; this registration is process-wide and bound to no run, so it has
-    # nowhere to record a reason and only needs to know whether there is
-    # something to install. The run-scoped registration is where a reason lands.
+    process). Returns ``True`` iff a handler was installed; a rejected
+    configuration is already reported through the resolver's own warning."""
     resolved = resolve_notify_config(project_dir=project_dir).handler
     if resolved is None:
         registry.unregister(name)
@@ -671,23 +642,13 @@ def register_run_notify_outcome_scope(
     project_dir: str | None = None,
 ) -> str | None:
     """Bind the settings-driven notify.on_terminal exec adapter's outcome to
-    *run*, scoped to this run's own terminal entity (``entity_kind``/
-    ``entity_id``), so a late-arriving outcome always lands on this run --
-    or nowhere -- even if the process has since allocated other runs. The
-    scoped registration is an override, so it takes over adapter dispatch
-    for this entity from the process-wide default registered by
-    ``register_settings_terminal_callback`` (which never attributes an
-    outcome to any run). Returns the registration name (pass to
+    *run*, scoped to this run's own terminal entity. An override registration,
+    so it takes over dispatch for this entity from the process-wide default.
+    Returns the registration name (pass to
     ``unregister_run_notify_outcome_scope`` in a ``finally`` block), or
-    ``None`` if notify.on_terminal resolved to disabled or if this entity is
-    excluded by the configured filter (never raises).
-
-    Returning ``None`` says only that nothing was registered, so a notifier
-    this run asked for and could not have is recorded onto the run before
-    returning: an unsuccessful outcome carrying the reason. The two benign
-    cases -- nothing configured, and this entity excluded by the filter --
-    write nothing, which is what tells them apart from a refusal.
-    """
+    ``None`` if disabled or filtered out (never raises); a notifier this run
+    asked for and could not have is recorded onto the run before returning --
+    see docs/internals/runtime.md for the silence-vs-rejection contract."""
     resolution = resolve_notify_config(project_dir=project_dir)
     if resolution.reason is not None:
         record_notify_rejection_to_run(run, resolution.reason)
@@ -695,18 +656,15 @@ def register_run_notify_outcome_scope(
     resolved = resolution.handler
     if resolved is None:
         return None
-    # The scoped registration is an override, so it dispatches on its own
-    # match rather than deferring to the process-wide registration's filter.
-    # It must therefore apply the configured filter itself: without this, an
-    # entity the operator excluded via filter.kinds/filter.ids would start
-    # receiving notifications as soon as it ran under a run scope.
+    # override dispatches on its own match, so it must re-apply the configured
+    # filter itself rather than deferring to the process-wide registration's
     if resolved.filter_kinds is not None and entity_kind not in resolved.filter_kinds:
         return None
     if resolved.filter_ids is not None and entity_id not in resolved.filter_ids:
         return None
 
     def _outcome_fn(*, ok: bool, exit_code: int | None, stderr_text: str | None) -> str | None:
-        return _record_notify_outcome_to_run(
+        return record_notify_outcome_to_run(
             run, ok=ok, exit_code=exit_code, stderr_text=stderr_text
         )
 

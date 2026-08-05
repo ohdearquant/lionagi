@@ -42,12 +42,8 @@ async def interpret(
     """Rewrite raw user text into a clearer, explicit LLM prompt using InterpretParam settings.
 
     This is the earliest point a caller's raw text reaches a model, so a
-    default (unset) ``turn_origin`` mints a fresh token here rather than
-    deferring to whatever call comes after it. Callers that are themselves
-    relaying an already-established turn (e.g. a multi-step operation that
-    runs its own interpret pre-pass before continuing) pass their own
-    ``turn_origin`` through so this call carries it instead of minting a
-    second one.
+    default (unset) ``turn_origin`` mints a fresh token here. Callers relaying
+    an already-established turn pass their own ``turn_origin`` through instead.
     """
 
     from ..chat.chat import chat

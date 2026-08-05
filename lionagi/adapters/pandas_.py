@@ -131,7 +131,7 @@ class DataFrameAdapter(AdapterBase, Adapter[T]):
         many: bool = True,
         adapt_meth: str | Callable = "model_validate",
         adapt_kw: dict | None = None,
-        validation_errors: tuple[type[Exception], ...] = None,
+        validation_errors: tuple[type[Exception], ...] | None = None,
         required_columns: list[str] | None = None,
         **kw: Any,
     ) -> T | list[T]:

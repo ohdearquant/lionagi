@@ -10,12 +10,9 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel
 
-from lionagi.state.db import DEFAULT_DB_PATH
-
 from ..registry import studio_route
 from ._db import open_db as _open_db
-
-_DB = str(DEFAULT_DB_PATH)
+from ._db import require_file_store, store_exists, store_path
 
 
 class NameConflictError(Exception):
@@ -44,10 +41,11 @@ async def _ensure_table(db) -> None:
 
 async def list_projects() -> dict[str, Any]:
     """Return all known projects with session counts and an unassigned count."""
-    if not DEFAULT_DB_PATH.exists():
+    require_file_store()
+    if not store_exists():
         return {"projects": [], "unassigned_count": 0}
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         cur = await db.execute(
             """SELECT p.name, p.source, p.path, p.github, p.description,
@@ -91,10 +89,11 @@ async def list_projects() -> dict[str, Any]:
 
 async def get_project(name: str) -> dict[str, Any] | None:
     """Return a single project with session counts and usage summaries."""
-    if not DEFAULT_DB_PATH.exists():
+    require_file_store()
+    if not store_exists():
         return None
 
-    async with _open_db(_DB) as db:
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         cur = await db.execute(
             """SELECT p.name, p.source, p.path, p.github, p.description,
@@ -170,7 +169,8 @@ async def create_project(
 
     clean_name = name.strip()
     now = time.time()
-    async with _open_db(_DB) as db:
+    require_file_store()
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         try:
             await db.execute(
@@ -194,7 +194,8 @@ async def update_project(name: str, fields: dict[str, Any]) -> bool:
     allowed = {"description", "github", "path"}
     clean = {k: v for k, v in fields.items() if k in allowed}
 
-    async with _open_db(_DB) as db:
+    require_file_store()
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         if not clean:
             cur = await db.execute("SELECT 1 FROM projects WHERE name = ?", (name,))
@@ -219,7 +220,8 @@ async def assign_sessions_to_project(
     all_unassigned: bool = False,
 ) -> int:
     """Assign sessions to a project. Returns count of updated rows."""
-    async with _open_db(_DB) as db:
+    require_file_store()
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         if session_ids:
             placeholders = ",".join("?" for _ in session_ids)
@@ -253,7 +255,8 @@ async def assign_sessions_to_project(
 
 async def delete_project(name: str) -> bool:
     """Delete a Studio-managed project. Returns True when deleted."""
-    async with _open_db(_DB) as db:
+    require_file_store()
+    async with _open_db(store_path()) as db:
         await _ensure_table(db)
         cur = await db.execute(
             "DELETE FROM projects WHERE name = ? AND source = 'studio'",

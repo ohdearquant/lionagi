@@ -216,14 +216,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_cc_session
   ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_run_id
   ON sessions(run_id) WHERE run_id IS NOT NULL;
--- first_msg_id / last_msg_id are child keys of messages(id). Deleting a
--- message makes sqlite look for rows here that still point at it, and with
--- no index on the column that search is a scan of the whole table, once per
--- deleted row -- a cost that is a function of the store rather than of the
--- delete. Measured on a 3.9 GB store, indexing these two columns and
--- branches(system_msg_id) took a message delete from 8.47 ms/row to
--- 0.86 ms/row. Not partial: the search sqlite runs for a foreign key is not
--- the query planner's, and only a plain index is certain to serve it.
+-- first_msg_id / last_msg_id are child keys of messages(id); without an
+-- index, a message delete scans the whole table looking for referrers, once
+-- per deleted row. Not partial: only a plain index is certain to serve it.
+-- See docs/internals/runtime.md for the measurement.
 CREATE INDEX IF NOT EXISTS idx_sessions_first_msg_id
   ON sessions(first_msg_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_msg_id
@@ -629,12 +625,9 @@ CREATE INDEX IF NOT EXISTS idx_schedule_runs_concurrency
   WHERE status IN ('queued', 'running', 'retry_wait');
 
 -- ── Workers (ADR-0071 D5) ─────────────────────────────────────────────────
--- Capability-matching worker registry -- the only genuinely new table this
--- ADR pair adds. A worker upserts its own row (worker_tick's heartbeat pass)
--- with its advertised capability tokens and the execution targets it can
--- serve; a heartbeat older than the worker.py TTL makes it ineligible for
--- NEW claims only. In-flight leases still recover solely via
--- schedule_runs.lease_expires_at (ADR-0071, unchanged by this table).
+-- Capability-matching worker registry, upserted by worker_tick's heartbeat
+-- pass; a heartbeat older than worker.py's TTL makes it ineligible for NEW
+-- claims only -- in-flight leases still recover via lease_expires_at.
 CREATE TABLE IF NOT EXISTS workers (
   worker_id                 TEXT    PRIMARY KEY,
   advertised_capabilities   JSON    NOT NULL DEFAULT '[]',
@@ -864,13 +857,9 @@ CREATE INDEX IF NOT EXISTS idx_workflow_defs_updated
   ON workflow_defs(updated_at);
 
 -- ── Session controls (ADR-0069 D1–D3: live-control transport) ───────────
--- One row per operator control verb queued against a live session.  A poller
--- task in cli/orchestrate/flow.py's _execute_dag reads unapplied rows
--- (applied_at IS NULL) and applies them
--- against the running executor.  Apply/stamp ordering is verb-classed:
--- pause/resume are idempotent (apply, then stamp), message is not
--- (stamp 'applying', then apply, then finalize).  'stop' is schema-reserved
--- and rejected by the current poller as unsupported; no CLI verb emits it yet.
+-- One row per operator control verb queued against a live session, polled by
+-- cli/orchestrate/flow.py's _execute_dag. See docs/internals/runtime.md for
+-- the verb-classed apply/stamp ordering.
 
 CREATE TABLE IF NOT EXISTS session_controls (
   id          TEXT    PRIMARY KEY,         -- uuid4 hex
@@ -880,7 +869,11 @@ CREATE TABLE IF NOT EXISTS session_controls (
   payload     JSON,                        -- verb-specific; NULL for pause/resume
   created_at  REAL    NOT NULL,
   applied_at  REAL,                        -- NULL until the poller consumes it
-  result      TEXT                         -- 'applying' | 'applied' | 'rejected:<reason>'
+  -- NULL until a consumer claims the row; set beside the 'applying:<owner>'
+  -- result so an operator looking at a wedged queue can tell a slow owner from
+  -- a dead one without going through the run's history.
+  claimed_at  REAL,
+  result      TEXT                         -- 'applying[:<owner>]' | 'applied' | 'rejected:<reason>'
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_controls_pending

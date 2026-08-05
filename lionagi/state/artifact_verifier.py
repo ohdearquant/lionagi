@@ -105,22 +105,10 @@ def warn_unknown_artifact_keys(
 
 def _resolve_produced(root: str, rel: str) -> str | None:
     """Return the path an expected artifact was actually produced at, or None.
-
-    An entry naming a directory is matched exactly, so a contract that knows
-    where its artifact lands keeps saying so precisely.
-
-    A bare filename is matched at the root first and then in any immediate
-    subdirectory. In a multi-agent run each worker writes into its own
-    subdirectory, and which worker produces a given artifact is decided when
-    the plan is cast — so the author of a playbook contract cannot name that
-    directory in advance, and requiring one made a bare filename impossible to
-    satisfy. Declaring *what* is expected and knowing *who* produces it are
-    held by different parties; only the first belongs in the contract.
-
-    Subdirectories are searched in sorted order, so a filename produced by more
-    than one worker resolves to the same one on every run rather than to
-    whatever the filesystem happened to list first.
-    """
+    A bare filename is matched at the root first, then in any immediate
+    subdirectory (sorted, for a deterministic match) — see
+    docs/internals/runtime.md for why a bare filename must resolve this way
+    in a multi-agent run."""
     try:
         direct = _safe_join(root, rel)
     except ArtifactPathError:
@@ -140,10 +128,7 @@ def _resolve_produced(root: str, rel: str) -> str | None:
         try:
             candidate = _safe_join(root, f"{sub}/{rel}")
         except ArtifactPathError:
-            # A subdirectory whose name is not a legal path segment (a glob
-            # character, say) is skipped rather than failing the whole check:
-            # it is not somewhere we would have written an artifact.
-            continue
+            continue  # not a legal path segment, so not somewhere we'd have written
         if os.path.isfile(candidate):
             return candidate
     return None
@@ -257,10 +242,9 @@ def verify_artifact_contract(
             produced.append(
                 {
                     "id": entry["id"],
-                    # Report where it was found, not only what was asked for: a
-                    # bare filename may have resolved into a worker's own
-                    # subdirectory, and the reader wants the path that exists.
-                    "path": os.path.relpath(full, root),
+                    "path": os.path.relpath(
+                        full, root
+                    ),  # where it was found, not just what was asked for
                     "size": os.path.getsize(full),
                     "present": True,
                 }

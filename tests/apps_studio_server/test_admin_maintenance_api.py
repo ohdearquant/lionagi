@@ -22,16 +22,8 @@ import lionagi.state.db as state_db_mod
 
 def _make_client(tmp_path, monkeypatch):
     """Return (client, db_path) with all relevant service modules pointed at db_path."""
-    import lionagi.studio.services.admin as admin_mod
-    import lionagi.studio.services.db_maintenance as maint_mod
-    import lionagi.studio.services.sessions as sessions_mod
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(admin_mod, "_DB", str(db_path))
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", db_path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(db_path))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     from lionagi.studio.app import app
@@ -320,7 +312,7 @@ def test_maintenance_lock_contention_returns_409(tmp_path, monkeypatch, action):
 
     # Shorten the per-connection busy_timeout so the contended open/write fails
     # fast (every pooled connection reads this at connect time).
-    monkeypatch.setattr(engine_mod, "_SQLITE_BUSY_TIMEOUT_MS", 100)
+    monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 100)
 
     # Hold an exclusive write lock with a raw sqlite3 connection.
     lock_conn = sqlite3.connect(str(db_path), timeout=0)

@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
+
 from ._runs import RUNS_ROOT
 from ._util import EXIT_CODE_BY_STATUS
 
@@ -29,9 +31,14 @@ __all__ = [
     "_format_bytes",
     "_list_sessions",
     "_print_stats",
+    "_collect_message_breakdown",
     "_checkpoint",
     "_vacuum",
     "_prune",
+    "_prune_candidates",
+    "_null_content",
+    "_null_content_candidates",
+    "_null_content_targets",
     "_doctor",
     # CLI entrypoints
     "add_state_subparser",
@@ -430,6 +437,11 @@ _STATS_PRAGMAS = (
     "foreign_keys",
 )
 
+# Age thresholds the message breakdown reports, in days. Every one is printed
+# whether or not a row falls in it, because a bucket reading zero is itself the
+# answer: it says a prune keeping that many days can free nothing.
+_MESSAGE_AGE_DAYS = (7, 14, 30, 90)
+
 
 def _db_sizes() -> dict[str, Any]:
     """Bytes on disk for the configured store, when the configured store is a file.
@@ -441,11 +453,15 @@ def _db_sizes() -> dict[str, Any]:
     answerable" and can never be read as "empty".
     """
     from lionagi.state.db import StateDB, state_db_file
+    from lionagi.state.engine import mask_credentials, mask_db_url
 
     db_path = state_db_file()
     if db_path is None:
+        # A store with no file behind it is a server URL, so this name is the
+        # one that most obviously carries a password. `is_file` is already
+        # false here, so nothing downstream treats it as a path to open.
         return {
-            "path": StateDB().url,
+            "path": mask_db_url(StateDB().url),
             "is_file": False,
             "exists": False,
             "size_bytes": None,
@@ -453,7 +469,11 @@ def _db_sizes() -> dict[str, Any]:
         }
     wal_path = db_path.with_name(db_path.name + "-wal")
     return {
-        "path": str(db_path),
+        # And so is this one, less obviously. A store URL with no scheme is
+        # read as a filesystem path, credential and all, which puts a password
+        # in the name of a real file and sends it down the branch that looks
+        # like it has nothing to hide.
+        "path": mask_credentials(str(db_path)),
         "is_file": True,
         "exists": db_path.exists(),
         "size_bytes": db_path.stat().st_size if db_path.exists() else 0,
@@ -461,8 +481,78 @@ def _db_sizes() -> dict[str, Any]:
     }
 
 
+async def _collect_message_breakdown(db: Any) -> dict[str, Any]:
+    """Messages by role and by age — the two axes a retention decision is made on.
+
+    A total row count cannot say whether a retention setting is able to reclaim
+    anything. A store whose oldest message is newer than the prune's keep-window
+    frees nothing at any ``--keep-days`` the prune accepts, and reports success
+    while doing it. The age histogram is what makes that readable before the
+    prune runs rather than after it has run and changed nothing.
+
+    Counts only. Summing content size is the one query here no index can serve
+    (57s against 1.68M rows, versus under 2s for everything else), and the
+    command that reclaims that content reports the size of the exact population
+    it is about to touch — which is the same number, measured where the decision
+    is actually taken.
+    """
+    import time as _time
+
+    from sqlalchemy import text
+
+    now = _time.time()
+
+    async with db._read() as conn:
+        role_rows = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT role AS r, COUNT(*) AS n FROM messages GROUP BY role ORDER BY n DESC"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    by_role: list[dict[str, Any]] = [{"role": r["r"], "count": r["n"]} for r in role_rows]
+
+    by_age: list[dict[str, Any]] = []
+    for days in _MESSAGE_AGE_DAYS:
+        async with db._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT COUNT(*) AS n FROM messages WHERE created_at < :cutoff"),
+                        {"cutoff": now - days * 86400},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        by_age.append({"older_than_days": days, "count": row["n"]})
+
+    async with db._read() as conn:
+        row = (
+            (await conn.execute(text("SELECT MIN(created_at) AS oldest FROM messages")))
+            .mappings()
+            .first()
+        )
+    oldest = row["oldest"] if row else None
+    # None on an empty table, and reported as None rather than as an age of
+    # zero: no messages and messages all written this instant are different
+    # states, and only one of them says a prune has nothing to reach.
+    oldest_age_days = None if oldest is None else (now - oldest) / 86400.0
+
+    return {
+        "messages_by_role": by_role,
+        "messages_by_age": by_age,
+        "oldest_message_age_days": oldest_age_days,
+    }
+
+
 async def _collect_stats(db: Any) -> dict[str, Any]:
-    """Row counts, the session status distribution, and the SQLite pragmas."""
+    """Row counts, the message breakdown, the session status distribution, and the pragmas."""
     from sqlalchemy import text
 
     counts: dict[str, int] = {}
@@ -499,6 +589,8 @@ async def _collect_stats(db: Any) -> dict[str, Any]:
             row = (await conn.execute(text(f"PRAGMA {pragma}"))).first()
         pragmas[pragma] = row[0] if row else None
 
+    breakdown = await _collect_message_breakdown(db)
+
     return {
         "row_counts": counts,
         # A list of pairs, not an object: a session whose status was never
@@ -506,6 +598,7 @@ async def _collect_stats(db: Any) -> dict[str, Any]:
         # would be indistinguishable from a status literally spelled that way.
         "sessions_by_status": [{"status": r["s"], "count": r["n"]} for r in status_rows],
         "pragmas": pragmas,
+        **breakdown,
     }
 
 
@@ -534,6 +627,31 @@ async def _print_stats() -> None:
         print(f"  {table:<14} {n:>10}")
     print()
 
+    print("Messages by role:")
+    for entry in collected["messages_by_role"]:
+        label = "(null)" if entry["role"] is None else entry["role"]
+        print(f"  {label:<14} {entry['count']:>10}")
+    if not collected["messages_by_role"]:
+        print("  (none)")
+    print()
+
+    print("Messages by age:")
+    for entry in collected["messages_by_age"]:
+        print(f"  older than {entry['older_than_days']:>3}d {entry['count']:>10}")
+    oldest = collected["oldest_message_age_days"]
+    if oldest is None:
+        print("  oldest          (no messages)")
+    else:
+        print(f"  oldest       {oldest:>10.1f}d")
+        # Said about MESSAGES, deliberately, and not about the prune as a whole.
+        # Message lifetime and session lifetime are independent here: `li state
+        # prune` selects by session age and then frees only messages nothing
+        # surviving still references, so it can delete thousands of old sessions
+        # and free no message rows at all. Since messages hold nearly all the
+        # bytes, "sessions deleted" is not a claim about space.
+        print("  (messages only — prune selects by SESSION age, see prune's own output)")
+    print()
+
     print("Sessions by status:")
     for entry in collected["sessions_by_status"]:
         label = "(null)" if entry["status"] is None else entry["status"]
@@ -560,6 +678,68 @@ async def _vacuum() -> None:
 
     async with StateDB() as db:
         await db.vacuum()
+
+
+# Which sessions the prune deletes, written once. The prune selects ids with it
+# and the check below counts what it still selects afterwards; two copies of this
+# predicate drifting apart would make the pair agree while describing different
+# populations, which is worse than having no check.
+_PRUNE_VICTIMS = (
+    "FROM sessions "
+    "WHERE id NOT IN ("
+    "  SELECT id FROM sessions ORDER BY updated_at DESC LIMIT :keep_n"
+    ") AND (updated_at < :cutoff OR updated_at IS NULL)"
+)
+
+
+async def _prune_candidates(*, keep_days: int, keep_n: int) -> dict[str, Any]:
+    """Recount what the prune's own predicate selects, and how old the oldest session is.
+
+    Printed beside the prune's result so the command cannot report an outcome
+    nothing contradicts. A single number is undetectable when it is wrong; a
+    pair is not. After a real run this must read zero, and after a preview it
+    must equal the count the preview reported, so either disagreement is visible
+    without anyone querying anything.
+
+    The age is here because of the failure this was built for: a keep-window
+    wider than the whole store selects nothing, so the prune deletes nothing and
+    says so in the words of a success. Beside the oldest session's age that
+    sentence stops being ambiguous.
+    """
+    import time as _time
+
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    cutoff = _time.time() - (keep_days * 86400)
+    now = _time.time()
+
+    async with StateDB() as db:
+        async with db._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(f"SELECT COUNT(*) AS n {_PRUNE_VICTIMS}"),  # noqa: S608
+                        {"keep_n": keep_n, "cutoff": cutoff},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            remaining = row["n"]
+            row = (
+                (await conn.execute(text("SELECT MIN(updated_at) AS oldest FROM sessions")))
+                .mappings()
+                .first()
+            )
+    oldest = row["oldest"] if row else None
+    return {
+        "candidates": remaining,
+        # None rather than an age of zero on an empty store: no sessions and
+        # sessions all touched this instant are different states.
+        "oldest_session_age_days": None if oldest is None else (now - oldest) / 86400.0,
+    }
 
 
 class _PreviewOnlyError(Exception):
@@ -603,12 +783,7 @@ async def _prune(
                 rows = (
                     (
                         await conn.execute(
-                            text(
-                                "SELECT id FROM sessions "
-                                "WHERE id NOT IN ("
-                                "  SELECT id FROM sessions ORDER BY updated_at DESC LIMIT :keep_n"
-                                ") AND (updated_at < :cutoff OR updated_at IS NULL)"
-                            ),
+                            text(f"SELECT id {_PRUNE_VICTIMS}"),  # noqa: S608
                             {"keep_n": keep_n, "cutoff": cutoff},
                         )
                     )
@@ -637,12 +812,10 @@ async def _prune(
                     .first()["n"]
                 )
 
-                # progressions carry no ownership edge back to the session or
-                # branch that made them, so nothing removes them when their
-                # owner goes. They are collected here while the owners are still
-                # readable, and the collection is held in a scratch table rather
-                # than in a parameter list so a large prune does not run into the
-                # bound-parameter ceiling.
+                # progressions carry no ownership edge back to their session/
+                # branch, so they're collected here (while owners are still
+                # readable) into a scratch table rather than a parameter list,
+                # to avoid the bound-parameter ceiling on a large prune.
                 await conn.execute(text("DROP TABLE IF EXISTS prune_orphan_progressions"))
                 await conn.execute(
                     text("CREATE TEMPORARY TABLE prune_orphan_progressions (id TEXT PRIMARY KEY)")
@@ -743,6 +916,212 @@ async def _prune(
                     "sessions": len(victim_ids),
                     "branches": branch_count,
                     "messages": deleted_messages,
+                }
+                if dry_run:
+                    raise _PreviewOnlyError(counts)
+        except _PreviewOnlyError as preview:
+            return preview.counts
+
+    return counts
+
+
+# Which message bodies the reclaim replaces, written once so the operation and
+# the recount below cannot describe different populations. Two copies of this
+# drifting apart would make the pair agree while counting different rows, which
+# is worse than printing no check at all.
+#
+# The already-reclaimed exclusion is what makes a second run of the same command
+# a no-op instead of a marker rewrite that reports work it did not do.
+_NULL_CONTENT_TARGETS = (
+    "FROM messages "
+    "WHERE created_at < :cutoff "
+    "  AND content IS NOT NULL "
+    f"  AND json_extract(content, '$.{CONTENT_PRUNED_KEY}') IS NULL"
+)
+
+
+def _null_content_targets(roles: tuple[str, ...]) -> str:
+    """The predicate, with the role filter appended when one was asked for."""
+    if not roles:
+        return _NULL_CONTENT_TARGETS
+    placeholders = ",".join(f":role{i}" for i in range(len(roles)))
+    return f"{_NULL_CONTENT_TARGETS} AND role IN ({placeholders})"
+
+
+def _null_content_params(*, cutoff: float, roles: tuple[str, ...]) -> dict[str, Any]:
+    params: dict[str, Any] = {"cutoff": cutoff}
+    for i, role in enumerate(roles):
+        params[f"role{i}"] = role
+    return params
+
+
+async def _null_content_candidates(
+    *,
+    older_than_days: int,
+    roles: tuple[str, ...],
+) -> dict[str, Any]:
+    """Recount what the reclaim's own predicate still selects, and their size.
+
+    Printed beside the result so the command cannot report an outcome nothing
+    contradicts. After a real run this has to read zero; after a preview it has
+    to equal what the preview reported. A single number is undetectable when it
+    is wrong, and a pair is not.
+
+    Runs outside the operation's transaction deliberately: inside it, it would
+    be reading the same uncommitted rows the operation just wrote and would
+    agree with it by construction.
+    """
+    import time as _time
+
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    cutoff = _time.time() - (older_than_days * 86400)
+    params = _null_content_params(cutoff=cutoff, roles=roles)
+    where = _null_content_targets(roles)
+
+    async with StateDB() as db:
+        async with db._read() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(  # noqa: S608
+                            f"SELECT COUNT(*) AS n, "
+                            f"COALESCE(SUM(LENGTH(content)), 0) AS b, "
+                            f"MIN(created_at) AS oldest {where}"
+                        ),
+                        params,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+
+    oldest = row["oldest"] if row else None
+    return {
+        "candidates": int(row["n"]) if row else 0,
+        "bytes": int(row["b"]) if row else 0,
+        # None rather than 0.0 when nothing is selected: no rows and rows
+        # written this instant are different states, and only one of them means
+        # the window has nothing to reach.
+        "oldest_age_days": None if oldest is None else (_time.time() - oldest) / 86400.0,
+    }
+
+
+async def _null_content(
+    *,
+    older_than_days: int,
+    roles: tuple[str, ...],
+    dry_run: bool,
+) -> dict[str, int]:
+    """Replace old message bodies with a marker, keeping every row and reference.
+
+    This exists because the prune cannot reach these bytes. The prune selects
+    SESSIONS; the bytes live on MESSAGES; and a message some surviving
+    progression still names is kept whatever its age. So a store can be almost
+    entirely message content, have every message inside a keep-window, and give
+    a prune nothing to delete.
+
+    The row, its id, its role, its timestamp and its place in every progression
+    all survive. What is dropped is the body, and in its place goes a value that
+    says a body was there and how large it was, so the removal stays legible
+    instead of reading as a turn that produced nothing.
+
+    ``dry_run`` performs the update and rolls it back, so the reported numbers
+    are measurements of the operation rather than an estimate of it. That makes
+    a preview a WRITE that takes the same lock for the same duration -- it is
+    not a read, and on a large store it is not a quick one.
+    """
+    import time as _time
+
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    now = _time.time()
+    cutoff = now - (older_than_days * 86400)
+    params = _null_content_params(cutoff=cutoff, roles=roles)
+    where = _null_content_targets(roles)
+
+    counts = {"messages": 0, "bytes_before": 0, "bytes_after": 0}
+
+    async with StateDB() as db:
+        try:
+            async with db._tx() as conn:
+                # The batch is pinned to a scratch table before anything is
+                # written, because both measurements have to be about the same
+                # rows and the predicate stops selecting them the moment the
+                # update lands. It also keeps the after-size away from markers
+                # an earlier run left behind, which the predicate excludes but a
+                # sum over "rows carrying a marker" would quietly re-include.
+                await conn.execute(text("DROP TABLE IF EXISTS null_content_batch"))
+                await conn.execute(
+                    text("CREATE TEMPORARY TABLE null_content_batch (id TEXT PRIMARY KEY)")
+                )
+                await conn.execute(
+                    text(f"INSERT INTO null_content_batch (id) SELECT id {where}"),  # noqa: S608
+                    params,
+                )
+
+                measured = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT COUNT(*) AS n, "
+                                "COALESCE(SUM(LENGTH(content)), 0) AS b "
+                                "FROM messages WHERE id IN (SELECT id FROM null_content_batch)"
+                            )
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                target_count = int(measured["n"])
+                bytes_before = int(measured["b"])
+
+                # The marker is built in SQL rather than in Python so that
+                # LENGTH(content) is evaluated against each row as it is
+                # overwritten. That makes original_bytes the row's OWN size in a
+                # single statement -- the alternative, one marker computed here
+                # and written everywhere, records a batch average under a
+                # per-row name.
+                await conn.execute(
+                    text(
+                        # noqa on the interpolation: pruned_content_sql() takes
+                        # no argument here, so the expression is a constant of
+                        # this module's making and the only value crossing the
+                        # boundary is :at, which is bound.
+                        f"UPDATE messages SET content = {pruned_content_sql()} "  # noqa: S608
+                        "WHERE id IN (SELECT id FROM null_content_batch)"
+                    ),
+                    {"at": now},
+                )
+
+                # Read back inside the same transaction: what the markers
+                # actually occupy. SQLite wrote them and is the only authority
+                # on how much of it is there.
+                bytes_after = int(
+                    (
+                        (
+                            await conn.execute(
+                                text(
+                                    "SELECT COALESCE(SUM(LENGTH(content)), 0) AS b "
+                                    "FROM messages "
+                                    "WHERE id IN (SELECT id FROM null_content_batch)"
+                                )
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )["b"]
+                )
+                await conn.execute(text("DROP TABLE IF EXISTS null_content_batch"))
+
+                counts = {
+                    "messages": target_count,
+                    "bytes_before": bytes_before,
+                    "bytes_after": bytes_after,
                 }
                 if dry_run:
                     raise _PreviewOnlyError(counts)
@@ -1089,15 +1468,19 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
 
-    # li state stats
+    # li state stats — no flags, and the machine surface takes none either, so
+    # its projected schema stays empty and the two cannot describe different
+    # commands.
     state_sub.add_parser(
         "stats",
-        help="Print DB/WAL size, row counts, and lifecycle health.",
+        help="Print DB/WAL size, row counts, message role/age breakdown, and lifecycle health.",
         description=(
             "Report state.db + state.db-wal sizes, per-table row counts, "
-            "session status distribution, and SQLite PRAGMAs (journal_mode, "
+            "messages broken down by role and by age, session status "
+            "distribution, and SQLite PRAGMAs (journal_mode, "
             "wal_autocheckpoint, busy_timeout). Use to spot growth and "
-            "lock contention."
+            "lock contention, and to check before pruning whether the "
+            "keep-window can reach anything at all."
         ),
     )
 
@@ -1141,7 +1524,16 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
             "Delete sessions older than --keep-days (default 30), keeping "
             "the most recent --keep-n (default 100). Foreign key cascades "
             "drop branches; messages are dropped if no other session "
-            "references them via progression. Use --dry-run to preview."
+            "references them via progression. Use --dry-run to preview.\n\n"
+            "SESSIONS ARE THE AXIS, AND MESSAGES HOLD THE BYTES. A message a "
+            "surviving progression still names is kept whatever its age, so a "
+            "run can delete thousands of sessions and free no message rows. "
+            "Read the message counts, not the session count, to judge whether "
+            "this reclaimed space; `li state stats` shows both distributions.\n\n"
+            "--dry-run is not a read. It runs the real deletes and rolls the "
+            "transaction back, which is what makes its counts exact rather "
+            "than estimated, and which means it takes the same write lock for "
+            "the same duration as the real thing."
         ),
     )
     prune.add_argument(
@@ -1160,6 +1552,59 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--dry-run",
         action="store_true",
         help="Print what WOULD be deleted, but don't actually delete.",
+    )
+
+    # li state null-content — reclaim message bodies the prune cannot reach
+    nullc = state_sub.add_parser(
+        "null-content",
+        help="Replace old message bodies with a marker, keeping the rows.",
+        description=(
+            "Reclaim the space held by message bodies older than --older-than "
+            "days, keeping every row, id, role, timestamp and progression "
+            "reference. THIS IS WHERE THE BYTES ARE, and prune cannot reach "
+            "them: prune selects SESSIONS, and a message any surviving "
+            "progression still names is kept whatever its age. A store can "
+            "therefore be almost entirely message content, have every message "
+            "inside a keep-window, and give a prune nothing to delete.\n\n"
+            "A reclaimed body is not emptied. It is replaced with a marker "
+            "recording that a body was there and how large it was, so it stays "
+            "distinguishable from a turn that genuinely produced nothing. "
+            "Reclaiming is not reversible: the text is gone.\n\n"
+            "The file does not shrink. Freed pages return to the database's own "
+            "free list and the bytes on disk stay where they are until "
+            "`li state vacuum` rebuilds the file.\n\n"
+            "--dry-run is not a read. It performs the update and rolls it back, "
+            "so its numbers measure the operation instead of estimating it, and "
+            "it takes the same write lock for the same duration."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    nullc.add_argument(
+        "--older-than",
+        type=int,
+        required=True,
+        metavar="DAYS",
+        help=(
+            "Reclaim bodies older than N days. Required and deliberately has no "
+            "default: there is no age that is safe to assume for an "
+            "irreversible operation."
+        ),
+    )
+    nullc.add_argument(
+        "--role",
+        action="append",
+        default=None,
+        metavar="ROLE",
+        help=(
+            "Limit to messages with this role; repeatable. Omitted means every "
+            "role. Check `li state stats` first — the roles are not evenly "
+            "sized, and one of them usually holds most of the bytes."
+        ),
+    )
+    nullc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Perform the reclaim and roll it back, reporting what it measured.",
     )
 
     # li state doctor — sweep stale 'running' sessions
@@ -1255,6 +1700,69 @@ def run_state(args: argparse.Namespace) -> int:
             f"{result['branches']} branch(es), "
             f"{result['messages']} orphan message(s)"
         )
+        # Recomputed after the fact, never carried out of the prune's own
+        # transaction: a count the prune produced cannot contradict the prune.
+        check = run_async(_prune_candidates(keep_days=args.keep_days, keep_n=args.keep_n))
+        expected = result["sessions"] if args.dry_run else 0
+        print(
+            f"  still selected by --keep-days {args.keep_days} --keep-n {args.keep_n}: "
+            f"{check['candidates']} (expected {expected})"
+        )
+        age = check["oldest_session_age_days"]
+        if age is None:
+            print("  oldest session: (none)")
+        else:
+            print(f"  oldest session: {age:.1f}d")
+            # Gated on the operation's own count, not on the age alone. The same
+            # comparison means two opposite things depending on when it is read:
+            # before the prune it says the window reaches nothing, after a
+            # successful one it says the prune WORKED and every survivor is
+            # inside the window. Ungated it prints "this reclaimed nothing"
+            # directly beneath "deleted 2000 session(s)", and tells an operator
+            # to lower the window -- advice that deletes more, on the one path
+            # where nothing was wrong.
+            if result["sessions"] == 0 and age < args.keep_days:
+                print(
+                    f"  NOTHING IS OLDER THAN --keep-days {args.keep_days}, so this "
+                    "selected nothing and no smaller change to the data would have "
+                    "helped. Lower the window or prune on a different axis."
+                )
+        return 0
+
+    if args.state_command == "null-content":
+        roles = tuple(args.role or ())
+        result = run_async(
+            _null_content(
+                older_than_days=args.older_than,
+                roles=roles,
+                dry_run=args.dry_run,
+            )
+        )
+        prefix = "(dry-run) would reclaim" if args.dry_run else "reclaimed"
+        scope = f"role(s) {', '.join(roles)}" if roles else "every role"
+        freed = result["bytes_before"] - result["bytes_after"]
+        print(
+            f"{prefix} {result['messages']} message body(ies) older than "
+            f"{args.older_than}d, {scope}"
+        )
+        print(
+            f"  content size: {_format_bytes(result['bytes_before'])} → "
+            f"{_format_bytes(result['bytes_after'])} "
+            f"(freed {_format_bytes(freed)} inside the DB)"
+        )
+        # Recomputed from the same predicate, outside the operation's
+        # transaction. A real run has to leave nothing selected; a preview has
+        # to leave exactly what it reported. Until this line existed the success
+        # line was a number with nothing to contradict it.
+        check = run_async(_null_content_candidates(older_than_days=args.older_than, roles=roles))
+        expected = result["messages"] if args.dry_run else 0
+        print(
+            f"  still selected by --older-than {args.older_than}: "
+            f"{check['candidates']} (expected {expected})"
+        )
+        if check["oldest_age_days"] is not None:
+            print(f"  oldest still selected: {check['oldest_age_days']:.1f}d")
+        print("  the file does not shrink until `li state vacuum`")
         return 0
 
     if args.state_command == "doctor":
@@ -1303,11 +1811,19 @@ async def _machine_stats_data() -> dict[str, Any]:
             absent = why
             result["row_counts"] = absent
             result["sessions_by_status"] = absent
+            result["messages_by_role"] = absent
+            result["messages_by_age"] = absent
+            result["oldest_message_age_days"] = absent
             result["journal_mode"] = absent
             return result
         collected = await _collect_stats(db)
     result["row_counts"] = available(collected["row_counts"])
     result["sessions_by_status"] = available(collected["sessions_by_status"])
+    # Carried here for the same reason _STATS_TABLES is named once: a machine
+    # caller and the printout must not come to describe different databases.
+    result["messages_by_role"] = available(collected["messages_by_role"])
+    result["messages_by_age"] = available(collected["messages_by_age"])
+    result["oldest_message_age_days"] = available(collected["oldest_message_age_days"])
     # Only the one pragma that describes the database rather than the connection
     # that asked. busy_timeout, synchronous and the rest are settings of whichever
     # connection reads them, so reporting them here would hand a caller this
@@ -1358,6 +1874,7 @@ def machine_result(argv: list[str]) -> dict[str, Any]:
             "checkpoint": "it checkpoints the write-ahead log",
             "vacuum": "it rebuilds the database file",
             "prune": "it deletes rows",
+            "null-content": "it destroys message bodies, which is an irreversible write",
             "doctor": "it sweeps stale rows to a new status, which is a write",
         },
     )

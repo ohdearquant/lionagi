@@ -536,11 +536,8 @@ async def _audit_decisions(proposal_id: str) -> list[str]:
 def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     import lionagi.cli._runs as runs_mod
     import lionagi.state.db as state_db_mod
-    import lionagi.studio.services.sessions as sessions_mod
 
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
-    monkeypatch.setattr(sessions_mod, "DEFAULT_DB_PATH", path)
-    monkeypatch.setattr(sessions_mod, "_DB", str(path))
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
 
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import shutil
 import sqlite3
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.schema import CreateTable
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
@@ -27,6 +28,8 @@ from lionagi.state.engine import (
     dialect_of,
     make_engine,
     make_readonly_engine,
+    mask_credentials,
+    mask_db_url,
     normalize_state_db_url,
 )
 from lionagi.state.lifecycle import LifecycleNotFoundError as _LifecycleNotFoundError
@@ -161,6 +164,33 @@ def state_db_file() -> Path | None:
     if not database or database == ":memory:":
         return None
     return Path(database)
+
+
+def read_only_open_supported() -> bool:
+    """Whether ``StateDB(readonly=True)`` can open the configured store at all.
+
+    Read-only mode is SQLite-only by contract: it is an ``mode=ro`` URI open of
+    an existing file, and ``make_readonly_engine()`` rejects every other
+    dialect. ``StateDB.open()``'s read-only branch is not dialect-gated, so an
+    unconditional ``readonly=True`` does not degrade on a server-backed store,
+    it fails at open. Callers that want read-only as an optimisation, rather
+    than as a safety requirement, pass this instead of True and take the
+    ordinary open where read-only is unavailable.
+
+    Callers that need read-only for safety must NOT use this: it hands them a
+    writable connection on the stores it returns False for, which is the
+    opposite of what they asked for.
+
+    ``state_db_file()`` returns a path exactly when the configured store is an
+    on-disk SQLite file, which is the set read-only mode accepts for any URL an
+    async engine can be built from at all. It is not literally the same set:
+    ``make_readonly_engine()`` also requires the ``sqlite+aiosqlite:///``
+    spelling, and an unrecognised driver such as ``sqlite+pysqlite:///`` passes
+    ``normalize_state_db_url()`` untouched. Such a URL fails the ordinary open
+    too, since a sync driver cannot back an async engine, so it is broken
+    either way and only the exception differs.
+    """
+    return state_db_file() is not None
 
 
 def state_db_known_absent() -> bool:
@@ -574,6 +604,9 @@ async def _restore_foreign_keys(conn, driver) -> None:
         await shield(conn.invalidate)
 
 
+_log = logging.getLogger(__name__)
+
+
 class StateDB:
     """Async SQLAlchemy state layer for sessions, branches, messages, and progressions."""
 
@@ -681,9 +714,15 @@ class StateDB:
             if p is not None and str(p) != ":memory:":
                 if self.readonly:
                     if not p.exists():
+                        # A store URL with no scheme is read as a filesystem
+                        # path, so this path is where a mis-set credentialed
+                        # URL ends up, verbatim. Masked here rather than only
+                        # where it is printed, because an exception travels to
+                        # readers this module does not know about.
                         raise FileNotFoundError(
-                            f"state.db not found at {p} — read-only open requires an "
-                            "existing database file (it will never be created)"
+                            f"state.db not found at {mask_credentials(str(p))} — read-only "
+                            "open requires an existing database file (it will never be "
+                            "created)"
                         )
                 else:
                     ensure_lionagi_dir(p.parent)
@@ -845,7 +884,15 @@ class StateDB:
             return
         if recorded_n <= int(SCHEMA_VERSION):
             return
-        where = self.path if self.dialect == "sqlite" and self.path is not None else self.url
+        # Named for an operator, so masked: on a server-backed store this is
+        # the connection URL, and this refusal fires on an ordinary open of a
+        # database a newer release wrote, which is a routine upgrade order
+        # mistake rather than a rare one.
+        where = (
+            mask_credentials(str(self.path))
+            if self.dialect == "sqlite" and self.path is not None
+            else mask_db_url(self.url)
+        )
         raise SchemaTooNewError(
             f"{where} records schema version {recorded} but this version of lionagi "
             f"applies schema version {SCHEMA_VERSION}. It was written by a later "
@@ -2273,6 +2320,371 @@ class StateDB:
             )
         return self._row_to_dict(row) if row else None
 
+    async def sessions_by_source_kind(self, source_kind: str) -> list[dict[str, Any]]:
+        """Minimal rows (id, node_metadata) for every session of one source_kind.
+
+        Deliberately thin — this exists for importer reconciliation sweeps, which
+        need provenance and identity but none of the joined message/branch cost.
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, node_metadata FROM sessions "
+                            "WHERE source_kind = :source_kind"
+                        ),
+                        {"source_kind": source_kind},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(row) for row in rows]
+
+    async def delete_imported_session(self, session_id: str, *, require_source_kind: str) -> bool:
+        """Delete a mirror-imported session and everything the mirror wrote for it:
+        the session row, its branches, their progressions, the messages those
+        progressions hold, and the session's status-transition history. Returns
+        True only when a row was actually deleted.
+
+        Fails closed on ownership twice over: the row's ``source_kind`` must equal
+        ``require_source_kind`` exactly AND that value must start with
+        ``imported_``. A live run's session is never eligible, and an importer
+        naming its own kind cannot reach a different importer's rows. The kind is
+        a mismatch guard rather than an authorization boundary: a caller that
+        names a valid imported kind tears down rows of that kind, so every
+        importer reconciles its own imports through this one method. Anything a
+        survivor still references is
+        retained, not deleted: messages held by an outside progression or
+        pointed at by a surviving session/branch, and target progressions a
+        survivor's progression_id names (together with their messages) — a
+        reference someone else holds is not this session's to destroy.
+
+        Concurrency: the retention checks and the deletes they authorise are
+        serialised against every writer that could create a new reference, so a
+        reference that appears after the check cannot be destroyed by the delete.
+        On SQLite the process write lock does this. On PostgreSQL a transaction
+        alone does not: at READ COMMITTED the check reads a snapshot, a
+        concurrent writer can commit a new reference after it, and the delete
+        would then proceed against a set that is no longer accurate. The table
+        lock below closes that window. It is taken NOWAIT, and the transaction
+        also runs under a bounded lock_timeout, so a teardown that cannot hold
+        what it needs gives up rather than queueing behind live writers; both
+        callers treat that as a row to revisit on a later sweep. Bounding the
+        lock waits is what keeps this transaction from sitting in a deadlock
+        cycle with a writer that reaches the same tables in another order. It
+        does not make one impossible, and it is not a deadline for the whole
+        teardown: the guarantee is only that no single lock-acquisition wait
+        lasts long enough to become a detected cycle on a server using
+        PostgreSQL's default deadlock_timeout.
+        """
+        if not require_source_kind.startswith("imported_"):
+            return False
+        async with self._tx() as conn:
+            if self.dialect != "sqlite":
+                # Taken before the first read, so everything read afterwards
+                # stays true for the rest of the transaction and no re-check is
+                # needed. These three tables are exactly the ones a survivor's
+                # reference can live in: a progression's collection holds message
+                # ids, and sessions and branches point progression_id and their
+                # message pointers at rows this teardown would otherwise remove.
+                # EXCLUSIVE conflicts with the ROW EXCLUSIVE that ordinary INSERT
+                # and UPDATE already take, so the writers need no changes and pay
+                # nothing on their own path.
+                #
+                # Two separate guards, because they cover different waits.
+                #
+                # lock_timeout bounds each LOCK-ACQUISITION wait, including the
+                # ones after the table locks are already held -- the soft-FK
+                # nulling below updates artifacts and four other tables, and
+                # those rows can be held by someone else. A wait while holding is
+                # what a deadlock cycle is made of, so bounding it is what keeps
+                # the teardown from sitting in one. It is not a deadline for the
+                # transaction: it caps no single statement's execution, no sum of
+                # successive lock waits, and nothing about commit or connection
+                # checkout. A long statement can still hold all three EXCLUSIVE
+                # locks, and nothing here bounds that. 250ms is chosen against
+                # PostgreSQL's deadlock_timeout, whose default is 1s, so one lock
+                # wait gives up well before the detector runs. It is also meant
+                # to sit above the row-lock holds of the ordinary writers so
+                # everyday contention resolves instead of aborting a teardown;
+                # that second half is the design intent behind the number and is
+                # not something this change measures. A server configured with a
+                # deadlock_timeout below this bound can still detect a cycle
+                # first; the teardown then aborts with a deadlock error rather
+                # than a lock timeout, which
+                # the callers treat identically.
+                #
+                # NOWAIT covers the acquisition itself, where waiting is
+                # pointless rather than merely bounded. A comma-separated LOCK
+                # TABLE takes the three locks one at a time in the written order
+                # rather than atomically, so a blocking form holds one table
+                # while waiting for the next, which closes a cycle with any
+                # writer touching the same tables in a different order.
+                # prune_old_data is exactly such a writer: it updates sessions
+                # before deleting from progressions, the reverse of the order
+                # here.
+                #
+                # The cost falls entirely on this rare teardown: a conflicting
+                # lock aborts the attempt, and both callers log the failure and
+                # retry on a later sweep.
+                await conn.execute(text("SET LOCAL lock_timeout = '250ms'"))
+                await conn.execute(
+                    text("LOCK TABLE branches, progressions, sessions IN EXCLUSIVE MODE NOWAIT")
+                )
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT source_kind, progression_id FROM sessions WHERE id = :id"),
+                        {"id": session_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return False
+            if str(row["source_kind"] or "") != require_source_kind:
+                return False
+
+            prog_ids: list[str] = [row["progression_id"]] if row["progression_id"] else []
+            branch_rows = (
+                (
+                    await conn.execute(
+                        text("SELECT progression_id FROM branches WHERE session_id = :id"),
+                        {"id": session_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            prog_ids.extend(b["progression_id"] for b in branch_rows if b["progression_id"])
+
+            # Chunked IN-lists keep each statement under SQLite's bound-variable cap.
+            def _chunks(values: list[str], size: int = 400):
+                for i in range(0, len(values), size):
+                    yield values[i : i + size]
+
+            # A survivor session or branch may point its progression_id FK at one
+            # of these progressions — such a progression, and the messages it
+            # holds, are not ours to delete.
+            kept_progs: set[str] = set()
+            for chunk in _chunks(prog_ids):
+                params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+                ph = ", ".join(f":{k}" for k in params)
+                rows = (
+                    (
+                        await conn.execute(
+                            text(
+                                f"SELECT progression_id AS pid FROM sessions WHERE id != :sid AND progression_id IN ({ph}) "  # noqa: S608, E501
+                                f"UNION SELECT progression_id FROM branches WHERE session_id != :sid AND progression_id IN ({ph})"  # noqa: S608, E501
+                            ),
+                            {"sid": session_id, **params},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                kept_progs.update(str(r["pid"]) for r in rows)
+            deletable_progs = [p for p in prog_ids if p not in kept_progs]
+
+            msg_ids: set[str] = set()
+            for pid in deletable_progs:
+                prow = (
+                    (
+                        await conn.execute(
+                            text("SELECT collection FROM progressions WHERE id = :id"),
+                            {"id": pid},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if prow is None:
+                    continue
+                collection = prow["collection"]
+                if isinstance(collection, str):
+                    try:
+                        collection = json.loads(collection)
+                    except (TypeError, ValueError):
+                        collection = []
+                if isinstance(collection, list):
+                    msg_ids.update(str(m) for m in collection)
+
+            # A message referenced by any progression OUTSIDE the deletable set is
+            # not ours to delete — a retained target progression counts as an
+            # outside holder here, so its shared messages survive with it.
+            prog_params = {f"pp{i}": pid for i, pid in enumerate(deletable_progs)}
+            prog_ph = ", ".join(f":{k}" for k in prog_params) or "''"
+            unnest = (
+                "json_each(p.collection) je"
+                if self.dialect == "sqlite"
+                else "LATERAL json_array_elements_text(p.collection::json) je(value)"
+            )
+            # A malformed collection on some UNRELATED progression must not sink
+            # the whole absorb: SQLite filters those rows out; on other dialects
+            # the savepoint below catches the cast error and fails toward
+            # retention for that chunk.
+            valid_guard = " AND json_valid(p.collection)" if self.dialect == "sqlite" else ""
+            # Interpolations are bound-param placeholder names, never values.
+            shared_sql = f"SELECT DISTINCT je.value AS mid FROM progressions p, {unnest} WHERE p.id NOT IN ({prog_ph}){valid_guard} AND je.value IN ({{msg_ph}})"  # noqa: S608, E501
+            shared: set[str] = set()
+            for chunk in _chunks(sorted(msg_ids)):
+                params = {f"m{i}": mid for i, mid in enumerate(chunk)}
+                msg_ph = ", ".join(f":{k}" for k in params)
+                try:
+                    async with conn.begin_nested():
+                        rows = (
+                            (
+                                await conn.execute(
+                                    text(shared_sql.format(msg_ph=msg_ph)),  # noqa: S608
+                                    {**prog_params, **params},
+                                )
+                            )
+                            .mappings()
+                            .all()
+                        )
+                except SQLAlchemyError:
+                    # Retaining is the safe direction: an over-retained message is
+                    # a stray row a later maintenance pass can orphan-collect; an
+                    # over-deleted one breaks a live session.
+                    _log.warning(
+                        "delete_imported_session: shared-reference check failed for a "
+                        "chunk of %d message(s); retaining them",
+                        len(chunk),
+                        exc_info=True,
+                    )
+                    shared.update(chunk)
+                    continue
+                shared.update(str(r["mid"]) for r in rows)
+
+            # Detaching an artifact moves it into another partial unique-index
+            # domain (schema.sql idx_artifacts_natural_key_*), where its
+            # (kind, name) slot may already be taken by an unattached row or one
+            # under the same invocation. Deterministic policy: a colliding row
+            # keeps its data and takes a suffixed name recording the session it
+            # came from; non-colliding rows keep their names. The suffixed name
+            # is allocated against BOTH the destination domain and this
+            # session's own soon-to-detach rows — a fixed suffix can itself be
+            # occupied, and a UNIQUE failure here rolls back the whole
+            # absorption.
+            srows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, kind, name, invocation_id FROM artifacts "
+                            "WHERE session_id = :id ORDER BY id"
+                        ),
+                        {"id": session_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if srows:
+                kinds = sorted({str(r["kind"]) for r in srows})
+                external: dict[tuple[Any, str], set[str]] = {}
+                for chunk in _chunks(kinds):
+                    ph = ", ".join(f":k{i}" for i in range(len(chunk)))
+                    rows = (
+                        (
+                            await conn.execute(
+                                text(
+                                    f"SELECT kind, name, invocation_id FROM artifacts "  # noqa: S608
+                                    f"WHERE session_id IS NULL AND kind IN ({ph})"
+                                ),
+                                {f"k{i}": k for i, k in enumerate(chunk)},
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    for r in rows:
+                        external.setdefault((r["invocation_id"], str(r["kind"])), set()).add(
+                            str(r["name"])
+                        )
+                taken = {dom: set(names) for dom, names in external.items()}
+                for r in srows:
+                    dom = (r["invocation_id"], str(r["kind"]))
+                    taken.setdefault(dom, set()).add(str(r["name"]))
+                for r in srows:
+                    dom = (r["invocation_id"], str(r["kind"]))
+                    if str(r["name"]) not in external.get(dom, set()):
+                        continue
+                    final = f"{r['name']} (detached {session_id})"
+                    n = 2
+                    while final in taken[dom]:
+                        final = f"{r['name']} (detached {session_id} {n})"
+                        n += 1
+                    taken[dom].add(final)
+                    await conn.execute(
+                        text("UPDATE artifacts SET name = :nm WHERE id = :aid"),
+                        {"nm": final, "aid": r["id"]},
+                    )
+            # Soft session FKs (no CASCADE) are someone else's rows pointing at
+            # this one — nullify the pointer, keep the row, same as the studio
+            # prune path (db_maintenance.py). Only artifacts carry unique indexes
+            # over session_id (handled above); the other four tables do not.
+            for table in ("artifacts", "plays", "team_messages", "dispatch_outbox", "approvals"):
+                await conn.execute(
+                    text(
+                        f"UPDATE {table} SET session_id = NULL WHERE session_id = :id"  # noqa: S608
+                    ),
+                    {"id": session_id},
+                )
+
+            # Referencing rows go before what they reference: branches (their
+            # system_msg_id points at messages), then the session (first/last
+            # message pointers and the progression FK), then the now-unreferenced
+            # messages, then the progressions.
+            await conn.execute(
+                text("DELETE FROM branches WHERE session_id = :id"), {"id": session_id}
+            )
+            await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": session_id})
+            # This session's own rows are already gone, so any first/last/system
+            # pointer the subquery still sees belongs to a survivor — such a
+            # message is retained even when no progression carries it.
+            retain_refs = (
+                " AND id NOT IN ("
+                "SELECT first_msg_id FROM sessions WHERE first_msg_id IS NOT NULL"
+                " UNION SELECT last_msg_id FROM sessions WHERE last_msg_id IS NOT NULL"
+                " UNION SELECT system_msg_id FROM branches WHERE system_msg_id IS NOT NULL)"
+            )
+            for chunk in _chunks(sorted(msg_ids - shared)):
+                params = {f"m{i}": mid for i, mid in enumerate(chunk)}
+                placeholders = ", ".join(f":{k}" for k in params)
+                await conn.execute(
+                    text(
+                        f"DELETE FROM messages WHERE id IN ({placeholders}){retain_refs}"  # noqa: S608, E501
+                    ),
+                    params,
+                )
+            for chunk in _chunks(deletable_progs):
+                params = {f"p{i}": pid for i, pid in enumerate(chunk)}
+                placeholders = ", ".join(f":{k}" for k in params)
+                await conn.execute(
+                    text(f"DELETE FROM progressions WHERE id IN ({placeholders})"),  # noqa: S608
+                    params,
+                )
+            # terminal_deliveries holds an FK into status_transitions: children first.
+            await conn.execute(
+                text(
+                    "DELETE FROM terminal_deliveries WHERE transition_id IN ("
+                    "SELECT id FROM status_transitions "
+                    "WHERE entity_type = 'session' AND entity_id = :id)"
+                ),
+                {"id": session_id},
+            )
+            await conn.execute(
+                text(
+                    "DELETE FROM status_transitions "
+                    "WHERE entity_type = 'session' AND entity_id = :id"
+                ),
+                {"id": session_id},
+            )
+        return True
+
     @staticmethod
     def _touch_activity_sql(dialect: str) -> str:
         # SQLite MAX(a,b) is a scalar greatest; Postgres MAX() is an aggregate,
@@ -3556,8 +3968,15 @@ class StateDB:
 
     # Threshold-alert metrics (studio-wide, not scoped to a single schedule's
     # own runs -- unlike sum_schedule_spend above, which sums a single
-    # schedule's spawned sessions). Keys must match
-    # lionagi.studio.scheduler.threshold.VALID_METRICS.
+    # schedule's spawned sessions).
+    #
+    # The members of lionagi.studio.scheduler.threshold.VALID_METRICS that one
+    # aggregate query answers, which is not all of them: p95_latency_ms needs a
+    # sorted sample (SQLite has no percentile function) and
+    # github_poll_healthy_age_minutes is a point-in-time gauge, so both are
+    # served by their own branches in metric_value below. The invariant is that
+    # every VALID_METRICS member is answered somewhere in metric_value, not
+    # that it is answered here.
     _THRESHOLD_METRIC_QUERIES: dict[str, str] = {
         "failed_sessions": (
             "SELECT COUNT(*) AS n FROM sessions "
@@ -4759,6 +5178,30 @@ class StateDB:
             )
         return [dict(r) for r in rows]
 
+    async def list_latest_definition_versions(self) -> list[dict[str, Any]]:
+        """Latest version and timestamp for every definition, in one read.
+
+        For enriching a listing. The alternative is a query per definition,
+        which is the shape that turns a directory scan into a request storm;
+        the table holds one row per saved version, so grouping it whole is
+        cheaper than asking about each name in turn.
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT kind, name, MAX(version) AS version,"
+                            " MAX(created_at) AS created_at FROM definitions"
+                            " GROUP BY kind, name"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
     # ── Session signals (Phase C Move 1) ─────────────────────────────
 
     async def insert_session_signal(
@@ -5238,8 +5681,16 @@ class StateDB:
     # executor, finalize_session_control() directly (idempotent — safe to
     # re-apply on a poller crash). message calls mark_session_control_applying()
     # before attempting the (non-idempotent) apply, then finalize_session_control()
-    # (a crash between the two leaves a visible 'applying' row instead of a
-    # silent double-injection risk).
+    # carrying the claim it took (a crash between the two leaves a visible
+    # 'applying:<owner>' row instead of a silent double-injection risk).
+    #
+    # A claimed row is never resolved by anything but its own claimant. A
+    # teardown that finds one leaves it standing, because the alternative is
+    # writing a guess: a message whose consumer died between the claim and the
+    # apply may or may not have been delivered, and 'rejected' asserts it was
+    # not. A visibly wedged queue carrying the owner and the claim's age is an
+    # honest degraded state that an operator can resolve; a fabricated terminal
+    # result is not.
 
     async def insert_session_control(
         self,
@@ -5248,18 +5699,54 @@ class StateDB:
         verb: str,
         payload: dict[str, Any] | None = None,
         created_at: float | None = None,
-    ) -> str:
-        """Queue a control verb for *session_id*; returns the new control id.
+    ) -> str | None:
+        """Queue a control verb for *session_id*; returns the new control id, or None.
+
+        The insert is conditional on the session still being 'running', and the
+        condition is evaluated by the insert statement itself rather than by a
+        caller that read the status a moment earlier. That is what closes the
+        race against a run tearing down: a caller-side status check and the
+        insert are two statements, and a run can terminalize between them,
+        leaving a control nobody will ever consume. Here the two outcomes are
+        the only ones: an insert that commits was admitted against a running
+        session and is therefore visible to that run's terminal sweep, and one
+        that arrives after terminalization inserts nothing and returns None for
+        the caller to refuse.
+
+        Evaluating the condition in the statement is enough on SQLite, whose
+        writers are serialised, and is NOT enough on PostgreSQL, where two
+        clients run concurrently: under READ COMMITTED the EXISTS clause reads a
+        snapshot, so an admission can pass against a session another transaction
+        is terminalizing, and commit after that run's sweep has already looked.
+        The row then exists, is pending, and has no consumer, which is exactly
+        the outcome the condition is here to prevent. Measured on PostgreSQL 16:
+        the plain form admits, the terminalizing transaction's sweep sees zero
+        rows, and one row is pending once the admission commits.
+
+        So on PostgreSQL the source of the insert takes a row lock on the
+        session. A concurrent terminal transition then waits for the admission
+        to finish rather than passing it, which orders the two and restores the
+        SQLite property: whatever was admitted is committed before the status
+        moves, and anything after it fails the condition. The wait is bounded by
+        a single-statement insert.
 
         Serialised through _tx() like the other append-only session logs.
         """
         control_id = uuid.uuid4().hex
+        admit_source = (
+            "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
+            if self.dialect == "sqlite"
+            else "FROM (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running' "
+            "FOR UPDATE) _admitted"
+        )
         async with self._tx() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 text(
                     "INSERT INTO session_controls "
-                    "(id, session_id, verb, payload, created_at, applied_at, result) "
-                    "VALUES (:id, :sid, :verb, :payload, :created_at, NULL, NULL)"
+                    "(id, session_id, verb, payload, created_at, applied_at, "
+                    "claimed_at, result) "
+                    "SELECT :id, :sid, :verb, :payload, :created_at, NULL, NULL, NULL "
+                    f"{admit_source}"  # noqa: S608 — dialect-selected literal, no caller input
                 ).bindparams(bindparam("payload", type_=JSON)),
                 {
                     "id": control_id,
@@ -5269,21 +5756,25 @@ class StateDB:
                     "created_at": created_at if created_at is not None else time.time(),
                 },
             )
+            if not result.rowcount:
+                return None
         return control_id
 
     async def list_pending_session_controls(self, session_id: str) -> list[dict[str, Any]]:
         """Unapplied controls (applied_at IS NULL) for *session_id*, oldest first.
 
-        Includes rows mid-apply (result='applying') — the poller/status surface
-        distinguish "never touched" (result IS NULL) from "a prior poller crashed
-        mid-apply" (result='applying') by inspecting that field.
+        Includes rows mid-apply (result='applying[:<owner>]') — the poller/status
+        surface distinguish "never touched" (result IS NULL) from "a consumer is
+        or was mid-apply" by inspecting that field, and read claimed_at beside it
+        for how long the claim has stood.
         """
         async with self._read() as conn:
             rows = (
                 (
                     await conn.execute(
                         text(
-                            "SELECT id, session_id, verb, payload, created_at, applied_at, result "
+                            "SELECT id, session_id, verb, payload, created_at, applied_at, "
+                            "claimed_at, result "
                             "FROM session_controls "
                             "WHERE session_id = :sid AND applied_at IS NULL "
                             # id tiebreak: identical created_at floats (rapid
@@ -5307,28 +5798,165 @@ class StateDB:
             result.append(d)
         return result
 
-    async def mark_session_control_applying(self, control_id: str) -> None:
-        """Stamp a non-idempotent (message) control as mid-apply, before attempting it.
+    async def mark_session_control_applying(
+        self, control_id: str, *, owner: str | None = None
+    ) -> str | None:
+        """Claim a non-idempotent (message) control as mid-apply, before attempting it.
+
+        The stamp is a compare-and-set: only a row no consumer has claimed
+        (``result IS NULL``) moves to 'applying'. Returns the claim string this
+        call wrote, or None if another consumer got there first. Two consumers
+        that read the same pending row therefore cannot both apply it; the loser
+        sees None and leaves the row alone. Returning a value rather than raising
+        keeps the ordinary "someone else got there first" case off the error path.
+
+        **The claim comes back because the claimant needs it to finish safely.**
+        finalize_session_control(expect_claim=...) is what stops a slow consumer
+        from overwriting an outcome that someone else recorded while it was
+        working, and a caller can only pass a claim it holds. Rebuilding the
+        string at the call site instead is how the two drift apart, so this is
+        the only place it is constructed.
+
+        *owner* names the claimant, and the claim is stored as ``applying:<owner>``.
+        Naming it is what lets a second consumer tell "someone else is mid-apply"
+        from "I am mid-apply", which a bare 'applying' cannot express; a caller
+        that has no meaningful identity omits it and gets the bare form.
+        claimed_at is stamped either way, so a wedged claim carries its own age.
 
         applied_at stays NULL — the row remains "pending" until finalize_session_control()
         runs, so a poller crash right after this stamp is visible, not silently lost.
         """
+        claim = f"applying:{owner}" if owner else "applying"
         async with self._tx() as conn:
-            await conn.execute(
-                text("UPDATE session_controls SET result = 'applying' WHERE id = :id"),
-                {"id": control_id},
+            result = await conn.execute(
+                text(
+                    "UPDATE session_controls SET result = :claim, claimed_at = :now "
+                    "WHERE id = :id AND result IS NULL"
+                ),
+                {
+                    "claim": claim,
+                    "now": time.time(),
+                    "id": control_id,
+                },
             )
+            return claim if result.rowcount else None
 
-    async def finalize_session_control(self, control_id: str, *, result: str) -> None:
-        """Stamp applied_at + a terminal *result* ('applied' or 'rejected:<reason>')."""
+    async def finalize_session_control(
+        self,
+        control_id: str,
+        *,
+        result: str,
+        expect_claim: str | None = None,
+        only_if_unclaimed: bool = False,
+    ) -> bool:
+        """Stamp applied_at + a terminal *result* ('applied' or 'rejected:<reason>').
+
+        With *expect_claim*, the write applies only while the row still carries
+        that exact claim string, and the return value says whether it did. A
+        consumer that claimed a row passes its own claim here, so a write aimed
+        at a row whose claim has moved on lands nowhere instead of overwriting
+        it. Without it the write is unconditional, which is what the idempotent
+        (pause/resume) path wants.
+
+        With *only_if_unclaimed*, the write applies only while the row is still
+        pending. This is what a sweep wants: reading the pending rows and then
+        deciding from that snapshot is a check against a value that can change
+        before the write, and the window is exactly wide enough for a consumer
+        to claim the row and deliver it, after which an unconditional write
+        records a delivered message as never delivered. The two guards are
+        alternatives, not a pair; asking for both is a caller bug.
+
+        This is a compare-and-set between cooperating consumers and NOT an
+        authorization boundary. The claim string is stored in a column every
+        reader can see, so any caller that can reach this method can also pass
+        it; what the check rules out is a consumer writing an outcome onto a row
+        whose state it has not re-read, not a consumer that means to. Nothing
+        reachable from a shared database can do better than that, since a caller
+        able to call this method is equally able to write the row directly.
+        """
+        if expect_claim is not None and only_if_unclaimed:
+            raise ValueError(
+                "finalize_session_control takes expect_claim or only_if_unclaimed, "
+                "not both: a row cannot be simultaneously claimed by a given "
+                "consumer and unclaimed"
+            )
+        params: dict[str, Any] = {
+            "applied_at": time.time(),
+            "result": result,
+            "id": control_id,
+        }
+        sql = (
+            "UPDATE session_controls SET applied_at = :applied_at, result = :result WHERE id = :id"
+        )
+        if expect_claim is not None:
+            sql += " AND result = :expect_claim"
+            params["expect_claim"] = expect_claim
+        elif only_if_unclaimed:
+            sql += " AND result IS NULL"
         async with self._tx() as conn:
-            await conn.execute(
+            written = await conn.execute(text(sql), params)
+            return bool(written.rowcount)
+
+    async def resolve_claimed_session_control(
+        self, control_id: str, *, outcome: str, actor: str | None = None
+    ) -> str | None:
+        """Close a control whose claimant never reported back; returns the stored result.
+
+        The one thing that can end a claimed row, and it is deliberately not
+        automatic. Nothing in the system can tell a consumer that died before
+        delivering a message from one that died after, so the row waits for
+        someone who can find out. This method is that person's write.
+
+        Returns None when the row is not claimed, which covers both "already
+        terminal" and "never taken", so a caller cannot use it to overwrite an
+        outcome the consumer itself recorded, or to skip a row that the ordinary
+        teardown sweep should be rejecting instead.
+
+        The claim it replaces is kept verbatim in the stored result, because the
+        record of who held a message and what a human then decided about it is
+        the whole value of leaving the row standing in the first place.
+        """
+        # The read decides and the write checks that the decision still holds.
+        # On PostgreSQL the claimant can commit its own outcome between the two
+        # statements, so the compare-and-set below is what refuses to overwrite
+        # it -- and the row count is what stops this returning a receipt for a
+        # write that never happened. Locking the row on the read instead was
+        # tried and removed: the UPDATE takes the same row lock a moment later,
+        # so the lock changed no outcome and only made the refusal arrive by a
+        # different route. SQLite serialises writers, so neither applies there.
+        async with self._tx() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT result FROM session_controls WHERE id = :id"),
+                        {"id": control_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            prior = (row or {}).get("result")
+            if not str(prior or "").startswith("applying"):
+                return None
+            stored = (
+                f"{outcome}: resolved by {actor or 'an unnamed operator'} after "
+                f"the claim {prior!r} was taken and never reported back"
+            )
+            written = await conn.execute(
                 text(
                     "UPDATE session_controls SET applied_at = :applied_at, result = :result "
-                    "WHERE id = :id"
+                    "WHERE id = :id AND result = :prior"
                 ),
-                {"applied_at": time.time(), "result": result, "id": control_id},
+                {
+                    "applied_at": time.time(),
+                    "result": stored,
+                    "id": control_id,
+                    "prior": prior,
+                },
             )
+            if not written.rowcount:
+                return None
+        return stored
 
     async def get_session_control(self, control_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:

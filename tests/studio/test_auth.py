@@ -43,18 +43,10 @@ _DATA_GET_PREFIXES = [
 
 def _make_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     import lionagi.studio.app as app_mod
-    import lionagi.studio.services.invocations as inv_mod
-    import lionagi.studio.services.sessions as sess_mod
-    import lionagi.studio.services.stats as stats_mod
 
     fake_db = tmp_path / "state.db"
 
     # Redirect all DB-backed services to the throw-away path so the app stays hermetic.
-    for mod in (stats_mod, inv_mod, sess_mod):
-        if hasattr(mod, "DEFAULT_DB_PATH"):
-            monkeypatch.setattr(mod, "DEFAULT_DB_PATH", fake_db)
-        if hasattr(mod, "_DB"):
-            monkeypatch.setattr(mod, "_DB", str(fake_db))
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
     # A fresh app instance (via create_app()) instead of importlib.reload(app_mod):

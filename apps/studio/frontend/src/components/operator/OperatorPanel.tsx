@@ -17,31 +17,36 @@ import {
   reportOperatorView,
   createOperatorConversation,
   decideOperatorProposal,
+  fetchOperatorModelCatalog,
+  forkOperatorConversation,
   getOperatorConversation,
   listOperatorConversations,
   streamOperatorConversation,
   submitOperatorTurn,
+  updateOperatorConversation,
 } from "@/lib/api";
 import type {
   OperatorContextSnapshot,
   OperatorConfirmationPayload,
   OperatorConversation,
   OperatorDonePayload,
+  OperatorEffort,
   OperatorErrorPayload,
   OperatorFrame,
+  OperatorModelCatalogEntry,
   OperatorProposalPayload,
   OperatorTextPayload,
   OperatorToolCallPayload,
   OperatorToolResultPayload,
   OperatorUiCommandPayload,
 } from "@/lib/types";
-import { OPERATOR_MODELS, type OperatorModel } from "@/lib/types";
 import Button from "@/components/ui/Button";
 import Markdown from "@/components/ui/Markdown";
 import {
   IconArrowRight,
   IconBan,
   IconCheck,
+  IconChevronDown,
   IconClose,
   IconCopy,
   IconError,
@@ -631,13 +636,21 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(operatorReducer, initialOperatorState);
   const [instruction, setInstruction] = useState("");
-  const [model, setModel] = useState<OperatorModel>(OPERATOR_MODELS[0]);
+  const [modelCatalog, setModelCatalog] = useState<OperatorModelCatalogEntry[]>([]);
+  const [model, setModel] = useState<string>("");
+  const [effort, setEffort] = useState<OperatorEffort | "">("");
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<Set<string>>(() => new Set());
   const [decidedProposalIds, setDecidedProposalIds] = useState<Set<string>>(() => new Set());
   const [conversations, setConversations] = useState<OperatorConversation[]>([]);
+  const [listFilter, setListFilter] = useState<"active" | "archived">("active");
+  const [listPanelOpen, setListPanelOpen] = useState(false);
+  const [listActionError, setListActionError] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [conversationBusyId, setConversationBusyId] = useState<string | null>(null);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
   const [showJump, setShowJump] = useState(false);
   const [visibleCount, setVisibleCount] = useState(200);
@@ -650,6 +663,39 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const effectsInFlightRef = useRef<Set<string>>(new Set());
   const effectsAcknowledgedRef = useRef<Set<string>>(new Set());
   const effectOutcomesRef = useRef<Map<string, StoredEffectAcknowledgement>>(new Map());
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const renameButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const previousRenamingIdRef = useRef<string | null>(null);
+  const conversationListButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Derived rather than synced through an effect: archiving the row being
+  // renamed, or switching the filter away from it, removes the row and its
+  // input while that input still holds focus. Removing a focused element moves
+  // focus to the document body silently and fires no blur, so a stored id would
+  // just go stale -- pointing at a row nobody can see, and reopening rename on
+  // it if the row ever comes back. Reading the rename as "the row is here and
+  // it is the one being renamed" makes the disappearance a state change the
+  // focus effect below can act on.
+  const activeRenamingId =
+    renamingId && conversations.some((item) => item.id === renamingId) ? renamingId : null;
+
+  useEffect(() => {
+    if (activeRenamingId) {
+      renameInputRef.current?.focus();
+      previousRenamingIdRef.current = activeRenamingId;
+      return;
+    }
+    if (previousRenamingIdRef.current) {
+      // The row this focus was meant to return to may be the one that just
+      // disappeared, and its ref entry goes with it. Without a fallback the
+      // input is removed with focus on nothing, which strands a keyboard user
+      // on document.body. The disclosure trigger outlives every row, so it is
+      // the target that is always still there.
+      const button = renameButtonRefs.current.get(previousRenamingIdRef.current);
+      (button ?? conversationListButtonRef.current)?.focus();
+    }
+    previousRenamingIdRef.current = activeRenamingId;
+  }, [activeRenamingId]);
 
   const loadConversation = useCallback(
     async (conversationId: string) => {
@@ -678,6 +724,61 @@ export default function OperatorPanel({ open, onClose }: Props) {
     },
     [t],
   );
+
+  useEffect(() => {
+    let active = true;
+    void fetchOperatorModelCatalog()
+      .then((catalog) => {
+        if (!active) return;
+        setModelCatalog(catalog.models);
+        // Never replace "no selection" with the catalog's first entry: the
+        // composer still works with no model chosen -- the daemon falls back
+        // to its own env-var default for a turn that omits one, and picking
+        // one here on the caller's behalf would silently override that
+        // default the moment the catalog loads, before the human ever
+        // touched the menu.
+        //
+        // A selection the catalog does not offer is not cleared either. It is
+        // usually the conversation's own stored pin, which the daemon will
+        // keep using; clearing it would show "Default" for a turn that runs
+        // on something else. The menu renders it as unavailable instead, so
+        // the operator can see what is in force and change it.
+      })
+      .catch(() => {
+        // The composer still works with no model selected -- the daemon
+        // falls back to its own env-var default for a turn that omits one.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // A conversation remembers the provider and model it was pinned to, and the
+  // daemon keeps using that pin for a turn that names neither. Showing
+  // "Default" while a pin is in force tells the operator the opposite of what
+  // will happen, so the stored selection is hydrated whenever the conversation
+  // changes. Effort is per turn rather than per conversation, so it starts
+  // empty and the operator chooses it again.
+  const hydratedConversationRef = useRef<string | null>(null);
+  useEffect(() => {
+    const conversation = state.conversation;
+    if (!conversation) {
+      hydratedConversationRef.current = null;
+      return;
+    }
+    if (hydratedConversationRef.current === conversation.id) return;
+    hydratedConversationRef.current = conversation.id;
+    setModel(conversation.providerModel ?? "");
+    setEffort("");
+  }, [state.conversation]);
+
+  const effortChoices = useMemo(
+    () => modelCatalog.find((entry) => entry.id === model)?.efforts ?? [],
+    [modelCatalog, model],
+  );
+  // Derived, not synced via effect: a stale selection from a previous model
+  // just stops being offered rather than needing a setState-on-effect sync.
+  const effectiveEffort = effort && effortChoices.includes(effort) ? effort : "";
 
   useEffect(() => {
     let active = true;
@@ -933,11 +1034,18 @@ export default function OperatorPanel({ open, onClose }: Props) {
         location.pathname,
         location.search as Record<string, unknown>,
       );
+      // The menu is hydrated from the conversation's pin, so an empty
+      // selection here means the operator moved it back to Default. Sending
+      // nothing would leave the pin in force, which is the opposite of what
+      // the menu now says, so ask for it to be dropped.
+      const clearing = !model && Boolean(conversation.provider || conversation.providerModel);
       const accepted = await submitOperatorTurn(conversation.id, {
         instruction: trimmed,
         context,
         expectedLastSequence: state.lastSequence,
-        model,
+        ...(model ? { model } : {}),
+        ...(effectiveEffort ? { effort: effectiveEffort } : {}),
+        ...(clearing ? { clearSelection: true } : {}),
       });
       dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
       setInstruction("");
@@ -960,6 +1068,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
     instruction,
     location.pathname,
     location.search,
+    model,
+    effectiveEffort,
     sending,
     state.activeRequestId,
     state.conversation,
@@ -1034,6 +1144,123 @@ export default function OperatorPanel({ open, onClose }: Props) {
     [loadConversation, resetConversation, state.conversation?.id],
   );
 
+  const refreshConversations = useCallback(
+    (status: "active" | "archived") => {
+      return listOperatorConversations({ status })
+        .then((available) => {
+          setConversations(available);
+        })
+        .catch((error) => {
+          setListActionError(error instanceof Error ? error.message : t("errors.load"));
+        });
+    },
+    [t],
+  );
+
+  const commitRename = useCallback(
+    async (conversationId: string, title: string) => {
+      const trimmed = title.trim();
+      setRenamingId(null);
+      const existing = conversations.find((item) => item.id === conversationId);
+      if (existing && (existing.title ?? "") === trimmed) return;
+      setListActionError(null);
+      try {
+        const updated = await updateOperatorConversation(conversationId, {
+          title: trimmed.length > 0 ? trimmed : null,
+        });
+        setConversations((current) =>
+          current.map((item) => (item.id === updated.id ? updated : item)),
+        );
+        if (state.conversation?.id === updated.id) {
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
+        }
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.rename"));
+      }
+    },
+    [conversations, state.conversation, t],
+  );
+
+  const togglePin = useCallback(
+    async (conversation: OperatorConversation) => {
+      setConversationBusyId(conversation.id);
+      setListActionError(null);
+      try {
+        const updated = await updateOperatorConversation(conversation.id, {
+          pinned: !conversation.pinned,
+        });
+        setConversations((current) =>
+          current
+            .map((item) => (item.id === updated.id ? updated : item))
+            .sort(
+              (a, b) =>
+                Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+            ),
+        );
+        if (state.conversation?.id === updated.id) {
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
+        }
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.pin"));
+      } finally {
+        setConversationBusyId(null);
+      }
+    },
+    [state.conversation, t],
+  );
+
+  const toggleArchive = useCallback(
+    async (conversation: OperatorConversation) => {
+      const nextStatus = conversation.status === "archived" ? "active" : "archived";
+      setConversationBusyId(conversation.id);
+      setListActionError(null);
+      try {
+        const updated = await updateOperatorConversation(conversation.id, {
+          status: nextStatus,
+        });
+        setConversations((current) =>
+          updated.status === listFilter
+            ? current.map((item) => (item.id === updated.id ? updated : item))
+            : current.filter((item) => item.id !== updated.id),
+        );
+        if (state.conversation?.id === updated.id) {
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
+        }
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.archive"));
+      } finally {
+        setConversationBusyId(null);
+      }
+    },
+    [listFilter, state.conversation, t],
+  );
+
+  const forkConversationById = useCallback(
+    async (conversation: OperatorConversation) => {
+      setConversationBusyId(conversation.id);
+      setListActionError(null);
+      try {
+        const snapshot = await forkOperatorConversation(conversation.id);
+        setConversations((current) => [snapshot.conversation, ...current]);
+        resetConversation();
+        window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
+        setVisibleCount(200);
+        nearBottomRef.current = true;
+        dispatch({
+          type: "LOAD_SUCCESS",
+          conversation: snapshot.conversation,
+          frames: snapshot.frames,
+        });
+        setListPanelOpen(false);
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.fork"));
+      } finally {
+        setConversationBusyId(null);
+      }
+    },
+    [resetConversation, t],
+  );
+
   const clampWidth = useCallback(
     (value: number) => Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value)),
     [],
@@ -1043,6 +1270,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const empty = state.frames.length === 0 && state.loadState !== "loading";
   const fatalError = state.loadState === "error";
+  const conversationListLabel = state.conversation
+    ? t("list.ariaLabelSelected", { title: conversationLabel(state.conversation) })
+    : t("list.ariaLabel");
 
   return (
     <>
@@ -1108,33 +1338,227 @@ export default function OperatorPanel({ open, onClose }: Props) {
             <h2 className="truncate text-label font-semibold text-content-primary">{t("title")}</h2>
             <div className="flex min-w-0 items-center gap-2">
               <ConnectionBadge state={state.connectionState} />
-              <select
-                aria-label={t("ariaLabel")}
-                title={t("newConversation")}
-                value={state.conversation?.id ?? ""}
-                onChange={(event) => selectConversation(event.target.value)}
-                className="min-w-0 max-w-36 flex-1 truncate border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
-              >
-                <option value="">{t("newConversation")}</option>
-                {conversations.map((conversation) => (
-                  <option key={conversation.id} value={conversation.id}>
-                    {conversationLabel(conversation)}
-                  </option>
-                ))}
-              </select>
+              <div className="relative min-w-0 max-w-36 flex-1">
+                <button
+                  type="button"
+                  ref={conversationListButtonRef}
+                  aria-label={conversationListLabel}
+                  aria-expanded={listPanelOpen}
+                  title={conversationListLabel}
+                  onClick={() => setListPanelOpen((open) => !open)}
+                  className="flex min-w-0 items-center gap-1 truncate border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none hover:text-content-primary focus:text-content-primary"
+                >
+                  <span className="min-w-0 truncate">
+                    {state.conversation
+                      ? conversationLabel(state.conversation)
+                      : t("newConversation")}
+                  </span>
+                  <IconChevronDown size={11} />
+                </button>
+                {listPanelOpen && (
+                  <div className="absolute start-0 top-full z-20 mt-1 w-80 rounded-lg border border-edge bg-surface-raised p-2 shadow-lg">
+                    <div className="flex items-center justify-between gap-2 pb-2">
+                      <div className="flex gap-1">
+                        <Button
+                          variant="toggle"
+                          size="sm"
+                          active={listFilter === "active"}
+                          onClick={() => {
+                            setListFilter("active");
+                            void refreshConversations("active");
+                          }}
+                        >
+                          {t("list.filter.active")}
+                        </Button>
+                        <Button
+                          variant="toggle"
+                          size="sm"
+                          active={listFilter === "archived"}
+                          onClick={() => {
+                            setListFilter("archived");
+                            void refreshConversations("archived");
+                          }}
+                        >
+                          {t("list.filter.archived")}
+                        </Button>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setListPanelOpen(false);
+                          resetConversation();
+                        }}
+                      >
+                        {t("newConversation")}
+                      </Button>
+                    </div>
+                    {listActionError && (
+                      <p className="pb-2 text-meta text-status-failure">{listActionError}</p>
+                    )}
+                    <ul className="max-h-72 space-y-1 overflow-y-auto">
+                      {conversations.length === 0 && (
+                        <li className="px-2 py-3 text-center text-meta text-content-muted">
+                          {t("list.empty")}
+                        </li>
+                      )}
+                      {conversations.map((conversation) => {
+                        const busy = conversationBusyId === conversation.id;
+                        const archived = conversation.status === "archived";
+                        return (
+                          <li
+                            key={conversation.id}
+                            className={[
+                              "flex items-center gap-1 rounded px-1.5 py-1",
+                              conversation.id === state.conversation?.id
+                                ? "bg-surface-overlay"
+                                : "hover:bg-surface-overlay",
+                            ].join(" ")}
+                          >
+                            {activeRenamingId === conversation.id ? (
+                              <input
+                                ref={renameInputRef}
+                                value={renameDraft}
+                                maxLength={512}
+                                placeholder={t("list.renamePlaceholder")}
+                                onChange={(event) => setRenameDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    // Deferred past this keydown/keyup pair: blurring
+                                    // synchronously here can hand focus to the row's
+                                    // Rename button before the browser delivers the
+                                    // matching keyup, which then replays as a second
+                                    // Enter activation on that button.
+                                    event.preventDefault();
+                                    const input = event.currentTarget;
+                                    requestAnimationFrame(() => input.blur());
+                                  } else if (event.key === "Escape") {
+                                    setRenamingId(null);
+                                  }
+                                }}
+                                onBlur={() => void commitRename(conversation.id, renameDraft)}
+                                className="min-w-0 flex-1 rounded border border-edge bg-surface-base px-1 py-0.5 text-meta text-content-primary outline-none focus:border-accent"
+                              />
+                            ) : (
+                              <button
+                                type="button"
+                                onDoubleClick={() => {
+                                  setRenamingId(conversation.id);
+                                  setRenameDraft(conversation.title ?? "");
+                                }}
+                                onClick={() => {
+                                  selectConversation(conversation.id);
+                                  setListPanelOpen(false);
+                                }}
+                                title={t("list.renamePlaceholder")}
+                                className="min-w-0 flex-1 truncate text-start text-meta text-content-primary outline-none"
+                              >
+                                {conversation.pinned ? "★ " : ""}
+                                {conversationLabel(conversation)}
+                              </button>
+                            )}
+                            {activeRenamingId !== conversation.id && (
+                              <button
+                                type="button"
+                                ref={(node) => {
+                                  if (node) renameButtonRefs.current.set(conversation.id, node);
+                                  else renameButtonRefs.current.delete(conversation.id);
+                                }}
+                                disabled={busy}
+                                aria-label={t("list.renameAriaLabel", {
+                                  title: conversationLabel(conversation),
+                                })}
+                                title={t("list.renameAriaLabel", {
+                                  title: conversationLabel(conversation),
+                                })}
+                                onClick={() => {
+                                  setRenamingId(conversation.id);
+                                  setRenameDraft(conversation.title ?? "");
+                                }}
+                                className="shrink-0 rounded px-1 py-0.5 text-meta text-content-muted hover:bg-surface-overlay disabled:opacity-50"
+                              >
+                                {t("list.rename")}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={busy}
+                              aria-label={conversation.pinned ? t("list.unpin") : t("list.pin")}
+                              title={conversation.pinned ? t("list.unpin") : t("list.pin")}
+                              onClick={() => void togglePin(conversation)}
+                              className={[
+                                "shrink-0 rounded px-1 py-0.5 text-meta hover:bg-surface-overlay disabled:opacity-50",
+                                conversation.pinned ? "text-accent" : "text-content-muted",
+                              ].join(" ")}
+                            >
+                              {t(conversation.pinned ? "list.unpin" : "list.pin")}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              aria-label={archived ? t("list.unarchive") : t("list.archive")}
+                              title={archived ? t("list.unarchive") : t("list.archive")}
+                              onClick={() => void toggleArchive(conversation)}
+                              className="shrink-0 rounded px-1 py-0.5 text-meta text-content-muted hover:bg-surface-overlay disabled:opacity-50"
+                            >
+                              {t(archived ? "list.unarchive" : "list.archive")}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              aria-label={t("list.fork")}
+                              title={t("list.fork")}
+                              onClick={() => void forkConversationById(conversation)}
+                              className="shrink-0 rounded px-1 py-0.5 text-meta text-content-muted hover:bg-surface-overlay disabled:opacity-50"
+                            >
+                              {busy ? t("list.forking") : t("list.fork")}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </div>
               <select
                 aria-label={t("model.label")}
                 title={t("model.label")}
                 value={model}
-                onChange={(event) => setModel(event.target.value as OperatorModel)}
+                onChange={(event) => {
+                  setModel(event.target.value);
+                  // A previous model's effort selection may not exist on the
+                  // new one; clear it explicitly rather than carrying a value
+                  // effortChoices no longer offers.
+                  setEffort("");
+                }}
                 className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
               >
-                {OPERATOR_MODELS.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
+                <option value="">{t("model.default")}</option>
+                {model && !modelCatalog.some((entry) => entry.id === model) && (
+                  <option value={model}>{t("model.unavailable", { model })}</option>
+                )}
+                {modelCatalog.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.label}
                   </option>
                 ))}
               </select>
+              {effortChoices.length > 0 && (
+                <select
+                  aria-label={t("effort.label")}
+                  title={t("effort.label")}
+                  value={effectiveEffort}
+                  onChange={(event) => setEffort(event.target.value as OperatorEffort)}
+                  className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
+                >
+                  <option value="">{t("effort.default")}</option>
+                  {effortChoices.map((choice) => (
+                    <option key={choice} value={choice}>
+                      {choice}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           </div>
           <button

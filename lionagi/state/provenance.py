@@ -38,8 +38,7 @@ def resolve_model_spec(provider: str | None, model: str | None) -> str | None:
     if not provider and not model:
         return None
     if provider and model:
-        # Already-qualified inputs ("claude/claude-sonnet-4-6") slip
-        # through with their original prefix preserved.
+        # Already-qualified inputs ("claude/claude-sonnet-4-6") keep their own prefix.
         if "/" in model:
             return model
         return f"{provider}/{model}"
