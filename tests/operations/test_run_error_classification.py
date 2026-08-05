@@ -294,3 +294,48 @@ async def test_run_raises_provider_error_for_null_error_payload_chunk():
 
     with pytest.raises(ProviderError):
         await _drain(run(branch, "do something", RunParam()))
+
+
+# ---------------------------------------------------------------------------
+# Reconnect notice: the provider CLI retrying its own stream is not a failure
+# ---------------------------------------------------------------------------
+
+
+async def test_run_continues_past_reconnect_notice_and_delivers_text():
+    """A reconnect_notice chunk mid-stream must not raise; content after it
+    still reaches the branch."""
+    notice = StreamChunk(
+        type="error",
+        content="Reconnecting... 1/5 (stream disconnected before completion)",
+        is_error=False,
+        metadata={"reconnect_notice": True},
+    )
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model(
+        [
+            notice,
+            StreamChunk(type="text", content="recovered answer"),
+            StreamChunk(type="result", metadata={}),
+        ]
+    )
+
+    items = await _drain(run(branch, "do something", RunParam()))
+    assert items, "run() must yield the post-reconnect content"
+
+    responses = [m for m in branch.msgs.messages if type(m).__name__ == "AssistantResponse"]
+    assert any("recovered answer" in str(m.response) for m in responses)
+
+
+async def test_run_reconnect_notice_alone_does_not_raise():
+    """A leg whose stream ends after a notice (process died mid-retry) ends
+    without a chunk-classified raise — terminality is the runtime's to call."""
+    notice = StreamChunk(
+        type="error",
+        content="Reconnecting... 2/5 (stream disconnected before completion)",
+        is_error=False,
+        metadata={"reconnect_notice": True},
+    )
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model([notice])
+
+    await _drain(run(branch, "do something", RunParam()))

@@ -374,6 +374,13 @@ async def end_child_group(proc: Any, *, grace: float = 5.0) -> None:
             _end_group_with_evidence(proc)
 
 
+# How long the stream keeps draining after the CLI child itself has exited.
+# Real trailing output arrives within moments of exit; what arrives after this
+# window is an orphaned descendant holding the inherited pipe open, and waiting
+# on it converts a finished leg into an unbounded wall-clock burn.
+_POST_EXIT_DRAIN_GRACE = 10.0
+
+
 def observe_spawned(pid: int) -> SpawnedProcess:
     """Read pid, group and start time as one observation of one process.
 
@@ -563,9 +570,70 @@ async def ndjson_from_cli(
         payload = stdin_data.encode() if isinstance(stdin_data, str) else stdin_data
         stdin_task = asyncio.create_task(_write_stdin(payload))
 
+    # stdout EOF requires EVERY holder of the pipe's write end to close it —
+    # not just the child. A CLI child that spawns its own long-lived helpers
+    # (MCP servers, daemons) leaks the write end into them, so when the child
+    # dies its orphans keep the pipe open and a plain read() waits forever: a
+    # finished leg whose artifacts are on disk reads as "running" for the rest
+    # of the caller's budget. Racing each read against the child's exit, then
+    # bounding the drain once it has exited, turns that hang into the normal
+    # end-of-stream path; teardown then ends the process group, which is what
+    # actually closes the orphans' copy of the pipe.
+    async def _await_child_exit() -> int:
+        # proc.wait() alone cannot be the exit signal: on newer Pythons it does
+        # not complete until every pipe transport disconnects, which is exactly
+        # what an orphan-held pipe prevents. returncode is set at process exit
+        # regardless of pipe state, so the wait races against a returncode
+        # poll; wait()'s result is preferred when it does complete, because it
+        # is the canonical exit code (and the only one a test double carries).
+        wait_task = asyncio.create_task(proc.wait())
+        try:
+            while proc.returncode is None and not wait_task.done():
+                await asyncio.wait({wait_task}, timeout=0.05)
+            if not wait_task.done():
+                await asyncio.wait({wait_task}, timeout=0.05)
+            if wait_task.done():
+                return wait_task.result()
+            return proc.returncode
+        finally:
+            if not wait_task.done():
+                wait_task.cancel()
+                try:
+                    await wait_task
+                except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
+                    pass
+
+    exit_task = asyncio.create_task(_await_child_exit())
+    read_task: asyncio.Task | None = None
+    child_exited = False
+
+    async def _read_next() -> bytes:
+        nonlocal read_task, child_exited
+        read_task = asyncio.create_task(proc.stdout.read(4096))
+        if not child_exited:
+            await asyncio.wait({read_task, exit_task}, return_when=asyncio.FIRST_COMPLETED)
+            child_exited = exit_task.done()
+        if child_exited and not read_task.done():
+            # The grace is per read, never a shared deadline: output the child
+            # buffered before exiting must survive a consumer that processes
+            # slowly between reads. Only a read that produces nothing for the
+            # whole grace ends the stream. wait_for cancels the read on
+            # timeout, so nothing is left pending.
+            try:
+                return await asyncio.wait_for(read_task, _POST_EXIT_DRAIN_GRACE)
+            except asyncio.TimeoutError:
+                log.warning(
+                    "CLI child (pid %s) exited but stdout stayed open — orphaned "
+                    "descendants hold the pipe; ending the stream after %.0fs grace",
+                    proc.pid,
+                    _POST_EXIT_DRAIN_GRACE,
+                )
+                return b""
+        return await read_task
+
     try:
         while True:
-            chunk = await proc.stdout.read(4096)
+            chunk = await _read_next()
             if not chunk:
                 break
 
@@ -602,7 +670,9 @@ async def ndjson_from_cli(
                 else:
                     log.error("Skipped unrecoverable JSON tail: %.120s...", buffer)
 
-        rc = await proc.wait()
+        # Same pipe-gating hazard as above: proc.wait() here would block on the
+        # orphans' copy of the pipe after a grace-bounded end of stream.
+        rc = await asyncio.shield(exit_task)
         if rc != 0:
             drain_truncated = False
             try:
@@ -630,7 +700,7 @@ async def ndjson_from_cli(
 
         # Reap the helper tasks — contextlib.suppress(Exception) does NOT
         # catch CancelledError (BaseException), so we suppress it explicitly.
-        for task in (stderr_task, stdin_task):
+        for task in (stderr_task, stdin_task, exit_task, read_task):
             if task is None:
                 continue
             task.cancel()
