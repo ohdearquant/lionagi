@@ -12,7 +12,12 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { computeEdgeSourceCompleted, shouldShowMiniMap } from "./WorkerCanvas";
+import {
+  computeEdgeSourceCompleted,
+  panelClearanceShift,
+  shouldShowMiniMap,
+  shouldShowSidePanel,
+} from "./WorkerCanvas";
 
 describe("computeEdgeSourceCompleted", () => {
   it("uses the legacy completedMap when nodeStatuses is undefined", () => {
@@ -72,6 +77,35 @@ describe("shouldShowMiniMap", () => {
   });
 });
 
+// ─── Side panel earns its width ───────────────────────────────────────────────
+// In a read-only embed the panel's empty state is 320px of placeholder text —
+// a quarter of the canvas saying "click a step". It appears only once there
+// is a selection to show. The editor keeps it always, since add/edit flows
+// live in it.
+
+describe("shouldShowSidePanel", () => {
+  it("read-only with nothing selected hides the panel", () => {
+    expect(shouldShowSidePanel(false, "none")).toBe(false);
+  });
+
+  it("read-only with a node selected shows it", () => {
+    expect(shouldShowSidePanel(false, "node")).toBe(true);
+  });
+
+  it("read-only with an exec result selected shows it", () => {
+    expect(shouldShowSidePanel(false, "exec-result")).toBe(true);
+  });
+
+  it("read-only with an edge selected shows it", () => {
+    expect(shouldShowSidePanel(false, "edge")).toBe(true);
+  });
+
+  it("the editor always shows it, selection or not", () => {
+    expect(shouldShowSidePanel(true, "none")).toBe(true);
+    expect(shouldShowSidePanel(true, "node")).toBe(true);
+  });
+});
+
 describe("WorkerCanvas.tsx — source contract for the MiniMap", () => {
   const CANVAS_DIR = path.resolve(__dirname);
   const src = fs.readFileSync(path.join(CANVAS_DIR, "WorkerCanvas.tsx"), "utf-8");
@@ -92,5 +126,55 @@ describe("WorkerCanvas.tsx — source contract for the MiniMap", () => {
     expect(miniMapTag).toMatch(/position="bottom-right"/);
     expect(miniMapTag).not.toMatch(/\b(?:width|height)=/);
     expect(miniMapTag).not.toMatch(/\bstyle=/);
+  });
+});
+
+// ─── panelClearanceShift — clicked node must clear the overlay panel ─────────
+// In read-only embeds the details panel overlays the right 320px of the
+// canvas, so a click on a node under that strip summons a panel hiding the
+// very node it describes. The shift is computed in pure screen-space math so
+// it can be pinned here: the gap these arms close is a pan that never fires
+// (shift 0 for a covered node) or fires backwards (negative shift).
+
+describe("panelClearanceShift", () => {
+  const CONTAINER = 1200; // panel strip starts at 1200 - 320 = 880
+
+  it("returns 0 for a node fully clear of the panel strip", () => {
+    // Node right edge at (100 + 210) * 1 + 0 = 310 — far left of 880.
+    expect(panelClearanceShift(100, 210, { x: 0, zoom: 1 }, CONTAINER)).toBe(0);
+  });
+
+  it("shifts a covered node left, clear of the strip plus a margin", () => {
+    // Node right edge at (700 + 210) * 1 + 100 = 1010 — 130px under the strip.
+    const shift = panelClearanceShift(700, 210, { x: 100, zoom: 1 }, CONTAINER);
+    expect(shift).toBe(1010 - 880 + 16);
+    // Applying the shift puts the node's right edge left of the strip.
+    expect(1010 - shift).toBeLessThan(880);
+  });
+
+  it("is never negative — a clear node is left where the user put it", () => {
+    for (const nodeX of [0, 300, 600, 640]) {
+      expect(panelClearanceShift(nodeX, 210, { x: 0, zoom: 1 }, CONTAINER)).toBeGreaterThanOrEqual(
+        0,
+      );
+    }
+  });
+
+  it("accounts for zoom: graph coordinates scale before comparing to the strip", () => {
+    // At zoom 0.5 the same node's screen right edge is (1600 + 210) * 0.5 = 905.
+    const shift = panelClearanceShift(1600, 210, { x: 0, zoom: 0.5 }, CONTAINER);
+    expect(shift).toBe(905 - 880 + 16);
+    // At zoom 1 it would be 1810 — the un-zoomed math would over-shift.
+    expect(shift).toBeLessThan(1810 - 880 + 16);
+  });
+
+  it("accounts for the current viewport offset", () => {
+    // Same node, viewport panned 400px left: right edge 910 - 400 = 510, clear.
+    expect(panelClearanceShift(700, 210, { x: -400, zoom: 1 }, CONTAINER)).toBe(0);
+  });
+
+  it("exactly at the strip boundary needs no shift", () => {
+    // Right edge exactly 880 — not strictly greater, so no pan.
+    expect(panelClearanceShift(670, 210, { x: 0, zoom: 1 }, CONTAINER)).toBe(0);
   });
 });
