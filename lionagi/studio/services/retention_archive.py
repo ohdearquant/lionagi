@@ -79,6 +79,21 @@ def _decode_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _declare_zip64(zf: zipfile.ZipFile, member_name: str) -> None:
+    """Raise *member_name*'s central-directory version fields to ZIP64 (4.5).
+
+    ``force_zip64=True`` shapes only the member's LOCAL header; CPython
+    computes the central-directory ``extract_version`` independently at close
+    and leaves a small member at 2.0 — so an archive of small members would
+    carry ZIP64 local headers that its own central directory disclaims. The
+    close-time record writer takes ``max(min_version, zinfo.extract_version)``,
+    so raising the attributes here is sufficient and survives close.
+    """
+    zinfo = zf.getinfo(member_name)
+    zinfo.extract_version = max(zinfo.extract_version, zipfile.ZIP64_VERSION)
+    zinfo.create_version = max(zinfo.create_version, zipfile.ZIP64_VERSION)
+
+
 def _write_member_stream(
     zf: zipfile.ZipFile, member_name: str, rows: Sequence[Mapping[str, Any]]
 ) -> tuple[int, str]:
@@ -99,6 +114,7 @@ def _write_member_stream(
             fh.write(line)
             hasher.update(line)
             count += 1
+    _declare_zip64(zf, member_name)
     return count, hasher.hexdigest()
 
 
@@ -172,6 +188,7 @@ def write_archive_chunk(
             )
             with zf.open(_MANIFEST_NAME, mode="w", force_zip64=True) as fh:
                 fh.write(manifest_bytes)
+            _declare_zip64(zf, _MANIFEST_NAME)
 
         fd = os.open(tmp_path, os.O_RDONLY)
         try:
