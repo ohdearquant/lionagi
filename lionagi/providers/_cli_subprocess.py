@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
@@ -374,6 +375,13 @@ async def end_child_group(proc: Any, *, grace: float = 5.0) -> None:
             _end_group_with_evidence(proc)
 
 
+# How long the stream keeps draining after the CLI child itself has exited.
+# Real trailing output arrives within moments of exit; what arrives after this
+# window is an orphaned descendant holding the inherited pipe open, and waiting
+# on it converts a finished leg into an unbounded wall-clock burn.
+_POST_EXIT_DRAIN_GRACE = 10.0
+
+
 def observe_spawned(pid: int) -> SpawnedProcess:
     """Read pid, group and start time as one observation of one process.
 
@@ -563,9 +571,43 @@ async def ndjson_from_cli(
         payload = stdin_data.encode() if isinstance(stdin_data, str) else stdin_data
         stdin_task = asyncio.create_task(_write_stdin(payload))
 
+    # stdout EOF requires EVERY holder of the pipe's write end to close it —
+    # not just the child. A CLI child that spawns its own long-lived helpers
+    # (MCP servers, daemons) leaks the write end into them, so when the child
+    # dies its orphans keep the pipe open and a plain read() waits forever: a
+    # finished leg whose artifacts are on disk reads as "running" for the rest
+    # of the caller's budget. Racing each read against the child's exit, then
+    # bounding the drain once it has exited, turns that hang into the normal
+    # end-of-stream path; teardown then ends the process group, which is what
+    # actually closes the orphans' copy of the pipe.
+    exit_task = asyncio.create_task(proc.wait())
+    post_exit_deadline: float | None = None
+
+    async def _read_next() -> bytes:
+        nonlocal post_exit_deadline
+        read_task = asyncio.create_task(proc.stdout.read(4096))
+        if post_exit_deadline is None:
+            await asyncio.wait({read_task, exit_task}, return_when=asyncio.FIRST_COMPLETED)
+            if not read_task.done():
+                post_exit_deadline = time.monotonic() + _POST_EXIT_DRAIN_GRACE
+        if not read_task.done() and post_exit_deadline is not None:
+            try:
+                return await asyncio.wait_for(
+                    read_task, max(post_exit_deadline - time.monotonic(), 0.0)
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "CLI child (pid %s) exited but stdout stayed open — orphaned "
+                    "descendants hold the pipe; ending the stream after %.0fs grace",
+                    proc.pid,
+                    _POST_EXIT_DRAIN_GRACE,
+                )
+                return b""
+        return await read_task
+
     try:
         while True:
-            chunk = await proc.stdout.read(4096)
+            chunk = await _read_next()
             if not chunk:
                 break
 
@@ -630,7 +672,7 @@ async def ndjson_from_cli(
 
         # Reap the helper tasks — contextlib.suppress(Exception) does NOT
         # catch CancelledError (BaseException), so we suppress it explicitly.
-        for task in (stderr_task, stdin_task):
+        for task in (stderr_task, stdin_task, exit_task):
             if task is None:
                 continue
             task.cancel()
