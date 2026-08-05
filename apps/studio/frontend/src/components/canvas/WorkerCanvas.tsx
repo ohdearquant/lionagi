@@ -72,6 +72,11 @@ interface WorkerCanvasProps {
 const nodeTypes = { step: StepNodeComponent };
 const edgeTypes = { condition: ConditionEdgeComponent };
 
+// Width of the details side panel (the w-80 strips below). The read-only
+// overlay variant covers this much of the canvas's right edge, and the
+// pan-clear-of-panel logic keys off the same number.
+const SIDE_PANEL_WIDTH = 320;
+
 // nodeStatuses only covers nodes it has live signal correlation for — a
 // legacy run (no matching signals, or none at all) still passes a truthy
 // object (RunDetail always builds one when a planned graph exists, `{}` in
@@ -195,8 +200,21 @@ export default function WorkerCanvas({
   // instance when the laid-out nodes land and when the container resizes.
   const flowRef = useRef<ReactFlowInstance | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const refitRaf = useRef<number | null>(null);
   const refit = useCallback(() => {
-    requestAnimationFrame(() => flowRef.current?.fitView({ padding: 0.15, maxZoom: 1 }));
+    // One pending frame at a time: a burst of resize callbacks coalesces into
+    // a single fit, and the handle lets unmount cancel a fit that would
+    // otherwise run against a disposed instance.
+    if (refitRaf.current !== null) cancelAnimationFrame(refitRaf.current);
+    refitRaf.current = requestAnimationFrame(() => {
+      refitRaf.current = null;
+      flowRef.current?.fitView({ padding: 0.15, maxZoom: 1 });
+    });
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (refitRaf.current !== null) cancelAnimationFrame(refitRaf.current);
+    };
   }, []);
   useEffect(() => {
     const el = containerRef.current;
@@ -262,12 +280,30 @@ export default function WorkerCanvas({
     onChange(fromFlowNodes(nodes), fromFlowEdges(edges));
   }, [nodes, edges, onChange]);
 
+  // In read-only embeds the side panel is an absolute overlay on the right
+  // edge of the canvas, so a click on a node under that strip would summon a
+  // panel that hides the very node it describes. Pan the node clear first;
+  // the editable panel is a flex sibling instead, whose mount resizes the
+  // canvas and re-fits through the ResizeObserver.
+  const panClearOfPanel = useCallback((node: Node) => {
+    const instance = flowRef.current;
+    const container = containerRef.current;
+    if (!instance || !container) return;
+    const { x, y, zoom } = instance.getViewport();
+    const panelLeft = container.clientWidth - SIDE_PANEL_WIDTH;
+    const nodeRight = (node.position.x + (node.width ?? 210)) * zoom + x;
+    if (nodeRight > panelLeft) {
+      instance.setViewport({ x: x - (nodeRight - panelLeft) - 16, y, zoom }, { duration: 250 });
+    }
+  }, []);
+
   // Node click
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       const typedNode = node as Node<StepNodeData>;
       const execResult = execSteps.find((s) => s.step === typedNode.id && s.status === "completed");
 
+      if (!editable) panClearOfPanel(node);
       if (execResult?.result) {
         setSelection({
           type: "exec-result",
@@ -279,7 +315,7 @@ export default function WorkerCanvas({
         setSelection({ type: "node", id: typedNode.id, data: typedNode.data });
       }
     },
-    [execSteps],
+    [execSteps, editable, panClearOfPanel],
   );
 
   // Edge click

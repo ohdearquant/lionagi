@@ -82,6 +82,13 @@ export function shouldRenderAuthoredGraph(
 // unresolvable). Resolve numeric endpoints by position in the nodes array —
 // assignment order — and drop edges that resolve nowhere: a missing edge
 // degrades to a sparser DAG, a phantom node corrupts the whole layout.
+//
+// Exact id match deliberately wins over positional reading. This function
+// also sees authored graphs whose endpoints ARE node ids, and there a node
+// literally named "2" must resolve to itself — id-first can never break a
+// well-formed graph, while position-first would. The residual ambiguity (a
+// planner graph whose role names are numeric strings) does not occur: roles
+// are words.
 export function resolveGraphEdges(
   nodes: WorkerGraph["nodes"],
   edges: WorkerGraph["edges"] | null | undefined,
