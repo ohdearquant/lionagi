@@ -97,8 +97,12 @@ _TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # disconnected before completion: ...)". Anchored to the observed prefix on
 # purpose: a message that doesn't match falls through to the terminal-error
 # branch, so a wording change in the CLI degrades to the old (fail-closed)
-# behaviour rather than misclassifying a real failure as a notice.
-_RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+")
+# behaviour rather than misclassifying a real failure as a notice. The
+# trailing "(" is load-bearing: the retry notice always carries a
+# parenthesized reason, and requiring it keeps terminal messages that merely
+# BEGIN with the retry prefix ("Reconnecting... 5/5 failed") on the terminal
+# path.
+_RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
 
 
 def _toml_scalar(value: str | int | float | bool) -> str:

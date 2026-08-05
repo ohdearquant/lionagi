@@ -87,6 +87,27 @@ async def test_disconnect_without_reconnect_prefix_stays_terminal():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "Reconnecting... 5/5 failed",
+        "Reconnecting... 5/5: max retries exceeded",
+        "Reconnecting... 5/5",
+    ],
+)
+async def test_terminal_message_wearing_the_retry_prefix_stays_terminal(msg):
+    """A real failure whose text merely BEGINS with the retry prefix must not
+    be swallowed as a notice — the notice shape requires the parenthesized
+    reason the CLI's actual retry line always carries."""
+    events = [{"type": "error", "error": {"message": msg}}]
+    chunks = await _chunks_from_events(events)
+
+    assert len(chunks) == 1
+    assert chunks[0].is_error is True
+    assert not chunks[0].metadata.get("reconnect_notice")
+
+
+@pytest.mark.asyncio
 async def test_turn_failed_with_reconnect_text_stays_terminal():
     """turn.failed is an explicit terminal verdict from the CLI; its message
     text never reclassifies it."""

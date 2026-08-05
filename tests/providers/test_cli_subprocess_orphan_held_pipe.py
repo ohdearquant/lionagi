@@ -71,6 +71,42 @@ async def test_stream_ends_within_grace_when_orphan_holds_stdout(monkeypatch):
     assert not _pid_alive(orphan_pid), f"orphan {orphan_pid} survived teardown"
 
 
+# The child exits immediately; the inherited stdout keeps FLOWING from the
+# orphan for longer than one grace period, then goes quiet. Data still
+# arriving is a live stream regardless of the child's exit — only silence for
+# a whole grace ends it. A deadline shared across reads (grace measured from
+# the exit, not from each read) truncates this mid-flow.
+_ORPHAN_KEEPS_WRITING = (
+    "import subprocess, sys\n"
+    "code = (\n"
+    "    'import json, time\\n'\n"
+    "    'for i in range(5):\\n'\n"
+    "    '    print(json.dumps({\"i\": i}), flush=True)\\n'\n"
+    "    '    time.sleep(0.25)\\n'\n"
+    "    'time.sleep(30)\\n'\n"
+    ")\n"
+    "subprocess.Popen([sys.executable, '-c', code], stdout=sys.stdout)\n"
+    "sys.exit(0)\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_data_still_flowing_after_exit_is_delivered_in_full(monkeypatch):
+    monkeypatch.setattr(cli_subprocess, "_POST_EXIT_DRAIN_GRACE", 0.5)
+
+    start = time.monotonic()
+    events = []
+    async for obj in ndjson_from_cli([sys.executable, "-c", _ORPHAN_KEEPS_WRITING]):
+        events.append(obj)
+    elapsed = time.monotonic() - start
+
+    assert [e["i"] for e in events] == list(range(5)), (
+        f"delivered {len(events)}/5 post-exit events — the drain truncated a flowing stream"
+    )
+    # After the writer goes quiet, one grace ends the stream — not the 30s sleep.
+    assert elapsed < 10, f"stream took {elapsed:.1f}s after the writer went quiet"
+
+
 @pytest.mark.asyncio
 async def test_living_child_is_never_time_boxed(monkeypatch):
     """A quiet-but-alive child streams past the grace untouched: the bound
