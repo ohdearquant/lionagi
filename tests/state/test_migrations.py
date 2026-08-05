@@ -400,6 +400,77 @@ async def test_statedb_upgrade_adds_cc_session_lookup_index(tmp_path: Path) -> N
     assert any("idx_sessions_cc_session" in detail for detail in details), details
 
 
+async def test_statedb_upgrade_adds_branches_session_created_index(tmp_path: Path) -> None:
+    """Existing databases gain the covering index for the session-detail branch
+    listing (ORDER BY created_at) after the index migration runs."""
+    from sqlalchemy import text
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "pre-branches-index.db"
+    with sqlite3.connect(db_path) as conn:
+        from lionagi.state.db import _SCHEMA_PATH
+
+        # schema.sql does not declare this index (it is only added via
+        # MIGRATION_INDEXES), so a fresh executescript already stands in for
+        # an "existing database" that predates this migration.
+        conn.executescript(_SCHEMA_PATH.read_text())
+
+    state = StateDB(db_path)
+    await state.open()
+    try:
+        await state.create_progression("progression-idx")
+        await state.execute(
+            "INSERT INTO sessions (id, created_at, progression_id, updated_at) "
+            "VALUES (:id, :created_at, :progression_id, :updated_at)",
+            {
+                "id": "session-idx",
+                "created_at": 1.0,
+                "progression_id": "progression-idx",
+                "updated_at": 1.0,
+            },
+        )
+        # Populate branches so the EXPLAIN runs against a table with rows —
+        # a plan over an empty table is weaker evidence that the index is
+        # actually chosen for the shape the listing query uses.
+        for i in range(3):
+            await state.execute(
+                "INSERT INTO branches (id, created_at, session_id, progression_id) "
+                "VALUES (:id, :created_at, :session_id, :progression_id)",
+                {
+                    "id": f"branch-idx-{i}",
+                    "created_at": float(i),
+                    "session_id": "session-idx",
+                    "progression_id": "progression-idx",
+                },
+            )
+        async with state._read() as conn:
+            indexes = (await conn.execute(text("PRAGMA index_list(branches)"))).mappings().all()
+            # Same query shape as the live branch listing (SELECT * ... ORDER BY
+            # created_at): the index's win is the equality seek plus sort
+            # elimination, not covering — SELECT * can never be index-only.
+            plan = (
+                (
+                    await conn.execute(
+                        text(
+                            "EXPLAIN QUERY PLAN SELECT * FROM branches "
+                            "WHERE session_id = :session_id ORDER BY created_at"
+                        ),
+                        {"session_id": "session-idx"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    finally:
+        await state.close()
+
+    assert "idx_branches_session_created" in {row["name"] for row in indexes}
+    details = [row["detail"] for row in plan]
+    assert any("idx_branches_session_created" in detail for detail in details), details
+    assert not any("USE TEMP B-TREE" in detail for detail in details), details
+
+
 def test_concurrent_statedb_opens_reconcile_cc_session_column(tmp_path: Path) -> None:
     """Concurrent first opens tolerate another process winning the ALTER race."""
     db_path = tmp_path / "concurrent-pre-cc-session.db"

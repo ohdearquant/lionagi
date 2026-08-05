@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ from lionagi.cli.mirror import (
     _seed_lineage,
     _since_window,
 )
+from lionagi.state._mirror_common import SourceLine
 from lionagi.state.claude_mirror import (
     _det,
     messages_for_event,
@@ -739,21 +741,23 @@ def test_read_new_events_buffers_partial_line(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_text('{"a":1}\n{"a":2}\n{"a":3')  # last line incomplete
     state = _FileState(session_uid="x")
-    first, new_offset, _ = _read_new_events(path, state)
+    first, sources, new_offset, _ = _read_new_events(path, state)
     assert [e["a"] for e in first] == [1, 2]
+    assert len(sources) == len(first)
     state.offset = new_offset  # caller commits the cursor only after a durable mirror
     # Complete the dangling line; the next read picks up only the new event.
     with path.open("a") as fh:
         fh.write("}\n")
-    second, _, _ = _read_new_events(path, state)
+    second, sources2, _, _ = _read_new_events(path, state)
     assert [e["a"] for e in second] == [3]
+    assert len(sources2) == len(second)
 
 
 def test_read_new_events_resets_on_truncation(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_text('{"a":1}\n')
     state = _FileState(session_uid="x", offset=9999)  # offset past EOF
-    out, _, _ = _read_new_events(path, state)
+    out, _, _, _ = _read_new_events(path, state)
     assert [e["a"] for e in out] == [1]
 
 
@@ -761,7 +765,7 @@ def test_read_new_events_skips_corrupt_lines(tmp_path: Path) -> None:
     path = tmp_path / "t.jsonl"
     path.write_text('{"a":1}\nnot json\n{"a":2}\n')
     state = _FileState(session_uid="x")
-    out, _, unreadable = _read_new_events(path, state)
+    out, _, _, unreadable = _read_new_events(path, state)
     assert [e["a"] for e in out] == [1, 2]
     # The dropped line is reported, not silently absorbed: a damaged transcript
     # and an uninteresting one must not read the same downstream.
@@ -775,7 +779,7 @@ def test_read_new_events_skips_non_dict_json_without_losing_followers(tmp_path: 
     path = tmp_path / "t.jsonl"
     path.write_text('[]\n{"a":1}\n42\n{"a":2}\n')
     state = _FileState(session_uid="x")
-    out, _, unreadable = _read_new_events(path, state)
+    out, _, _, unreadable = _read_new_events(path, state)
     assert [e["a"] for e in out] == [1, 2]
     assert unreadable == 2  # both the bare list and the bare scalar
 
@@ -1562,3 +1566,630 @@ async def test_a_failed_prior_stem_absorption_also_leaves_the_file_eligible(tmp_
         assert state.orchestrated
 
     assert calls == [uid, stem, uid, stem], f"absorption ids across both passes: {calls}"
+
+
+# ── Bounded preview + source pointer codec (mirror_spec.md) ──────────────────
+
+
+def _source_line_for(raw: bytes, path: Path) -> SourceLine:
+    from lionagi.state._mirror_common import SourceLine
+
+    return SourceLine(
+        value=json.loads(raw),
+        source_path=str(path),
+        source_offset=0,
+        source_byte_count=len(raw),
+        source_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def test_bound_mirror_content_default_truncates_long_instruction():
+    from lionagi.state._mirror_common import bound_mirror_content
+
+    long_text = "x" * 600
+    content = {"instruction": long_text}
+    line = SourceLine(
+        value={},
+        source_path="/tmp/t.jsonl",
+        source_offset=0,
+        source_byte_count=10,
+        source_sha256="a" * 64,
+    )
+    preview, pointer = bound_mirror_content(
+        content,
+        "msg-1",
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid="sess-1",
+        max_preview_chars=500,
+    )
+    assert preview == {"instruction": "x" * 500}
+    assert pointer["truncated"] is True
+    assert pointer["pointer_kind"] == "mirror_jsonl_v1"
+    assert pointer["message_id"] == "msg-1"
+
+
+def test_bound_mirror_content_zero_stores_empty_preview_with_valid_pointer():
+    from lionagi.state._mirror_common import bound_mirror_content
+
+    content = {"assistant_response": "hello world"}
+    line = SourceLine(
+        value={},
+        source_path="/tmp/t.jsonl",
+        source_offset=5,
+        source_byte_count=20,
+        source_sha256="b" * 64,
+    )
+    preview, pointer = bound_mirror_content(
+        content,
+        "msg-2",
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid="sess-1",
+        max_preview_chars=0,
+    )
+    assert preview == {"assistant_response": ""}
+    assert pointer["truncated"] is True
+    assert pointer["source_offset"] == 5
+    assert pointer["source_byte_count"] == 20
+
+
+def test_bound_mirror_content_exact_boundary_not_truncated():
+    from lionagi.state._mirror_common import bound_mirror_content
+
+    text = "y" * 500
+    line = SourceLine(
+        value={},
+        source_path="/tmp/t.jsonl",
+        source_offset=0,
+        source_byte_count=1,
+        source_sha256="c" * 64,
+    )
+    preview, pointer = bound_mirror_content(
+        {"assistant_response": text},
+        "msg-3",
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid="sess-1",
+        max_preview_chars=500,
+    )
+    assert preview == {"assistant_response": text}
+    assert pointer["truncated"] is False
+
+
+def test_bound_mirror_content_short_content_unchanged_and_not_truncated():
+    from lionagi.state._mirror_common import bound_mirror_content
+
+    line = SourceLine(
+        value={},
+        source_path="/tmp/t.jsonl",
+        source_offset=0,
+        source_byte_count=1,
+        source_sha256="d" * 64,
+    )
+    preview, pointer = bound_mirror_content(
+        {"assistant_response": "short"},
+        "msg-4",
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid="sess-1",
+        max_preview_chars=500,
+    )
+    assert preview == {"assistant_response": "short"}
+    assert pointer["truncated"] is False
+
+
+def test_bound_mirror_content_negative_budget_rejected():
+    from lionagi.state._mirror_common import bound_mirror_content
+
+    line = SourceLine(
+        value={},
+        source_path="/tmp/t.jsonl",
+        source_offset=0,
+        source_byte_count=1,
+        source_sha256="e" * 64,
+    )
+    with pytest.raises(ValueError):
+        bound_mirror_content(
+            {"assistant_response": "x"},
+            "msg-5",
+            line,
+            source_kind="claude_jsonl",
+            source_session_uid="sess-1",
+            max_preview_chars=-1,
+        )
+
+
+def test_bound_mirror_content_action_request_bounds_arguments_and_caps_function():
+    from lionagi.state._mirror_common import bound_mirror_content, canonical_json
+
+    content = {"function": "z" * 200, "arguments": {"payload": "w" * 900}}
+    line = SourceLine(
+        value={},
+        source_path="/tmp/t.jsonl",
+        source_offset=0,
+        source_byte_count=1,
+        source_sha256="f" * 64,
+    )
+    preview, pointer = bound_mirror_content(
+        content,
+        "msg-6",
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid="sess-1",
+        max_preview_chars=500,
+    )
+    assert len(preview["function"]) == 128
+    assert preview["arguments"]["_truncated"] is True
+    assert pointer["truncated"] is True
+
+
+def test_bound_mirror_content_metadata_merge_preserves_lion_class():
+    from lionagi.state._mirror_common import bound_mirror_content
+
+    line = SourceLine(
+        value={},
+        source_path="/tmp/t.jsonl",
+        source_offset=0,
+        source_byte_count=1,
+        source_sha256="0" * 64,
+    )
+    _, pointer = bound_mirror_content(
+        {"assistant_response": "hi"},
+        "msg-7",
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid="sess-1",
+        max_preview_chars=500,
+    )
+    node_metadata = {"lion_class": "AssistantResponse", "mirror_source": pointer}
+    assert node_metadata["lion_class"] == "AssistantResponse"
+    assert node_metadata["mirror_source"]["message_id"] == "msg-7"
+
+
+def test_resolve_mirrored_content_legacy_row_without_pointer_unchanged():
+    from lionagi.state._mirror_common import resolve_mirrored_content
+
+    row = {"content": {"assistant_response": "hi"}, "node_metadata": {"lion_class": "X"}}
+    resolved = resolve_mirrored_content(row)
+    assert resolved.status == "legacy"
+    assert resolved.content == row["content"]
+
+
+def test_resolve_mirrored_content_round_trip_claude_assistant_response(tmp_path):
+    """bound -> resolve reconstructs the exact full content via the real Claude
+    adapter mapper, proving the pointer/hash/offset chain is internally consistent."""
+    from lionagi.state._mirror_common import bound_mirror_content, resolve_mirrored_content
+
+    session_uid = "sess-roundtrip"
+    event = {
+        "type": "assistant",
+        "uuid": "evt-1",
+        "timestamp": "2026-08-01T00:00:00Z",
+        "message": {"content": [{"type": "text", "text": "z" * 700}]},
+    }
+    raw = json.dumps(event).encode("utf-8")
+    path = tmp_path / "transcript.jsonl"
+    path.write_bytes(raw + b"\n")
+
+    msgs = messages_for_event(event, session_uid, {})
+    assert len(msgs) == 1
+    md = msgs[0].to_dict(mode="db")
+
+    line = _source_line_for(raw, path)
+    preview, pointer = bound_mirror_content(
+        md["content"],
+        md["id"],
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid=session_uid,
+        max_preview_chars=500,
+    )
+    assert pointer["truncated"] is True
+    row = {"content": preview, "node_metadata": {"mirror_source": pointer}}
+
+    def reconstruct(record, source_session_uid, message_id):
+        for m in messages_for_event(record, source_session_uid, {}):
+            if str(m.id) == message_id:
+                return m.to_dict(mode="db")["content"]
+        return None
+
+    resolved = resolve_mirrored_content(row, reconstruct=reconstruct)
+    assert resolved.status == "resolved"
+    assert resolved.content == md["content"]
+
+
+def test_resolve_mirrored_content_source_missing_falls_back_to_preview(tmp_path):
+    from lionagi.state._mirror_common import bound_mirror_content, resolve_mirrored_content
+
+    path = tmp_path / "gone.jsonl"
+    raw = b'{"a": 1}'
+    path.write_bytes(raw)
+    line = _source_line_for(raw, path)
+    preview, pointer = bound_mirror_content(
+        {"assistant_response": "hi"},
+        "msg-8",
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid="sess-1",
+        max_preview_chars=500,
+    )
+    path.unlink()
+    row = {"content": preview, "node_metadata": {"mirror_source": pointer}}
+    resolved = resolve_mirrored_content(row, reconstruct=lambda *a: None)
+    assert resolved.status == "preview"
+    assert resolved.reason == "source_missing"
+    assert resolved.content == preview
+
+
+def test_resolve_mirrored_content_source_replaced_hash_mismatch(tmp_path):
+    from lionagi.state._mirror_common import bound_mirror_content, resolve_mirrored_content
+
+    path = tmp_path / "replaced.jsonl"
+    raw = b'{"a": 1}'
+    path.write_bytes(raw)
+    line = _source_line_for(raw, path)
+    preview, pointer = bound_mirror_content(
+        {"assistant_response": "hi"},
+        "msg-9",
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid="sess-1",
+        max_preview_chars=500,
+    )
+    path.write_bytes(b'{"a": 2}')  # same length, different bytes -> sha mismatch
+    row = {"content": preview, "node_metadata": {"mirror_source": pointer}}
+    resolved = resolve_mirrored_content(row, reconstruct=lambda *a: None)
+    assert resolved.status == "preview"
+    assert resolved.reason == "source_replaced"
+
+
+def test_resolve_mirrored_content_short_read_falls_back_to_preview(tmp_path):
+    from lionagi.state._mirror_common import bound_mirror_content, resolve_mirrored_content
+
+    path = tmp_path / "short.jsonl"
+    raw = b'{"a": 1}'
+    path.write_bytes(raw)
+    line = _source_line_for(raw, path)
+    preview, pointer = bound_mirror_content(
+        {"assistant_response": "hi"},
+        "msg-10",
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid="sess-1",
+        max_preview_chars=500,
+    )
+    path.write_bytes(raw[:3])  # now shorter than the recorded byte range
+    row = {"content": preview, "node_metadata": {"mirror_source": pointer}}
+    resolved = resolve_mirrored_content(row, reconstruct=lambda *a: None)
+    assert resolved.status == "preview"
+    assert resolved.reason == "short_read"
+
+
+def test_resolve_mirrored_content_unsupported_pointer_version(tmp_path):
+    from lionagi.state._mirror_common import resolve_mirrored_content
+
+    row = {
+        "content": {"assistant_response": "hi"},
+        "node_metadata": {
+            "mirror_source": {
+                "pointer_kind": "mirror_jsonl_v2",
+                "source_offset": 0,
+                "source_byte_count": 1,
+                "source_path": "/tmp/whatever.jsonl",
+                "source_sha256": "0" * 64,
+            }
+        },
+    }
+    resolved = resolve_mirrored_content(row)
+    assert resolved.status == "preview"
+    assert resolved.reason == "unsupported_pointer"
+
+
+def test_resolve_mirrored_content_no_message_match_falls_back(tmp_path):
+    from lionagi.state._mirror_common import bound_mirror_content, resolve_mirrored_content
+
+    path = tmp_path / "t.jsonl"
+    raw = b'{"a": 1}'
+    path.write_bytes(raw)
+    line = _source_line_for(raw, path)
+    preview, pointer = bound_mirror_content(
+        {"assistant_response": "hi"},
+        "msg-11",
+        line,
+        source_kind="claude_jsonl",
+        source_session_uid="sess-1",
+        max_preview_chars=500,
+    )
+    row = {"content": preview, "node_metadata": {"mirror_source": pointer}}
+    resolved = resolve_mirrored_content(row, reconstruct=lambda *a: None)
+    assert resolved.status == "preview"
+    assert resolved.reason == "no_message_match"
+
+
+def test_config_negative_preview_chars_rejected(monkeypatch):
+    import importlib
+
+    from lionagi.studio import config as config_mod
+
+    monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", "-1")
+    with pytest.raises(ValueError):
+        importlib.reload(config_mod)
+    monkeypatch.delenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", raising=False)
+    importlib.reload(config_mod)
+
+
+def test_config_omitted_preview_chars_defaults_to_500(monkeypatch):
+    import importlib
+
+    monkeypatch.delenv("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", raising=False)
+    from lionagi.studio import config as config_mod
+
+    importlib.reload(config_mod)
+    assert config_mod.MIRROR_PREVIEW_CHARS == 500
+
+
+# ── Live-path mirror bounding: oversized ingestion through the three real
+# writers (claude_mirror.py, codex_mirror.py, cli/mirror.py). A unit test on
+# the codec alone (above) does not prove these are wired; each test here
+# writes an oversized transcript to disk and reads the row back out of a real
+# StateDB after it went through the module's own tailer, never constructing
+# the pointer by hand. ──────────────────────────────────────────────────────
+
+_OVERSIZED_TEXT = "z" * 5000  # far beyond MIRROR_PREVIEW_CHARS default (500)
+
+
+def _claude_oversized_file(root: Path, uid: str) -> Path:
+    path = root / "-proj" / f"{uid}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "type": "user",
+        "uuid": f"{uid}-u",
+        "timestamp": "2026-08-05T00:00:00.000Z",
+        "sessionId": uid,
+        "message": {"role": "user", "content": [{"type": "text", "text": _OVERSIZED_TEXT}]},
+    }
+    path.write_text(json.dumps(event) + "\n")
+    return path
+
+
+def _codex_oversized_file(root: Path, uid: str) -> Path:
+    path = root / f"rollout-{uid}.jsonl"
+    root.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "type": "session_meta",
+        "timestamp": "2026-08-05T00:00:00Z",
+        "payload": {"id": uid, "session_id": uid, "cwd": "/x", "originator": "Codex Desktop"},
+    }
+    user = {
+        "type": "response_item",
+        "timestamp": "2026-08-05T00:00:01Z",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "id": "m1",
+            "content": [{"text": _OVERSIZED_TEXT}],
+        },
+    }
+    path.write_text("".join(json.dumps(e) + "\n" for e in (meta, user)))
+    return path
+
+
+@pytest.mark.asyncio
+async def test_live_claude_ingest_bounds_oversized_message_via_one_pass(
+    temp_db_path: Path, tmp_path: Path
+) -> None:
+    """`_one_pass` (claude_mirror.py's live ingestion sweep) must write a bounded
+    preview plus a resolvable source pointer for an oversized message, not the
+    raw unbounded text."""
+    from lionagi.state._mirror_common import resolve_mirrored_content
+
+    uid = "0199dddd-0000-0000-0000-000000000001"
+    root = tmp_path / "projects"
+    path = _claude_oversized_file(root, uid)
+
+    async with StateDB() as db:
+        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        branch_id = _det(uid, "branch")
+        rows = await db.get_branch_messages(branch_id)
+
+    assert len(rows) == 1
+    row = rows[0]
+    stored = row["content"]["instruction"]
+    assert stored != _OVERSIZED_TEXT
+    assert len(stored) < len(_OVERSIZED_TEXT)
+    pointer = row["node_metadata"]["mirror_source"]
+    assert pointer["truncated"] is True
+    assert pointer["source_path"] == str(path)
+    assert pointer["pointer_kind"] == "mirror_jsonl_v1"
+
+    def _reconstruct(record, session_uid, message_id):
+        for m in messages_for_event(record, session_uid, {}):
+            if str(m.id) == message_id:
+                return m.to_dict(mode="db")["content"]
+        return None
+
+    resolved = resolve_mirrored_content(row, reconstruct=_reconstruct)
+    assert resolved.status == "resolved"
+    assert resolved.content["instruction"] == _OVERSIZED_TEXT
+
+
+@pytest.mark.asyncio
+async def test_live_codex_ingest_bounds_oversized_message_via_mirror_one_codex(
+    tmp_path: Path,
+) -> None:
+    """`_mirror_one_codex` (codex_mirror.py's live ingestion path) must write a
+    bounded preview plus a resolvable source pointer for an oversized message."""
+    from lionagi.cli.mirror import _mirror_one_codex
+    from lionagi.state._mirror_common import resolve_mirrored_content
+    from lionagi.state.codex_mirror import _det as codex_det
+    from lionagi.state.codex_mirror import messages_for_record
+
+    uid = "0199dddd-0000-0000-0000-000000000002"
+    root = tmp_path / "codex"
+    path = _codex_oversized_file(root, uid)
+    state = _FileState(session_uid="")
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        written = await _mirror_one_codex(db, path, state, {})
+        branch_id = codex_det(uid, "branch")
+        rows = await db.get_branch_messages(branch_id)
+
+    assert written == 1
+    assert len(rows) == 1
+    row = rows[0]
+    stored = row["content"]["instruction"]
+    assert stored != _OVERSIZED_TEXT
+    assert len(stored) < len(_OVERSIZED_TEXT)
+    pointer = row["node_metadata"]["mirror_source"]
+    assert pointer["truncated"] is True
+    assert pointer["source_path"] == str(path)
+
+    def _reconstruct(record, session_uid, message_id):
+        for m in messages_for_record(record, session_uid, {}):
+            if str(m.id) == message_id:
+                return m.to_dict(mode="db")["content"]
+        return None
+
+    resolved = resolve_mirrored_content(row, reconstruct=_reconstruct)
+    assert resolved.status == "resolved"
+    assert resolved.content["instruction"] == _OVERSIZED_TEXT
+
+
+@pytest.mark.asyncio
+async def test_live_cli_mirror_run_once_bounds_oversized_message_end_to_end(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `li mirror --once` entry point (`_run` in cli/mirror.py) must produce
+    a bounded, resolvable row through the full CLI codepath — argument parsing,
+    state persistence and both the claude and codex passes — not just through
+    the lower-level per-file helpers exercised by the other two live tests."""
+    import argparse
+
+    from lionagi.cli import mirror as mirror_mod
+    from lionagi.state._mirror_common import resolve_mirrored_content
+
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
+
+    uid = "0199dddd-0000-0000-0000-000000000003"
+    root = tmp_path / "projects"
+    path = _claude_oversized_file(root, uid)
+    codex_root = tmp_path / "codex_root"
+    codex_root.mkdir()
+
+    args = argparse.Namespace(
+        root=str(root),
+        codex_root=str(codex_root),
+        source="claude",
+        since=None,
+        once=True,
+        interval=0.01,
+        live_window=300.0,
+    )
+    rc = await mirror_mod._run(args)
+
+    async with StateDB() as db:
+        branch_id = _det(uid, "branch")
+        rows = await db.get_branch_messages(branch_id)
+
+    assert rc == 0
+    assert len(rows) == 1
+    row = rows[0]
+    stored = row["content"]["instruction"]
+    assert stored != _OVERSIZED_TEXT
+    assert len(stored) < len(_OVERSIZED_TEXT)
+    pointer = row["node_metadata"]["mirror_source"]
+    assert pointer["truncated"] is True
+    assert pointer["source_path"] == str(path)
+
+    def _reconstruct(record, session_uid, message_id):
+        for m in messages_for_event(record, session_uid, {}):
+            if str(m.id) == message_id:
+                return m.to_dict(mode="db")["content"]
+        return None
+
+    resolved = resolve_mirrored_content(row, reconstruct=_reconstruct)
+    assert resolved.status == "resolved"
+    assert resolved.content["instruction"] == _OVERSIZED_TEXT
+
+
+@pytest.mark.asyncio
+async def test_live_cli_mirror_run_once_relative_root_produces_resolvable_pointer(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative ``--root`` must still resolve to an absolute source pointer.
+
+    Regression for the mirror review finding: ``_run`` only called
+    ``expanduser()`` on ``args.root``, so a relative root stored a
+    non-absolute ``source_path`` that ``resolve_mirrored_content`` rejects as
+    ``unsupported_pointer`` even though the row itself was correctly bounded.
+    """
+    import argparse
+
+    from lionagi.cli import mirror as mirror_mod
+    from lionagi.state._mirror_common import resolve_mirrored_content
+
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
+    monkeypatch.chdir(tmp_path)
+
+    uid = "0199dddd-0000-0000-0000-000000000004"
+    root = tmp_path / "relative-root" / "projects"
+    path = _claude_oversized_file(root, uid)
+    codex_root = tmp_path / "codex_root"
+    codex_root.mkdir()
+
+    args = argparse.Namespace(
+        root="relative-root/projects",
+        codex_root=str(codex_root),
+        source="claude",
+        since=None,
+        once=True,
+        interval=0.01,
+        live_window=300.0,
+    )
+    rc = await mirror_mod._run(args)
+
+    async with StateDB() as db:
+        branch_id = _det(uid, "branch")
+        rows = await db.get_branch_messages(branch_id)
+
+    assert rc == 0
+    assert len(rows) == 1
+    row = rows[0]
+    pointer = row["node_metadata"]["mirror_source"]
+    assert Path(pointer["source_path"]).is_absolute()
+    assert pointer["source_path"] == str(path.resolve())
+
+    def _reconstruct(record, session_uid, message_id):
+        for m in messages_for_event(record, session_uid, {}):
+            if str(m.id) == message_id:
+                return m.to_dict(mode="db")["content"]
+        return None
+
+    resolved = resolve_mirrored_content(row, reconstruct=_reconstruct)
+    assert resolved.status == "resolved"
+    assert resolved.content["instruction"] == _OVERSIZED_TEXT
+
+
+def test_grep_evidence_live_mirror_paths_call_bound_mirror_content() -> None:
+    """Regression guard for the round-1 gate finding ("zero callers"): the two
+    writers must call the bounding codec directly, and the CLI tailer that
+    feeds them must thread the source-pointer data (byte offsets + the
+    preview-chars budget) into every live write."""
+    root = Path(__file__).resolve().parents[2] / "lionagi"
+    codec_callers = {
+        root / "state" / "claude_mirror.py": "claude_mirror.py",
+        root / "state" / "codex_mirror.py": "codex_mirror.py",
+    }
+    missing = [
+        label
+        for path, label in codec_callers.items()
+        if "bound_mirror_content" not in path.read_text()
+    ]
+    assert not missing, f"bound_mirror_content has zero callers in: {missing}"
+
+    cli_text = (root / "cli" / "mirror.py").read_text()
+    assert "max_preview_chars" in cli_text and "event_sources" in cli_text, (
+        "cli/mirror.py does not thread the mirror bounding budget/source pointers "
+        "into mirror_session()"
+    )

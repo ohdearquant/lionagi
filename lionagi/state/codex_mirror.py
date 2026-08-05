@@ -27,6 +27,8 @@ from lionagi.protocols.messages.action_response import ActionResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponse
 from lionagi.protocols.messages.instruction import Instruction
 
+from ._mirror_common import SourceLine, bound_mirror_content
+
 if TYPE_CHECKING:
     from lionagi.protocols.messages.message import RoledMessage
 
@@ -408,6 +410,8 @@ async def mirror_session(
     source_path: str | None = None,
     turn: dict[str, Any] | None = None,
     unparseable: int = 0,
+    event_sources: list[tuple[int, int, str]] | None = None,
+    max_preview_chars: int | None = None,
 ) -> tuple[int, RecordTally]:
     """Idempotently write a batch of codex records for one rollout.
 
@@ -416,6 +420,13 @@ async def mirror_session(
     file being mirrored across several passes; it is updated in place as records
     are walked. ``source_path`` is the rollout file this batch came from, stamped
     into the session's provenance so any row resolves back to its file.
+
+    ``event_sources`` is the per-record ``(byte_offset, byte_count, sha256)`` of
+    each raw JSONL line in ``records`` (same order/length). When both it and
+    ``max_preview_chars`` are given, every message's content is bounded via
+    ``bound_mirror_content`` before it is written, with a resolvable source
+    pointer on ``node_metadata.mirror_source``. Omitting them keeps the legacy
+    unbounded write, for callers with no live rollout file behind the records.
 
     Live/idle transitions are owned by ``reconcile_session_status``, not this writer.
     """
@@ -427,7 +438,8 @@ async def mirror_session(
     seen: dict[str, int] = {}
     mirrored: dict[str, int] = {}
     messages: list[RoledMessage] = []
-    for rec in records:
+    message_sources: list[SourceLine | None] = []
+    for idx, rec in enumerate(records):
         rtype = str(rec.get("type") or "<untyped>")
         seen[rtype] = seen.get(rtype, 0) + 1
         ctx = turn_context(rec)
@@ -437,7 +449,18 @@ async def mirror_session(
         produced = messages_for_record(rec, rollout_uid, tool_names, turn)
         if produced:
             mirrored[rtype] = mirrored.get(rtype, 0) + len(produced)
+            src: SourceLine | None = None
+            if event_sources is not None and idx < len(event_sources):
+                offset, byte_count, sha = event_sources[idx]
+                src = SourceLine(
+                    value=rec,
+                    source_path=source_path or "",
+                    source_offset=offset,
+                    source_byte_count=byte_count,
+                    source_sha256=sha,
+                )
             messages.extend(produced)
+            message_sources.extend([src] * len(produced))
     tally = RecordTally(seen, mirrored, unparseable)
 
     existing = await db.get_session(sid)
@@ -515,8 +538,21 @@ async def mirror_session(
         }
     )
 
-    for m in messages:
+    for m, src in zip(messages, message_sources, strict=False):
         md = m.to_dict(mode="db")
+        if max_preview_chars is not None and src is not None:
+            preview, pointer = bound_mirror_content(
+                md["content"],
+                md["id"],
+                src,
+                source_kind="codex_jsonl",
+                source_session_uid=rollout_uid,
+                max_preview_chars=max_preview_chars,
+            )
+            md["content"] = preview
+            nm = dict(md.get("node_metadata") or {})
+            nm["mirror_source"] = pointer
+            md["node_metadata"] = nm
         await db.insert_message(md)
         await db.append_to_progression(bprog, md["id"])
         await db.append_to_progression(sprog, md["id"])

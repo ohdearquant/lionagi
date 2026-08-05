@@ -329,6 +329,17 @@ CHECKPOINT_INTERVAL_SECONDS: int = int(
 )
 # Sessions/runs older than this many days (with terminal status) will be pruned.
 PRUNE_KEEP_DAYS: int = int(os.environ.get("LIONAGI_STUDIO_PRUNE_KEEP_DAYS", "30"))
+# Directory to archive pruned rows to before deletion. Unset (default) preserves
+# the pre-archive prune behaviour exactly. When set, prune refuses to delete any
+# row unless the archive for that pass was written and verified first.
+_PRUNE_ARCHIVE_DIR_RAW = os.environ.get("LIONAGI_STUDIO_PRUNE_ARCHIVE_DIR", "").strip()
+PRUNE_ARCHIVE_DIR: Path | None = (
+    Path(_PRUNE_ARCHIVE_DIR_RAW).expanduser() if _PRUNE_ARCHIVE_DIR_RAW else None
+)
+# Max session ids deleted per committed chunk during prune. Bounds each
+# transaction so the write lock is released between chunks and an interrupted
+# prune keeps the chunks that already committed.
+PRUNE_CHUNK_ROWS: int = max(1, int(os.environ.get("LIONAGI_STUDIO_PRUNE_CHUNK_ROWS", "100")))
 
 # dispatch_outbox retention (ADR-0059 delta 3). Two windows: terminal-success
 # rows (delivered/acked) are low-signal once past the window, so they use a
@@ -359,3 +370,11 @@ _MIRROR_SOURCE_RAW: str = os.environ.get("LIONAGI_STUDIO_MIRROR_SOURCE", "both")
 MIRROR_SOURCE: str = (
     _MIRROR_SOURCE_RAW if _MIRROR_SOURCE_RAW in ("both", "claude", "codex") else "both"
 )
+# Bounded display preview stored in messages.content for mirror-ingested rows
+# (Unicode code points, not bytes). 0 is valid (empty preview + pointer only).
+# Negative values are a configuration error — there is no "unbounded" sentinel.
+MIRROR_PREVIEW_CHARS: int = int(os.environ.get("LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS", "500"))
+if MIRROR_PREVIEW_CHARS < 0:
+    raise ValueError(
+        f"LIONAGI_STUDIO_MIRROR_PREVIEW_CHARS must be >= 0, got {MIRROR_PREVIEW_CHARS}"
+    )
