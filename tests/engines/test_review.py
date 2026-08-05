@@ -12,6 +12,9 @@ from lionagi.engines.review import (
     IssueFound,
     ReviewEngine,
     VerifyResult,
+    _clean_ref,
+    _verdict_instruction,
+    _verify_clean_instruction,
     _verify_instruction,
     _verify_ref,
 )
@@ -254,3 +257,177 @@ def test_verify_instruction_names_the_ref_field():
     assert "claim: sqli" in text
     # Deterministic: the same issue always gets the same token.
     assert _verify_ref(issue) == ref
+
+
+# -- clean-verdict audit ------------------------------------------------------
+# A clean or minor-only review spawns no issue verifiers, so it used to reach
+# the verdict with zero VerifyResult — and a downstream evidence floor then
+# refused the APPROVE as evidence-empty, structurally, on every clean run.
+# The engine now audits its own clean verdict: one adversarial verifier that
+# must execute a real check and emit a VerifyResult carrying the run's clean
+# ref, so a clean verdict ships positive evidence instead of absence.
+
+
+class _RoutedEmitter:
+    """operate() emits the event registered for this agent's name, once."""
+
+    def __init__(self, run, name: str, event):
+        self.name = name
+        self._run = run
+        self._event = event
+        self.calls: list[str] = []
+
+    async def operate(self, *, instruction: str):
+        self.calls.append(instruction)
+        if self._event is not None and len(self.calls) == 1:
+            await self._run.emit(self._event)
+        return None
+
+
+def _routing_make(run, events_by_name: dict, made: list, verdict_capture: dict | None = None):
+    async def fake_make(role, *, name=None, **kw):
+        made.append(name or role)
+        if name == "verdict":
+
+            class _Synth:
+                name = "verdict"
+
+                async def operate(self, *, instruction: str):
+                    if verdict_capture is not None:
+                        verdict_capture["instruction"] = instruction
+                    return "APPROVE"
+
+            return _Synth()
+        return _RoutedEmitter(run, name or role, events_by_name.get(name))
+
+    return fake_make
+
+
+@pytest.mark.asyncio
+async def test_clean_review_emits_a_clean_audit_verify_result():
+    dims = ("correctness", "security")
+    eng = ReviewEngine(dimensions=dims)
+    run = eng.new_run()
+    ref = _clean_ref(dims)
+    made: list = []
+    run.make_agent = _routing_make(
+        run,
+        {
+            "review-correctness": DimensionClean(dimension="correctness", rationale="checked"),
+            "review-security": DimensionClean(dimension="security", rationale="checked"),
+            "verify-clean": VerifyResult(
+                issue="CLEAN: review affirmed no blocking issues",
+                ref=ref,
+                holds=True,
+                rationale="ran the suite named in the artifact; 12 passed",
+            ),
+        },
+        made,
+    )
+    await eng._run(run, "ARTIFACT")
+    assert "verify-clean" in made
+    results = run.by_type(VerifyResult)
+    assert len(results) == 1 and results[0].ref == ref
+
+
+@pytest.mark.asyncio
+async def test_minor_only_review_also_gets_the_clean_audit():
+    # Minor issues spawn no issue verifier, so without the audit this run
+    # would carry zero VerifyResult exactly like a clean one.
+    dims = ("correctness",)
+    eng = ReviewEngine(dimensions=dims)
+    run = eng.new_run()
+    ref = _clean_ref(dims)
+    made: list = []
+    run.make_agent = _routing_make(
+        run,
+        {
+            "review-correctness": IssueFound(
+                dimension="correctness", description="nit", severity="minor"
+            ),
+            "verify-clean": VerifyResult(issue="CLEAN: minor-only", ref=ref, holds=True),
+        },
+        made,
+    )
+    await eng._run(run, "ARTIFACT")
+    assert "verify-clean" in made
+    assert any(v.ref == ref for v in run.by_type(VerifyResult))
+
+
+@pytest.mark.asyncio
+async def test_issue_path_spawns_no_clean_audit():
+    # A critical issue produces a real issue verification — the clean audit
+    # must not fire on top of it.
+    dims = ("security",)
+    eng = ReviewEngine(dimensions=dims)
+    run = eng.new_run()
+    issue = IssueFound(dimension="security", description="sqli", severity="critical")
+    made: list = []
+    run.make_agent = _routing_make(
+        run,
+        {
+            "review-security": issue,
+            "verify-security": VerifyResult(issue="sqli", ref=_verify_ref(issue), holds=True),
+        },
+        made,
+    )
+    await eng._run(run, "ARTIFACT")
+    assert "verify-security" in made
+    assert "verify-clean" not in made
+
+
+@pytest.mark.asyncio
+async def test_verify_clean_off_switch_restores_old_behavior():
+    dims = ("correctness",)
+    eng = ReviewEngine(dimensions=dims, verify_clean=False)
+    run = eng.new_run()
+    made: list = []
+    run.make_agent = _routing_make(
+        run,
+        {"review-correctness": DimensionClean(dimension="correctness")},
+        made,
+    )
+    await eng._run(run, "ARTIFACT")
+    assert "verify-clean" not in made
+    assert run.by_type(VerifyResult) == []
+
+
+def test_verify_clean_instruction_mandates_an_executed_check():
+    dims = ("correctness", "security")
+    ref = _clean_ref(dims)
+    clean = [DimensionClean(dimension="correctness", rationale="looked sound")]
+    text = _verify_clean_instruction("ARTIFACT-BODY", clean, ref)
+    assert f"ref='{ref}'" in text
+    assert "MUST execute" in text
+    assert "naming no executed check is invalid" in text
+    assert "ARTIFACT-BODY" in text  # the verifier gets the artifact to check against
+    assert "correctness: looked sound" in text
+    # Deterministic per dimension set, distinct across sets.
+    assert _clean_ref(dims) == ref
+    assert _clean_ref(("other",)) != ref
+
+
+def test_verdict_instruction_inverts_polarity_for_refuted_clean_audit():
+    # The generic guidance says "weigh refuted issues down" — read onto a
+    # clean audit, that polarity is backwards: holds=false there REFUTES the
+    # clean verdict. The clean-audit section must carry its own AGAINST-
+    # approval guidance, and it must appear only when a clean audit exists.
+    dims = ("correctness",)
+    refuted = VerifyResult(
+        issue="CLEAN: review affirmed no blocking issues",
+        ref=_clean_ref(dims),
+        holds=False,
+        rationale="ran the suite; 2 tests fail",
+    )
+    with_audit = _verdict_instruction("ART", dims, [], [refuted], [])
+    assert "Clean-verdict audit" in with_audit
+    assert "weigh that AGAINST approval" in with_audit
+    assert "ran the suite; 2 tests fail" in with_audit
+
+    # An ordinary issue verification must NOT be routed into the audit
+    # section or given the inverted guidance.
+    issue = IssueFound(dimension="security", description="sqli", severity="critical")
+    ordinary = VerifyResult(issue="sqli", ref=_verify_ref(issue), holds=False)
+    without_audit = _verdict_instruction("ART", dims, [issue], [ordinary], [])
+    assert "Clean-verdict audit" not in without_audit
+    assert "weigh that AGAINST approval" not in without_audit
