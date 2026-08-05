@@ -137,8 +137,11 @@ Extends `Engine` with:
 | `verifier_role` | `"critic"` | Casts role for adversarial verifiers. |
 | `synthesis_role` | `"synthesizer"` | Casts role that issues the terminal `ReviewVerdict`. |
 | `verify_severities` | `("critical", "major")` | Issue severities that reactively spawn an adversarial verifier. |
+| `verify_clean` | `True` | When a run reaches quiescence with zero `VerifyResult` (clean or minor-only review), spawn one adversarial audit of the clean verdict itself. |
 | `repair_retries` | `1` | Re-prompt turns when a reviewer or verifier emits no valid event. |
 
-Pipeline shape: fan-out (one reviewer per dimension, parallel) → adversarial verify high-severity issues → quiesce → `ReviewVerdict`.
+Pipeline shape: fan-out (one reviewer per dimension, parallel) → adversarial verify high-severity issues → quiesce → clean-verdict audit if no verification ran → `ReviewVerdict`.
 
 Every dimension emits affirmatively: issues arrive as `IssueFound`, a clean dimension arrives as `DimensionClean` (dimension + one-sentence rationale). A dimension that emits nothing is therefore a transport failure, never an implicit all-clear — the verdict instruction lists affirmed-clean dimensions separately so downstream consumers can distinguish "reviewed, clean" from "reviewer never reported". Verifier arrival keys on a short engine-assigned `ref` token echoed back in the `VerifyResult`, so a paraphrased issue description does not burn repair rounds.
+
+A clean or minor-only review spawns no issue verifiers, so it would otherwise terminate with zero `VerifyResult` — indistinguishable, by evidence, from a run whose verification never happened. With `verify_clean` on, such runs get one adversarial verifier auditing the clean verdict: it must execute a concrete check against the artifact and name what it executed in its rationale, and it emits a `VerifyResult` carrying the run's clean ref. In the verdict instruction these audits are listed apart from issue verifications because their polarity is inverted: `holds=false` there refutes the review's clean verdict and weighs against approval.
