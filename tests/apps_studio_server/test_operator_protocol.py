@@ -1682,3 +1682,404 @@ async def test_http_create_submit_and_paged_replay_contract(tmp_path, monkeypatc
         assert body["latestSequence"] >= 5
         assert body["frames"][0]["requestId"] == accepted["requestId"]
     await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_current_view_prefers_a_navigation_reported_after_the_instruction(
+    tmp_path, monkeypatch
+):
+    """A turn's context is frozen at submit, so it goes stale the moment the human moves.
+
+    Without preferring a later-reported view, the Operator answers "where am I"
+    with wherever they were when they hit send. That is wrong precisely in the
+    case the question gets asked, and it is wrong in the confident direction:
+    the answer looks like a live read.
+    """
+    from lionagi.studio.operator.application_mcp import get_current_view
+
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="where am I?",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "observationSeq": 1,
+            "observerId": "page-a",
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    # Nothing reported yet: the turn's own snapshot is the freshest thing there
+    # is, and the answer says so rather than implying it is live.
+    before = await get_current_view({})
+    assert before["known"] is True
+    assert before["space"] == "mission"
+    assert before["source"] == "turn"
+
+    # The human navigates mid-turn and the browser reports it.
+    await store.record_view(
+        cid, {"space": "library", "route": "/library?tab=playbook", "filters": {}}, 2, "page-a"
+    )
+
+    after = await get_current_view({})
+    assert after["space"] == "library"
+    assert after["route"] == "/library?tab=playbook"
+    assert after["source"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_live_view_columns_are_added_to_a_preexisting_conversation_store(tmp_path):
+    """The demo store predates these columns, so the additive migration carries them.
+
+    CREATE TABLE IF NOT EXISTS is a no-op on an existing database, so without
+    the migration record_view raises on every navigation against a store that
+    already exists, which is every store that matters.
+    """
+    import aiosqlite
+
+    db_path = tmp_path / "state.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "CREATE TABLE studio_operator_conversations ("
+            "id TEXT PRIMARY KEY, project TEXT, title TEXT, "
+            "status TEXT NOT NULL DEFAULT 'active', "
+            "next_sequence INTEGER NOT NULL DEFAULT 1, active_request_id TEXT, "
+            "created_at REAL NOT NULL, updated_at REAL NOT NULL, "
+            "archived_at REAL, deleted_at REAL)"
+        )
+        await db.commit()
+
+    store = OperatorStore(db_path)
+    cid = (await store.create_conversation())["id"]
+    assert await store.get_view(cid, "page-a") == (None, None)
+
+    assert await store.record_view(
+        cid, {"space": "system", "route": "/system", "filters": {}}, 7, "page-a"
+    )
+    view, seq = await store.get_view(cid, "page-a")
+    assert view["space"] == "system"
+    assert seq == 7
+    assert await store.get_view(cid, "page-b") == (None, None), (
+        "one page's report says nothing about where another page is"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_late_arriving_older_navigation_does_not_overwrite_the_current_view(
+    tmp_path, monkeypatch
+):
+    """Reports race, and the loser of that race is the stale view.
+
+    Each navigation report is its own request, so arrival order is not
+    observation order. Ordering by arrival lets a delayed report for the page
+    the human already left overwrite the page they are actually on, and the
+    read still labels it "live" — a stale answer wearing the fresh label, which
+    is worse than the frozen snapshot this mechanism replaced.
+    """
+    from lionagi.studio.operator.application_mcp import get_current_view
+
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="where am I?",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "observationSeq": 2,
+            "observerId": "page-a",
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    # The browser saw /library first and /schedules second, but the reports
+    # reach the server in the opposite order.
+    newer_applied = await store.record_view(
+        cid, {"space": "schedules", "route": "/schedules", "filters": {}}, 3, "page-a"
+    )
+    older_applied = await store.record_view(
+        cid, {"space": "library", "route": "/library", "filters": {}}, 1, "page-a"
+    )
+    assert newer_applied is True
+    assert older_applied is False, "an older observation must not overwrite a newer one"
+
+    view = await get_current_view({})
+    assert view["space"] == "schedules", "the human is on the page they navigated to last"
+    assert view["source"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_a_report_observed_before_the_turn_is_not_live_when_it_arrives_after(
+    tmp_path, monkeypatch
+):
+    """Arriving after the instruction is not the same as being seen after it.
+
+    A report the browser sent while on the previous page can be delayed past
+    the submission of a turn sent from the next one. If arrival decided
+    freshness, that pre-question observation would come back as the answer to
+    the question, labelled live, and the human would be told they are on a page
+    they had already left before they asked. Driven over HTTP because the
+    ordering that matters is the one the wire produces.
+    """
+    httpx = pytest.importorskip("httpx")
+    from lionagi.studio.app import create_app
+    from lionagi.studio.operator.application_mcp import get_current_view
+    from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+    app = create_app()
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await reset_operator_coordinator_for_testing(coordinator)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        created = await client.post("/api/operator/conversations", json={"title": "ordering"})
+        cid = created.json()["conversation"]["id"]
+
+        # Seen on /library, but the report is held back by the network.
+        stale_report = {
+            "space": "library",
+            "route": "/library",
+            "filters": {},
+            "observationSeq": 1,
+            "observerId": "page-a",
+        }
+
+        # The human moves to /mission and asks from there.
+        submitted = await client.post(
+            f"/api/operator/conversations/{cid}/turns",
+            json={
+                "instruction": "where am I?",
+                "context": {
+                    "space": "mission",
+                    "route": "/",
+                    "filters": {},
+                    "observationSeq": 2,
+                    "observerId": "page-a",
+                },
+                "expectedLastSequence": 0,
+            },
+        )
+        assert submitted.status_code == 202
+        request_id = submitted.json()["requestId"]
+
+        # Only now does the /library report land.
+        delayed = await client.post(
+            f"/api/operator/conversations/{cid}/view",
+            json=stale_report,
+        )
+        assert delayed.status_code == 200
+        assert delayed.json()["applied"] is True, (
+            "the first report on a conversation is stored; being stored is not being current"
+        )
+
+        monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+        monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+        monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+
+        view = await get_current_view({})
+        assert view["space"] == "mission", "a view seen before the question cannot answer it"
+        assert view["source"] == "turn"
+
+        # And a report genuinely observed after the turn does flip it, so the
+        # assertion above is about ordering rather than about live never firing.
+        after = await client.post(
+            f"/api/operator/conversations/{cid}/view",
+            json={
+                "space": "schedules",
+                "route": "/schedules",
+                "filters": {},
+                "observationSeq": 3,
+                "observerId": "page-a",
+            },
+        )
+        assert after.status_code == 200
+        moved = await get_current_view({})
+        assert moved["space"] == "schedules"
+        assert moved["source"] == "live"
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_another_pages_later_count_cannot_answer_for_the_page_that_asked(
+    tmp_path, monkeypatch
+):
+    """A count means nothing outside the page that did the counting.
+
+    Two tabs open on one conversation are looking at two different pages and
+    count independently, so the busier tab reaches a higher number without
+    having seen anything more recent. Comparing across them lets a tab the human
+    is not looking at answer for the tab they asked from, and the answer wears
+    the live label. Only the page the instruction came from can say where they
+    are; every other page can cost freshness and never correctness.
+
+    This is also what makes a reload safe, since a reloaded page is a new
+    observer whose restarted count is never measured against the page it
+    replaced.
+    """
+    httpx = pytest.importorskip("httpx")
+    from lionagi.studio.app import create_app
+    from lionagi.studio.operator.application_mcp import get_current_view
+    from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+    app = create_app()
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await reset_operator_coordinator_for_testing(coordinator)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        created = await client.post("/api/operator/conversations", json={"title": "two tabs"})
+        cid = created.json()["conversation"]["id"]
+
+        # Tab A has been busy and is deep into its own count.
+        busy = await client.post(
+            f"/api/operator/conversations/{cid}/view",
+            json={
+                "space": "schedules",
+                "route": "/schedules",
+                "filters": {},
+                "observationSeq": 40,
+                "observerId": "page-a",
+            },
+        )
+        assert busy.status_code == 200
+
+        # The human asks from tab B, which has seen far fewer views.
+        submitted = await client.post(
+            f"/api/operator/conversations/{cid}/turns",
+            json={
+                "instruction": "where am I?",
+                "context": {
+                    "space": "system",
+                    "route": "/system",
+                    "filters": {},
+                    "observationSeq": 2,
+                    "observerId": "page-b",
+                },
+                "expectedLastSequence": 0,
+            },
+        )
+        assert submitted.status_code == 202
+
+        monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+        monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+        monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", submitted.json()["requestId"])
+
+        view = await get_current_view({})
+        assert view["space"] == "system", "the tab they asked from is the one that answers"
+        assert view["source"] == "turn"
+
+        # Tab B's own low-numbered report is stored even though tab A counted
+        # higher, because refusing it would silence whichever tab started later.
+        mine = await client.post(
+            f"/api/operator/conversations/{cid}/view",
+            json={
+                "space": "library",
+                "route": "/library",
+                "filters": {},
+                "observationSeq": 3,
+                "observerId": "page-b",
+            },
+        )
+        assert mine.status_code == 200
+        assert mine.json()["applied"] is True
+
+        moved = await get_current_view({})
+        assert moved["space"] == "library", "a later view from the asking tab does answer"
+        assert moved["source"] == "live"
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_another_pages_report_does_not_readmit_a_stale_one_from_the_asking_page(
+    tmp_path, monkeypatch
+):
+    """A second tab must not erase what the asking tab has already reported.
+
+    Keeping one view per conversation makes every page's report overwrite the
+    page before it, which throws away the asking page's high-water mark. A
+    delayed older report from that page then has nothing to lose to and is
+    stored as its latest, so the read returns a page the human left two
+    navigations ago and calls it live. The other tab is not even the one being
+    answered about: it is only the eraser.
+    """
+    from lionagi.studio.operator.application_mcp import get_current_view
+
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="where am I?",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "observationSeq": 1,
+            "observerId": "page-a",
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    # The asking page moves twice, and its reports leave in order.
+    assert await store.record_view(
+        cid, {"space": "schedules", "route": "/schedules", "filters": {}}, 3, "page-a"
+    )
+    # The other tab reports in between.
+    assert await store.record_view(
+        cid, {"space": "designer", "route": "/designer", "filters": {}}, 9, "page-b"
+    )
+    # And now the asking page's EARLIER report finally arrives.
+    assert not await store.record_view(
+        cid, {"space": "library", "route": "/library", "filters": {}}, 2, "page-a"
+    ), "a page's own older report stays older, whoever reported in between"
+
+    view = await get_current_view({})
+    assert view["space"] == "schedules", "the asking page is where its newest report put it"
+    assert view["source"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_observation_timestamp_is_not_applied_twice(tmp_path):
+    """Equal observation times are the same observation, not a newer one.
+
+    Guarded explicitly because ">=" and ">" differ here only in the case a
+    retry produces, and a retried report re-applying is indistinguishable from
+    a real navigation until it is the stale one that wins.
+    """
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+
+    first = await store.record_view(
+        cid, {"space": "library", "route": "/library", "filters": {}}, 5, "page-a"
+    )
+    replay = await store.record_view(
+        cid, {"space": "mission", "route": "/", "filters": {}}, 5, "page-a"
+    )
+    assert first is True
+    assert replay is False
+
+    view, _ = await store.get_view(cid, "page-a")
+    assert view["space"] == "library"

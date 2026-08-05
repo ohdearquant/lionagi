@@ -168,6 +168,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
         "/api/operator/conversations/{conversation_id}/requests/{request_id}/cancel",
     ),
     ("POST", "/api/operator/conversations/{conversation_id}/turns"),
+    ("POST", "/api/operator/conversations/{conversation_id}/view"),
     ("POST", "/api/playbook-templates/{name}/install"),
     ("POST", "/api/playbooks/{name}"),
     ("POST", "/api/playbooks/{name}/run"),
@@ -267,7 +268,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 121
+    assert len(_GOLDEN_ROUTES) == 122
 
 
 def _compiled_match_shape(path_template: str) -> str:

@@ -133,8 +133,12 @@ _TOOL_DESCRIPTIONS = {
         "list_recent_runs cannot answer because it only returns the newest 20."
     ),
     "get_current_view": (
-        "Read the Studio view the human is on right now: space, route, "
-        "selection and filters. Read-only and always current for this turn."
+        "Read the Studio view the human is on: space, route, selection and "
+        "filters. Read-only. The 'source' field says how fresh the answer is: "
+        "'live' means the browser reported this view after the instruction was "
+        "sent, so it is where they are now; 'turn' means nothing newer has been "
+        "reported, so it is where they were when they sent the instruction and "
+        "they may have moved since."
     ),
     "list_schedules": (
         "List Studio schedules as a redacted read-only projection: trigger, "
@@ -234,10 +238,37 @@ async def run_stats(arguments: dict[str, Any]) -> dict[str, Any]:
 
 async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
     CurrentViewInput.model_validate(arguments)
-    store, _conversation_id, request_id = _identity()
+    store, conversation_id, request_id = _identity()
     turn = await store.get_turn(request_id)
     context = turn.get("context")
-    if not isinstance(context, dict):
+    context = context if isinstance(context, dict) else None
+    source = "turn"
+
+    # The turn's context is frozen at submit, so it is only the freshest answer
+    # until the human moves. Prefer a view the SAME PAGE observed later in its
+    # own count of the views it has seen.
+    #
+    # Both halves of that are load-bearing. Server arrival order cannot stand in
+    # for the count: a report the browser saw before the instruction can arrive
+    # after it, and ordering by arrival would present a view from before the
+    # question as the answer to it, labelled live. Nor can a wall clock, which
+    # can step backwards and leave a stale view holding the higher number. And a
+    # count from a different page cannot be compared at all: two tabs on one
+    # conversation are looking at two different pages, they count
+    # independently, and only the page the instruction came from can say where
+    # the human is.
+    #
+    # When the turn names no observer or no count there is nothing to compare
+    # against, so the honest answer is the turn's own snapshot rather than a
+    # freshness claim that cannot be supported.
+    turn_seq = (context or {}).get("observationSeq")
+    turn_observer = (context or {}).get("observerId")
+    if isinstance(turn_seq, int) and isinstance(turn_observer, str):
+        reported, reported_seq = await store.get_view(conversation_id, turn_observer)
+        if reported is not None and isinstance(reported_seq, int) and reported_seq > turn_seq:
+            context, source = reported, "live"
+
+    if context is None:
         return {"known": False}
     return {
         "known": True,
@@ -246,6 +277,15 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
         "project": public_project(context.get("project")),
         "selection": context.get("selection"),
         "filters": context.get("filters"),
+        # "turn" means nothing observed later than the instruction has been
+        # reported, so the human may have moved since. "live" means this is
+        # where they are.
+        #
+        # The observation count that decided this is deliberately NOT returned.
+        # It counts what one page has seen and means nothing outside that page,
+        # so a bare number here could only invite a comparison that is not
+        # valid -- which is the defect this whole mechanism was built to remove.
+        "source": source,
     }
 
 

@@ -475,6 +475,10 @@ export interface OperatorContextSnapshot {
   route: string;
   selection?: Record<string, string> | null;
   filters: Record<string, OperatorJsonValue>;
+  /** This page's count of views seen. Orders a report against a turn. */
+  observationSeq?: number;
+  /** Which page observed it. A count means nothing outside its own page. */
+  observerId?: string;
 }
 
 export interface OperatorTextPayload {

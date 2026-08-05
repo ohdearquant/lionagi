@@ -9,6 +9,7 @@ import type {
   ProjectDetail,
   ProjectSummary,
   OperatorConversation,
+  OperatorContextSnapshot,
   OperatorConversationSnapshot,
   OperatorFrame,
   OperatorFrameType,
@@ -429,6 +430,28 @@ export async function submitOperatorTurn(
         ...(request.effort ? { effort: request.effort } : {}),
         ...(request.clearSelection ? { clear_selection: true } : {}),
       }),
+    },
+  );
+}
+
+/**
+ * Report where the human is now, outside of any turn.
+ *
+ * A turn's context is frozen when it is submitted, so without this the
+ * Operator answers "where am I" with wherever they were when they hit send.
+ * Best effort by design: a dropped report costs freshness, never correctness,
+ * because the tool falls back to the turn's own snapshot and labels it.
+ */
+export async function reportOperatorView(
+  conversationId: string,
+  context: OperatorContextSnapshot & { observationSeq: number; observerId: string },
+): Promise<void> {
+  await fetchJson<unknown>(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}/view`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(context),
     },
   );
 }

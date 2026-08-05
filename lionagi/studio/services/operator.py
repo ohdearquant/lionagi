@@ -25,6 +25,7 @@ from ..operator.types import (
     DecideProposalRequest,
     ForkConversationRequest,
     OperatorTurnRequest,
+    OperatorViewReport,
     UpdateConversationRequest,
 )
 from ..registry import studio_route
@@ -211,6 +212,34 @@ async def list_operator_models() -> dict[str, Any]:
     from ..operator.catalog import catalog_entries
 
     return {"models": catalog_entries()}
+
+
+@studio_route(
+    "/operator/conversations/{conversation_id}/view",
+    method="POST",
+    area="operator",
+)
+async def report_operator_view(conversation_id: str, body: OperatorViewReport) -> dict[str, Any]:
+    """Record where the human is now, so the Operator can read it mid-turn.
+
+    A turn's context is frozen at submit. Without this the Operator answers
+    "where am I" with wherever the human was when they hit send, which is
+    wrong precisely when they have moved since.
+
+    A report that does not count higher than the one already stored by the same
+    page is discarded, since reports race and the loser of that race is the
+    stale view.
+    """
+    coordinator = get_operator_coordinator()
+    view = body.model_dump(by_alias=True)
+    seq = view.pop("observationSeq")
+    observer = view.pop("observerId")
+    try:
+        await coordinator.ensure_started()
+        applied = await coordinator.store.record_view(conversation_id, view, seq, observer)
+        return {"ok": True, "applied": applied}
+    except OperatorStoreError as exc:
+        raise _http_error(exc) from exc
 
 
 @studio_route(

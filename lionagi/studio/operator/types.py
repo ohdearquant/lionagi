@@ -88,6 +88,39 @@ class OperatorContextSnapshot(WireModel):
     route: str = Field(min_length=1, max_length=4096)
     selection: dict[str, str] | None = None
     filters: dict[str, Any] = Field(default_factory=dict)
+    # Who observed this view, and how many views they had seen when they did.
+    #
+    # Ordering is by count and deliberately not by any clock. Server arrival
+    # order answers a different question, since a view seen before an
+    # instruction can arrive after it. A wall clock answers it wrongly too: it
+    # can step backwards, and then a view from before the step outranks
+    # everything observed after it.
+    #
+    # A count means nothing outside the page that did the counting, which is why
+    # the observer travels with it. Two tabs on one conversation are looking at
+    # two different pages; only the one the instruction came from can say where
+    # the human is, and comparing the other's count against it is what makes an
+    # abandoned page look current. A reload is a new observer for the same
+    # reason.
+    #
+    # Both are optional here so a client that sends neither degrades to "cannot
+    # establish freshness" rather than to a false claim of it.
+    observation_seq: int | None = Field(default=None, ge=1, alias="observationSeq")
+    observer_id: str | None = Field(default=None, min_length=1, max_length=128, alias="observerId")
+
+
+class OperatorViewReport(OperatorContextSnapshot):
+    """A view the browser reports outside of any turn.
+
+    Both fields are required here, unlike on a turn's snapshot: a report exists
+    only to answer "where is the human now", and one that cannot say who saw it
+    or where it fell in their sequence cannot be ordered against anything, so
+    accepting it would mean storing a view that can only ever be reported with
+    the wrong freshness label.
+    """
+
+    observation_seq: int = Field(ge=1, alias="observationSeq")
+    observer_id: str = Field(min_length=1, max_length=128, alias="observerId")
 
 
 # The model still reaches a CLI argument, so it stays a closed set -- but the

@@ -14,6 +14,7 @@ import {
   ApiError,
   acknowledgeOperatorEffect,
   cancelOperatorRequest,
+  reportOperatorView,
   createOperatorConversation,
   decideOperatorProposal,
   fetchOperatorModelCatalog,
@@ -64,6 +65,7 @@ import {
   rememberEffectAcknowledgement,
   type StoredEffectAcknowledgement,
 } from "./operatorEffects";
+import { nextObservationSeq, observationObserver } from "./observationSequence";
 import { applyTheme } from "@/lib/theme";
 
 const STORAGE_KEY = "studio:operator-conversation";
@@ -221,10 +223,13 @@ export function formatProposalCommand(command: Record<string, unknown>): Formatt
   return { text: formatted, elided: elided.hit, droppedCharacters: 0 };
 }
 
+// Numbered rather than timed, and stamped with who did the observing. See
+// ./observationSequence for why neither a clock nor another page's count can
+// order these.
 function operatorContext(
   pathname: string,
   search: Record<string, unknown>,
-): OperatorContextSnapshot {
+): OperatorContextSnapshot & { observationSeq: number; observerId: string } {
   let space: OperatorContextSnapshot["space"] = "mission";
   if (pathname.startsWith("/library")) space = "library";
   else if (pathname.startsWith("/schedules")) space = "schedules";
@@ -261,6 +266,8 @@ function operatorContext(
     route: `${pathname}${queryString ? `?${queryString}` : ""}`,
     selection: Object.keys(selection).length ? selection : null,
     filters,
+    observationSeq: nextObservationSeq(),
+    observerId: observationObserver(),
   };
 }
 
@@ -965,6 +972,25 @@ export default function OperatorPanel({ open, onClose }: Props) {
     if (added && !nearBottomRef.current) setVisibleCount((count) => count + added);
     previousItemCountRef.current = items.length;
   }, [items.length]);
+
+  // Report where the human is whenever they move, not only when they send.
+  // A turn's context is frozen at submit, so without this the Operator's answer
+  // to "where am I" is wherever they were when they hit send. Best effort: a
+  // failed report costs freshness, never correctness, because the read falls
+  // back to the turn's own snapshot and says which one it used.
+  const conversationId = state.conversation?.id;
+  useEffect(() => {
+    if (!conversationId) return;
+    // Stamped here, when the view is SEEN, not below when the request fires:
+    // the debounce and the network both reorder, so two navigations can reach
+    // the server reversed and the server has to keep whichever the browser
+    // observed later rather than whichever arrived later.
+    const context = operatorContext(location.pathname, location.search as Record<string, unknown>);
+    const timer = window.setTimeout(() => {
+      void reportOperatorView(conversationId, context).catch(() => {});
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [conversationId, location.pathname, location.search]);
 
   useLayoutEffect(() => {
     const oldHeight = anchorHeightRef.current;
