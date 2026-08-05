@@ -77,6 +77,21 @@ const edgeTypes = { condition: ConditionEdgeComponent };
 // pan-clear-of-panel logic keys off the same number.
 const SIDE_PANEL_WIDTH = 320;
 
+// How far left the viewport must shift for a node to clear the side-panel
+// strip, in screen pixels — 0 when it is already clear. Node coordinates are
+// graph-space; the viewport transform maps them to screen space.
+export function panelClearanceShift(
+  nodeX: number,
+  nodeWidth: number,
+  viewport: { x: number; zoom: number },
+  containerWidth: number,
+  panelWidth: number = SIDE_PANEL_WIDTH,
+): number {
+  const panelLeft = containerWidth - panelWidth;
+  const nodeRight = (nodeX + nodeWidth) * viewport.zoom + viewport.x;
+  return nodeRight > panelLeft ? nodeRight - panelLeft + 16 : 0;
+}
+
 // nodeStatuses only covers nodes it has live signal correlation for — a
 // legacy run (no matching signals, or none at all) still passes a truthy
 // object (RunDetail always builds one when a planned graph exists, `{}` in
@@ -290,10 +305,14 @@ export default function WorkerCanvas({
     const container = containerRef.current;
     if (!instance || !container) return;
     const { x, y, zoom } = instance.getViewport();
-    const panelLeft = container.clientWidth - SIDE_PANEL_WIDTH;
-    const nodeRight = (node.position.x + (node.width ?? 210)) * zoom + x;
-    if (nodeRight > panelLeft) {
-      instance.setViewport({ x: x - (nodeRight - panelLeft) - 16, y, zoom }, { duration: 250 });
+    const shift = panelClearanceShift(
+      node.position.x,
+      node.width ?? 210,
+      { x, zoom },
+      container.clientWidth,
+    );
+    if (shift > 0) {
+      instance.setViewport({ x: x - shift, y, zoom }, { duration: 250 });
     }
   }, []);
 

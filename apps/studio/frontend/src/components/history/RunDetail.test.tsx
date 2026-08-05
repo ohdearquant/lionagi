@@ -785,3 +785,40 @@ describe("history/RunDetail.tsx — resolveGraphEdges", () => {
     });
   });
 });
+
+describe("history/RunDetail.tsx — resolveGraphEdges dedupes what resolution collapses", () => {
+  const graphNodes = (...ids: string[]) =>
+    ids.map((id) => ({ id })) as unknown as import("@/lib/types").WorkerGraph["nodes"];
+  const edge = (id: string, source: string, target: string) =>
+    ({ id, source, target, mode: "simple" }) as const;
+
+  it("drops the second edge when a numeric ref and the id it names arrive as two edges", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic");
+    // "1"→"2" and "explorer"→"critic" are one dependency spelled two ways.
+    const out = resolveGraphEdges(nodes, [edge("e1", "1", "2"), edge("e2", "explorer", "critic")]);
+    expect(out).toEqual([{ id: "e1", source: "explorer", target: "critic", mode: "simple" }]);
+  });
+
+  it("drops a repeated edge id even when the pairs differ", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic", "synth");
+    const out = resolveGraphEdges(nodes, [
+      edge("dup", "explorer", "critic"),
+      edge("dup", "explorer", "synth"),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ source: "explorer", target: "critic" });
+  });
+
+  it("keeps distinct edges between distinct pairs untouched", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic", "synth");
+    const out = resolveGraphEdges(nodes, [
+      edge("e1", "explorer", "critic"),
+      edge("e2", "critic", "synth"),
+      edge("e3", "explorer", "synth"),
+    ]);
+    expect(out).toHaveLength(3);
+  });
+});
