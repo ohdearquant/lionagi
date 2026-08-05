@@ -1365,7 +1365,18 @@ export default function RunDetail({ id }: RunDetailProps) {
       {runGraph && shouldRenderAuthoredGraph(runGraph, opGraph) ? (
         <div id="run-dag" className="scroll-mt-4">
           <SectionHeader label={t("sectionExecutionGraph")} count={runGraph.nodes.length} />
-          <div className="h-[280px] rounded border border-edge bg-surface-raised shadow-card overflow-hidden">
+          {/* A fan-out of dozens of workers cannot be legible in the same
+              280px that fits a five-step pipeline — the panel grows with the
+              graph so fitView has room to keep nodes readable. */}
+          <div
+            className={`${
+              runGraph.nodes.length > 24
+                ? "h-[560px]"
+                : runGraph.nodes.length > 10
+                  ? "h-[420px]"
+                  : "h-[280px]"
+            } rounded border border-edge bg-surface-raised shadow-card overflow-hidden`}
+          >
             <Suspense fallback={null}>
               <WorkerCanvas
                 graph={runGraph}

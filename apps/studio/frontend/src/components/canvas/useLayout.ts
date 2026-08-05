@@ -41,6 +41,82 @@ export function estimateNodeHeight(node: Node): number {
   return height;
 }
 
+const NODE_SEP = 36;
+
+// A rank taller than this wraps into a grid. dagre stacks every sibling of a
+// fan-out into one cross-axis strip, so a run that fans 30 workers off one
+// orchestrator becomes a ~4000px column that fitView can only show as a
+// sliver of unreadable cards. Wrapping trades edge purity (links into the
+// inner columns cross their siblings) for the whole graph being legible at
+// once, which is the only trade a monitoring panel can make.
+const WRAP_THRESHOLD = 7;
+// The embeds this canvas lives in are wide strips (RunDetail's run-dag panel,
+// the Fleet session view), so a wrapped block aims for that shape.
+const WRAP_TARGET_ASPECT = 2.4;
+const WRAP_COL_GAP = 28;
+
+// Re-arrange any over-tall rank of an LR layout into column-major grid
+// columns, shifting every rank to its right by the width the wrap added.
+// Sibling order within the grid preserves dagre's cross-axis order, so nodes
+// dagre placed adjacent stay adjacent.
+function wrapWideRanks(nodes: Node[]): Node[] {
+  const byRankX = new Map<number, Node[]>();
+  for (const node of nodes) {
+    const key = Math.round(node.position.x);
+    const rank = byRankX.get(key);
+    if (rank) rank.push(node);
+    else byRankX.set(key, [node]);
+  }
+
+  const rankXs = [...byRankX.keys()].sort((a, b) => a - b);
+  const out: Node[] = [];
+  let xShift = 0;
+  const colPitch = NODE_WIDTH + WRAP_COL_GAP;
+
+  for (const rankX of rankXs) {
+    const rank = [...(byRankX.get(rankX) ?? [])].sort((a, b) => a.position.y - b.position.y);
+    if (rank.length <= WRAP_THRESHOLD) {
+      for (const node of rank) {
+        out.push({ ...node, position: { x: node.position.x + xShift, y: node.position.y } });
+      }
+      continue;
+    }
+
+    const rowPitch =
+      rank.reduce((sum, n) => sum + estimateNodeHeight(n), 0) / rank.length + NODE_SEP;
+    const cols = Math.max(
+      2,
+      Math.ceil(Math.sqrt((WRAP_TARGET_ASPECT * rank.length * rowPitch) / colPitch)),
+    );
+    const rows = Math.ceil(rank.length / cols);
+    // Rounding can leave the last planned column empty; the shift must count
+    // the columns actually placed or every rank downstream drifts right.
+    const usedCols = Math.ceil(rank.length / rows);
+
+    // Keep the wrapped block vertically centred where dagre centred the rank,
+    // so edges from the previous rank stay short.
+    const top = rank[0].position.y;
+    const bottom = rank[rank.length - 1].position.y + estimateNodeHeight(rank[rank.length - 1]);
+    const rankCenter = (top + bottom) / 2;
+
+    for (let col = 0; col * rows < rank.length; col++) {
+      const colNodes = rank.slice(col * rows, (col + 1) * rows);
+      const colHeight =
+        colNodes.reduce((sum, n) => sum + estimateNodeHeight(n), 0) +
+        NODE_SEP * (colNodes.length - 1);
+      let y = rankCenter - colHeight / 2;
+      for (const node of colNodes) {
+        out.push({ ...node, position: { x: rankX + xShift + col * colPitch, y } });
+        y += estimateNodeHeight(node) + NODE_SEP;
+      }
+    }
+
+    xShift += (usedCols - 1) * colPitch;
+  }
+
+  return out;
+}
+
 export function getLayoutedElements(
   nodes: Node[],
   edges: Edge[],
@@ -50,7 +126,7 @@ export function getLayoutedElements(
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
     rankdir: direction,
-    nodesep: 36,
+    nodesep: NODE_SEP,
     ranksep: 90,
     marginx: 28,
     marginy: 24,
@@ -78,7 +154,9 @@ export function getLayoutedElements(
     };
   });
 
-  return { nodes: layoutedNodes, edges };
+  // The wrap keys ranks by their shared x, which holds only for LR (constant
+  // node width). TB ranks share y instead; no caller lays out TB today.
+  return { nodes: direction === "LR" ? wrapWideRanks(layoutedNodes) : layoutedNodes, edges };
 }
 
 export function useAutoLayout() {

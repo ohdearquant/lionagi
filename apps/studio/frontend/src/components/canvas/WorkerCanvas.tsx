@@ -77,6 +77,15 @@ export function shouldShowMiniMap(compact: boolean, nodeCount: number): boolean 
   return nodeCount > 10;
 }
 
+// The side panel is an editor surface. In a read-only embed with nothing
+// selected it is 320px of "click a step to inspect" placeholder — a quarter
+// of the canvas spent saying nothing — so it appears only once there is a
+// selection to show. The editor keeps it permanently, since add/edit flows
+// live there.
+export function shouldShowSidePanel(editable: boolean, selectionType: Selection["type"]): boolean {
+  return editable || selectionType !== "none";
+}
+
 export function computeEdgeSourceCompleted(
   source: string,
   nodeStatuses: Record<string, NodeExecStatus> | undefined,
@@ -358,7 +367,12 @@ export default function WorkerCanvas({
           nodesConnectable={editable}
           elementsSelectable={true}
           fitView
-          fitViewOptions={{ padding: 0.3 }}
+          // minZoom must sit below what fitView needs for a large graph —
+          // react-flow's 0.5 default made fitView stop there, showing a
+          // sliver of the graph as if it were the whole thing. maxZoom keeps
+          // a two-node graph from being blown up to fill the panel.
+          minZoom={0.1}
+          fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
           proOptions={{ hideAttribution: true }}
           className="bg-surface-base"
         >
@@ -417,19 +431,22 @@ export default function WorkerCanvas({
         )}
       </div>
 
-      {/* Side Panel */}
-      <div className="w-80 shrink-0 border-l border-edge bg-surface-overlay overflow-y-auto">
-        <SidePanel
-          selection={selection}
-          editable={editable}
-          roles={roles}
-          agentProfiles={agentProfiles}
-          modelOverrides={modelOverrides}
-          onNodeUpdate={onNodeUpdate}
-          onEdgeUpdate={onEdgeUpdate}
-          onDelete={onDeleteElement}
-        />
-      </div>
+      {/* Side Panel — clicking the empty pane deselects, which closes it in
+          the read-only embed */}
+      {shouldShowSidePanel(editable, selection.type) && (
+        <div className="w-80 shrink-0 border-l border-edge bg-surface-overlay overflow-y-auto">
+          <SidePanel
+            selection={selection}
+            editable={editable}
+            roles={roles}
+            agentProfiles={agentProfiles}
+            modelOverrides={modelOverrides}
+            onNodeUpdate={onNodeUpdate}
+            onEdgeUpdate={onEdgeUpdate}
+            onDelete={onDeleteElement}
+          />
+        </div>
+      )}
     </div>
   );
 }

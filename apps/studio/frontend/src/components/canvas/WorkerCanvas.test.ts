@@ -12,7 +12,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { computeEdgeSourceCompleted, shouldShowMiniMap } from "./WorkerCanvas";
+import { computeEdgeSourceCompleted, shouldShowMiniMap, shouldShowSidePanel } from "./WorkerCanvas";
 
 describe("computeEdgeSourceCompleted", () => {
   it("uses the legacy completedMap when nodeStatuses is undefined", () => {
@@ -69,6 +69,35 @@ describe("shouldShowMiniMap", () => {
 
   it("non-compact usage hides the minimap at or under the threshold", () => {
     expect(shouldShowMiniMap(false, 10)).toBe(false);
+  });
+});
+
+// ─── Side panel earns its width ───────────────────────────────────────────────
+// In a read-only embed the panel's empty state is 320px of placeholder text —
+// a quarter of the canvas saying "click a step". It appears only once there
+// is a selection to show. The editor keeps it always, since add/edit flows
+// live in it.
+
+describe("shouldShowSidePanel", () => {
+  it("read-only with nothing selected hides the panel", () => {
+    expect(shouldShowSidePanel(false, "none")).toBe(false);
+  });
+
+  it("read-only with a node selected shows it", () => {
+    expect(shouldShowSidePanel(false, "node")).toBe(true);
+  });
+
+  it("read-only with an exec result selected shows it", () => {
+    expect(shouldShowSidePanel(false, "exec-result")).toBe(true);
+  });
+
+  it("read-only with an edge selected shows it", () => {
+    expect(shouldShowSidePanel(false, "edge")).toBe(true);
+  });
+
+  it("the editor always shows it, selection or not", () => {
+    expect(shouldShowSidePanel(true, "none")).toBe(true);
+    expect(shouldShowSidePanel(true, "node")).toBe(true);
   });
 });
 
