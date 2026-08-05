@@ -93,6 +93,13 @@ __all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
 # docs/internals/providers.md#codex-c-override-toml-serialization.
 _TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# The CLI's mid-stream retry announcement, e.g. "Reconnecting... 1/5 (stream
+# disconnected before completion: ...)". Anchored to the observed prefix on
+# purpose: a message that doesn't match falls through to the terminal-error
+# branch, so a wording change in the CLI degrades to the old (fail-closed)
+# behaviour rather than misclassifying a real failure as a notice.
+_RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+")
+
 
 def _toml_scalar(value: str | int | float | bool) -> str:
     """Render a single TOML scalar (or its quoted-string form), via the
@@ -886,14 +893,13 @@ async def stream_codex_cli(
 
             # -- turn.failed / error --
             elif typ in ("turn.failed", "error"):
-                session.is_error = True
                 err = obj.get("error", {})
                 # Error message location varies by event type; capture the raw
                 # value pre-normalization for the benign-EOS check below.
                 _raw_err = err
                 if err is None:
                     err = {}
-                session.result = (
+                _err_message = (
                     (
                         err.get("message")
                         or obj.get("message")
@@ -906,6 +912,34 @@ async def stream_codex_cli(
                     if isinstance(err, dict)
                     else obj.get("message", str(err))
                 )
+                # The CLI announces its OWN retry of a dropped provider stream
+                # as an error-typed event ("Reconnecting... 1/5 (...)") and then
+                # keeps going. Treating that notice as terminal kills the leg
+                # before the CLI's second attempt ever runs, so it is surfaced
+                # as a non-error chunk and the stream keeps consuming. A retry
+                # that ultimately fails produces a real terminal event (or the
+                # process exits), which still takes the branch below — and an
+                # unrecognized notice text fails toward terminal, the direction
+                # that loses a leg rather than the one that hangs it.
+                if (
+                    typ == "error"
+                    and isinstance(_err_message, str)
+                    and _RECONNECT_NOTICE_RE.match(_err_message)
+                ):
+                    if request.verbose_output:
+                        log.warning("Codex reconnecting mid-stream: %s", _err_message)
+                    sc = StreamChunk(
+                        type="error",
+                        content=_err_message,
+                        is_error=False,
+                        metadata={**obj, "reconnect_notice": True},
+                    )
+                    session.chunks.append(sc)
+                    yield sc
+                    continue
+
+                session.is_error = True
+                session.result = _err_message
                 # Benign-EOS sentinel on resumed sessions — see docs/internals/runtime.md
                 # for the exact 3-condition classification.
                 _is_benign_eos = (

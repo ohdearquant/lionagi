@@ -580,6 +580,17 @@ async def run(
                                     "ending stream cleanly"
                                 )
                                 break
+                            # A reconnect notice is the provider CLI retrying its own
+                            # dropped stream: the process is still running and will
+                            # either resume emitting events or produce a real terminal
+                            # error, so the run keeps consuming instead of raising.
+                            if chunk.metadata.get("reconnect_notice"):
+                                logger.warning(
+                                    "run: provider reconnecting mid-stream (%s); "
+                                    "continuing to consume",
+                                    chunk.content,
+                                )
+                                continue
                             # Persist text already delivered before a late failure destroys it.
                             if res := await _flush_response():
                                 yield res
