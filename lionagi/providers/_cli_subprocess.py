@@ -580,13 +580,28 @@ async def ndjson_from_cli(
     # end-of-stream path; teardown then ends the process group, which is what
     # actually closes the orphans' copy of the pipe.
     async def _await_child_exit() -> int:
-        # proc.wait() cannot be the exit signal here: on newer Pythons it does
+        # proc.wait() alone cannot be the exit signal: on newer Pythons it does
         # not complete until every pipe transport disconnects, which is exactly
         # what an orphan-held pipe prevents. returncode is set at process exit
-        # regardless of pipe state, so poll it.
-        while proc.returncode is None:
-            await asyncio.sleep(0.05)
-        return proc.returncode
+        # regardless of pipe state, so the wait races against a returncode
+        # poll; wait()'s result is preferred when it does complete, because it
+        # is the canonical exit code (and the only one a test double carries).
+        wait_task = asyncio.create_task(proc.wait())
+        try:
+            while proc.returncode is None and not wait_task.done():
+                await asyncio.wait({wait_task}, timeout=0.05)
+            if not wait_task.done():
+                await asyncio.wait({wait_task}, timeout=0.05)
+            if wait_task.done():
+                return wait_task.result()
+            return proc.returncode
+        finally:
+            if not wait_task.done():
+                wait_task.cancel()
+                try:
+                    await wait_task
+                except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
+                    pass
 
     exit_task = asyncio.create_task(_await_child_exit())
     read_task: asyncio.Task | None = None
