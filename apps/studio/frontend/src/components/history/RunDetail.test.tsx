@@ -822,3 +822,53 @@ describe("history/RunDetail.tsx — resolveGraphEdges dedupes what resolution co
     expect(out).toHaveLength(3);
   });
 });
+
+describe("history/RunDetail.tsx — a collapsed pair keeps its richer edge", () => {
+  const graphNodes = (...ids: string[]) =>
+    ids.map((id) => ({ id })) as unknown as import("@/lib/types").WorkerGraph["nodes"];
+
+  it("a condition-bearing edge survives a bare duplicate that arrived FIRST", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic");
+    const out = resolveGraphEdges(nodes, [
+      { id: "bare", source: "1", target: "2", mode: "simple" },
+      {
+        id: "cond",
+        source: "explorer",
+        target: "critic",
+        mode: "simple",
+        condition: "score > 0.8",
+      },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ id: "cond", condition: "score > 0.8" });
+  });
+
+  it("a condition-bearing edge survives a bare duplicate that arrived SECOND", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic");
+    const out = resolveGraphEdges(nodes, [
+      {
+        id: "cond",
+        source: "explorer",
+        target: "critic",
+        mode: "simple",
+        condition: "score > 0.8",
+      },
+      { id: "bare", source: "1", target: "2", mode: "simple" },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ id: "cond", condition: "score > 0.8" });
+  });
+
+  it("a replaced pair keeps its original position in the edge order", async () => {
+    const { resolveGraphEdges } = await import("./RunDetail");
+    const nodes = graphNodes("explorer", "critic", "synth");
+    const out = resolveGraphEdges(nodes, [
+      { id: "bare", source: "1", target: "2", mode: "simple" },
+      { id: "other", source: "critic", target: "synth", mode: "simple" },
+      { id: "cond", source: "explorer", target: "critic", mode: "simple", condition: "x" },
+    ]);
+    expect(out.map((e) => e.id)).toEqual(["cond", "other"]);
+  });
+});

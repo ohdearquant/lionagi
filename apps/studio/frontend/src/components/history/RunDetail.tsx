@@ -103,26 +103,38 @@ export function resolveGraphEdges(
     }
     return null;
   };
-  const out: WorkerGraph["edges"] = [];
   // Resolution can collapse distinct refs onto one endpoint pair (a numeric
   // ref and the id it names, arriving as two edges), and a defective producer
   // can repeat an edge id — either survives as a doubled edge / React
   // duplicate key. A source === target edge is the degenerate form of the
   // same collapse: depends_on edges form an acyclic dependency DAG, so a
   // self-edge is never semantics, only a ref pair naming one node twice.
+  // When a pair collapses, the edge carrying more information wins — the
+  // duplicates differ exactly when one arrived bare (a numeric planner ref)
+  // and the other carries the authored condition/handler/map.
+  const richness = (e: WorkerGraph["edges"][number]): number =>
+    (e.condition ? 1 : 0) + (e.map ? 1 : 0) + (e.handler ? 1 : 0) + (e.mode === "code" ? 1 : 0);
   const seenIds = new Set<string>();
-  const seenPairs = new Set<string>();
+  const byPair = new Map<string, WorkerGraph["edges"][number]>();
+  const pairOrder: string[] = [];
   for (const edge of edges) {
     const source = resolve(edge.source);
     const target = resolve(edge.target);
     if (source === null || target === null || source === target) continue;
-    const pair = `${source}\u0000${target}`;
-    if (seenIds.has(edge.id) || seenPairs.has(pair)) continue;
+    if (seenIds.has(edge.id)) continue;
     seenIds.add(edge.id);
-    seenPairs.add(pair);
-    out.push({ ...edge, source, target });
+    const pair = `${source}\u0000${target}`;
+    const resolved = { ...edge, source, target };
+    const kept = byPair.get(pair);
+    if (!kept) {
+      byPair.set(pair, resolved);
+      pairOrder.push(pair);
+    } else if (richness(resolved) > richness(kept)) {
+      // Replace in place — the pair keeps its first position in the output.
+      byPair.set(pair, resolved);
+    }
   }
-  return out;
+  return pairOrder.map((pair) => byPair.get(pair)!);
 }
 
 // Raw SSE payloads arrive as an untyped Record — this is the boundary where
