@@ -16,6 +16,7 @@ import {
   estimateNodeHeight,
   getLayoutedElements,
   maxGraphDepth,
+  NODE_HEIGHT,
   rankSepForDepth,
   wrapWideRanks,
   foldWideGraph,
@@ -89,38 +90,30 @@ function assertNoOverlap(nodes: Node[]) {
 }
 
 describe("estimateNodeHeight", () => {
-  it("gives a node carrying no optional rows the base height", () => {
-    expect(estimateNodeHeight(bare("a"))).toBe(40);
-  });
-
-  it("grows as each row is filled in, so a fully populated node is much taller", () => {
-    expect(estimateNodeHeight(full("a"))).toBeGreaterThan(estimateNodeHeight(bare("a")));
-    // The gap is the whole bug: a single constant cannot describe both.
-    expect(estimateNodeHeight(full("a")) - estimateNodeHeight(bare("a"))).toBeGreaterThan(40);
-  });
-
-  it("counts each row independently rather than treating any one as a proxy", () => {
+  // The card is a fixed two-row box, so its height cannot depend on how far
+  // along a run is. This is the invariant the whole layout leans on: two nodes
+  // side by side are the same size whether or not either has finished, which is
+  // what lets a rank line up. It used to grow a row at a time, and these tests
+  // used to assert that growth.
+  it("is the same for every node whatever data it carries", () => {
     const roleOnly = { ...bare("a"), data: { label: "a", role: "critic" } };
     const roleAndModel = {
       ...bare("a"),
-      data: { label: "a", role: "critic", assignment: "codex/gpt-5.6-terra" },
+      data: { label: "a", role: "critic", assignment: "some-model" },
     };
-    expect(estimateNodeHeight(roleAndModel)).toBeGreaterThan(estimateNodeHeight(roleOnly));
-    expect(estimateNodeHeight(roleOnly)).toBeGreaterThan(estimateNodeHeight(bare("a")));
+    const zeroed = { ...bare("a"), data: { label: "a", errorCount: 0, toolCallCount: 0 } };
+    const heights = [bare("a"), full("a"), roleOnly, roleAndModel, zeroed].map(estimateNodeHeight);
+    expect(new Set(heights).size).toBe(1);
   });
 
-  it("does not count a zero/absent stats row", () => {
-    const zeroed = {
-      ...bare("a"),
-      data: { label: "a", errorCount: 0, toolCallCount: 0 },
-    };
-    expect(estimateNodeHeight(zeroed)).toBe(estimateNodeHeight(bare("a")));
+  it("matches the card's own declared height, so layout and component cannot drift", () => {
+    expect(estimateNodeHeight(full("a"))).toBe(NODE_HEIGHT);
   });
 
   it("survives a node with no data at all", () => {
     const noData = { id: "a", position: { x: 0, y: 0 } } as unknown as Node;
     expect(() => estimateNodeHeight(noData)).not.toThrow();
-    expect(estimateNodeHeight(noData)).toBe(40);
+    expect(estimateNodeHeight(noData)).toBe(NODE_HEIGHT);
   });
 });
 
@@ -161,14 +154,17 @@ describe("getLayoutedElements — populated nodes do not overlap", () => {
     }
   });
 
-  it("spaces populated siblings further apart than bare ones, since they are taller", () => {
+  it("spaces siblings identically whether or not they carry data", () => {
+    // The inverse of what this used to assert, and the reason ranks line up: a
+    // half-finished run and a finished one lay out to the same shape, so the
+    // graph does not reflow under the reader as results arrive.
     const populated = getLayoutedElements([full(parent), ...siblings.map(full)], edges, "LR");
     const plain = getLayoutedElements([bare(parent), ...siblings.map(bare)], edges, "LR");
     const span = (nodes: Node[]) => {
       const ys = siblings.map((id) => nodes.find((n) => n.id === id)!.position.y);
       return Math.max(...ys) - Math.min(...ys);
     };
-    expect(span(populated.nodes)).toBeGreaterThan(span(plain.nodes));
+    expect(span(populated.nodes)).toBe(span(plain.nodes));
   });
 
   it("keeps every node it was given", () => {
