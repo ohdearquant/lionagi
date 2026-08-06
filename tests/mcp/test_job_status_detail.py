@@ -325,6 +325,35 @@ async def test_detail_true_is_soft_when_graph_metadata_is_malformed(isolated_sta
     assert "detail_unavailable" in result["detail"]
 
 
+async def test_detail_true_is_soft_when_graph_nodes_is_a_dict(isolated_state):
+    """``graph.nodes`` read back as a dict (not a list) must not be iterated as
+    if it were a list of node dicts — that silently yields zero nodes with no
+    indication anything was wrong. A malformed container shape must say
+    detail_unavailable, never a fabricated empty-but-successful detail."""
+    db_path = isolated_state
+    run_id = "20260101T000000-stu901"
+    session_id = "77777777-7777-7777-7777-777777777777"
+    meta = {"early_graph": {"nodes": {"collect": {"id": "collect"}}, "edges": []}}
+    await seed_session(db_path, session_id=session_id, run_id=run_id, node_metadata=meta)
+
+    result = await job_status_async(run_id, detail=True)
+    assert result["detail"] == {"detail_unavailable": "malformed_session_detail"}
+
+
+async def test_detail_true_is_soft_when_no_metadata_or_branches_recorded(isolated_state):
+    """A session with no graph, no branches, and no node_metadata at all never
+    had anything to build a detail view from. Falling back to "zero branches
+    means zero nodes" would answer with an indistinguishable empty-but-clean
+    detail, so this must say detail_unavailable instead."""
+    db_path = isolated_state
+    run_id = "20260101T000000-vwx234"
+    session_id = "88888888-8888-8888-8888-888888888888"
+    await seed_session(db_path, session_id=session_id, run_id=run_id)
+
+    result = await job_status_async(run_id, detail=True)
+    assert result["detail"] == {"detail_unavailable": "no_session_detail"}
+
+
 async def test_detail_true_is_soft_when_the_studio_extra_is_absent(isolated_state, monkeypatch):
     """A run whose session IS recorded but whose detail-building service
     cannot be imported still answers, rather than raising past job.status."""

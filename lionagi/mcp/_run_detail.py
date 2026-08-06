@@ -24,9 +24,30 @@ from typing import Any
 __all__ = ("build_run_detail",)
 
 
+class _DetailUnavailableError(Exception):
+    """Raised inside the reshape to name a specific soft-failure reason.
+
+    Caught separately from the generic ``except Exception`` boundary in
+    ``build_run_detail`` so a distinguishable cause (malformed vs. absent)
+    survives instead of collapsing into one catch-all reason.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 async def build_run_detail(run_id: str) -> dict[str, Any]:
     """``{"nodes": ..., "artifact_contract": ..., "stalls": ...}`` for *run_id*,
-    or ``{"detail_unavailable": <reason>}`` when any of that cannot be built."""
+    or ``{"detail_unavailable": <reason>}`` when any of that cannot be built.
+
+    ``<reason>`` is one of: ``state_db_not_installed``, ``state_db_unreadable``,
+    ``no_session_recorded_for_run``, ``studio_extra_not_installed``,
+    ``session_detail_unreadable``, ``session_not_found``, ``no_session_detail``
+    (no graph, no branches, and no recorded node_metadata — nothing to build a
+    detail view from), or ``malformed_session_detail`` (the graph shape read
+    back from node_metadata was not the list-of-dicts this reshape expects).
+    """
     try:
         from lionagi.state.db import StateDB
     except ImportError:
@@ -59,6 +80,14 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
     if session is None:
         return {"detail_unavailable": "session_not_found"}
 
+    if _session_has_no_detail_material(session):
+        # No graph, no branches, no node_metadata, and no artifact contract —
+        # nothing was ever recorded for this session to build a detail view
+        # from. Falling through would build a technically-successful but
+        # fabricated empty detail, indistinguishable from a session that
+        # genuinely finished with zero nodes and zero artifacts.
+        return {"detail_unavailable": "no_session_detail"}
+
     # A session's graph/segments come from node_metadata, a caller-adjacent
     # JSON blob this reads but never wrote — a shape it doesn't expect (e.g. a
     # node id that isn't hashable) must not turn an opt-in detail request into
@@ -70,6 +99,8 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
             "artifact_contract": _build_artifact_contract(session),
             "stalls": _build_stalls(nodes, session),
         }
+    except _DetailUnavailableError as exc:
+        return {"detail_unavailable": exc.reason}
     except Exception:
         return {"detail_unavailable": "malformed_session_detail"}
 
@@ -142,14 +173,50 @@ def _branch_by_name(session: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {b["name"]: b for b in branches if isinstance(b, dict) and b.get("name")}
 
 
+def _node_metadata_recorded(session: dict[str, Any]) -> bool:
+    """Whether *any* node_metadata was ever written for this session.
+
+    The raw column comes back as a JSON-encoded string, so an absent value is
+    the literal text ``"null"`` — truthy as a Python string even though it
+    means "nothing recorded." Parse before judging presence.
+    """
+    raw = session.get("node_metadata")
+    if raw is None:
+        return False
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return True
+    return raw is not None
+
+
+def _session_has_no_detail_material(session: dict[str, Any]) -> bool:
+    """No graph, no branches, no node_metadata, no artifact contract.
+
+    A session in this state never had anything recorded to build a detail
+    view from — distinct from a session that legitimately has one of these
+    (e.g. an artifact contract but no graph) and would otherwise build an
+    honest, if partly empty, detail.
+    """
+    if session.get("graph") is not None:
+        return False
+    if session.get("branches"):
+        return False
+    if session.get("artifact_contract_json") is not None:
+        return False
+    if session.get("artifact_verification_json") is not None:
+        return False
+    return not _node_metadata_recorded(session)
+
+
 def _build_nodes(session: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
     branches = session.get("branches") or []
     branch_by_name = _branch_by_name(session)
     spawned_by_map = _spawned_by_map(run_id)
     graph = session.get("graph")
-    graph_nodes = graph.get("nodes") if isinstance(graph, dict) else None
 
-    if not graph_nodes:
+    if graph is None:
         # No planned/authored graph — the common shape for a plain `li agent`
         # run. Every branch is its own node; there is nothing to correlate a
         # reactive-spawn parent against, so spawned_by stays unreported.
@@ -158,6 +225,14 @@ def _build_nodes(session: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
             for b in branches
             if isinstance(b, dict)
         ]
+
+    if not isinstance(graph, dict):
+        raise _DetailUnavailableError("malformed_session_detail")
+    graph_nodes = graph.get("nodes")
+    if graph_nodes is None:
+        graph_nodes = []
+    elif not isinstance(graph_nodes, list):
+        raise _DetailUnavailableError("malformed_session_detail")
 
     segments_by_op = _segments_by_op_id(session)
     nodes: list[dict[str, Any]] = []
