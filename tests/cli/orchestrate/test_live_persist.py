@@ -2589,6 +2589,101 @@ async def test_execute_dag_bounds_escalation_link_drain_on_cancellation(
     await stop_live_persist(env, status="completed")
 
 
+async def test_execute_dag_bounds_escalation_link_drain_on_late_cancellation(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Round-4 regression: the round-3 fix only bounds the drain when
+    cancellation lands *during* ``run_dag()`` (caught by the ``except
+    asyncio.CancelledError`` that sets ``_dag_cancelled``). If ``run_dag()``
+    already returned and cancellation instead lands while ``_execute_dag``
+    is inside the finally's own (until now unguarded) drain gather, that
+    except never ran, ``_dag_cancelled`` stays False, and the drain took the
+    normal unbounded gather — hanging just like the round-3 bug, just from a
+    later arrival window."""
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+    from lionagi.operations.node import create_operation
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    node = create_operation("operate", parameters={})
+    node.metadata["escalated_from"] = "parent-op-1"
+    node.metadata["escalated_from_name"] = "worker"
+    node._branch = SimpleNamespace(
+        chat_model=SimpleNamespace(provider_session_id="cli-session-xyz")
+    )
+
+    link_started = asyncio.Event()
+    link_cancelled = asyncio.Event()
+
+    async def _hanging_link(*a, **k):
+        link_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            link_cancelled.set()
+            raise
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["test/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        on_op_complete = kwargs.get("on_op_complete")
+        if on_op_complete is not None:
+            on_op_complete(node)
+        # Returns normally — unlike the round-3 test, cancellation has not
+        # landed yet, so the except that sets _dag_cancelled never fires.
+        return {"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with (
+        patch("lionagi.state.claude_mirror.link_escalation_session", _hanging_link),
+        patch.object(PlanningEngine, "new_run", return_value=engine_run),
+    ):
+        execute_task = asyncio.create_task(
+            _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+        )
+        # run_dag() has already returned by the time the link task starts
+        # (it's scheduled from the on_op_complete callback inside run_dag),
+        # so cancelling here lands inside the finally's own drain gather.
+        await link_started.wait()
+        execute_task.cancel()
+
+        start = time.monotonic()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(execute_task, timeout=5)
+        elapsed = time.monotonic() - start
+
+    assert elapsed < 5, (
+        f"teardown took {elapsed}s — a late-arriving cancellation still hangs the drain"
+    )
+    assert link_cancelled.is_set()
+    await stop_live_persist(env, status="completed")
+
+
 async def test_flow_timeout_shields_completed_branch_status_until_commit(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,

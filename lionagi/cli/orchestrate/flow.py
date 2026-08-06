@@ -1454,6 +1454,23 @@ async def _execute_dag(
                 await _exch_task
             # Route any final outbox sends left over after the last collect tick.
             await _exchange.collect_all()
+
+        async def _drain_escalation_links_bounded() -> None:
+            # An escalation-link row is nice-to-have attribution, not run
+            # data — losing one to cancellation is acceptable, but a hung
+            # link write (stuck DB call) blocking teardown indefinitely is
+            # not. Give in-flight links a short grace period to land
+            # normally, then cancel whatever is left and wait for it to
+            # actually unwind before returning.
+            with contextlib.suppress(Exception), move_on_after(2):
+                await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
+            _survivors = [t for t in _escalation_link_tasks if not t.done()]
+            for _t in _survivors:
+                _t.cancel()
+            if _survivors:
+                with contextlib.suppress(Exception):
+                    await _asyncio.gather(*_survivors, return_exceptions=True)
+
         # Completion observers schedule persistence writes synchronously but the
         # writes themselves are async. Drain them while the live DB is still open.
         with CancelScope(shield=True):
@@ -1465,28 +1482,29 @@ async def _execute_dag(
                     await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
             if _escalation_link_tasks:
                 if _dag_cancelled:
-                    # An escalation-link row is nice-to-have attribution, not
-                    # run data — losing one on cancellation is acceptable, but
-                    # a hung link write (stuck DB call) blocking teardown
-                    # indefinitely is not. Give in-flight links a short grace
-                    # period to land normally, then cancel whatever is left
-                    # and wait for it to actually unwind before returning.
-                    with contextlib.suppress(Exception), move_on_after(2):
-                        await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
-                    _survivors = [t for t in _escalation_link_tasks if not t.done()]
-                    for _t in _survivors:
-                        _t.cancel()
-                    if _survivors:
-                        with contextlib.suppress(Exception):
-                            await _asyncio.gather(*_survivors, return_exceptions=True)
+                    # Cancellation already landed while run_dag() was running,
+                    # so go straight to the bounded path.
+                    await _drain_escalation_links_bounded()
                 else:
                     # Bounded by _ESCALATION_LINK_RETRIES * _ESCALATION_LINK_RETRY_INTERVAL
-                    # (a few seconds worst case) — the outer db/session teardown
-                    # (teardown_persist) only runs after this function returns, so
-                    # draining here, not firing untracked, is what keeps a late retry
-                    # from writing into a store this run has already closed.
+                    # (a few seconds worst case) in the happy path — the outer
+                    # db/session teardown (teardown_persist) only runs after this
+                    # function returns, so draining here, not firing untracked, is
+                    # what keeps a late retry from writing into a store this run
+                    # has already closed. But a cancellation can also land on
+                    # *this* task after run_dag() already returned — the shield
+                    # above stops anyio-mediated cancellation, not a direct
+                    # cancel() on this task — so _dag_cancelled is False and this
+                    # gather is the one that would otherwise hang unbounded.
+                    # Catch that arrival and fall through to the same
+                    # grace+cancel path, then re-raise so the caller still
+                    # observes the cancellation.
                     with contextlib.suppress(Exception):
-                        await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
+                        try:
+                            await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
+                        except _asyncio.CancelledError:
+                            await _drain_escalation_links_bounded()
+                            raise
     t_exec_elapsed = time.monotonic() - t_exec
 
     op_results = dag_result.get("operation_results", {})
