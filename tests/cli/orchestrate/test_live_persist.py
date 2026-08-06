@@ -2404,6 +2404,83 @@ async def test_execute_dag_gate_rejected_evidence_survives_uuid_node_ids(
     assert s["status_reason_code"] == "run.completed.gate_rejected"
 
 
+async def test_execute_dag_escalation_evidence_survives_uuid_node_ids(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Same shape as test_execute_dag_gate_rejected_evidence_survives_uuid_node_ids,
+    one screen up: dag_state.node_ids holds real Operation UUIDs, and
+    dag_result["escalated_operations"] holds their str() form. Comparing
+    node_ids[i] to that string set directly is always False for a UUID, so a
+    planned escalated worker's evidence entry was silently reclassified as a
+    "spawned" node and lost its agent label. This must not regress."""
+    from unittest.mock import MagicMock, patch
+    from uuid import uuid4
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    worker_node_id = uuid4()
+    assignments = [TaskAssignment(task="do the risky thing", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[worker_node_id],
+        known_nodes={worker_node_id},
+        deps_by_node={worker_node_id: []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {},
+            "spawned_operations": 0,
+            "escalated_operations": [str(worker_node_id)],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        exec_result = await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    # The planned "worker", not a synthesized UUID-as-label placeholder.
+    assert exec_result.escalated_agent_ids == ["worker"]
+    assert env._escalated_evidence == [
+        {"kind": "escalated_operation", "id": "worker", "label": "worker"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.escalated"
+
+    import json as _json
+
+    evidence = s["status_evidence_refs"]
+    evidence = _json.loads(evidence) if isinstance(evidence, str) else evidence
+    assert any(e.get("id") == "worker" for e in evidence)
+
+
 async def test_execute_dag_drains_inflight_branch_status_before_teardown(
     temp_db_path: Path,
     tmp_path: Path,

@@ -1437,9 +1437,13 @@ async def _execute_dag(
     escalated_evidence = [
         {"kind": "escalated_operation", "id": agent_ids[i], "label": assignments[i].assignee}
         for i in range(len(assignments))
-        if node_ids[i] in escalated_op_ids
+        # node_ids holds Operation UUIDs, not strings, despite the `list[str]`
+        # annotation -- compare on the string form so a planned (non-spawned)
+        # escalated op is recognized here instead of falling through to the
+        # spawned branch below and losing its assignee label.
+        if str(node_ids[i]) in escalated_op_ids
     ]
-    for spawned_nid in sorted(escalated_op_ids - known_nodes):
+    for spawned_nid in sorted(escalated_op_ids - known_node_strs):
         # Surface the stamped spawn_id (e.g. "spawn-3") instead of the
         # internal UUID, matching the artifact dirs/contract entries produced.
         graph_node = graph_nodes.get(spawned_nid)
