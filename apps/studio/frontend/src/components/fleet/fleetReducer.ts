@@ -27,6 +27,7 @@
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus, isEffectivelyActive, type RunStatusInput } from "@/lib/runStatus";
+import { resolveRunLabel } from "@/lib/runLabel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -186,7 +187,7 @@ function buildOrgUnits(
     const elapsed = elapsedSec(run.started_at ?? null, nowSec);
     const row: AgentRow = {
       id: run.run_id,
-      name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12),
+      name: resolveRunLabel(run),
       status: run.status,
       effectiveHealth: run.effective_health ?? null,
       elapsedSec: elapsed,
@@ -259,7 +260,7 @@ export function terminalRecentRows(runs: RunSummary[]): RecentRow[] {
     .sort((a, b) => (b.ended_at ?? b.started_at ?? 0) - (a.ended_at ?? a.started_at ?? 0))
     .map((r) => ({
       id: r.run_id,
-      name: r.playbook_name ?? r.agent_name ?? r.run_id.slice(-12),
+      name: resolveRunLabel(r),
       status: r.status,
       invocation_id: r.invocation_id ?? null,
       status_reason_code: r.status_reason_code,
