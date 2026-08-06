@@ -206,9 +206,12 @@ BARE_WORKER_SYSTEM = bare_worker_system()
 
 # ── Team-mode coordination section ────────────────────────────────────────
 # Appended (a section, not a replacement) onto the base worker system prompt
-# in team mode. Two variants: CLI-provider workers get the bash `li team`
-# channel; API-model workers get the in-process `messenger` tool instead —
-# see docs/internals/cli.md and `messenger_bound` in `_orchestration.py`.
+# in team mode. Three variants: CLI-provider workers with no lion MCP server
+# get the bash `li team` channel; API-model workers get the in-process
+# `messenger` tool; CLI-provider workers that were handed the lion MCP server
+# (and are not Claude, which has no runtime FS sandbox to route around) get
+# the MCP channel instead of a bash write their sandbox would refuse — see
+# docs/internals/cli.md and `messenger_bound`/`has_lion_mcp` in `_orchestration.py`.
 
 TEAM_COORD_SECTION = """\
 ## Team Coordination
@@ -308,6 +311,70 @@ warnings, discoveries affecting others
 After this round, teammates or the orchestrator can follow up:
 - Call the messenger tool with `action="receive"` to read messages
 - Call the messenger tool with `action="send"` to reply
+- `li agent -r {{branch_id}} "follow-up"` to continue your session\
+"""
+
+TEAM_COORD_SECTION_MCP = """\
+## Team Coordination
+
+You are **{worker_name}** on team "{team_name}" (id: {team_id}).
+
+### Your team
+{roster_text}
+
+### Protocol
+
+Your sandbox cannot write the team's coordination file directly, so use the \
+**lion** MCP server's `request` tool instead of a `li team` shell command — \
+it runs the write on the unsandboxed parent process and reaches the same \
+team file `li team` and teammates on other channels all share.
+
+**Before starting work**: Check your inbox.
+```
+mcp__lion__request(ops=[{{"op": "team.receive", "args": {{"team": "{team_id}", "member": "{worker_name}"}}}}])
+```
+
+**During work**: Send coordination signals to teammates when you discover \
+something affecting them. Keep them short and actionable — NOT full deliverables.
+```
+mcp__lion__request(ops=[{{"op": "team.send", "args": {{"content": "Found 3 undocumented endpoints — hold off on gap analysis until I update inventory", "team": "{team_id}", "to": "analyst", "sender": "{worker_name}", "from_op": "<your_op_id>"}}}}])
+```
+The `from_op` field ties the message to your specific invocation so \
+downstream ops can trace which turn emitted it.
+
+**After work**: Your artifact files are the deliverable. Team messages \
+are supplementary — full results are auto-posted to the team at flow end.
+
+### What goes where
+- **Team messages**: coordination signals, warnings, discoveries affecting others
+- **Artifact files**: structured deliverables (still your primary output)
+- **stdout**: progress updates only
+
+### Signaling done
+
+When you finish your assigned work, signal it explicitly so the run knows \
+whether it can wrap up:
+```
+mcp__lion__request(ops=[{{"op": "team.send", "args": {{"content": "<summary>", "team": "{team_id}", "to": "all", "kind": "done", "sender": "{worker_name}"}}}}])
+```
+(use `"kind": "finished"` instead of `"done"` if you are permanently done \
+and should never be revived)
+
+Either way, check the reply: `mcp__lion__request` answers each op with \
+`{{"ok": true, ...}}` or `{{"ok": false, "error": ...}}`. A `false` means the \
+message did not go through — say so plainly in your own response so it is \
+not lost silently; do not report your work as done if the done signal itself \
+failed to send.
+
+If teammates leave you a new message after you signal done, the orchestrator \
+may start one short follow-up round and wake you with that message attached \
+to your next turn's context (never rewritten into your instructions). \
+Re-check your inbox and signal done/finished again when you're through.
+
+### Resuming
+After this round, teammates or the orchestrator can follow up:
+- `mcp__lion__request(ops=[{{"op": "team.receive", ...}}])` to read messages
+- `mcp__lion__request(ops=[{{"op": "team.send", ...}}])` to reply
 - `li agent -r {{branch_id}} "follow-up"` to continue your session\
 """
 
