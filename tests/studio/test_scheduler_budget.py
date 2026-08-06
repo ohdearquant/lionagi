@@ -232,6 +232,39 @@ async def test_maybe_fire_disables_and_records_when_over_budget():
 
 
 @pytest.mark.asyncio
+async def test_disable_still_lands_when_the_annotation_reread_fails():
+    """The rollup reread only annotates the disable record; a failure there
+    must not abort the disable or the skipped-run write."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.sum_schedule_spend = AsyncMock(
+        side_effect=[
+            {"cost_usd": 10.0, "tokens": 0, "unreported_sessions": 0},
+            RuntimeError("second read failed"),
+        ]
+    )
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(budget_usd=10.0, next_fire_at=1000.0)
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        await engine._maybe_fire(schedule, now=1000.0)
+
+    mock_tracked.assert_not_called()
+    svc.update_schedule.assert_awaited_once_with("sched-001", enabled=0)
+    svc.create_schedule_run.assert_awaited_once()
+    (run_payload,), _ = svc.create_schedule_run.await_args
+    assert run_payload["trigger_context"]["budget_exhausted"] is True
+    budget_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.kwargs.get("reason_code") == "schedule.budget.exhausted"
+    ]
+    assert budget_calls
+    assert budget_calls[0].kwargs["metadata"]["unreported_sessions"] is None
+
+
+@pytest.mark.asyncio
 async def test_maybe_fire_fires_normally_when_under_budget():
     from lionagi.studio.scheduler.engine import SchedulerEngine
 

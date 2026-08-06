@@ -1552,9 +1552,21 @@ class SchedulerEngine:
         disable record -- a human reading why a schedule got disabled should
         be able to tell "spend actually crossed the line" from "spend
         crossed the line but part of it is unmeasured, so the true total may
-        be higher still".
+        be higher still". The reread is annotation only: if it fails, the
+        disable and the skip record must still land, with the count marked
+        unknown rather than the enforcement aborted.
         """
-        spend = await self._svc.sum_schedule_spend(schedule["id"])
+        try:
+            spend = await self._svc.sum_schedule_spend(schedule["id"])
+        except Exception:
+            _log.warning(
+                "Could not re-read the spend rollup for schedule %s while "
+                "disabling it for budget exhaustion; recording the "
+                "unreported-session count as unknown",
+                schedule["id"],
+                exc_info=True,
+            )
+            spend = {}
         _log.info(
             "Schedule %s (%s) has exhausted its budget (budget_usd=%s, budget_tokens=%s); "
             "disabling instead of firing",
@@ -1578,7 +1590,7 @@ class SchedulerEngine:
             metadata={
                 "budget_usd": schedule.get("budget_usd"),
                 "budget_tokens": schedule.get("budget_tokens"),
-                "unreported_sessions": spend.get("unreported_sessions", 0),
+                "unreported_sessions": spend.get("unreported_sessions"),
             },
         )
         await self._svc.update_schedule(schedule["id"], enabled=0)
