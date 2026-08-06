@@ -14,6 +14,7 @@
  * rendering (matches the sparkline.ts / boardReducer.ts convention).
  */
 
+import { runLabel } from "@/lib/runLabel";
 import type { RunSummary } from "@/lib/types";
 import { deriveDisplayStatus, type DisplayStatus } from "@/lib/runStatus";
 
@@ -28,7 +29,7 @@ export interface RecentGroup {
 }
 
 function runName(run: RunSummary): string {
-  return run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
+  return runLabel(run);
 }
 
 /**

@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "Memeriksa apakah proses ini dapat dilanjutkan…",
+    "availabilityFailed": "Tidak dapat menentukan apakah proses ini dapat dilanjutkan.",
+    "notResumable": "Proses ini tidak dapat dilanjutkan.",
+    "continueDescription": "Memutar ulang rencana yang tersimpan dari titik terakhir — tanpa instruksi baru, tanpa cabang untuk dipilih.",
+    "continueSubmit": "Lanjutkan",
+    "continueDegraded": "Tetap lanjutkan, tanpa konteks yang hilang"
   },
   "operator": {
     "title": "Operator",
@@ -446,7 +452,10 @@
       "graphEdgeCount": "{count} sisi",
       "graphImpliedHidden": "· {count} implisit disembunyikan",
       "graphHideImplied": "sembunyikan implisit",
-      "graphShowImplied": "tampilkan sisi implisit"
+      "graphShowImplied": "tampilkan sisi implisit",
+      "rename": "Ganti nama sesi",
+      "renamePlaceholder": "Nama sesi",
+      "renameSaveFailed": "Tidak dapat menyimpan nama baru."
     },
     "masterAria": "Daftar riwayat",
     "detailAria": "Detail item"

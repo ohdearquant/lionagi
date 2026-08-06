@@ -108,6 +108,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/runs/projects"),
     ("GET", "/api/runs/{run_id}"),
     ("GET", "/api/runs/{run_id}/file"),
+    ("GET", "/api/runs/{run_id}/resume"),
     ("GET", "/api/schedules/"),
     ("GET", "/api/schedules/limits"),
     ("GET", "/api/schedules/runs/{run_id}"),
@@ -189,6 +190,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", "/api/mcp/servers/{name}"),
     ("PUT", "/api/playbooks/{name}"),
     ("PUT", "/api/projects/{name}"),
+    ("PUT", "/api/sessions/{session_id}"),
     ("PUT", "/api/workflow-defs/{def_id}"),
 )
 
@@ -268,7 +270,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 122
+    assert len(_GOLDEN_ROUTES) == 124
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -599,6 +601,8 @@ _SESSION_DETAIL_KEYS = sorted(
         "status_reason_code",
         "status_reason_summary",
         "updated_at",
+        "user_label",
+        "display_name",
     ]
 )
 
@@ -649,6 +653,39 @@ def test_sessions_detail_malformed_cursor_400_shape(tmp_path, monkeypatch):
 
     r = client.get(f"/api/sessions/{sid}", params={"message_cursor": "not-valid-base64-json!!"})
     assert r.status_code == 400
+    assert sorted(r.json().keys()) == ["detail"]
+
+
+def test_sessions_rename_success_response_shape(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    sid = str(uuid.uuid4())
+    run_async(_seed_completed_session(db_path, sid))
+    client = _make_client()
+
+    r = client.put(f"/api/sessions/{sid}", json={"label": "gate rename"})
+    assert r.status_code == 200
+    assert sorted(r.json().keys()) == ["display_name", "session_id", "user_label"]
+
+
+def test_sessions_rename_unknown_id_404_shape(tmp_path, monkeypatch):
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    client = _make_client()
+
+    r = client.put(f"/api/sessions/{uuid.uuid4()}", json={"label": "gate rename"})
+    assert r.status_code == 404
+    assert sorted(r.json().keys()) == ["detail"]
+
+
+def test_sessions_rename_control_character_422_shape(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    sid = str(uuid.uuid4())
+    run_async(_seed_completed_session(db_path, sid))
+    client = _make_client()
+
+    r = client.put(f"/api/sessions/{sid}", json={"label": "bad\nlabel"})
+    assert r.status_code == 422
     assert sorted(r.json().keys()) == ["detail"]
 
 

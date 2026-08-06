@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "Verificando se esta execução pode ser retomada…",
+    "availabilityFailed": "Não foi possível determinar se esta execução pode ser retomada.",
+    "notResumable": "Esta execução não pode ser retomada.",
+    "continueDescription": "Reproduz o plano salvo de onde parou — sem nova instrução, sem branch para escolher.",
+    "continueSubmit": "Continuar",
+    "continueDegraded": "Continuar mesmo assim, sem o contexto ausente"
   },
   "operator": {
     "title": "Operator",
@@ -446,7 +452,10 @@
       "graphEdgeCount": "{count} arestas",
       "graphImpliedHidden": "· {count} implícitas ocultas",
       "graphHideImplied": "ocultar implícitas",
-      "graphShowImplied": "mostrar arestas implícitas"
+      "graphShowImplied": "mostrar arestas implícitas",
+      "rename": "Renomear sessão",
+      "renamePlaceholder": "Nome da sessão",
+      "renameSaveFailed": "Não foi possível salvar o novo nome."
     },
     "masterAria": "Lista do histórico",
     "detailAria": "Detalhes do item"

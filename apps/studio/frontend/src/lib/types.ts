@@ -67,6 +67,9 @@ export interface RunSummary {
   run_id: string;
   id?: string;
   name?: string | null;
+  // The backend's single resolved display name, where a user's rename lands.
+  // Served on every run row; prefer it over the fields below via runLabel().
+  display_name?: string | null;
   playbook_name?: string | null;
   agent_name?: string | null;
   invocation_kind?: string | null;
@@ -158,16 +161,51 @@ export interface RunDetail {
   artifact_verification_json?: ArtifactVerification | null;
 }
 
+// The checkpoint-replay kinds (play/flow/show-play/fanout) send neither
+// instruction nor branch_id — the checkpoint owns the plan — so both are
+// optional here; the "agent" kind still requires instruction, enforced by
+// the resume service (services/run_resume.py) and mirrored in ResumeRun's
+// own submit validation.
 export interface RunResumeRequest {
-  instruction: string;
+  instruction?: string;
   branch_id?: string;
   model?: string;
+  allow_degraded_context?: boolean;
 }
 
+// branch_id is only present for an "agent" kind resume; invocation_kind and
+// checkpoint_run_id are only present for a checkpoint-replay kind resume.
 export interface RunResumeResponse {
   run_id: string;
-  branch_id: string;
   invocation_id: string;
+  branch_id?: string;
+  invocation_kind?: string;
+  checkpoint_run_id?: string;
+}
+
+// A run with no checkpoint is a distinct, explicit state from a resume that
+// failed — this mirrors GET /api/runs/{run_id}/resume (services/run_resume.py
+// resume_availability), read BEFORE the resume action is offered so a dead
+// control never renders as a live one.
+export type ResumeUnavailableReason =
+  | "branch_conflict"
+  | "no_checkpoint"
+  | "empty_checkpoint"
+  | "no_run_id"
+  | "no_backing_session"
+  | "target_not_found"
+  | "ambiguous_target"
+  | "invalid_checkpoint"
+  | "unsupported_kind";
+
+export interface ResumeAvailability {
+  run_id: string;
+  invocation_kind: string | null;
+  resumable: boolean;
+  reason?: ResumeUnavailableReason;
+  message?: string;
+  branch_id?: string;
+  checkpoint_run_id?: string;
 }
 
 // ─── Worker / Playbook types ──────────────────────────────────────────────────

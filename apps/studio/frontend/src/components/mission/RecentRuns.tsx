@@ -9,6 +9,7 @@
  * never share a group with a genuine failure of the same name.
  */
 
+import { runLabel } from "@/lib/runLabel";
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
@@ -158,7 +159,7 @@ function RunRow({
   first: boolean;
   statusLabel: (status: string) => string | undefined;
 }) {
-  const name = run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
+  const name = runLabel(run);
   const dur = durationSec(run, nowSec);
   return (
     <Link

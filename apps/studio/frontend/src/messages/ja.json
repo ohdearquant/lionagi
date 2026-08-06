@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "この実行を再開できるか確認しています…",
+    "availabilityFailed": "この実行を再開できるかどうかを判断できませんでした。",
+    "notResumable": "この実行は再開できません。",
+    "continueDescription": "停止した箇所から保存済みのプランを再生します — 新しい指示もブランチの選択も不要です。",
+    "continueSubmit": "続行",
+    "continueDegraded": "不足しているコンテキストなしでもそのまま続行"
   },
   "operator": {
     "title": "Operator",
@@ -446,7 +452,10 @@
       "graphEdgeCount": "{count} 本のエッジ",
       "graphImpliedHidden": "· 暗黙のエッジ {count} 本を非表示",
       "graphHideImplied": "暗黙のエッジを隠す",
-      "graphShowImplied": "暗黙のエッジを表示"
+      "graphShowImplied": "暗黙のエッジを表示",
+      "rename": "セッション名を変更",
+      "renamePlaceholder": "セッション名",
+      "renameSaveFailed": "新しい名前を保存できませんでした。"
     },
     "masterAria": "履歴一覧",
     "detailAria": "項目の詳細"

@@ -87,6 +87,37 @@ def test_admin_doctor_reports_missing_artifacts_phantom(tmp_path, monkeypatch):
     assert "missing_artifacts" in reasons
 
 
+def test_admin_doctor_phantom_playbook_field_prefers_user_label(tmp_path, monkeypatch):
+    """The phantom-session diagnostic's "playbook" display field must resolve
+    through the same helper as every other served session name -- a rename
+    must show up here too, ranked above the system-written `name`."""
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    missing_dir = str(tmp_path / "nonexistent_artifacts")
+    stale_time = time.time() - 7200
+    _run(_seed_running_session(db_path, sid, artifacts_path=missing_dir, updated_at=stale_time))
+
+    # Raw SQL, not StateDB.update_session(): the real rename route writes
+    # this way specifically so a rename does not bump updated_at and
+    # un-stale the very row this test is asserting stays phantom.
+    async def _rename() -> None:
+        import aiosqlite
+
+        async with aiosqlite.connect(str(db_path)) as conn:
+            await conn.execute(
+                "UPDATE sessions SET user_label = ? WHERE id = ?", ("Renamed Phantom", sid)
+            )
+            await conn.commit()
+
+    _run(_rename())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/admin/doctor")
+    assert r.status_code == 200
+    phantoms = {p["session_id"]: p for p in r.json()["phantom_sessions"]}
+    assert phantoms[sid]["playbook"] == "Renamed Phantom"
+
+
 def test_admin_doctor_no_db_returns_empty_health(tmp_path, monkeypatch):
     db_path = tmp_path / "missing.db"
     client = _make_client(tmp_path, monkeypatch, db_path)
@@ -293,6 +324,27 @@ def test_admin_health_reports_status_and_health_buckets(tmp_path, monkeypatch):
     assert sum(sess["by_health"].values()) == sess["total"]
     # by_status must stay liveness-aware: total count is preserved either way.
     assert sum(sess["by_status"].values()) == sess["total"]
+
+
+def test_admin_health_unhealthy_name_prefers_user_label(tmp_path, monkeypatch):
+    """The unhealthy-sessions diagnostic's "name" field must resolve through
+    the shared helper -- a rename outranks the system-written `name` here
+    exactly as it does on the session list/detail routes."""
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, sid))  # no artifacts/messages -> ORPHANED
+
+    async def _rename() -> None:
+        async with StateDB(db_path) as db:
+            await db.update_session(sid, user_label="Renamed Unhealthy Session")
+
+    _run(_rename())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/admin/health")
+    assert r.status_code == 200
+    unhealthy = {row["session_id"]: row for row in r.json()["sessions"]["unhealthy"]}
+    assert unhealthy[sid]["name"] == "Renamed Unhealthy Session"
 
 
 def test_admin_health_running_bucket_excludes_confirmed_dead_running_session(tmp_path, monkeypatch):

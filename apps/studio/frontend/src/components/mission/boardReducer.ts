@@ -7,6 +7,7 @@
  * layer — reducer and components are unchanged.
  */
 
+import { runLabel } from "@/lib/runLabel";
 import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus, isOrphanedReason } from "@/lib/runStatus";
@@ -168,7 +169,7 @@ function buildAttentionItems(
     items.push({
       id: `run:${run.run_id}`,
       kind: "run",
-      name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-8),
+      name: runLabel(run, 8),
       reason,
       startedAt: run.started_at ?? null,
       href: `/runs/${run.run_id}`,

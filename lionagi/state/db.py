@@ -227,6 +227,10 @@ _SESSION_COLUMNS = frozenset(
     {
         "cc_session_id",
         "name",
+        # User-owned display label (Studio rename). No system writer in the
+        # creation/update audit passes this field; it stays in the allow-list
+        # so StateDB.update_session() is the one write path for it.
+        "user_label",
         "user",
         "node_metadata",
         "first_msg_id",
@@ -1240,6 +1244,7 @@ class StateDB:
                               created_at      REAL    NOT NULL,
                               node_metadata   JSON,
                               name            TEXT,
+                              user_label      TEXT,
                               user            TEXT,
                               progression_id  TEXT    NOT NULL REFERENCES progressions(id),
                               first_msg_id    TEXT    REFERENCES messages(id),

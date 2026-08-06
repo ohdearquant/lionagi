@@ -15,6 +15,8 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("playbook_name", "TEXT"),
         ("agent_name", "TEXT"),
         ("invocation_kind", "TEXT"),
+        # User-owned display label (Studio rename); never system-written.
+        ("user_label", "TEXT"),
         ("show_topic", "TEXT"),
         ("show_play_name", "TEXT"),
         ("artifacts_path", "TEXT"),

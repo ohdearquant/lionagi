@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "Es wird geprüft, ob dieser Lauf fortgesetzt werden kann…",
+    "availabilityFailed": "Es konnte nicht ermittelt werden, ob dieser Lauf fortgesetzt werden kann.",
+    "notResumable": "Dieser Lauf kann nicht fortgesetzt werden.",
+    "continueDescription": "Spielt den gespeicherten Plan ab dort ab, wo er gestoppt wurde — keine neue Anweisung, kein Branch zur Auswahl.",
+    "continueSubmit": "Fortsetzen",
+    "continueDegraded": "Trotzdem fortsetzen, ohne den fehlenden Kontext"
   },
   "operator": {
     "title": "Operator",
@@ -446,7 +452,10 @@
       "graphEdgeCount": "{count} Kanten",
       "graphImpliedHidden": "· {count} implizite ausgeblendet",
       "graphHideImplied": "implizite ausblenden",
-      "graphShowImplied": "implizite Kanten anzeigen"
+      "graphShowImplied": "implizite Kanten anzeigen",
+      "rename": "Sitzung umbenennen",
+      "renamePlaceholder": "Sitzungsname",
+      "renameSaveFailed": "Der neue Name konnte nicht gespeichert werden."
     },
     "masterAria": "Verlaufsliste",
     "detailAria": "Elementdetails"

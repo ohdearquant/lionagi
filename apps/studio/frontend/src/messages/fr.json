@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "Vérification de la possibilité de reprendre cette exécution…",
+    "availabilityFailed": "Impossible de déterminer si cette exécution peut être reprise.",
+    "notResumable": "Cette exécution ne peut pas être reprise.",
+    "continueDescription": "Rejoue le plan enregistré là où il s'est arrêté — aucune nouvelle instruction, aucune branche à choisir.",
+    "continueSubmit": "Continuer",
+    "continueDegraded": "Continuer quand même, sans le contexte manquant"
   },
   "operator": {
     "title": "Operator",
@@ -446,7 +452,10 @@
       "graphEdgeCount": "{count} arêtes",
       "graphImpliedHidden": "· {count} implicites masquées",
       "graphHideImplied": "masquer les implicites",
-      "graphShowImplied": "afficher les arêtes implicites"
+      "graphShowImplied": "afficher les arêtes implicites",
+      "rename": "Renommer la session",
+      "renamePlaceholder": "Nom de la session",
+      "renameSaveFailed": "Impossible d'enregistrer le nouveau nom."
     },
     "masterAria": "Liste d’historique",
     "detailAria": "Détail de l’élément"

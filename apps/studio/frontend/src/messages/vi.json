@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "Đang kiểm tra xem lượt chạy này có thể tiếp tục hay không…",
+    "availabilityFailed": "Không thể xác định liệu lượt chạy này có thể tiếp tục hay không.",
+    "notResumable": "Không thể tiếp tục lượt chạy này.",
+    "continueDescription": "Phát lại kế hoạch đã lưu từ nơi nó dừng lại — không có hướng dẫn mới, không có nhánh để chọn.",
+    "continueSubmit": "Tiếp tục",
+    "continueDegraded": "Vẫn tiếp tục, không có ngữ cảnh bị thiếu"
   },
   "operator": {
     "title": "Operator",
@@ -446,7 +452,10 @@
       "graphEdgeCount": "{count} cạnh",
       "graphImpliedHidden": "· ẩn {count} cạnh ngầm định",
       "graphHideImplied": "ẩn cạnh ngầm định",
-      "graphShowImplied": "hiện cạnh ngầm định"
+      "graphShowImplied": "hiện cạnh ngầm định",
+      "rename": "Đổi tên phiên",
+      "renamePlaceholder": "Tên phiên",
+      "renameSaveFailed": "Không thể lưu tên mới."
     },
     "masterAria": "danh sách lịch sử",
     "detailAria": "chi tiết mục"

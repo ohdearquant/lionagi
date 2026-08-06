@@ -472,6 +472,10 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         "run_id": s["id"],
         "id": s["id"],
         "name": s.get("name"),
+        "user_label": s.get("user_label"),
+        # Single resolved display name (sessions.resolve_session_display_name);
+        # callers must render this, not recompute their own fallback chain.
+        "display_name": _sessions_svc.resolve_session_display_name(s),
         "playbook_name": s.get("playbook_name"),
         "agent_name": s.get("agent_name"),
         "invocation_kind": s.get("invocation_kind"),
@@ -719,7 +723,7 @@ async def list_runs_route(
     ),
     search: str | None = Query(
         default=None,
-        description="Case-insensitive contains match on session name or agent name",
+        description="Case-insensitive contains match on session label, name, or agent name",
     ),
 ) -> dict[str, Any]:
     where = _sessions_svc.SessionFilter(

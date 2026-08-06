@@ -203,6 +203,29 @@ async def test_get_run_maps_session_fields_correctly(patched_runs_svc):
     assert result["task"] == ""
 
 
+async def test_get_run_display_name_matches_session_detail(patched_runs_svc):
+    """_run_row's display_name must come from the same resolver session detail
+    uses -- proven here by asserting equality against get_session(), not by
+    re-deriving the expected value independently."""
+    from lionagi.studio.services import sessions as sessions_svc
+
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, agent_name="researcher")
+
+    async with StateDB(db_path) as db:
+        await db.update_session(sid, user_label="Renamed Run")
+
+    result = await svc.get_run(sid)
+    session_detail = await sessions_svc.get_session(sid)
+
+    assert result["display_name"] == "Renamed Run"
+    assert result["user_label"] == "Renamed Run"
+    assert result["display_name"] == session_detail["display_name"]
+    # worker_name stays the role field (agent_name), untouched by the rename.
+    assert result["worker_name"] == "researcher"
+
+
 # ---------------------------------------------------------------------------
 # Test 5 — step_count matches branch count; steps list is populated
 # ---------------------------------------------------------------------------

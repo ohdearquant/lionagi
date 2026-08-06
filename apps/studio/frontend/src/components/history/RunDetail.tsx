@@ -15,7 +15,14 @@ import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
-import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
+import {
+  ApiError,
+  getInvocation,
+  getSession,
+  renameSession,
+  streamSession,
+  streamSignals,
+} from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
 import {
   buildNodeStatusesByName,
@@ -948,6 +955,110 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
   );
 }
 
+// ── Inline session rename (list row + this header are the only two places
+// a session name is served, both through resolve_session_display_name /
+// session.display_name — one source, so they can't disagree) ─────────────────
+
+function SessionNameEditor({
+  sessionId,
+  displayName,
+  onRenamed,
+}: {
+  sessionId: string;
+  displayName: string;
+  onRenamed: (result: { user_label: string | null; display_name: string }) => void;
+}) {
+  const t = useTranslations("history.detail");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(displayName);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!editing) return;
+    const raf = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [editing]);
+
+  function startEditing() {
+    setDraft(displayName);
+    setError(null);
+    setEditing(true);
+  }
+
+  function cancelEditing() {
+    setEditing(false);
+    setError(null);
+    setDraft(displayName);
+  }
+
+  async function commit() {
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = await renameSession(sessionId, draft);
+      onRenamed(saved);
+      setEditing(false);
+    } catch (caught) {
+      // A failed save keeps the editor open with the user's typed text
+      // rather than discarding it or silently reverting to the old name.
+      setError(caught instanceof Error ? caught.message : t("renameSaveFailed"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <input
+          ref={inputRef}
+          value={draft}
+          disabled={saving}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => {
+            if (!saving && draft === displayName) cancelEditing();
+          }}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void commit();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              cancelEditing();
+            }
+          }}
+          maxLength={160}
+          placeholder={t("renamePlaceholder")}
+          className="focus-ring min-w-0 flex-1 rounded border border-edge bg-surface-base px-1.5 py-0.5 font-mono text-[length:var(--t-base)] font-semibold text-content-primary"
+        />
+        {error && (
+          <span role="alert" className="shrink-0 text-[length:var(--t-xs)] text-status-failure">
+            {error}
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={startEditing}
+      title={t("rename")}
+      aria-label={t("rename")}
+      className="focus-ring min-w-0 flex-1 truncate rounded px-0.5 text-left font-mono text-[length:var(--t-base)] font-semibold text-content-primary hover:bg-surface-overlay"
+    >
+      {displayName}
+    </button>
+  );
+}
+
 // ── Public component ──────────────────────────────────────────────────────────
 
 // Floor for the execution-graph panel — keeps a tiny pipeline from collapsing
@@ -1492,9 +1603,17 @@ export default function RunDetail({ id }: RunDetailProps) {
     <div className="flex flex-col gap-6 p-3">
       {/* Compact pane header — name + live badge + elapsed */}
       <div className="flex items-center gap-2 border-b border-edge pb-1">
-        <span className="min-w-0 flex-1 truncate font-mono text-[length:var(--t-base)] font-semibold text-content-primary">
-          {session.name || session.id.slice(0, 8)}
-        </span>
+        <SessionNameEditor
+          sessionId={session.id}
+          displayName={session.display_name || session.name || session.id.slice(0, 8)}
+          onRenamed={(saved) => {
+            setSession((prev) =>
+              prev && prev.id === session.id
+                ? { ...prev, user_label: saved.user_label, display_name: saved.display_name }
+                : prev,
+            );
+          }}
+        />
         <StatusVerdictChips run={runForStatus} />
         {live && !done && (
           <span className="flex shrink-0 items-center gap-1 text-[length:var(--t-xs)] text-status-success">
@@ -1511,6 +1630,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       <ResumeRun
         key={session.id}
         runId={session.id}
+        invocationKind={session.invocation_kind ?? null}
         branches={session.branches}
         onResumed={handleResumed}
       />

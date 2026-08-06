@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "جارٍ التحقق مما إذا كان يمكن استئناف هذا التشغيل…",
+    "availabilityFailed": "تعذر تحديد ما إذا كان يمكن استئناف هذا التشغيل.",
+    "notResumable": "لا يمكن استئناف هذا التشغيل.",
+    "continueDescription": "يعيد تشغيل الخطة المحفوظة من حيث توقفت — بلا تعليمات جديدة وبلا فرع للاختيار.",
+    "continueSubmit": "متابعة",
+    "continueDegraded": "المتابعة على أي حال، بدون السياق المفقود"
   },
   "operator": {
     "title": "Operator",
@@ -446,7 +452,10 @@
       "graphEdgeCount": "{count} حافة",
       "graphImpliedHidden": "· {count} ضمنية مخفية",
       "graphHideImplied": "إخفاء الضمنية",
-      "graphShowImplied": "إظهار الحواف الضمنية"
+      "graphShowImplied": "إظهار الحواف الضمنية",
+      "rename": "إعادة تسمية الجلسة",
+      "renamePlaceholder": "اسم الجلسة",
+      "renameSaveFailed": "تعذر حفظ الاسم الجديد."
     },
     "masterAria": "قائمة السجل",
     "detailAria": "تفاصيل العنصر"

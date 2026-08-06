@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "Проверяется, можно ли возобновить этот запуск…",
+    "availabilityFailed": "Не удалось определить, можно ли возобновить этот запуск.",
+    "notResumable": "Этот запуск нельзя возобновить.",
+    "continueDescription": "Повторяет сохранённый план с места остановки — без новой инструкции, без выбора ветки.",
+    "continueSubmit": "Продолжить",
+    "continueDegraded": "Всё равно продолжить, без отсутствующего контекста"
   },
   "operator": {
     "title": "Operator",
@@ -446,7 +452,10 @@
       "graphEdgeCount": "рёбер: {count}",
       "graphImpliedHidden": "· скрыто неявных: {count}",
       "graphHideImplied": "скрыть неявные",
-      "graphShowImplied": "показать неявные рёбра"
+      "graphShowImplied": "показать неявные рёбра",
+      "rename": "Переименовать сессию",
+      "renamePlaceholder": "Имя сессии",
+      "renameSaveFailed": "Не удалось сохранить новое имя."
     },
     "masterAria": "Список истории",
     "detailAria": "Сведения об элементе"

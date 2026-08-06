@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "یہ جانچا جا رہا ہے کہ آیا یہ رن دوبارہ شروع کیا جا سکتا ہے…",
+    "availabilityFailed": "یہ طے نہیں کیا جا سکا کہ آیا یہ رن دوبارہ شروع کیا جا سکتا ہے۔",
+    "notResumable": "یہ رن دوبارہ شروع نہیں کیا جا سکتا۔",
+    "continueDescription": "محفوظ شدہ منصوبے کو وہیں سے دوبارہ چلاتا ہے جہاں یہ رکا تھا — کوئی نئی ہدایت نہیں، منتخب کرنے کے لیے کوئی برانچ نہیں۔",
+    "continueSubmit": "جاری رکھیں",
+    "continueDegraded": "گمشدہ سیاق و سباق کے بغیر پھر بھی جاری رکھیں"
   },
   "operator": {
     "title": "Operator",
@@ -446,7 +452,10 @@
       "graphEdgeCount": "{count} کنارے",
       "graphImpliedHidden": "· {count} ضمنی چھپے ہوئے",
       "graphHideImplied": "ضمنی چھپائیں",
-      "graphShowImplied": "ضمنی کنارے دکھائیں"
+      "graphShowImplied": "ضمنی کنارے دکھائیں",
+      "rename": "سیشن کا نام تبدیل کریں",
+      "renamePlaceholder": "سیشن کا نام",
+      "renameSaveFailed": "نیا نام محفوظ نہیں ہو سکا۔"
     },
     "masterAria": "ہسٹری فہرست",
     "detailAria": "آئٹم تفصیل"

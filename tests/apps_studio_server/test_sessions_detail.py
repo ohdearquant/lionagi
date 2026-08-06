@@ -1378,3 +1378,67 @@ async def test_get_session_message_count_is_db_aggregate_not_progression_length(
     assert branch["message_total"] == 2  # progression length, kept as a separate field
     assert result["message_stats"]["message_count"] == 1  # DB aggregate, not progression length
     assert branch["message_stats"]["message_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# resolve_session_display_name() served through list_sessions() / get_session()
+# ---------------------------------------------------------------------------
+
+
+async def test_unrenamed_session_display_name_is_the_legacy_fallback(patched_sessions_db):
+    """A session nobody has renamed (user_label NULL) must resolve to exactly
+    the same name list_sessions()/get_session() already returned before
+    user_label existed -- no visual change for the common case."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-unrenamed", status="completed")
+
+    rows = await svc.list_sessions()
+    detail = await svc.get_session("sess-unrenamed")
+
+    assert rows[0]["user_label"] is None
+    assert rows[0]["display_name"] == "Test Session"  # seed_session's default `name`
+    assert detail["user_label"] is None
+    assert detail["display_name"] == "Test Session"
+
+
+async def test_renamed_session_display_name_agrees_across_list_and_detail(patched_sessions_db):
+    """The rename must be visible, and identical, everywhere a session name is
+    served -- a second, independently-computed fallback is exactly the defect
+    resolve_session_display_name() exists to remove."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-renamed", status="completed")
+
+    async with StateDB(db_path) as db:
+        await db.update_session("sess-renamed", user_label="Ocean's Debug Run")
+
+    rows = await svc.list_sessions()
+    detail = await svc.get_session("sess-renamed")
+
+    assert rows[0]["user_label"] == "Ocean's Debug Run"
+    assert rows[0]["display_name"] == "Ocean's Debug Run"
+    assert detail["user_label"] == "Ocean's Debug Run"
+    assert detail["display_name"] == "Ocean's Debug Run"
+
+
+async def test_renamed_session_display_name_wins_over_agent_and_playbook(patched_sessions_db):
+    """user_label outranks every existing fallback candidate, not just `name`."""
+    svc, db_path = patched_sessions_db
+    async with StateDB(db_path) as db:
+        prog_id = "sess-priority-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": "sess-priority",
+                "created_at": 100.0,
+                "updated_at": 100.0,
+                "progression_id": prog_id,
+                "name": None,
+                "agent_name": "worker-agent",
+                "playbook_name": "worker-playbook",
+                "status": "completed",
+            }
+        )
+        await db.update_session("sess-priority", user_label="Priority Label")
+
+    detail = await svc.get_session("sess-priority")
+    assert detail["display_name"] == "Priority Label"

@@ -230,6 +230,55 @@ def test_runs_list_search_is_case_insensitive(tmp_path, monkeypatch):
     assert r.json()["total"] == 1
 
 
+def test_runs_list_search_matches_user_label(tmp_path, monkeypatch):
+    """A Studio rename must be searchable, on top of the existing name/agent_name
+    match -- extending SessionFilter.where() rather than replacing it."""
+    db_path = tmp_path / "state.db"
+    sessions = [
+        {"id": str(uuid.uuid4()), "name": "agent"},
+        {"id": str(uuid.uuid4()), "name": "totally different"},
+    ]
+    _run(_seed_sessions(db_path, sessions))
+    labeled_id = sessions[0]["id"]
+
+    async def _rename() -> None:
+        async with StateDB(db_path) as db:
+            await db.update_session(labeled_id, user_label="flaky login investigation")
+
+    _run(_rename())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs?search=flaky")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 1
+    assert data["runs"][0]["id"] == labeled_id
+    assert data["runs"][0]["display_name"] == "flaky login investigation"
+
+
+def test_runs_list_search_label_escapes_percent_wildcard(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    sessions = [
+        {"id": str(uuid.uuid4()), "name": "agent"},
+        {"id": str(uuid.uuid4()), "name": "unrelated"},
+    ]
+    _run(_seed_sessions(db_path, sessions))
+    labeled_id = sessions[0]["id"]
+
+    async def _rename() -> None:
+        async with StateDB(db_path) as db:
+            await db.update_session(labeled_id, user_label="hit rate 50% today")
+
+    _run(_rename())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs", params={"search": "50%"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 1
+    assert data["runs"][0]["id"] == labeled_id
+
+
 def test_runs_list_search_no_match_returns_empty(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     sessions = [{"id": str(uuid.uuid4()), "name": "alpha"}]

@@ -1369,6 +1369,40 @@ async def test_narrow_source_kind_check_is_widened_for_codex_imports(tmp_path):
         _insert_session(db_path, "bogus", "imported_elsewhere")
 
 
+async def test_legacy_rebuild_preserves_user_label(tmp_path):
+    """The sessions rebuild path (triggered here by the legacy status CHECK)
+    copies every existing column generically via PRAGMA table_info -- but the
+    literal ``CREATE TABLE sessions_new`` DDL it copies into must also declare
+    the column, or the INSERT...SELECT fails outright. Regression coverage for
+    forgetting that declaration when a session column is added."""
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "legacy-label.db"
+    _create_legacy_session_status_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("INSERT OR IGNORE INTO progressions (id, created_at) VALUES ('p', 1.0)")
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, progression_id, user_label) "
+            "VALUES (?, ?, ?, 'p', ?)",
+            ("labeled", 1.0, 1.0, "Keep Me"),
+        )
+
+    assert StateDB._sessions_rebuild_needed(_sessions_create_sql(db_path))
+
+    state = StateDB(f"sqlite+aiosqlite:///{db_path}")
+    async with state:
+        pass
+
+    # The rebuild ran (the legacy CHECK is gone) ...
+    assert not StateDB._sessions_rebuild_needed(_sessions_create_sql(db_path))
+    # ... and the label survived it, rather than the INSERT...SELECT silently
+    # dropping a column sessions_new never declared.
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT user_label FROM sessions WHERE id = 'labeled'").fetchone()
+    assert row == ("Keep Me",)
+
+
 async def test_current_schema_db_is_not_rebuilt(tmp_path):
     """A database created by this release carries neither legacy CHECK, so opening
     it leaves the sessions table byte-identical."""
