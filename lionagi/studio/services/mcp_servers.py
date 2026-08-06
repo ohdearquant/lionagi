@@ -178,9 +178,12 @@ def _validate_shape(name: str, config: dict[str, Any]) -> list[str]:
             errors.append("'args' must be a list of strings")
         env = config.get("env", {})
         if not isinstance(env, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+            isinstance(k, str) and (v is None or isinstance(v, str)) for k, v in env.items()
         ):
-            errors.append("'env' must be an object mapping string names to string values")
+            errors.append(
+                "'env' must be an object mapping string names to string values "
+                "(a null value marks the key for deletion)"
+            )
 
     if has_url:
         url = config.get("url")

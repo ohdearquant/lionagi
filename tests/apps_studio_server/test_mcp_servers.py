@@ -56,6 +56,15 @@ def test_validate_shape_rejects_bad_env_values():
     assert any("'env'" in e for e in errors)
 
 
+def test_validate_shape_accepts_env_null_value_as_deletion_marker():
+    """`update_server` treats a `None` env value as "delete this key" (see
+    `_merge_config`), so a `/validate` call against the same patch body must
+    not reject it -- otherwise a patch the save path accepts fails shape
+    validation first (#2771)."""
+    errors = mcp_mod._validate_shape("myserver", {"command": "python3", "env": {"KEY": None}})
+    assert errors == []
+
+
 def test_validate_shape_rejects_bad_url():
     errors = mcp_mod._validate_shape("myserver", {"url": "not-a-url"})
     assert any("'url'" in e for e in errors)
