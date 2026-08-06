@@ -152,7 +152,7 @@ def test_the_loader_boundary_does_not_absorb_a_missing_dependency(monkeypatch, r
     def _boom(selected):
         raise ModuleNotFoundError("No module named 'somedep'", name="somedep")
 
-    monkeypatch.setattr(cli_main, "_build_parser", _boom)
+    monkeypatch.setattr(cli_main, "build_cli_parser", _boom)
 
     assert cli_main.main(["doctor"]) == EXIT_CODE_ENVIRONMENT_ERROR
     assert "somedep" in "\n".join(reported)

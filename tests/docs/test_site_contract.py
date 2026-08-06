@@ -60,16 +60,16 @@ def test_stale_pages_are_excluded_from_the_published_site() -> None:
 
 
 def test_cli_reference_covers_every_shipped_surface() -> None:
-    from lionagi.cli.main import _COMMAND_REGISTRY
+    from lionagi._auto import iter_cli_seeds
 
     reference = (DOCS / "cli-reference.md").read_text().lower()
     aliases = {
         "orchestrate": ("li orchestrate", "li o "),
     }
-    for spec in _COMMAND_REGISTRY:
-        needles = aliases.get(spec.name, (f"li {spec.name}",))
+    for seed in iter_cli_seeds():
+        needles = aliases.get(seed.name, (f"li {seed.name}",))
         assert any(needle in reference for needle in needles), (
-            f"cli-reference.md does not make `li {spec.name}` discoverable"
+            f"cli-reference.md does not make `li {seed.name}` discoverable"
         )
 
     for hidden_surface in ("li play", "li skill", "li wait"):

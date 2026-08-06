@@ -20,7 +20,7 @@ import argparse
 
 import pytest
 
-from lionagi.cli.main import _COMMAND_REGISTRY
+from lionagi._auto import iter_cli_seeds, load_cli_command
 from lionagi.mcp.verbs import ABSENT, FENCED_PATHS, VERBS
 
 
@@ -62,19 +62,20 @@ def _cli_leaves() -> tuple[dict[str, str], dict[str, str]]:
     """
     leaves: dict[str, str] = {}
     unbuildable: dict[str, str] = {}
-    for spec in _COMMAND_REGISTRY:
+    for seed in iter_cli_seeds():
         root = argparse.ArgumentParser(prog="li")
         subparsers = root.add_subparsers(dest="command")
         try:
-            getattr(spec.loader(), spec.parser_factory)(subparsers)
+            registration = load_cli_command(seed)
+            registration.cli.parser_factory(subparsers)
         except Exception as exc:  # noqa: BLE001 — recorded, and failed on by the caller
-            unbuildable[spec.name] = f"{type(exc).__name__}: {exc}"
+            unbuildable[seed.name] = f"{type(exc).__name__}: {exc}"
             continue
         for name, sub in subparsers.choices.items():
-            if name not in (spec.name, *spec.aliases):
+            if name not in (seed.name, *seed.aliases):
                 continue
             for spelling, canonical in _leaves(sub, name).items():
-                leaves[spelling] = canonical.replace(name, spec.name, 1)
+                leaves[spelling] = canonical.replace(name, seed.name, 1)
     return leaves, unbuildable
 
 
