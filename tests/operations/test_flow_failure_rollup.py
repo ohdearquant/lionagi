@@ -122,3 +122,34 @@ async def test_skipped_operation_is_not_reported_as_failed():
     assert "never" not in executed
     assert never_id in result["skipped_operations"]
     assert never_id not in result["failed_operations"]
+
+
+@pytest.mark.asyncio
+async def test_non_mapping_response_context_is_rolled_up_as_failed():
+    """An operation that completes but returns a non-Mapping response
+    ``context`` is flipped to EventStatus.FAILED by the post-invoke
+    validation guard -- that guard must land the op in failed_operations
+    the same as an op whose invoke() itself raised, not bypass the rollup
+    it exists to feed."""
+    executed: list[str] = []
+
+    async def first(**kw):
+        executed.append("first")
+        return "first ok"
+
+    async def bad_context(**kw):
+        executed.append("last")
+        return {"context": "not-a-mapping"}
+
+    session = _session_with_ops(first=first, last=bad_context)
+    builder = OperationGraphBuilder()
+    ids = _build_chain_graph(builder)
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, parallel=False, verbose=False)
+
+    assert "first" in executed
+    assert "last" in executed
+    assert ids["last"] in result["failed_operations"]
+    assert ids["first"] not in result["failed_operations"]
+    assert ids["last"] in result["completed_operations"]

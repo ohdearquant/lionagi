@@ -2736,3 +2736,204 @@ async def test_dead_terminal_node_flips_completed_to_failed_end_to_end(
     assert s is not None
     assert s["status"] == "failed", "a dead terminal node must not read as a clean completion"
     assert s["status_reason_code"] == "run.failed.exception"
+
+
+# A planned node that never produced a result at all -- absent from
+# operation_results, not in failed_operations (no invoke() ever raised) and
+# not in skipped_operations (no edge condition short-circuited it) -- read as
+# an ordinary "(no response)" entry with the run's own status untouched.
+# These tests pin the reconciliation between the fixed initial plan
+# (dag_state.node_ids) and what the executor actually observed.
+
+
+async def test_execute_dag_records_lost_operation_evidence_for_missing_result(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A two-node plan where only node-0 shows up in operation_results (the
+    executor never produced a result -- completed, failed, or skipped -- for
+    node-1) must be named in env._failed_operation_evidence so the run fails
+    loud instead of reading as run.completed.ok."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    assignments = [
+        TaskAssignment(task="do first", assignee="worker"),
+        TaskAssignment(task="do last (never runs)", assignee="reviewer"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first", "last"],
+        dep_indices=[[], [0]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0", "node-1"],
+        known_nodes={"node-0", "node-1"},
+        deps_by_node={"node-0": [], "node-1": ["node-0"]},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {"node-0": "first ok"},
+            "spawned_operations": 0,
+            "escalated_operations": [],
+            "failed_operations": [],
+            "skipped_operations": [],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert env._failed_operation_evidence == [
+        {"kind": "lost_operation", "id": "last", "label": "reviewer"}
+    ]
+    assert getattr(env, "_escalated_evidence", None) is None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed", "a missing planned node must not read as a clean completion"
+    assert s["status_reason_code"] == "run.failed.exception"
+
+
+async def test_execute_dag_skipped_node_does_not_trip_lost_operation_evidence(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """node-1 absent from operation_results is NOT a lost node when the
+    executor named it in skipped_operations -- an ordinary edge-condition
+    skip is a legitimate, non-failing outcome and must not fail the run."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+
+    assignments = [
+        TaskAssignment(task="do first", assignee="worker"),
+        TaskAssignment(task="skip me", assignee="reviewer"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first", "skipped"],
+        dep_indices=[[], [0]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0", "node-1"],
+        known_nodes={"node-0", "node-1"},
+        deps_by_node={"node-0": [], "node-1": ["node-0"]},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {"node-0": "first ok"},
+            "spawned_operations": 0,
+            "escalated_operations": [],
+            "failed_operations": [],
+            "skipped_operations": ["node-1"],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert not getattr(env, "_failed_operation_evidence", None)
+
+    await stop_live_persist(env, status="completed")
+
+
+async def test_execute_dag_dropped_spawn_does_not_trip_lost_operation_evidence(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A reactively spawned node that got dropped (budget/cycle refusal) was
+    never a planned node -- it must not surface as a lost planned node just
+    because its id shows up somewhere in the DAG result. Reconciliation is
+    scoped to dag_state.node_ids only."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+
+    assignments = [
+        TaskAssignment(task="do first", assignee="worker"),
+        TaskAssignment(task="do last", assignee="reviewer"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first", "last"],
+        dep_indices=[[], [0]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0", "node-1"],
+        known_nodes={"node-0", "node-1"},
+        deps_by_node={"node-0": [], "node-1": ["node-0"]},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {"node-0": "first ok", "node-1": "last ok"},
+            "spawned_operations": 0,
+            "escalated_operations": [],
+            "failed_operations": [],
+            "skipped_operations": [],
+            "dropped_spawns": [
+                {"reason": "max_spawn_exceeded", "assignee": "reviewer", "op_id": "spawn-99"}
+            ],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert not getattr(env, "_failed_operation_evidence", None)
+
+    await stop_live_persist(env, status="completed")

@@ -1454,6 +1454,34 @@ async def _execute_dag(
         prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
         env._failed_operation_evidence = [*prior_failed_evidence, *failed_evidence]
 
+    # Lost-node evidence: a node in the fixed initial plan (node_ids /
+    # assignments, indexed 1:1) whose result never landed in
+    # operation_results at all -- distinct from a node that ran and failed
+    # (already caught above) or was legitimately never meant to run. Every
+    # other accounted-for fate is excluded explicitly: an edge-condition skip
+    # is named in skipped_operations; a leg that gave up via EscalationRequest
+    # is named in escalated_operations and already fails the run through the
+    # escalated-evidence backstop above with its own, more specific reason;
+    # a reactive/budget-refused spawn was never a planned node to begin with
+    # (dropped_spawns never touches node_ids). A cancelled run never reaches
+    # this line -- run_dag raises and the whole evidence block above is
+    # skipped -- so no separate check is needed for it. What remains here is
+    # a node the plan expected but execution never observed in any of those
+    # ways; treat it as a failure with its own evidence rather than letting
+    # it render as "(no response)" below.
+    skipped_op_ids = {str(x) for x in dag_result.get("skipped_operations", [])}
+    observed_op_ids = {str(k) for k in op_results}
+    lost_evidence = [
+        {"kind": "lost_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+        for i in range(len(assignments))
+        if str(node_ids[i]) not in observed_op_ids
+        and str(node_ids[i]) not in skipped_op_ids
+        and str(node_ids[i]) not in escalated_op_ids
+    ]
+    if lost_evidence:
+        prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior_failed_evidence, *lost_evidence]
+
     agent_results: list[dict] = []
 
     def _record_result(result: dict) -> None:

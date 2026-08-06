@@ -421,6 +421,7 @@ class DependencyAwareExecutor:
                             operation.execution.status = EventStatus.FAILED
                             operation.execution.error = error
                             self.results[operation.id] = {"error": str(error)}
+                            self.failed_operations.add(operation.id)
                             if self.on_progress:
                                 self.on_progress(str(operation.id), branch_name, "failed", elapsed)
                             if self.verbose:
