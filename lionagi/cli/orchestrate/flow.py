@@ -1412,6 +1412,7 @@ async def _execute_dag(
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
     _exchange = getattr(env, "exchange", None)
     _exch_task = _asyncio.ensure_future(_exchange.run(0.5)) if _exchange is not None else None
+    _dag_cancelled = False
     try:
         dag_result = await eng_run.run_dag(
             env.builder.get_graph(),
@@ -1437,6 +1438,9 @@ async def _execute_dag(
             spawn_branch_setup=_spawn_branch_setup if reactive else None,
             on_op_complete=_on_op_complete,
         )
+    except _asyncio.CancelledError:
+        _dag_cancelled = True
+        raise
     finally:
         _hb_task.cancel()
         _ctl_task.cancel()
@@ -1460,13 +1464,29 @@ async def _execute_dag(
                 with contextlib.suppress(Exception):
                     await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
             if _escalation_link_tasks:
-                # Bounded by _ESCALATION_LINK_RETRIES * _ESCALATION_LINK_RETRY_INTERVAL
-                # (a few seconds worst case) — the outer db/session teardown
-                # (teardown_persist) only runs after this function returns, so
-                # draining here, not firing untracked, is what keeps a late retry
-                # from writing into a store this run has already closed.
-                with contextlib.suppress(Exception):
-                    await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
+                if _dag_cancelled:
+                    # An escalation-link row is nice-to-have attribution, not
+                    # run data — losing one on cancellation is acceptable, but
+                    # a hung link write (stuck DB call) blocking teardown
+                    # indefinitely is not. Give in-flight links a short grace
+                    # period to land normally, then cancel whatever is left
+                    # and wait for it to actually unwind before returning.
+                    with contextlib.suppress(Exception), move_on_after(2):
+                        await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
+                    _survivors = [t for t in _escalation_link_tasks if not t.done()]
+                    for _t in _survivors:
+                        _t.cancel()
+                    if _survivors:
+                        with contextlib.suppress(Exception):
+                            await _asyncio.gather(*_survivors, return_exceptions=True)
+                else:
+                    # Bounded by _ESCALATION_LINK_RETRIES * _ESCALATION_LINK_RETRY_INTERVAL
+                    # (a few seconds worst case) — the outer db/session teardown
+                    # (teardown_persist) only runs after this function returns, so
+                    # draining here, not firing untracked, is what keeps a late retry
+                    # from writing into a store this run has already closed.
+                    with contextlib.suppress(Exception):
+                        await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
     t_exec_elapsed = time.monotonic() - t_exec
 
     op_results = dag_result.get("operation_results", {})
