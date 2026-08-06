@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Annotated, Any
 
-from lionagi.ln.concurrency.utils import is_coro_func
-
 from ._sentinel import MaybeUndefined, Undefined, is_sentinel, not_sentinel
 from .base import Meta
 
@@ -120,7 +118,7 @@ class Spec:
             if not is_valid_type:
                 raise ValueError(f"base_type must be a type or type annotation, got {base_type}")
 
-        if kw.get("default_factory") and is_coro_func(kw["default_factory"]):
+        if kw.get("default_factory") and _is_coro_func(kw["default_factory"]):
             import warnings
 
             warnings.warn(
@@ -278,10 +276,17 @@ class Spec:
         return {meta.key: meta.value for meta in self.metadata if meta.key not in exclude}
 
 
+def _is_coro_func(obj: Any) -> bool:
+    """Deferred import: avoids pulling anyio/.concurrency onto the cold `import lionagi` path."""
+    from lionagi.ln.concurrency.utils import is_coro_func
+
+    return is_coro_func(obj)
+
+
 def _is_factory(obj: Any) -> tuple[bool, bool]:
     """Return (is_factory, is_async)."""
     if not callable(obj):
         return (False, False)
-    if is_coro_func(obj):
+    if _is_coro_func(obj):
         return (True, True)
     return (True, False)
