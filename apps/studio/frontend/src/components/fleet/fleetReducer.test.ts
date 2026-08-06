@@ -3,6 +3,7 @@ import {
   fleetReducer,
   initialFleetState,
   terminalRecentRows,
+  terminalRecentRowsServerOrder,
   createHistoryPager,
 } from "./fleetReducer";
 import type { FleetState } from "./fleetReducer";
@@ -449,6 +450,49 @@ describe("terminalRecentRows", () => {
     expect(rows[0].id).toBe("r79");
     expect(rows[79].id).toBe("r0");
     expect(rows.some((r) => r.id === "live")).toBe(false);
+  });
+
+  it("preserves a null total_cost_usd as unreported, not a coerced 0", () => {
+    const rows = terminalRecentRows([
+      makeRun({ run_id: "r1", status: "completed", total_cost_usd: null }),
+    ]);
+    expect(rows[0].totalCostUsd).toBeNull();
+  });
+
+  it("preserves a genuine zero total_cost_usd distinctly from unreported", () => {
+    const rows = terminalRecentRows([
+      makeRun({ run_id: "r1", status: "completed", total_cost_usd: 0 }),
+    ]);
+    expect(rows[0].totalCostUsd).toBe(0);
+  });
+
+  it("carries a reported cost through", () => {
+    const rows = terminalRecentRows([
+      makeRun({ run_id: "r1", status: "completed", total_cost_usd: 4.5 }),
+    ]);
+    expect(rows[0].totalCostUsd).toBe(4.5);
+  });
+});
+
+describe("terminalRecentRowsServerOrder", () => {
+  it("preserves the input order instead of re-sorting by ended_at", () => {
+    // Deliberately out of ended_at order — as /api/runs/?sort=cost would
+    // return: highest cost first, unrelated to recency.
+    const runs = [
+      makeRun({ run_id: "cheap", status: "completed", ended_at: 5_000, total_cost_usd: 1 }),
+      makeRun({ run_id: "pricey", status: "completed", ended_at: 1_000, total_cost_usd: 99 }),
+      makeRun({ run_id: "free", status: "completed", ended_at: 3_000, total_cost_usd: 0 }),
+    ];
+    const rows = terminalRecentRowsServerOrder(runs);
+    expect(rows.map((r) => r.id)).toEqual(["cheap", "pricey", "free"]);
+  });
+
+  it("still excludes active runs", () => {
+    const rows = terminalRecentRowsServerOrder([
+      makeRun({ run_id: "live", status: "running", started_at: 1 }),
+      makeRun({ run_id: "done", status: "completed", ended_at: 1 }),
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(["done"]);
   });
 });
 

@@ -784,6 +784,8 @@
     },
     "history": {
       "label": "lịch sử phiên",
+      "sortRecent": "Gần đây",
+      "sortCost": "Chi phí cao nhất",
       "all": "tất cả",
       "completed": "hoàn tất",
       "failed": "thất bại",
@@ -861,6 +863,15 @@
       "completionRate": "hoàn tất {rate}%",
       "noTerminalRuns": "không có lần chạy đã kết thúc nào trong khoảng thời gian này",
       "total": "{count, plural, other {tổng #}}",
+      "staleHint": "đang hiển thị dữ liệu cuối cùng · làm mới thất bại"
+    },
+    "spend": {
+      "title": "Chi phí đã báo cáo",
+      "loading": "Đang tải chi phí…",
+      "error": "Chi phí không khả dụng · {message}",
+      "unreachable": "không kết nối được API",
+      "empty": "Không có lượt chạy trong khoảng này",
+      "coverage": "{reported}/{total} đã báo cáo",
       "staleHint": "đang hiển thị dữ liệu cuối cùng · làm mới thất bại"
     },
     "stale": {

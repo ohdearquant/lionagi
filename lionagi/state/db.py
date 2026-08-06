@@ -3138,6 +3138,91 @@ class StateDB:
             )
         return [dict(r) for r in rows]
 
+    async def spend_stats(self, *, window_start: float) -> dict[str, Any]:
+        """Reported-spend aggregate for the Mission Control spend panel.
+
+        Anchored on the same COALESCE(ended_at, started_at, created_at)
+        timestamp as activity_stats, so the spend panel and the activity
+        panel describe the same population for the same window. Unreported
+        (NULL total_cost_usd) sessions are counted but never coerced into
+        the sum — reported_usd stays None whenever no row in the window
+        reported a cost, rather than reading as a genuine $0.
+        """
+        query = """
+            SELECT
+                SUM(CASE WHEN total_cost_usd IS NOT NULL THEN total_cost_usd END) AS reported_usd,
+                SUM(CASE WHEN total_cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS reported_count,
+                SUM(CASE WHEN total_cost_usd IS NULL THEN 1 ELSE 0 END) AS unreported_count
+            FROM sessions
+            WHERE COALESCE(ended_at, started_at, created_at) >= :window_start
+        """  # noqa: S608
+        async with self._read() as conn:
+            row = (
+                (await conn.execute(text(query), {"window_start": window_start})).mappings().first()
+            )
+        reported_usd = row["reported_usd"] if row else None
+        return {
+            "reported_usd": float(reported_usd) if reported_usd is not None else None,
+            "reported_count": int(row["reported_count"] or 0) if row else 0,
+            "unreported_count": int(row["unreported_count"] or 0) if row else 0,
+        }
+
+    # Session-grain spend dimensions only. Branch-level attribution (by
+    # model, by the per-branch agent role within a flow) needs a coverage
+    # check against branch-level total_cost_usd before it can be trusted —
+    # see the cost-visibility design doc's Stage 2 gate. These three
+    # columns are single-valued per session, so grouping by them carries no
+    # such risk.
+    _SPEND_ROLLUP_COLUMNS: dict[str, str] = {
+        "project": "project",
+        "agent": "agent_name",
+        "playbook": "playbook_name",
+    }
+    _SPEND_ROLLUP_MAX_LIMIT = 50
+
+    async def spend_rollup(
+        self, *, window_start: float, dimension: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Session-grain spend rollup, one row per distinct dimension value,
+        highest reported spend first (unreported-only groups last). Same
+        window anchor and never-coerce-NULL contract as spend_stats.
+        """
+        column = self._SPEND_ROLLUP_COLUMNS.get(dimension)
+        if column is None:
+            raise ValueError(f"dimension must be one of: {', '.join(self._SPEND_ROLLUP_COLUMNS)}")
+        bounded_limit = max(1, min(int(limit), self._SPEND_ROLLUP_MAX_LIMIT))
+        query = f"""
+            SELECT
+                {column} AS rollup_key,
+                SUM(CASE WHEN total_cost_usd IS NOT NULL THEN total_cost_usd END) AS reported_usd,
+                SUM(CASE WHEN total_cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS reported_count,
+                SUM(CASE WHEN total_cost_usd IS NULL THEN 1 ELSE 0 END) AS unreported_count
+            FROM sessions
+            WHERE COALESCE(ended_at, started_at, created_at) >= :window_start
+            GROUP BY {column}
+            ORDER BY reported_usd IS NULL, reported_usd DESC
+            LIMIT :limit
+        """  # noqa: S608
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(query), {"window_start": window_start, "limit": bounded_limit}
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [
+            {
+                "key": r["rollup_key"],
+                "reported_usd": float(r["reported_usd"]) if r["reported_usd"] is not None else None,
+                "reported_count": int(r["reported_count"] or 0),
+                "unreported_count": int(r["unreported_count"] or 0),
+            }
+            for r in rows
+        ]
+
     # ── Projects ──────────────────────────────────────────────────────
 
     async def _upsert_project_stmt(

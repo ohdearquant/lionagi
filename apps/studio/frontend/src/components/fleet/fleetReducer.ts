@@ -70,6 +70,9 @@ export interface RecentRow {
   status_reason_code?: string | null;
   status_reason_summary?: string | null;
   endedAtSec: number | null;
+  // Cost-visibility contract: `null` means unreported (unknown), never a
+  // coerced 0 — format with usageFormat.ts, don't branch on truthiness.
+  totalCostUsd: number | null;
 }
 
 export interface FleetState {
@@ -251,12 +254,9 @@ function buildOrgUnits(
   return units;
 }
 
-/** Terminal runs mapped to history rows, newest first. Shared with the
- *  Fleet view's lazy pagination, which maps older pages the same way. */
-export function terminalRecentRows(runs: RunSummary[]): RecentRow[] {
+function mapRunsToRecentRows(runs: RunSummary[]): RecentRow[] {
   return runs
     .filter((r) => !isActive(r))
-    .sort((a, b) => (b.ended_at ?? b.started_at ?? 0) - (a.ended_at ?? a.started_at ?? 0))
     .map((r) => ({
       id: r.run_id,
       name: r.playbook_name ?? r.agent_name ?? r.run_id.slice(-12),
@@ -265,7 +265,22 @@ export function terminalRecentRows(runs: RunSummary[]): RecentRow[] {
       status_reason_code: r.status_reason_code,
       status_reason_summary: r.status_reason_summary,
       endedAtSec: r.ended_at ?? r.started_at ?? null,
+      totalCostUsd: r.total_cost_usd ?? null,
     }));
+}
+
+/** Terminal runs mapped to history rows, newest first. Shared with the
+ *  Fleet view's lazy pagination, which maps older pages the same way. */
+export function terminalRecentRows(runs: RunSummary[]): RecentRow[] {
+  return mapRunsToRecentRows(runs).sort((a, b) => (b.endedAtSec ?? 0) - (a.endedAtSec ?? 0));
+}
+
+/** Terminal runs mapped to history rows, preserving the server's own order —
+ *  for the "Highest cost" history sort, where /api/runs/?sort=cost has
+ *  already computed the ordering and a client re-sort by end time would
+ *  silently undo it. */
+export function terminalRecentRowsServerOrder(runs: RunSummary[]): RecentRow[] {
+  return mapRunsToRecentRows(runs);
 }
 
 /** One fetched page of older history rows. */

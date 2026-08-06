@@ -784,6 +784,8 @@
     },
     "history": {
       "label": "Sessionverlauf",
+      "sortRecent": "Neueste",
+      "sortCost": "Höchste Kosten",
       "all": "Alle",
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
@@ -861,6 +863,15 @@
       "completionRate": "{rate}% abgeschlossen",
       "noTerminalRuns": "Keine beendeten Ausführungen im Zeitraum",
       "total": "{count, plural, one {# insgesamt} other {# insgesamt}}",
+      "staleHint": "zeige letzten bekannten Stand · Aktualisierung fehlgeschlagen"
+    },
+    "spend": {
+      "title": "Gemeldete Ausgaben",
+      "loading": "Ausgaben werden geladen…",
+      "error": "Ausgaben nicht verfügbar · {message}",
+      "unreachable": "API nicht erreichbar",
+      "empty": "Keine Läufe im Zeitfenster",
+      "coverage": "{reported} von {total} gemeldet",
       "staleHint": "zeige letzten bekannten Stand · Aktualisierung fehlgeschlagen"
     },
     "stale": {

@@ -784,6 +784,8 @@
     },
     "history": {
       "label": "セッション履歴",
+      "sortRecent": "最近",
+      "sortCost": "コストが高い順",
       "all": "すべて",
       "completed": "完了",
       "failed": "失敗",
@@ -861,6 +863,15 @@
       "completionRate": "完了率 {rate}%",
       "noTerminalRuns": "ウィンドウ内に終端実行はありません",
       "total": "{count, plural, other {合計 # 件}}",
+      "staleHint": "最後に判明した状態を表示 · 更新に失敗"
+    },
+    "spend": {
+      "title": "報告済みの費用",
+      "loading": "費用を読み込み中…",
+      "error": "費用は利用できません · {message}",
+      "unreachable": "APIに接続できません",
+      "empty": "この期間に実行はありません",
+      "coverage": "{total}件中{reported}件が報告済み",
       "staleHint": "最後に判明した状態を表示 · 更新に失敗"
     },
     "stale": {
