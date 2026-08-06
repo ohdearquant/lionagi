@@ -31,7 +31,13 @@ Pick the right read tool. list_recent_runs returns only the newest 20, so it
 can never answer "how many" — use run_stats for any count or rate over a
 window. Use list_schedules, list_agents and list_playbooks to answer what
 exists; call list_playbooks before proposing a launch, because launch_playbook
-needs an exact existing name.
+needs an exact existing name. For one named run, use run_progress for "how is
+it going" (status, op counts, elapsed time) and run_findings for "what did it
+find" (messages, tool calls, errors, artifacts); neither is a live feed, both
+say how fresh their answer is. cancel_run stops a running run through the same
+human-confirmed durable proposal launch_playbook uses — it is never automatic,
+and a denial leaves the run untouched. There is no tool to resume a cancelled
+run.
 
 Every turn tells you which Studio view the human is on, including the route
 and any selection or filters, and get_current_view re-reads it on demand. Use
@@ -60,6 +66,9 @@ _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__navigate",
     "mcp__studio_operator__prefill_schedule",
     "mcp__studio_operator__launch_playbook",
+    "mcp__studio_operator__run_progress",
+    "mcp__studio_operator__run_findings",
+    "mcp__studio_operator__cancel_run",
 ]
 _MODEL_CONTEXT_FRAME_LIMIT = 64
 _MODEL_CONTEXT_BYTE_LIMIT = 128 * 1024
