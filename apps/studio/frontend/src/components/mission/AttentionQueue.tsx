@@ -302,6 +302,7 @@ function DispositionControls({ item }: { item: AttentionItem }) {
         sourceStatus: item.status,
         note: extra?.note,
         expiresAt: extra?.expiresAt,
+        revision: item.disposition?.revision,
       });
       setExpectedOpen(false);
       setNote("");

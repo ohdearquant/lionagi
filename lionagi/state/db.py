@@ -126,7 +126,7 @@ DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 # whenever a migration changes the shape a reader would see -- a new table, a
 # rebuilt CHECK constraint, a column whose meaning changed. Version "1" is the
 # original shape, before the migrations now applied on open existed.
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 _DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 

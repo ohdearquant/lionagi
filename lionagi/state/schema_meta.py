@@ -1175,6 +1175,20 @@ attention_dispositions = Table(
     Column("expires_at", Float),
     Column("actor", Text, nullable=False),
     Column("source_status", Text, nullable=False),
+    Column("revision", Integer, nullable=False, server_default="1"),
+)
+
+# ── attention_disposition_revisions (per-item_id revision ledger) ─────────
+# Survives a DELETE of the disposition row itself so a PUT that recreates
+# item_id afterward can still be fenced against the last operation --
+# without this, a delayed replay of an earlier PUT could resurrect a
+# disposition after DELETE removed it. See attention.py upsert_disposition.
+
+attention_disposition_revisions = Table(
+    "attention_disposition_revisions",
+    metadata,
+    Column("item_id", Text, primary_key=True),
+    Column("revision", Integer, nullable=False),
 )
 
 # ── attention_disposition_history (append-only discharge ledger) ──────────
@@ -1184,6 +1198,10 @@ attention_disposition_history = Table(
     metadata,
     Column("id", Text, primary_key=True),
     Column("item_id", Text, nullable=False),
+    # Global monotonic append order -- created_at alone can tie under
+    # concurrent writers, which would let equal-timestamp rows land in
+    # either order on read. See approval_evidence.sequence for the pattern.
+    Column("sequence", Integer, nullable=False),
     Column("prior_state", Text),
     # 'acknowledged' | 'resolved' | 'expected' | 'snoozed' | 'open' (undo/delete).
     Column("new_state", Text, nullable=False),
@@ -1197,4 +1215,9 @@ Index(
     "idx_attention_disposition_history_item",
     attention_disposition_history.c.item_id,
     attention_disposition_history.c.created_at,
+)
+Index(
+    "idx_attention_disposition_history_sequence",
+    attention_disposition_history.c.sequence,
+    unique=True,
 )

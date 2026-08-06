@@ -75,6 +75,7 @@ function makeDisposition(
     expires_at: null,
     actor: "operator",
     source_status: "failed",
+    revision: 1,
   };
   return { ...base, ...overrides };
 }

@@ -1949,6 +1949,9 @@ export interface AttentionDisposition {
   expires_at: number | null;
   actor: string;
   source_status: string;
+  /** Server-owned, monotonic per item_id. Echo back on the next PUT — required
+   * to recreate an item a DELETE has removed; a stale value is rejected (409). */
+  revision: number;
 }
 
 export interface AttentionDispositionHistoryEntry {
@@ -1970,7 +1973,13 @@ export async function listAttentionDispositions(): Promise<Record<string, Attent
   return res.dispositions;
 }
 
-/** Create-or-replace one item's disposition. Idempotent under retry. */
+/**
+ * Create-or-replace one item's disposition. Idempotent under retry while the
+ * disposition stays active. `revision` should be the value last read for
+ * this item_id (e.g. `item.disposition?.revision`) — required to recreate a
+ * disposition a DELETE has removed; omitted or stale, the server rejects
+ * with 409 rather than resurrecting stale data.
+ */
 export async function putAttentionDisposition(
   itemId: string,
   body: {
@@ -1979,6 +1988,7 @@ export async function putAttentionDisposition(
     note?: string;
     expiresAt?: number;
     actor?: string;
+    revision?: number;
   },
 ): Promise<AttentionDisposition> {
   return fetchJson<AttentionDisposition>(
@@ -1992,6 +2002,7 @@ export async function putAttentionDisposition(
         note: body.note,
         expires_at: body.expiresAt,
         actor: body.actor,
+        revision: body.revision,
       }),
     },
   );

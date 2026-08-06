@@ -188,6 +188,38 @@ def test_replace_changes_state_and_appends_history(tmp_path, monkeypatch):
     assert history[1]["prior_state"] == "acknowledged"
 
 
+def test_history_order_survives_equal_timestamps(tmp_path, monkeypatch):
+    """Two writes landing at the exact same wall-clock time (a real
+    possibility -- time.time() resolution is coarser than SQLite's
+    lock-serialized write throughput) must still read back in append order.
+    Ordering by created_at alone can tie and let a reader observe them
+    reversed; the server-side sequence column can't tie."""
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import attention as attention_mod
+
+    frozen = time.time()
+    monkeypatch.setattr(attention_mod.time, "time", lambda: frozen)
+
+    _run(
+        attention_mod.upsert_disposition(
+            "run:tie", state="acknowledged", source_status="failed", actor="operator"
+        )
+    )
+    _run(
+        attention_mod.upsert_disposition(
+            "run:tie", state="resolved", source_status="completed", actor="operator"
+        )
+    )
+    _run(attention_mod.delete_disposition("run:tie", actor="operator"))
+
+    history = _run(attention_mod.disposition_history("run:tie"))
+    assert len({h["created_at"] for h in history}) == 1, "fixture must actually tie timestamps"
+    assert [h["new_state"] for h in history] == ["acknowledged", "resolved", "open"]
+
+
 def test_delete_undoes_and_is_a_noop_when_nothing_discharged(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     _patch_db(monkeypatch, db_path)
@@ -213,6 +245,108 @@ def test_delete_undoes_and_is_a_noop_when_nothing_discharged(tmp_path, monkeypat
     history = _run(attention_mod.disposition_history("run:r3"))
     assert [h["new_state"] for h in history] == ["resolved", "open"]
     assert history[-1]["prior_state"] == "resolved"
+
+
+def test_delete_fences_a_replayed_put_from_resurrecting_the_disposition(tmp_path, monkeypatch):
+    """A DELETE must leave behind something a later PUT has to beat: without
+    it, a network-delayed retry of the pre-delete PUT can arrive after the
+    undo and recreate the row with its old (already-undone) expires_at."""
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from fastapi import HTTPException
+
+    from lionagi.studio.services import attention as attention_mod
+
+    original = _run(
+        attention_mod.upsert_disposition(
+            "run:replay",
+            state="snoozed",
+            source_status="failed",
+            expires_at=time.time() + 3600,
+            actor="operator",
+        )
+    )
+    stale_revision = original["revision"]
+
+    _run(attention_mod.delete_disposition("run:replay", actor="operator"))
+    assert "run:replay" not in _run(attention_mod.list_dispositions())
+
+    # The delayed duplicate of the original PUT, carrying the pre-delete
+    # revision, must not resurrect the snooze.
+    with pytest.raises(HTTPException) as exc_info:
+        _run(
+            attention_mod.upsert_disposition(
+                "run:replay",
+                state="snoozed",
+                source_status="failed",
+                expires_at=time.time() + 3600,
+                actor="operator",
+                revision=stale_revision,
+            )
+        )
+    assert exc_info.value.status_code == 409
+    assert "run:replay" not in _run(attention_mod.list_dispositions())
+
+    # So must a caller that carries no revision at all -- once item_id has a
+    # recorded prior operation, omitting revision is no safer than a stale one.
+    with pytest.raises(HTTPException) as exc_info2:
+        _run(
+            attention_mod.upsert_disposition(
+                "run:replay",
+                state="acknowledged",
+                source_status="failed",
+                actor="operator",
+            )
+        )
+    assert exc_info2.value.status_code == 409
+
+    # A caller that reads the current (post-delete) revision and beats it
+    # is a legitimate fresh action, and succeeds.
+    recreated = _run(
+        attention_mod.upsert_disposition(
+            "run:replay",
+            state="acknowledged",
+            source_status="failed",
+            actor="operator",
+            revision=stale_revision + 1,
+        )
+    )
+    assert recreated["state"] == "acknowledged"
+
+
+def test_http_put_after_delete_rejects_stale_revision(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    client = _make_client(db_path, monkeypatch)
+
+    put1 = client.put(
+        "/api/attention/dispositions/run:httpreplay",
+        json={
+            "state": "snoozed",
+            "source_status": "failed",
+            "expires_at": time.time() + 3600,
+        },
+    )
+    assert put1.status_code == 200, put1.text
+    stale_revision = put1.json()["revision"]
+
+    deleted = client.delete("/api/attention/dispositions/run:httpreplay")
+    assert deleted.status_code == 200
+
+    replay = client.put(
+        "/api/attention/dispositions/run:httpreplay",
+        json={
+            "state": "snoozed",
+            "source_status": "failed",
+            "expires_at": time.time() + 3600,
+            "revision": stale_revision,
+        },
+    )
+    assert replay.status_code == 409
+
+    listed = client.get("/api/attention/dispositions/")
+    assert "run:httpreplay" not in listed.json()["dispositions"]
 
 
 def test_list_excludes_lapsed_snoozed_and_expected_but_keeps_others(tmp_path, monkeypatch):
