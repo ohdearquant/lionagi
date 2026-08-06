@@ -13,6 +13,7 @@ from lionagi.state.artifact_verifier import (
     missing_artifact_evidence,
     missing_artifact_summary,
     resolve_artifact_contract,
+    stale_artifact_markers,
     validate_artifact_contract,
     verify_artifact_contract,
 )
@@ -579,3 +580,69 @@ def test_the_reported_run_shape_now_passes_end_to_end(tmp_path):
     assert result["missing_required"] == []
     assert result["missing_optional"] == []
     assert len(result["produced"]) == 5
+
+
+# ── stale_artifact_markers ────────────────────────────────────────────────────
+#
+# A stored verification is a snapshot taken at run completion. These markers
+# never re-verify pass/fail; they only flag, via mtime and presence, whether
+# the artifacts that snapshot found may no longer match what is on disk now.
+
+
+class TestStaleArtifactMarkers:
+    def test_a_fresh_snapshot_has_no_staleness(self, tmp_path):
+        (tmp_path / "report.md").write_text("content")
+        contract = {"expected": [{"id": "report", "path": "report.md"}]}
+        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
+
+        assert stale_artifact_markers(result, artifacts_root=str(tmp_path)) is None
+
+    def test_a_file_touched_after_checked_at_is_flagged_changed(self, tmp_path):
+        artifact = tmp_path / "report.md"
+        artifact.write_text("content")
+        contract = {"expected": [{"id": "report", "path": "report.md"}]}
+        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
+
+        later = result["checked_at"] + 100
+        os.utime(artifact, (later, later))
+
+        markers = stale_artifact_markers(result, artifacts_root=str(tmp_path))
+        assert markers is not None
+        assert markers["changed_since_verification"] == ["report"]
+        assert markers["absent_since_verification"] == []
+
+    def test_a_file_removed_after_verification_is_flagged_absent(self, tmp_path):
+        artifact = tmp_path / "report.md"
+        artifact.write_text("content")
+        contract = {"expected": [{"id": "report", "path": "report.md"}]}
+        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
+
+        artifact.unlink()
+
+        markers = stale_artifact_markers(result, artifacts_root=str(tmp_path))
+        assert markers is not None
+        assert markers["absent_since_verification"] == ["report"]
+        assert markers["changed_since_verification"] == []
+
+    def test_no_artifacts_root_produces_no_markers(self, tmp_path):
+        (tmp_path / "report.md").write_text("content")
+        contract = {"expected": [{"id": "report", "path": "report.md"}]}
+        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
+
+        assert stale_artifact_markers(result, artifacts_root=None) is None
+        assert stale_artifact_markers(result, artifacts_root="") is None
+
+    def test_a_missing_required_artifact_is_not_reported_as_stale(self, tmp_path):
+        # It was never produced, so there is nothing on disk to have changed —
+        # that is `missing_required`'s claim to make, not this one's.
+        contract = {"expected": [{"id": "report", "path": "report.md", "required": True}]}
+        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
+
+        assert stale_artifact_markers(result, artifacts_root=str(tmp_path)) is None
+
+    def test_malformed_verification_produces_no_markers(self, tmp_path):
+        assert stale_artifact_markers({}, artifacts_root=str(tmp_path)) is None
+        assert (
+            stale_artifact_markers({"checked_at": "not-a-number"}, artifacts_root=str(tmp_path))
+            is None
+        )

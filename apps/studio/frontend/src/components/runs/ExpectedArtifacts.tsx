@@ -14,6 +14,13 @@ function verificationTone(status?: string | null): "ok" | "failed" | "pending" |
   return "default";
 }
 
+function formatCheckedAt(checkedAt: number): string {
+  return new Date(checkedAt * 1000).toLocaleString([], {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
 export interface ExpectedArtifactsProps {
   contract?: ArtifactContract | null;
   verification?: ArtifactVerification | null;
@@ -28,10 +35,12 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
   const producedById = new Map((result?.produced ?? []).map((p) => [p.id, p]));
   const missingRequired = new Set((result?.missing_required ?? []).map((p) => p.id));
   const missingOptional = new Set((result?.missing_optional ?? []).map((p) => p.id));
+  const changedSince = new Set(result?.changed_since_verification ?? []);
+  const absentSince = new Set(result?.absent_since_verification ?? []);
 
   return (
     <div id="expected-artifacts" className="scroll-mt-24">
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="text-label font-semibold text-content-primary">Expected artifacts</h2>
         <span className="rounded bg-surface-overlay px-1.5 py-0 font-mono text-[length:var(--t-xs)] text-content-muted">
           {expected.length}
@@ -50,6 +59,15 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
             <Badge tone={verificationTone(result.status)}>Verified: {result.status}</Badge>
           )
         )}
+        {result && !result.provisional && (
+          // A recorded verdict is a snapshot taken at run completion — show
+          // when it was taken rather than let the badge read as current state.
+          <span className="text-[length:var(--t-xs)] text-content-muted">
+            verified at completion, {formatCheckedAt(result.checked_at)}
+          </span>
+        )}
+        {absentSince.size > 0 && <Badge tone="pending">no longer present</Badge>}
+        {changedSince.size > 0 && <Badge tone="pending">files changed since verification</Badge>}
       </div>
       <div className="rounded border border-edge bg-surface-raised px-3 py-2 shadow-card">
         <ul className="flex flex-col divide-y divide-edge-subtle">
@@ -62,20 +80,26 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
               !result?.provisional &&
               (missingRequired.has(entry.id) || missingOptional.has(entry.id));
             const required = entry.required !== false;
-            const statusTone = produced
-              ? "ok"
-              : missing && required
-                ? "failed"
+            const noLongerPresent = produced && absentSince.has(entry.id);
+            const changedOnDisk = produced && !noLongerPresent && changedSince.has(entry.id);
+            const statusTone = noLongerPresent
+              ? "pending"
+              : produced
+                ? "ok"
+                : missing && required
+                  ? "failed"
+                  : missing
+                    ? "pending"
+                    : "default";
+            const statusLabel = noLongerPresent
+              ? "NO LONGER PRESENT"
+              : produced
+                ? `OK (${formatBytes(produced.size)})${changedOnDisk ? " — changed since verification" : ""}`
                 : missing
-                  ? "pending"
-                  : "default";
-            const statusLabel = produced
-              ? `OK (${formatBytes(produced.size)})`
-              : missing
-                ? "MISSING"
-                : notRecorded
-                  ? "NOT RECORDED"
-                  : "PENDING";
+                  ? "MISSING"
+                  : notRecorded
+                    ? "NOT RECORDED"
+                    : "PENDING";
             return (
               <li
                 key={entry.id}

@@ -51,6 +51,11 @@ class VerificationResult(TypedDict):
     produced: list[ProducedArtifact]
 
 
+class StaleMarkers(TypedDict):
+    changed_since_verification: list[str]
+    absent_since_verification: list[str]
+
+
 def _safe_join(root: str, rel: str) -> str:
     """Join rel under root, rejecting absolute paths, globs, '..', and escapes."""
     if not isinstance(rel, str) or not rel or rel.startswith("/") or "\x00" in rel:
@@ -285,3 +290,48 @@ def missing_artifact_evidence(missing: list[dict[str, Any]]) -> list[dict[str, s
         }
         for entry in missing
     ]
+
+
+def stale_artifact_markers(
+    verification: dict[str, Any], *, artifacts_root: str | None
+) -> StaleMarkers | None:
+    """Cheaply flag whether a recorded verdict's produced artifacts may no
+    longer match what was on disk at `checked_at`.
+
+    This never re-verifies pass/fail — it only checks mtime and presence for
+    the artifacts the recorded verdict already found, so a caller can label
+    the verdict's currency instead of presenting a completion-time snapshot
+    as current state. Returns None when nothing looks stale.
+    """
+    if not artifacts_root:
+        return None
+    checked_at = verification.get("checked_at")
+    produced = verification.get("produced")
+    if not isinstance(checked_at, (int, float)) or not isinstance(produced, list):
+        return None
+
+    root = os.path.realpath(artifacts_root)
+    changed: list[str] = []
+    absent: list[str] = []
+    for entry in produced:
+        if not isinstance(entry, dict):
+            continue
+        artifact_id = entry.get("id")
+        rel_path = entry.get("path")
+        if not artifact_id or not rel_path:
+            continue
+        try:
+            full = _safe_join(root, rel_path)
+        except ArtifactPathError:
+            continue
+        try:
+            mtime = os.path.getmtime(full)
+        except OSError:
+            absent.append(artifact_id)
+            continue
+        if mtime > checked_at:
+            changed.append(artifact_id)
+
+    if not changed and not absent:
+        return None
+    return {"changed_since_verification": changed, "absent_since_verification": absent}

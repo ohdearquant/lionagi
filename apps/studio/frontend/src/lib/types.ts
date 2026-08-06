@@ -49,6 +49,12 @@ export interface ArtifactVerificationResult {
   /** A reading taken while the run is still going, rather than the recorded
    *  verdict it was judged on. Artifacts may still appear. */
   provisional?: boolean;
+  /** Artifact ids whose file mtime is later than `checked_at` — the recorded
+   *  verdict may no longer match what is on disk now. */
+  changed_since_verification?: string[];
+  /** Artifact ids the recorded verdict found present that no longer exist
+   *  on disk. */
+  absent_since_verification?: string[];
 }
 
 export interface ArtifactVerificationNotRecorded {
