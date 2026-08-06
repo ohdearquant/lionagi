@@ -302,10 +302,15 @@ export interface HistoryPager {
  * would otherwise both fetch the same page and double-advance past the next
  * one. A concurrent call resolves to null without fetching; a failed fetch
  * keeps its page number so the next fire retries it.
+ *
+ * mapRows defaults to the recency ordering; the "Highest cost" history sort
+ * passes terminalRecentRowsServerOrder so later pages stay in the server's
+ * cost order instead of being re-sorted by end time.
  */
 export function createHistoryPager(
   fetchPage: (page: number) => Promise<{ runs: RunSummary[]; has_next: boolean }>,
   firstPage = 2,
+  mapRows: (runs: RunSummary[]) => RecentRow[] = terminalRecentRows,
 ): HistoryPager {
   let nextPage = firstPage;
   let inFlight = false;
@@ -317,7 +322,7 @@ export function createHistoryPager(
       const page = nextPage;
       nextPage = page + 1;
       return fetchPage(page)
-        .then((resp) => ({ rows: terminalRecentRows(resp.runs), hasMore: resp.has_next }))
+        .then((resp) => ({ rows: mapRows(resp.runs), hasMore: resp.has_next }))
         .catch(() => {
           nextPage = page;
           return null;

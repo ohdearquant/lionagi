@@ -678,30 +678,46 @@ export default function FleetView() {
     setHistVisible(HIST_VISIBLE_STEP);
   }, [urlProject, urlProjectNull, urlSearchText]);
 
-  // "Highest cost" is a separate, single-page fetch computed server-side
-  // (/api/runs/?sort=cost) rather than a client re-sort of the live-polled
-  // + paginated "recent" history — the poll only ever covers 200 rows in
-  // recency order, so a client sort couldn't see cost across the whole store.
+  // "Highest cost" is computed server-side (/api/runs/?sort=cost) rather than
+  // a client re-sort of the live-polled + paginated "recent" history — the
+  // poll only ever covers 200 rows in recency order, so a client sort
+  // couldn't see cost across the whole store. Status filtering still happens
+  // client-side (matchesHistFilter needs the derived display status, which
+  // the server's raw status column can't distinguish — e.g. orphaned), so
+  // rows matching the active filter beyond the first cost-ranked page are
+  // reached the same way the "recent" pager reaches them: by paging further,
+  // never by claiming the list is complete when it isn't (histHasMore below
+  // reflects the server's own has_next, not a hardcoded false).
   const [costSortedRows, setCostSortedRows] = useState<RecentRow[] | null>(null);
   const [costSortLoading, setCostSortLoading] = useState(false);
+  const [costHasMore, setCostHasMore] = useState(false);
+  const costPagerRef = useRef<HistoryPager | null>(null);
   useEffect(() => {
     if (histSort !== "cost") return;
     let active = true;
+    const fetchCostPage = (page: number) =>
+      listRuns({
+        page,
+        per_page: HIST_PAGE_SIZE,
+        project: urlProject ?? undefined,
+        project_null: urlProjectNull,
+        search: urlSearchText || undefined,
+        sort: "cost",
+      });
+    costPagerRef.current = createHistoryPager(fetchCostPage, 2, terminalRecentRowsServerOrder);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch, matching the rest of this file's fetch effects
     setCostSortLoading(true);
-    listRuns({
-      per_page: HIST_PAGE_SIZE,
-      project: urlProject ?? undefined,
-      project_null: urlProjectNull,
-      search: urlSearchText || undefined,
-      sort: "cost",
-    })
+    fetchCostPage(1)
       .then((resp) => {
         if (!active) return;
         setCostSortedRows(terminalRecentRowsServerOrder(resp.runs));
+        setCostHasMore(resp.has_next);
       })
       .catch(() => {
-        if (active) setCostSortedRows([]);
+        if (active) {
+          setCostSortedRows([]);
+          setCostHasMore(false);
+        }
       })
       .finally(() => {
         if (active) setCostSortLoading(false);
@@ -729,14 +745,26 @@ export default function FleetView() {
     () => (histSort === "cost" ? (costSortedRows ?? []) : recentSortedRows),
     [histSort, costSortedRows, recentSortedRows],
   );
-  // The cost sort is one server page with no "load more" — the sort itself
-  // already picked the highest-spend rows across the whole store, unlike the
-  // recency history which pages because a store-wide recency read has no
-  // natural cutoff.
-  const histHasMore = histSort === "cost" ? false : serverHasMore;
+  // costHasMore mirrors the server's own has_next for the cost-ranked pages
+  // fetched so far — never hardcoded, so a status filter that has exhausted
+  // the loaded rows still shows "load more" instead of reading as complete.
+  const histHasMore = histSort === "cost" ? costHasMore : serverHasMore;
 
   const handleLoadMore = useCallback(() => {
-    if (histSort === "cost") return;
+    if (histSort === "cost") {
+      const costPager = costPagerRef.current;
+      if (!costHasMore || !costPager || costPager.inFlight()) return;
+      setCostSortLoading(true);
+      void costPager.loadNext().then((page) => {
+        // null = fetch failed — leave state as-is; the sentinel retries the page.
+        if (page) {
+          setCostSortedRows((prev) => [...(prev ?? []), ...page.rows]);
+          setCostHasMore(page.hasMore);
+        }
+        setCostSortLoading(false);
+      });
+      return;
+    }
     // Reveal already-loaded rows first; hit the server only when exhausted.
     if (histVisible < historyRows.length) {
       setHistVisible((n) => n + HIST_VISIBLE_STEP);
@@ -753,7 +781,7 @@ export default function FleetView() {
       }
       setLoadingMore(false);
     });
-  }, [histSort, histVisible, historyRows.length, serverHasMore, pager]);
+  }, [histSort, histVisible, historyRows.length, serverHasMore, pager, costHasMore]);
 
   // Derive effective selection: URL param first, else auto-select first row.
   // We track whether we've done the auto-select with a ref to avoid loops.

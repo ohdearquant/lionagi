@@ -628,4 +628,48 @@ describe("createHistoryPager", () => {
     await p;
     expect(pager.inFlight()).toBe(false);
   });
+
+  it("a custom mapRows (cost order) is applied to later pages instead of the recency default — the 'Highest cost' history sort must not have its order undone once paging kicks in", async () => {
+    const d = deferredFetch();
+    const pager = createHistoryPager(d.fetchPage, 2, terminalRecentRowsServerOrder);
+    const p = pager.loadNext();
+    // Deliberately out of ended_at order, as /api/runs/?sort=cost returns it —
+    // terminalRecentRows (the default mapRows) would re-sort this by recency.
+    d.settle()({
+      runs: [
+        makeRun({ run_id: "pricey", status: "completed", ended_at: 1, total_cost_usd: 99 }),
+        makeRun({ run_id: "cheap", status: "completed", ended_at: 5, total_cost_usd: 1 }),
+      ],
+      has_next: true,
+    });
+    const page = await p;
+    expect(page?.rows.map((r) => r.id)).toEqual(["pricey", "cheap"]);
+  });
+
+  it("cost sort + status filter: a matching row beyond the first cost-ranked page surfaces on the next page, and hasMore stays true until the server says otherwise — it never reads as a complete, silently-truncated list", async () => {
+    const d = deferredFetch();
+    const pager = createHistoryPager(d.fetchPage, 2, terminalRecentRowsServerOrder);
+
+    // First cost-ranked page: no "failed" rows at all.
+    const first = pager.loadNext();
+    d.settle()({
+      runs: [makeRun({ run_id: "expensive-ok", status: "completed", total_cost_usd: 500 })],
+      has_next: true,
+    });
+    const page1 = await first;
+    expect(page1?.hasMore).toBe(true);
+    const filteredPage1 = (page1?.rows ?? []).filter((r) => deriveDisplayStatus(r) === "failed");
+    expect(filteredPage1).toHaveLength(0); // none yet — but hasMore says keep going, not "done"
+
+    // Second cost-ranked page: the matching row was here all along.
+    const second = pager.loadNext();
+    d.settle()({
+      runs: [makeRun({ run_id: "cheap-failed", status: "failed", total_cost_usd: 1 })],
+      has_next: false,
+    });
+    const page2 = await second;
+    expect(page2?.hasMore).toBe(false);
+    const filteredPage2 = (page2?.rows ?? []).filter((r) => deriveDisplayStatus(r) === "failed");
+    expect(filteredPage2.map((r) => r.id)).toEqual(["cheap-failed"]);
+  });
 });
