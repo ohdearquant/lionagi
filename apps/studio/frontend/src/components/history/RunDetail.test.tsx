@@ -6,7 +6,7 @@
  * - It does not import Drawer (master-detail doctrine)
  */
 
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as React from "react";
@@ -15,10 +15,39 @@ import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import RunStepCard from "@/components/RunStepCard";
 import enMessages from "@/messages/en.json";
-import type { RunStep } from "@/lib/types";
+import type { RunStep, WorkerGraph } from "@/lib/types";
 
 vi.mock("@/components/ui/Markdown", () => ({
   default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+// Mounting RunDetail for real exercises the hidden-count badge + toggle as an
+// actual render/click, not a source-text regex (which can pass while JSX
+// placement or the click handler is broken). Everything mounted needs real
+// network/router-context dependencies stubbed: getSession/streamSession/
+// streamSignals hit real SSE/fetch plumbing, ResumeRun renders a
+// @tanstack/react-router <Link> that throws outside a RouterProvider, and the
+// real WorkerCanvas drags in dagre + the full ReactFlow tree, none of which
+// this test needs — only that it received the right edge set.
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return {
+    ...actual,
+    getSession: vi.fn(),
+    getInvocation: vi.fn(),
+    streamSession: vi.fn(() => () => {}),
+    streamSignals: vi.fn(() => () => {}),
+  };
+});
+
+vi.mock("@/components/history/ResumeRun", () => ({
+  default: () => null,
+}));
+
+vi.mock("@/components/canvas/WorkerCanvas", () => ({
+  default: (props: { graph: { edges: unknown[] } }) => (
+    <div data-testid="worker-canvas" data-edge-count={props.graph.edges.length} />
+  ),
 }));
 
 const HISTORY_DIR = path.resolve(__dirname);
@@ -121,30 +150,36 @@ describe("fleet/SessionDetail.tsx — renders RunDetail without fullPage", () =>
   });
 });
 
-// ─── Authored graph is never transitively reduced ────────────────────────────
+// ─── Authored graph is reduced at display time only ──────────────────────────
 // runGraph is Studio's persisted early_graph — the exact graph the designer
-// authored, edges and conditions included. Applying transitiveReduce() to it
-// would silently drop an authored conditional edge (e.g. A→B, B→C, and a
-// conditional A→C) whenever the runtime happens to also reach C via B — the
-// runtime emitter's depends_on is a predecessor list, not proof an edge is
-// synthetic. Reduction stays scoped to buildOperationGraph's runtime-derived
-// opGraph (whose edges genuinely are a raw ancestor list).
+// authored, resolved (resolveGraphEdges) but otherwise as wired: it can carry
+// one depends_on-style edge per ancestor, same as the runtime opGraph below,
+// so it clutters the same way a raw ancestor list does. Unlike opGraph, an
+// authored edge can also carry a condition/handler/map/code mode — semantics
+// the designer put there on purpose, not structural redundancy. So the
+// authored graph IS reduced, but only for display (never mutated/re-persisted)
+// and only through transitiveReduceDisplay, whose semantic guard never drops
+// a rich edge and whose cycle guard renders everything unchanged if the graph
+// isn't a DAG — plain transitiveReduce (used for opGraph) has neither guard.
 
-describe("history/RunDetail.tsx — authored run graph is rendered unreduced", () => {
+describe("history/RunDetail.tsx — authored run graph is reduced at display time only", () => {
   const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
 
-  it("does not import transitiveReduce", () => {
-    expect(src).not.toMatch(/transitiveReduce/);
+  it("imports the display-time transitiveReduceDisplay, not the runtime transitiveReduce", () => {
+    const importBlock = src.match(/import \{[^}]*\} from "@\/lib\/operationGraph";/)?.[0] ?? "";
+    expect(importBlock).toMatch(/transitiveReduceDisplay/);
+    expect(importBlock).not.toMatch(/\btransitiveReduce\b/);
   });
 
-  it("passes runGraph directly to WorkerCanvas, not a reduced copy", () => {
-    expect(src).toMatch(/graph={runGraph}/);
+  it("does not pass runGraph directly to WorkerCanvas — edges go through the reduction first", () => {
+    expect(src).not.toMatch(/graph={runGraph}/);
+    expect(src).toMatch(/graph=\{\{\s*\.\.\.runGraph,\s*edges:\s*displayEdges\s*\}\}/);
   });
 });
 
-describe("transitiveReduce (lib/operationGraph) — why RunDetail must not apply it to runGraph", () => {
-  it("would drop an authored conditional A→C that transitiveReduce sees as redundant via A→B→C", async () => {
-    const { transitiveReduce } = await import("@/lib/operationGraph");
+describe("transitiveReduceDisplay (lib/operationGraph) — why it's safe to apply to runGraph where plain transitiveReduce was not", () => {
+  it("keeps an authored conditional A→C that plain transitiveReduce would drop as redundant via A→B→C", async () => {
+    const { transitiveReduce, transitiveReduceDisplay } = await import("@/lib/operationGraph");
 
     // Mirrors an authored WorkerGraph: A→B, B→C, and a conditional A→C.
     const authoredEdges = [
@@ -153,15 +188,282 @@ describe("transitiveReduce (lib/operationGraph) — why RunDetail must not apply
       { id: "e-ac", source: "A", target: "C", condition: "score > 0.8" },
     ];
 
-    // What the old code did (reduce the authored graph): loses the
-    // conditional edge, because C is reachable from A through B.
+    // The runtime reducer would drop it: C is reachable from A through B,
+    // and it has no notion of "this edge carries a condition".
     const wouldHaveReduced = transitiveReduce(authoredEdges);
     expect(wouldHaveReduced.find((e) => e.id === "e-ac")).toBeUndefined();
 
-    // What RunDetail does now: pass the authored edges through unchanged,
-    // so the conditional A→C survives.
-    const rendered = authoredEdges;
-    expect(rendered.find((e) => e.id === "e-ac")).toBeDefined();
+    // The display-time reducer RunDetail actually calls keeps it.
+    const { kept, hidden } = transitiveReduceDisplay(authoredEdges);
+    expect(kept.find((e) => e.id === "e-ac")).toBeDefined();
+    expect(hidden).toHaveLength(0);
+  });
+});
+
+// ─── Reduced-by-default with a show-implied-edges escape hatch ───────────────
+// computeDisplayEdges is the pure core of RunDetail's edge-selection useMemo:
+// reduce by default (transitiveReduceDisplay), fall back to the full resolved
+// set when the toggle is on, and always report how many edges the reduction
+// hid so the chrome can show it regardless of which set is currently shown.
+
+describe("computeDisplayEdges (RunDetail) — reduced-by-default, toggle restores the full set", () => {
+  const diamondWithSkip: WorkerGraph["edges"] = [
+    { id: "e-ab", source: "A", target: "B", mode: "simple" },
+    { id: "e-bc", source: "B", target: "C", mode: "simple" },
+    { id: "e-ac", source: "A", target: "C", mode: "simple" }, // redundant: A→B→C
+  ];
+
+  it("reduces by default and reports the hidden count", async () => {
+    const { computeDisplayEdges } = await import("./RunDetail");
+    const { displayEdges, hiddenCount } = computeDisplayEdges(diamondWithSkip, false);
+    expect(displayEdges).toHaveLength(2);
+    expect(displayEdges.find((e) => e.id === "e-ac")).toBeUndefined();
+    expect(hiddenCount).toBe(1);
+  });
+
+  it("show-implied-edges toggle restores the full resolved set without losing the hidden count", async () => {
+    const { computeDisplayEdges } = await import("./RunDetail");
+    const { displayEdges, hiddenCount } = computeDisplayEdges(diamondWithSkip, true);
+    expect(displayEdges).toHaveLength(3);
+    expect(displayEdges.find((e) => e.id === "e-ac")).toBeDefined();
+    expect(hiddenCount).toBe(1);
+  });
+
+  it("a semantic edge survives reduction — hiddenCount is 0, nothing to toggle", async () => {
+    const { computeDisplayEdges } = await import("./RunDetail");
+    const withCondition: WorkerGraph["edges"] = [
+      { id: "e-ab", source: "A", target: "B", mode: "simple" },
+      { id: "e-bc", source: "B", target: "C", mode: "simple" },
+      { id: "e-ac", source: "A", target: "C", mode: "simple", condition: "score > 0.8" },
+    ];
+    const { displayEdges, hiddenCount } = computeDisplayEdges(withCondition, false);
+    expect(displayEdges).toHaveLength(3);
+    expect(hiddenCount).toBe(0);
+  });
+
+  it("empty edges reduce to empty, zero hidden", async () => {
+    const { computeDisplayEdges } = await import("./RunDetail");
+    expect(computeDisplayEdges([], false)).toEqual({ displayEdges: [], hiddenCount: 0 });
+  });
+});
+
+// ─── Hidden-count badge + show-implied-edges toggle wired into the chrome ────
+
+describe("history/RunDetail.tsx — hidden-implied-edge count and toggle wired into the run-dag chrome", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("the run-dag SectionHeader receives edgeCount/hiddenCount/toggle props sourced from the reduction", () => {
+    const start = src.indexOf('id="run-dag"');
+    const end = src.indexOf("</Suspense>", start);
+    const block = src.slice(start, end);
+    expect(block).toMatch(/edgeCount=\{displayEdges\.length\}/);
+    expect(block).toMatch(/hiddenCount=\{hiddenCount\}/);
+    expect(block).toMatch(/onToggleImplied=\{.*setShowImpliedEdges/);
+    expect(block).toMatch(/showImplied=\{showImpliedEdges\}/);
+  });
+
+  it("SectionHeader only renders the hidden badge/toggle once hiddenCount is positive, and defaults to reduced", () => {
+    expect(src).toMatch(/hiddenCount\s*!=\s*null\s*&&\s*hiddenCount\s*>\s*0/);
+    expect(src).toMatch(/const \[showImpliedEdges, setShowImpliedEdges\] = useState\(false\)/);
+  });
+});
+
+// ─── Hidden-count badge + toggle, mounted for real ───────────────────────────
+// The two describe blocks above (computeDisplayEdges, and the source-text
+// checks on the run-dag SectionHeader call) establish the pure selection
+// logic is right and that the JSX wires the right prop names — but neither
+// proves the badge text actually renders, that the button actually flips
+// which edge set WorkerCanvas receives, or that a graph with nothing hidden
+// omits the toggle. This mounts the real RunDetail (getSession/streamSession/
+// streamSignals/ResumeRun/WorkerCanvas mocked at module scope, above) against
+// a diamond-with-skip graph (A→B→C plus a redundant A→C) and drives the
+// button through a real click.
+
+describe("history/RunDetail.tsx — hidden-count badge and show-implied toggle, mounted", () => {
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    // jsdom does not implement scrollIntoView; RunDetail calls it on load
+    // (see RunDetail.pagination.test.tsx, which mounts the same component).
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const diamondWithSkipGraph = {
+    name: "run",
+    description: "",
+    nodes: [
+      {
+        id: "A",
+        label: "A",
+        role: "",
+        assignment: "",
+        prompt: "",
+        capacity: 1,
+        timeout: null,
+        inputs: [],
+        outputs: [],
+      },
+      {
+        id: "B",
+        label: "B",
+        role: "",
+        assignment: "",
+        prompt: "",
+        capacity: 1,
+        timeout: null,
+        inputs: [],
+        outputs: [],
+      },
+      {
+        id: "C",
+        label: "C",
+        role: "",
+        assignment: "",
+        prompt: "",
+        capacity: 1,
+        timeout: null,
+        inputs: [],
+        outputs: [],
+      },
+    ],
+    edges: [
+      { id: "e-ab", source: "A", target: "B", mode: "simple" as const },
+      { id: "e-bc", source: "B", target: "C", mode: "simple" as const },
+      { id: "e-ac", source: "A", target: "C", mode: "simple" as const }, // redundant: A→B→C
+    ],
+  };
+
+  const minimalSession = (graph: unknown) => ({
+    id: "run-mount-1",
+    name: "run-mount-1",
+    created_at: 0,
+    updated_at: 0,
+    status: "completed",
+    branches: [],
+    graph,
+  });
+
+  async function mountRunDetail(graph: unknown) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue(minimalSession(graph) as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-mount-1" />
+        </IntlProvider>,
+      );
+    });
+    // getSession resolves asynchronously and lazy(WorkerCanvas) suspends for
+    // at least one microtask; flush both before asserting.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return {
+      container,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("shows the hidden-count badge and the reduced edge set by default", async () => {
+    const { container, unmount } = await mountRunDetail(diamondWithSkipGraph);
+    try {
+      expect(container.textContent).toContain("1 implied hidden");
+      const canvas = container.querySelector('[data-testid="worker-canvas"]');
+      expect(canvas?.getAttribute("data-edge-count")).toBe("2");
+      const toggle = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "show implied edges",
+      );
+      expect(toggle).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("clicking the toggle flips the button label and hands WorkerCanvas the full edge set", async () => {
+    const { container, unmount } = await mountRunDetail(diamondWithSkipGraph);
+    try {
+      const toggle = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "show implied edges",
+      );
+      expect(toggle).toBeDefined();
+
+      await act(async () => {
+        toggle?.click();
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const canvasAfter = container.querySelector('[data-testid="worker-canvas"]');
+      expect(canvasAfter?.getAttribute("data-edge-count")).toBe("3");
+      const hideButton = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "hide implied",
+      );
+      expect(hideButton).toBeDefined();
+      // The badge count itself must not change on toggle — 1 edge is still
+      // implied, whichever set is currently shown.
+      expect(container.textContent).toContain("1 implied hidden");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("an already-minimal graph (nothing hidden) renders no badge and no toggle", async () => {
+    const minimalGraph = {
+      name: "run",
+      description: "",
+      nodes: [
+        {
+          id: "A",
+          label: "A",
+          role: "",
+          assignment: "",
+          prompt: "",
+          capacity: 1,
+          timeout: null,
+          inputs: [],
+          outputs: [],
+        },
+        {
+          id: "B",
+          label: "B",
+          role: "",
+          assignment: "",
+          prompt: "",
+          capacity: 1,
+          timeout: null,
+          inputs: [],
+          outputs: [],
+        },
+      ],
+      edges: [{ id: "e-ab", source: "A", target: "B", mode: "simple" as const }],
+    };
+    const { container, unmount } = await mountRunDetail(minimalGraph);
+    try {
+      expect(container.textContent).not.toContain("implied hidden");
+      const toggle = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "show implied edges" || b.textContent === "hide implied",
+      );
+      expect(toggle).toBeUndefined();
+      const canvas = container.querySelector('[data-testid="worker-canvas"]');
+      expect(canvas?.getAttribute("data-edge-count")).toBe("1");
+    } finally {
+      unmount();
+    }
   });
 });
 
