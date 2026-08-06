@@ -23,6 +23,7 @@ import {
   collapsedTextFor,
   extractFilePaths,
   pathFromArgs,
+  servableKnownFiles,
 } from "./RunStepCard";
 import type { RunMessage, RunStep } from "@/lib/types";
 
@@ -362,5 +363,29 @@ describe("pathFromArgs — shell-derived file paths", () => {
     expect(
       pathFromArgs({ command: "cat /repo/src/a.py /repo/src/../src/a.py" }, "", "Bash"),
     ).toEqual(["/repo/src/a.py"]);
+  });
+});
+
+describe("servableKnownFiles", () => {
+  const ROOT = "/Users/x/khive-work/shows/topic/play";
+
+  it("keeps only files inside the artifact root — what the endpoint can serve", () => {
+    const kept = servableKnownFiles(
+      [`${ROOT}/coordinator/report.md`, "/Users/x/projects/repo/src/main.py"],
+      ROOT,
+    );
+    expect(kept).toEqual([`${ROOT}/coordinator/report.md`]);
+  });
+
+  it("returns nothing when the run has no artifact root — every link would 404", () => {
+    expect(servableKnownFiles([`${ROOT}/coordinator/report.md`], null)).toEqual([]);
+  });
+
+  it("a sibling dir sharing the root's prefix is outside it", () => {
+    expect(servableKnownFiles([`${ROOT}-backup/a.md`], ROOT)).toEqual([]);
+  });
+
+  it("normalizes a trailing slash on the root", () => {
+    expect(servableKnownFiles([`${ROOT}/a.md`], `${ROOT}/`)).toEqual([`${ROOT}/a.md`]);
   });
 });

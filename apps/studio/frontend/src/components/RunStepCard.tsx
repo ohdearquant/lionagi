@@ -282,6 +282,21 @@ export function pathFromArgs(
 /** The run's known file surface for one branch's messages — same source
  * (`pathFromArgs` over tool-call args) the "top files" panel already uses,
  * reused here for file-link resolution so both stay in lockstep. */
+/** Restrict candidate file-reference targets to what the run file endpoint
+ * can actually serve: paths inside the run's artifact root. The run's file
+ * surface also records files it touched elsewhere (repo edits, workspace
+ * reads); resolving a reference to one of those mints a link whose only
+ * possible outcome is a "path escapes workspace root" refusal. With no root
+ * at all, nothing is servable. */
+export function servableKnownFiles(
+  paths: string[],
+  artifactRoot: string | null | undefined,
+): string[] {
+  if (!artifactRoot) return [];
+  const root = artifactRoot.replace(/\/+$/, "") + "/";
+  return Array.from(new Set(paths)).filter((p) => p.startsWith(root));
+}
+
 export function extractFilePaths(messages: RunMessage[]): string[] {
   const toolMessages = messages.filter((m) => m.role === "tool_call" || m.role === "action");
   const paths = new Set<string>();
@@ -436,9 +451,13 @@ function RunStepCard({
     const agentId = result.agent || step.step;
     const agentDir =
       artifactRoot && agentId ? `${artifactRoot.replace(/\/+$/, "")}/${agentId}` : undefined;
-    const knownFiles = Array.from(
-      new Set([...summary.files.map((f) => f.path), ...(runFiles ?? [])]),
+    const knownFiles = servableKnownFiles(
+      [...summary.files.map((f) => f.path), ...(runFiles ?? [])],
+      artifactRoot,
     );
+    // No servable files means every link this context could mint would fail
+    // at the endpoint — render plain text instead of dead links.
+    if (knownFiles.length === 0) return undefined;
     return { runId, knownFiles, agentDir };
   }, [runId, artifactRoot, runFiles, result.agent, step.step, summary.files]);
 
