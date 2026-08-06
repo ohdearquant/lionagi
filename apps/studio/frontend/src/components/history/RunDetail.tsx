@@ -613,6 +613,17 @@ export interface GateOutcome {
 
 const BLOCKING_FINDING_SEVERITIES = new Set(["critical", "high"]);
 
+// Flow-layer DAG gates (lionagi/operations/flow.py's is_gate contract) never
+// emit a StructuredOutput signal — a rejecting gate's verdict lives in the
+// operation result the executor inspects internally, and surfaces to the
+// outside world only as this session-level terminal reason code (set by the
+// CLI teardown in lionagi/cli/_runs.py once the DAG completes with at least
+// one short-circuited gate). It is the one shape that channel actually
+// reaches the run-detail payload through today (SessionDetail.status_reason_code,
+// via services/sessions.py get_session) — mirrored here as a literal rather
+// than imported, same pattern as runStatus.ts's ZOMBIE_REASON_CODE.
+const GATE_REJECTED_REASON_CODE = "run.completed.gate_rejected";
+
 // Runtime errors (tool-call failures) and a gate/review step's verdict are
 // different populations — a run can have zero of the former and still carry
 // a "request changes" finding from the latter. Scanning newest-first mirrors
@@ -626,7 +637,10 @@ const BLOCKING_FINDING_SEVERITIES = new Set(["critical", "high"]);
 // `verdict`) and would otherwise render a false "Gate" badge. Only the
 // dedicated `gate_verdict` / `gate_passed` keys — which no non-gate emission
 // in the codebase uses — identify an output AS a gate result.
-export function deriveGateOutcome(events: SignalEvent[]): GateOutcome | null {
+export function deriveGateOutcome(
+  events: SignalEvent[],
+  runStatus?: { status_reason_code?: string | null } | null,
+): GateOutcome | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
     if (ev.kind !== "StructuredOutput") continue;
@@ -653,6 +667,13 @@ export function deriveGateOutcome(events: SignalEvent[]): GateOutcome | null {
         hasFindings: false,
       };
     }
+  }
+  // No direct-producer StructuredOutput carried a verdict — fall back to the
+  // DAG-gate reason code. This channel only ever reports a rejection (there is
+  // no matching "a gate passed" reason code to derive "approve" from), so it
+  // never contradicts a StructuredOutput-derived approve/approve-with-fixes above.
+  if (runStatus?.status_reason_code === GATE_REJECTED_REASON_CODE) {
+    return { verdict: "reject", major: 0, minor: 0, hasFindings: false };
   }
   return null;
 }
@@ -1505,7 +1526,10 @@ export default function RunDetail({ id }: RunDetailProps) {
     return errs;
   }, [steps]);
 
-  const gateOutcome = useMemo(() => deriveGateOutcome(signalEvents), [signalEvents]);
+  const gateOutcome = useMemo(
+    () => deriveGateOutcome(signalEvents, session),
+    [signalEvents, session],
+  );
 
   const opGraph = useMemo(
     () => buildOperationGraph(signalEvents.filter((e) => !!e.op_id)),

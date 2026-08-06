@@ -867,6 +867,59 @@ describe("history/RunDetail.tsx — deriveGateOutcome", () => {
     ]);
     expect(outcome).toBeNull();
   });
+
+  it("does not badge a hypothesis-engine ConclusionDrawn shape (bare `verdict`, no gate_verdict key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            verdict: "confirmed",
+            rationale: "3/3 assertions held",
+            question_ref: "Q1",
+            result_ref: "R1",
+            basis: "empirical",
+            confidence: 0.8,
+            limitations: [],
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  // A flow-layer DAG gate (lionagi/operations/flow.py's is_gate contract) never
+  // emits a StructuredOutput signal — its rejection surfaces only as this
+  // session-level terminal reason code (lionagi/cli/_runs.py, RunReasons.
+  // COMPLETED_GATE_REJECTED). deriveGateOutcome must read that shape too, or a
+  // DAG gate can reject with no badge ever appearing.
+  it("badges a reject from the session's gate-rejected reason code when no StructuredOutput verdict exists", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome(
+      [sig({ kind: "NodeCompleted", payload: { name: "step1" } })],
+      { status_reason_code: "run.completed.gate_rejected" },
+    );
+    expect(outcome).toEqual({ verdict: "reject", major: 0, minor: 0, hasFindings: false });
+  });
+
+  it("does not badge on an unrelated terminal reason code", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome(
+      [sig({ kind: "NodeCompleted", payload: { name: "step1" } })],
+      { status_reason_code: "run.completed.ok" },
+    );
+    expect(outcome).toBeNull();
+  });
+
+  it("prefers a StructuredOutput verdict over the gate-rejected reason code", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome(
+      [sig({ kind: "StructuredOutput", payload: { data: { gate_verdict: "approve" } } })],
+      { status_reason_code: "run.completed.gate_rejected" },
+    );
+    expect(outcome?.verdict).toBe("approve");
+  });
 });
 
 // ─── EventsSection — "show older" paging ─────────────────────────────────────
