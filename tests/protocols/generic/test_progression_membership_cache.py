@@ -10,6 +10,7 @@ cost no longer scales with n.
 from __future__ import annotations
 
 import timeit
+from collections import deque
 from uuid import uuid4
 
 import pytest
@@ -285,15 +286,128 @@ def test_include_after_direct_order_clear_reinserts():
     assert list(p.order) == [uid]
 
 
-def test_direct_order_mutation_leaves_members_stale_until_explicit_rebuild():
+def test_direct_order_mutation_updates_members_eagerly():
+    # `order` is wrapped in an owning deque that keeps `_members` correct on
+    # every direct mutation (not just length-changing ones) — see the
+    # `_MembersDeque` design rationale in `progression.py`.
     p = Progression()
     new_id = uuid4()
     p.order.append(new_id)
-    # `_members` itself (not `__contains__`) stays stale until asked.
-    assert new_id not in p._members
-    p._rebuild_members()
     assert new_id in p._members
     assert p._members == set(p.order)
+
+
+def test_direct_order_reassignment_leaves_members_stale_until_synced():
+    # The one remaining staleness case: `order` replaced wholesale with a
+    # plain (unwrapped) deque bypasses the owning-deque's eager updates until
+    # the next `_ensure_synced()`-gated call (or an explicit rebuild).
+    p = Progression()
+    p.order.append(uuid4())
+    new_ids = [uuid4(), uuid4()]
+    p.order = deque(new_ids)
+    assert p._members != set(new_ids)
+    p._rebuild_members()
+    assert new_ids[0] in p._members
+    assert p._members == set(p.order)
+
+
+# ---------------------------------------------------------------------------
+# Length-preserving external mutation (the `_ensure_synced` length-only guard
+# cannot see these — the owning `_MembersDeque` must handle them directly).
+# ---------------------------------------------------------------------------
+
+
+def test_direct_order_setitem_length_preserving_membership_both_signs():
+    p = Progression()
+    a, b = uuid4(), uuid4()
+    p.order.extend([a, b])
+    c = uuid4()
+
+    p.order[0] = c  # length-preserving external replacement
+
+    assert a not in p  # negative sign: replaced id no longer a member
+    assert c in p  # positive sign: replacement id is now a member
+
+
+def test_include_after_length_preserving_setitem_does_not_duplicate():
+    p = Progression()
+    a, b = uuid4(), uuid4()
+    p.order.extend([a, b])
+    c = uuid4()
+    p.order[0] = c
+
+    assert p.include(c) is False  # already present; must not re-append
+    assert list(p.order).count(c) == 1
+
+
+def test_remove_succeeds_after_length_preserving_setitem():
+    p = Progression()
+    a, b = uuid4(), uuid4()
+    p.order.extend([a, b])
+    c = uuid4()
+    p.order[0] = c
+
+    p.remove(c)  # must not raise ItemNotFoundError for a present id
+    assert c not in p
+    assert list(p.order) == [b]
+
+
+def test_direct_order_popleft_append_length_preserving_membership():
+    p = Progression()
+    ids = [uuid4() for _ in range(3)]
+    p.order.extend(ids)
+    new_id = uuid4()
+
+    popped = p.order.popleft()
+    p.order.append(new_id)
+
+    assert popped not in p
+    assert new_id in p
+    assert p.include(new_id) is False
+    p.remove(new_id)
+    assert new_id not in p
+
+
+def test_direct_order_mutator_coverage_keeps_members_consistent():
+    # Exercises every mutating deque operation the owning wrapper must own,
+    # asserting `_members == set(order)` after each step.
+    p = Progression()
+    ids = [uuid4() for _ in range(5)]
+    p.order.extend(ids)
+    assert p._members == set(p.order)
+
+    p.order.appendleft(uuid4())
+    assert p._members == set(p.order)
+
+    p.order.rotate(2)
+    assert p._members == set(p.order)
+
+    p.order.reverse()
+    assert p._members == set(p.order)
+
+    p.order.insert(1, uuid4())
+    assert p._members == set(p.order)
+
+    p.order.extendleft([uuid4(), uuid4()])
+    assert p._members == set(p.order)
+
+    removed = p.order[0]
+    del p.order[0]
+    assert removed not in p._members
+    assert p._members == set(p.order)
+
+    p.order.remove(p.order[0])
+    assert p._members == set(p.order)
+
+    p.order += [uuid4()]
+    assert p._members == set(p.order)
+
+    popped = p.order.pop()
+    assert popped not in p._members
+    assert p._members == set(p.order)
+
+    p.order.clear()
+    assert p._members == set() == set(p.order)
 
 
 # ---------------------------------------------------------------------------
@@ -403,4 +517,32 @@ def test_contains_cost_does_not_scale_with_size():
         f"contains() cost scaled with size (ratio={ratio:.2f}, "
         f"small={small_time:.4f}s, large={large_time:.4f}s) — "
         "expected O(1) amortized membership via the `_members` cache"
+    )
+
+
+def test_contains_cost_flat_across_n_1k_and_n_100k():
+    # Mirrors the contract's own timeit probe (baseline_repro.md) at the
+    # exact n=1k / n=100k scale, on top of the owning-deque fix — the O(1)
+    # win must survive length-preserving-mutation-safety changes.
+    small_n = 1_000
+    large_n = 100_000  # 100x larger
+
+    small = Progression(order=[uuid4() for _ in range(small_n)])
+    large = Progression(order=[uuid4() for _ in range(large_n)])
+
+    small_probe = uuid4()
+    large_probe = uuid4()
+
+    small_time = timeit.timeit(lambda: small_probe in small, number=5_000)
+    large_time = timeit.timeit(lambda: large_probe in large, number=5_000)
+
+    ratio = large_time / small_time if small_time > 0 else float("inf")
+
+    # A purely O(n) implementation would show ~100x; a generous ceiling of 5x
+    # comfortably distinguishes O(1)-amortized behavior from an O(n)
+    # regression while tolerating CI noise.
+    assert ratio < 5, (
+        f"contains() cost scaled with size (ratio={ratio:.2f}, "
+        f"n=1k={small_time:.4f}s, n=100k={large_time:.4f}s) — "
+        "expected flat per-check cost across n=1k vs n=100k"
     )
