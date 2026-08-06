@@ -180,6 +180,29 @@ export function sortSchedulesForCards(schedules: ScheduleSummary[]): ScheduleSum
   });
 }
 
+// ─── Health badge derivation ───────────────────────────────────────────────
+// The backend computes health from cadence + recorded schedule_runs rows, so
+// this is a pure display mapping only -- it never re-derives the verdict, it
+// just turns the server's fields into what a badge needs to render.
+
+export type HealthBadgeState =
+  | { kind: "hidden" }
+  | { kind: "healthy" | "failing" | "overdue"; outcome: string | null; outcomeAtMs: number | null }
+  | { kind: "never-fired"; sinceMs: number };
+
+export function scheduleHealthBadge(s: ScheduleSummary): HealthBadgeState {
+  const state = s.health_state;
+  if (!state || state === "disabled") return { kind: "hidden" };
+  if (state === "never-fired") {
+    return { kind: "never-fired", sinceMs: toMs(s.health_since ?? 0) };
+  }
+  return {
+    kind: state,
+    outcome: s.health_last_outcome ?? null,
+    outcomeAtMs: s.health_last_outcome_at != null ? toMs(s.health_last_outcome_at) : null,
+  };
+}
+
 /** Most recent run per schedule, for the table's "last run" column. */
 export function latestRunBySchedule(runs: RunRow[]): Map<string, RunRow> {
   const map = new Map<string, RunRow>();

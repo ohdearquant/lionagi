@@ -547,7 +547,15 @@
       "last": "last",
       "never": "never run",
       "paused": "Paused",
-      "notScheduled": "Not scheduled"
+      "notScheduled": "Not scheduled",
+      "health": {
+        "healthy": "Healthy",
+        "failing": "Failing",
+        "overdue": "Overdue",
+        "neverFired": "Never fired",
+        "lastOutcome": "last {outcome} {delta} ago",
+        "neverFiredSince": "never fired since {date}"
+      }
     },
     "run": {
       "elapsed": "{delta} elapsed",

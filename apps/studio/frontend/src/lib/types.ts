@@ -391,6 +391,12 @@ export interface ScheduleSummary {
   github_filter?: { event?: string; base?: string; state?: string } | null;
   consecutive_failures?: number;
   last_status?: string | null;
+  /** Server-computed verdict from cadence + recorded schedule_runs, never
+   * from next_fire_at (a promise, not evidence). */
+  health_state?: "healthy" | "failing" | "overdue" | "never-fired" | "disabled";
+  health_last_outcome?: string | null;
+  health_last_outcome_at?: number | null;
+  health_since?: number;
   created_at: number;
   updated_at: number;
 }

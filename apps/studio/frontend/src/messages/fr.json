@@ -547,7 +547,15 @@
       "last": "dernier",
       "never": "jamais exécuté",
       "paused": "En pause",
-      "notScheduled": "Non planifié"
+      "notScheduled": "Non planifié",
+      "health": {
+        "healthy": "En bonne santé",
+        "failing": "En échec",
+        "overdue": "En retard",
+        "neverFired": "Jamais exécutée",
+        "lastOutcome": "dernière fois {outcome} il y a {delta}",
+        "neverFiredSince": "jamais exécutée depuis {date}"
+      }
     },
     "run": {
       "elapsed": "{delta} écoulé",

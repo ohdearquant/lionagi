@@ -547,7 +547,15 @@
       "last": "पिछला",
       "never": "कभी रन नहीं हुआ",
       "paused": "रोका गया",
-      "notScheduled": "निर्धारित नहीं"
+      "notScheduled": "निर्धारित नहीं",
+      "health": {
+        "healthy": "स्वस्थ",
+        "failing": "विफल",
+        "overdue": "लंबित",
+        "neverFired": "कभी नहीं चली",
+        "lastOutcome": "पिछली बार {outcome} {delta} पहले",
+        "neverFiredSince": "{date} से कभी नहीं चली"
+      }
     },
     "run": {
       "elapsed": "{delta} बीत गया",

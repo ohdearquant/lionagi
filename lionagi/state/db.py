@@ -3942,6 +3942,50 @@ class StateDB:
             result[sid] = (streak, last_status)
         return result
 
+    async def schedule_health_evidence(self, schedule_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Batched read of the run evidence a health verdict needs.
+
+        A 'recorded' row is any top-level (chain_depth=0) schedule_runs row,
+        including 'skipped'. An 'executed' row excludes 'skipped' -- a missed-
+        fire or overlap skip moves the cursor but nothing ran, so it must not
+        stand in for real evidence when deciding whether a schedule is silent.
+        """
+        if not schedule_ids:
+            return {}
+        id_placeholders = ", ".join(f":id{i}" for i in range(len(schedule_ids)))
+        params = {f"id{i}": sid for i, sid in enumerate(schedule_ids)}
+        query = (
+            "SELECT schedule_id, status, fired_at FROM ("  # noqa: S608
+            "  SELECT schedule_id, status, fired_at,"
+            "         ROW_NUMBER() OVER ("
+            "           PARTITION BY schedule_id ORDER BY fired_at DESC, id DESC"
+            "         ) AS rn"
+            f"  FROM schedule_runs WHERE schedule_id IN ({id_placeholders}) AND chain_depth = 0"
+            ") ranked WHERE rn <= 50 ORDER BY schedule_id, rn"
+        )
+        async with self._read() as conn:
+            rows = (await conn.execute(text(query), params)).mappings().all()
+        grouped: dict[str, list[Any]] = {}
+        for row in rows:
+            grouped.setdefault(row["schedule_id"], []).append(row)
+        result: dict[str, dict[str, Any]] = {}
+        for sid in schedule_ids:
+            ranked = grouped.get(sid)
+            if not ranked:
+                result[sid] = {
+                    "last_recorded_run_at": None,
+                    "last_executed_status": None,
+                    "last_executed_run_at": None,
+                }
+                continue
+            executed = next((r for r in ranked if r["status"] != "skipped"), None)
+            result[sid] = {
+                "last_recorded_run_at": ranked[0]["fired_at"],
+                "last_executed_status": executed["status"] if executed else None,
+                "last_executed_run_at": executed["fired_at"] if executed else None,
+            }
+        return result
+
     async def sum_schedule_spend(self, schedule_id: str) -> dict[str, Any]:
         """Sum cost/token usage across every session a schedule has spawned.
 

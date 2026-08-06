@@ -405,6 +405,72 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     return None
 
 
+# Health severity is computed from cadence + observed schedule_runs rows,
+# never from next_fire_at -- next_fire_at is a promise the scheduler made,
+# not evidence that anything happened. A missed-fire/overlap/capacity skip
+# advances the cursor while recording no execution, so silence hidden behind
+# a pile of skips must still read as overdue, not healthy.
+_HEALTH_OVERDUE_MULTIPLIER = 3
+_HEALTH_OVERDUE_GRACE_FLOOR_SEC = 300  # 5 minutes
+
+
+def _schedule_cadence_seconds(row: dict[str, Any]) -> float | None:
+    trigger_type = row.get("trigger_type")
+    if trigger_type == "interval":
+        return row.get("interval_sec")
+    if trigger_type == "github_poll":
+        # Matches the scheduler's own poll fallback when poll_interval_sec is unset.
+        return row.get("poll_interval_sec") or 300
+    # cron/at cadence isn't a fixed period; overdue detection is skipped for
+    # them rather than guessed from next_fire_at.
+    return None
+
+
+def compute_schedule_health(
+    row: dict[str, Any], evidence: dict[str, Any], *, now: float
+) -> dict[str, Any]:
+    """Derive a read-only health verdict for one schedule.
+
+    States: disabled (not enabled), never-fired (enabled, no row has ever
+    actually executed), overdue (enabled, cadence known, and no execution
+    evidence within grace of the expected cadence), failing (last executed
+    outcome was failed/timed_out), healthy (otherwise).
+    """
+    last_executed_at = evidence.get("last_executed_run_at")
+    last_executed_status = evidence.get("last_executed_status")
+
+    if not row.get("enabled"):
+        state = "disabled"
+    elif last_executed_at is None:
+        state = "never-fired"
+    else:
+        cadence_seconds = _schedule_cadence_seconds(row)
+        overdue = (
+            cadence_seconds is not None
+            and cadence_seconds > 0
+            and (
+                now - last_executed_at
+                > max(
+                    cadence_seconds * _HEALTH_OVERDUE_MULTIPLIER,
+                    cadence_seconds + _HEALTH_OVERDUE_GRACE_FLOOR_SEC,
+                )
+            )
+        )
+        if overdue:
+            state = "overdue"
+        elif last_executed_status in ("failed", "timed_out"):
+            state = "failing"
+        else:
+            state = "healthy"
+
+    return {
+        "health_state": state,
+        "health_last_outcome": last_executed_status,
+        "health_last_outcome_at": last_executed_at,
+        "health_since": row.get("created_at"),
+    }
+
+
 async def list_schedules(
     *,
     enabled: bool | None = None,
@@ -418,12 +484,15 @@ async def list_schedules(
         ids = [row["id"] for row in rows]
         used_by_id = await db.count_schedule_runs_batch(ids, chain_depth=0)
         streaks_by_id = await db.schedule_run_streaks(ids)
+        health_evidence_by_id = await db.schedule_health_evidence(ids)
+        now = time.time()
         for row in rows:
             if row.get("max_runs"):
                 row["remaining_runs"] = max(row["max_runs"] - used_by_id[row["id"]], 0)
             streak, last_status = streaks_by_id[row["id"]]
             row["consecutive_failures"] = streak
             row["last_status"] = last_status
+            row.update(compute_schedule_health(row, health_evidence_by_id[row["id"]], now=now))
     return rows
 
 
@@ -441,6 +510,8 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         streak, last_status = await db.schedule_run_streak(schedule_id)
         row["consecutive_failures"] = streak
         row["last_status"] = last_status
+        evidence = (await db.schedule_health_evidence([schedule_id]))[schedule_id]
+        row.update(compute_schedule_health(row, evidence, now=time.time()))
     row["recent_runs"] = runs
     return row
 

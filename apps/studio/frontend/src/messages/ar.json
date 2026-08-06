@@ -547,7 +547,15 @@
       "last": "الأخير",
       "never": "لم يُشغّل قط",
       "paused": "متوقف مؤقتًا",
-      "notScheduled": "غير مجدول"
+      "notScheduled": "غير مجدول",
+      "health": {
+        "healthy": "سليم",
+        "failing": "فاشل",
+        "overdue": "متأخر",
+        "neverFired": "لم يعمل مطلقًا",
+        "lastOutcome": "آخر {outcome} منذ {delta}",
+        "neverFiredSince": "لم يعمل مطلقًا منذ {date}"
+      }
     },
     "run": {
       "elapsed": "انقضى {delta}",

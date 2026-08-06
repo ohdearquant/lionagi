@@ -547,7 +547,15 @@
       "last": "gần nhất",
       "never": "chưa từng chạy",
       "paused": "Đã tạm dừng",
-      "notScheduled": "Chưa lên lịch"
+      "notScheduled": "Chưa lên lịch",
+      "health": {
+        "healthy": "Khỏe mạnh",
+        "failing": "Thất bại",
+        "overdue": "Quá hạn",
+        "neverFired": "Chưa từng chạy",
+        "lastOutcome": "lần cuối {outcome} {delta} trước",
+        "neverFiredSince": "chưa từng chạy kể từ {date}"
+      }
     },
     "run": {
       "elapsed": "đã qua {delta}",

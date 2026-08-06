@@ -547,7 +547,15 @@
       "last": "son",
       "never": "hiç çalışmadı",
       "paused": "Duraklatıldı",
-      "notScheduled": "Zamanlanmadı"
+      "notScheduled": "Zamanlanmadı",
+      "health": {
+        "healthy": "Sağlıklı",
+        "failing": "Başarısız",
+        "overdue": "Gecikmiş",
+        "neverFired": "Hiç çalışmadı",
+        "lastOutcome": "son {outcome} {delta} önce",
+        "neverFiredSince": "{date} tarihinden beri hiç çalışmadı"
+      }
     },
     "run": {
       "elapsed": "{delta} geçti",

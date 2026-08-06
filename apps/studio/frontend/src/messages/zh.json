@@ -547,7 +547,15 @@
       "last": "上次",
       "never": "从未运行",
       "paused": "已暂停",
-      "notScheduled": "未排期"
+      "notScheduled": "未排期",
+      "health": {
+        "healthy": "健康",
+        "failing": "失败",
+        "overdue": "逾期",
+        "neverFired": "从未运行",
+        "lastOutcome": "{delta}前{outcome}",
+        "neverFiredSince": "自 {date} 起从未运行"
+      }
     },
     "run": {
       "elapsed": "已运行 {delta}",

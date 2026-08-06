@@ -20,6 +20,7 @@ import {
   formatDelta,
   latestRunBySchedule,
   nextFireState,
+  scheduleHealthBadge,
   sortSchedulesForCards,
   toMs,
   type RunRow,
@@ -71,6 +72,65 @@ function NextFire({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: numbe
           : t("card.in", { delta: formatDelta(state.deltaMs) })}
       </span>
     </span>
+  );
+}
+
+const HEALTH_COLOR: Record<"healthy" | "failing" | "overdue" | "never-fired", string> = {
+  healthy: "var(--content-secondary)",
+  failing: "var(--status-warning)",
+  overdue: "var(--status-warning)",
+  "never-fired": "var(--content-muted)",
+};
+
+const HEALTH_LABEL_KEY: Record<"healthy" | "failing" | "overdue" | "never-fired", string> = {
+  healthy: "healthy",
+  failing: "failing",
+  overdue: "overdue",
+  "never-fired": "neverFired",
+};
+
+/**
+ * Health verdict badge — the server derives this from cadence + recorded
+ * schedule_runs rows, so a day of silence behind skipped occurrences or a
+ * schedule that has never once executed shows up here even while the raw
+ * next-fire countdown still looks reassuring.
+ */
+function HealthBadge({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: number }) {
+  const t = useTranslations("schedules.card.health");
+  const tStatus = useTranslations("history.status");
+  const locale = useLocale();
+  const badge = scheduleHealthBadge(schedule);
+
+  if (badge.kind === "hidden") return null;
+
+  const label = t(HEALTH_LABEL_KEY[badge.kind] as Parameters<typeof t>[0]);
+
+  let evidence: string | null = null;
+  if (badge.kind === "never-fired") {
+    const date = new Date(badge.sinceMs).toLocaleDateString(locale, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    evidence = t("neverFiredSince", { date });
+  } else if (badge.outcome && badge.outcomeAtMs != null) {
+    const outcome = KNOWN_RUN_STATUSES.has(badge.outcome)
+      ? tStatus(badge.outcome as Parameters<typeof tStatus>[0])
+      : badge.outcome;
+    evidence = t("lastOutcome", { outcome, delta: formatDelta(nowMs - badge.outcomeAtMs) });
+  }
+
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 text-meta">
+      <span className="font-semibold" style={{ color: HEALTH_COLOR[badge.kind] }}>
+        {label}
+      </span>
+      {evidence && (
+        <span className="truncate text-content-muted" title={evidence}>
+          · {evidence}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -186,6 +246,9 @@ function ScheduleCard({
           {trigger.text}
         </span>
       </div>
+
+      {/* Health verdict: cadence + recorded outcomes, ahead of the raw last-run pill */}
+      <HealthBadge schedule={schedule} nowMs={nowMs} />
 
       {/* Last run */}
       <LastRun run={lastRun} nowMs={nowMs} />

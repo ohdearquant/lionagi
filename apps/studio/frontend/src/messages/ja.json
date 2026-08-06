@@ -547,7 +547,15 @@
       "last": "前回",
       "never": "未実行",
       "paused": "一時停止中",
-      "notScheduled": "未スケジュール"
+      "notScheduled": "未スケジュール",
+      "health": {
+        "healthy": "正常",
+        "failing": "失敗",
+        "overdue": "遅延",
+        "neverFired": "一度も実行されていません",
+        "lastOutcome": "{delta}前に{outcome}",
+        "neverFiredSince": "{date}以降一度も実行されていません"
+      }
     },
     "run": {
       "elapsed": "{delta}経過",
