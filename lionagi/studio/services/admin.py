@@ -28,6 +28,7 @@ from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._db import require_file_store, store_exists, store_path
 from ._path_safety import public_path
+from .sessions import resolve_session_display_name
 
 _log = logging.getLogger(__name__)
 
@@ -330,8 +331,8 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
     async with _open_db(store_path()) as db:
         cur = await db.execute(
             """
-            SELECT id, name, playbook_name, started_at, updated_at, artifacts_path,
-                   status, node_metadata
+            SELECT id, name, user_label, agent_name, playbook_name, started_at,
+                   updated_at, artifacts_path, status, node_metadata
             FROM sessions
             WHERE status = 'running'
             ORDER BY updated_at DESC
@@ -347,7 +348,7 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
             phantoms.append(
                 {
                     "session_id": row["id"],
-                    "playbook": row["playbook_name"] or row["name"],
+                    "playbook": resolve_session_display_name(dict(row)),
                     "started_at": row["started_at"],
                     "updated_at": row["updated_at"] or 0.0,
                     "artifacts_path": row["artifacts_path"],
@@ -433,7 +434,7 @@ async def health_report() -> dict[str, Any]:
             WITH page AS (
                 SELECT id AS page_id FROM sessions ORDER BY updated_at DESC LIMIT ?
             )
-            SELECT s.id, s.name, s.status, s.invocation_kind, s.agent_name,
+            SELECT s.id, s.name, s.user_label, s.status, s.invocation_kind, s.agent_name,
                    s.playbook_name, s.started_at, s.ended_at, s.updated_at,
                    s.last_message_at, s.artifacts_path, s.node_metadata,
                    COALESCE(SUM(json_array_length(p.collection)), 0) AS message_count
@@ -498,10 +499,7 @@ async def health_report() -> dict[str, Any]:
             unhealthy.append(
                 {
                     "session_id": row["id"],
-                    "name": sess.get("name")
-                    or sess.get("playbook_name")
-                    or sess.get("agent_name")
-                    or "",
+                    "name": resolve_session_display_name(sess),
                     "health": health.value,
                     "status": status,
                     "invocation_kind": sess.get("invocation_kind"),

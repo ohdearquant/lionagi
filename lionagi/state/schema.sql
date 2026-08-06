@@ -115,6 +115,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at      REAL    NOT NULL,
   node_metadata   JSON,
   name            TEXT,
+  -- User-owned display label (Studio rename). Distinct from `name`, which is
+  -- system-written at session creation and can be overwritten by a later
+  -- system write through the generic updater's allow-list. NULL means the
+  -- session has never been renamed; readers fall back to the existing
+  -- name/agent_name/playbook_name/id chain via resolve_session_display_name().
+  user_label      TEXT,
   user            TEXT,
   progression_id  TEXT    NOT NULL REFERENCES progressions(id),
   first_msg_id    TEXT    REFERENCES messages(id),

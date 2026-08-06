@@ -153,6 +153,68 @@ async def test_get_invocation_schedule_run_fields_none_for_interactive_invocatio
     assert result["schedule_run_error_detail"] is None
 
 
+async def test_get_invocation_sessions_carry_resolved_display_name(tmp_path, monkeypatch):
+    """The child-session projection must run through the same resolver as
+    session list/detail -- a renamed child session shows its label here too,
+    not the raw `name` column."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        inv_id = await _create_invocation(db)
+        prog_id = uuid.uuid4().hex[:12]
+        await db.create_progression(prog_id)
+        sid = uuid.uuid4().hex[:12]
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog_id,
+                "invocation_id": inv_id,
+                "name": "agent",
+                "status": "completed",
+                "started_at": time.time(),
+            }
+        )
+        await db.update_session(sid, user_label="Child Session Label")
+
+    result = await invocations_mod.get_invocation(inv_id)
+
+    assert result is not None
+    assert len(result["sessions"]) == 1
+    child = result["sessions"][0]
+    assert child["id"] == sid
+    assert child["user_label"] == "Child Session Label"
+    assert child["display_name"] == "Child Session Label"
+
+
+async def test_get_invocation_sessions_display_name_falls_back_when_unrenamed(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        inv_id = await _create_invocation(db)
+        prog_id = uuid.uuid4().hex[:12]
+        await db.create_progression(prog_id)
+        sid = uuid.uuid4().hex[:12]
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog_id,
+                "invocation_id": inv_id,
+                "name": "agent",
+                "status": "completed",
+                "started_at": time.time(),
+            }
+        )
+
+    result = await invocations_mod.get_invocation(inv_id)
+
+    assert result["sessions"][0]["user_label"] is None
+    assert result["sessions"][0]["display_name"] == "agent"
+
+
 async def test_list_invocations_includes_schedule_run_failure_fields(tmp_path, monkeypatch):
     """list_invocations surfaces the same schedule_run fields cheaply via the
     existing JOIN, for both a failed-scheduled and a plain invocation."""

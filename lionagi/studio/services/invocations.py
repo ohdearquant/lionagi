@@ -14,6 +14,7 @@ from lionagi.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
 from ._io import parse_json_col as _parse_json_col
+from .sessions import resolve_session_display_name
 
 
 async def list_invocations(
@@ -104,6 +105,8 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
             {
                 "id": s["id"],
                 "name": s.get("name"),
+                "user_label": s.get("user_label"),
+                "display_name": resolve_session_display_name(s),
                 "agent_name": s.get("agent_name"),
                 "playbook_name": s.get("playbook_name"),
                 "invocation_kind": s.get("invocation_kind"),

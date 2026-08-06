@@ -4,12 +4,15 @@ import asyncio
 import base64
 import json
 import time
+import unicodedata
+from collections.abc import Mapping
 from typing import Any
 
 import aiosqlite
 from fastapi import HTTPException, Query
+from pydantic import BaseModel
 
-from lionagi._errors import NotFoundError
+from lionagi._errors import NotFoundError, ValidationError
 from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
@@ -20,6 +23,44 @@ from ._io import parse_json_col as _parse_json_col
 from .artifact_verification import resolve_artifact_verification
 
 SESSION_DONE_STABLE_SECS = 60.0
+
+# Studio name validation bound (application_mcp.py:77 uses the same cap).
+MAX_SESSION_LABEL_LENGTH = 160
+
+
+def resolve_session_display_name(row: Mapping[str, Any]) -> str:
+    """The single priority chain for every served session display name.
+
+    ``user_label`` (the Studio rename) wins over the system-written
+    ``name``, which wins over ``agent_name``, which wins over
+    ``playbook_name``. Blank candidates (None, empty, or whitespace-only)
+    are treated as absent, so a session nobody has renamed resolves exactly
+    as it did before ``user_label`` existed. The last resort is an 8-char id
+    prefix, matching the fallback every existing consumer already used.
+    """
+    for key in ("user_label", "name", "agent_name", "playbook_name"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return str(row.get("id") or "")[:8]
+
+
+def _normalize_session_label(raw: str) -> str | None:
+    """Trim, cap length, and reject control characters in a rename request.
+
+    A value that is empty after trimming means "clear the label" and
+    returns ``None`` rather than raising -- clearing is not an error case.
+    """
+    trimmed = raw.strip()
+    if not trimmed:
+        return None
+    if len(trimmed) > MAX_SESSION_LABEL_LENGTH:
+        raise ValidationError(
+            f"label must be at most {MAX_SESSION_LABEL_LENGTH} characters after trimming"
+        )
+    if any(unicodedata.category(ch) == "Cc" for ch in trimmed):
+        raise ValidationError("label must not contain control characters")
+    return trimmed
 
 
 def _parse_metadata(raw: str | None) -> dict[str, Any] | None:
@@ -152,12 +193,14 @@ class SessionFilter:
         if self.search:
             escaped = _escape_like(self.search)
             clauses.append(
-                "(LOWER(COALESCE(s.name, '')) LIKE '%' || LOWER(?) || '%' "
+                "(LOWER(COALESCE(s.user_label, '')) LIKE '%' || LOWER(?) || '%' "
+                f"ESCAPE '{_LIKE_ESCAPE_CHAR}' "
+                "OR LOWER(COALESCE(s.name, '')) LIKE '%' || LOWER(?) || '%' "
                 f"ESCAPE '{_LIKE_ESCAPE_CHAR}' "
                 "OR LOWER(COALESCE(s.agent_name, '')) LIKE '%' || LOWER(?) || '%' "
                 f"ESCAPE '{_LIKE_ESCAPE_CHAR}')"
             )
-            params.extend([escaped, escaped])
+            params.extend([escaped, escaped, escaped])
         if self.statuses:
             ordered = sorted(self.statuses)
             placeholders = ",".join("?" for _ in ordered)
@@ -232,6 +275,7 @@ async def list_sessions(
             SELECT
                 s.id,
                 s.name,
+                s.user_label,
                 s.created_at,
                 s.updated_at,
                 s.playbook_name,
@@ -272,10 +316,12 @@ async def list_sessions(
         )
         rows = await cur.fetchall()
 
-    return [
-        {
+    out = []
+    for row in rows:
+        entry = {
             "id": row["id"],
             "name": row["name"],
+            "user_label": row["user_label"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"] or 0.0,
             "node_metadata": row["node_metadata"],
@@ -329,8 +375,9 @@ async def list_sessions(
             "status_reason_code": row["status_reason_code"],
             "status_reason_summary": row["status_reason_summary"],
         }
-        for row in rows
-    ]
+        entry["display_name"] = resolve_session_display_name(entry)
+        out.append(entry)
+    return out
 
 
 async def list_project_counts() -> list[dict[str, Any]]:
@@ -645,7 +692,7 @@ async def get_session(
     async with _open_db(store_path()) as db:
         cur = await db.execute(
             # Include lifecycle and provenance columns (model/provider/effort/agent_hash).
-            """SELECT id, name, created_at, updated_at,
+            """SELECT id, name, user_label, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
                       artifact_contract_json, artifact_verification_json,
@@ -792,9 +839,10 @@ async def get_session(
         artifacts_path=session_row["artifacts_path"],
     )
 
-    return {
+    detail = {
         "id": session_row["id"],
         "name": session_row["name"],
+        "user_label": session_row["user_label"],
         "created_at": session_row["created_at"],
         "updated_at": session_row["updated_at"],
         "playbook_name": session_row["playbook_name"],
@@ -837,6 +885,8 @@ async def get_session(
         # get_run()'s liveness check can find the recorded pid.
         "node_metadata": session_row["node_metadata"],
     }
+    detail["display_name"] = resolve_session_display_name(detail)
+    return detail
 
 
 async def get_session_by_cc_id(cc_uid: str) -> dict[str, Any] | None:
@@ -978,6 +1028,51 @@ async def get_session_route(
     if session is None:
         raise NotFoundError(f"Session '{session_id}' not found")
     return session
+
+
+class RenameSessionRequest(BaseModel):
+    label: str
+
+
+@studio_route("/sessions/{session_id}", method="PUT", area="sessions", name="rename_session")
+async def rename_session_route(session_id: str, body: RenameSessionRequest) -> dict[str, Any]:
+    """Set or clear a session's user-owned display label.
+
+    Whitespace-only input clears the label (the display falls back to the
+    existing name/agent_name/playbook_name/id chain) rather than erroring.
+    An unknown session_id 404s before any write, matching the GET route's
+    wording (``sessions.py`` GET handler above).
+    """
+    require_file_store()
+    if not await session_exists(session_id):
+        raise NotFoundError(f"Session '{session_id}' not found")
+
+    normalized = _normalize_session_label(body.label)
+
+    # A plain field write, not routed through StateDB.update_session(): that
+    # generic updater unconditionally bumps updated_at, which would make a
+    # rename masquerade as activity -- reordering session lists and, for a
+    # running session, resetting the staleness clock a phantom-session sweep
+    # depends on. A label edit is not activity.
+    async with _open_db(store_path()) as db:
+        await db.execute(
+            "UPDATE sessions SET user_label = ? WHERE id = ?",
+            (normalized, session_id),
+        )
+        await db.commit()
+
+        cur = await db.execute(
+            "SELECT id, name, user_label, agent_name, playbook_name FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+
+    display_name = resolve_session_display_name(dict(row)) if row else session_id[:8]
+    return {
+        "session_id": session_id,
+        "user_label": normalized,
+        "display_name": display_name,
+    }
 
 
 @studio_route(

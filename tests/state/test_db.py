@@ -611,6 +611,8 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
             "artifact_verification_json",
             # live flow phase column for `li monitor`.
             "current_phase",
+            # user-owned display label (Studio rename).
+            "user_label",
         ):
             assert must_have in cols, f"sessions.{must_have} not migrated"
         async with db._read() as conn:
@@ -959,6 +961,39 @@ async def test_update_session_current_phase(db: StateDB):
 
     await db.update_session(s["id"], current_phase="executing")
     assert (await db.get_session(s["id"]))["current_phase"] == "executing"
+
+
+async def test_create_session_never_sets_user_label(db: StateDB):
+    """user_label is NULL on creation even when a system writer's `name` is set.
+
+    No creation writer passes user_label — it starts NULL for every session,
+    renamed or not, and is only ever set by the Studio rename route through
+    update_session().
+    """
+    s = await _make_session(db)
+    await db.update_session(s["id"], name="agent")
+    retrieved = await db.get_session(s["id"])
+    assert retrieved["user_label"] is None
+    assert retrieved["name"] == "agent"
+
+
+async def test_update_session_user_label_round_trip(db: StateDB):
+    """user_label is in the allow-listed update_session() path, and a write
+    to it never touches the system-written `name` column (the ownership
+    boundary the column exists to provide)."""
+    s = await _make_session(db)
+    await db.update_session(s["id"], name="agent")
+
+    await db.update_session(s["id"], user_label="My Renamed Session")
+    retrieved = await db.get_session(s["id"])
+    assert retrieved["user_label"] == "My Renamed Session"
+    assert retrieved["name"] == "agent"
+
+    # Clearing (writing None) round-trips to NULL, not an empty string.
+    await db.update_session(s["id"], user_label=None)
+    retrieved = await db.get_session(s["id"])
+    assert retrieved["user_label"] is None
+    assert retrieved["name"] == "agent"
 
 
 async def test_list_sessions_by_status(db: StateDB):
