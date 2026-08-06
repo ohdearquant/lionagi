@@ -1037,6 +1037,98 @@ class TestBranchEndEmission:
             _m._SHARED.pop(db_path, None)
             _m._SHARED.pop(normalize_state_db_url(None), None)
 
+    async def test_usage_payload_lands_on_the_branch_row(self, monkeypatch, tmp_path):
+        """BRANCH_END usage fields (input_tokens/output_tokens/total_cost_usd/
+        num_turns) pass through persist_branch_end onto the branch row."""
+        from lionagi.hooks.builtins import persist_branch_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, sprog = "be-session-usage", "prog-be-s-usage"
+            bid, bprog = "be-branch-usage", "prog-be-b-usage"
+            await _seed_session(db, sid, sprog)
+            await _seed_branch(db, bid, sid, bprog)
+
+            bus = HookBus()
+            bus.on(HookPoint.BRANCH_END, persist_branch_end)
+            await bus.emit(
+                HookPoint.BRANCH_END,
+                branch_id=bid,
+                status="completed",
+                ended_at=42.0,
+                input_tokens=10,
+                output_tokens=5,
+                total_cost_usd=0.001,
+                num_turns=1,
+            )
+
+            row = await db.get_branch(bid)
+            assert row["input_tokens"] == 10
+            assert row["output_tokens"] == 5
+            assert row["total_cost_usd"] == pytest.approx(0.001)
+            assert row["num_turns"] == 1
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
+    async def test_usage_none_does_not_overwrite_existing_value(self, monkeypatch, tmp_path):
+        """A later BRANCH_END carrying no usage (e.g. a coarser run-level
+        safety-net emission after a per-op writer already recorded usage)
+        must not null out what was already stored."""
+        from lionagi.hooks.builtins import persist_branch_end
+        from lionagi.hooks.bus import HookBus, HookPoint
+
+        db_path = _redirect_shared_db(monkeypatch, tmp_path)
+
+        db = await _shared(db_path)
+        try:
+            sid, sprog = "be-session-usage-2", "prog-be-s-usage-2"
+            bid, bprog = "be-branch-usage-2", "prog-be-b-usage-2"
+            await _seed_session(db, sid, sprog)
+            await _seed_branch(db, bid, sid, bprog)
+
+            bus = HookBus()
+            bus.on(HookPoint.BRANCH_END, persist_branch_end)
+            await bus.emit(
+                HookPoint.BRANCH_END,
+                branch_id=bid,
+                status="completed",
+                ended_at=42.0,
+                input_tokens=10,
+                output_tokens=5,
+                total_cost_usd=0.001,
+                num_turns=1,
+            )
+            # A second emission with no usage payload at all (**_unused absorbs
+            # nothing new here: no usage kwargs are passed).
+            await bus.emit(
+                HookPoint.BRANCH_END,
+                branch_id=bid,
+                status="failed",
+                ended_at=999.0,
+            )
+
+            row = await db.get_branch(bid)
+            assert row["status"] == "completed"  # guard: first terminal write wins
+            assert row["input_tokens"] == 10
+            assert row["output_tokens"] == 5
+            assert row["total_cost_usd"] == pytest.approx(0.001)
+            assert row["num_turns"] == 1
+        finally:
+            await db.close()
+            import lionagi.state.db as _m
+            from lionagi.state.engine import normalize_state_db_url
+
+            _m._SHARED.pop(db_path, None)
+            _m._SHARED.pop(normalize_state_db_url(None), None)
+
 
 class TestDefaultHookBusEmissions:
     """build_session_bus wires all three handlers; each fires on the correct point."""

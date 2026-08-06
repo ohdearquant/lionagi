@@ -728,6 +728,75 @@ async def test_teardown_branch_end_guard_skips_already_terminal_branch(
     assert b["ended_at"] == 111.0
 
 
+async def test_teardown_writes_branch_usage_from_collected_messages(
+    temp_db_path: Path,
+):
+    """teardown's BRANCH_END emission carries this branch's own
+    _collect_branch_usage() values onto its row, not just status/ended_at."""
+    from lionagi.protocols.messages.assistant_response import (
+        AssistantResponse,
+        AssistantResponseContent,
+    )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    branch.msgs.messages.include(
+        AssistantResponse(
+            content=AssistantResponseContent(assistant_response="ok"),
+            metadata={
+                "model_response": {
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "total_cost_usd": 0.001,
+                    "num_turns": 1,
+                }
+            },
+        )
+    )
+
+    await _teardown_live_persist(ctx, status="completed")
+
+    async with StateDB() as db:
+        b = await db.get_branch(str(branch.id))
+    assert b["input_tokens"] == 10
+    assert b["output_tokens"] == 5
+    assert b["total_cost_usd"] == pytest.approx(0.001)
+    assert b["num_turns"] == 1
+
+
+async def test_teardown_branch_usage_stays_null_when_no_cost_reported(
+    temp_db_path: Path,
+):
+    """A provider response with no cost field must leave total_cost_usd NULL
+    on the branch row, never coerced to 0.0."""
+    from lionagi.protocols.messages.assistant_response import (
+        AssistantResponse,
+        AssistantResponseContent,
+    )
+
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    branch.msgs.messages.include(
+        AssistantResponse(
+            content=AssistantResponseContent(assistant_response="ok"),
+            metadata={
+                "model_response": {
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                    "num_turns": 1,
+                }
+            },
+        )
+    )
+
+    await _teardown_live_persist(ctx, status="completed")
+
+    async with StateDB() as db:
+        b = await db.get_branch(str(branch.id))
+    assert b["input_tokens"] == 3
+    assert b["total_cost_usd"] is None
+
+
 async def test_teardown_detaches_persistence_from_bus(
     temp_db_path: Path,
 ):

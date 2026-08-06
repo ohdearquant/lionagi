@@ -258,7 +258,12 @@ CREATE TABLE IF NOT EXISTS branches (
   agent_name      TEXT,
   status          TEXT,
   started_at      REAL,
-  ended_at        REAL
+  ended_at        REAL,
+  -- ── Branch usage (populated at BRANCH_END) ────────────────────────────
+  input_tokens    INTEGER,   -- prompt tokens (uncached), this branch only
+  output_tokens   INTEGER,   -- completion tokens, this branch only
+  total_cost_usd  REAL,      -- NULL when the provider did not report cost
+  num_turns       INTEGER    -- LLM turns on this branch
 );
 
 CREATE INDEX IF NOT EXISTS idx_branches_session_created

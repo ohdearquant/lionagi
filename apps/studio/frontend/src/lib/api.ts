@@ -1210,6 +1210,14 @@ export interface SessionBranch {
   /** The branch's own terminal state. Null on rows written before the column
    * existed — a missing status is not a success, it is no answer. */
   status?: string | null;
+  /** Usage/cost breakdown for this branch alone. `total_cost_usd` is `null`
+   * when the provider did not report a cost, distinct from a genuine `0.0`. */
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_cost_usd?: number | null;
+  num_turns?: number | null;
+  /** Derived server-side from ended_at - started_at. */
+  duration_ms?: number | null;
 }
 
 export interface SessionDetail {
@@ -1252,6 +1260,14 @@ export interface SessionDetail {
   // Absolute artifact-root path on disk (services/sessions.py get_session
   // returns this verbatim) — the run's save root for file-link resolution.
   artifacts_path?: string | null;
+  // Session-wide usage/cost total (services/sessions.py get_session): the
+  // sum across every branch, not a breakdown. `total_cost_usd` is `null`
+  // when no branch's provider reported a cost, distinct from a genuine `0.0`.
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_cost_usd?: number | null;
+  num_turns?: number | null;
+  duration_ms?: number | null;
   // Full-session aggregate (services/sessions.py get_session, computed over
   // every branch's full progression, not the display window) — `files` is
   // the run-wide known-file union, including files touched before the

@@ -177,6 +177,24 @@ describe("stepPropsEqual", () => {
     expect(stepPropsEqual(prev, next)).toBe(false);
   });
 
+  it("returns false when only result.total_cost_usd differs (usage-only refetch)", () => {
+    const prev = props(step({ result: { total_cost_usd: 0.01 } }));
+    const next = props(step({ result: { total_cost_usd: 0.02 } }));
+    expect(stepPropsEqual(prev, next)).toBe(false);
+  });
+
+  it("returns false when a null total_cost_usd resolves to a reported cost", () => {
+    const prev = props(step({ result: { total_cost_usd: null } }));
+    const next = props(step({ result: { total_cost_usd: 0.0 } }));
+    expect(stepPropsEqual(prev, next)).toBe(false);
+  });
+
+  it("returns false when only result.input_tokens or output_tokens differ", () => {
+    const prev = props(step({ result: { input_tokens: 100, output_tokens: 50 } }));
+    const next = props(step({ result: { input_tokens: 100, output_tokens: 75 } }));
+    expect(stepPropsEqual(prev, next)).toBe(false);
+  });
+
   it("returns true when only sender changes on an otherwise-identical message", () => {
     const prev = props(step({}, [toolMessage({ sender: "agent-a" })]));
     const next = props(step({}, [toolMessage({ sender: "agent-b" })]));

@@ -359,6 +359,10 @@ _BRANCH_COLUMNS = frozenset(
         "status",
         "started_at",
         "ended_at",
+        "input_tokens",
+        "output_tokens",
+        "total_cost_usd",
+        "num_turns",
     }
 )
 
@@ -4653,11 +4657,20 @@ class StateDB:
         await conn.execute(stmt, params)
 
     async def finalize_branch(
-        self, branch_id: str, *, status: str, ended_at: float | None = None
+        self,
+        branch_id: str,
+        *,
+        status: str,
+        ended_at: float | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_cost_usd: float | None = None,
+        num_turns: int | None = None,
     ) -> bool:
         """Guarded terminal-status write for one branch row (BRANCH_END).
 
-        Two-sided guard; both conditions must hold for the write to land:
+        Two-sided guard; both conditions must hold for the status/ended_at
+        write to land:
 
         - *status* itself must be a genuine terminal outcome
           (``_BRANCH_TERMINAL_STATUSES`` == ``SESSION_TERMINAL_STATUSES`` —
@@ -4680,12 +4693,32 @@ class StateDB:
           timed_out, aborted, completed_empty) or what this call's own
           *status* argument is.
 
+        The four usage fields are a separate, unguarded write: a per-op
+        writer finalizing a branch's status early must not cost that branch
+        its usage breakdown, so usage lands on the row whenever this call
+        carries it, independent of whether the status/ended_at guard above
+        passed. Each usage field is written only when it is not None:
+        total_cost_usd=None (unknown) is never coerced to 0.0 (a genuine
+        free call), and omitting a field here never overwrites a
+        previously-recorded value with NULL.
+
         A branch row that was never created (a DAG leg that never emitted a
-        first message) matches zero rows and is a harmless no-op.
-        Returns True when a row was actually updated.
+        first message) matches zero rows for both writes and is a harmless
+        no-op. Returns True when the guarded status/ended_at write actually
+        updated a row.
         """
         if status not in _BRANCH_TERMINAL_STATUSES:
             return False
+        usage_fields = {
+            k: v
+            for k, v in {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_cost_usd": total_cost_usd,
+                "num_turns": num_turns,
+            }.items()
+            if v is not None
+        }
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
@@ -4698,6 +4731,8 @@ class StateDB:
                     "id": branch_id,
                 },
             )
+            if usage_fields:
+                await self._update_branch_in_tx(conn, branch_id, **usage_fields)
         return result.rowcount > 0
 
     async def repair_branch_progression(

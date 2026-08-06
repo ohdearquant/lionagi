@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/icons";
 import type { RunMessage, RunStep } from "@/lib/types";
 import type { FileResolutionContext } from "@/components/ui/Markdown";
+import { formatCostUsd, formatTokenCount } from "@/lib/usageFormat";
 
 const Markdown = lazy(() => import("@/components/ui/Markdown"));
 
@@ -36,6 +37,11 @@ interface StepResult {
   message_count?: number | null;
   duration_sec?: number;
   roles?: RolesBreakdown;
+  /** `total_cost_usd` is `null` when the provider did not report a cost,
+   * distinct from a genuine `0.0`. */
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_cost_usd?: number | null;
   [key: string]: unknown;
 }
 
@@ -514,6 +520,10 @@ function RunStepCard({
               <span className="font-mono text-meta text-content-muted">{result.model}</span>
             )}
             <span className="ml-auto flex items-center gap-2 font-mono text-meta text-content-muted">
+              <span>{formatCostUsd(result.total_cost_usd)}</span>
+              <span>
+                {formatTokenCount(result.input_tokens)}/{formatTokenCount(result.output_tokens)}
+              </span>
               <span>{t("countTools", { count: summary.toolCount })}</span>
               {summary.failedCount > 0 && (
                 <span className="text-status-error">
@@ -786,6 +796,9 @@ export function stepPropsEqual(prev: RunStepCardProps, next: RunStepCardProps): 
     prevResult.model === nextResult.model &&
     prevResult.message_count === nextResult.message_count &&
     prevResult.duration_sec === nextResult.duration_sec &&
+    prevResult.input_tokens === nextResult.input_tokens &&
+    prevResult.output_tokens === nextResult.output_tokens &&
+    prevResult.total_cost_usd === nextResult.total_cost_usd &&
     prev.runId === next.runId &&
     prev.artifactRoot === next.artifactRoot &&
     prev.runFiles === next.runFiles &&

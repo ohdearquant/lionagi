@@ -69,6 +69,11 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("status", "TEXT"),
         ("started_at", "REAL"),
         ("ended_at", "REAL"),
+        # Per-branch usage populated at BRANCH_END.
+        ("input_tokens", "INTEGER"),
+        ("output_tokens", "INTEGER"),
+        ("total_cost_usd", "REAL"),
+        ("num_turns", "INTEGER"),
     ],
     "shows": [
         ("status_source", "TEXT NOT NULL DEFAULT 'unknown'"),

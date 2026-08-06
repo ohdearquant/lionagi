@@ -657,6 +657,38 @@ describe("history/RunDetail.tsx — persisted branch totals survive message pagi
     expect(runStep.result?.duration_sec).toBe(600);
     expect(runStep.result?.message_count).toBe(30_525);
   });
+
+  it("maps a branch's own usage/cost fields onto the resulting RunStep, not the session total", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const runStep = branchToRunStep(
+      {
+        id: "branch-1",
+        name: "worker",
+        created_at: 10,
+        messages: [],
+        input_tokens: 1234,
+        output_tokens: 567,
+        total_cost_usd: 0.0003,
+      },
+      "completed",
+    );
+
+    expect(runStep.result?.input_tokens).toBe(1234);
+    expect(runStep.result?.output_tokens).toBe(567);
+    expect(runStep.result?.total_cost_usd).toBe(0.0003);
+  });
+
+  it("maps a branch with no reported cost to null, not zero, on the RunStep", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const runStep = branchToRunStep(
+      { id: "branch-2", name: "worker", created_at: 10, messages: [] },
+      "completed",
+    );
+
+    expect(runStep.result?.total_cost_usd).toBeNull();
+    expect(runStep.result?.input_tokens).toBeNull();
+    expect(runStep.result?.output_tokens).toBeNull();
+  });
 });
 
 describe("history/RunDetail.tsx — live branch aggregates", () => {
@@ -674,7 +706,14 @@ describe("history/RunDetail.tsx — live branch aggregates", () => {
       status: "completed",
       timestamp: 10,
       messages,
-      result: { agent: "worker", message_count: 1, duration_sec: 10 },
+      result: {
+        agent: "worker",
+        message_count: 1,
+        duration_sec: 10,
+        total_cost_usd: null,
+        input_tokens: null,
+        output_tokens: null,
+      },
     };
     const terminalStep: RunStep = {
       ...runningStep,
@@ -684,11 +723,56 @@ describe("history/RunDetail.tsx — live branch aggregates", () => {
     const { container, rerender } = renderRunStepCards([runningStep]);
 
     expect(container.textContent).toContain("10s");
+    // Unreported cost renders as an em dash, not $0.00.
+    expect(container.textContent).toContain("—");
 
     rerender([terminalStep]);
 
     expect(container.textContent).not.toContain("10s");
     expect(container.textContent).toContain("50s");
+  });
+
+  it("refreshes the rendered memoized card cost/token usage after a terminal refetch", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: "finished",
+        sender: "worker",
+        timestamp: 20,
+      },
+    ];
+    const runningStep: RunStep = {
+      step: "worker",
+      status: "completed",
+      timestamp: 10,
+      messages,
+      result: {
+        agent: "worker",
+        message_count: 1,
+        duration_sec: 10,
+        total_cost_usd: null,
+        input_tokens: null,
+        output_tokens: null,
+      },
+    };
+    const terminalStep: RunStep = {
+      ...runningStep,
+      messages,
+      result: {
+        ...runningStep.result,
+        total_cost_usd: 0.0003,
+        input_tokens: 1234,
+        output_tokens: 567,
+      },
+    };
+    const { container, rerender } = renderRunStepCards([runningStep]);
+
+    expect(container.textContent).not.toContain("$0.0003");
+
+    rerender([terminalStep]);
+
+    expect(container.textContent).toContain("$0.0003");
+    expect(container.textContent).toContain("1,234");
   });
 
   it("renders a streamed message once and advances duration through the terminal refetch", async () => {

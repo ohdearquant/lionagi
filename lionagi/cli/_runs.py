@@ -888,13 +888,20 @@ async def teardown_persist(
             from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
             if final_status in SESSION_TERMINAL_STATUSES:
+                from lionagi.session.signal import _collect_branch_usage
+
                 _end_at = time.time()
                 for _b in [_branch] if _branch is not None else _hook_branches:
+                    try:
+                        _branch_usage = _collect_branch_usage(_b)
+                    except Exception:  # noqa: BLE001, S110
+                        _branch_usage = {}
                     await session_obj.hooks.emit(
                         HookPoint.BRANCH_END,
                         branch_id=str(_b.id),
                         status=final_status,
                         ended_at=_end_at,
+                        **_branch_usage,
                     )
 
             await session_obj.hooks.emit(

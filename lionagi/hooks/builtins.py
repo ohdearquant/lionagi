@@ -174,19 +174,33 @@ async def persist_branch_end(
     branch_id: str,
     status: str = "completed",
     ended_at: float | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    total_cost_usd: float | None = None,
+    num_turns: int | None = None,
     **_unused: Any,
 ) -> None:
-    """Stamp the branch row's terminal status/ended_at — the BRANCH_END
-    counterpart to BRANCH_CREATE's persist_branch_provenance.
+    """Stamp the branch row's terminal status/ended_at and usage, the
+    BRANCH_END counterpart to BRANCH_CREATE's persist_branch_provenance.
 
-    Delegates the guard to StateDB.finalize_branch(), which no-ops on a
-    non-terminal status, on a branch already at any terminal status (so a
-    more specific outcome recorded elsewhere, e.g. the DAG runner's own
-    NodeCompleted/NodeFailed updates, is never clobbered), and on a branch
-    row that doesn't exist yet.
+    Delegates the guard to StateDB.finalize_branch(), which no-ops the
+    status/ended_at write on a non-terminal status, on a branch already at
+    any terminal status (so a more specific outcome recorded elsewhere, e.g.
+    the DAG runner's own NodeCompleted/NodeFailed updates, is never
+    clobbered), and on a branch row that doesn't exist yet. Usage fields are
+    forwarded as given; finalize_branch() writes only the ones that are not
+    None and does so independent of the status guard.
     """
     db = await _db()
-    await db.finalize_branch(branch_id, status=status, ended_at=ended_at or time.time())
+    await db.finalize_branch(
+        branch_id,
+        status=status,
+        ended_at=ended_at or time.time(),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_cost_usd=total_cost_usd,
+        num_turns=num_turns,
+    )
 
 
 async def persist_message(
