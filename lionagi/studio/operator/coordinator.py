@@ -42,6 +42,18 @@ class ApplicationTargetConflictError(RuntimeError):
     """The exact target approved by a human is no longer current."""
 
 
+class ApplicationCommandError(RuntimeError):
+    """An application command failed; carries whatever evidence existed at the time.
+
+    ``invocation_id`` is set only once ``launch()`` has durably recorded the
+    invocation -- a failure before that point genuinely has nothing to point at.
+    """
+
+    def __init__(self, message: str, *, invocation_id: str | None = None) -> None:
+        super().__init__(message)
+        self.invocation_id = invocation_id
+
+
 async def _verify_application_target(proposal: dict[str, Any]) -> None:
     target_version = proposal.get("targetVersion")
     if target_version is None:
@@ -72,7 +84,13 @@ async def _execute_application_command(
         raise ValueError(f"Unsupported Operator application command: {command_type!r}")
     from lionagi.studio.services.launches import launch
 
-    result = await launch(command)
+    try:
+        result = await launch(command)
+    except Exception as exc:  # noqa: BLE001
+        # Nothing has been recorded yet -- validation, launch-cap, and
+        # executable-resolution failures all happen before any invocation row
+        # exists, so there is no id to hand back to the caller.
+        raise ApplicationCommandError(str(exc)) from exc
     invocation_id = result.get("invocation_id")
     if not invocation_id:
         return result
@@ -83,13 +101,18 @@ async def _execute_application_command(
     from lionagi.studio.services.invocations import get_invocation
 
     run_id = None
-    for _ in range(20):
-        detail = await get_invocation(str(invocation_id))
-        sessions = detail.get("sessions", []) if detail else []
-        if sessions:
-            run_id = sessions[0].get("id")
-            break
-        await asyncio.sleep(0.1)
+    try:
+        for _ in range(20):
+            detail = await get_invocation(str(invocation_id))
+            sessions = detail.get("sessions", []) if detail else []
+            if sessions:
+                run_id = sessions[0].get("id")
+                break
+            await asyncio.sleep(0.1)
+    except Exception as exc:  # noqa: BLE001
+        # The invocation itself is durable even though polling it failed --
+        # carry its id forward so the failure can still point at it.
+        raise ApplicationCommandError(str(exc), invocation_id=str(invocation_id)) from exc
     return {
         **result,
         "run_id": run_id,
@@ -467,16 +490,25 @@ class OperatorCoordinator:
             terminal_status = "failed"
             terminal_exc = exc
             _log.exception("Operator turn failed: %s", request_id)
+            # A canonical run only exists once setup_agent_persist() has
+            # returned (live is not None); an exception before that point --
+            # history compilation, provider selection, branch/run-dir setup --
+            # has no run to point at, so say that plainly instead of guessing.
+            if live is not None:
+                run_id = live["session_id"]
+                evidence = f"open the run at /runs/{run_id} for its status and history"
+                details: dict[str, Any] = {"runId": run_id, "href": f"/runs/{run_id}"}
+            else:
+                evidence = "no run was recorded for this turn before it failed"
+                details = {"runId": None}
             await self.store.finish_turn(
                 request_id,
                 outcome="failed",
                 error={
                     "code": "model_failure",
-                    "message": (
-                        f"The Operator engine failed ({type(exc).__name__}); "
-                        "see daemon logs for diagnostics"
-                    ),
+                    "message": (f"The Operator engine failed ({type(exc).__name__}); {evidence}."),
                     "retryable": True,
+                    "details": details,
                 },
             )
         finally:
@@ -613,17 +645,27 @@ class OperatorCoordinator:
         try:
             result = await self.command_executor(proposal["commandType"], proposal["command"])
         except Exception as exc:  # noqa: BLE001
-            public_message = (
-                f"Application command failed ({type(exc).__name__}); "
-                "see daemon logs for diagnostics"
-            )
+            # A launch that failed before recording an invocation has nothing
+            # durable to point at; one that failed after has an invocation_id
+            # attached by _execute_application_command.
+            invocation_id = getattr(exc, "invocation_id", None)
+            if invocation_id:
+                evidence = f"open invocation {invocation_id} at /invocations/{invocation_id}"
+                details: dict[str, Any] = {
+                    "invocationId": invocation_id,
+                    "href": f"/invocations/{invocation_id}",
+                }
+            else:
+                evidence = "no invocation was recorded for this command before it failed"
+                details = {"invocationId": None}
+            public_message = f"Application command failed ({type(exc).__name__}); {evidence}."
             _log.exception("Operator application command failed: %s", proposal_id)
             try:
                 proposal = await self.store.complete_proposal(
                     proposal_id,
                     status="failed",
                     error_code="service_failure",
-                    result={"message": public_message},
+                    result={"message": public_message, "details": details},
                     audit=True,
                 )
             except Exception as persist_exc:  # noqa: BLE001
@@ -648,6 +690,7 @@ class OperatorCoordinator:
                         "code": "service_failure",
                         "message": public_message,
                         "retryable": False,
+                        "details": details,
                     },
                 },
             )
