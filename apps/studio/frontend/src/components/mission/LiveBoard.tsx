@@ -12,6 +12,7 @@
  * "quiet — check?" flag; duration alone never does.
  */
 
+import { runLabel } from "@/lib/runLabel";
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
@@ -69,7 +70,7 @@ function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
   // Last activity falls back to started_at when no heartbeat has landed yet
   // — never to "no data", since a fresh run has always at least started.
   const lastActivity = elapsedSec(run.last_message_at ?? run.started_at ?? undefined, nowSec);
-  const name = run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
+  const name = runLabel(run);
   // Honest staleness: a process-dead run must not render as a live one.
   // Health axis only — duration never factors into this flag.
   // TODO(unify): route through deriveDisplayStatus once status/verdict/
@@ -275,9 +276,7 @@ const BOARD_MAX_HEIGHT = "max-h-[420px]";
 function BoardTableRow({ card, nowSec }: { card: LiveCard; nowSec: number }) {
   const t = useTranslations("mission");
   const isRun = card.kind === "run";
-  const name = isRun
-    ? (card.run.playbook_name ?? card.run.agent_name ?? card.run.run_id.slice(-12))
-    : card.invocation.skill;
+  const name = isRun ? runLabel(card.run) : card.invocation.skill;
   const startedAt = isRun ? (card.run.started_at ?? undefined) : card.invocation.started_at;
   const elapsed = elapsedSec(startedAt, nowSec);
   const lastActivityAt = isRun

@@ -67,6 +67,9 @@ export interface RunSummary {
   run_id: string;
   id?: string;
   name?: string | null;
+  // The backend's single resolved display name, where a user's rename lands.
+  // Served on every run row; prefer it over the fields below via runLabel().
+  display_name?: string | null;
   playbook_name?: string | null;
   agent_name?: string | null;
   invocation_kind?: string | null;
