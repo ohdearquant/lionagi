@@ -276,9 +276,7 @@ const BOARD_MAX_HEIGHT = "max-h-[420px]";
 function BoardTableRow({ card, nowSec }: { card: LiveCard; nowSec: number }) {
   const t = useTranslations("mission");
   const isRun = card.kind === "run";
-  const name = isRun
-    ? (card.run.playbook_name ?? card.run.agent_name ?? card.run.run_id.slice(-12))
-    : card.invocation.skill;
+  const name = isRun ? resolveRunLabel(card.run) : card.invocation.skill;
   const startedAt = isRun ? (card.run.started_at ?? undefined) : card.invocation.started_at;
   const elapsed = elapsedSec(startedAt, nowSec);
   const lastActivityAt = isRun

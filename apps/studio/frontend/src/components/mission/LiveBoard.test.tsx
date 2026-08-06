@@ -226,6 +226,27 @@ describe("LiveBoard — combined card order and view switching", () => {
     expect(rows[0].textContent).toContain("run-abcdef0123456789".slice(-16));
   });
 
+  it("table view and card view resolve the same run to the same name — no more mirror-surface gap", () => {
+    const theRun = run({
+      run_id: "run-abcdef0123456789",
+      started_at: 900,
+      playbook_name: "table-run",
+      agent_name: "implementer",
+    });
+    mount([theRun]);
+    const cardText = container.textContent ?? "";
+    expect(cardText).toContain("table-run");
+
+    const tableButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent === "Table",
+    );
+    act(() => {
+      tableButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const rows = container.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("table-run");
+  });
+
   it("persists the view choice across remounts via localStorage", () => {
     mount([run({ run_id: "r1", started_at: 100 })]);
     const tableButton = Array.from(container.querySelectorAll("button")).find(

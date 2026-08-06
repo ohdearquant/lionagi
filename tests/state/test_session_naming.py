@@ -59,10 +59,18 @@ def test_sanitize_is_idempotent_on_already_clean_short_text() -> None:
     assert sanitize_prompt_name("a normal short prompt") == "a normal short prompt"
 
 
-def test_sanitize_empty_or_none_returns_empty_string() -> None:
-    assert sanitize_prompt_name(None) == ""
-    assert sanitize_prompt_name("") == ""
-    assert sanitize_prompt_name("   ") == ""
+def test_sanitize_empty_or_none_returns_none() -> None:
+    assert sanitize_prompt_name(None) is None
+    assert sanitize_prompt_name("") is None
+    assert sanitize_prompt_name("   ") is None
+
+
+def test_sanitize_banner_only_input_returns_none_not_empty_string() -> None:
+    # Nothing survives stripping -- this is the "had content, produced
+    # nothing usable" case, and must be distinguishable (via None) from the
+    # "had no content to begin with" case above.
+    assert sanitize_prompt_name("LION_SYSTEM_MESSAGE") is None
+    assert sanitize_prompt_name("Guidance: LION_SYSTEM_MESSAGE") is None
 
 
 # ── agent_role_label ──────────────────────────────────────────────────────

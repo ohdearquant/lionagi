@@ -34,7 +34,7 @@ _STRIP_PATTERNS = (_LEADING_BANNER_RE, _LEADING_MARKDOWN_RE, _LEADING_LABEL_RE)
 _MAX_STRIP_PASSES = 6
 
 
-def sanitize_prompt_name(raw: str | None, *, max_len: int = DISPLAY_NAME_MAX_LEN) -> str:
+def sanitize_prompt_name(raw: str | None, *, max_len: int = DISPLAY_NAME_MAX_LEN) -> str | None:
     """Turn raw prompt/instruction text into a short, banner-free display name.
 
     Collapses whitespace, strips a leading system-message banner / markdown
@@ -42,9 +42,18 @@ def sanitize_prompt_name(raw: str | None, *, max_len: int = DISPLAY_NAME_MAX_LEN
     at `max_len` with an ellipsis. A name is never left starting with a
     colon'd prefix like "Guidance:". Idempotent on text that is already
     clean and short.
+
+    Returns `None`, never `""`, whenever there is no usable name — both for
+    empty/whitespace-only `raw`, and for a banner-only `raw` (e.g. just
+    `"LION_SYSTEM_MESSAGE"`, with nothing left once the banner is stripped).
+    A bare `""` would be ambiguous between those two cases and easy to
+    mistake for "the display name is the empty string"; `None` reads
+    unambiguously as "nothing to show here" and is falsy the same way `""`
+    is, so every existing `if sanitized:` caller keeps falling through to
+    its own next tier without any change.
     """
     if not raw:
-        return ""
+        return None
     text = " ".join(raw.split())
     for _ in range(_MAX_STRIP_PASSES):
         for pattern in _STRIP_PATTERNS:
@@ -54,6 +63,8 @@ def sanitize_prompt_name(raw: str | None, *, max_len: int = DISPLAY_NAME_MAX_LEN
                 break
         else:
             break
+    if not text:
+        return None
     if len(text) > max_len:
         text = text[: max_len - 1].rstrip() + "…"
     return text
@@ -66,6 +77,14 @@ def agent_role_label(agent_name: str, started_at: float | None) -> str:
     lookup against sibling rows. Stable across re-reads (same started_at
     always formats the same way) and computed from UTC so it does not depend
     on the resolving machine's local timezone.
+
+    Two same-agent runs started in the same minute still collide on this
+    label — that is accepted, by design, not a bug: the row's id remains the
+    real identity everywhere it matters (links, keys, API lookups), and this
+    label exists only to make a list of cards readable at a glance. Making
+    the label itself collision-proof (seconds, a counter, a suffix of the
+    id) would make the common case noisier to read to avoid an edge case
+    nothing actually depends on for correctness.
     """
     label = agent_name.strip()
     if not label:

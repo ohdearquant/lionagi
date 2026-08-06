@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
+from lionagi.state.session_naming import resolve_display_name
 
 from ._runs import RUNS_ROOT
 from ._util import EXIT_CODE_BY_STATUS
@@ -313,13 +314,19 @@ async def _collect_sessions(db: Any, *, limit: int, status: str | None) -> list[
     """
     from sqlalchemy import text
 
+    # Same columns resolve_display_name reads for the Studio API (see
+    # studio/services/sessions.py) so `li state list` names agree with the
+    # Studio UI instead of showing the raw `name` column.
+    select_cols = (
+        "id, name, status, updated_at, playbook_name, agent_name, show_play_name, started_at"
+    )
     async with db._read() as conn:
         if status:
             rows = (
                 (
                     await conn.execute(
                         text(
-                            "SELECT id, name, status, updated_at FROM sessions "
+                            f"SELECT {select_cols} FROM sessions "  # noqa: S608
                             "WHERE status = :st ORDER BY updated_at DESC LIMIT :lim"
                         ),
                         {"st": status, "lim": limit},
@@ -333,7 +340,7 @@ async def _collect_sessions(db: Any, *, limit: int, status: str | None) -> list[
                 (
                     await conn.execute(
                         text(
-                            "SELECT id, name, status, updated_at FROM sessions "
+                            f"SELECT {select_cols} FROM sessions "  # noqa: S608
                             "ORDER BY updated_at DESC LIMIT :lim"
                         ),
                         {"lim": limit},
@@ -375,7 +382,7 @@ async def _collect_sessions(db: Any, *, limit: int, status: str | None) -> list[
         collected.append(
             {
                 "id": sid,
-                "name": row["name"],
+                "name": resolve_display_name(dict(row)),
                 "status": row["status"],
                 "updated_at": row["updated_at"],
                 "branch_count": bc,
