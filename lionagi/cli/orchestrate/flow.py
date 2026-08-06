@@ -942,6 +942,7 @@ async def _execute_dag(
     _executor_ref: dict[str, object] = {}
     _checkpoint_tasks: list = []
     _branch_status_tasks: list = []
+    _escalation_link_tasks: list = []
 
     _checkpoint_writer: CheckpointWriter | None = None
     if checkpoint_config is not None:
@@ -1321,7 +1322,7 @@ async def _execute_dag(
                 _ESCALATION_LINK_RETRIES,
             )
 
-        _asyncio.ensure_future(_do())
+        _escalation_link_tasks.append(_asyncio.ensure_future(_do()))
 
     def _on_op_complete(node: Any) -> None:
         """ReactiveExecutor.on_op_complete callback: called for every completed node."""
@@ -1458,6 +1459,14 @@ async def _execute_dag(
             if _checkpoint_tasks:
                 with contextlib.suppress(Exception):
                     await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
+            if _escalation_link_tasks:
+                # Bounded by _ESCALATION_LINK_RETRIES * _ESCALATION_LINK_RETRY_INTERVAL
+                # (a few seconds worst case) — the outer db/session teardown
+                # (teardown_persist) only runs after this function returns, so
+                # draining here, not firing untracked, is what keeps a late retry
+                # from writing into a store this run has already closed.
+                with contextlib.suppress(Exception):
+                    await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
     t_exec_elapsed = time.monotonic() - t_exec
 
     op_results = dag_result.get("operation_results", {})
@@ -2033,11 +2042,11 @@ async def _run_flow(
     if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
         _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
 
-    # Stashed for _execute_dag's escalation-mirror-link hook, which runs deeper in
-    # the call chain than this run's resolved project — not a declared env field,
-    # same as `_escalated_evidence`/`_finalize_extras` below.
-    env._project = project
-
+    # start_live_persist resolves `project` (explicit arg, or detect_project()
+    # fallback) and stashes the RESOLVED value on env._project — what the
+    # session row actually gets — for _execute_dag's escalation-mirror-link
+    # hook, which runs deeper in the call chain and must inherit the same
+    # project the run itself was attributed, not re-guess from cwd.
     await start_live_persist(
         env,
         invocation_kind=_invocation_kind,

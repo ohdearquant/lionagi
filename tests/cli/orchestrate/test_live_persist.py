@@ -103,6 +103,51 @@ async def test_start_creates_session_and_registers_hook_on_orc_branch(
     await stop_live_persist(env, status="completed")
 
 
+async def test_start_live_persist_stashes_resolved_project_not_raw_arg(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Round-2 regression: env._project must carry the RESOLVED project (what
+    the session row actually gets — explicit arg or detect_project()
+    fallback), not the caller's raw argument. The common case is a run whose
+    project came from detection rather than an explicit --project flag;
+    before this fix, anything reading env._project (e.g. the
+    escalation-mirror-link hook) would see the unresolved raw value —- None
+    here — instead of what the session row actually recorded."""
+    monkeypatch.setattr(
+        "lionagi.cli._project.detect_project",
+        lambda cwd=None: ("acme/widget", "git_remote"),
+    )
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", project=None)
+    try:
+        ctx = env._live_persist
+        assert ctx is not None
+        async with StateDB() as db:
+            s = await db.get_session(ctx["session_id"])
+        assert s["project"] == "acme/widget"
+        assert env._project == "acme/widget"
+    finally:
+        await stop_live_persist(env, status="completed")
+
+
+async def test_start_live_persist_stashes_explicit_project_verbatim(
+    temp_db_path: Path,
+):
+    """The explicit-argument path: env._project must match what was passed,
+    same as the session row — the resolved and raw values coincide here, but
+    the read must still go through the resolved value, not bypass it."""
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", project="explicit/proj")
+    try:
+        ctx = env._live_persist
+        assert ctx is not None
+        assert env._project == "explicit/proj"
+    finally:
+        await stop_live_persist(env, status="completed")
+
+
 async def test_orchestration_manifest_tracks_start_and_terminal_status(
     temp_db_path: Path, tmp_path: Path
 ):
@@ -2369,6 +2414,92 @@ async def test_execute_dag_drains_inflight_branch_status_before_teardown(
 
     assert events.index("write-finished") < events.index("teardown-started")
     assert env._live_persist is None
+
+
+async def test_execute_dag_drains_escalation_link_retries_before_teardown(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Round-2 regression: the escalation-mirror-link retry loop used to fire
+    as an untracked task (bare ``_asyncio.ensure_future``, nothing awaited it)
+    — a retry still sleeping when ``_execute_dag`` returned could go on to
+    write into a db that ``stop_live_persist`` had already closed. It is now
+    tracked in ``_escalation_link_tasks`` and drained in the same shielded
+    finally block as ``_branch_status_tasks``/``_checkpoint_tasks``, so every
+    retry must finish before ``_execute_dag`` returns — never after."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate import flow as flow_module
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+    from lionagi.operations.node import create_operation
+
+    monkeypatch.setattr(flow_module, "_ESCALATION_LINK_RETRIES", 3)
+    monkeypatch.setattr(flow_module, "_ESCALATION_LINK_RETRY_INTERVAL", 0.02)
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    node = create_operation("operate", parameters={})
+    node.metadata["escalated_from"] = "parent-op-1"
+    node.metadata["escalated_from_name"] = "worker"
+    node._branch = SimpleNamespace(
+        chat_model=SimpleNamespace(provider_session_id="cli-session-xyz")
+    )
+
+    events: list[str] = []
+
+    async def _spy_link(*a, **k):
+        # The mirror row never appears — every retry must actually run.
+        events.append("link-attempt")
+        return False
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["test/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        on_op_complete = kwargs.get("on_op_complete")
+        if on_op_complete is not None:
+            on_op_complete(node)
+        return {"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with (
+        patch("lionagi.state.claude_mirror.link_escalation_session", _spy_link),
+        patch.object(PlanningEngine, "new_run", return_value=engine_run),
+    ):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+    events.append("execute-dag-returned")
+    await stop_live_persist(env, status="completed")
+    events.append("teardown-finished")
+
+    # All three retries ran to exhaustion, entirely before _execute_dag
+    # returned — none leaked past it into (or after) teardown.
+    assert events == [
+        "link-attempt",
+        "link-attempt",
+        "link-attempt",
+        "execute-dag-returned",
+        "teardown-finished",
+    ]
 
 
 async def test_flow_timeout_shields_completed_branch_status_until_commit(
