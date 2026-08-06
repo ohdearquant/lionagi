@@ -691,8 +691,8 @@ def _machine_create(argv: list[str]) -> dict[str, Any]:
     from .machine import MachineError, machine_parser, parse_machine_argv
 
     parser = machine_parser("li team create")
-    parser.add_argument("name")
-    parser.add_argument("-m", "--members", required=True)
+    parser.add_argument("name", help="Display name for the new team")
+    parser.add_argument("-m", "--members", required=True, help="Comma-separated member names")
     args = parse_machine_argv(parser, argv)
 
     members = [m.strip() for m in args.members.split(",") if m.strip()]
@@ -726,7 +726,7 @@ def _machine_show(argv: list[str]) -> dict[str, Any]:
     from .machine import MachineError, machine_parser, parse_machine_argv
 
     parser = machine_parser("li team show")
-    parser.add_argument("team")
+    parser.add_argument("team", help="Team id (or unambiguous prefix)")
     args = parse_machine_argv(parser, argv)
 
     try:
@@ -743,15 +743,27 @@ def _machine_send(argv: list[str]) -> dict[str, Any]:
     from .machine import MachineError, machine_parser, parse_machine_argv
 
     parser = machine_parser("li team send")
-    parser.add_argument("content")
-    parser.add_argument("--team", "-t", required=True)
-    parser.add_argument("--to", required=True)
-    parser.add_argument("--from", dest="sender", default=None)
-    parser.add_argument("--from-op", dest="from_op", default=None)
+    parser.add_argument("content", help="Message body")
+    parser.add_argument("--team", "-t", required=True, help="Team id (or unambiguous prefix)")
+    parser.add_argument("--to", required=True, help="Recipients: comma-separated names, or 'all'")
     parser.add_argument(
-        "--kind", default=None, choices=(MESSAGE_KIND, DONE_KIND, FINISHED_KIND, WAKEUP_KIND)
+        "--from", dest="sender", default=None, help="Sender name recorded on the message"
     )
-    parser.add_argument("--artifacts", default=None)
+    parser.add_argument(
+        "--from-op",
+        dest="from_op",
+        default=None,
+        help="Originating op id, for tracing the emitting turn",
+    )
+    parser.add_argument(
+        "--kind",
+        default=None,
+        choices=(MESSAGE_KIND, DONE_KIND, FINISHED_KIND, WAKEUP_KIND),
+        help="Message kind; 'done'/'finished' signal completion",
+    )
+    parser.add_argument(
+        "--artifacts", default=None, help="Comma-separated artifact paths to attach"
+    )
     args = parse_machine_argv(parser, argv)
 
     try:
@@ -796,8 +808,10 @@ def _machine_receive(argv: list[str]) -> dict[str, Any]:
     from .machine import MachineError, machine_parser, parse_machine_argv
 
     parser = machine_parser("li team receive")
-    parser.add_argument("--team", "-t", required=True)
-    parser.add_argument("--as", dest="member", default=None)
+    parser.add_argument("--team", "-t", required=True, help="Team id (or unambiguous prefix)")
+    parser.add_argument(
+        "--as", dest="member", default=None, help="Read as this member; marks their messages read"
+    )
     args = parse_machine_argv(parser, argv)
     me = args.member
 
