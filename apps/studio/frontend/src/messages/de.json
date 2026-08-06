@@ -437,6 +437,7 @@
       "noEvents": "Keine Lifecycle-Ereignisse aufgezeichnet",
       "live": "live",
       "noBranchErrors": "Keine Fehler über alle Branches hinweg erkannt.",
+      "branchFailed": "Branch endete mit Fehler",
       "noFiles": "Keine Dateioperationen erkannt.",
       "sectionInvocation": "Aufruf",
       "invocationSiblingRuns": "Zugehörige Ausführungen",

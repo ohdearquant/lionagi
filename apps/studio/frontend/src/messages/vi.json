@@ -437,6 +437,7 @@
       "noEvents": "chưa ghi nhận sự kiện vòng đời",
       "live": "trực tiếp",
       "noBranchErrors": "không phát hiện lỗi trên bất kỳ nhánh nào.",
+      "branchFailed": "nhánh kết thúc với lỗi",
       "noFiles": "không phát hiện thao tác tệp.",
       "sectionInvocation": "lần gọi",
       "invocationSiblingRuns": "lần chạy cùng cấp",

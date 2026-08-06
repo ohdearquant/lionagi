@@ -437,6 +437,7 @@
       "noEvents": "کوئی لائف سائیکل ایونٹ ریکارڈ نہیں ہوا",
       "live": "لائیو",
       "noBranchErrors": "تمام برانچز میں کوئی خرابی نہیں ملی۔",
+      "branchFailed": "برانچ ناکامی پر ختم ہوئی",
       "noFiles": "کوئی فائل آپریشن نہیں ملا۔",
       "sectionInvocation": "انووکیشن",
       "invocationSiblingRuns": "ساتھ والے رنز",

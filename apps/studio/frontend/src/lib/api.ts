@@ -1207,6 +1207,9 @@ export interface SessionBranch {
   model?: string | null;
   provider?: string | null;
   agent_name?: string | null;
+  /** The branch's own terminal state. Null on rows written before the column
+   * existed — a missing status is not a success, it is no answer. */
+  status?: string | null;
 }
 
 export interface SessionDetail {

@@ -437,6 +437,7 @@
       "noEvents": "kayıtlı yaşam döngüsü olayı yok",
       "live": "canlı",
       "noBranchErrors": "hiçbir dalda hata algılanmadı.",
+      "branchFailed": "dal hatayla sonlandı",
       "noFiles": "dosya işlemi algılanmadı.",
       "sectionInvocation": "çağrı",
       "invocationSiblingRuns": "kardeş çalıştırmalar",

@@ -437,6 +437,7 @@
       "noEvents": "기록된 수명 주기 이벤트 없음",
       "live": "라이브",
       "noBranchErrors": "모든 브랜치에서 감지된 오류가 없습니다.",
+      "branchFailed": "브랜치가 실패로 종료됨",
       "noFiles": "감지된 파일 작업이 없습니다.",
       "sectionInvocation": "호출",
       "invocationSiblingRuns": "형제 실행",

@@ -437,6 +437,7 @@
       "noEvents": "Tidak ada peristiwa siklus hidup tercatat",
       "live": "live",
       "noBranchErrors": "Tidak ada kesalahan terdeteksi di semua branch.",
+      "branchFailed": "cabang berakhir dengan kegagalan",
       "noFiles": "Tidak ada operasi file terdeteksi.",
       "sectionInvocation": "Invokasi",
       "invocationSiblingRuns": "Eksekusi terkait",

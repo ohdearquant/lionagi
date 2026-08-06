@@ -437,6 +437,7 @@
       "noEvents": "No hay eventos de ciclo de vida registrados",
       "live": "en vivo",
       "noBranchErrors": "No se detectaron errores en ninguna rama.",
+      "branchFailed": "la rama terminó en fallo",
       "noFiles": "No se detectaron operaciones de archivo.",
       "sectionInvocation": "Invocación",
       "invocationSiblingRuns": "Ejecuciones relacionadas",

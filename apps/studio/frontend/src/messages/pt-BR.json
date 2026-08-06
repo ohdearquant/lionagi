@@ -437,6 +437,7 @@
       "noEvents": "Nenhum evento de ciclo de vida registrado",
       "live": "ao vivo",
       "noBranchErrors": "Nenhum erro detectado em todos os branches.",
+      "branchFailed": "ramificação terminou com falha",
       "noFiles": "Nenhuma operação de arquivo detectada.",
       "sectionInvocation": "Invocação",
       "invocationSiblingRuns": "Execuções irmãs",

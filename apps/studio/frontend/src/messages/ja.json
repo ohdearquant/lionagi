@@ -437,6 +437,7 @@
       "noEvents": "ライフサイクルイベントは記録されていません",
       "live": "ライブ",
       "noBranchErrors": "すべてのブランチでエラーは検出されていません。",
+      "branchFailed": "ブランチが失敗で終了",
       "noFiles": "ファイル操作は検出されていません。",
       "sectionInvocation": "呼び出し",
       "invocationSiblingRuns": "関連実行",

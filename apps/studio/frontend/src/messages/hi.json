@@ -437,6 +437,7 @@
       "noEvents": "कोई लाइफ़साइकल इवेंट रिकॉर्ड नहीं है",
       "live": "लाइव",
       "noBranchErrors": "किसी भी ब्रांच में त्रुटि नहीं मिली।",
+      "branchFailed": "शाखा विफलता के साथ समाप्त हुई",
       "noFiles": "कोई फ़ाइल ऑपरेशन नहीं मिला।",
       "sectionInvocation": "इनवोकेशन",
       "invocationSiblingRuns": "सिब्लिंग रन",

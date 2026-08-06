@@ -437,6 +437,7 @@
       "noEvents": "لم تُسجّل أي أحداث لدورة الحياة",
       "live": "مباشر",
       "noBranchErrors": "لم تُكتشف أخطاء عبر كل الفروع.",
+      "branchFailed": "انتهى الفرع بالفشل",
       "noFiles": "لم تُكتشف عمليات على الملفات.",
       "sectionInvocation": "الاستدعاء",
       "invocationSiblingRuns": "التشغيلات المرتبطة",

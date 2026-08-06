@@ -567,10 +567,14 @@ function OverviewSection({ data }: { data: OverviewData }) {
 export function resolveOverviewCounts(
   messageStats: SessionDetail["message_stats"],
   loaded: { toolCallCount: number; errorCount: number },
+  // Branches that ended failed. The server's error_count and the loaded count
+  // are both scans of tool calls, so neither can see a branch that died
+  // without calling anything. The two axes are disjoint, so they add.
+  branchFailureCount = 0,
 ): { toolCallCount: number; errorCount: number } {
   return {
     toolCallCount: messageStats?.tool_call_count ?? loaded.toolCallCount,
-    errorCount: messageStats?.error_count ?? loaded.errorCount,
+    errorCount: (messageStats?.error_count ?? loaded.errorCount) + branchFailureCount,
   };
 }
 
@@ -642,6 +646,11 @@ function BranchesSection({
 // ── Errors section ────────────────────────────────────────────────────────────
 
 interface ErrorEntry {
+  // "tool" = a tool call that came back with an error. "branch" = the branch
+  // itself ended in a failed state. A branch that dies before it calls
+  // anything produces no tool errors at all, so counting only tool errors
+  // reports "no errors" for exactly the worst outcome a branch can have.
+  kind: "tool" | "branch";
   fn: string;
   branch: string;
   timestamp: number | null;
@@ -649,14 +658,61 @@ interface ErrorEntry {
   summary?: string;
 }
 
+// Branch failures group under one heading rather than under a tool name.
+const BRANCH_FAILURE_KEY = "__branch_failure__";
+
+// Branch statuses that mean the branch did not do its job. Drawn from the
+// state layer's terminal vocabulary (failed / timed_out / aborted), plus the
+// spellings older manifests use. "cancelled" is deliberate and stays out.
+const FAILED_BRANCH_STATUSES = new Set([
+  "failed",
+  "failure",
+  "error",
+  "errored",
+  "timed_out",
+  "timeout",
+  "aborted",
+  "escalated",
+]);
+
+export function isFailedStatus(status: string | null | undefined): boolean {
+  return FAILED_BRANCH_STATUSES.has((status ?? "").trim().toLowerCase());
+}
+
+/**
+ * One entry per branch that ended in a failed state, keyed off the branch's
+ * OWN status. Branches whose status is absent are not failures: the step list
+ * substitutes the session status for those, which would report every branch of
+ * a failed run as individually failed.
+ */
+export function collectBranchFailures(
+  branches: SessionDetail["branches"] | undefined,
+): ErrorEntry[] {
+  const out: ErrorEntry[] = [];
+  for (const branch of branches ?? []) {
+    const status = branch.status ?? "";
+    if (!isFailedStatus(status)) continue;
+    const name = branch.name || branch.id.slice(0, 8);
+    out.push({
+      kind: "branch",
+      fn: name,
+      branch: name,
+      timestamp: branch.last_message_at ?? branch.first_message_at ?? null,
+      output: status,
+    });
+  }
+  return out;
+}
+
 function ErrorsSection({ errors, partial }: { errors: ErrorEntry[]; partial?: boolean }) {
   const t = useTranslations("history.detail");
   const groups = useMemo(() => {
     const map = new Map<string, ErrorEntry[]>();
     for (const err of errors) {
-      const list = map.get(err.fn) ?? [];
+      const key = err.kind === "branch" ? BRANCH_FAILURE_KEY : err.fn;
+      const list = map.get(key) ?? [];
       list.push(err);
-      map.set(err.fn, list);
+      map.set(key, list);
     }
     return Array.from(map.entries()).sort((a, b) => b[1].length - a[1].length);
   }, [errors]);
@@ -707,7 +763,7 @@ function ErrorsSection({ errors, partial }: { errors: ErrorEntry[]; partial?: bo
                     )}
                   </span>
                   <span className="font-mono text-[length:var(--t-xs)] font-semibold text-status-error">
-                    {fn}
+                    {fn === BRANCH_FAILURE_KEY ? t("branchFailed") : fn}
                   </span>
                   <span className="rounded bg-status-error-bg px-1.5 py-0 font-mono text-[length:var(--t-xs)] text-status-error">
                     ×{errs.length}
@@ -1437,12 +1493,13 @@ export default function RunDetail({ id }: RunDetailProps) {
     return Array.from(set);
   }, [steps, session]);
 
-  const errors = useMemo(() => {
+  const toolErrors = useMemo(() => {
     const errs: ErrorEntry[] = [];
     for (const step of steps) {
       for (const msg of step.messages ?? []) {
         if (msg.role === "tool_call" && msg.status === "error") {
           errs.push({
+            kind: "tool",
             fn: msg.function ?? "unknown",
             branch: step.step,
             timestamp: msg.timestamp ?? null,
@@ -1454,6 +1511,17 @@ export default function RunDetail({ id }: RunDetailProps) {
     }
     return errs;
   }, [steps]);
+
+  // The branches' own outcomes, independently of what they called. A branch
+  // that failed with zero tool calls is the case this panel most needs to
+  // show, and it is the one a tool-call scan cannot see.
+  //
+  // Read from session.branches rather than from steps: a step inherits the
+  // session's status when its branch carries none (so a failed session would
+  // mark every branch failed), and one branch can produce several steps.
+  const branchFailures = useMemo(() => collectBranchFailures(session?.branches), [session]);
+
+  const errors = useMemo(() => [...toolErrors, ...branchFailures], [toolErrors, branchFailures]);
 
   const files = useMemo(() => {
     const paths = new Set<string>();
@@ -1563,10 +1631,11 @@ export default function RunDetail({ id }: RunDetailProps) {
   const loadedToolCallCount = steps.reduce((n, s) => {
     return n + (s.messages ?? []).filter((m) => m.role === "tool_call").length;
   }, 0);
-  const { toolCallCount, errorCount } = resolveOverviewCounts(session.message_stats, {
-    toolCallCount: loadedToolCallCount,
-    errorCount: errors.length,
-  });
+  const { toolCallCount, errorCount } = resolveOverviewCounts(
+    session.message_stats,
+    { toolCallCount: loadedToolCallCount, errorCount: toolErrors.length },
+    branchFailures.length,
+  );
 
   // DESIGN-BRIEF §0: derive from the real status_reason fields, not the
   // done/live booleans — those conflate every terminal status (including

@@ -437,6 +437,7 @@
       "noEvents": "Aucun événement de cycle de vie enregistré",
       "live": "live",
       "noBranchErrors": "Aucune erreur détectée sur toutes les branches.",
+      "branchFailed": "branche terminée en échec",
       "noFiles": "Aucune opération de fichier détectée.",
       "sectionInvocation": "Invocation",
       "invocationSiblingRuns": "Exécutions sœurs",

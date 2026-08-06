@@ -437,6 +437,7 @@
       "noEvents": "No lifecycle events recorded",
       "live": "live",
       "noBranchErrors": "No errors detected across all branches.",
+      "branchFailed": "branch ended in failure",
       "noFiles": "No file operations detected.",
       "sectionInvocation": "Invocation",
       "invocationSiblingRuns": "Sibling runs",

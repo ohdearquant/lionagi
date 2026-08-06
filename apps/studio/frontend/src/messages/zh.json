@@ -437,6 +437,7 @@
       "noEvents": "暂无生命周期事件",
       "live": "实时",
       "noBranchErrors": "所有分支均未检测到错误。",
+      "branchFailed": "分支以失败结束",
       "noFiles": "未检测到文件操作。",
       "sectionInvocation": "调用",
       "invocationSiblingRuns": "同批运行",
