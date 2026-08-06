@@ -936,6 +936,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
             }
             child = create_operation(emitter.operation, parameters=child_params)
             child.metadata["escalated_from"] = op_id
+            # Readable label for anything attributing this child's work back to the
+            # node it retries (e.g. mirroring a CLI engine's transcript) — cheaper to
+            # carry now than to re-derive `name` from a stale emitter reference later.
+            child.metadata["escalated_from_name"] = name
             if self._accept_node(child, emitter_id=emitter_id, independent=True):
                 self._escalated_ids.add(emitter_id)
         elif route == "notify":

@@ -151,6 +151,14 @@ _CONTROL_POLL_INTERVAL = 2.0
 # tick here rather than let later controls overtake it in the DB.
 _CONTROL_UNSTAMPED = "unstamped"
 
+# ── Escalation mirror linking — attributes an escalated leg's CLI transcript
+# back to this run instead of leaving it an unlinked, misattributed session.
+# The transcript mirror may run in another process and lag behind this run's
+# own completion, so the link write gets a few bounded retries rather than
+# firing once and giving up.
+_ESCALATION_LINK_RETRIES = 5
+_ESCALATION_LINK_RETRY_INTERVAL = 1.0
+
 # ── Team lifecycle (done-signal / wakeup rounds / quiescence) ───────────────
 # Driven by ReactiveExecutor's on_op_complete hook, not a poll loop (which
 # would race the executor's task-group teardown) — see TeamLifecycleCoordinator.
@@ -1258,6 +1266,68 @@ async def _execute_dag(
                 f"woke {', '.join(sorted(state.pending_targets))}"
             )
 
+    def _link_escalation_mirror(node: Any) -> None:
+        """Attribute an escalation child's CLI transcript to this run.
+
+        No-ops for anything that isn't an escalation child (no ``escalated_from``
+        metadata) or that didn't run on a CLI engine (``provider_session_id`` unset —
+        API-provider retries have nothing for the transcript mirror to link). The
+        session uid a CLI engine reports is the same one the mirror keys its session
+        row by, so it is the only thing this run and a detached mirror sweep share.
+        """
+        metadata = getattr(node, "metadata", None)
+        parent_op_id = metadata.get("escalated_from") if metadata else None
+        if not parent_op_id:
+            return
+        chat_model = getattr(getattr(node, "_branch", None), "chat_model", None)
+        session_uid = getattr(chat_model, "provider_session_id", None) if chat_model else None
+        if not session_uid:
+            return
+        ctx = getattr(env, "_live_persist", None)
+        db = ctx.get("db") if ctx else None
+        if db is None:
+            return
+        escalated_label = metadata.get("escalated_from_name") or parent_op_id[:8]
+        display_name = f"escalation of {escalated_label}"
+        project = getattr(env, "_project", None)
+        project_source = "escalation_parent" if project else None
+
+        async def _do() -> None:
+            from lionagi.state.claude_mirror import link_escalation_session
+
+            for attempt in range(_ESCALATION_LINK_RETRIES):
+                if attempt:
+                    await _asyncio.sleep(_ESCALATION_LINK_RETRY_INTERVAL)
+                try:
+                    linked = await link_escalation_session(
+                        db,
+                        session_uid=session_uid,
+                        run_id=env.run.run_id,
+                        name=display_name,
+                        project=project,
+                        project_source=project_source,
+                        parent_op_id=parent_op_id,
+                    )
+                except Exception:  # noqa: BLE001 — a link failure must not affect the run
+                    logger.exception(
+                        "escalation mirror link failed for session %s", session_uid[:8]
+                    )
+                    return
+                if linked:
+                    return
+            logger.warning(
+                "escalation mirror link: no mirrored session for %s after %d retries",
+                session_uid[:8],
+                _ESCALATION_LINK_RETRIES,
+            )
+
+        _asyncio.ensure_future(_do())
+
+    def _on_op_complete(node: Any) -> None:
+        """ReactiveExecutor.on_op_complete callback: called for every completed node."""
+        _link_escalation_mirror(node)
+        _on_team_op_complete(node)
+
     async def _control_poll_loop() -> None:
         while True:
             await _asyncio.sleep(_CONTROL_POLL_INTERVAL)
@@ -1364,7 +1434,7 @@ async def _execute_dag(
                 register_branch_hook(env._live_persist, branch) if env._live_persist else None
             ),
             spawn_branch_setup=_spawn_branch_setup if reactive else None,
-            on_op_complete=_on_team_op_complete if _team_coordinator is not None else None,
+            on_op_complete=_on_op_complete,
         )
     finally:
         _hb_task.cancel()
@@ -1962,6 +2032,11 @@ async def _run_flow(
     _extra_node_metadata: dict = {"run_id": env.run.run_id}
     if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
         _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
+
+    # Stashed for _execute_dag's escalation-mirror-link hook, which runs deeper in
+    # the call chain than this run's resolved project — not a declared env field,
+    # same as `_escalated_evidence`/`_finalize_extras` below.
+    env._project = project
 
     await start_live_persist(
         env,

@@ -226,6 +226,7 @@ _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin",
 _SESSION_COLUMNS = frozenset(
     {
         "cc_session_id",
+        "run_id",
         "name",
         "user",
         "node_metadata",
