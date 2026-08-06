@@ -162,8 +162,17 @@ function ScheduleRow({
   return (
     <tr
       onClick={() => onOpen(schedule.id)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen(schedule.id);
+        }
+      }}
+      tabIndex={0}
+      role="button"
+      aria-label={schedule.name}
       className={[
-        "cursor-pointer border-b border-edge transition-colors duration-100 hover:bg-surface-overlay/60",
+        "cursor-pointer border-b border-edge transition-colors duration-100 hover:bg-surface-overlay/60 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
         schedule.enabled ? "" : "opacity-60",
       ].join(" ")}
     >
