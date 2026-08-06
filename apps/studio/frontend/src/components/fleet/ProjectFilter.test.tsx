@@ -383,4 +383,98 @@ describe("ProjectFilter component", () => {
     expect(container.querySelector('[role="listbox"]')).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it("marks the actually selected option aria-selected, not the keyboard-highlighted one", async () => {
+    listRunProjectsMock.mockReturnValue(
+      resolved([row({ project: "org/alpha", count: 1 }), row({ project: "org/beta", count: 1 })]),
+    );
+    await mount({ project: "org/alpha" });
+    await open();
+    const input = container.querySelector('input[role="combobox"]') as HTMLInputElement;
+    // Options: 0=All, 1=No project, 2=org/alpha, 3=org/beta. Three ArrowDowns
+    // from 0 land on org/beta — org/alpha stays the selected option even
+    // though org/beta is now highlighted.
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+        await Promise.resolve();
+      });
+    }
+    const alphaOption = Array.from(container.querySelectorAll('[role="option"]')).find((el) =>
+      el.textContent?.includes("org/alpha"),
+    ) as HTMLElement;
+    const betaOption = Array.from(container.querySelectorAll('[role="option"]')).find((el) =>
+      el.textContent?.includes("org/beta"),
+    ) as HTMLElement;
+    expect(alphaOption.getAttribute("aria-selected")).toBe("true");
+    expect(betaOption.getAttribute("aria-selected")).toBe("false");
+    expect(input.getAttribute("aria-activedescendant")).toBe(betaOption.id);
+  });
+
+  it("typing a query then pressing Enter selects the top filtered match, not 'All projects'", async () => {
+    listRunProjectsMock.mockReturnValue(
+      resolved([
+        row({ project: "lionagi", count: 1 }),
+        row({ project: "lion-studio", count: 50 }),
+        row({ project: "other", count: 100 }),
+      ]),
+    );
+    await mount();
+    await open();
+    const input = container.querySelector('input[role="combobox"]') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "lio");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    // lion-studio has the higher count among the "lio" matches, so it sorts
+    // first and is what Enter selects.
+    expect(onChange).toHaveBeenCalledWith({ project: "lion-studio" });
+  });
+
+  it("pressing Enter when the query matches nothing is a no-op", async () => {
+    listRunProjectsMock.mockReturnValue(resolved([row({ project: "org/alpha", count: 1 })]));
+    await mount({ project: "org/alpha" });
+    await open();
+    const input = container.querySelector('input[role="combobox"]') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        input,
+        "no-such-project",
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="listbox"]')).not.toBeNull();
+  });
+
+  it("re-shows the error banner on a fresh failure after a prior dismissal", async () => {
+    listRunProjectsMock.mockRejectedValueOnce(new Error("network down"));
+    await mount();
+    await open();
+    expect(container.textContent).toContain("Failed to load projects");
+    const dismissButton = container.querySelector('button[aria-label="Dismiss"]');
+    await act(async () => {
+      dismissButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain("Failed to load projects");
+
+    // Dismissing removes the whole banner (including its Retry button), so the
+    // next failure has to come from the background refresh, not a click.
+    listRunProjectsMock.mockRejectedValueOnce(new Error("network down again"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(container.textContent).toContain("Failed to load projects");
+  });
 });

@@ -88,7 +88,7 @@ function OptionRow({
     <div
       id={id}
       role="option"
-      aria-selected={active}
+      aria-selected={current}
       tabIndex={-1}
       onClick={onClick}
       onMouseEnter={onMouseEnter}
@@ -137,6 +137,7 @@ export default function ProjectFilter({ project, projectNull, onChange }: Projec
       setDismissed(false);
     } catch {
       setError(true);
+      setDismissed(false);
     }
   }, []);
 
@@ -217,6 +218,7 @@ export default function ProjectFilter({ project, projectNull, onChange }: Projec
       setActiveRaw((a) => Math.max(a - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
+      if (query.trim() !== "" && filtered.length === 0) return;
       const opt = options[active];
       if (opt) select(opt);
     }
@@ -257,8 +259,17 @@ export default function ProjectFilter({ project, projectNull, onChange }: Projec
               type="text"
               value={query}
               onChange={(e) => {
-                setQuery(e.target.value);
-                setActiveRaw(0);
+                const value = e.target.value;
+                setQuery(value);
+                if (value.trim() === "") {
+                  setActiveRaw(0);
+                } else {
+                  // Non-empty query never has a "Recent" group (see `showRecent`),
+                  // so the first filtered match always lands right after the two
+                  // pinned options — index 2 — when there is one.
+                  const hasMatch = filterProjectsByQuery(projects, value).length > 0;
+                  setActiveRaw(hasMatch ? 2 : 0);
+                }
               }}
               onKeyDown={handleInputKeyDown}
               placeholder={t("filters.projectSearchPlaceholder")}
