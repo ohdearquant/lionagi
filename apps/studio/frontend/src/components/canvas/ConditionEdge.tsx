@@ -1,8 +1,16 @@
 "use client";
 
-import { memo } from "react";
-import { getBezierPath, EdgeLabelRenderer } from "reactflow";
+import { memo, useState } from "react";
+import { getBezierPath, getSmoothStepPath, EdgeLabelRenderer } from "reactflow";
 import type { EdgeProps } from "reactflow";
+
+// A bezier between ranks that are far apart draws one long curve sweeping
+// across every intervening rank's cards — the "spaghetti" a deep chain reads
+// as. Past this rank distance, route with a rounded step instead: it hugs the
+// rank grid rather than cutting across it.
+const LONG_RANGE_RANK_DISTANCE = 3;
+const LONG_RANGE_BORDER_RADIUS = 12;
+const LONG_RANGE_OFFSET = 24;
 
 export interface ConditionEdgeData {
   mode: "simple" | "code";
@@ -10,6 +18,42 @@ export interface ConditionEdgeData {
   map?: Record<string, string>;
   handler?: string;
   sourceCompleted?: boolean;
+  /** Longest-path rank distance source -> target, from useLayout's rank map
+   * (WorkerCanvas attaches this after each layout pass). Undefined for edges
+   * that predate a layout — e.g. a fresh onConnect in the editor — which
+   * fall back to the short-edge bezier route. */
+  rankDistance?: number;
+}
+
+export function isLongRangeEdge(rankDistance: number | undefined): boolean {
+  return (rankDistance ?? 0) >= LONG_RANGE_RANK_DISTANCE;
+}
+
+export interface EdgeVisualState {
+  strokeColor: string;
+  strokeOpacity: number;
+  strokeWidth: number;
+}
+
+// Completed edges recede once a run is done — a finished 18-node graph with
+// every edge at full green saturation reads as uniformly "hot" and buries
+// the one thing worth looking at. Selection always wins (a reviewer clicked
+// it); hover re-emphasizes so a muted edge stays inspectable without
+// clicking. Non-completed (running/pending) edges are never muted.
+export function computeEdgeVisualState(
+  selected: boolean,
+  completed: boolean,
+  emphasized: boolean,
+): EdgeVisualState {
+  return {
+    strokeColor: selected
+      ? "var(--status-selected)"
+      : completed
+        ? "var(--dag-edge-done)"
+        : "var(--dag-pending-border)",
+    strokeOpacity: completed && !emphasized ? 0.5 : 1,
+    strokeWidth: selected ? 2.5 : completed ? 1.75 : 2,
+  };
 }
 
 function ConditionEdgeComponent({
@@ -23,28 +67,37 @@ function ConditionEdgeComponent({
   data,
   selected,
 }: EdgeProps<ConditionEdgeData>) {
+  const [hovered, setHovered] = useState(false);
   const completed = data?.sourceCompleted ?? false;
   const isCode = data?.mode === "code";
+  const isLongRange = isLongRangeEdge(data?.rankDistance);
 
-  const [edgePath, labelX, labelY] = getBezierPath({
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition,
-  });
+  const [edgePath, labelX, labelY] = isLongRange
+    ? getSmoothStepPath({
+        sourceX,
+        sourceY,
+        sourcePosition,
+        targetX,
+        targetY,
+        targetPosition,
+        borderRadius: LONG_RANGE_BORDER_RADIUS,
+        offset: LONG_RANGE_OFFSET,
+      })
+    : getBezierPath({
+        sourceX,
+        sourceY,
+        sourcePosition,
+        targetX,
+        targetY,
+        targetPosition,
+      });
 
-  // Edge stroke colors are data-driven (selected state + completion state) —
-  // kept inline. Default uses the solid dag-pending-border token (opaque
-  // gray) rather than the translucent --edge-strong hairline: at these
-  // widths the hairline reads as invisible against surface-base in both
-  // themes.
-  const strokeColor = selected
-    ? "var(--status-selected)"
-    : completed
-      ? "var(--dag-edge-done)"
-      : "var(--dag-pending-border)";
+  const emphasized = Boolean(selected) || hovered;
+  const { strokeColor, strokeOpacity, strokeWidth } = computeEdgeVisualState(
+    Boolean(selected),
+    completed,
+    emphasized,
+  );
 
   return (
     <>
@@ -53,10 +106,13 @@ function ConditionEdgeComponent({
         d={edgePath}
         fill="none"
         stroke={strokeColor}
-        strokeWidth={selected ? 2.5 : completed ? 2 : 1.75}
+        strokeOpacity={strokeOpacity}
+        strokeWidth={strokeWidth}
         strokeDasharray={isCode ? "6 4" : undefined}
-        style={{ transition: "stroke 0.25s, stroke-width 0.15s" }}
+        style={{ transition: "stroke 0.25s, stroke-width 0.15s, stroke-opacity 0.25s" }}
         markerEnd={`url(#${completed ? "arrow-active" : "arrow"})`}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
       />
 
       {data?.condition && (
