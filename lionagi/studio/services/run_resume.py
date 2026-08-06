@@ -72,8 +72,8 @@ class RunResumeCheckpointError(RuntimeError):
 
 class RunResumeRequest(BaseModel):
     # Optional: required for invocation_kind="agent", rejected for the
-    # checkpoint-replay kinds (play/flow/show-play/fanout), where the
-    # checkpoint — not a new instruction — supplies the plan.
+    # checkpoint-replay kinds (play/flow/show-play), where the checkpoint —
+    # not a new instruction — supplies the plan.
     instruction: str | None = Field(default=None, max_length=MAX_SPEC_PROMPT_CHARS)
     branch_id: str | None = None
     model: str | None = None
@@ -86,7 +86,17 @@ class RunResumeRequest(BaseModel):
 # reopening a single agent branch. Kept separate from the DB CHECK
 # constraint's vocabulary (schema.sql) so a new kind must be classified
 # here explicitly before it can be resumed at all.
-_FLOW_RESUME_KINDS = frozenset({"play", "flow", "show-play", "fanout"})
+#
+# fanout is deliberately excluded: `_run_fanout` (cli/orchestrate/fanout.py)
+# never stamps a run_id into node_metadata and never instantiates a
+# CheckpointWriter, so a real fanout session can never satisfy
+# _resolve_flow_checkpoint's prerequisites — there is no future in which one
+# does. Routing it through the checkpoint-resolution path anyway would only
+# ever fail with flow-specific wording ("...or never reached _build_dag")
+# that misdescribes why. Treating it as unsupported instead is the honest,
+# structurally-correct answer, decided by what the kind can ever produce, not
+# by kind membership in a set built for a different execution shape.
+_FLOW_RESUME_KINDS = frozenset({"play", "flow", "show-play"})
 
 
 _resume_admission_lock = asyncio.Lock()
@@ -210,6 +220,33 @@ async def _ensure_branch_snapshot_available(branch_id: str) -> None:
         ) from exc
 
 
+async def _require_resumable_snapshot(run_id: str, branch_id: str) -> bool:
+    """The one prerequisite check for an agent-kind resume, shared by GET and POST.
+
+    Returns whether the source run is still queued. A queued source has no
+    snapshot to check yet — a queued resume writes its own worker config and
+    the snapshot is verified once the source actually finishes, matching
+    _resume_agent_run's own launch-time branching. Only when the source is
+    already terminal does `li agent -r` need a snapshot to reopen right now,
+    so only then is one required here.
+
+    resume_availability (GET) and _resume_agent_run (POST) both call this
+    instead of each doing their own version of it — GET previously only
+    checked branch membership, so it could answer "resumable" for a run POST
+    would then 409 on because the branch's CLI snapshot was never written or
+    had since been pruned. Sharing the check means GET's answer and POST's
+    outcome can only disagree when something about the run genuinely changed
+    between the two calls.
+    """
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+    source_status = await _run_status(run_id)
+    queued = source_status not in SESSION_TERMINAL_STATUSES
+    if not queued:
+        await _ensure_branch_snapshot_available(branch_id)
+    return queued
+
+
 def _build_resume_argv(
     executable_prefix: list[str],
     *,
@@ -300,10 +337,7 @@ async def _resume_agent_run(
                 f"Branch {resolved_branch_id!r} already has a resume in progress"
             )
 
-        source_status = await _run_status(run_id)
-        from lionagi.state.db import SESSION_TERMINAL_STATUSES
-
-        queued = source_status not in SESSION_TERMINAL_STATUSES
+        queued = await _require_resumable_snapshot(run_id, resolved_branch_id)
         tmp_path: str | None = None
         if queued:
             tmp_path = _write_queued_resume_config(
@@ -321,7 +355,6 @@ async def _resume_agent_run(
                 tmp_path,
             ]
         else:
-            await _ensure_branch_snapshot_available(resolved_branch_id)
             argv = _build_resume_argv(
                 executable_prefix,
                 branch_id=resolved_branch_id,
@@ -453,7 +486,7 @@ async def _resume_flow_run(
     invocation_kind: str,
     allow_degraded_context: bool,
 ) -> dict[str, Any]:
-    """Launch a checkpointed flow/play/show-play/fanout resume.
+    """Launch a checkpointed flow/play/show-play resume.
 
     Unlike the agent path there is no branch to reopen: `li o flow --resume`
     replays the persisted plan from the checkpoint, so the only inputs are
@@ -601,6 +634,16 @@ async def resume_availability(run_id: str) -> dict[str, Any]:
                 "reason": "branch_conflict",
                 "message": str(exc),
             }
+        try:
+            await _require_resumable_snapshot(run_id, branch_id)
+        except RunResumeUnavailableError as exc:
+            return {
+                "run_id": run_id,
+                "invocation_kind": kind,
+                "resumable": False,
+                "reason": "snapshot_unavailable",
+                "message": str(exc),
+            }
         return {
             "run_id": run_id,
             "invocation_kind": kind,
@@ -646,9 +689,10 @@ async def resume_run(
     """Dispatch a resume request by the run's recorded invocation_kind.
 
     `agent` keeps the existing single-branch CLI resume path byte-for-byte.
-    `play`/`flow`/`show-play`/`fanout` all replay a checkpointed flow — the
-    checkpoint owns the plan, so instruction/branch/model are rejected.
-    NULL and any other stored value are refused before anything launches;
+    `play`/`flow`/`show-play` all replay a checkpointed flow — the checkpoint
+    owns the plan, so instruction/branch/model are rejected. `fanout` has no
+    checkpoint-replay mechanism at all and is refused the same way NULL and
+    any other unsupported value are: before anything launches, since
     silently defaulting to one path would resume the wrong thing.
     """
     _svc_validate_identifier(run_id, "run_id")

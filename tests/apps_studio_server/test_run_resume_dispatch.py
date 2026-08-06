@@ -153,7 +153,7 @@ def flow_resume_harness(tmp_path: Path, monkeypatch: Any):
 # ── Parameterized dispatch across every invocation_kind ──────────────────────
 
 
-@pytest.mark.parametrize("kind", ["play", "flow", "show-play", "fanout"])
+@pytest.mark.parametrize("kind", ["play", "flow", "show-play"])
 def test_flow_kind_resume_dispatches_to_checkpoint_replay_argv(flow_resume_harness, kind):
     _svc, db_path, runs_root, client, launched = flow_resume_harness
     session_id = str(uuid.uuid4())
@@ -240,6 +240,42 @@ def test_agent_kind_resume_still_uses_the_untouched_agent_argv(flow_resume_harne
     ]
     assert kwargs["skill"] == "resume:agent"
     assert kwargs["action_kind"] == "agent"
+
+
+def test_real_fanout_session_reports_non_resumable_with_an_honest_reason(flow_resume_harness):
+    """A fanout session as `_run_fanout` (cli/orchestrate/fanout.py) actually
+    writes one: node_metadata carries only the process identity markers every
+    live run gets, never a run_id (only flow.py's shared _run_flow path stamps
+    that), and no checkpoint.json is ever written for it — fanout has no
+    CheckpointWriter at all. Injecting a synthetic run_id + checkpoint here
+    (as the parametrized dispatch test above does for play/flow/show-play)
+    would prove the checkpoint-replay machinery works, not that a real fanout
+    run can use it — it never can. GET and POST must both refuse, with the
+    same reason, using only what a real fanout session ever has on record.
+    """
+    _svc, db_path, _runs_root, client, launched = flow_resume_harness
+    session_id = str(uuid.uuid4())
+    _run(
+        _seed_session(
+            db_path,
+            session_id=session_id,
+            invocation_kind="fanout",
+            node_metadata={"pid": 4242, "pid_create_time": 123456.0},
+        )
+    )
+    # No checkpoint.json under runs_root for this session, at all.
+
+    get_response = client.get(f"/api/runs/{session_id}/resume")
+    assert get_response.status_code == 200, get_response.text
+    get_body = get_response.json()
+    assert get_body["resumable"] is False
+    assert get_body["reason"] == "unsupported_kind"
+    assert "fanout" in get_body["message"]
+
+    post_response = client.post(f"/api/runs/{session_id}/resume", json={})
+    assert post_response.status_code == 409, post_response.text
+    assert post_response.json()["detail"] == get_body["message"]
+    assert launched == []
 
 
 def test_null_invocation_kind_refuses_before_launch_with_actual_kind(flow_resume_harness):

@@ -158,7 +158,7 @@ export interface RunDetail {
   artifact_verification_json?: ArtifactVerification | null;
 }
 
-// The checkpoint-replay kinds (play/flow/show-play/fanout) send neither
+// The checkpoint-replay kinds (play/flow/show-play) send neither
 // instruction nor branch_id — the checkpoint owns the plan — so both are
 // optional here; the "agent" kind still requires instruction, enforced by
 // the resume service (services/run_resume.py) and mirrored in ResumeRun's
@@ -186,6 +186,7 @@ export interface RunResumeResponse {
 // control never renders as a live one.
 export type ResumeUnavailableReason =
   | "branch_conflict"
+  | "snapshot_unavailable"
   | "no_checkpoint"
   | "empty_checkpoint"
   | "no_run_id"

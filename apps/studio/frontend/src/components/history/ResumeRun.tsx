@@ -9,9 +9,11 @@ import { IconArrowRight, IconCheck, IconCopy, IconLaunch } from "@/components/ui
 interface Props {
   runId: string;
   /** session.invocation_kind — dispatches which resume UI renders. `agent`
-   * keeps the existing branch+instruction form; play/flow/show-play/fanout
-   * replay a checkpoint and take neither. Anything else (including null)
-   * is not resumable from here — the same refusal the backend dispatcher
+   * keeps the existing branch+instruction form; play/flow/show-play replay a
+   * checkpoint and take neither. Anything else (including null, and fanout —
+   * which has no checkpoint-replay mechanism at all) is not resumable from
+   * here, and the availability precheck below already reports that before
+   * this switch is ever reached — the same refusal the backend dispatcher
    * (services/run_resume.py _dispatch_resume_by_kind) enforces. */
   invocationKind: string | null;
   branches: SessionBranch[];
@@ -19,7 +21,7 @@ interface Props {
 }
 
 // Mirrors _FLOW_RESUME_KINDS in services/run_resume.py.
-const FLOW_RESUME_KINDS = new Set(["play", "flow", "show-play", "fanout"]);
+const FLOW_RESUME_KINDS = new Set(["play", "flow", "show-play"]);
 
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -341,7 +343,7 @@ function ResumeAgentForm({
   );
 }
 
-// ── checkpoint-replay kinds (play/flow/show-play/fanout): continue action ──
+// ── checkpoint-replay kinds (play/flow/show-play): continue action ──
 //
 // Unlike the agent path there is no branch to reopen and no instruction to
 // give: the checkpoint owns the plan, so this is a single-button "Continue"

@@ -245,7 +245,23 @@ describe("ResumeRun component", () => {
     expect(container.querySelector("textarea")).toBeNull();
   });
 
-  for (const kind of ["play", "flow", "show-play", "fanout"]) {
+  it("renders an explicit explanation for a fanout run, which has no checkpoint-replay mechanism", async () => {
+    getResumeAvailabilityMock.mockResolvedValue({
+      run_id: "run-1",
+      invocation_kind: "fanout",
+      resumable: false,
+      reason: "unsupported_kind",
+      message: "Run 'run-1' has invocation_kind 'fanout', which does not support resume.",
+    });
+
+    await mount([], { invocationKind: "fanout" });
+
+    expect(container.textContent).toContain("which does not support resume");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  for (const kind of ["play", "flow", "show-play"]) {
     it(`renders a no-branch, no-instruction continue action for invocation_kind=${kind}`, async () => {
       getResumeAvailabilityMock.mockResolvedValue({
         run_id: "run-1",
