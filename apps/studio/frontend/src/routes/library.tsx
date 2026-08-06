@@ -13,6 +13,7 @@ import { IconCheck, IconClose, IconDotFilled } from "@/components/ui/icons";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
+import Skeleton from "@/components/ui/Skeleton";
 import DrawerBackButton from "@/components/ui/DrawerBackButton";
 import DrawerHeader from "@/components/ui/DrawerHeader";
 import type { LibraryKind } from "@/components/library/KindBadge";
@@ -316,6 +317,27 @@ function encodeSel(kind: LibraryKind, name: string, subKind?: PlaybookSubKind): 
   return `${kind}:${name}`;
 }
 
+/** Placeholder row count while the first fetch is in flight. */
+const CATALOG_SKELETON_ROWS = 8;
+
+/** Shimmering row placeholders, sized to match a real catalog row — avoids the
+ * layout jump of a centered "loading" line collapsing once rows land. */
+function CatalogSkeleton() {
+  return (
+    <div aria-hidden="true" className="divide-y divide-edge">
+      {Array.from({ length: CATALOG_SKELETON_ROWS }, (_, i) => (
+        <div key={i} className="flex items-center gap-3 px-3 py-2.5">
+          <Skeleton className="h-4 w-4 shrink-0 rounded-full" />
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <Skeleton className="h-3.5 w-40" />
+            <Skeleton className="h-3 w-64 max-w-full" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function LibraryPage() {
   const t = useTranslations("library");
   const tDaemon = useTranslations("daemon");
@@ -490,9 +512,7 @@ function LibraryPage() {
       {/* Catalog */}
       <div className="flex-1 overflow-y-auto">
         {loading ? (
-          <div className="flex items-center justify-center py-12 text-[length:var(--t-sm)] text-content-muted">
-            {t("loading")}
-          </div>
+          <CatalogSkeleton />
         ) : isEmpty ? (
           <EmptyState
             glyph="▤"
