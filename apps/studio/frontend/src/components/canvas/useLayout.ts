@@ -2,43 +2,26 @@ import { useCallback } from "react";
 import dagre from "dagre";
 import type { Node, Edge } from "reactflow";
 
-const NODE_WIDTH = 210;
+// The card's own geometry, imported by StepNode so there is one copy of each
+// number rather than a layout constant and a stylesheet that agree until one
+// of them is edited.
+export const NODE_WIDTH = 210;
 
-// StepNode grows a row at a time as a run fills its data in: the role badge,
-// the assignment (the model it ran on), then the duration/calls line. A single
-// constant height therefore describes the node at exactly one moment of its
-// life. Feeding dagre that constant once the other rows exist makes it reserve
-// less vertical room than the node occupies, and the boxes crowd into each
-// other — worst on a graph where every node has been assigned, which is any
-// graph worth looking at.
+// StepNode is a fixed two-row card: name and state on top, role and elapsed
+// along the bottom, both rows always rendered. So one constant describes it at
+// every moment of a run, and dagre reserves exactly what the node occupies.
 //
-// These track StepNode's own padding and per-row heights. They are estimates:
-// exact only matters to the extent that ranks stay clear of each other, and
-// over-reserving is harmless where under-reserving overlaps.
-const NODE_BASE_HEIGHT = 40; // vertical padding + the label row
-const ROW_ROLE = 22;
-const ROW_ASSIGNMENT = 17;
-const ROW_STATS = 19;
+// It used to grow a row at a time as a run filled its data in, which meant the
+// height depended on how far along the run was, ranks came out ragged, and this
+// function had to guess. Fixing the card removed the guess: two nodes side by
+// side are now the same size whether or not either has finished.
+export const NODE_HEIGHT = 56;
 
-export function estimateNodeHeight(node: Node): number {
-  const data = (node.data ?? {}) as {
-    role?: unknown;
-    assignment?: unknown;
-    durationSeconds?: number | null;
-    errorCount?: number | null;
-    toolCallCount?: number | null;
-  };
-  let height = NODE_BASE_HEIGHT;
-  if (data.role) height += ROW_ROLE;
-  if (data.assignment) height += ROW_ASSIGNMENT;
-  if (
-    (data.durationSeconds != null && data.durationSeconds >= 0) ||
-    (data.errorCount ?? 0) > 0 ||
-    (data.toolCallCount ?? 0) > 0
-  ) {
-    height += ROW_STATS;
-  }
-  return height;
+/** The height of a rendered node. Constant by construction — see NODE_HEIGHT.
+ *  Kept as a function because the layout passes call it per node and a future
+ *  variable-size node type would land here. */
+export function estimateNodeHeight(_node: Node): number {
+  return NODE_HEIGHT;
 }
 
 const NODE_SEP = 36;
@@ -129,11 +112,15 @@ const FOLD_MAX_ROW_WIDTH = 1500;
 // the next row sits to the LEFT of its source — the one thing a left-to-right
 // graph otherwise guarantees. That price is worth paying for a chain, whose
 // rows are empty of meaning anyway, and not worth paying for a graph that
-// already reads in two dimensions. Two full node-rows plus their separator is
-// 2*98 + 36 = 232px, so a graph taller than this has real cross-axis content:
-// a wrapped fan-out (measured ~536px tall) is deliberately out of scope here,
-// because wrapWideRanks above already owns that shape and made its own trade.
-const FOLD_MAX_FLAT_HEIGHT = 240;
+// already reads in two dimensions. The cut-off is two full node-rows plus the
+// separator between them, so a graph taller than this has real cross-axis
+// content: a wrapped fan-out is deliberately out of scope here, because
+// wrapWideRanks above already owns that shape and made its own trade.
+//
+// Derived rather than written as a number so that changing the card's height
+// cannot silently widen what counts as flat. At 56px per row that is 148px,
+// where a literal 240 would have quietly started folding three-row graphs.
+const FOLD_MAX_FLAT_HEIGHT = 2 * NODE_HEIGHT + NODE_SEP;
 const FOLD_ROW_GAP = 56;
 
 // Fold a wide, flat graph into stacked rows, each row still reading
