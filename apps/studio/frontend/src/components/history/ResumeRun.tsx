@@ -117,10 +117,21 @@ export default function ResumeRun({ runId, invocationKind, branches, onResumed }
     );
   }
 
+  // `branch_conflict` is not a refusal. It means the backend could not pick a
+  // branch on its own, which is exactly the case the agent form below already
+  // handles: it takes the branch list as a prop and renders a selector
+  // whenever there is more than one. Treating it as unresumable would hide a
+  // control that works and would make a multi-branch agent run — previously
+  // resumable by choosing a branch — unreachable from the UI. Guarded on
+  // there actually being a choice to offer, so a conflict with no branches to
+  // pick from still reads as the explained refusal below.
+  const awaitingBranchChoice =
+    invocationKind === "agent" && availability?.reason === "branch_conflict" && branches.length > 1;
+
   // Resumability is a fact determined before the action is offered — a run
   // with no checkpoint (or any other refusal) reads as an explicit,
   // explained state, never a dead or guessed-at control.
-  if (availability && !availability.resumable) {
+  if (availability && !availability.resumable && !awaitingBranchChoice) {
     return (
       <SectionShell runId={runId}>
         <p className="mt-0.5 text-body leading-relaxed text-content-muted">

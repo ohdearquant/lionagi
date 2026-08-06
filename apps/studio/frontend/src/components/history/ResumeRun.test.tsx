@@ -189,6 +189,49 @@ describe("ResumeRun component", () => {
     expect(container.querySelector("textarea")).not.toBeNull();
   });
 
+  it("still offers the branch picker when an agent run's only obstacle is choosing a branch", async () => {
+    // branch_conflict means the backend could not pick a branch by itself, not
+    // that the run cannot be resumed — the form below renders a selector for
+    // exactly this case. Treating it as unresumable made multi-branch agent
+    // resume unreachable from the UI even though the API still accepted it.
+    getResumeAvailabilityMock.mockResolvedValue({
+      run_id: "run-1",
+      invocation_kind: "agent",
+      resumable: false,
+      reason: "branch_conflict",
+      message: "Run 'run-1' does not resolve to exactly one resumable branch.",
+    });
+
+    await mount(
+      [
+        { id: "branch-a", name: "worker-a" },
+        { id: "branch-b", name: "worker-b" },
+      ] as SessionBranch[],
+      { invocationKind: "agent" },
+    );
+
+    // The picker and the instruction box are both present.
+    expect(container.querySelector("select")).not.toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
+  });
+
+  it("still refuses a branch_conflict that offers no branch to choose between", async () => {
+    // The bypass is guarded on there being a real choice; without one the
+    // explained refusal is still the right surface.
+    getResumeAvailabilityMock.mockResolvedValue({
+      run_id: "run-1",
+      invocation_kind: "agent",
+      resumable: false,
+      reason: "branch_conflict",
+      message: "Run 'run-1' does not resolve to exactly one resumable branch.",
+    });
+
+    await mount([], { invocationKind: "agent" });
+
+    expect(container.textContent).toContain("does not resolve to exactly one resumable branch");
+    expect(container.querySelector("textarea")).toBeNull();
+  });
+
   it("renders an explicit explanation, not a dead control, when the run is not resumable", async () => {
     getResumeAvailabilityMock.mockResolvedValue({
       run_id: "run-1",
