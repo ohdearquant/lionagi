@@ -281,6 +281,63 @@ async def test_metadata_column_parity_vs_schema_sql(tmp_path, sqlite_meta_engine
     assert not mismatches, "Column-set mismatch:\n" + "\n".join(mismatches)
 
 
+async def test_branches_index_matches_runtime_migration_definition(tmp_path, sqlite_meta_engine):
+    """The provisioned branches session index matches the runtime migration.
+
+    Target 3 (perf-baseline ranked_targets.md): idx_branches_session used to
+    be a bare (session_id) index, forcing a temp B-tree sort for the
+    session-detail branch listing (ORDER BY created_at). schema.sql and
+    schema_meta.py must both declare the same composite/covering
+    (session_id, created_at) index as schema_migrations.MIGRATION_INDEXES,
+    with no bare idx_branches_session left in either provisioning definition
+    and no table/column change.
+    """
+    import re
+
+    from lionagi.state.db import _SCHEMA_PATH
+    from lionagi.state.schema_migrations import MIGRATION_INDEXES
+
+    # Raw schema.sql indexes.
+    raw_db = tmp_path / "raw_branches_idx.db"
+    schema_text = _SCHEMA_PATH.read_text()
+    lines = [ln for ln in schema_text.splitlines() if not ln.strip().upper().startswith("PRAGMA")]
+    conn_raw = sqlite3.connect(str(raw_db))
+    conn_raw.executescript("\n".join(lines))
+    conn_raw.commit()
+    cursor = conn_raw.cursor()
+    cursor.execute("PRAGMA index_list(branches)")
+    raw_index_names = {row[1] for row in cursor.fetchall()}
+    cursor.execute("PRAGMA index_info(idx_branches_session_created)")
+    raw_composite_cols = [row[2] for row in cursor.fetchall()]
+    conn_raw.close()
+
+    assert "idx_branches_session_created" in raw_index_names
+    assert "idx_branches_session" not in raw_index_names
+    assert raw_composite_cols == ["session_id", "created_at"]
+
+    # SQLAlchemy metadata indexes.
+    def _get_meta_indexes(sync_conn):
+        insp = sa.inspect(sync_conn)
+        return {idx["name"]: idx["column_names"] for idx in insp.get_indexes("branches")}
+
+    async with sqlite_meta_engine.connect() as conn:
+        meta_indexes = await conn.run_sync(_get_meta_indexes)
+
+    assert "idx_branches_session_created" in meta_indexes
+    assert "idx_branches_session" not in meta_indexes
+    assert meta_indexes["idx_branches_session_created"] == raw_composite_cols
+
+    # Runtime migration definition (schema_migrations.MIGRATION_INDEXES) must
+    # declare the identical column order.
+    (composite_sql,) = (
+        sql for sql in MIGRATION_INDEXES["sqlite"] if "idx_branches_session_created" in sql
+    )
+    migration_cols = [
+        c.strip() for c in re.search(r"branches\(([^)]+)\)", composite_sql).group(1).split(",")
+    ]
+    assert migration_cols == raw_composite_cols
+
+
 async def test_metadata_check_constraint_parity_vs_schema_sql(tmp_path, sqlite_meta_engine):
     """Enum CHECK value-sets from MetaData match those from real schema.sql."""
     import re
