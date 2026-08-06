@@ -829,6 +829,47 @@ async def test_model_failure_states_absence_when_no_run_was_created(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_model_failure_after_session_commit_points_at_the_orphaned_run(tmp_path, monkeypatch):
+    """Setup can commit the session row and then fail on a later step (here,
+    the branch insert): the failure message must not claim nothing was
+    recorded, and the row must not be left "running" forever."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+
+    async def broken_create_branch(self, *_args, **_kwargs):
+        raise RuntimeError("branch insert exploded")
+
+    monkeypatch.setattr(StateDB, "create_branch", broken_create_branch)
+
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="setup will fail after the session row commits",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    frames = await _wait_done(coordinator.store, cid)
+    error = next(frame for frame in frames if frame["type"] == "error")["payload"]["error"]
+    assert error["code"] == "model_failure"
+    run_id = error["details"]["runId"]
+    assert run_id
+    assert f"/runs/{run_id}" in error["message"]
+    assert error["details"]["href"] == f"/runs/{run_id}"
+    assert "no run was recorded" not in error["message"]
+
+    # The pointer resolves to a real, durable, no-longer-orphaned row: the
+    # commit survived setup's failure, but it is not left "running" forever.
+    async with StateDB(readonly=True) as db:
+        session = await db.get_session(run_id)
+    assert session is not None
+    assert session["status"] in SESSION_TERMINAL_STATUSES
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_application_command_failure_points_at_its_invocation(tmp_path, monkeypatch):
     """A command failure after its invocation was recorded must name that invocation."""
     path = tmp_path / "state.db"

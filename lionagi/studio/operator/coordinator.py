@@ -494,10 +494,24 @@ class OperatorCoordinator:
             # returned (live is not None); an exception before that point --
             # history compilation, provider selection, branch/run-dir setup --
             # has no run to point at, so say that plainly instead of guessing.
+            # setup_agent_persist() can also commit the session row and then
+            # fail on a later step of the same setup, leaving `live` None even
+            # though a durable record exists -- recover that row before
+            # concluding nothing was recorded.
+            orphaned_session = None
+            if live is None and run_dir is not None:
+                with suppress(Exception):
+                    orphaned_session = await cli_runs.find_incomplete_session_for_run(
+                        run_dir.run_id
+                    )
             if live is not None:
                 run_id = live["session_id"]
                 evidence = f"open the run at /runs/{run_id} for its status and history"
                 details: dict[str, Any] = {"runId": run_id, "href": f"/runs/{run_id}"}
+            elif orphaned_session is not None:
+                run_id = orphaned_session["id"]
+                evidence = f"open the run at /runs/{run_id} for its status and history"
+                details = {"runId": run_id, "href": f"/runs/{run_id}"}
             else:
                 evidence = "no run was recorded for this turn before it failed"
                 details = {"runId": None}
