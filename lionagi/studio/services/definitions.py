@@ -20,6 +20,13 @@ from lionagi.state.engine import mask_credentials
 from ..registry import studio_route
 from ._path_safety import validate_name_component
 from .agents import _is_protected_system
+from .redaction import (
+    RedactedPayloadError,
+    abbreviate_path,
+    demo_mode_enabled,
+    redact_agent_markdown,
+    reject_if_redacted_payload,
+)
 
 _log = logging.getLogger("lionagi.studio")
 
@@ -211,6 +218,12 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
         return None
 
     content = await anyio.to_thread.run_sync(disk_file.read_text)
+    path = _relative_path(disk_file)
+
+    redact = kind == "agent" and demo_mode_enabled()
+    if redact:
+        content = redact_agent_markdown(content, redact=True)
+        path = abbreviate_path(path)
 
     # The disk half is current and correct whatever the store is, so it is
     # answered either way. The history half is null rather than empty when the
@@ -222,7 +235,7 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
         return {
             "kind": kind,
             "name": name,
-            "path": _relative_path(disk_file),
+            "path": path,
             "content": content,
             "version": None,
             "versions": None,
@@ -232,7 +245,7 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
     return {
         "kind": kind,
         "name": name,
-        "path": _relative_path(disk_file),
+        "path": path,
         "content": content,
         "version": versions[0]["version"] if versions else 0,
         "versions": versions,
@@ -270,11 +283,15 @@ async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | No
     if not row:
         return None
 
+    content = row["content"]
+    if kind == "agent" and demo_mode_enabled():
+        content = redact_agent_markdown(content, redact=True)
+
     return {
         "kind": kind,
         "name": name,
         "version": row["version"],
-        "content": row["content"],
+        "content": content,
         "created_at": row["created_at"],
         "message": row["message"],
     }
@@ -295,6 +312,16 @@ async def save_definition(
     base = KIND_DIRS.get(kind)
     if not base:
         raise ValueError(f"Unknown kind: {kind}")
+
+    # The other write path onto agent files (PUT /agents/{name}) carries the
+    # same guard -- see agents.py's update_agent(). Refusing here too closes
+    # the bypass: this route upserts blindly (ADR-0077), so without this check
+    # a redacted payload round-tripped through this route would overwrite the
+    # real file even though the PUT route refuses the identical content.
+    if kind == "agent" and demo_mode_enabled() and not content.strip():
+        raise RedactedPayloadError("Refusing to save: content is missing while demo mode is active")
+    if kind == "agent":
+        reject_if_redacted_payload(content)
 
     from lionagi.state.db import StateDB
 
@@ -513,7 +540,7 @@ async def save_definition_route(kind: str, name: str, body: SaveBody) -> dict[st
     # service layer; catch it and return 422 instead of propagating a 500.
     try:
         return await save_definition(kind, name, body.content, body.message)
-    except PermissionError as e:
+    except (PermissionError, RedactedPayloadError) as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e

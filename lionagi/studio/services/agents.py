@@ -15,6 +15,12 @@ from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 
 from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join, validate_name_component
+from .redaction import (
+    RedactedPayloadError,
+    demo_mode_enabled,
+    project_agent_fields,
+    reject_if_redacted_payload,
+)
 
 _AGENTS_ROOT = LIONAGI_HOME / "agents"
 _log = logging.getLogger(__name__)
@@ -295,6 +301,14 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if _is_protected_system(existing_fm):
         raise AgentProtectedError(f"Agent '{stem}' is a system agent and cannot be edited")
 
+    # While demo mode is on, a client that fetched the redacted view and posted
+    # it back unmodified must not be able to overwrite the real file with the
+    # placeholder text -- the other write path onto agent files (the generic
+    # definitions save route) carries the same guard; see redaction.py.
+    reject_if_redacted_payload(
+        data.get("system_prompt"), data.get("guidance"), data.get("description")
+    )
+
     fm: dict[str, Any] = dict(existing_fm)
     incoming = _normalize_frontmatter(data)
     _canonicalize_casts(incoming)
@@ -333,6 +347,8 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
 @studio_route("/agents/", method="GET", area="agents", name="list_agents")
 async def list_agents_route() -> dict[str, Any]:
     agents = await anyio.to_thread.run_sync(list_agents)
+    redact = demo_mode_enabled()
+    agents = [project_agent_fields(a, redact=redact) for a in agents]
     return {"agents": agents}
 
 
@@ -341,7 +357,7 @@ async def get_agent_route(name: str) -> dict[str, Any]:
     agent = await anyio.to_thread.run_sync(partial(get_agent, name))
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
-    return agent
+    return project_agent_fields(agent, redact=demo_mode_enabled())
 
 
 @studio_route("/agents/{name}", method="POST", area="agents", name="create_agent")
@@ -362,7 +378,7 @@ async def update_agent_route(
 ) -> dict[str, Any]:
     try:
         updated = await anyio.to_thread.run_sync(partial(update_agent, name, body))
-    except AgentProtectedError as e:
+    except (AgentProtectedError, RedactedPayloadError) as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
