@@ -618,6 +618,14 @@ const BLOCKING_FINDING_SEVERITIES = new Set(["critical", "high"]);
 // a "request changes" finding from the latter. Scanning newest-first mirrors
 // how a reader thinks about it: the most recent structured verdict is the
 // one that matters, not the first one emitted.
+//
+// A bare `verdict: string` or `passed: boolean` field is NOT a reliable gate
+// signal — plenty of unrelated structured outputs across the codebase carry
+// exactly those field names (e.g. a coding-engine result's `passed`, a
+// hypothesis-engine result's `passed`, a generic Verdict/ComplianceVerdict's
+// `verdict`) and would otherwise render a false "Gate" badge. Only the
+// dedicated `gate_verdict` / `gate_passed` keys — which no non-gate emission
+// in the codebase uses — identify an output AS a gate result.
 export function deriveGateOutcome(events: SignalEvent[]): GateOutcome | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
@@ -625,7 +633,7 @@ export function deriveGateOutcome(events: SignalEvent[]): GateOutcome | null {
     const data = ev.payload?.data;
     if (!data || typeof data !== "object" || Array.isArray(data)) continue;
     const d = data as Record<string, unknown>;
-    if (typeof d.verdict === "string" && d.verdict) {
+    if (typeof d.gate_verdict === "string" && d.gate_verdict) {
       const findings = Array.isArray(d.findings) ? d.findings : [];
       let major = 0;
       let minor = 0;
@@ -635,12 +643,11 @@ export function deriveGateOutcome(events: SignalEvent[]): GateOutcome | null {
         if (typeof severity === "string" && BLOCKING_FINDING_SEVERITIES.has(severity)) major += 1;
         else minor += 1;
       }
-      return { verdict: deriveVerdict(d.verdict), major, minor, hasFindings: true };
+      return { verdict: deriveVerdict(d.gate_verdict), major, minor, hasFindings: true };
     }
-    if (typeof d.gate_passed === "boolean" || typeof d.passed === "boolean") {
-      const passed = (d.gate_passed ?? d.passed) as boolean;
+    if (typeof d.gate_passed === "boolean") {
       return {
-        verdict: passed ? "approve" : "reject",
+        verdict: d.gate_passed ? "approve" : "reject",
         major: 0,
         minor: 0,
         hasFindings: false,
@@ -926,7 +933,17 @@ export function summarizeHookEvent(ev: SignalEvent): string | null {
   return detail ? `${point} · ${detail}` : point;
 }
 
-function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean }) {
+export function EventsSection({
+  events,
+  live,
+  renderStep = EVENTS_RENDER_STEP,
+}: {
+  events: SignalEvent[];
+  live: boolean;
+  /** Paging window size; defaults to EVENTS_RENDER_STEP. Overridable so tests
+   *  can exercise the "show older" page-back without rendering hundreds of rows. */
+  renderStep?: number;
+}) {
   const t = useTranslations("history.detail");
   const laneSummaries = useMemo((): LaneSummary[] => {
     const byOp = new Map<string, LaneSignal[]>();
@@ -944,7 +961,7 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
     }));
   }, [events]);
 
-  const [renderCap, setRenderCap] = useState(EVENTS_RENDER_STEP);
+  const [renderCap, setRenderCap] = useState(renderStep);
   // A switch to a new (empty) run must reset the render window immediately,
   // not after a post-render effect — adjusted during render (React's
   // documented pattern for resetting state on a prop change) rather than in
@@ -953,7 +970,7 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
   const [wasEmpty, setWasEmpty] = useState(isEmpty);
   if (isEmpty !== wasEmpty) {
     setWasEmpty(isEmpty);
-    if (isEmpty) setRenderCap(EVENTS_RENDER_STEP);
+    if (isEmpty) setRenderCap(renderStep);
   }
 
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
@@ -1015,10 +1032,10 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
           {hiddenOlderEvents > 0 && (
             <button
               type="button"
-              onClick={() => setRenderCap((c) => c + EVENTS_RENDER_STEP)}
+              onClick={() => setRenderCap((c) => c + renderStep)}
               className="w-full border-b border-edge px-3 py-1.5 text-center font-mono text-[length:var(--t-xs)] text-content-muted hover:bg-surface-overlay hover:text-content-secondary"
             >
-              {t("showOlderEvents", { count: Math.min(hiddenOlderEvents, EVENTS_RENDER_STEP) })}
+              {t("showOlderEvents", { count: Math.min(hiddenOlderEvents, renderStep) })}
             </button>
           )}
           <div className="flex flex-col divide-y divide-edge-subtle">

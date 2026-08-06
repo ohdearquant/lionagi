@@ -6,7 +6,7 @@
  * - It does not import Drawer (master-detail doctrine)
  */
 
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeAll, describe, it, expect, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as React from "react";
@@ -775,7 +775,7 @@ describe("history/RunDetail.tsx — deriveGateOutcome", () => {
         kind: "StructuredOutput",
         payload: {
           data: {
-            verdict: "approve-with-fixes",
+            gate_verdict: "approve-with-fixes",
             findings: [
               { severity: "high", description: "a" },
               { severity: "medium", description: "b" },
@@ -804,8 +804,8 @@ describe("history/RunDetail.tsx — deriveGateOutcome", () => {
   it("uses the most recent verdict when multiple StructuredOutput signals carry one", async () => {
     const { deriveGateOutcome } = await import("./RunDetail");
     const outcome = deriveGateOutcome([
-      sig({ id: "e1", kind: "StructuredOutput", payload: { data: { verdict: "reject" } } }),
-      sig({ id: "e2", kind: "StructuredOutput", payload: { data: { verdict: "approve" } } }),
+      sig({ id: "e1", kind: "StructuredOutput", payload: { data: { gate_verdict: "reject" } } }),
+      sig({ id: "e2", kind: "StructuredOutput", payload: { data: { gate_verdict: "approve" } } }),
     ]);
     expect(outcome?.verdict).toBe("approve");
   });
@@ -816,6 +816,115 @@ describe("history/RunDetail.tsx — deriveGateOutcome", () => {
       sig({ kind: "StructuredOutput", payload: { data: { assignments: [] } } }),
     ]);
     expect(outcome).toBeNull();
+  });
+
+  it("does not badge a coding-engine result shape (bare `passed`, no gate key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            passed: true,
+            measurements: { rounds: 2 },
+            caveats: [],
+            experiment_ref: "",
+            verdict_ref: "V1",
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  it("does not badge a hypothesis-engine result shape (bare `passed`, no gate key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            passed: false,
+            measurements: "0/3 assertions held",
+            caveats: ["budget exhausted"],
+            experiment_ref: "E1",
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  it("does not badge a generic Verdict/ComplianceVerdict shape (bare `verdict`, no gate_verdict key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: { verdict: "REJECT", rationale: "unmet acceptance criteria", unmet: ["a"] },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+});
+
+// ─── EventsSection — "show older" paging ─────────────────────────────────────
+// The events list renders only the newest `renderStep` rows and pages older
+// rows in on click; a bug here would either drop rows or scramble the
+// chronological order readers rely on when scanning a run's history.
+
+describe("history/RunDetail.tsx — EventsSection show-older paging", () => {
+  function hookEvents(count: number) {
+    return Array.from({ length: count }, (_, i) =>
+      sig({ id: `e${i}`, kind: "HookSignal", payload: { point: `p${i}` } }),
+    );
+  }
+
+  function renderEvents(events: ReturnType<typeof hookEvents>, renderStep: number) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    mountedCards.push({ container, root });
+    act(() => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <EventsSectionForTest events={events} live={false} renderStep={renderStep} />
+        </IntlProvider>,
+      );
+    });
+    return container;
+  }
+
+  function visiblePoints(container: HTMLDivElement) {
+    return Array.from(container.querySelectorAll("#run-events .divide-y > div")).map((row) => {
+      const match = row.textContent?.match(/p(\d+)/);
+      return match ? `p${match[1]}` : null;
+    });
+  }
+
+  let EventsSectionForTest: (typeof import("./RunDetail"))["EventsSection"];
+
+  beforeAll(async () => {
+    ({ EventsSection: EventsSectionForTest } = await import("./RunDetail"));
+  });
+
+  it("clicking 'show older' pages back further while preserving chronological order", () => {
+    const events = hookEvents(7); // p0..p6
+    const container = renderEvents(events, 3);
+
+    // Only the newest 3 rows render initially, oldest-to-newest within the window.
+    expect(visiblePoints(container)).toEqual(["p4", "p5", "p6"]);
+
+    const button = container.querySelector("button");
+    expect(button).not.toBeNull();
+    act(() => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Paging back reveals the next-older 3 rows, prepended in order — the
+    // previously-visible rows keep their relative order, nothing is reshuffled.
+    expect(visiblePoints(container)).toEqual(["p1", "p2", "p3", "p4", "p5", "p6"]);
   });
 });
 
