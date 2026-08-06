@@ -350,6 +350,87 @@ describe("fetchJson HTML-fallback / no-backend guard", () => {
   });
 });
 
+describe("fetchJson validation-error messages", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    vi.stubGlobal("window", {
+      ...window,
+      __STUDIO_API_BASE__: undefined,
+      location: { ...window.location, port: "", hostname: "server.example", protocol: "http:" },
+    });
+  });
+
+  function stub422(detail: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ detail }), {
+            status: 422,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      ),
+    );
+  }
+
+  it("names the field and the reason for a validation error instead of the status code", async () => {
+    stub422([{ type: "missing", loc: ["body", "instruction"], msg: "Field required", input: {} }]);
+
+    const { getStats } = await import("./api");
+    await expect(getStats()).rejects.toThrow(/instruction/);
+    await expect(getStats()).rejects.toThrow(/Field required/);
+    await expect(getStats()).rejects.not.toThrow(/Request failed/);
+  });
+
+  it("joins several validation errors and reports the field path of each", async () => {
+    stub422([
+      { type: "missing", loc: ["body", "prompt"], msg: "Field required" },
+      {
+        type: "string_type",
+        loc: ["body", "opts", "effort"],
+        msg: "Input should be a valid string",
+      },
+    ]);
+
+    const { getStats } = await import("./api");
+    await expect(getStats()).rejects.toThrow(/prompt: Field required/);
+    await expect(getStats()).rejects.toThrow(/opts\.effort: Input should be a valid string/);
+  });
+
+  it("caps a long validation list rather than rendering an unreadable wall of text", async () => {
+    stub422(
+      Array.from({ length: 7 }, (_, i) => ({
+        type: "missing",
+        loc: ["body", `field${i}`],
+        msg: "Field required",
+      })),
+    );
+
+    const { getStats } = await import("./api");
+    // The first few are named; the rest are counted, so the message stays readable.
+    await expect(getStats()).rejects.toThrow(/field0: Field required/);
+    await expect(getStats()).rejects.toThrow(/\+4 more/);
+    await expect(getStats()).rejects.not.toThrow(/field6/);
+  });
+
+  it("falls back to the status code when the array carries nothing readable", async () => {
+    // A non-Pydantic array body must not produce a confident-looking empty message.
+    stub422([1, 2, 3]);
+
+    const { getStats } = await import("./api");
+    await expect(getStats()).rejects.toThrow(/Request failed: 422/);
+  });
+
+  it("still prefers a plain string detail (unchanged behavior)", async () => {
+    stub422("that playbook is already running");
+
+    const { getStats } = await import("./api");
+    await expect(getStats()).rejects.toThrow(/that playbook is already running/);
+  });
+});
+
 describe("engine defs API", () => {
   type FetchCall = { url: string; init?: RequestInit };
 
