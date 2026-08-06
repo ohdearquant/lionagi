@@ -1,16 +1,25 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
-import { ApiError, resumeRun, type SessionBranch } from "@/lib/api";
-import type { RunResumeResponse } from "@/lib/types";
+import { ApiError, getResumeAvailability, resumeRun, type SessionBranch } from "@/lib/api";
+import type { ResumeAvailability, RunResumeResponse } from "@/lib/types";
 import Button from "@/components/ui/Button";
 import { IconArrowRight, IconCheck, IconCopy, IconLaunch } from "@/components/ui/icons";
 
 interface Props {
   runId: string;
+  /** session.invocation_kind — dispatches which resume UI renders. `agent`
+   * keeps the existing branch+instruction form; play/flow/show-play/fanout
+   * replay a checkpoint and take neither. Anything else (including null)
+   * is not resumable from here — the same refusal the backend dispatcher
+   * (services/run_resume.py _dispatch_resume_by_kind) enforces. */
+  invocationKind: string | null;
   branches: SessionBranch[];
   onResumed: (result: RunResumeResponse) => void | Promise<void>;
 }
+
+// Mirrors _FLOW_RESUME_KINDS in services/run_resume.py.
+const FLOW_RESUME_KINDS = new Set(["play", "flow", "show-play", "fanout"]);
 
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -22,7 +31,120 @@ export function resumeCommand(branchId: string | null, instruction: string): str
   return `li agent -r ${branch} --prompt ${followUp}`;
 }
 
-export default function ResumeRun({ runId, branches, onResumed }: Props) {
+function SectionShell({ runId, children }: { runId: string; children: React.ReactNode }) {
+  const t = useTranslations("runResume");
+  return (
+    <section
+      aria-labelledby={`resume-run-${runId}`}
+      className="rounded-lg border border-edge bg-surface-raised p-3 shadow-[var(--shadow-raised-soft)]"
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-edge bg-surface-overlay text-accent">
+          <IconLaunch size={15} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 id={`resume-run-${runId}`} className="text-label font-semibold text-content-primary">
+            {t("title")}
+          </h3>
+          {children}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export default function ResumeRun({ runId, invocationKind, branches, onResumed }: Props) {
+  const t = useTranslations("runResume");
+  const [availability, setAvailability] = useState<ResumeAvailability | null>(null);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before the async precheck; setState only fires in the effect body synchronously, not in callbacks
+    setChecking(true);
+    setAvailability(null);
+    setAvailabilityError(null);
+    getResumeAvailability(runId)
+      .then((result) => {
+        if (!cancelled) setAvailability(result);
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setAvailabilityError(caught instanceof Error ? caught.message : t("availabilityFailed"));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable per locale; re-running on it would re-fetch on every render
+  }, [runId]);
+
+  if (checking) {
+    return (
+      <SectionShell runId={runId}>
+        <p className="mt-0.5 text-body leading-relaxed text-content-muted">
+          {t("checkingAvailability")}
+        </p>
+      </SectionShell>
+    );
+  }
+
+  if (availabilityError) {
+    return (
+      <SectionShell runId={runId}>
+        <p role="alert" className="mt-0.5 text-body leading-relaxed text-status-failure">
+          {availabilityError}
+        </p>
+      </SectionShell>
+    );
+  }
+
+  // `branch_conflict` is not a refusal. It means the backend could not pick a
+  // branch on its own, which is exactly the case the agent form below already
+  // handles: it takes the branch list as a prop and renders a selector
+  // whenever there is more than one. Treating it as unresumable would hide a
+  // control that works and would make a multi-branch agent run — previously
+  // resumable by choosing a branch — unreachable from the UI. Guarded on
+  // there actually being a choice to offer, so a conflict with no branches to
+  // pick from still reads as the explained refusal below.
+  const awaitingBranchChoice =
+    invocationKind === "agent" && availability?.reason === "branch_conflict" && branches.length > 1;
+
+  // Resumability is a fact determined before the action is offered — a run
+  // with no checkpoint (or any other refusal) reads as an explicit,
+  // explained state, never a dead or guessed-at control.
+  if (availability && !availability.resumable && !awaitingBranchChoice) {
+    return (
+      <SectionShell runId={runId}>
+        <p className="mt-0.5 text-body leading-relaxed text-content-muted">
+          {availability.message || t("notResumable")}
+        </p>
+      </SectionShell>
+    );
+  }
+
+  if (invocationKind != null && FLOW_RESUME_KINDS.has(invocationKind)) {
+    return <ResumeFlowRun runId={runId} onResumed={onResumed} />;
+  }
+
+  return <ResumeAgentForm runId={runId} branches={branches} onResumed={onResumed} />;
+}
+
+// ── agent kind: existing branch + instruction form (unchanged behavior) ────
+
+function ResumeAgentForm({
+  runId,
+  branches,
+  onResumed,
+}: {
+  runId: string;
+  branches: SessionBranch[];
+  onResumed: Props["onResumed"];
+}) {
   const t = useTranslations("runResume");
   const initialBranch = branches.length === 1 ? (branches[0]?.id ?? "") : "";
   const [instruction, setInstruction] = useState("");
@@ -216,5 +338,80 @@ export default function ResumeRun({ runId, branches, onResumed }: Props) {
         <p className="mt-1.5 text-meta leading-relaxed text-content-muted">{t("cli.help")}</p>
       </div>
     </section>
+  );
+}
+
+// ── checkpoint-replay kinds (play/flow/show-play/fanout): continue action ──
+//
+// Unlike the agent path there is no branch to reopen and no instruction to
+// give: the checkpoint owns the plan, so this is a single-button "Continue"
+// action. If the checkpointed plan itself can't be replayed cleanly (e.g. a
+// pending op needs conversational context resume can't restore), that
+// surfaces later as a failed invocation with its own reason — visible via
+// the run's activity feed, same as any other detached-launch failure.
+
+function ResumeFlowRun({ runId, onResumed }: { runId: string; onResumed: Props["onResumed"] }) {
+  const t = useTranslations("runResume");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<RunResumeResponse | null>(null);
+
+  async function submit() {
+    setSubmitting(true);
+    setError(null);
+    setResult(null);
+    try {
+      const accepted = await resumeRun(runId, {});
+      setResult(accepted);
+      await onResumed(accepted);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("failed"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <SectionShell runId={runId}>
+      <p className="mt-0.5 text-body leading-relaxed text-content-muted">
+        {t("continueDescription")}
+      </p>
+
+      {error && (
+        <p role="alert" className="mt-2 text-meta text-status-failure">
+          {error}
+        </p>
+      )}
+
+      {result && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-status-success/30 bg-status-success-bg px-2.5 py-2 text-body text-status-success">
+          <IconCheck size={13} />
+          <span className="font-medium">{t("accepted")}</span>
+          <Link
+            to="/fleet"
+            search={{ s: result.run_id, invocation: result.invocation_id }}
+            className="focus-ring ms-auto inline-flex items-center gap-1 rounded text-content-primary underline decoration-edge-strong underline-offset-2"
+          >
+            {t("viewActivity")}
+            <span className="max-w-28 truncate font-data text-meta text-content-muted">
+              {result.invocation_id}
+            </span>
+            <IconArrowRight size={12} />
+          </Link>
+        </div>
+      )}
+
+      <div className="mt-3">
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={submitting}
+          onClick={() => void submit()}
+          trailing={<IconArrowRight size={12} />}
+        >
+          {submitting ? t("submitting") : t("continueSubmit")}
+        </Button>
+      </div>
+    </SectionShell>
   );
 }

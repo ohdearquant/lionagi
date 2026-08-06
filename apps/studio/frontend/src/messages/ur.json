@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "یہ جانچا جا رہا ہے کہ آیا یہ رن دوبارہ شروع کیا جا سکتا ہے…",
+    "availabilityFailed": "یہ طے نہیں کیا جا سکا کہ آیا یہ رن دوبارہ شروع کیا جا سکتا ہے۔",
+    "notResumable": "یہ رن دوبارہ شروع نہیں کیا جا سکتا۔",
+    "continueDescription": "محفوظ شدہ منصوبے کو وہیں سے دوبارہ چلاتا ہے جہاں یہ رکا تھا — کوئی نئی ہدایت نہیں، منتخب کرنے کے لیے کوئی برانچ نہیں۔",
+    "continueSubmit": "جاری رکھیں",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

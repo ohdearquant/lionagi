@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Проверяется, можно ли возобновить этот запуск…",
+    "availabilityFailed": "Не удалось определить, можно ли возобновить этот запуск.",
+    "notResumable": "Этот запуск нельзя возобновить.",
+    "continueDescription": "Повторяет сохранённый план с места остановки — без новой инструкции, без выбора ветки.",
+    "continueSubmit": "Продолжить",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

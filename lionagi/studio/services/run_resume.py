@@ -48,13 +48,45 @@ class RunResumeUnavailableError(RuntimeError):
 
 
 class RunResumeInProgressError(RuntimeError):
-    """Another queued or executing resume already owns this branch."""
+    """Another queued or executing resume already owns this branch/target."""
+
+
+class RunResumeUnsupportedKindError(RuntimeError):
+    """The run's invocation_kind is NULL or not a resumable value."""
+
+
+class RunResumeCheckpointError(RuntimeError):
+    """A flow-kind resume could not be preflighted to a usable checkpoint.
+
+    ``reason`` is a stable machine-readable code distinguishing WHY a
+    checkpoint is not available (target/session/run-id lookup failure, no
+    checkpoint.json, or an empty persisted plan) from a launch failure — the
+    caller must be able to tell "there is nothing to resume" apart from
+    "resume was attempted and failed".
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class RunResumeRequest(BaseModel):
-    instruction: str = Field(min_length=1, max_length=MAX_SPEC_PROMPT_CHARS)
+    # Optional: required for invocation_kind="agent", rejected for the
+    # checkpoint-replay kinds (play/flow/show-play/fanout), where the
+    # checkpoint — not a new instruction — supplies the plan.
+    instruction: str | None = Field(default=None, max_length=MAX_SPEC_PROMPT_CHARS)
     branch_id: str | None = None
     model: str | None = None
+    # Only meaningful for the checkpoint-replay kinds; never defaulted to
+    # true automatically. See _resume_flow_run.
+    allow_degraded_context: bool = False
+
+
+# invocation_kind values that replay a checkpointed flow instead of
+# reopening a single agent branch. Kept separate from the DB CHECK
+# constraint's vocabulary (schema.sql) so a new kind must be classified
+# here explicitly before it can be resumed at all.
+_FLOW_RESUME_KINDS = frozenset({"play", "flow", "show-play", "fanout"})
 
 
 _resume_admission_lock = asyncio.Lock()
@@ -230,7 +262,7 @@ def _write_queued_resume_config(
     return path
 
 
-async def resume_run(
+async def _resume_agent_run(
     run_id: str,
     *,
     instruction: str,
@@ -324,6 +356,339 @@ async def resume_run(
     }
 
 
+async def _resolve_flow_checkpoint(target: str) -> tuple[Any, dict[str, Any]]:
+    """Preflight a flow-kind resume to the checkpoint it would replay.
+
+    Reuses the exact resolution `li o flow --resume` performs (run id, or
+    any session/invocation/play id backed by one) so a Studio "no
+    checkpoint" answer and a CLI "no checkpoint" answer can never disagree
+    about the same target. Raises RunResumeCheckpointError, never launches.
+    """
+    from lionagi.cli._util import AmbiguousIdError
+    from lionagi.cli.orchestrate._checkpoint import FlowResumeError, resolve_checkpoint_target
+
+    try:
+        run_dir, checkpoint = await resolve_checkpoint_target(target)
+    except FlowResumeError as exc:
+        message = str(exc)
+        if "No checkpoint.json found" in message:
+            reason = "no_checkpoint"
+        elif "has no run_id on record" in message:
+            reason = "no_run_id"
+        elif "No backing session found" in message:
+            reason = "no_backing_session"
+        else:
+            reason = "target_not_found"
+        raise RunResumeCheckpointError(reason, message) from exc
+    except AmbiguousIdError as exc:
+        # A short id prefix matched more than one run directory. This is a
+        # distinct resumability state from "no checkpoint" — the caller
+        # named something real, it just isn't unique yet.
+        raise RunResumeCheckpointError(
+            "ambiguous_target", f"Target {target!r} is ambiguous: {exc}"
+        ) from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        # The checkpoint file exists but couldn't be read/parsed (truncated
+        # write, disk error, hand-edited JSON). Distinct from "no checkpoint"
+        # so the caller can tell "nothing to resume" from "resume is blocked
+        # on a corrupt persisted state".
+        raise RunResumeCheckpointError(
+            "invalid_checkpoint",
+            f"Checkpoint for {target!r} could not be read: {exc}",
+        ) from exc
+
+    if not checkpoint.get("plan"):
+        raise RunResumeCheckpointError(
+            "empty_checkpoint",
+            f"Checkpoint for {target!r} has an empty plan — nothing to resume.",
+        )
+    return run_dir, checkpoint
+
+
+def _build_flow_resume_argv(
+    executable_prefix: list[str],
+    *,
+    target: str,
+    allow_degraded_context: bool,
+) -> list[str]:
+    """Build the checkpoint-replay resume command.
+
+    No instruction, no branch, no model: the checkpoint owns the plan.
+    --allow-degraded-context is appended only on explicit opt-in — it is
+    never the default, since its whole purpose is to proceed past a refusal
+    that exists to protect conversational context.
+    """
+    argv = [*executable_prefix, "orchestrate", "flow", "--resume", target]
+    if allow_degraded_context:
+        argv.append("--allow-degraded-context")
+    return argv
+
+
+async def _active_flow_resume(run_id: str) -> dict[str, Any] | None:
+    """Same admission-guard shape as _active_resume_for_branch, keyed on the
+    distinct resume:flow skill so agent and flow resumes for the same source
+    never mask each other's in-progress state."""
+    async with StateDB(readonly=read_only_open_supported()) as db:
+        rows = await db.list_invocations(
+            skill="resume:flow",
+            status="running",
+            limit=200,
+            offset=0,
+        )
+    for row in rows:
+        metadata = row.get("node_metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = None
+        if isinstance(metadata, dict) and metadata.get("run_id") == run_id:
+            return {**row, "node_metadata": metadata}
+    return None
+
+
+async def _resume_flow_run(
+    run_id: str,
+    *,
+    invocation_kind: str,
+    allow_degraded_context: bool,
+) -> dict[str, Any]:
+    """Launch a checkpointed flow/play/show-play/fanout resume.
+
+    Unlike the agent path there is no branch to reopen: `li o flow --resume`
+    replays the persisted plan from the checkpoint, so the only inputs are
+    the target id and the explicit degraded-context opt-in.
+    """
+    # Determine resumability BEFORE offering/launching the action: a run
+    # with no checkpoint is a distinct, explicit state, not a generic
+    # detached-launch failure or an empty success payload. Checked before
+    # the executable lookup so the persisted checkpoint fact — which the UI
+    # can determine independent of the daemon's own launch environment —
+    # always wins over a launch-environment error like a missing `li`.
+    run_dir, _checkpoint = await _resolve_flow_checkpoint(run_id)
+
+    executable_prefix, resolve_error = _subprocess.resolve_li_executable()
+    if executable_prefix is None:
+        if resolve_error:
+            _log.error("Could not resolve the installed `li` executable: %s", resolve_error)
+        raise _launches.LiExecutableUnavailableError(
+            "The Studio daemon could not resolve the installed `li` executable; "
+            "reinstall LionAGI with the Studio extra and restart Studio"
+        )
+
+    async with _resume_admission_lock:
+        active = await _active_flow_resume(run_id)
+        if active is not None:
+            metadata = active["node_metadata"]
+            if metadata.get("allow_degraded_context") == allow_degraded_context:
+                return {
+                    "run_id": run_id,
+                    "invocation_kind": invocation_kind,
+                    "invocation_id": active["id"],
+                    "checkpoint_run_id": run_dir.run_id,
+                }
+            raise RunResumeInProgressError(f"Run {run_id!r} already has a flow resume in progress")
+
+        argv = _build_flow_resume_argv(
+            executable_prefix,
+            target=run_id,
+            allow_degraded_context=allow_degraded_context,
+        )
+        invocation_id = await _launches.launch_detached_argv(
+            argv,
+            skill="resume:flow",
+            plugin="studio_run_resume",
+            prompt=None,
+            tmp_path=None,
+            action_kind="flow",
+            node_metadata={
+                "run_id": run_id,
+                "invocation_kind": invocation_kind,
+                "resume": True,
+                "allow_degraded_context": allow_degraded_context,
+                "checkpoint_run_id": run_dir.run_id,
+            },
+        )
+    return {
+        "run_id": run_id,
+        "invocation_kind": invocation_kind,
+        "invocation_id": invocation_id,
+        "checkpoint_run_id": run_dir.run_id,
+    }
+
+
+async def _dispatch_resume_by_kind(
+    run_id: str,
+    session: dict[str, Any],
+    *,
+    instruction: str | None,
+    branch_id: str | None,
+    model: str | None,
+    allow_degraded_context: bool,
+) -> dict[str, Any]:
+    """Route an already-fetched session row to its resume path by invocation_kind.
+
+    Split out from resume_run so the NULL/unknown-kind refusal (the one
+    behavior the DB's own CHECK constraint can never let a live row exercise,
+    since it restricts the column to exactly the known vocabulary) is
+    directly unit-testable against a synthetic session dict.
+    """
+    kind = session.get("invocation_kind")
+
+    if kind == "agent":
+        if instruction is None:
+            raise ValueError("instruction is required to resume an agent run")
+        return await _resume_agent_run(
+            run_id, instruction=instruction, branch_id=branch_id, model=model
+        )
+
+    if kind in _FLOW_RESUME_KINDS:
+        if instruction is not None:
+            raise ValueError(
+                f"invocation_kind {kind!r} replays the persisted checkpoint plan; "
+                "instruction is not accepted"
+            )
+        if branch_id is not None:
+            raise ValueError(
+                f"invocation_kind {kind!r} replays the persisted checkpoint plan; "
+                "branch_id is not accepted"
+            )
+        if model is not None:
+            raise ValueError(
+                f"invocation_kind {kind!r} replays the persisted checkpoint plan; "
+                "model is not accepted"
+            )
+        return await _resume_flow_run(
+            run_id, invocation_kind=kind, allow_degraded_context=allow_degraded_context
+        )
+
+    raise RunResumeUnsupportedKindError(
+        f"Run {run_id!r} has invocation_kind {kind!r}, which does not support resume."
+    )
+
+
+async def resume_availability(run_id: str) -> dict[str, Any]:
+    """Read-only resumability precheck the UI calls before rendering the resume action.
+
+    Never launches anything and never touches the `li` executable/launch
+    admission path. Reuses the exact branch/checkpoint resolution
+    `resume_run` uses, so a "yes" here and the POST outcome can never
+    disagree about the same run. A run with no checkpoint, an ambiguous
+    target, or an unsupported invocation_kind are each a distinct,
+    explicit ``resumable: False`` state with a machine-readable ``reason`` —
+    never a generic failure and never something the UI could mistake for
+    "still loading".
+    """
+    _svc_validate_identifier(run_id, "run_id")
+    if state_db_known_absent():
+        raise RunNotFoundError(f"Run {run_id!r} not found")
+
+    async with StateDB(readonly=read_only_open_supported()) as db:
+        session = await db.get_session(run_id)
+    if session is None:
+        raise RunNotFoundError(f"Run {run_id!r} not found")
+
+    kind = session.get("invocation_kind")
+
+    if kind == "agent":
+        try:
+            branch_id = await _resolve_branch(run_id, None)
+        except RunBranchConflictError as exc:
+            return {
+                "run_id": run_id,
+                "invocation_kind": kind,
+                "resumable": False,
+                "reason": "branch_conflict",
+                "message": str(exc),
+            }
+        return {
+            "run_id": run_id,
+            "invocation_kind": kind,
+            "resumable": True,
+            "branch_id": branch_id,
+        }
+
+    if kind in _FLOW_RESUME_KINDS:
+        try:
+            run_dir, _checkpoint = await _resolve_flow_checkpoint(run_id)
+        except RunResumeCheckpointError as exc:
+            return {
+                "run_id": run_id,
+                "invocation_kind": kind,
+                "resumable": False,
+                "reason": exc.reason,
+                "message": str(exc),
+            }
+        return {
+            "run_id": run_id,
+            "invocation_kind": kind,
+            "resumable": True,
+            "checkpoint_run_id": run_dir.run_id,
+        }
+
+    return {
+        "run_id": run_id,
+        "invocation_kind": kind,
+        "resumable": False,
+        "reason": "unsupported_kind",
+        "message": f"Run {run_id!r} has invocation_kind {kind!r}, which does not support resume.",
+    }
+
+
+async def resume_run(
+    run_id: str,
+    *,
+    instruction: str | None = None,
+    branch_id: str | None = None,
+    model: str | None = None,
+    allow_degraded_context: bool = False,
+) -> dict[str, Any]:
+    """Dispatch a resume request by the run's recorded invocation_kind.
+
+    `agent` keeps the existing single-branch CLI resume path byte-for-byte.
+    `play`/`flow`/`show-play`/`fanout` all replay a checkpointed flow — the
+    checkpoint owns the plan, so instruction/branch/model are rejected.
+    NULL and any other stored value are refused before anything launches;
+    silently defaulting to one path would resume the wrong thing.
+    """
+    _svc_validate_identifier(run_id, "run_id")
+    if state_db_known_absent():
+        raise RunNotFoundError(f"Run {run_id!r} not found")
+
+    async with StateDB(readonly=read_only_open_supported()) as db:
+        session = await db.get_session(run_id)
+    if session is None:
+        raise RunNotFoundError(f"Run {run_id!r} not found")
+
+    return await _dispatch_resume_by_kind(
+        run_id,
+        session,
+        instruction=instruction,
+        branch_id=branch_id,
+        model=model,
+        allow_degraded_context=allow_degraded_context,
+    )
+
+
+@studio_route(
+    "/runs/{run_id}/resume",
+    method="GET",
+    area="runs",
+    name="resume_availability",
+)
+async def resume_availability_route(run_id: str) -> dict[str, Any]:
+    """Read-only precheck: can this run be resumed, and why/why not.
+
+    The UI calls this before rendering the resume action so a run with no
+    checkpoint reads as an explicit, explained state rather than a dead or
+    guessed-at control.
+    """
+    try:
+        return await resume_availability(run_id)
+    except RunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @studio_route(
     "/runs/{run_id}/resume",
     method="POST",
@@ -332,19 +697,25 @@ async def resume_run(
     name="resume_run",
 )
 async def resume_run_route(run_id: str, body: RunResumeRequest) -> dict[str, Any]:
-    """Resume any run that has an underlying branch, including terminal runs."""
+    """Resume any run that has an underlying branch or checkpoint, dispatched by invocation_kind."""
     try:
         return await resume_run(
             run_id,
             instruction=body.instruction,
             branch_id=body.branch_id,
             model=body.model,
+            allow_degraded_context=body.allow_degraded_context,
         )
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RunResumeCheckpointError as exc:
+        raise HTTPException(
+            status_code=409, detail={"reason": exc.reason, "message": str(exc)}
+        ) from exc
     except (
         RunBranchConflictError,
         RunResumeInProgressError,
+        RunResumeUnsupportedKindError,
         RunResumeUnavailableError,
     ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

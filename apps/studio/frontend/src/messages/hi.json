@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "जाँच की जा रही है कि क्या यह रन फिर से शुरू किया जा सकता है…",
+    "availabilityFailed": "यह निर्धारित नहीं किया जा सका कि यह रन फिर से शुरू किया जा सकता है या नहीं।",
+    "notResumable": "इस रन को फिर से शुरू नहीं किया जा सकता।",
+    "continueDescription": "जहाँ यह रुका था वहीं से सहेजी गई योजना को फिर से चलाता है — कोई नया निर्देश नहीं, कोई शाखा चुनने की आवश्यकता नहीं।",
+    "continueSubmit": "जारी रखें",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Es wird geprüft, ob dieser Lauf fortgesetzt werden kann…",
+    "availabilityFailed": "Es konnte nicht ermittelt werden, ob dieser Lauf fortgesetzt werden kann.",
+    "notResumable": "Dieser Lauf kann nicht fortgesetzt werden.",
+    "continueDescription": "Spielt den gespeicherten Plan ab dort ab, wo er gestoppt wurde — keine neue Anweisung, kein Branch zur Auswahl.",
+    "continueSubmit": "Fortsetzen",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

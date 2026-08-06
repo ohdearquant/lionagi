@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Comprobando si esta ejecución se puede reanudar…",
+    "availabilityFailed": "No se pudo determinar si esta ejecución se puede reanudar.",
+    "notResumable": "Esta ejecución no se puede reanudar.",
+    "continueDescription": "Reproduce el plan guardado desde donde se detuvo; sin nueva instrucción ni rama que elegir.",
+    "continueSubmit": "Continuar",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

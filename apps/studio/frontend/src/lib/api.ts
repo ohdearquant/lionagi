@@ -17,6 +17,7 @@ import type {
   OperatorProposalResult,
   OperatorTurnAccepted,
   OperatorTurnRequest,
+  ResumeAvailability,
   RunDetail,
   RunResumeRequest,
   RunResumeResponse,
@@ -765,6 +766,14 @@ export async function resumeRun(
   });
 }
 
+// Read-only precheck (services/run_resume.py resume_availability) so the UI
+// can determine resumability BEFORE rendering the resume action — a run
+// with no checkpoint reads as an explicit, explained state rather than a
+// dead or guessed-at control.
+export async function getResumeAvailability(runId: string): Promise<ResumeAvailability> {
+  return fetchJson<ResumeAvailability>(`/api/runs/${encodeURIComponent(runId)}/resume`);
+}
+
 export interface RunFileContent {
   path: string;
   content: string;
@@ -1166,6 +1175,7 @@ export interface SessionBranch {
 export interface SessionDetail {
   id: string;
   name: string;
+  invocation_kind?: string | null;
   created_at: number;
   updated_at: number;
   status?: string | null;
