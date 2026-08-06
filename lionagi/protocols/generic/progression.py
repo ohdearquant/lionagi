@@ -24,6 +24,114 @@ __all__ = (
 )
 
 
+class _MembersDeque(deque):
+    """A ``deque`` that keeps a bound membership ``set`` in sync on every mutation.
+
+    ``Progression.order`` is a public, directly-mutable deque: external code
+    (tests, third-party callers, ``Pile`` internals) mutates it in place —
+    ``p.order.append(x)``, ``p.order[0] = x``, ``p.order.popleft()``, etc. A
+    length-only staleness check (comparing ``len(order)`` across calls) cannot
+    detect a length-preserving external write (e.g. ``order[0] = x``, or a
+    ``popleft()`` paired with an ``append()``), so this class instead updates
+    the bound set eagerly, inside every mutating operation, using the same
+    duplicate-aware discard rule as the rest of ``Progression`` (an id is only
+    dropped from the set once no occurrence of it remains in the deque).
+    """
+
+    def __init__(self, iterable=(), /, members: set | None = None):
+        super().__init__(iterable)
+        self._members_ref: set | None = members
+
+    def bind(self, members: set) -> None:
+        """Point this deque at a (freshly rebuilt) membership set."""
+        self._members_ref = members
+
+    def __setitem__(self, key, value) -> None:
+        if isinstance(key, slice):
+            super().__setitem__(key, value)
+            if self._members_ref is not None:
+                self._members_ref.clear()
+                self._members_ref.update(self)
+        else:
+            old = self[key]
+            super().__setitem__(key, value)
+            if self._members_ref is not None:
+                if old not in self:
+                    self._members_ref.discard(old)
+                self._members_ref.add(value)
+
+    def __delitem__(self, key) -> None:
+        if isinstance(key, slice):
+            super().__delitem__(key)
+            if self._members_ref is not None:
+                self._members_ref.clear()
+                self._members_ref.update(self)
+        else:
+            old = self[key]
+            super().__delitem__(key)
+            if self._members_ref is not None and old not in self:
+                self._members_ref.discard(old)
+
+    def __iadd__(self, other):
+        other = list(other)
+        result = super().__iadd__(other)
+        if self._members_ref is not None:
+            self._members_ref.update(other)
+        return result
+
+    def append(self, x) -> None:
+        super().append(x)
+        if self._members_ref is not None:
+            self._members_ref.add(x)
+
+    def appendleft(self, x) -> None:
+        super().appendleft(x)
+        if self._members_ref is not None:
+            self._members_ref.add(x)
+
+    def pop(self):
+        value = super().pop()
+        if self._members_ref is not None and value not in self:
+            self._members_ref.discard(value)
+        return value
+
+    def popleft(self):
+        value = super().popleft()
+        if self._members_ref is not None and value not in self:
+            self._members_ref.discard(value)
+        return value
+
+    def insert(self, index, x) -> None:
+        super().insert(index, x)
+        if self._members_ref is not None:
+            self._members_ref.add(x)
+
+    def remove(self, value) -> None:
+        super().remove(value)
+        if self._members_ref is not None and value not in self:
+            self._members_ref.discard(value)
+
+    def extend(self, iterable) -> None:
+        iterable = list(iterable)
+        super().extend(iterable)
+        if self._members_ref is not None:
+            self._members_ref.update(iterable)
+
+    def extendleft(self, iterable) -> None:
+        iterable = list(iterable)
+        super().extendleft(iterable)
+        if self._members_ref is not None:
+            self._members_ref.update(iterable)
+
+    def clear(self) -> None:
+        super().clear()
+        if self._members_ref is not None:
+            self._members_ref.clear()
+
+    # `rotate` and `reverse` permute existing entries without changing which
+    # ids are present, so the bound membership set never needs an update.
+
+
 class Progression(Element, Ordering[T], Generic[T]):
     """Ordered sequence of item UUIDs with set-backed O(1) membership checks."""
 
@@ -38,11 +146,18 @@ class Progression(Element, Ordering[T], Generic[T]):
         description="A human-readable identifier for the progression.",
     )
     _members: set[UUID] = PrivateAttr(default_factory=set)
-    # Length of `order` as of the last known-good `_members` sync. `order` is a
-    # public mutable deque, so code can mutate it directly (bypassing every
-    # `Progression` method). A length mismatch is a cheap O(1) signal that such
-    # an external mutation happened, so `__contains__` can lazily rebuild only
-    # when needed instead of paying O(n) on every call.
+    # Length of `order` as of the last known-good `_members` sync, used only to
+    # detect that `order` was replaced wholesale (`p.order = deque(...)`).
+    #
+    # CRITICAL DESIGN RATIONALE: `order` is a public, directly-mutable deque,
+    # and external code (tests, third-party callers, `Pile` internals) is
+    # expected to mutate it in place rather than going through `Progression`'s
+    # methods. `order` is therefore always wrapped in a `_MembersDeque` (see
+    # above), which keeps `_members` correct on every such mutation, including
+    # length-preserving ones (`order[0] = x`, `popleft()` + `append()`) that a
+    # length-only staleness check cannot see. Public behavior — membership
+    # correctness after *any* direct `order` mutation — must never be
+    # narrowed to "only length-changing mutations are safe".
     _order_len: int = PrivateAttr(default=0)
 
     def model_post_init(self, __context: Any) -> None:
@@ -50,16 +165,20 @@ class Progression(Element, Ordering[T], Generic[T]):
         self._rebuild_members()
 
     def _rebuild_members(self) -> None:
+        if not isinstance(self.order, _MembersDeque):
+            self.order = _MembersDeque(self.order)
         self._members = set(self.order)
+        self.order.bind(self._members)
         self._order_len = len(self.order)
 
     def _ensure_synced(self) -> None:
         # Must be called before any read of, or incremental update to,
-        # `_members`/`_order_len`: an external direct `order` mutation may
-        # have happened since the last sync, and an incremental update
-        # applied on top of an already-stale cache would "bless" the wrong
-        # state as synced (matching lengths without matching contents).
-        if len(self.order) != self._order_len:
+        # `_members`/`_order_len`. `_MembersDeque` keeps `_members` correct on
+        # every direct mutation of `order` itself, but `order` can also be
+        # replaced wholesale (`p.order = deque(...)`, or a plain-deque copy
+        # produced by pydantic re-validation) — the isinstance/length check
+        # below catches that case and rewraps + rebuilds.
+        if not isinstance(self.order, _MembersDeque) or len(self.order) != self._order_len:
             self._rebuild_members()
 
     @field_validator("order", mode="before")
