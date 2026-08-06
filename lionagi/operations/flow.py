@@ -139,6 +139,12 @@ class DependencyAwareExecutor:
         self.completion_events = {}
         self.operation_branches = {}
         self.skipped_operations = set()
+        # Distinct from skipped_operations: an op whose invoke() raised, kept
+        # separate from completed_operations (which still includes it, for
+        # back-compat -- a FAILED op still produced an (error) result) so a
+        # caller can tell a dead node from a genuine completion without
+        # inspecting every result value by hand.
+        self.failed_operations = set()
         self._op_start_times = {}
         self._pause_event: ConcurrencyEvent | None = None
         # Fire-and-forget flow signal tasks, retained until each finishes so a
@@ -193,6 +199,7 @@ class DependencyAwareExecutor:
             "operation_results": self.results,
             "final_context": self.context.content,
             "skipped_operations": list(self.skipped_operations),
+            "failed_operations": list(self.failed_operations),
         }
 
         self._validate_execution_results(result)
@@ -434,6 +441,7 @@ class DependencyAwareExecutor:
 
                 elif operation.execution.status == EventStatus.FAILED:
                     self.results[operation.id] = {"error": str(operation.execution.error)}
+                    self.failed_operations.add(operation.id)
                     if self.on_progress:
                         self.on_progress(str(operation.id), branch_name, "failed", elapsed)
                     if self.verbose:
@@ -452,6 +460,7 @@ class DependencyAwareExecutor:
             # Defensive net for unexpected flow-level errors; invoke() already handles FAILED status.
             if operation.id not in self.results:
                 self.results[operation.id] = {"error": str(e)}
+            self.failed_operations.add(operation.id)
 
             if self.verbose:
                 logger.error("Operation %s failed: %s", str(operation.id)[:8], e)
@@ -777,6 +786,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             "operation_results": self.results,
             "final_context": self.context.content,
             "skipped_operations": list(self.skipped_operations),
+            "failed_operations": list(self.failed_operations),
             "spawned_operations": self._spawn_count,
             "escalated_operations": list(self._escalated_ids),
             "dropped_spawns": self._dropped_spawns,

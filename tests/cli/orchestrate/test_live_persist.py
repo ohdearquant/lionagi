@@ -2553,3 +2553,186 @@ async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(
     assert s is not None
     assert s["status"] == "failed"
     assert s["status_reason_code"] == "run.failed.escalated"
+
+
+# ── Node-failure backstop ──────────────────────────────────────────────────────
+#
+# A flow whose final node died could still report succeeded: an operation's
+# invoke() raised, DependencyAwareExecutor caught it and set that node's own
+# status to FAILED, but the DAG-level result folded it into
+# completed_operations right alongside genuine completions and never rolled
+# the per-node failure up into the run's own status. These tests pin the
+# fix at both the _execute_dag plumbing layer and the teardown status flip.
+
+
+async def test_execute_dag_records_failed_operation_evidence(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A node's own invoke() failure (DependencyAwareExecutor's
+    failed_operations, distinct from completed_operations) must be named in
+    env._failed_operation_evidence so stop_live_persist can fail the run
+    loud instead of it reading as an ordinary clean completion."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    assignments = [
+        TaskAssignment(task="do first", assignee="worker"),
+        TaskAssignment(task="do last (dies)", assignee="reviewer"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first", "last"],
+        dep_indices=[[], [0]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0", "node-1"],
+        known_nodes={"node-0", "node-1"},
+        deps_by_node={"node-0": [], "node-1": ["node-0"]},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {
+                "node-0": "first ok",
+                "node-1": {
+                    "error": (
+                        "Failed to stream API call: CLI subprocess exited "
+                        "with code 1 and wrote nothing to stderr"
+                    )
+                },
+            },
+            "spawned_operations": 0,
+            "escalated_operations": [],
+            "failed_operations": ["node-1"],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert env._failed_operation_evidence == [
+        {"kind": "failed_operation", "id": "last", "label": "reviewer"}
+    ]
+    # An escalation-free, ordinary FAILED node must not also read as an
+    # escalation -- these are different failure modes with different reasons.
+    assert getattr(env, "_escalated_evidence", None) is None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.exception"
+
+    import json as _json
+
+    evidence = s["status_evidence_refs"]
+    evidence = _json.loads(evidence) if isinstance(evidence, str) else evidence
+    assert any(e.get("id") == "last" for e in evidence)
+
+
+async def test_dead_terminal_node_flips_completed_to_failed_end_to_end(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """True end-to-end repro of a flow whose terminal node dies: a two-node
+    DAG (first -> last) run through the REAL DependencyAwareExecutor, where
+    the terminal node raises exactly the kind of error a dead CLI subprocess
+    produces. Before the fix, this session's own status ended 'completed'
+    even though its terminal node never produced a result -- indistinguishable
+    from a run that actually passed its gate."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.operations.flow import flow as _real_flow
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    async def first(**kw):
+        return "first ok"
+
+    async def last(**kw):
+        raise RuntimeError(
+            "Failed to stream API call: CLI subprocess exited with code 1 "
+            "and wrote nothing to stderr"
+        )
+
+    env.session.register_operation("first", first)
+    env.session.register_operation("last", last)
+
+    builder = OperationGraphBuilder()
+    first_id = builder.add_operation("first", depends_on=[])
+    last_id = builder.add_operation("last", depends_on=[first_id])
+    graph = builder.get_graph()
+
+    assignments = [
+        TaskAssignment(task="do first", assignee="worker"),
+        TaskAssignment(task="do last (dies)", assignee="reviewer"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first", "last"],
+        dep_indices=[[], [0]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[first_id, last_id],
+        known_nodes={first_id, last_id},
+        deps_by_node={first_id: [], last_id: ["first"]},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        # The real executor, not a hand-built dict -- proves the rollup
+        # itself end-to-end, not just the _execute_dag plumbing around it.
+        return await _real_flow(env.session, graph, parallel=False, verbose=False)
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert env._failed_operation_evidence == [
+        {"kind": "failed_operation", "id": "last", "label": "reviewer"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed", "a dead terminal node must not read as a clean completion"
+    assert s["status_reason_code"] == "run.failed.exception"

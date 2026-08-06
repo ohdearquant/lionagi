@@ -1604,6 +1604,7 @@ async def stop_live_persist(
     ctx = env._live_persist
     extras = getattr(env, "_finalize_extras", None)
     escalated_evidence = getattr(env, "_escalated_evidence", None)
+    failed_operation_evidence = getattr(env, "_failed_operation_evidence", None)
     finalize_error = getattr(env, "_finalize_error", None)
     artifact_write_error = getattr(env, "_artifact_write_error", None)
     final_status = await teardown_persist(
@@ -1612,6 +1613,7 @@ async def stop_live_persist(
         exception=exception,
         extras=extras,
         escalated_evidence=escalated_evidence,
+        failed_operation_evidence=failed_operation_evidence,
         finalize_error=finalize_error,
         artifact_write_error=artifact_write_error,
         cwd=env.cwd,

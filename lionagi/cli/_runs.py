@@ -495,6 +495,7 @@ async def _teardown_common(
     extras: dict | None = None,
     identity_markers: dict | None = None,
     escalated_evidence: list[dict] | None = None,
+    failed_operation_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
     cwd: str | None = None,
@@ -654,6 +655,24 @@ async def _teardown_common(
                         ),
                     }
                 ]
+
+    # Node-failure backstop: a DAG operation's invoke() raised
+    # and the executor recorded EventStatus.FAILED for it, but that per-node
+    # failure was folded into completed_operations right alongside genuine
+    # completions and never rolled up into the run's own status -- a run
+    # whose terminal (or any other) node died could still read as an
+    # ordinary clean completion. See lionagi/operations/flow.py's
+    # failed_operations tracking and _execute_dag's evidence collection.
+    if failed_operation_evidence and final_status == "completed":
+        from lionagi.state.reasons import RunReasons
+
+        final_status = "failed"
+        final_reason_code = RunReasons.FAILED_EXCEPTION
+        ids = [str(e.get("id", "")) for e in failed_operation_evidence]
+        final_reason_summary = (
+            f"{len(failed_operation_evidence)} operation(s) failed: {', '.join(ids)}."
+        )
+        final_evidence_refs = failed_operation_evidence
 
     # Escalation backstop: a leg that gave up mid-run via EscalationRequest without
     # an artifact contract must not read as a clean completion.
@@ -819,6 +838,7 @@ async def teardown_persist(
     exception: BaseException | None = None,
     extras: dict | None = None,
     escalated_evidence: list[dict] | None = None,
+    failed_operation_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
     cwd: str | None = None,
@@ -842,6 +862,7 @@ async def teardown_persist(
             extras=extras,
             identity_markers=ctx.get("identity_markers"),
             escalated_evidence=escalated_evidence,
+            failed_operation_evidence=failed_operation_evidence,
             finalize_error=finalize_error,
             artifact_write_error=artifact_write_error,
             cwd=cwd,

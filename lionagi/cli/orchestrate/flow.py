@@ -1430,6 +1430,30 @@ async def _execute_dag(
         prior_evidence = getattr(env, "_escalated_evidence", None) or []
         env._escalated_evidence = [*prior_evidence, *escalated_evidence]
 
+    # Node-failure evidence: an operation's invoke() raised and
+    # DependencyAwareExecutor recorded EventStatus.FAILED for it, but that
+    # per-node failure was folded into completed_operations right alongside
+    # genuine completions and never rolled up into the run's own status --
+    # a run whose terminal (or any other) node died could still read as an
+    # ordinary clean completion. Mirrors the escalation evidence above: name
+    # the failed op(s) here, let stop_live_persist flip status/reason.
+    failed_op_ids = {str(x) for x in dag_result.get("failed_operations", [])}
+    failed_evidence = [
+        {"kind": "failed_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+        for i in range(len(assignments))
+        if str(node_ids[i]) in failed_op_ids
+    ]
+    for spawned_nid in sorted(failed_op_ids - known_node_strs):
+        graph_node = graph_nodes.get(spawned_nid)
+        spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        evidence_id = spawn_id or spawned_nid
+        failed_evidence.append(
+            {"kind": "failed_operation", "id": evidence_id, "label": evidence_id}
+        )
+    if failed_evidence:
+        prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior_failed_evidence, *failed_evidence]
+
     agent_results: list[dict] = []
 
     def _record_result(result: dict) -> None:
