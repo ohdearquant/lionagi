@@ -16,6 +16,7 @@ import {
   computeEdgeSourceCompleted,
   fitZoomFor,
   FIT_ZOOM_FLOOR,
+  MIN_INTERACTIVE_ZOOM,
   panelClearanceShift,
   shouldShowMiniMap,
   shouldShowSidePanel,
@@ -250,11 +251,18 @@ describe("WorkerCanvas.tsx — source contract for the readability floor clamp",
   const CANVAS_DIR = path.resolve(__dirname);
   const src = fs.readFileSync(path.join(CANVAS_DIR, "WorkerCanvas.tsx"), "utf-8");
 
-  it("wires FIT_ZOOM_FLOOR into the ReactFlow root minZoom, the invariant clamp", () => {
-    expect(src).toMatch(/minZoom=\{FIT_ZOOM_FLOOR\}/);
+  it("keeps the readability floor OFF the ReactFlow root, so zoom-out still reaches a whole graph", () => {
+    // The root minZoom bounds every zoom gesture — wheel, pinch, the Controls
+    // zoom-out button — not just the fit. Setting it to the readability floor
+    // makes a graph whose natural fit is below that floor permanently
+    // unviewable in a compact embed, which has no minimap either. The floor
+    // belongs to the fit; the root gets a much lower interactive bound.
+    expect(src).not.toMatch(/minZoom=\{FIT_ZOOM_FLOOR\}/);
+    expect(src).toMatch(/minZoom=\{MIN_INTERACTIVE_ZOOM\}/);
+    expect(MIN_INTERACTIVE_ZOOM).toBeLessThan(FIT_ZOOM_FLOOR);
   });
 
-  it("also sets it in fitViewOptions for the initial fit", () => {
+  it("still sets the readability floor in fitViewOptions for the initial fit", () => {
     const fitViewOptions = src.match(/fitViewOptions=\{\{[\s\S]*?\}\}/)?.[0];
     expect(fitViewOptions).toBeDefined();
     expect(fitViewOptions).toMatch(/minZoom:\s*FIT_ZOOM_FLOOR/);

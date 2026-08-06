@@ -47,6 +47,15 @@ import type {
 // shrinking further; ReactFlow's own pan/zoom-out takes over from there.
 export const FIT_ZOOM_FLOOR = 0.65;
 
+// How far a user may deliberately zoom out, which is a different question from
+// how small the default fit may go. The floor above keeps the view we CHOOSE
+// legible; this one keeps a graph too wide to fit legibly from becoming
+// unviewable, because a compact embed has no minimap and a floor on the root
+// would leave panning as the only way to see a wide graph whole. Zooming past
+// the readability floor is an explicit gesture whose intent is "show me the
+// shape", not "let me read the labels".
+export const MIN_INTERACTIVE_ZOOM = 0.2;
+
 // Computed fit zoom for a laid-out graph in a given viewport — the same
 // arithmetic ReactFlow's fitView/getViewportForBounds uses internally (fit
 // width and height under a SINGLE padding term, then clamp to [minZoom,
@@ -514,14 +523,15 @@ export default function WorkerCanvas({
           nodesConnectable={editable}
           elementsSelectable={true}
           fitView
-          // minZoom is the readability floor (FIT_ZOOM_FLOOR — see above):
-          // below it a StepNode's smallest text stops being legible, so
-          // instead of shrinking further the graph overflows the container
-          // and pan/wheel-zoom take over. It is set on both the root (the
-          // invariant clamp that also guards wheel/controls zoom-out) and
-          // fitViewOptions (belt-and-braces for the initial fit). maxZoom
-          // keeps a two-node graph from being blown up to fill the panel.
-          minZoom={FIT_ZOOM_FLOOR}
+          // The readability floor belongs to the FIT, not to the zoom control.
+          // fitViewOptions clamps the view we pick, so the graph always opens
+          // legible; the root keeps a much lower floor so a graph too wide to
+          // fit at that zoom can still be zoomed out and seen whole. Putting
+          // the readability floor on the root instead clamps wheel, pinch and
+          // the zoom-out button too, which strands a wide graph overflowing a
+          // compact embed that has no minimap. maxZoom keeps a two-node graph
+          // from being blown up to fill the panel.
+          minZoom={MIN_INTERACTIVE_ZOOM}
           fitViewOptions={{ padding: 0.15, maxZoom: 1, minZoom: FIT_ZOOM_FLOOR }}
           proOptions={{ hideAttribution: true }}
           className="bg-surface-base"

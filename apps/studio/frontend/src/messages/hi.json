@@ -442,7 +442,11 @@
       "noBranchErrorsPartial": "लोड किए गए मैसेज में कोई त्रुटि नहीं।",
       "noFilesPartial": "लोड किए गए मैसेज में कोई फ़ाइल ऑपरेशन नहीं मिला।",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count} किनारे",
+      "graphImpliedHidden": "· {count} निहित छिपे",
+      "graphHideImplied": "निहित छिपाएँ",
+      "graphShowImplied": "निहित किनारे दिखाएँ"
     },
     "masterAria": "इतिहास सूची",
     "detailAria": "आइटम विवरण"
