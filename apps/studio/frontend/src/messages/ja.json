@@ -431,6 +431,7 @@
       "statTopic": "トピック",
       "statPlay": "プレイ",
       "statPlaybook": "ワークフロー",
+      "statKind": "種別",
       "waitingMessages": "メッセージを待機中…",
       "noMessages": "メッセージは記録されていません",
       "waitingEvents": "ライフサイクルイベントを待機中…",

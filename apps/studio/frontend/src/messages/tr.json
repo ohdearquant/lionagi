@@ -431,6 +431,7 @@
       "statTopic": "konu",
       "statPlay": "Play",
       "statPlaybook": "iş akışı",
+      "statKind": "tür",
       "waitingMessages": "mesajlar bekleniyor…",
       "noMessages": "kayıtlı mesaj yok",
       "waitingEvents": "yaşam döngüsü olayları bekleniyor…",

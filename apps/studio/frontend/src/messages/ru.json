@@ -431,6 +431,7 @@
       "statTopic": "Тема",
       "statPlay": "Play",
       "statPlaybook": "Рабочий процесс",
+      "statKind": "Тип",
       "waitingMessages": "Ожидание сообщений…",
       "noMessages": "Сообщения не записаны",
       "waitingEvents": "Ожидание событий жизненного цикла…",

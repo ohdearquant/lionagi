@@ -495,6 +495,10 @@ interface OverviewData {
   showTopic?: string | null;
   showPlayName?: string | null;
   playbookName?: string | null;
+  /** How this run was invoked: agent, play, flow, fanout, show-play. A play
+   * root reports whatever agent profile planned it, so without this the page
+   * shows a whole playbook execution and one agent identically. */
+  invocationKind?: string | null;
 }
 
 function OverviewSection({ data }: { data: OverviewData }) {
@@ -518,6 +522,9 @@ function OverviewSection({ data }: { data: OverviewData }) {
   ];
 
   const provenance = [
+    // First, because it is the fact that changes how everything below it
+    // reads: the same playbook name under kind "play" means N agents running.
+    data.invocationKind && { label: t("statKind"), value: data.invocationKind },
     data.showTopic && { label: t("statTopic"), value: data.showTopic },
     data.showPlayName && { label: t("statPlay"), value: data.showPlayName },
     data.playbookName && { label: t("statPlaybook"), value: data.playbookName },
@@ -1666,6 +1673,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       | string
       | null
       | undefined,
+    invocationKind: session.invocation_kind ?? null,
   };
 
   const content = (

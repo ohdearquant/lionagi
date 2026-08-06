@@ -431,6 +431,7 @@
       "statTopic": "Thema",
       "statPlay": "Play",
       "statPlaybook": "Workflow",
+      "statKind": "Art",
       "waitingMessages": "Warte auf Nachrichten…",
       "noMessages": "Keine Nachrichten aufgezeichnet",
       "waitingEvents": "Warte auf Lifecycle-Ereignisse…",

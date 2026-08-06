@@ -313,7 +313,12 @@ function RunLink({ runId }: { runId: string }) {
   );
 }
 
-function CopyButton({ value }: { value: string }) {
+// `persistent` keeps the control visible instead of revealing it on hover.
+// A hover-only affordance is invisible to anyone who has not already guessed
+// it is there, and the Operator's own answer is the thing people actually
+// copy out of this panel, so that one is shown standing. Your own prompt is
+// rarely copied and stays hover-revealed, which keeps the transcript quiet.
+function CopyButton({ value, persistent = false }: { value: string; persistent?: boolean }) {
   const t = useTranslations("operator");
   const [copied, setCopied] = useState(false);
 
@@ -337,7 +342,9 @@ function CopyButton({ value }: { value: string }) {
       onClick={copy}
       aria-label={t("message.copy")}
       title={copied ? t("message.copied") : t("message.copy")}
-      className="focus-ring flex h-6 w-6 shrink-0 items-center justify-center rounded text-content-muted opacity-0 transition-opacity hover:bg-surface-overlay hover:text-content-primary focus-visible:opacity-100 group-hover:opacity-100"
+      className={`focus-ring flex h-6 w-6 shrink-0 items-center justify-center rounded text-content-muted transition-opacity hover:bg-surface-overlay hover:text-content-primary focus-visible:opacity-100 group-hover:opacity-100 ${
+        persistent ? "opacity-50" : "opacity-0"
+      }`}
     >
       {copied ? <IconCheck size={12} className="text-status-success" /> : <IconCopy size={12} />}
     </button>
@@ -366,7 +373,7 @@ function TextMessage({ item }: { item: Extract<DisplayItem, { kind: "text" }> })
           <p className="whitespace-pre-wrap break-words">{item.content}</p>
         )}
       </div>
-      {!user && <CopyButton value={item.content} />}
+      {!user && <CopyButton value={item.content} persistent />}
     </article>
   );
 }

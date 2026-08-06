@@ -431,6 +431,7 @@
       "statTopic": "Topic",
       "statPlay": "Play",
       "statPlaybook": "Workflow",
+      "statKind": "Kind",
       "waitingMessages": "Waiting for messages…",
       "noMessages": "No messages recorded",
       "waitingEvents": "Waiting for lifecycle events…",

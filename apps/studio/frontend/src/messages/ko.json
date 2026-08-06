@@ -431,6 +431,7 @@
       "statTopic": "주제",
       "statPlay": "플레이",
       "statPlaybook": "워크플로",
+      "statKind": "종류",
       "waitingMessages": "메시지 대기 중…",
       "noMessages": "기록된 메시지 없음",
       "waitingEvents": "수명 주기 이벤트 대기 중…",

@@ -238,6 +238,12 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
             {
                 "id": "run-1",
                 "agentName": "Operator",
+                # Neither fixture row carries the provenance columns, so both
+                # project to None. A row missing them yields nulls rather than
+                # dropping the keys, which keeps the shape stable for a reader
+                # that always checks kind before describing a run.
+                "kind": None,
+                "playbookName": None,
                 "status": "failed",
                 "project": "private",
                 "startedAt": 1.0,
@@ -247,6 +253,8 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
             {
                 "id": "run-2",
                 "agentName": "Researcher",
+                "kind": None,
+                "playbookName": None,
                 "status": "failed",
                 "project": "acme/research",
                 "startedAt": 3.0,
@@ -257,6 +265,68 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
         "count": 2,
         "bounded": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_recent_runs_projection_separates_a_play_root_from_a_single_agent(monkeypatch):
+    """A play root reports the agent profile that planned it, so `agentName`
+    alone cannot say whether a run is one agent or a whole playbook execution
+    -- both rows below say "orchestrator". The projection must carry the
+    session's own `invocation_kind` so the two are distinguishable without
+    inferring anything from the name, the timing, or the project."""
+    from lionagi.studio.operator.application_mcp import list_recent_runs
+    from lionagi.studio.services import runs as runs_service
+
+    async def fake_list_runs(*, status, limit, offset):
+        return [
+            {
+                "id": "play-root",
+                "agent_name": "orchestrator",
+                "invocation_kind": "play",
+                "playbook_name": "lionagi-consolidate",
+                "status": "running",
+                "project": "acme/lionagi",
+                "started_at": 1.0,
+                "ended_at": None,
+            },
+            {
+                "id": "lone-agent",
+                "agent_name": "orchestrator",
+                "invocation_kind": "agent",
+                "playbook_name": None,
+                "status": "running",
+                "project": "acme/lionagi",
+                "started_at": 1.0,
+                "ended_at": None,
+            },
+        ]
+
+    monkeypatch.setattr(runs_service, "list_runs", fake_list_runs)
+    runs = (await list_recent_runs({"limit": 20}))["runs"]
+    play, agent = runs[0], runs[1]
+
+    # The discriminating assertion: identical on every field a reader had
+    # before, different on the one that was added.
+    assert play["agentName"] == agent["agentName"] == "orchestrator"
+    assert play["kind"] == "play"
+    assert agent["kind"] == "agent"
+    assert play["playbookName"] == "lionagi-consolidate"
+    assert agent["playbookName"] is None
+
+
+@pytest.mark.asyncio
+async def test_operator_guidance_requires_reading_run_kind_before_describing_a_run():
+    """The projection change is only half the fix: a model that never learns
+    to read `kind` will keep calling a play "the orchestrator agent" while
+    holding a payload that says otherwise."""
+    from lionagi.studio.operator.engine import _SYSTEM_PROMPT
+
+    assert "kind" in _SYSTEM_PROMPT
+    assert "agentName alone never establishes" in _SYSTEM_PROMPT
+    # The old instruction promised the snapshot always described the page,
+    # which on a route carrying only a URL pushed the model to narrate a view
+    # it had never observed.
+    assert "never say you cannot tell what they are looking at" not in _SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio

@@ -431,6 +431,7 @@
       "statTopic": "Tema",
       "statPlay": "Play",
       "statPlaybook": "Flujo de trabajo",
+      "statKind": "Tipo",
       "waitingMessages": "Esperando mensajes…",
       "noMessages": "No hay mensajes registrados",
       "waitingEvents": "Esperando eventos de ciclo de vida…",

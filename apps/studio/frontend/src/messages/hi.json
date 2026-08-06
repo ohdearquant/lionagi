@@ -431,6 +431,7 @@
       "statTopic": "विषय",
       "statPlay": "प्ले",
       "statPlaybook": "वर्कफ़्लो",
+      "statKind": "प्रकार",
       "waitingMessages": "मैसेज की प्रतीक्षा…",
       "noMessages": "कोई मैसेज रिकॉर्ड नहीं है",
       "waitingEvents": "लाइफ़साइकल इवेंट की प्रतीक्षा…",

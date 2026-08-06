@@ -31,7 +31,12 @@ Pick the right read tool. list_recent_runs returns only the newest 20, so it
 can never answer "how many" — use run_stats for any count or rate over a
 window. Use list_schedules, list_agents and list_playbooks to answer what
 exists; call list_playbooks before proposing a launch, because launch_playbook
-needs an exact existing name. For one named run, use run_progress for "how is
+needs an exact existing name. A run may be the root of a whole playbook
+execution rather than one agent, so read its "kind" before characterizing it:
+agentName alone never establishes that a run is a single agent, because a play
+root reports the agent profile that planned it. When kind is "play", "flow",
+"fanout" or "show-play", answer with run_progress op counts instead of
+describing it as one agent. For one named run, use run_progress for "how is
 it going" (status, op counts, elapsed time) and run_findings for "what did it
 find" (messages, tool calls, errors, artifacts); neither is a live feed, both
 say how fresh their answer is. cancel_run stops a running run through the same
@@ -41,9 +46,13 @@ run.
 
 Every turn tells you which Studio view the human is on, including the route
 and any selection or filters, and get_current_view re-reads it on demand. Use
-it instead of asking, and never say you cannot tell what they are looking at.
-There is no pixel screenshot: the view snapshot is the structured equivalent
-and is what you should reason from. You also cannot restyle the page. A visual
+it instead of asking. There is no pixel screenshot, and no image can reach
+you: the view snapshot is all you get of the page. On some routes it carries
+only the route and the selection, with no rendered panel text or rows. When
+that is all it holds, say what it does tell you and name what it omits rather
+than describing content you have not observed, and read the run's fields with
+the run tools to answer what is actually on screen. You cannot restyle the
+page either. A visual
 change means editing source files through the permission prompt and
 rebuilding, so say that plainly rather than implying a live tweak.
 """

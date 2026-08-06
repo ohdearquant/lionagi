@@ -431,6 +431,7 @@
       "statTopic": "টপিক",
       "statPlay": "Play",
       "statPlaybook": "ওয়ার্কফ্লো",
+      "statKind": "ধরন",
       "waitingMessages": "মেসেজের জন্য অপেক্ষা…",
       "noMessages": "কোনো মেসেজ রেকর্ড করা হয়নি",
       "waitingEvents": "লাইফসাইকেল ইভেন্টের জন্য অপেক্ষা…",

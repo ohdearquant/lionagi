@@ -132,7 +132,13 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
 }
 
 _TOOL_DESCRIPTIONS = {
-    "list_recent_runs": ("List at most 20 recent Studio runs as a redacted read-only projection."),
+    "list_recent_runs": (
+        "List at most 20 recent Studio runs as a redacted read-only "
+        "projection. Each run carries a 'kind' ('agent', 'play', 'flow', "
+        "'fanout' or 'show-play') and, for a playbook execution, a "
+        "'playbookName'. Read 'kind' before describing what a run is: a play "
+        "is a whole playbook execution with many ops inside it, not one agent."
+    ),
     "run_stats": (
         "Count runs over a whole window (24h or 7d) with per-status totals and "
         "completion rate. Use this for 'how many runs did I have', which "
@@ -235,6 +241,16 @@ async def list_recent_runs(arguments: dict[str, Any]) -> dict[str, Any]:
         {
             "id": row.get("id"),
             "agentName": row.get("agent_name"),
+            # Without these two a play root and a leaf agent run are the same
+            # object here: the root of a playbook execution reports whatever
+            # agent profile planned it (commonly "orchestrator", an ordinary
+            # row in list_agents), so agentName alone cannot separate one
+            # agent from N of them. invocation_kind is the discriminator the
+            # session row already stores, passed through under its stored
+            # vocabulary rather than remapped, so a reader can match it
+            # against the same values the rest of the system uses.
+            "kind": row.get("invocation_kind"),
+            "playbookName": row.get("playbook_name"),
             "status": row.get("status"),
             "project": public_project(row.get("project")),
             "startedAt": row.get("started_at"),

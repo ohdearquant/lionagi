@@ -431,6 +431,7 @@
       "statTopic": "Topik",
       "statPlay": "Play",
       "statPlaybook": "Alur kerja",
+      "statKind": "Jenis",
       "waitingMessages": "Menunggu pesan…",
       "noMessages": "Tidak ada pesan tercatat",
       "waitingEvents": "Menunggu peristiwa siklus hidup…",

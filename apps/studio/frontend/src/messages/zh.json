@@ -431,6 +431,7 @@
       "statTopic": "主题",
       "statPlay": "剧目",
       "statPlaybook": "工作流",
+      "statKind": "类型",
       "waitingMessages": "等待消息…",
       "noMessages": "暂无消息记录",
       "waitingEvents": "等待生命周期事件…",
