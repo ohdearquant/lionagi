@@ -226,6 +226,19 @@ def test_a_fanout_is_not_offered_the_spec_file_it_has_no_argument_for(spawned):
     assert "'playbook'" not in message, message
 
 
+def test_a_resume_submission_needs_no_prompt_to_reach_the_spawn(spawned):
+    """A resume replays the checkpoint's persisted prompt verbatim and reads
+    no other flow flags, so refusing it for a missing prompt blocks the one
+    submission shape that can never need one."""
+    answer = call(
+        ops=[spawn_op("flow.submit", {"resume": "20990101T000000-aaaaaa", "no_mcp_config": True})]
+    )["ops"][0]
+
+    assert answer["ok"] is True, answer
+    assert spawned.argv is not None, "the submission was refused before the spawn"
+    assert "--resume=20990101T000000-aaaaaa" in spawned.argv, spawned.argv
+
+
 def test_a_flow_whose_prompt_is_only_in_a_spec_file_reaches_the_spawn(spawned, submit_dir):
     """The spec file may carry a prompt: key, and this check does not read the
     file. The command does, so the question is left to it."""

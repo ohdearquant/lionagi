@@ -422,6 +422,7 @@
       "sectionFiles": "tệp",
       "sectionEvents": "sự kiện",
       "sectionExecutionGraph": "đồ thị thực thi",
+      "resumedFromNotice": "Tiếp tục từ một lần thử trước của lần chạy này:",
       "statStatus": "trạng thái",
       "statDuration": "thời lượng",
       "statBranches": "nhánh",

@@ -422,6 +422,7 @@
       "sectionFiles": "Archivos",
       "sectionEvents": "Eventos",
       "sectionExecutionGraph": "Grafo de ejecución",
+      "resumedFromNotice": "Reanudado desde un intento anterior de esta ejecución:",
       "statStatus": "Estado",
       "statDuration": "Duración",
       "statBranches": "Ramas",

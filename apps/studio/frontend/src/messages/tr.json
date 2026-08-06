@@ -422,6 +422,7 @@
       "sectionFiles": "dosyalar",
       "sectionEvents": "olaylar",
       "sectionExecutionGraph": "çalıştırma grafiği",
+      "resumedFromNotice": "Bu çalıştırmanın önceki bir denemesinden devam edildi:",
       "statStatus": "durum",
       "statDuration": "süre",
       "statBranches": "dallar",

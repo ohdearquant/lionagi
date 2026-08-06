@@ -209,8 +209,12 @@ async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]
         session_row = await _resolve_primary_session(db, entity_type, row)
         if session_row is None:
             raise FlowResumeError(f"No backing session found for {target!r}.")
+        # The run_id COLUMN is written at session creation and never
+        # rewritten; the node_metadata copy was historically clobbered by
+        # progress writes, so the column is the authoritative read and the
+        # metadata key is the fallback for rows created before the column.
         node_meta = session_row.get("node_metadata") or {}
-        run_id = node_meta.get("run_id")
+        run_id = session_row.get("run_id") or node_meta.get("run_id")
 
     if not run_id:
         raise FlowResumeError(

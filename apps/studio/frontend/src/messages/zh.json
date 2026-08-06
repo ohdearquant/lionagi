@@ -422,6 +422,7 @@
       "sectionFiles": "文件",
       "sectionEvents": "事件",
       "sectionExecutionGraph": "执行图",
+      "resumedFromNotice": "从此运行的早前一次尝试恢复：",
       "statStatus": "状态",
       "statDuration": "耗时",
       "statBranches": "分支",

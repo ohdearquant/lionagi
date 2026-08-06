@@ -422,6 +422,7 @@
       "sectionFiles": "ফাইল",
       "sectionEvents": "ইভেন্ট",
       "sectionExecutionGraph": "এক্সিকিউশন গ্রাফ",
+      "resumedFromNotice": "এই রানের আগের একটি প্রচেষ্টা থেকে পুনরায় শুরু হয়েছে:",
       "statStatus": "স্ট্যাটাস",
       "statDuration": "সময়কাল",
       "statBranches": "ব্রাঞ্চ",

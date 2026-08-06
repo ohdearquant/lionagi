@@ -570,6 +570,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "artifact_verification_json",
         "artifacts_path",
         "branches",
+        "resumed_from",
         "created_at",
         "duration_ms",
         "effort",

@@ -70,6 +70,18 @@ def _parse_metadata(raw: str | None) -> dict[str, Any] | None:
     return meta if isinstance(meta, dict) else None
 
 
+def _base_role(instance_name: str) -> str:
+    """The role behind an instance name: "advisor-2" → "advisor".
+
+    Only a purely numeric suffix is an instance counter — a role that itself
+    ends in a word ("explorer-deep") is left alone.
+    """
+    stem, sep, suffix = instance_name.rpartition("-")
+    if sep and stem and suffix.isdigit():
+        return stem
+    return instance_name
+
+
 def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
     """Build a DAG graph from session node_metadata (agents + operations)."""
     if not raw:
@@ -103,7 +115,10 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
             {
                 "id": op["id"],
                 "label": op["id"],
-                "role": agent.get("name", ""),
+                # Base role when recorded; older rows only carry the instance
+                # name (e.g. "advisor-2"), whose numeric suffix is trimmed so
+                # the role line never repeats the label above it.
+                "role": agent.get("role") or _base_role(agent.get("name", "")),
                 "assignment": agent.get("model", ""),
                 "prompt": "",
                 "capacity": 1,
@@ -914,6 +929,9 @@ async def get_session(
         "status_evidence_refs": _parse_json_col(session_row["status_evidence_refs"]),
         "graph": _graph_from_metadata(session_row["node_metadata"]),
         "segments": (_parse_metadata(session_row["node_metadata"]) or {}).get("segments"),
+        # Resume lineage: the session this run was resumed from, so the UI can
+        # present attempts of one run together instead of as strangers.
+        "resumed_from": (_parse_metadata(session_row["node_metadata"]) or {}).get("resumed_from"),
         # Raw node_metadata (carries pid/pid_create_time) so callers like
         # get_run()'s liveness check can find the recorded pid.
         "node_metadata": session_row["node_metadata"],

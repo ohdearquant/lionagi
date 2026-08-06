@@ -422,6 +422,7 @@
       "sectionFiles": "File",
       "sectionEvents": "Peristiwa",
       "sectionExecutionGraph": "Graf eksekusi",
+      "resumedFromNotice": "Dilanjutkan dari percobaan sebelumnya pada run ini:",
       "statStatus": "Status",
       "statDuration": "Durasi",
       "statBranches": "Branch",

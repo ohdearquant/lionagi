@@ -422,6 +422,7 @@
       "sectionFiles": "파일",
       "sectionEvents": "이벤트",
       "sectionExecutionGraph": "실행 그래프",
+      "resumedFromNotice": "이 실행의 이전 시도에서 재개됨:",
       "statStatus": "상태",
       "statDuration": "기간",
       "statBranches": "브랜치",

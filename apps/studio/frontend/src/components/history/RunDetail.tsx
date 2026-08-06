@@ -7,6 +7,7 @@
  */
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
@@ -1567,17 +1568,40 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   // Live per-node status correlated by authored step id (Node* payload.name),
   // never by op_id — see lib/operationGraph.ts. Only meaningful when a
-  // planned graph exists to correlate against.
+  // planned graph exists to correlate against. On a terminal session the
+  // signal stream is reconciled against branch rows: a killed run never
+  // emits terminal node signals, so without this pass its in-flight nodes
+  // read "running" forever while the branch list says cancelled.
   const nodeStatuses = useMemo((): Record<string, NodeExecStatus> | undefined => {
     if (!runGraph) return undefined;
     const byName = buildNodeStatusesByName(signalEvents);
+    const branchStatusByName = new Map<string, string>();
+    for (const b of session?.branches ?? []) {
+      if (b.name && b.status) branchStatusByName.set(b.name, b.status);
+    }
+    const sessionTerminal = done;
     const result: Record<string, NodeExecStatus> = {};
     for (const node of runGraph.nodes) {
       const live = byName.get(node.id);
-      if (live) result[node.id] = live.status === "succeeded" ? "completed" : live.status;
+      let status: NodeExecStatus | undefined = live
+        ? live.status === "succeeded"
+          ? "completed"
+          : live.status
+        : undefined;
+      if (sessionTerminal) {
+        const branch = branchStatusByName.get(node.id);
+        if (branch === "completed" || branch === "failed" || branch === "cancelled") {
+          status = branch;
+        } else if (status === "running" || status === "queued" || branch === "running") {
+          // Terminal session, no terminal record for this node: it was
+          // interrupted, whatever the last live signal claimed.
+          status = "cancelled";
+        }
+      }
+      if (status) result[node.id] = status;
     }
     return result;
-  }, [runGraph, signalEvents]);
+  }, [runGraph, signalEvents, session, done]);
 
   if (error) {
     return (
@@ -1694,6 +1718,18 @@ export default function RunDetail({ id }: RunDetailProps) {
       </div>
 
       <OverviewSection data={overviewData} />
+      {session.resumed_from && (
+        <div className="flex items-center gap-2 rounded border border-edge bg-surface-raised px-3 py-2 text-meta text-content-secondary shadow-card">
+          <span>{t("resumedFromNotice")}</span>
+          <Link
+            to="/fleet"
+            search={{ s: session.resumed_from }}
+            className="font-mono text-accent hover:underline"
+          >
+            {session.resumed_from.slice(0, 8)}
+          </Link>
+        </div>
+      )}
       <ResumeRun
         key={session.id}
         runId={session.id}

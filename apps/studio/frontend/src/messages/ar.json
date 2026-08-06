@@ -422,6 +422,7 @@
       "sectionFiles": "الملفات",
       "sectionEvents": "الأحداث",
       "sectionExecutionGraph": "مخطط التنفيذ",
+      "resumedFromNotice": "تمت الاستئناف من محاولة سابقة لهذا التشغيل:",
       "statStatus": "الحالة",
       "statDuration": "المدة",
       "statBranches": "الفروع",

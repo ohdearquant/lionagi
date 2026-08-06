@@ -890,12 +890,40 @@ async def teardown_persist(
             if final_status in SESSION_TERMINAL_STATUSES:
                 from lionagi.session.signal import _collect_branch_usage
 
+                def _estimated_cost(branch, usage: dict) -> float | None:
+                    # Engines that price themselves (the Claude CLI) already
+                    # reported a cost; everyone else gets a list-price
+                    # estimate from the branch's own model, or stays NULL.
+                    if usage.get("total_cost_usd") is not None:
+                        return None
+                    try:
+                        from lionagi.service.pricing import estimate_cost_usd
+                        from lionagi.state import provenance as _provenance
+
+                        ep_cfg = branch.chat_model.endpoint.config
+                        spec = _provenance.resolve_model_spec(
+                            getattr(ep_cfg, "provider", None),
+                            (ep_cfg.kwargs or {}).get("model"),
+                        )
+                        return estimate_cost_usd(
+                            spec,
+                            int(usage.get("input_tokens", 0) or 0),
+                            int(usage.get("output_tokens", 0) or 0),
+                        )
+                    except Exception:  # noqa: BLE001
+                        return None
+
                 _end_at = time.time()
+                _session_estimated = 0.0
                 for _b in [_branch] if _branch is not None else _hook_branches:
                     try:
                         _branch_usage = _collect_branch_usage(_b)
                     except Exception:  # noqa: BLE001, S110
                         _branch_usage = {}
+                    _est = _estimated_cost(_b, _branch_usage)
+                    if _est is not None:
+                        _branch_usage["total_cost_usd"] = _est
+                        _session_estimated += _est
                     await session_obj.hooks.emit(
                         HookPoint.BRANCH_END,
                         branch_id=str(_b.id),
@@ -903,6 +931,14 @@ async def teardown_persist(
                         ended_at=_end_at,
                         **_branch_usage,
                     )
+                # The session row's total must agree with the sum of its
+                # branch rows, estimates included — budget enforcement reads
+                # the session column, and an estimate the branches carry but
+                # the session omits would undercount live spend.
+                if _session_estimated > 0:
+                    _usage["total_cost_usd"] = (
+                        _usage.get("total_cost_usd") or 0.0
+                    ) + _session_estimated
 
             await session_obj.hooks.emit(
                 HookPoint.SESSION_END,

@@ -1432,11 +1432,13 @@ async def setup_orchestration_persist(
         _proj, _proj_src = _resolve_project(project)
         from lionagi.cli.kill import current_pid_markers as _pid_markers
 
-        _identity_markers = _pid_markers()
+        # Caller stamps (run_id, resumed_from) ride with the kill-identity
+        # markers: every later node_metadata rewrite merges the markers dict
+        # last, so keys outside it are lost on the first progress write.
+        _identity_markers = {**_pid_markers(), **(extra_node_metadata or {})}
         _node_meta = {
             **(session_dict.get("node_metadata") or {}),
             **_identity_markers,
-            **(extra_node_metadata or {}),
         }
         await db.create_session(
             {

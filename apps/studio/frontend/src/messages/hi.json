@@ -422,6 +422,7 @@
       "sectionFiles": "फ़ाइलें",
       "sectionEvents": "इवेंट",
       "sectionExecutionGraph": "एक्ज़ीक्यूशन ग्राफ़",
+      "resumedFromNotice": "इस रन के पहले के प्रयास से फिर से शुरू किया गया:",
       "statStatus": "स्थिति",
       "statDuration": "अवधि",
       "statBranches": "ब्रांच",

@@ -422,6 +422,7 @@
       "sectionFiles": "Fichiers",
       "sectionEvents": "Événements",
       "sectionExecutionGraph": "Graphe d’exécution",
+      "resumedFromNotice": "Repris depuis une tentative antérieure de cette exécution :",
       "statStatus": "Statut",
       "statDuration": "Durée",
       "statBranches": "Branches",

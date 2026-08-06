@@ -672,7 +672,12 @@ async def _build_dag(
     # Early DAG snapshot for Studio.
     early_graph = {
         "agents": [
-            {"id": agent_ids[i], "name": agent_ids[i], "model": worker_models[i]}
+            {
+                "id": agent_ids[i],
+                "name": agent_ids[i],
+                "role": assignments[i].assignee,
+                "model": worker_models[i],
+            }
             for i in range(len(assignments))
         ],
         "operations": [
@@ -1448,6 +1453,7 @@ async def _execute_dag(
                 "id": agent_ids[i],
                 "agent_id": agent_ids[i],
                 "name": agent_ids[i],
+                "role": assignments[i].assignee,
                 "model": worker_models[i],
                 "depends_on": final_deps.get(str(nid), deps_by_node[nid]),
                 "spawned": False,
@@ -1515,6 +1521,7 @@ async def _execute_dag(
                 "id": sid,
                 "agent_id": sid,
                 "name": assignee or "spawned",
+                "role": assignee or "spawned",
                 "model": spawn_model,
                 "assignee": assignee,
                 # A node injected mid-run has real predecessors; read them off
@@ -1727,6 +1734,7 @@ def _finalize_flow(
             {
                 "id": agent_ids[i],
                 "name": agent_ids[i],
+                "role": assignments[i].assignee,
                 "model": worker_models[i],
                 "artifact_dir": str(env.run.agent_artifact_dir(agent_ids[i])),
                 "spawned": False,
@@ -1737,6 +1745,7 @@ def _finalize_flow(
             {
                 "id": r["agent_id"],
                 "name": r.get("assignee") or r["name"],
+                "role": r.get("role") or r.get("assignee") or r["name"],
                 "model": r.get("model", ""),
                 "artifact_dir": str(env.run.agent_artifact_dir(r["agent_id"])),
                 "spawned": True,

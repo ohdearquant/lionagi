@@ -422,6 +422,7 @@
       "sectionFiles": "ファイル",
       "sectionEvents": "イベント",
       "sectionExecutionGraph": "実行グラフ",
+      "resumedFromNotice": "この実行の以前の試行から再開:",
       "statStatus": "ステータス",
       "statDuration": "期間",
       "statBranches": "ブランチ",

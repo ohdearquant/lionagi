@@ -1234,6 +1234,9 @@ export interface SessionDetail {
   // and the header disagree.
   display_name?: string;
   invocation_kind?: string | null;
+  // Resume lineage (services/sessions.py get_session): the session id this
+  // run was resumed from. Absent/null for a first attempt.
+  resumed_from?: string | null;
   created_at: number;
   updated_at: number;
   status?: string | null;

@@ -627,8 +627,12 @@ def _has_prompt_source(kind: str, args: dict[str, Any], prompt: str | None) -> b
     itself refuses on a falsy prompt, so an empty string must fail this check
     too. Flow (and play, which requires a playbook) also accept a spec file or
     playbook that may carry its own ``prompt`` key this doesn't read, so their
-    presence settles the question too; fanout has only the two routes.
+    presence settles the question too; fanout has only the two routes. A
+    ``resume`` submission replays the checkpoint's persisted prompt verbatim
+    and reads no other flow flags, so it needs no prompt here at all.
     """
+    if args.get("resume"):
+        return True
     query = args.get("query") or []
     last_positional = prompt if prompt is not None else (query[-1] if query else None)
     if last_positional:

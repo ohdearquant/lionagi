@@ -148,7 +148,9 @@ def _build_graph(manifest: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": op["id"],
                 "label": op["id"],
-                "role": agent.get("name", ""),
+                # Base role when recorded; older manifests carry only the
+                # instance name, whose numeric suffix is trimmed.
+                "role": agent.get("role") or _sessions_svc._base_role(agent.get("name", "")),
                 "assignment": agent.get("model", ""),
                 "prompt": "",
                 "capacity": 1,

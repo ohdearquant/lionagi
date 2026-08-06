@@ -16,6 +16,7 @@ const STATUS_WORD: Record<NodeExecStatus, string> = {
   completed: "done",
   failed: "failed",
   escalated: "escalated",
+  cancelled: "cancelled",
 };
 
 function usePrefersReducedMotion(): boolean {
@@ -53,7 +54,8 @@ export type NodeExecStatus =
   | "paused"
   | "completed"
   | "failed"
-  | "escalated";
+  | "escalated"
+  | "cancelled";
 
 export interface StepNodeData {
   label: string;
@@ -79,7 +81,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
   const isTerminalError = status === "failed" || status === "escalated";
 
   // These colors derive from status data (dag-* tokens) — keep inline
-  const isWarn = status === "awaiting_approval" || status === "paused";
+  const isWarn = status === "awaiting_approval" || status === "paused" || status === "cancelled";
 
   const borderColor =
     status === "running"
@@ -185,6 +187,11 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         {status === "awaiting_approval" && (
           <span className="flex shrink-0 items-center text-status-warning">
             <IconWarning size={10} strokeWidth={2.5} />
+          </span>
+        )}
+        {status === "cancelled" && (
+          <span className="flex shrink-0 items-center text-status-warning">
+            <IconClose size={10} strokeWidth={2.5} />
           </span>
         )}
         {status === "paused" && (

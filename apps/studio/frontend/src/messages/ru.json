@@ -422,6 +422,7 @@
       "sectionFiles": "Файлы",
       "sectionEvents": "События",
       "sectionExecutionGraph": "Граф выполнения",
+      "resumedFromNotice": "Возобновлено с более ранней попытки этого запуска:",
       "statStatus": "Статус",
       "statDuration": "Длительность",
       "statBranches": "Ветки",
