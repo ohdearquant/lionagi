@@ -34,6 +34,7 @@ from ._common import (
     _format_result_json,
     _format_result_text,
     _post_results_to_team,
+    check_team_send_delivery,
     retarget_artifact_section,
 )
 from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
@@ -1707,6 +1708,15 @@ def _finalize_flow(
             lambda: _post_results_to_team(
                 env.team_data, agent_results, agent_ids, synthesis_result
             ),
+        )
+        # Backstop for the original silent-loss bug: a worker's own team.send/
+        # receive call can fail entirely inside its own (possibly sandboxed)
+        # subprocess, invisible to everything above. A hit here raises inside
+        # the same guard as team_post, so it lands on env._finalize_error too
+        # -- visible in the run record, not just the worker's private output.
+        _guard_finalize_step(
+            "team_send_delivery",
+            lambda: check_team_send_delivery(agent_results),
         )
 
     def _snapshot_and_resume_pointer() -> None:

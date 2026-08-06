@@ -1570,6 +1570,203 @@ def test_finalize_flow_team_post_failure_still_returns_output_and_records_error(
     assert "team inbox lock timed out" in env._finalize_error["error"]
 
 
+# ── AC4: undeliverable team sends must surface, never report clean success ──
+#
+# A worker's own `team.send`/`team.receive` call can fail entirely inside its
+# own (possibly sandboxed) subprocess -- invisible to the DAG executor, the
+# team file, and everything else. The only trace of it is the worker's own
+# turn response. `check_team_send_delivery` scans for that and, wired into
+# the same best-effort finalize-step guard as `team_post`, lands it on
+# `env._finalize_error` -- this is the arm that would have caught the
+# original silent loss.
+
+
+def test_finalize_flow_undeliverable_mcp_team_send_records_finalize_error(tmp_path):
+    """MCP-channel arm: a worker's response echoes the dispatcher's own
+    ok=false envelope for a team.send/team.receive op."""
+    env = _make_env(tmp_path, team_data={"id": "team-x", "name": "team-x"})
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    undeliverable_response = (
+        "I tried to notify the team but the call failed: "
+        '{"status": "partial", "ops": [{"ok": false, "op": "team.send", '
+        '"error": "not available"}]}'
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "model": "codex/gpt-5.5",
+                "depends_on": [],
+                "spawned": False,
+                "response": undeliverable_response,
+                "time_ms": 100,
+            }
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+    )
+
+    with (
+        patch("lionagi.cli.orchestrate.flow._post_results_to_team"),
+        patch("lionagi.cli.orchestrate.flow.finalize_orchestration"),
+    ):
+        output = _finalize_flow(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            None,
+            output_format="text",
+            show_graph=False,
+        )
+
+    # The DAG's own result must still survive -- this is best-effort telemetry,
+    # not a run failure.
+    assert isinstance(output, str)
+    assert len(output) > 0
+    assert env._finalize_error is not None
+    assert env._finalize_error["error_class"] == "TeamSendFailureError"
+    assert "researcher" in env._finalize_error["error"]
+
+
+def test_finalize_flow_bash_sandbox_denial_records_finalize_error(tmp_path):
+    """Bash-channel arm: a CLI worker's response shows `li team send` was
+    refused by its own runtime filesystem sandbox -- the original bug."""
+    env = _make_env(tmp_path, team_data={"id": "team-x", "name": "team-x"})
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "model": "codex/gpt-5.5",
+                "depends_on": [],
+                "spawned": False,
+                "response": (
+                    'ran `li team send "done" -t team-x --to all --from researcher`\n'
+                    "PermissionError: [Errno 13] Permission denied: "
+                    "'/Users/x/.lionagi/teams/team-x.json'"
+                ),
+                "time_ms": 100,
+            }
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+    )
+
+    with (
+        patch("lionagi.cli.orchestrate.flow._post_results_to_team"),
+        patch("lionagi.cli.orchestrate.flow.finalize_orchestration"),
+    ):
+        output = _finalize_flow(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            None,
+            output_format="text",
+            show_graph=False,
+        )
+
+    assert isinstance(output, str)
+    assert env._finalize_error is not None
+    assert env._finalize_error["error_class"] == "TeamSendFailureError"
+    assert "researcher" in env._finalize_error["error"]
+
+
+def test_finalize_flow_clean_team_responses_leave_finalize_error_none(tmp_path):
+    """Sanity check for the new step: ordinary worker responses in team mode
+    must not false-positive into a finalize error."""
+    env = _make_env(tmp_path, team_data={"id": "team-x", "name": "team-x"})
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "model": "codex/gpt-5.5",
+                "depends_on": [],
+                "spawned": False,
+                "response": "great research, sent teammates a heads up successfully",
+                "time_ms": 100,
+            }
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+    )
+
+    with (
+        patch("lionagi.cli.orchestrate.flow._post_results_to_team"),
+        patch("lionagi.cli.orchestrate.flow.finalize_orchestration"),
+    ):
+        _finalize_flow(
+            env,
+            "task",
+            plan_result,
+            dag_state,
+            exec_result,
+            None,
+            output_format="text",
+            show_graph=False,
+        )
+
+    assert getattr(env, "_finalize_error", None) is None
+
+
 def test_finalize_flow_artifact_write_failure_is_split_from_finalize_error(tmp_path):
     """The synthesis artifact IS the run's output, not a best-effort finalize
     side effect — a failure writing it must land on its own field

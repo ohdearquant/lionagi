@@ -462,3 +462,81 @@ def _post_results_to_team(
                     "read_by": {},
                 }
             )
+
+
+# ── Undeliverable team-send visibility ─────────────────────────────────────
+# A sandboxed worker's team.send/team.receive call (bash `li team` or the MCP
+# channel above) runs and fails entirely inside that worker's own subprocess
+# -- the orchestrator has no other window onto it than the worker's own final
+# response. This is a best-effort text scan over that response, wired into
+# flow.py's existing best-effort finalize-step guard (see `_finalize_error`
+# and `flow.py`'s `_guard_finalize_step`) so a hit lands in the run's durable
+# record instead of vanishing the way the original silent-loss bug did.
+
+
+class TeamSendFailureError(Exception):
+    """A worker's own response shows a team message did not get delivered."""
+
+
+# The MCP dispatcher wraps a failed op as `{"ok": false, "op": "team.send", ...}`
+# (or "team.receive") -- see lionagi/mcp/dispatch.py. A worker that echoes that
+# reply in its own turn carries this pattern regardless of which side of the
+# pair comes first in the JSON.
+_MACHINE_TEAM_FAILURE = re.compile(
+    r'"op"\s*:\s*"team\.(?:send|receive)".{0,400}?"ok"\s*:\s*false'
+    r'|"ok"\s*:\s*false.{0,400}?"op"\s*:\s*"team\.(?:send|receive)"',
+    re.DOTALL,
+)
+
+# The original bug: a sandboxed `li team send`/`li team receive` bash call
+# refused by the worker's own runtime filesystem sandbox.
+_BASH_TEAM_DENIAL = re.compile(
+    r"li team (?:send|receive)\b.{0,400}?"
+    r"(?:Permission denied|Operation not permitted|Read-only file system|"
+    r"PermissionError|OSError)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def find_undeliverable_team_sends(agent_results: list[dict]) -> list[tuple[str, str]]:
+    """Workers whose own response text shows a team send/receive did not land.
+
+    Best-effort and text-matching, not a real delivery receipt -- the
+    orchestrator has no other visibility into a failure that happened inside
+    a worker's own sandboxed process. Returns ``(worker_name, matched_snippet)``
+    pairs; empty when nothing looks undeliverable.
+    """
+    hits: list[tuple[str, str]] = []
+    for result in agent_results:
+        text = result.get("response") or ""
+        if not text:
+            continue
+        match = _MACHINE_TEAM_FAILURE.search(text) or _BASH_TEAM_DENIAL.search(text)
+        if match is None:
+            continue
+        worker = result.get("agent_id") or result.get("name") or "?"
+        snippet = match.group(0)
+        if len(snippet) > 200:
+            snippet = snippet[:200] + "..."
+        hits.append((worker, snippet))
+    return hits
+
+
+def check_team_send_delivery(agent_results: list[dict]) -> None:
+    """Raise ``TeamSendFailureError`` if any worker's response shows an
+    undeliverable team message.
+
+    Meant to run inside a best-effort finalize-step guard (see
+    ``flow.py``'s ``_guard_finalize_step``) so a hit lands on
+    ``env._finalize_error`` -- visible in the run's durable record, and
+    (via ``RunReasons.COMPLETED_FINALIZE_ERROR``) no longer an unqualified
+    success -- without masking the DAG's own already-produced result.
+    """
+    hits = find_undeliverable_team_sends(agent_results)
+    if not hits:
+        return
+    names = ", ".join(worker for worker, _snippet in hits)
+    detail = "; ".join(f"{worker}: {snippet!r}" for worker, snippet in hits)
+    raise TeamSendFailureError(
+        f"{len(hits)} worker(s) could not deliver a team message ({names}): {detail}"
+    )
