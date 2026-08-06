@@ -78,6 +78,15 @@ REVIEWED_PATHS = frozenset(
         "state stats",
         "stats runs",
         "team list",
+        # Team coordination read/write. Reviewed together: all four act only on
+        # the team store under the server's own home, take a closed argument
+        # set matching the CLI flags, and exist so filesystem-sandboxed workers
+        # can coordinate through the unsandboxed server instead of being
+        # refused at open() on the team file.
+        "team create",
+        "team show",
+        "team send",
+        "team receive",
     }
 )
 

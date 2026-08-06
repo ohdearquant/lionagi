@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -516,3 +517,123 @@ class TestConcurrentWrites:
         assert read_count > 0
         data = team._load_team(team_id)
         assert len(data["messages"]) == 20 * len(workers)
+
+
+# ── machine result: create / show / send / receive ──────────────────────────
+
+
+class TestMachineResult:
+    def test_create_writes_a_team_and_returns_its_record(self):
+        from lionagi.cli.machine import validate_envelope
+
+        data = team.machine_result(["create", "Squad", "--members", "alice, bob"])
+        validate_envelope({"ok": True, "contract_version": 1, "data": data, "error": None})
+        assert data["name"] == "Squad"
+        assert data["members"] == ["alice", "bob"]
+        assert data["created_at"]
+        on_disk = json.loads(Path(data["path"]).read_text())
+        assert on_disk["id"] == data["id"]
+        assert on_disk["messages"] == []
+
+    def test_create_with_no_members_is_invalid_input(self):
+        from lionagi.cli.machine import MachineError
+
+        with pytest.raises(MachineError) as exc:
+            team.machine_result(["create", "Squad", "--members", " , ,"])
+        assert exc.value.kind == "invalid_input"
+
+    def test_create_missing_required_flag_is_invalid_input(self):
+        from lionagi.cli.machine import MachineError
+
+        with pytest.raises(MachineError) as exc:
+            team.machine_result(["create", "Squad"])
+        assert exc.value.kind == "invalid_input"
+
+    def test_show_returns_the_full_team_including_messages(self):
+        created = team.machine_result(["create", "Squad", "--members", "alice,bob"])
+        team.machine_result(
+            ["send", "hi", "--team", created["id"], "--to", "all", "--from", "alice"]
+        )
+        shown = team.machine_result(["show", created["id"]])
+        assert shown["team"]["id"] == created["id"]
+        assert [m["content"] for m in shown["team"]["messages"]] == ["hi"]
+
+    def test_show_of_unknown_team_is_not_found(self):
+        from lionagi.cli.machine import MachineError
+
+        with pytest.raises(MachineError) as exc:
+            team.machine_result(["show", "no-such-team"])
+        assert exc.value.kind == "not_found"
+
+    def test_send_returns_message_id_team_id_recipients_and_timestamp(self):
+        created = team.machine_result(["create", "Squad", "--members", "alice,bob"])
+        sent = team.machine_result(
+            ["send", "hi", "--team", created["id"], "--to", "bob", "--from", "alice"]
+        )
+        assert sent["team_id"] == created["id"]
+        assert sent["to"] == ["bob"]
+        assert sent["message_id"]
+        assert sent["timestamp"]
+
+    def test_send_broadcast_recipient_is_the_star_marker(self):
+        created = team.machine_result(["create", "Squad", "--members", "alice,bob"])
+        sent = team.machine_result(
+            ["send", "hi all", "--team", created["id"], "--to", "all", "--from", "alice"]
+        )
+        assert sent["to"] == ["*"]
+
+    def test_send_to_a_missing_team_is_not_found(self):
+        from lionagi.cli.machine import MachineError
+
+        with pytest.raises(MachineError) as exc:
+            team.machine_result(["send", "hi", "--team", "no-such-team", "--to", "all"])
+        assert exc.value.kind == "not_found"
+
+    def test_receive_as_a_member_marks_only_their_mail_read_and_returns_the_count(self):
+        created = team.machine_result(["create", "Squad", "--members", "alice,bob"])
+        team.machine_result(
+            ["send", "hi", "--team", created["id"], "--to", "all", "--from", "alice"]
+        )
+        first = team.machine_result(["receive", "--team", created["id"], "--as", "bob"])
+        assert first["count"] == 1
+        assert first["member"] == "bob"
+        assert [m["content"] for m in first["messages"]] == ["hi"]
+
+        second = team.machine_result(["receive", "--team", created["id"], "--as", "bob"])
+        assert second["count"] == 0
+
+    def test_receive_without_member_dumps_everything_and_marks_nothing_read(self):
+        created = team.machine_result(["create", "Squad", "--members", "alice,bob"])
+        team.machine_result(
+            ["send", "hi", "--team", created["id"], "--to", "all", "--from", "alice"]
+        )
+        first = team.machine_result(["receive", "--team", created["id"]])
+        assert first["member"] is None
+        assert first["count"] == 1
+
+        second = team.machine_result(["receive", "--team", created["id"]])
+        assert second["count"] == 1, "no member name means nothing is ever marked read"
+
+    def test_recv_alias_reaches_the_same_handler_as_receive(self):
+        created = team.machine_result(["create", "Squad", "--members", "alice,bob"])
+        team.machine_result(
+            ["send", "hi", "--team", created["id"], "--to", "all", "--from", "alice"]
+        )
+        via_recv = team.machine_result(["recv", "--team", created["id"], "--as", "bob"])
+        assert via_recv["count"] == 1
+
+    def test_receive_from_a_missing_team_is_not_found(self):
+        from lionagi.cli.machine import MachineError
+
+        with pytest.raises(MachineError) as exc:
+            team.machine_result(["receive", "--team", "no-such-team"])
+        assert exc.value.kind == "not_found"
+
+    def test_an_unknown_team_subcommand_is_invalid_input_not_unavailable(self):
+        """Every `li team` subcommand now has a machine seam, so nothing on this
+        command should still answer through the `without_seam` unavailable path."""
+        from lionagi.cli.machine import MachineError
+
+        with pytest.raises(MachineError) as exc:
+            team.machine_result(["not-a-subcommand"])
+        assert exc.value.kind == "invalid_input"

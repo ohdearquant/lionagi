@@ -342,14 +342,18 @@ def team_worker_system(
     *,
     messenger_bound: bool = False,
     messenger_names: frozenset[str] | None = None,
+    has_lion_mcp: bool = False,
 ) -> str | None:
     """TEAM coordination section to append to worker system prompt, or None.
-    See docs/internals/cli.md for the messenger-bound vs bash-channel
-    contract, roster-flagging, and why prior messages are excluded here."""
+    See docs/internals/cli.md for the messenger-bound vs bash-channel vs
+    MCP-channel contract, roster-flagging, and why prior messages are
+    excluded here. ``has_lion_mcp`` is ignored when ``messenger_bound`` is
+    True (an API-model worker always prefers its in-process tool)."""
     if not team_data:
         return None
     from ._common import (  # avoid import cycle
         TEAM_COORD_SECTION,
+        TEAM_COORD_SECTION_MCP,
         TEAM_COORD_SECTION_MESSENGER,
     )
 
@@ -368,7 +372,12 @@ def team_worker_system(
         else:
             roster_lines.append(f"- {t}")
     roster_lines.append(f"- **{worker_name}** (you)")
-    template = TEAM_COORD_SECTION_MESSENGER if messenger_bound else TEAM_COORD_SECTION
+    if messenger_bound:
+        template = TEAM_COORD_SECTION_MESSENGER
+    elif has_lion_mcp:
+        template = TEAM_COORD_SECTION_MCP
+    else:
+        template = TEAM_COORD_SECTION
     section = template.format(
         worker_name=worker_name,
         team_name=team_data["name"],
@@ -601,6 +610,31 @@ def _hand_mcp_servers(imodel, servers: dict | None, *, label: str) -> None:
         f"{label}: the {provider} provider takes its MCP servers from its own "
         f"configuration rather than from the request, so {lost}."
     )
+
+
+def _worker_has_lion_mcp(w_imodel, *, is_cli: bool, env: OrchestrationEnv) -> bool:
+    """Whether *w_imodel* was actually handed the lion MCP server.
+
+    True only for a sandboxed CLI provider that both accepts a forwarded MCP
+    server set (see ``apply_forwarded_mcp_servers``) and is not Claude —
+    Claude has no runtime filesystem sandbox to route the team channel
+    around (``bypassPermissions``), so it keeps the simpler bash `li team`
+    channel unconditionally regardless of what MCP servers this run
+    resolved. See docs/internals/cli.md for the transport this decides
+    between.
+    """
+    if not is_cli:
+        return False
+    from lionagi.agent.factory import provider_accepts_forwarded_mcp
+    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
+
+    provider = w_imodel.endpoint.config.provider
+    if provider in _CLAUDE_PROVIDER_NAMES:
+        return False
+    if not provider_accepts_forwarded_mcp(provider):
+        return False
+    servers = getattr(env, "mcp_servers", None) or {}
+    return "lion" in servers
 
 
 async def setup_orchestration(
@@ -880,6 +914,7 @@ async def build_worker_branch(
     exchange = getattr(env, "exchange", None)
     messenger = getattr(env, "messenger", None)
     messenger_bound = exchange is not None and messenger is not None and not is_cli
+    has_lion_mcp = _worker_has_lion_mcp(w_imodel, is_cli=is_cli, env=env)
 
     resolved_modes = [] if env.bare else resolve_modes(role, modes, env.pack)
     team_section = team_worker_system(
@@ -887,6 +922,7 @@ async def build_worker_branch(
         wname,
         messenger_bound=messenger_bound,
         messenger_names=getattr(env, "messenger_names", None),
+        has_lion_mcp=has_lion_mcp,
     )
 
     # Verbatim path applies only when the profile authored a body (one that

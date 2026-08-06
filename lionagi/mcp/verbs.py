@@ -718,6 +718,34 @@ _REGISTERED: tuple[Verb, ...] = (
         admits=(),
     ),
     Verb(
+        name="team.create",
+        summary="Create a new team with named members.",
+        executor="machine",
+        cli_path="team create",
+        admits=("name", "members"),
+    ),
+    Verb(
+        name="team.show",
+        summary="Show team details and messages.",
+        executor="machine",
+        cli_path="team show",
+        admits=("team",),
+    ),
+    Verb(
+        name="team.send",
+        summary="Send a message to team members.",
+        executor="machine",
+        cli_path="team send",
+        admits=("content", "team", "to", "sender", "from_op", "kind", "artifacts"),
+    ),
+    Verb(
+        name="team.receive",
+        summary="Read inbox messages.",
+        executor="machine",
+        cli_path="team receive",
+        admits=("team", "member"),
+    ),
+    Verb(
         name="plugin.info",
         summary="One plugin's version, trust state, and everything its manifest declares.",
         executor="machine",
@@ -793,11 +821,6 @@ ABSENT: tuple[AbsentVerb, ...] = (
             "it reports one schedule run, which schedule.runs already returns in a machine result"
         ),
         cli_path="schedule run",
-    ),
-    *_absent(
-        "team",
-        ("create", "show", "send", "receive"),
-        "Messaging between agents working as a team.",
     ),
     *_absent(
         "state",

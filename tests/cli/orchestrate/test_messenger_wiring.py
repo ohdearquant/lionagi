@@ -416,6 +416,13 @@ def test_bash_and_messenger_templates_are_distinct():
     assert TEAM_COORD_SECTION != TEAM_COORD_SECTION_MESSENGER
 
 
+def test_all_three_coordination_templates_are_pairwise_distinct():
+    from lionagi.cli.orchestrate._common import TEAM_COORD_SECTION_MCP
+
+    assert TEAM_COORD_SECTION != TEAM_COORD_SECTION_MCP
+    assert TEAM_COORD_SECTION_MESSENGER != TEAM_COORD_SECTION_MCP
+
+
 def test_team_worker_system_messenger_bound_selects_tool_channel_only():
     section = team_worker_system(_team_data(), "alice", messenger_bound=True)
 
@@ -507,6 +514,183 @@ async def test_cli_worker_branch_prompt_has_bash_channel_only(tmp_path):
     prompt = wb.system.rendered
     for marker in _BASH_MARKERS:
         assert marker in prompt
+    for marker in _MESSENGER_MARKERS:
+        assert marker not in prompt
+
+
+# ── Sandboxed CLI worker + lion MCP: third coordination channel ────────────
+#
+# A CLI-provider worker whose sandbox was granted the lion MCP server (Codex's
+# `--full-auto workspace-write` refuses a direct `~/.lionagi/teams/` write, but
+# the MCP call runs on the unsandboxed parent process) must get MCP-channel
+# instructions instead of a bash command its own sandbox would reject. Claude
+# has no such runtime FS sandbox (bypassPermissions) and keeps the simpler
+# bash channel unconditionally -- this is the regression surface for AC5.
+
+_MCP_MARKERS = ("mcp__lion__request", '"op": "team.send"', '"op": "team.receive"')
+
+
+def _codex_imodel(*_a, **_kw):
+    return iModel(provider="codex", api_key="dummy-key")
+
+
+def test_team_worker_system_mcp_bound_selects_mcp_channel_only():
+    section = team_worker_system(_team_data(), "alice", has_lion_mcp=True)
+
+    for marker in _MCP_MARKERS:
+        assert marker in section
+    for marker in _BASH_MARKERS:
+        assert marker not in section
+    for marker in _MESSENGER_MARKERS:
+        assert marker not in section
+
+
+def test_team_worker_system_messenger_bound_ignores_has_lion_mcp():
+    """An API-model worker always prefers its in-process tool over the MCP
+    channel, even if has_lion_mcp is (incorrectly) passed as True -- the two
+    flags are not mutually exclusive by construction, so precedence matters."""
+    section = team_worker_system(_team_data(), "alice", messenger_bound=True, has_lion_mcp=True)
+
+    for marker in _MESSENGER_MARKERS:
+        assert marker in section
+    for marker in _MCP_MARKERS:
+        assert marker not in section
+    for marker in _BASH_MARKERS:
+        assert marker not in section
+
+
+def test_worker_has_lion_mcp_true_for_codex_with_lion_server(tmp_path):
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+
+    env = _make_env(tmp_path)
+    env.mcp_servers = {"lion": {"command": "li"}, "khive": {"command": "kk"}}
+    assert orch_mod._worker_has_lion_mcp(_codex_imodel(), is_cli=True, env=env) is True
+
+
+def test_worker_has_lion_mcp_false_without_lion_server(tmp_path):
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+
+    env = _make_env(tmp_path)
+    env.mcp_servers = {"khive": {"command": "kk"}}
+    assert orch_mod._worker_has_lion_mcp(_codex_imodel(), is_cli=True, env=env) is False
+
+
+def test_worker_has_lion_mcp_false_for_claude_even_with_lion_server(tmp_path):
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+
+    env = _make_env(tmp_path)
+    env.mcp_servers = {"lion": {"command": "li"}}
+    assert orch_mod._worker_has_lion_mcp(_cli_imodel(), is_cli=True, env=env) is False
+
+
+def test_worker_has_lion_mcp_false_for_non_cli_worker(tmp_path):
+    import lionagi.cli.orchestrate._orchestration as orch_mod
+
+    env = _make_env(tmp_path)
+    env.mcp_servers = {"lion": {"command": "li"}}
+    assert orch_mod._worker_has_lion_mcp(_api_imodel(), is_cli=False, env=env) is False
+
+
+@pytest.mark.asyncio
+async def test_codex_worker_with_lion_mcp_gets_mcp_channel_prompt_end_to_end(tmp_path):
+    """End-to-end: a Codex worker whose run resolved the lion MCP server gets
+    the MCP coordination section, not the bash `li team` instructions its own
+    sandbox would refuse."""
+    exchange = Exchange()
+    messenger = LionMessenger(exchange)
+    roster: dict = {}
+    env = _make_env(
+        tmp_path,
+        exchange=exchange,
+        messenger=messenger,
+        roster=roster,
+        team_data=_team_data(),
+    )
+    env.mcp_servers = {"lion": {"command": "li"}}
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_codex_imodel,
+    ):
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
+            env, agent_id="codex-worker", role="researcher", explicit_name="codex-worker"
+        )
+
+    assert messenger_bound is False
+    prompt = wb.system.rendered
+    for marker in _MCP_MARKERS:
+        assert marker in prompt
+    for marker in _BASH_MARKERS:
+        assert marker not in prompt
+    for marker in _MESSENGER_MARKERS:
+        assert marker not in prompt
+
+
+@pytest.mark.asyncio
+async def test_codex_worker_without_lion_mcp_keeps_bash_channel_end_to_end(tmp_path):
+    """Regression: a Codex worker whose run resolved no MCP servers at all (or
+    none named 'lion') falls back to the bash channel exactly as before this
+    change -- still broken under a runtime sandbox, but not a behavior change."""
+    exchange = Exchange()
+    messenger = LionMessenger(exchange)
+    roster: dict = {}
+    env = _make_env(
+        tmp_path,
+        exchange=exchange,
+        messenger=messenger,
+        roster=roster,
+        team_data=_team_data(),
+    )
+    env.mcp_servers = {"khive": {"command": "kk"}}
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_codex_imodel,
+    ):
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
+            env, agent_id="codex-worker", role="researcher", explicit_name="codex-worker"
+        )
+
+    assert messenger_bound is False
+    prompt = wb.system.rendered
+    for marker in _BASH_MARKERS:
+        assert marker in prompt
+    for marker in _MCP_MARKERS:
+        assert marker not in prompt
+
+
+@pytest.mark.asyncio
+async def test_claude_worker_keeps_bash_channel_even_with_lion_mcp_end_to_end(tmp_path):
+    """AC5: the Claude path must keep working unchanged. Claude has no runtime
+    filesystem sandbox (bypassPermissions), so even when this run resolved the
+    lion MCP server, a Claude worker keeps the simpler bash `li team` channel
+    rather than switching to MCP guidance it doesn't need."""
+    exchange = Exchange()
+    messenger = LionMessenger(exchange)
+    roster: dict = {}
+    env = _make_env(
+        tmp_path,
+        exchange=exchange,
+        messenger=messenger,
+        roster=roster,
+        team_data=_team_data(),
+    )
+    env.mcp_servers = {"lion": {"command": "li"}}
+
+    with patch(
+        "lionagi.cli.orchestrate._orchestration.build_imodel_from_spec",
+        side_effect=_cli_imodel,
+    ):
+        wb, _model, _profile, messenger_bound = await build_worker_branch(
+            env, agent_id="claude-worker", role="researcher", explicit_name="claude-worker"
+        )
+
+    assert messenger_bound is False
+    prompt = wb.system.rendered
+    for marker in _BASH_MARKERS:
+        assert marker in prompt
+    for marker in _MCP_MARKERS:
+        assert marker not in prompt
     for marker in _MESSENGER_MARKERS:
         assert marker not in prompt
 
