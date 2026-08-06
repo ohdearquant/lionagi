@@ -678,6 +678,147 @@ describe("history/RunDetail.tsx — badgeForEvent (NodeEscalated route=notify)",
   });
 });
 
+// ─── visibleEventPayloadEntries / summarizeHookEvent — #2862 ─────────────────
+// Element/Signal attach created_at/metadata/schema_version to every signal
+// row; the events panel must not dump them into the one-line summary, and a
+// HookSignal row must read as a human summary, not a struct.
+
+function sig(overrides: Partial<import("@/lib/api").SignalEvent> = {}) {
+  return {
+    id: "e1",
+    session_id: "s1",
+    seq: 1,
+    kind: "HookSignal",
+    op_id: "op-a",
+    ts: 1000,
+    payload: {},
+    ...overrides,
+  } as import("@/lib/api").SignalEvent;
+}
+
+describe("history/RunDetail.tsx — visibleEventPayloadEntries", () => {
+  it("drops op_id, schema_version, and created_at from the visible entries", async () => {
+    const { visibleEventPayloadEntries } = await import("./RunDetail");
+    const entries = visibleEventPayloadEntries({
+      op_id: "op-a",
+      schema_version: 1,
+      created_at: 1786034040.25,
+      name: "step1",
+    });
+    expect(entries).toEqual([["name", "step1"]]);
+  });
+
+  it("drops empty metadata but keeps non-empty metadata", async () => {
+    const { visibleEventPayloadEntries } = await import("./RunDetail");
+    expect(visibleEventPayloadEntries({ metadata: {} })).toEqual([]);
+    expect(visibleEventPayloadEntries({ metadata: { k: "v" } })).toEqual([
+      ["metadata", { k: "v" }],
+    ]);
+  });
+
+  it("returns [] for an undefined payload", async () => {
+    const { visibleEventPayloadEntries } = await import("./RunDetail");
+    expect(visibleEventPayloadEntries(undefined)).toEqual([]);
+  });
+});
+
+describe("history/RunDetail.tsx — summarizeHookEvent", () => {
+  it("summarizes a tool.pre hook as 'point · tool_name'", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    const summary = summarizeHookEvent(
+      sig({
+        kind: "HookSignal",
+        payload: { point: "tool.pre", kwargs: { tool_name: "read_file", call_id: "c1" } },
+      }),
+    );
+    expect(summary).toBe("tool.pre · read_file");
+  });
+
+  it("falls back to the bare point when kwargs has no recognized field", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    const summary = summarizeHookEvent(
+      sig({ kind: "HookSignal", payload: { point: "session.start", kwargs: {} } }),
+    );
+    expect(summary).toBe("session.start");
+  });
+
+  it("returns null for a non-hook signal", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    expect(summarizeHookEvent(sig({ kind: "NodeStarted", payload: { name: "step1" } }))).toBeNull();
+  });
+
+  it("returns null when a HookSignal payload has no point", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    expect(summarizeHookEvent(sig({ kind: "HookSignal", payload: {} }))).toBeNull();
+  });
+});
+
+// ─── deriveGateOutcome — #2863 ────────────────────────────────────────────────
+// A gate/review step's structured verdict is a different population from
+// runtime tool errors; deriveGateOutcome scans the signal stream for it so
+// the page can surface "Gate: approve-with-fixes · 1 major, 5 minor" beside
+// the (possibly zero) runtime-error count instead of letting the green
+// "no errors" text read as the run's overall verdict.
+
+describe("history/RunDetail.tsx — deriveGateOutcome", () => {
+  it("returns null when no StructuredOutput signal carries a verdict shape", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    expect(
+      deriveGateOutcome([sig({ kind: "NodeStarted", payload: { name: "step1" } })]),
+    ).toBeNull();
+  });
+
+  it("extracts verdict and major/minor counts from a review-shaped StructuredOutput", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            verdict: "approve-with-fixes",
+            findings: [
+              { severity: "high", description: "a" },
+              { severity: "medium", description: "b" },
+              { severity: "low", description: "c" },
+            ],
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toEqual({
+      verdict: "approve-with-fixes",
+      major: 1,
+      minor: 2,
+      hasFindings: true,
+    });
+  });
+
+  it("extracts a boolean gate_passed shape with no findings breakdown", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({ kind: "StructuredOutput", payload: { data: { gate_passed: false } } }),
+    ]);
+    expect(outcome).toEqual({ verdict: "reject", major: 0, minor: 0, hasFindings: false });
+  });
+
+  it("uses the most recent verdict when multiple StructuredOutput signals carry one", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({ id: "e1", kind: "StructuredOutput", payload: { data: { verdict: "reject" } } }),
+      sig({ id: "e2", kind: "StructuredOutput", payload: { data: { verdict: "approve" } } }),
+    ]);
+    expect(outcome?.verdict).toBe("approve");
+  });
+
+  it("ignores a StructuredOutput signal whose data has neither shape", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({ kind: "StructuredOutput", payload: { data: { assignments: [] } } }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+});
+
 describe("stale-write guard predicate (mirrors the done handler's merge condition)", () => {
   function mergeIfSameSession(
     prev: { id: string; status: string } | null,
