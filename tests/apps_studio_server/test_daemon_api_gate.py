@@ -809,6 +809,52 @@ def test_schedules_detail_response_shape(tmp_path, monkeypatch):
     assert sorted(r.json().keys()) == _SCHEDULE_DETAIL_KEYS
 
 
+def test_schedules_detail_response_shape_with_budget_configured(tmp_path, monkeypatch):
+    """A schedule with budget_usd/budget_tokens configured additionally surfaces
+    the spend rollup (spend_usd, spend_tokens, unreported_sessions,
+    spend_is_partial). These keys are gated on a configured budget -- the
+    base _SCHEDULE_DETAIL_KEYS gate above uses a schedule with no budget
+    configured, so it's unaffected by this addition. Blessed deliberately
+    here rather than left to silently drift into the pinned shape."""
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    async def _create() -> str:
+        import lionagi.studio.services.schedules as schedules_mod
+
+        created = await schedules_mod.create_schedule(
+            {
+                "name": f"gate-budget-{uuid.uuid4().hex[:8]}",
+                "trigger_type": "cron",
+                "cron_expr": "0 18 * * *",
+                "action_kind": "agent",
+                "action_prompt": "ping",
+                "budget_usd": 5.0,
+            }
+        )
+        return created["id"]
+
+    schedule_id = run_async(_create())
+    client = _make_client()
+
+    r = client.get(f"/api/schedules/{schedule_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert sorted(body.keys()) == sorted(
+        [
+            *_SCHEDULE_DETAIL_KEYS,
+            "spend_usd",
+            "spend_tokens",
+            "unreported_sessions",
+            "spend_is_partial",
+        ]
+    )
+    assert body["spend_usd"] == 0.0
+    assert body["spend_tokens"] == 0
+    assert body["unreported_sessions"] == 0
+    assert body["spend_is_partial"] is False
+
+
 def test_schedules_detail_404_shape(tmp_path, monkeypatch):
     _patch_db(monkeypatch, tmp_path / "state.db")
     client = _make_client()
