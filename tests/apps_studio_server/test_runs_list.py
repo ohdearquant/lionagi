@@ -203,10 +203,23 @@ def test_runs_list_project_null_filter(tmp_path, monkeypatch):
 
 
 def test_runs_list_search_matches_name_or_agent_name(tmp_path, monkeypatch):
+    # search still matches the raw stored name/agent_name columns in SQL, but
+    # the returned `name` field is the resolved display name: a session with
+    # an agent_name gets the agent-role descriptor, not its raw stored name
+    # — so the second row's displayed name is derived from its agent_name,
+    # not the "unrelated" string it was seeded with.
+    from lionagi.state.session_naming import agent_role_label
+
+    started_at = 1767277320.0  # 2026-01-01T14:22:00Z
     db_path = tmp_path / "state.db"
     sessions = [
         {"id": str(uuid.uuid4()), "name": "fix flaky login test"},
-        {"id": str(uuid.uuid4()), "name": "unrelated", "agent_name": "flaky-hunter"},
+        {
+            "id": str(uuid.uuid4()),
+            "name": "unrelated",
+            "agent_name": "flaky-hunter",
+            "started_at": started_at,
+        },
         {"id": str(uuid.uuid4()), "name": "totally different"},
     ]
     _run(_seed_sessions(db_path, sessions))
@@ -217,7 +230,7 @@ def test_runs_list_search_matches_name_or_agent_name(tmp_path, monkeypatch):
     data = r.json()
     assert data["total"] == 2
     names = {run["name"] for run in data["runs"]}
-    assert names == {"fix flaky login test", "unrelated"}
+    assert names == {"fix flaky login test", agent_role_label("flaky-hunter", started_at)}
 
 
 def test_runs_list_search_is_case_insensitive(tmp_path, monkeypatch):

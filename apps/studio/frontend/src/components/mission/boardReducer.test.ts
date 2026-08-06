@@ -3,6 +3,7 @@ import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
 import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
+import { resolveRunLabel } from "@/lib/runLabel";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -187,6 +188,18 @@ describe("boardReducer — attention queue derivation", () => {
   it("undated failures are excluded — age unknown is not actionable", () => {
     const s = dispatchOk(initialBoardState(), [makeRun({ run_id: "undated", status: "failed" })]);
     expect(s.attentionItems).toHaveLength(0);
+  });
+
+  it("a run's attention-queue name matches the shared resolver, never a raw playbook/agent fallback", () => {
+    const run = makeRun({
+      run_id: "r1",
+      status: "failed",
+      started_at: 1_000_000 - 600,
+      playbook_name: "pr-merge-review",
+      agent_name: "implementer",
+    });
+    const s = dispatchOk(initialBoardState(), [run]);
+    expect(s.attentionItems[0].name).toBe(resolveRunLabel(run));
   });
 
   it("running + stale health appears in attention queue", () => {

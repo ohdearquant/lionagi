@@ -12,6 +12,7 @@ from fastapi import HTTPException, Query
 from lionagi._errors import NotFoundError
 from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
+from lionagi.state.session_naming import resolve_display_name
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
@@ -275,7 +276,10 @@ async def list_sessions(
     return [
         {
             "id": row["id"],
-            "name": row["name"],
+            # Displayed name prefers structured identity (playbook/show/agent)
+            # over the raw, possibly prompt-derived value stored on the row
+            # — see resolve_display_name().
+            "name": resolve_display_name(dict(row)),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"] or 0.0,
             "node_metadata": row["node_metadata"],
@@ -794,7 +798,9 @@ async def get_session(
 
     return {
         "id": session_row["id"],
-        "name": session_row["name"],
+        # Same resolution as list_sessions() — structured identity beats
+        # the raw, possibly prompt-derived stored name.
+        "name": resolve_display_name(dict(session_row)),
         "created_at": session_row["created_at"],
         "updated_at": session_row["updated_at"],
         "playbook_name": session_row["playbook_name"],
