@@ -491,7 +491,7 @@ function LibraryPage() {
           {kindFilter === "mcp"
             ? t("newMcpServer")
             : kindFilter === "agent"
-              ? "New Agent"
+              ? t("newAgent")
               : t("newWorkflow")}
         </Button>
       </div>
