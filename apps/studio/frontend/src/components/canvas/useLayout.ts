@@ -117,17 +117,126 @@ export function wrapWideRanks(nodes: Node[]): Node[] {
   return out;
 }
 
+// dagre's ranksep is one constant paid at EVERY rank boundary, so a 10-rank
+// chain pays it 9 times over — the deeper the graph, the more that constant
+// alone inflates the bounding box fitView has to shrink to fit. Shallow
+// graphs (D <= SHALLOW_DEPTH) keep the original 90 unchanged — the wide
+// fan-out fixture is depth 3, so this is an identity for it; deeper graphs
+// taper linearly down to a floor. The floor is not a node-overlap guarantee
+// by itself — ranksep only spaces ranks apart, not siblings within a rank —
+// that guarantee is enforceMinRankGap below.
+const RANKSEP_SHALLOW_DEPTH = 5;
+const RANKSEP_TAPER_PER_RANK = 7;
+
+export function rankSepForDepth(maxDepth: number, ranksep = 90, minRanksep = 48): number {
+  if (maxDepth <= RANKSEP_SHALLOW_DEPTH) return ranksep;
+  return Math.max(
+    minRanksep,
+    ranksep - RANKSEP_TAPER_PER_RANK * (maxDepth - RANKSEP_SHALLOW_DEPTH),
+  );
+}
+
+// Longest-path depth of every node from its roots, over the RESOLVED edge
+// set (post display-time reduction, if any — callers pass whatever edges
+// they intend to lay out). This is both the rank index edges use for
+// long-range routing (ConditionEdge's rankDistance) and the input to
+// rankSepForDepth. A cycle should not happen in a depends_on graph, but a
+// defensive on-stack guard keeps a malformed input from recursing forever —
+// it simply stops deepening along the cyclic edge rather than erroring, the
+// same policy operationGraph's reducer uses for cycles.
+export function computeNodeDepths(nodes: Node[], edges: Edge[]): Map<string, number> {
+  const known = new Set(nodes.map((n) => n.id));
+  const preds = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!known.has(e.source) || !known.has(e.target)) continue;
+    const list = preds.get(e.target);
+    if (list) list.push(e.source);
+    else preds.set(e.target, [e.source]);
+  }
+
+  const depth = new Map<string, number>();
+  const onStack = new Set<string>();
+  const depthOf = (id: string): number => {
+    const cached = depth.get(id);
+    if (cached !== undefined) return cached;
+    const p = preds.get(id);
+    if (!p || p.length === 0) {
+      depth.set(id, 0);
+      return 0;
+    }
+    if (onStack.has(id)) return 0; // cycle guard
+    onStack.add(id);
+    let d = 0;
+    for (const src of p) d = Math.max(d, depthOf(src) + 1);
+    onStack.delete(id);
+    depth.set(id, d);
+    return d;
+  };
+  for (const n of nodes) depthOf(n.id);
+  return depth;
+}
+
+export function maxGraphDepth(nodes: Node[], edges: Edge[]): number {
+  const depths = computeNodeDepths(nodes, edges);
+  return depths.size ? Math.max(...depths.values()) : 0;
+}
+
+// dagre's nodesep spaces siblings within a rank, but its estimate of a rank's
+// cross-axis extent comes from the SAME per-node height estimate that drives
+// ranksep math — close enough for well-behaved graphs, not a hard guarantee
+// once a rank mixes very different node heights (a deep chain's fan-in rank,
+// e.g.). This pass runs last and is a straightforward sweep, not a dagre
+// re-layout: group by shared rank (x, for LR), sort by y, and push down any
+// node whose gap to its predecessor is under the floor. Nodes in the same
+// rank are never linked by an edge that passes between them (dagre only
+// edges across ranks), so widening the gap never crosses an edge.
+export function enforceMinRankGap(nodes: Node[], minGap = 6): Node[] {
+  const byX = new Map<number, Node[]>();
+  for (const n of nodes) {
+    const key = Math.round(n.position.x);
+    const rank = byX.get(key);
+    if (rank) rank.push(n);
+    else byX.set(key, [n]);
+  }
+
+  const out: Node[] = [];
+  for (const [, rank] of byX) {
+    const sorted = [...rank].sort((a, b) => a.position.y - b.position.y);
+    let cursor = -Infinity;
+    for (const node of sorted) {
+      const top = Math.max(node.position.y, cursor + minGap);
+      const shifted =
+        top === node.position.y ? node : { ...node, position: { ...node.position, y: top } };
+      out.push(shifted);
+      cursor = top + estimateNodeHeight(shifted);
+    }
+  }
+  return out;
+}
+
+export interface LayoutedGraph {
+  nodes: Node[];
+  edges: Edge[];
+  height: number;
+  /** node id -> longest-path depth (rank index), for edge rank-distance
+   * styling (ConditionEdge's long-range smooth-step routing). */
+  ranks: Map<string, number>;
+}
+
 export function getLayoutedElements(
   nodes: Node[],
   edges: Edge[],
   direction: "LR" | "TB" = "LR",
-): { nodes: Node[]; edges: Edge[]; height: number } {
+): LayoutedGraph {
+  const ranks = computeNodeDepths(nodes, edges);
+  const maxDepth = ranks.size ? Math.max(...ranks.values()) : 0;
+
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
     rankdir: direction,
     nodesep: NODE_SEP,
-    ranksep: 90,
+    ranksep: rankSepForDepth(maxDepth),
     marginx: 28,
     marginy: 24,
   });
@@ -156,12 +265,13 @@ export function getLayoutedElements(
 
   // The wrap keys ranks by their shared x, which holds only for LR (constant
   // node width). TB ranks share y instead; no caller lays out TB today.
-  const finalNodes = direction === "LR" ? wrapWideRanks(layoutedNodes) : layoutedNodes;
+  const wrappedNodes = direction === "LR" ? wrapWideRanks(layoutedNodes) : layoutedNodes;
+  const finalNodes = enforceMinRankGap(wrappedNodes);
 
-  // Bounding-box height of the laid-out graph (post-wrap), so containers can
-  // size to what the layout actually needs — a linear pipeline is one rank
-  // tall no matter how many nodes it has, and a wrapped fan-out is exactly as
-  // tall as its grid.
+  // Bounding-box height of the laid-out graph (post-wrap, post-gap), so
+  // containers can size to what the layout actually needs — a linear
+  // pipeline is one rank tall no matter how many nodes it has, and a wrapped
+  // fan-out is exactly as tall as its grid.
   let top = Infinity;
   let bottom = -Infinity;
   for (const node of finalNodes) {
@@ -170,7 +280,7 @@ export function getLayoutedElements(
   }
   const height = finalNodes.length === 0 ? 0 : bottom - top + 2 * 24;
 
-  return { nodes: finalNodes, edges, height };
+  return { nodes: finalNodes, edges, height, ranks };
 }
 
 export function useAutoLayout() {

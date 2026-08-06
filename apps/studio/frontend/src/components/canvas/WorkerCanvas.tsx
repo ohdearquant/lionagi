@@ -35,6 +35,50 @@ import type {
   WorkerLinkEdge,
 } from "@/lib/types";
 
+// ─── Readability floor ───────────────────────────────────
+//
+// fitView shrinks the whole graph to fit the container, with no regard for
+// whether the result is still legible. StepNode's smallest text (label,
+// role, assignment, stats rows) all render at --t-xs (11px, theme.css) —
+// ConditionEdge's condition chip matches. Below a 7px screen size even
+// anti-aliased text stops being legible, so the floor is the zoom at which
+// an 11px glyph lands on 7px: 7 / 11 = 0.636, rounded up to 0.65 for a small
+// margin. Below the floor the canvas overflows its container instead of
+// shrinking further; ReactFlow's own pan/zoom-out takes over from there.
+export const FIT_ZOOM_FLOOR = 0.65;
+
+// How far a user may deliberately zoom out, which is a different question from
+// how small the default fit may go. The floor above keeps the view we CHOOSE
+// legible; this one keeps a graph too wide to fit legibly from becoming
+// unviewable, because a compact embed has no minimap and a floor on the root
+// would leave panning as the only way to see a wide graph whole. Zooming past
+// the readability floor is an explicit gesture whose intent is "show me the
+// shape", not "let me read the labels".
+export const MIN_INTERACTIVE_ZOOM = 0.2;
+
+// Computed fit zoom for a laid-out graph in a given viewport — the same
+// arithmetic ReactFlow's fitView/getViewportForBounds uses internally (fit
+// width and height under a SINGLE padding term, then clamp to [minZoom,
+// maxZoom], take the smaller axis). Exported so layout fixtures can assert
+// "this graph's fit zoom would clear the floor" without mounting ReactFlow.
+// minZoom defaults to FIT_ZOOM_FLOOR because that is the clamp WorkerCanvas
+// actually wires into <ReactFlow minZoom>/fitViewOptions below — callers that
+// need the pre-clamp raw arithmetic (e.g. to demonstrate why the clamp is
+// needed) can pass 0 explicitly.
+export function fitZoomFor(
+  graphWidth: number,
+  graphHeight: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  padding: number,
+  maxZoom: number,
+  minZoom: number = FIT_ZOOM_FLOOR,
+): number {
+  const w = viewportWidth / (graphWidth * (1 + padding)) || 1;
+  const h = viewportHeight / (graphHeight * (1 + padding)) || 1;
+  return Math.min(Math.max(Math.min(w, h), minZoom), maxZoom);
+}
+
 // ─── Types ───────────────────────────────────────────────
 
 interface WorkerCanvasProps {
@@ -159,6 +203,24 @@ function toFlowEdges(edges: WorkerLinkEdge[]): Edge<ConditionEdgeData>[] {
   }));
 }
 
+// Rank distance is a layout output (useLayout's rank map), not something
+// toFlowEdges can know at the initial graph -> ReactFlow conversion — so it
+// is stamped on afterward, once a layout pass has run. Edges outside the
+// rank map (e.g. a node dropped mid-edit) fall back to undefined, which
+// ConditionEdge treats as short-range.
+function attachRankDistance(
+  edges: Edge<ConditionEdgeData>[],
+  ranks: Map<string, number>,
+): Edge<ConditionEdgeData>[] {
+  return edges.map((e) => {
+    const srcRank = ranks.get(e.source);
+    const tgtRank = ranks.get(e.target);
+    const rankDistance =
+      srcRank !== undefined && tgtRank !== undefined ? tgtRank - srcRank : undefined;
+    return { ...e, data: { ...(e.data as ConditionEdgeData), rankDistance } };
+  });
+}
+
 function fromFlowNodes(nodes: Node<StepNodeData>[]): WorkerStepNode[] {
   return nodes.map((n) => ({
     id: n.id,
@@ -223,7 +285,7 @@ export default function WorkerCanvas({
     if (refitRaf.current !== null) cancelAnimationFrame(refitRaf.current);
     refitRaf.current = requestAnimationFrame(() => {
       refitRaf.current = null;
-      flowRef.current?.fitView({ padding: 0.15, maxZoom: 1 });
+      flowRef.current?.fitView({ padding: 0.15, maxZoom: 1, minZoom: FIT_ZOOM_FLOOR });
     });
   }, []);
   useEffect(() => {
@@ -245,9 +307,10 @@ export default function WorkerCanvas({
       nodes: ln,
       edges: le,
       height,
+      ranks,
     } = getLayoutedElements(initialFlowNodes, initialFlowEdges, "LR");
     setNodes(ln);
-    setEdges(le);
+    setEdges(attachRankDistance(le, ranks));
     initialised.current = true;
     onLayoutHeight?.(height);
     refit();
@@ -433,9 +496,9 @@ export default function WorkerCanvas({
 
   // Auto layout
   const handleAutoLayout = useCallback(() => {
-    const { nodes: ln, edges: le } = getLayoutedElements(nodes, edges, "LR");
+    const { nodes: ln, edges: le, ranks } = getLayoutedElements(nodes, edges, "LR");
     setNodes(ln);
-    setEdges(le);
+    setEdges(attachRankDistance(le, ranks));
   }, [nodes, edges, setNodes, setEdges]);
 
   return (
@@ -460,12 +523,16 @@ export default function WorkerCanvas({
           nodesConnectable={editable}
           elementsSelectable={true}
           fitView
-          // minZoom must sit below what fitView needs for a large graph —
-          // react-flow's 0.5 default made fitView stop there, showing a
-          // sliver of the graph as if it were the whole thing. maxZoom keeps
-          // a two-node graph from being blown up to fill the panel.
-          minZoom={0.1}
-          fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+          // The readability floor belongs to the FIT, not to the zoom control.
+          // fitViewOptions clamps the view we pick, so the graph always opens
+          // legible; the root keeps a much lower floor so a graph too wide to
+          // fit at that zoom can still be zoomed out and seen whole. Putting
+          // the readability floor on the root instead clamps wheel, pinch and
+          // the zoom-out button too, which strands a wide graph overflowing a
+          // compact embed that has no minimap. maxZoom keeps a two-node graph
+          // from being blown up to fill the panel.
+          minZoom={MIN_INTERACTIVE_ZOOM}
+          fitViewOptions={{ padding: 0.15, maxZoom: 1, minZoom: FIT_ZOOM_FLOOR }}
           proOptions={{ hideAttribution: true }}
           className="bg-surface-base"
         >

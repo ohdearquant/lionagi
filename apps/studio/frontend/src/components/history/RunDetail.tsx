@@ -17,7 +17,12 @@ import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
-import { buildNodeStatusesByName, buildOperationGraph, laneFor } from "@/lib/operationGraph";
+import {
+  buildNodeStatusesByName,
+  buildOperationGraph,
+  laneFor,
+  transitiveReduceDisplay,
+} from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
 import { deriveDisplayStatus, isEffectivelyActive } from "@/lib/runStatus";
 import type { RunMessage, RunResumeResponse, RunStep, WorkerGraph } from "@/lib/types";
@@ -135,6 +140,22 @@ export function resolveGraphEdges(
     }
   }
   return pairOrder.map((pair) => byPair.get(pair)!);
+}
+
+// The authored graph's resolved edges (resolveGraphEdges output) include
+// every ancestor the designer wired, direct and transitive alike — the same
+// "one depends_on entry per predecessor" redundancy transitiveReduce exists
+// for on the runtime path, just authored instead of engine-emitted. Reduce
+// it the same way, display-time only and with the semantic guard
+// (transitiveReduceDisplay never drops a condition/handler/map/code edge),
+// so a viewer sees the minimal picture by default with a one-click escape
+// hatch back to the full resolved set — never a dependency silently erased.
+export function computeDisplayEdges(
+  edges: WorkerGraph["edges"],
+  showImpliedEdges: boolean,
+): { displayEdges: WorkerGraph["edges"]; hiddenCount: number } {
+  const { kept, hidden } = transitiveReduceDisplay(edges);
+  return { displayEdges: showImpliedEdges ? edges : kept, hiddenCount: hidden.length };
 }
 
 // Raw SSE payloads arrive as an untyped Record — this is the boundary where
@@ -400,11 +421,24 @@ function SectionHeader({
   label,
   count,
   errorTone,
+  edgeCount,
+  hiddenCount,
+  onToggleImplied,
+  showImplied,
 }: {
   label: string;
   count?: number;
   errorTone?: boolean;
+  /** Edge count of whatever graph is actually being rendered (reduced by
+   * default, or the full resolved set when showImplied is on). */
+  edgeCount?: number;
+  /** Edges transitiveReduceDisplay dropped as transitively implied — the
+   * toggle button and "N implied hidden" badge render only when > 0. */
+  hiddenCount?: number;
+  onToggleImplied?: () => void;
+  showImplied?: boolean;
 }) {
+  const t = useTranslations("history.detail");
   return (
     <div className="mb-2 flex items-center gap-2">
       <h2 className="text-label font-semibold text-content-primary">{label}</h2>
@@ -418,6 +452,25 @@ function SectionHeader({
         >
           {count}
         </span>
+      )}
+      {edgeCount != null && (
+        <span className="rounded px-1.5 py-0 font-mono text-[length:var(--t-xs)] bg-surface-overlay text-content-muted">
+          {t("graphEdgeCount", { count: edgeCount })}
+        </span>
+      )}
+      {hiddenCount != null && hiddenCount > 0 && (
+        <>
+          <span className="font-mono text-[length:var(--t-xs)] text-content-muted">
+            {t("graphImpliedHidden", { count: hiddenCount })}
+          </span>
+          <button
+            type="button"
+            onClick={onToggleImplied}
+            className="rounded border border-edge px-1.5 py-0 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary"
+          >
+            {showImplied ? t("graphHideImplied") : t("graphShowImplied")}
+          </button>
+        </>
       )}
     </div>
   );
@@ -897,11 +950,15 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
 
 // ── Public component ──────────────────────────────────────────────────────────
 
-// Bounds for the execution-graph panel. The floor keeps a tiny pipeline from
-// collapsing into a sliver; the cap keeps a huge fan-out from swallowing the
-// page — past it the canvas pans/zooms inside the panel.
+// Floor for the execution-graph panel — keeps a tiny pipeline from collapsing
+// into a sliver. No ceiling: the card sizes to the laid-out graph's reported
+// bounding-box height (post-reduction, post-depth-scaled-ranksep) so fitView
+// has room to keep a deep chain's cards above the readability floor
+// (WorkerCanvas's FIT_ZOOM_FLOOR); a capped card would force fitView below
+// that floor for every graph taller than the cap. The enclosing page scrolls
+// past a tall card; the canvas itself only pans once it's still wider/taller
+// than the floor-zoomed viewport.
 const DAG_MIN_HEIGHT = 280;
-const DAG_MAX_HEIGHT = 560;
 
 export interface RunDetailProps {
   /** Session ID to load. */
@@ -925,7 +982,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   const dagHeight = dagHeightFor.id === id ? dagHeightFor.height : DAG_MIN_HEIGHT;
   const onDagLayoutHeight = useCallback(
     (height: number) => {
-      const clamped = Math.min(DAG_MAX_HEIGHT, Math.max(DAG_MIN_HEIGHT, Math.ceil(height)));
+      const clamped = Math.max(DAG_MIN_HEIGHT, Math.ceil(height));
       setDagHeightFor((prev) => ({
         id,
         height: Math.max(prev.id === id ? prev.height : DAG_MIN_HEIGHT, clamped),
@@ -1317,11 +1374,23 @@ export default function RunDetail({ id }: RunDetailProps) {
   );
 
   // runGraph is the persisted/authored graph (Studio's early_graph) — its
-  // edges are exactly what the designer wired, and may carry conditions that
-  // only apply to a specific (possibly transitive-looking) edge. Do NOT
-  // transitively reduce it: unlike the runtime-derived opGraph below (whose
-  // edges come from depends_on ancestor lists and legitimately need
-  // deduplication), every authored edge here is meaningful and must render.
+  // edges are exactly what the designer wired, resolved (resolveGraphEdges,
+  // above) but not yet reduced. Like the runtime-derived opGraph below, a
+  // depends_on-style ancestor set can carry edges a shorter chain already
+  // implies; unlike opGraph, an authored edge can also carry a
+  // condition/handler/map/code mode the designer put there on purpose. So
+  // this is reduced too, but display-time only and through
+  // transitiveReduceDisplay (not the runtime transitiveReduce): it never
+  // drops a semantically rich edge, and a hidden dependency is always one
+  // toggle away from view, never silently gone.
+  const [showImpliedEdges, setShowImpliedEdges] = useState(false);
+  const { displayEdges, hiddenCount } = useMemo(
+    () =>
+      runGraph
+        ? computeDisplayEdges(runGraph.edges, showImpliedEdges)
+        : { displayEdges: [] as WorkerGraph["edges"], hiddenCount: 0 },
+    [runGraph, showImpliedEdges],
+  );
 
   // Live per-node status correlated by authored step id (Node* payload.name),
   // never by op_id — see lib/operationGraph.ts. Only meaningful when a
@@ -1454,7 +1523,14 @@ export default function RunDetail({ id }: RunDetailProps) {
       />
       {runGraph && shouldRenderAuthoredGraph(runGraph, opGraph) ? (
         <div id="run-dag" className="scroll-mt-4">
-          <SectionHeader label={t("sectionExecutionGraph")} count={runGraph.nodes.length} />
+          <SectionHeader
+            label={t("sectionExecutionGraph")}
+            count={runGraph.nodes.length}
+            edgeCount={displayEdges.length}
+            hiddenCount={hiddenCount}
+            onToggleImplied={() => setShowImpliedEdges((v) => !v)}
+            showImplied={showImpliedEdges}
+          />
           {/* A fan-out of dozens of workers cannot be legible in the same
               280px that fits a five-step pipeline — the panel takes its height
               from the laid-out graph's bounding box so fitView has room to
@@ -1466,7 +1542,7 @@ export default function RunDetail({ id }: RunDetailProps) {
           >
             <Suspense fallback={null}>
               <WorkerCanvas
-                graph={runGraph}
+                graph={{ ...runGraph, edges: displayEdges }}
                 editable={false}
                 execSteps={execSteps}
                 nodeStatuses={nodeStatuses}

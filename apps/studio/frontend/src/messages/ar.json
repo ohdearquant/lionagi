@@ -442,7 +442,11 @@
       "noBranchErrorsPartial": "لا توجد أخطاء في الرسائل المحمّلة.",
       "noFilesPartial": "لم تُكتشف عمليات على الملفات في الرسائل المحمّلة.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count} حافة",
+      "graphImpliedHidden": "· {count} ضمنية مخفية",
+      "graphHideImplied": "إخفاء الضمنية",
+      "graphShowImplied": "إظهار الحواف الضمنية"
     },
     "masterAria": "قائمة السجل",
     "detailAria": "تفاصيل العنصر"
