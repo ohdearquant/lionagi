@@ -4,6 +4,7 @@ import {
   buildOperationGraph,
   laneFor,
   transitiveReduce,
+  transitiveReduceDisplay,
 } from "./operationGraph";
 import type { SignalEvent } from "./api";
 
@@ -457,6 +458,118 @@ describe("transitiveReduce", () => {
 
   it("is a no-op on an empty edge list", () => {
     expect(transitiveReduce([])).toEqual([]);
+  });
+});
+
+// ── transitiveReduceDisplay — semantic-guarded display-time reduction ──────────
+
+describe("transitiveReduceDisplay — semantic-guarded display-time reduction", () => {
+  it("keeps both branches of a diamond (nothing redundant)", () => {
+    const edges = [
+      { source: "A", target: "B" },
+      { source: "A", target: "C" },
+      { source: "B", target: "D" },
+      { source: "C", target: "D" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).toHaveLength(4);
+    expect(hidden).toHaveLength(0);
+  });
+
+  it("drops a skip edge when a longer path covers it", () => {
+    const edges = [
+      { source: "A", target: "B" },
+      { source: "B", target: "C" },
+      { source: "A", target: "C" }, // redundant: A→B→C
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).toHaveLength(2);
+    expect(kept).not.toContainEqual({ source: "A", target: "C" });
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0]).toMatchObject({ source: "A", target: "C" });
+  });
+
+  it("fan-in to sink: only direct predecessors survive when the sink also depends on the root", () => {
+    const edges = [
+      { source: "root", target: "w1" },
+      { source: "root", target: "w2" },
+      { source: "w1", target: "sink" },
+      { source: "w2", target: "sink" },
+      { source: "root", target: "sink" }, // redundant: root→w1→sink and root→w2→sink
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).toHaveLength(4);
+    expect(kept).not.toContainEqual({ source: "root", target: "sink" });
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0]).toMatchObject({ source: "root", target: "sink" });
+  });
+
+  it("leaves a cyclic graph entirely unchanged", () => {
+    const edges = [
+      { source: "A", target: "B" },
+      { source: "B", target: "A" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).toEqual(edges);
+    expect(hidden).toHaveLength(0);
+  });
+
+  it("skips reduction for the WHOLE graph even when a transitive-looking edge sits alongside the cycle", () => {
+    // A→B→C→A is a cycle; A→C also looks like a candidate for the skip-edge
+    // reduction in the diamond/chain tests above (A reaches C via B). A
+    // reducer that only guards the cycle's own edges — rather than the whole
+    // graph — would still drop A→C here, which this test exists to catch: a
+    // cyclic depends_on graph is defensive/unexpected input, and every edge
+    // in and around it may be load-bearing, so nothing may be dropped.
+    const edges = [
+      { source: "A", target: "B" },
+      { source: "B", target: "C" },
+      { source: "C", target: "A" },
+      { source: "A", target: "C" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).toEqual(edges);
+    expect(kept).toHaveLength(4);
+    expect(hidden).toHaveLength(0);
+  });
+
+  it("preserves a conditional edge that would be dropped by plain transitiveReduce", () => {
+    const edges = [
+      { source: "A", target: "B" },
+      { source: "B", target: "C" },
+      { source: "A", target: "C", condition: "score > 0.8" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).toHaveLength(3);
+    expect(kept).toContainEqual(edges[2]); // conditional edge survives
+    expect(hidden).toHaveLength(0);
+  });
+
+  it("returns unchanged for an already-minimal graph (identity)", () => {
+    const edges = [
+      { source: "A", target: "B" },
+      { source: "B", target: "C" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).toEqual(edges);
+    expect(hidden).toHaveLength(0);
+  });
+
+  it("is a no-op on an empty edge list", () => {
+    expect(transitiveReduceDisplay([])).toEqual({ kept: [], hidden: [] });
+  });
+
+  it("never drops a map or handler or mode=code edge, only a bare condition", () => {
+    const edges = [
+      { source: "A", target: "B" },
+      { source: "B", target: "C" },
+      { source: "A", target: "C", handler: "onMatch" },
+      { source: "A", target: "C", map: { key: "value" } },
+      { source: "A", target: "C", mode: "code" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).toHaveLength(5);
+    expect(hidden).toHaveLength(0);
   });
 });
 
