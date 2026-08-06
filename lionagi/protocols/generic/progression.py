@@ -38,13 +38,29 @@ class Progression(Element, Ordering[T], Generic[T]):
         description="A human-readable identifier for the progression.",
     )
     _members: set[UUID] = PrivateAttr(default_factory=set)
+    # Length of `order` as of the last known-good `_members` sync. `order` is a
+    # public mutable deque, so code can mutate it directly (bypassing every
+    # `Progression` method). A length mismatch is a cheap O(1) signal that such
+    # an external mutation happened, so `__contains__` can lazily rebuild only
+    # when needed instead of paying O(n) on every call.
+    _order_len: int = PrivateAttr(default=0)
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)
-        self._members = set(self.order)
+        self._rebuild_members()
 
     def _rebuild_members(self) -> None:
         self._members = set(self.order)
+        self._order_len = len(self.order)
+
+    def _ensure_synced(self) -> None:
+        # Must be called before any read of, or incremental update to,
+        # `_members`/`_order_len`: an external direct `order` mutation may
+        # have happened since the last sync, and an incremental update
+        # applied on top of an already-stale cache would "bless" the wrong
+        # state as synced (matching lengths without matching contents).
+        if len(self.order) != self._order_len:
+            self._rebuild_members()
 
     @field_validator("order", mode="before")
     def _validate_ordering(cls, value: Any) -> deque[UUID]:
@@ -63,11 +79,8 @@ class Progression(Element, Ordering[T], Generic[T]):
     def __contains__(self, item: Any) -> bool:
         try:
             refs = validate_order(item)
-            # Recomputed from `order` rather than the `_members` cache: `order`
-            # is a public mutable deque, so direct external mutation (e.g.
-            # `progression.order.append(x)`) can desync a cached set without
-            # this method ever knowing.
-            members = set(self.order)
+            self._ensure_synced()
+            members = self._members
             return all(ref in members for ref in refs)
         except (ValueError, TypeError):
             return False
@@ -96,15 +109,18 @@ class Progression(Element, Ordering[T], Generic[T]):
             self.order = deque(as_list)
             self._rebuild_members()
         else:
+            self._ensure_synced()
             try:
                 old = self.order[key]
                 self.order[key] = refs[0]
                 if old not in self.order:
                     self._members.discard(old)
                 self._members.add(refs[0])
+                self._order_len = len(self.order)
             except IndexError:
                 self.order.insert(key, refs[0])
                 self._members.add(refs[0])
+                self._order_len = len(self.order)
 
     def __delitem__(self, key: int | slice) -> None:
         if isinstance(key, slice):
@@ -128,6 +144,7 @@ class Progression(Element, Ordering[T], Generic[T]):
     def clear(self) -> None:
         self.order.clear()
         self._members.clear()
+        self._order_len = 0
 
     def include(self, item: Any, /) -> bool:
         try:
@@ -137,12 +154,14 @@ class Progression(Element, Ordering[T], Generic[T]):
         if not refs:
             return True
 
+        self._ensure_synced()
         appended = False
         for ref in refs:
             if ref not in self._members:
                 self.order.append(ref)
                 self._members.add(ref)
                 appended = True
+        self._order_len = len(self.order)
         return appended
 
     def exclude(self, item: Any, /) -> bool:
@@ -160,15 +179,19 @@ class Progression(Element, Ordering[T], Generic[T]):
         return len(self.order) < before
 
     def append(self, item: Any, /) -> None:
+        self._ensure_synced()
         if isinstance(item, Element):
             self.order.append(item.id)
             self._members.add(item.id)
+            self._order_len = len(self.order)
             return
         refs = validate_order(item)
         self.order.extend(refs)
         self._members.update(refs)
+        self._order_len = len(self.order)
 
     def pop(self, index: int = -1) -> UUID:
+        self._ensure_synced()
         try:
             if index == -1 or index == len(self.order) - 1:
                 uid = self.order.pop()
@@ -179,6 +202,7 @@ class Progression(Element, Ordering[T], Generic[T]):
                 del self.order[index]
             if uid not in self.order:
                 self._members.discard(uid)
+            self._order_len = len(self.order)
             return uid
         except Exception as e:
             raise ItemNotFoundError(str(e)) from e
@@ -186,9 +210,11 @@ class Progression(Element, Ordering[T], Generic[T]):
     def popleft(self) -> UUID:
         if not self.order:
             raise ItemNotFoundError("No items in progression.")
+        self._ensure_synced()
         uid = self.order.popleft()
         if uid not in self.order:
             self._members.discard(uid)
+        self._order_len = len(self.order)
         return uid
 
     def remove(self, item: Any, /) -> None:
@@ -198,6 +224,7 @@ class Progression(Element, Ordering[T], Generic[T]):
             raise ItemNotFoundError(str(item)) from e
         if not refs:
             return
+        self._ensure_synced()
         missing = [r for r in refs if r not in self._members]
         if missing:
             raise ItemNotFoundError(str(missing))
@@ -218,8 +245,10 @@ class Progression(Element, Ordering[T], Generic[T]):
     def extend(self, other: Progression) -> None:
         if not isinstance(other, Progression):
             raise ValueError("Can only extend with another Progression.")
+        self._ensure_synced()
         self.order.extend(other.order)
         self._members.update(other.order)
+        self._order_len = len(self.order)
 
     def __add__(self, other: Any) -> Progression[T]:
         new_refs = validate_order(other)
@@ -244,10 +273,12 @@ class Progression(Element, Ordering[T], Generic[T]):
 
     def insert(self, index: int, item: ID.RefSeq, /) -> None:
         item_ = validate_order(item)
+        self._ensure_synced()
         for i in reversed(item_):
             uid = ID.get_id(i)
             self.order.insert(index, uid)
             self._members.add(uid)
+        self._order_len = len(self.order)
 
     def _validate_index(self, index: int, allow_end: bool = False) -> int:
         length = len(self.order)
