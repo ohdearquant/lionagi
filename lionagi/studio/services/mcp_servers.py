@@ -314,6 +314,20 @@ def get_server(name: str) -> dict[str, Any] | None:
 
 
 def register_server(name: str, config: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
+    """Register a new server. ``_validate_shape`` treats a `None` env value as
+    a deletion marker so `/validate` can approve the same patch body
+    `update_server` accepts -- but there is no existing config here for a
+    `None` to delete. Running the incoming config through `_merge_config`
+    against an empty base reuses `update_server`'s own semantics rather than
+    inventing a second rule: a key whose value is `None` is simply never
+    added, exactly as it would be dropped from an existing config. Without
+    this, a `None` env value survived shape validation unmerged and was
+    persisted verbatim into the registry and the derived ``.mcp.json`` that
+    downstream CLI runs read.
+    """
+    if isinstance(config, dict):
+        config = _merge_config({}, config)
+
     errors = _validate_shape(name, config)
     if errors:
         raise McpServerError("; ".join(errors))
@@ -337,6 +351,10 @@ def register_server(name: str, config: dict[str, Any], *, enabled: bool = True) 
 
 def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     """Merge a partial config onto the stored one instead of replacing it.
+
+    Also used by ``register_server`` with an empty ``existing``, so that a
+    `None` env value on create is dropped by the same rule that removes it on
+    update, rather than persisted as a literal null.
 
     A client never receives env *values* back (see ``_mask_config``), so a
     save that only changed e.g. ``args`` and echoed nothing else back must
@@ -363,14 +381,20 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
             merged[key] = value
 
     if "env" in patch:
-        incoming_env = patch["env"] or {}
-        merged_env = dict(existing.get("env") or {})
-        for env_key, env_value in incoming_env.items():
-            if env_value is None:
-                merged_env.pop(env_key, None)
-            else:
-                merged_env[env_key] = env_value
-        merged["env"] = merged_env
+        incoming_env = patch["env"]
+        if incoming_env is not None and not isinstance(incoming_env, dict):
+            # Malformed shape (e.g. a string or list) -- pass it through
+            # unmerged so `_validate_shape` rejects it with a proper error
+            # instead of this loop crashing on `.items()`.
+            merged["env"] = incoming_env
+        else:
+            merged_env = dict(existing.get("env") or {})
+            for env_key, env_value in (incoming_env or {}).items():
+                if env_value is None:
+                    merged_env.pop(env_key, None)
+                else:
+                    merged_env[env_key] = env_value
+            merged["env"] = merged_env
 
     if patch.get("url"):
         for key in _STDIO_ONLY_FIELDS:
