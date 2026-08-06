@@ -1,0 +1,664 @@
+{
+  "available_path_count": 75,
+  "available_paths": [
+    "agent",
+    "casts",
+    "dispatch",
+    "dispatch ack",
+    "dispatch ls",
+    "dispatch purge",
+    "dispatch retry",
+    "dispatch show",
+    "doctor",
+    "engine",
+    "engine run",
+    "handshake",
+    "hooks",
+    "hooks import",
+    "hooks trust",
+    "invoke",
+    "invoke end",
+    "invoke list",
+    "invoke start",
+    "kill",
+    "lifecycle",
+    "mcp",
+    "mirror",
+    "monitor",
+    "orchestrate",
+    "orchestrate ctl",
+    "orchestrate ctl msg",
+    "orchestrate ctl pause",
+    "orchestrate ctl resolve",
+    "orchestrate ctl resume",
+    "orchestrate ctl status",
+    "orchestrate fanout",
+    "orchestrate flow",
+    "plugin",
+    "plugin disable",
+    "plugin enable",
+    "plugin info",
+    "plugin list",
+    "plugin trust",
+    "runs",
+    "schedule",
+    "schedule apply",
+    "schedule create",
+    "schedule delete",
+    "schedule disable",
+    "schedule enable",
+    "schedule export",
+    "schedule get",
+    "schedule limits",
+    "schedule list",
+    "schedule run",
+    "schedule runs",
+    "schedule status",
+    "schedule trigger",
+    "schedule validate",
+    "state",
+    "state checkpoint",
+    "state doctor",
+    "state import",
+    "state import-teams",
+    "state ls",
+    "state null-content",
+    "state prune",
+    "state stats",
+    "state vacuum",
+    "stats",
+    "stats runs",
+    "studio",
+    "studio start",
+    "team",
+    "team create",
+    "team list",
+    "team receive",
+    "team send",
+    "team show"
+  ],
+  "catalog": {
+    "available_count": 40,
+    "available_verb_names": [
+      "agent.submit",
+      "dispatch.ack",
+      "dispatch.ls",
+      "dispatch.purge",
+      "dispatch.retry",
+      "dispatch.show",
+      "doctor",
+      "fanout.submit",
+      "flow.submit",
+      "handshake",
+      "invoke.list",
+      "job.kill",
+      "job.list",
+      "job.output",
+      "job.status",
+      "job.wait",
+      "lifecycle",
+      "monitor",
+      "play.submit",
+      "plugin.info",
+      "profile.list",
+      "profile.show",
+      "runs",
+      "schedule.create",
+      "schedule.delete",
+      "schedule.disable",
+      "schedule.enable",
+      "schedule.export",
+      "schedule.get",
+      "schedule.limits",
+      "schedule.list",
+      "schedule.runs",
+      "schedule.status",
+      "schedule.trigger",
+      "schedule.validate",
+      "server.info",
+      "state.ls",
+      "state.stats",
+      "stats.runs",
+      "team.list"
+    ],
+    "max_ops": 8,
+    "verb_count": 70,
+    "verb_names": [
+      "agent.submit",
+      "casts",
+      "dispatch.ack",
+      "dispatch.ls",
+      "dispatch.purge",
+      "dispatch.retry",
+      "dispatch.show",
+      "doctor",
+      "engine.run",
+      "fanout.submit",
+      "flow.submit",
+      "handshake",
+      "hooks.import",
+      "invoke.end",
+      "invoke.list",
+      "invoke.start",
+      "job.kill",
+      "job.list",
+      "job.output",
+      "job.status",
+      "job.wait",
+      "kill",
+      "lifecycle",
+      "mcp",
+      "mirror",
+      "monitor",
+      "orchestrate.ctl.msg",
+      "orchestrate.ctl.pause",
+      "orchestrate.ctl.resolve",
+      "orchestrate.ctl.resume",
+      "orchestrate.ctl.status",
+      "play.submit",
+      "plugin.disable",
+      "plugin.enable",
+      "plugin.info",
+      "plugin.list",
+      "profile.list",
+      "profile.show",
+      "runs",
+      "schedule.apply",
+      "schedule.create",
+      "schedule.delete",
+      "schedule.disable",
+      "schedule.enable",
+      "schedule.export",
+      "schedule.get",
+      "schedule.limits",
+      "schedule.list",
+      "schedule.run",
+      "schedule.runs",
+      "schedule.status",
+      "schedule.trigger",
+      "schedule.validate",
+      "server.info",
+      "state.checkpoint",
+      "state.doctor",
+      "state.import",
+      "state.import-teams",
+      "state.ls",
+      "state.null-content",
+      "state.prune",
+      "state.stats",
+      "state.vacuum",
+      "stats.runs",
+      "studio.start",
+      "team.create",
+      "team.list",
+      "team.receive",
+      "team.send",
+      "team.show"
+    ]
+  },
+  "errors": [
+    {
+      "input": "nonexistent-command",
+      "kind": "SchemaProjectionError",
+      "message": "cannot project 'nonexistent-command': no such command"
+    },
+    {
+      "input": "dispatch nonexistent-subcommand",
+      "kind": "SchemaProjectionError",
+      "message": "cannot project 'dispatch nonexistent-subcommand': no such command path"
+    },
+    {
+      "input": "state",
+      "kind": "SchemaProjectionError",
+      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'null-content', 'prune', 'stats', 'vacuum']"
+    }
+  ],
+  "projection_errors": {},
+  "projections": {
+    "agent": {
+      "path": "agent",
+      "schema": {
+        "additionalProperties": false,
+        "description": "Spawn a single subagent and wait for its final response. Flags may appear anywhere relative to the positionals. Use -r / -c to continue a previous conversation. Use -a to load a profile from .lionagi/agents/. Use --preset to apply a built-in agent configuration. Use --form to load and validate structured inputs before invoking. Use --context-from to hand a new agent distilled context from a prior session/branch/run/file.",
+        "properties": {
+          "agent": {
+            "description": "Load agent profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, then a trusted+enabled plugin's declared profile ('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). Profile provides system prompt, default model, effort, yolo, timeout, resume_on_timeout. CLI flags override profile settings.",
+            "type": "string",
+            "x-aliases": [
+              "-a"
+            ],
+            "x-flag": "--agent"
+          },
+          "bypass": {
+            "default": false,
+            "description": "Bypass all codex approvals and sandbox (for cloud/codespace environments).",
+            "type": "boolean",
+            "x-flag": "--bypass"
+          },
+          "context_budget": {
+            "description": "Total token budget for --context-from content (default 8000; ~4 chars/token).",
+            "type": "integer",
+            "x-flag": "--context-budget"
+          },
+          "context_from": {
+            "description": "Inject distilled context from a prior session id, branch id, run id, or file path into this new branch's first instruction, above the prompt. Repeatable (concatenated in argv order); the total budget (see --context-budget) is shared across all refs. Rejected in combination with -r / --resume or -c / --continue-last.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-flag": "--context-from"
+          },
+          "continue_last": {
+            "default": false,
+            "description": "Continue the most recently used branch, keeping its history, without having to look up its id.",
+            "type": "boolean",
+            "x-aliases": [
+              "-c"
+            ],
+            "x-flag": "--continue-last"
+          },
+          "cwd": {
+            "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
+            "type": "string",
+            "x-flag": "--cwd"
+          },
+          "effort": {
+            "description": "Override effort (overrides spec suffix). claude: low|medium|high|xhigh|max. codex: none|minimal|low|medium|high|xhigh|max|ultra (max/ultra clamp per model support). gemini-code/gemini-cli: folded into --model as Low|Medium|High (Gemini 3.1 Pro has no Medium).",
+            "type": "string",
+            "x-flag": "--effort"
+          },
+          "fast": {
+            "default": false,
+            "description": "Route codex requests through OpenAI's priority service tier (lower latency; requires account eligibility). Does not change model or reasoning effort.",
+            "type": "boolean",
+            "x-flag": "--fast"
+          },
+          "form": {
+            "description": "Path to a YAML or JSON work-form spec file. The spec declares typed fields and values; validation runs BEFORE any LLM call. Exits rc=1 on validation error. Validated values are injected into the prompt as structured context.",
+            "type": "string",
+            "x-flag": "--form"
+          },
+          "image": {
+            "description": "Attach an image file to the prompt (repeatable, e.g. --image a.png --image b.jpg). Supported extensions: .gif, .jpeg, .jpg, .png, .webp. Each file is read, base64-encoded, and attached as an image content part on the user message.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-flag": "--image"
+          },
+          "invocation": {
+            "description": "Parent invocation id (from `li invoke start`). Groups this session under a skill orchestration record. Optional.",
+            "type": "string",
+            "x-flag": "--invocation"
+          },
+          "list_profiles": {
+            "default": false,
+            "description": "Print every agent profile -a would resolve, as JSON, and exit without running anything. Use it to find out what names are available here.",
+            "type": "boolean",
+            "x-flag": "--list-profiles"
+          },
+          "mcp_config": {
+            "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from --cwd. The file is read once at spawn.",
+            "type": "string",
+            "x-flag": "--mcp-config"
+          },
+          "no_mcp_config": {
+            "default": false,
+            "description": "Hand the leg no MCP servers, and say so deliberately instead of arriving there by an empty search.",
+            "type": "boolean",
+            "x-flag": "--no-mcp-config"
+          },
+          "notify": {
+            "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
+            "type": "string",
+            "x-flag": "--notify"
+          },
+          "preset": {
+            "description": "Apply a built-in agent configuration preset. Supported values: coding. 'coding' wires CodingToolkit with path-guard hooks and a coding system prompt; cwd defaults to the invocation directory.",
+            "enum": [
+              "coding"
+            ],
+            "type": "string",
+            "x-flag": "--preset"
+          },
+          "project": {
+            "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
+            "type": "string",
+            "x-flag": "--project"
+          },
+          "prompt_file": {
+            "description": "Read the instruction from a file; '-' reads stdin, which is heredoc-friendly. The file is read once at spawn, so editing it afterwards cannot change the run.",
+            "type": "string",
+            "x-flag": "--prompt-file"
+          },
+          "prompt_flag": {
+            "description": "The instruction, as a flag instead of the positional PROMPT. Give it one way or the other, never both.",
+            "type": "string",
+            "x-flag": "--prompt"
+          },
+          "query": {
+            "description": "Optional model spec followed by the prompt. Model is one of 'claude', 'codex', 'gemini-code' (defaults), or a full spec like 'claude/opus'; omit it when -a / --resume / -c provides one. The prompt may instead be passed via --prompt or --prompt-file.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-positional": true
+          },
+          "resume": {
+            "description": "Continue a previous run by its branch id, keeping that conversation's history. Cannot be combined with --context-from, which is for starting fresh.",
+            "type": "string",
+            "x-aliases": [
+              "-r"
+            ],
+            "x-flag": "--resume"
+          },
+          "resume_on_timeout": {
+            "default": false,
+            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+            "type": "boolean",
+            "x-flag": "--resume-on-timeout"
+          },
+          "theme": {
+            "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
+            "enum": [
+              "light",
+              "dark"
+            ],
+            "type": "string",
+            "x-flag": "--theme"
+          },
+          "timeout": {
+            "description": "Hard wall-clock timeout in seconds. When set, a [DEADLINE] preamble is injected into the agent's prompt so the agent knows its time budget and can pace reasoning accordingly.",
+            "type": "integer",
+            "x-flag": "--timeout"
+          },
+          "verbose": {
+            "default": false,
+            "description": "Stream the agent's output as it is produced instead of printing only the final result, and silence the progress lines that would interleave with it.",
+            "type": "boolean",
+            "x-aliases": [
+              "-v"
+            ],
+            "x-flag": "--verbose"
+          },
+          "yolo": {
+            "default": false,
+            "description": "Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
+            "type": "boolean",
+            "x-flag": "--yolo"
+          }
+        },
+        "title": "agent",
+        "type": "object",
+        "x-positional-order": [
+          "query"
+        ],
+        "x-required-unenforced": [
+          "query"
+        ]
+      },
+      "stage": "static"
+    },
+    "dispatch ls": {
+      "path": "dispatch ls",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 50,
+            "description": "Maximum rows to print, newest first (default 50).",
+            "type": "integer",
+            "x-flag": "--limit"
+          },
+          "status": {
+            "description": "Show only rows in this status: pending, delivering, delivered, acked, dead_letter or expired. Omit to list every status.",
+            "type": "string",
+            "x-flag": "--status"
+          }
+        },
+        "title": "dispatch ls",
+        "type": "object"
+      },
+      "stage": "static"
+    },
+    "doctor": {
+      "path": "doctor",
+      "schema": {
+        "additionalProperties": false,
+        "description": "Environment preflight: install location + editability, Python/venv, the import chain `li --version` traverses, core dependency importability, Studio daemon reachability, and ~/.lionagi writability.",
+        "properties": {
+          "json": {
+            "default": false,
+            "description": "Emit a JSON object of check name -> {status, detail} instead of plain text.",
+            "type": "boolean",
+            "x-flag": "--json"
+          }
+        },
+        "title": "doctor",
+        "type": "object"
+      },
+      "stage": "static"
+    },
+    "hooks trust": {
+      "path": "hooks trust",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "cwd": {
+            "description": "Project whose imported hook commands are listed and approved (defaults to the current directory).",
+            "type": "string",
+            "x-flag": "--cwd"
+          },
+          "yes": {
+            "default": false,
+            "description": "Record trust without an interactive confirmation prompt.",
+            "type": "boolean",
+            "x-flag": "--yes"
+          }
+        },
+        "title": "hooks trust",
+        "type": "object"
+      },
+      "stage": "static"
+    },
+    "schedule create": {
+      "path": "schedule create",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action_command": {
+            "description": "Executable name to spawn directly, bypassing `li` (for action-kind=command). Must be a bare name (no path separators) and be a member of LIONAGI_SCHEDULER_COMMAND_ALLOWLIST; refused loudly at create time and re-checked at fire time.",
+            "type": "string",
+            "x-flag": "--action-command"
+          },
+          "action_command_args": {
+            "description": "action-kind=command argv, as a JSON array of {{var}} templates rendered from trigger_context at fire time, e.g. '[\"review-pr\", \"--pr\", \"{{pr_number}}\"]'.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "x-flag": "--action-command-args",
+            "x-json-encoded": true
+          },
+          "action_kind": {
+            "default": "agent",
+            "description": "Stored action kind or accepted alias (default: agent).",
+            "enum": [
+              "agent",
+              "command",
+              "engine",
+              "fanout",
+              "flow",
+              "flow_yaml",
+              "play",
+              "playbook"
+            ],
+            "type": "string",
+            "x-flag": "--action-kind"
+          },
+          "agent": {
+            "description": "Agent profile to run, resolved the same way `li agent --agent` resolves it. Supplies the system prompt, model and effort the fire runs with.",
+            "type": "string",
+            "x-flag": "--agent"
+          },
+          "cron": {
+            "description": "Cron expression, e.g. \"0 * * * *\". Required when --trigger-type is cron, which is the default; ignored for other trigger types.",
+            "type": "string",
+            "x-flag": "--cron"
+          },
+          "cwd": {
+            "description": "Explicit execution root for this schedule's spawned process (must be an existing directory). Persisted at creation time so the schedule's spawn cwd never depends on where the Studio daemon is running from (default: --project's registered path, or this CLI's own working directory).",
+            "type": "string",
+            "x-flag": "--cwd"
+          },
+          "description": {
+            "description": "Human-readable description.",
+            "type": "string",
+            "x-flag": "--description"
+          },
+          "flow_yaml": {
+            "description": "Path to a YAML flow spec file (for action-kind=flow_yaml).",
+            "type": "string",
+            "x-flag": "--flow-yaml"
+          },
+          "github_filter": {
+            "description": "JSON object filtering which PRs fire the trigger, e.g. '{\"state\": \"open\", \"base\": \"main\"}'.",
+            "type": "string",
+            "x-flag": "--github-filter"
+          },
+          "github_repo": {
+            "description": "GitHub repository to poll (required for --trigger-type github/github_poll).",
+            "type": "string",
+            "x-flag": "--github-repo"
+          },
+          "interval": {
+            "description": "Seconds between fires. Required when --trigger-type is interval; ignored for other trigger types.",
+            "type": "integer",
+            "x-flag": "--interval"
+          },
+          "max_cost_usd": {
+            "description": "Auto-disable this schedule once its cumulative session spend reaches USD (default: unlimited). Pre-fire cumulative gate: an in-flight run is not interrupted, so the schedule may overshoot by up to one run's cost before the next fire is refused.",
+            "type": "number",
+            "x-flag": "--max-cost-usd"
+          },
+          "max_runs": {
+            "description": "Auto-disable this schedule once N total runs have fired (default: unlimited). Chained on_success/on_fail fires do not count toward N. Mutually exclusive with --once.",
+            "type": "integer",
+            "x-flag": "--max-runs"
+          },
+          "max_tokens": {
+            "description": "Auto-disable this schedule once its cumulative session token usage (input+output) reaches N (default: unlimited). Same pre-fire cumulative semantics as --max-cost-usd.",
+            "type": "integer",
+            "x-flag": "--max-tokens"
+          },
+          "model": {
+            "description": "Model spec for agent action.",
+            "type": "string",
+            "x-flag": "--model"
+          },
+          "name": {
+            "description": "Unique name identifying this schedule. Reused as the display label in listings; a name already in use is rejected rather than overwritten.",
+            "type": "string",
+            "x-positional": true
+          },
+          "on_fail": {
+            "description": "Chain action to fire when this run exits non-zero, as a JSON object (same allowed keys and shallow-merge caveat as --on-success \u2014 see above). Example: --on-fail '{\"prompt\": \"alert on-call\", \"on_fail\": null}'.",
+            "type": "string",
+            "x-flag": "--on-fail"
+          },
+          "on_success": {
+            "description": "Chain action to fire when this run exits 0, as a JSON object (allowed keys: kind/action_kind, model, prompt, agent, playbook, on_success, on_fail). WARNING \u2014 shallow merge: the chain child is built as {**this_schedule, **on_success}, so any key you omit is INHERITED from this schedule, including on_success/on_fail themselves. A 2-level chain must set the inner level's own \"on_success\": null explicitly, or the chain keeps re-firing at each depth (capped, but rarely what you want). Example: --on-success '{\"prompt\": \"notify done\", \"on_success\": null}'.",
+            "type": "string",
+            "x-flag": "--on-success"
+          },
+          "once": {
+            "default": false,
+            "description": "Sugar for --max-runs 1 \u2014 fire once, then auto-disable.",
+            "type": "boolean",
+            "x-flag": "--once"
+          },
+          "playbook": {
+            "description": "Playbook name (for action-kind=play/playbook).",
+            "type": "string",
+            "x-flag": "--playbook"
+          },
+          "poll_interval": {
+            "description": "How often to poll GitHub, in seconds (github_poll only).",
+            "type": "integer",
+            "x-flag": "--poll-interval"
+          },
+          "project": {
+            "description": "Project this schedule's runs are recorded under. Defaults to the project detected from the execution root.",
+            "type": "string",
+            "x-flag": "--project"
+          },
+          "prompt": {
+            "description": "Instruction the scheduled agent runs at each fire. Required when --action-kind is agent, which is the default. A profile named by --agent supplies the model and settings, never this instruction, so a schedule created without it fires and fails.",
+            "type": "string",
+            "x-flag": "--prompt"
+          },
+          "threshold_config": {
+            "description": "Metric threshold alert config as a JSON object: {\"metric\": \"failed_sessions|total_cost_usd|p95_latency_ms|github_poll_healthy_age_minutes|github_poll_consecutive_401\", \"op\": \"gt|gte\", \"value\": N, \"window_minutes\": N}. When set, this schedule's own cron/interval cadence only evaluates the metric on each tick and fires the action only when the threshold is breached (cooldown = window_minutes). Full validation happens server-side, e.g. '{\"metric\": \"failed_sessions\", \"op\": \"gt\", \"value\": 5, \"window_minutes\": 60}'.",
+            "type": "string",
+            "x-flag": "--threshold-config"
+          },
+          "trigger_type": {
+            "default": "cron",
+            "description": "Trigger type (default: cron). 'github' is an alias for 'github_poll'.",
+            "enum": [
+              "cron",
+              "interval",
+              "github",
+              "github_poll"
+            ],
+            "type": "string",
+            "x-flag": "--trigger-type"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "schedule create",
+        "type": "object",
+        "x-playbook-arguments": "This command accepts arguments declared by the playbook named in 'playbook'. Ask for this schema again with that playbook named to see them.",
+        "x-positional-order": [
+          "name"
+        ]
+      },
+      "stage": "base"
+    },
+    "state ls": {
+      "path": "state ls",
+      "schema": {
+        "additionalProperties": false,
+        "description": "Print a table of sessions stored in state.db.",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "description": "Maximum sessions to print, newest first (default 50).",
+            "type": "integer",
+            "x-flag": "--limit"
+          },
+          "status": {
+            "description": "Show only sessions in this status: running, completed, failed or aborted. Omit to list every status.",
+            "type": "string",
+            "x-flag": "--status"
+          }
+        },
+        "title": "state ls",
+        "type": "object"
+      },
+      "stage": "static"
+    },
+    "team list": {
+      "path": "team list",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "team list",
+        "type": "object"
+      },
+      "stage": "static"
+    }
+  }
+}
