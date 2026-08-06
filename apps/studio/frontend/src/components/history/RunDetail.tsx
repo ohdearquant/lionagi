@@ -20,6 +20,7 @@ import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "
 import { buildNodeStatusesByName, buildOperationGraph, laneFor } from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
 import { deriveDisplayStatus, isEffectivelyActive } from "@/lib/runStatus";
+import { formatCostUsd, formatTokenCount } from "@/lib/usageFormat";
 import type { RunMessage, RunResumeResponse, RunStep, WorkerGraph } from "@/lib/types";
 import type { NodeExecStatus } from "@/components/canvas/StepNode";
 
@@ -337,6 +338,9 @@ export function branchToRunStep(
       message_count: messageCount,
       roles: rolesCounts,
       duration_sec: durationSec,
+      input_tokens: branch.input_tokens ?? null,
+      output_tokens: branch.output_tokens ?? null,
+      total_cost_usd: branch.total_cost_usd ?? null,
     },
     messages: runMessages,
     timestamp: branch.created_at,
@@ -432,6 +436,9 @@ interface OverviewData {
   messageCount: number;
   toolCallCount: number;
   errorCount: number;
+  costUsd?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
   showTopic?: string | null;
   showPlayName?: string | null;
   playbookName?: string | null;
@@ -455,6 +462,9 @@ function OverviewSection({ data }: { data: OverviewData }) {
       value: String(data.errorCount),
       tone: data.errorCount > 0 ? ("error" as const) : ("ok" as const),
     },
+    { label: t("statCost"), value: formatCostUsd(data.costUsd) },
+    { label: t("statInputTokens"), value: formatTokenCount(data.inputTokens) },
+    { label: t("statOutputTokens"), value: formatTokenCount(data.outputTokens) },
   ];
 
   const provenance = [
@@ -1405,6 +1415,9 @@ export default function RunDetail({ id }: RunDetailProps) {
     messageCount: totalMessages,
     toolCallCount,
     errorCount,
+    costUsd: session.total_cost_usd,
+    inputTokens: session.input_tokens,
+    outputTokens: session.output_tokens,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
       | string
       | null
