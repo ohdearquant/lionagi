@@ -22,6 +22,7 @@ import Skeleton from "@/components/ui/Skeleton";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { runDeepLink, invocationDeepLink } from "@/lib/runDeepLink";
+import { resolveRunLabel } from "@/lib/runLabel";
 import { runCreationKey, invocationCreationKey } from "./boardReducer";
 
 /**
@@ -69,7 +70,7 @@ function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
   // Last activity falls back to started_at when no heartbeat has landed yet
   // — never to "no data", since a fresh run has always at least started.
   const lastActivity = elapsedSec(run.last_message_at ?? run.started_at ?? undefined, nowSec);
-  const name = run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
+  const name = resolveRunLabel(run);
   // Honest staleness: a process-dead run must not render as a live one.
   // Health axis only — duration never factors into this flag.
   // TODO(unify): route through deriveDisplayStatus once status/verdict/
