@@ -51,16 +51,17 @@ describe("resolveRunLabel", () => {
     expect(resolveRunLabel(run)).toBe("reviewer");
   });
 
-  it("recomputes a backend-resolved agent-role name's HH:MM in local time", () => {
-    // 2026-01-01T14:22:00Z — vite.config.mts pins the test process to TZ=UTC,
-    // so "local" and UTC agree here and the pinned digits are reproducible.
+  it("never rewrites a backend-resolved agent-role name, even though it could recompute HH:MM", () => {
+    // A non-empty run.name is provenance-ambiguous (it could be the backend's
+    // UTC-baked agent-role label, or a future custom name that just looks like
+    // one) so it always renders verbatim -- never mutated based on text shape.
     const run = makeRun({
       run_id: "r1",
       name: "implementer · 09:00",
       agent_name: "implementer",
       started_at: 1767277320,
     });
-    expect(resolveRunLabel(run)).toBe("implementer · 14:22");
+    expect(resolveRunLabel(run)).toBe("implementer · 09:00");
   });
 
   it("leaves a backend-resolved agent-role name alone when started_at is missing", () => {
@@ -71,6 +72,20 @@ describe("resolveRunLabel", () => {
       started_at: null,
     });
     expect(resolveRunLabel(run)).toBe("implementer · 09:00");
+  });
+
+  it("round-trips a custom stored name byte-identical, even one shaped like an agent-role label", () => {
+    // Provenance is data, not text shape: a stored name that coincidentally
+    // matches "<agent_name> · HH:MM" must still never be rewritten, and a
+    // started_at that would recompute to a *different* clock time must not
+    // leak through either.
+    const run = makeRun({
+      run_id: "r1",
+      name: "a · 14:22",
+      agent_name: "a",
+      started_at: 1767255720, // 2026-01-01T08:22:00Z -- recompute would say "08:22"
+    });
+    expect(resolveRunLabel(run)).toBe("a · 14:22");
   });
 
   it("appends a local HH:MM disambiguator to a bare agent_name fallback", () => {

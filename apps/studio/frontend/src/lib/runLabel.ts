@@ -11,18 +11,17 @@
  * to call this instead, so a run can no longer show two different names on
  * two different surfaces at once.
  *
- * The agent-role tier ("<agent> · HH:MM") is the one part of the resolved
- * name that is clock-shaped, and Studio otherwise always shows the viewer's
- * local time. The backend bakes that HH:MM in UTC so the *stored* value is
- * deterministic regardless of which machine resolved it (see
- * agent_role_label's docstring) — this function recomputes the HH:MM half
- * from `run.started_at` in the browser's local time before display, both
- * when the backend already sent a resolved agent-role name and when this
- * function falls back to building one itself from a bare `agent_name`.
+ * A non-empty `run.name` is rendered VERBATIM, never rewritten. There is no
+ * reliable way to tell a backend-resolved agent-role label ("implementer ·
+ * 14:22", baked in UTC — see agent_role_label's docstring) apart from a
+ * future user-set custom name that happens to share that shape by text
+ * alone, and a stored/custom name must never be mutated. The one place this
+ * function computes local-time HH:MM itself is its *own* fallback tier below
+ * — building a label from a bare `agent_name` + `started_at` when the
+ * backend sent no name at all, a case where this function controls the
+ * construction end to end and there is nothing stored to disagree with.
  */
 import type { RunSummary } from "./types";
-
-const AGENT_TIME_SUFFIX_RE = / · \d{2}:\d{2}$/;
 
 function localHHMM(startedAt: number | null | undefined): string | null {
   if (startedAt == null) return null;
@@ -36,15 +35,6 @@ function localHHMM(startedAt: number | null | undefined): string | null {
 export function resolveRunLabel(run: RunSummary): string {
   const backendName = run.name?.trim();
   if (backendName) {
-    const agentName = run.agent_name?.trim();
-    if (
-      agentName &&
-      backendName.startsWith(`${agentName} · `) &&
-      AGENT_TIME_SUFFIX_RE.test(backendName)
-    ) {
-      const local = localHHMM(run.started_at);
-      if (local) return `${agentName} · ${local}`;
-    }
     return backendName;
   }
 
