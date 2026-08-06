@@ -2269,6 +2269,35 @@ class StateDB:
                 session.get("project_source") or "git_remote",
             )
 
+    async def attach_session_invocation(self, session_id: str, invocation_id: str) -> None:
+        """Point an existing session row at *invocation_id*.
+
+        ``create_session``'s ``INSERT ... ON CONFLICT (id) DO NOTHING`` only
+        links a session to its invocation at the moment the row is first
+        inserted; a resume reopens that same row instead of inserting a new
+        one, so its invocation_id would otherwise never be recorded. This is
+        the same sessions.invocation_id + invocations.session_count linkage
+        applied to a row that already exists, guarded so a repeat call (or
+        one that finds the link already current) does not double-count.
+        """
+        now = time.time()
+        async with self._tx() as conn:
+            result = await conn.execute(
+                text(
+                    "UPDATE sessions SET invocation_id = :inv_id, updated_at = :now "
+                    "WHERE id = :sid AND (invocation_id IS NULL OR invocation_id != :inv_id)"
+                ),
+                {"inv_id": invocation_id, "now": now, "sid": session_id},
+            )
+            if result.rowcount:
+                await conn.execute(
+                    text(
+                        "UPDATE invocations SET session_count = session_count + 1, "
+                        "updated_at = :now WHERE id = :inv_id"
+                    ),
+                    {"now": now, "inv_id": invocation_id},
+                )
+
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
             row = (

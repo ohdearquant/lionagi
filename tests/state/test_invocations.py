@@ -173,6 +173,52 @@ async def test_session_without_invocation_id_is_unaffected(db: StateDB):
     assert fetched["invocation_id"] is None
 
 
+# ── attach_session_invocation (resume backfill, issue #2767) ──────────────────
+
+
+async def test_attach_session_invocation_links_an_unlinked_session(db: StateDB):
+    """A session created with no invocation_id (or a resume reopening a row
+    created before this leg's invocation existed) can be backfilled onto one,
+    the same way create_session links a brand-new row."""
+    inv = await _make_invocation(db)
+    session = await _make_session(db, invocation_id=None, status="running")
+
+    await db.attach_session_invocation(session["id"], inv["id"])
+
+    assert (await db.get_session(session["id"]))["invocation_id"] == inv["id"]
+    assert (await db.get_invocation(inv["id"]))["session_count"] == 1
+    rows = await db.list_sessions_for_invocation(inv["id"])
+    assert [r["id"] for r in rows] == [session["id"]]
+
+
+async def test_attach_session_invocation_relinks_a_resumed_session(db: StateDB):
+    """The resume case: a session already attributed to the invocation that
+    originally created it is re-pointed at the invocation that resumed it,
+    so the resume's own invocation record can find the session it drove."""
+    original = await _make_invocation(db)
+    resume = await _make_invocation(db)
+    session = await _make_session(db, invocation_id=original["id"], status="running")
+
+    await db.attach_session_invocation(session["id"], resume["id"])
+
+    assert (await db.get_session(session["id"]))["invocation_id"] == resume["id"]
+    assert (await db.get_invocation(resume["id"]))["session_count"] == 1
+    assert [r["id"] for r in await db.list_sessions_for_invocation(resume["id"])] == [session["id"]]
+
+
+async def test_attach_session_invocation_is_a_noop_when_already_current(db: StateDB):
+    """Calling it again with the same invocation_id must not double-count —
+    the same idempotence create_session's ON CONFLICT DO NOTHING gives a
+    brand-new row."""
+    inv = await _make_invocation(db)
+    session = await _make_session(db, invocation_id=inv["id"], status="running")
+
+    await db.attach_session_invocation(session["id"], inv["id"])
+    await db.attach_session_invocation(session["id"], inv["id"])
+
+    assert (await db.get_invocation(inv["id"]))["session_count"] == 1
+
+
 # ── List + filter ─────────────────────────────────────────────────────────────
 
 

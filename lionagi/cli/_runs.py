@@ -1229,6 +1229,14 @@ async def setup_agent_persist(
 
             existing_msg_ids = set(await db.get_progression(branch_prog_id))
 
+            if invocation_id and existing_session.get("invocation_id") != invocation_id:
+                # A resume reopens this row rather than inserting a new one,
+                # so the ON CONFLICT DO NOTHING branch below never runs for
+                # it and this leg's invocation_id would otherwise be
+                # dropped. Backfill the same linkage a brand-new session
+                # gets at insert time.
+                await db.attach_session_invocation(session_id, invocation_id)
+
             # The adopted row's drain declaration is rewritten by the reopen
             # above, in the same statement that installs this leg's process
             # markers. Nothing to do here for a row that was terminal.

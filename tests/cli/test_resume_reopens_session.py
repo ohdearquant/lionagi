@@ -320,6 +320,40 @@ async def test_a_session_deleted_while_the_resume_waited_is_not_an_error(temp_db
 
 
 @pytest.mark.asyncio
+async def test_a_resumed_leg_links_its_session_to_its_own_invocation(temp_db_path):
+    """Issue #2767: a resumed leg reopens the branch's existing session row
+    instead of inserting a new one, so create_session's ON CONFLICT DO
+    NOTHING never runs for it and the resume's invocation_id was silently
+    dropped. The invocation that actually drove the resume must still be
+    able to find the session it drove.
+    """
+    from lionagi import Branch
+    from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
+
+    branch = Branch(name="resumed")
+    async with StateDB() as db:
+        await db.create_invocation({"id": "first-inv", "skill": "agent", "started_at": 1.0})
+        await db.create_invocation({"id": "resume-inv", "skill": "resume:agent", "started_at": 2.0})
+
+        first = await setup_agent_persist(
+            branch, agent_name="implementer", invocation_id="first-inv"
+        )
+        assert first is not None
+        await teardown_agent_persist(first, status="completed")
+
+        second = await setup_agent_persist(
+            branch, agent_name="implementer", invocation_id="resume-inv"
+        )
+        assert second is not None
+        assert second["session_id"] == first["session_id"], "resume must reuse the same session"
+
+        resumed_invocation = await db.get_invocation("resume-inv")
+        assert resumed_invocation["session_count"] == 1
+        sessions = await db.list_sessions_for_invocation("resume-inv")
+        assert [s["id"] for s in sessions] == [second["session_id"]]
+
+
+@pytest.mark.asyncio
 async def test_a_resume_whose_session_is_pruned_mid_setup_still_records_itself(
     temp_db_path, monkeypatch
 ):
