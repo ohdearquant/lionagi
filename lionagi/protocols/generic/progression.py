@@ -128,6 +128,15 @@ class _MembersDeque(deque):
         if self._members_ref is not None:
             self._members_ref.clear()
 
+    def __imul__(self, n: int) -> _MembersDeque:
+        # `n <= 0` drops every element (membership must shrink to empty);
+        # `n >= 1` only duplicates existing ids, so the *set* of unique
+        # members is unchanged and the bound set needs no update.
+        if n <= 0:
+            self.clear()
+            return self
+        return super().__imul__(n)
+
     # `rotate` and `reverse` permute existing entries without changing which
     # ids are present, so the bound membership set never needs an update.
 
@@ -176,9 +185,18 @@ class Progression(Element, Ordering[T], Generic[T]):
         # `_members`/`_order_len`. `_MembersDeque` keeps `_members` correct on
         # every direct mutation of `order` itself, but `order` can also be
         # replaced wholesale (`p.order = deque(...)`, or a plain-deque copy
-        # produced by pydantic re-validation) — the isinstance/length check
-        # below catches that case and rewraps + rebuilds.
-        if not isinstance(self.order, _MembersDeque) or len(self.order) != self._order_len:
+        # produced by pydantic re-validation), or be a wrapper that belongs to
+        # (is bound to) a *different* `Progression` instance's `_members` set
+        # — ownership is checked by identity
+        # (`order._members_ref is self._members`), not just type and length,
+        # so a foreign or unbound wrapper of matching length can't silently
+        # pass as synced.
+        order = self.order
+        if (
+            not isinstance(order, _MembersDeque)
+            or len(order) != self._order_len
+            or order._members_ref is not self._members
+        ):
             self._rebuild_members()
 
     @field_validator("order", mode="before")
