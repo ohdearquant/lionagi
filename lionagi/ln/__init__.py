@@ -1,4 +1,3 @@
-from ._async_call import AlcallParams, BcallParams, alcall, bcall
 from ._cache import BoundedLRUCache
 from ._hash import (
     GENESIS_HASH,
@@ -19,42 +18,7 @@ from ._json_dump import (
 )
 from ._lazy_init import LazyInit, lazy_import
 from ._list_call import lcall
-from ._proc import aterminate_process_group, terminate_process_group
 from ._ssrf import is_ssrf_safe
-from ._to_list import ToListParams, to_list
-from ._utils import (
-    acreate_path,
-    async_synchronized,
-    coerce_created_at,
-    copy,
-    create_path,
-    extract_types,
-    get_bins,
-    import_module,
-    is_import_installed,
-    is_same_dtype,
-    is_union_type,
-    load_type_from_string,
-    now_utc,
-    register_type_prefix,
-    synchronized,
-    to_uuid,
-    union_members,
-)
-from .concurrency import (
-    bounded_map,
-    create_task_group,
-    fail_after,
-    fail_at,
-    gather,
-    get_cancelled_exc_class,
-    is_cancelled,
-    is_coro_func,
-    move_on_after,
-    move_on_at,
-    race,
-    retry,
-)
 from .fuzzy import (
     MAX_JSON_INPUT_SIZE,
     SIMILARITY_TYPE,
@@ -97,6 +61,69 @@ from .types import (
     not_sentinel,
     resolve_path,
 )
+
+# Deferred off the cold `import lionagi` path: `.concurrency` (and `_utils`/`_proc`,
+# which import anyio at module scope) and `_async_call`/`_to_list` (measured as the
+# two most expensive submodules at import time). Resolved lazily via __getattr__,
+# same registry-based convention as lazy_import() uses elsewhere in the package.
+_LAZY_MAP: dict[str, tuple[str, str | None]] = {
+    # ._async_call
+    "AlcallParams": ("_async_call", "AlcallParams"),
+    "BcallParams": ("_async_call", "BcallParams"),
+    "alcall": ("_async_call", "alcall"),
+    "bcall": ("_async_call", "bcall"),
+    # ._to_list
+    "ToListParams": ("_to_list", "ToListParams"),
+    "to_list": ("_to_list", "to_list"),
+    # ._utils (imports anyio.Path at module scope)
+    "acreate_path": ("_utils", "acreate_path"),
+    "async_synchronized": ("_utils", "async_synchronized"),
+    "coerce_created_at": ("_utils", "coerce_created_at"),
+    "copy": ("_utils", "copy"),
+    "create_path": ("_utils", "create_path"),
+    "extract_types": ("_utils", "extract_types"),
+    "get_bins": ("_utils", "get_bins"),
+    "import_module": ("_utils", "import_module"),
+    "is_import_installed": ("_utils", "is_import_installed"),
+    "is_same_dtype": ("_utils", "is_same_dtype"),
+    "is_union_type": ("_utils", "is_union_type"),
+    "load_type_from_string": ("_utils", "load_type_from_string"),
+    "now_utc": ("_utils", "now_utc"),
+    "register_type_prefix": ("_utils", "register_type_prefix"),
+    "synchronized": ("_utils", "synchronized"),
+    "to_uuid": ("_utils", "to_uuid"),
+    "union_members": ("_utils", "union_members"),
+    # ._proc (imports .concurrency at module scope)
+    "terminate_process_group": ("_proc", "terminate_process_group"),
+    "aterminate_process_group": ("_proc", "aterminate_process_group"),
+    # .concurrency (imports anyio)
+    "bounded_map": ("concurrency", "bounded_map"),
+    "create_task_group": ("concurrency", "create_task_group"),
+    "fail_after": ("concurrency", "fail_after"),
+    "fail_at": ("concurrency", "fail_at"),
+    "gather": ("concurrency", "gather"),
+    "get_cancelled_exc_class": ("concurrency", "get_cancelled_exc_class"),
+    "is_cancelled": ("concurrency", "is_cancelled"),
+    "is_coro_func": ("concurrency", "is_coro_func"),
+    "move_on_after": ("concurrency", "move_on_after"),
+    "move_on_at": ("concurrency", "move_on_at"),
+    "race": ("concurrency", "race"),
+    "retry": ("concurrency", "retry"),
+}
+
+
+def __getattr__(name: str):
+    if name == "concurrency":
+        from . import concurrency
+
+        globals()["concurrency"] = concurrency
+        return concurrency
+    return lazy_import(name, _LAZY_MAP, __name__, globals())
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__) | {"concurrency"})
+
 
 __all__ = (
     "alcall",
