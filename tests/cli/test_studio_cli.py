@@ -627,3 +627,133 @@ def test_ensure_frontend_built_installs_when_vite_missing(tmp_path, monkeypatch)
 
     assert result is True
     assert len(install_calls) == 1, "npm install must be called once"
+
+
+def test_vite_dev_argv_binds_the_same_host_used_for_the_printed_url():
+    """The spawn argv and the printed URL must come from one host/port source of truth."""
+    from lionagi.studio.cli import _vite_dev_argv
+
+    argv = _vite_dev_argv(5174, "127.0.0.1")
+
+    assert argv == ["npx", "vite", "--port", "5174", "--host", "127.0.0.1"]
+
+
+def test_vite_dev_argv_uses_the_given_host_not_a_hardcoded_default():
+    from lionagi.studio.cli import _vite_dev_argv
+
+    argv = _vite_dev_argv(3000, "0.0.0.0")
+
+    assert "--host" in argv
+    assert argv[argv.index("--host") + 1] == "0.0.0.0"
+
+
+def test_parse_vite_local_url_extracts_bound_address():
+    from lionagi.studio.cli import _parse_vite_local_url
+
+    line = "  ➜  Local:   http://127.0.0.1:5174/\n"
+
+    assert _parse_vite_local_url(line) == "http://127.0.0.1:5174"
+
+
+def test_parse_vite_local_url_reflects_an_auto_incremented_port():
+    """Vite bumps to the next free port when the requested one is taken; the
+    parsed URL must reflect that real port, not the one that was requested."""
+    from lionagi.studio.cli import _parse_vite_local_url
+
+    line = "  ➜  Local:   http://127.0.0.1:5175/\n"
+
+    assert _parse_vite_local_url(line) == "http://127.0.0.1:5175"
+
+
+def test_parse_vite_local_url_ignores_unrelated_lines():
+    from lionagi.studio.cli import _parse_vite_local_url
+
+    assert _parse_vite_local_url("  VITE v5.4.10  ready in 328 ms\n") is None
+    assert _parse_vite_local_url("  ➜  Network: use --host to expose\n") is None
+    assert _parse_vite_local_url("") is None
+
+
+def test_parse_vite_local_url_strips_ansi_color_codes():
+    """npx/Vite can color this line even with a piped (non-TTY) stdout; the
+    escape codes sit right around `Local:` and the URL and must not defeat
+    the match, or every colored run silently falls back to a guessed URL."""
+    from lionagi.studio.cli import _parse_vite_local_url
+
+    line = "  \x1b[32m➜\x1b[39m  \x1b[1mLocal\x1b[22m:   \x1b[36mhttp://127.0.0.1:5174/\x1b[39m\n"
+
+    assert _parse_vite_local_url(line) == "http://127.0.0.1:5174"
+
+
+def test_await_vite_ready_url_returns_the_parsed_startup_address():
+    from unittest.mock import MagicMock
+
+    from lionagi.studio.cli import _await_vite_ready_url
+
+    proc = MagicMock()
+    proc.stdout = iter(
+        [
+            "  VITE v5.4.10  ready in 328 ms\n",
+            "  ➜  Local:   http://127.0.0.1:5175/\n",
+        ]
+    )
+
+    url = _await_vite_ready_url(proc, fallback_host="127.0.0.1", fallback_port=3000, timeout=5.0)
+
+    assert url == "http://127.0.0.1:5175"
+
+
+def test_await_vite_ready_url_falls_back_when_nothing_matches():
+    """If Vite never logs a Local: line before the timeout (crash, unexpected
+    output format), fall back to the requested host/port instead of hanging."""
+    from unittest.mock import MagicMock
+
+    from lionagi.studio.cli import _await_vite_ready_url
+
+    proc = MagicMock()
+    proc.stdout = iter(["  some unrelated output\n"])
+
+    url = _await_vite_ready_url(proc, fallback_host="127.0.0.1", fallback_port=3000, timeout=1.0)
+
+    assert url == "http://127.0.0.1:3000"
+
+
+def test_launch_vite_dev_passes_host_through_to_argv_and_returns_the_bound_url(
+    tmp_path, monkeypatch
+):
+    """End-to-end (mocked Popen): the host given to _launch_vite_dev reaches the
+    spawn argv, and the returned URL is the one parsed from Vite's own output."""
+    import lionagi.studio.cli as studio_mod
+
+    captured_argv = {}
+
+    class FakeProc:
+        def __init__(self):
+            self.stdout = iter(["  ➜  Local:   http://0.0.0.0:4001/\n"])
+
+    def fake_popen(argv, **kwargs):
+        captured_argv["argv"] = argv
+        return FakeProc()
+
+    monkeypatch.setattr(studio_mod.subprocess, "Popen", fake_popen)
+
+    result = studio_mod._launch_vite_dev(tmp_path, 4000, host="0.0.0.0")
+
+    assert result is not None
+    proc, url = result
+    assert isinstance(proc, FakeProc)
+    assert captured_argv["argv"] == ["npx", "vite", "--port", "4000", "--host", "0.0.0.0"]
+    assert url == "http://0.0.0.0:4001"
+
+
+def test_launch_vite_dev_warns_and_returns_none_when_npx_missing(tmp_path, monkeypatch, capsys):
+    import lionagi.studio.cli as studio_mod
+
+    def fake_popen(argv, **kwargs):
+        raise FileNotFoundError("npx not found")
+
+    monkeypatch.setattr(studio_mod.subprocess, "Popen", fake_popen)
+
+    result = studio_mod._launch_vite_dev(tmp_path, 4000, host="127.0.0.1")
+
+    assert result is None
+    assert "npx not found" in capsys.readouterr().err

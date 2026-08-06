@@ -10,10 +10,12 @@ import contextlib
 import json
 import math
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -375,9 +377,10 @@ def _start_local(
     if dev_mode:
         # Dev mode: hot-reload Vite dev server + uvicorn side-by-side.
         # Vite proxies /api → uvicorn (configured in vite.config.mts).
-        frontend_proc = _launch_vite_dev(frontend_dir, frontend_port)
-        if frontend_proc:
-            print(f"Lion Studio UI (dev):  http://{host}:{frontend_port}")
+        launched = _launch_vite_dev(frontend_dir, frontend_port, host=host)
+        if launched:
+            frontend_proc, frontend_url = launched
+            print(f"Lion Studio UI (dev):  {frontend_url}")
         print(f"Lion Studio API:       http://{host}:{port}")
     else:
         # Production mode: build dist/ once, then uvicorn serves both UI and API
@@ -520,24 +523,91 @@ def _ensure_frontend_built(frontend_dir: Path) -> bool:
     return True
 
 
+def _vite_dev_argv(frontend_port: int, host: str) -> list[str]:
+    """Build the `npx vite` dev-server argv from a single host/port source of truth."""
+    return ["npx", "vite", "--port", str(frontend_port), "--host", host]
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_VITE_LOCAL_URL_RE = re.compile(r"Local:\s+(https?://[^\s/]+)")
+
+
+def _parse_vite_local_url(line: str) -> str | None:
+    """Extract the bound URL from a Vite startup line like `➜  Local:   http://127.0.0.1:5174/`.
+
+    Vite colors this line with ANSI escapes whenever it thinks it has a color
+    terminal (npm/npx can force this even with a piped stdout), so the escapes
+    must be stripped before matching or the parse silently misses and the
+    caller falls back to the requested (possibly wrong) address.
+    """
+    plain = _ANSI_ESCAPE_RE.sub("", line)
+    match = _VITE_LOCAL_URL_RE.search(plain)
+    return match.group(1) if match else None
+
+
+def _await_vite_ready_url(
+    proc: subprocess.Popen,
+    *,
+    fallback_host: str,
+    fallback_port: int,
+    timeout: float = 10.0,
+) -> str:
+    """Read Vite's startup output for the address it actually bound.
+
+    Vite auto-increments past a taken port, so the requested port is not a
+    guarantee; falls back to the requested host/port if nothing is parsed
+    before `timeout` (Vite failed to start, or logged something unexpected).
+    """
+    result: queue.Queue[str | None] = queue.Queue(maxsize=1)
+
+    def _pump() -> None:
+        if proc.stdout is None:
+            result.put(None)
+            return
+        for line in proc.stdout:
+            parsed = _parse_vite_local_url(line)
+            if parsed:
+                result.put(parsed)
+                return
+        result.put(None)
+
+    thread = threading.Thread(target=_pump, daemon=True)
+    thread.start()
+    try:
+        found = result.get(timeout=timeout)
+    except queue.Empty:
+        found = None
+    return found or f"http://{fallback_host}:{fallback_port}"
+
+
 def _launch_vite_dev(
     frontend_dir: Path,
     frontend_port: int,
-) -> subprocess.Popen | None:
-    """Spawn `npx vite --port <N>` for hot-reload dev mode."""
+    *,
+    host: str = "127.0.0.1",
+) -> tuple[subprocess.Popen, str] | None:
+    """Spawn the Vite dev server and resolve the URL it actually bound to.
+
+    Returns the process paired with the real bound URL, so the caller never
+    prints/opens an address nothing is listening on.
+    """
     env = {**os.environ, "PORT": str(frontend_port)}
     try:
-        return subprocess.Popen(  # noqa: S603
-            ["npx", "vite", "--port", str(frontend_port)],  # noqa: S607
+        proc = subprocess.Popen(  # noqa: S603
+            _vite_dev_argv(frontend_port, host),  # noqa: S607
             cwd=str(frontend_dir),
             env=env,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            text=True,
             start_new_session=True,
         )
     except FileNotFoundError:
         print("Warning: npx not found.", file=sys.stderr)
         return None
+
+    url = _await_vite_ready_url(proc, fallback_host=host, fallback_port=frontend_port)
+    return proc, url
 
 
 # --- `li schedule` — manage lionagi Studio schedules from the CLI ---
