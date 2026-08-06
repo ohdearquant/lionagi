@@ -279,7 +279,7 @@ branches = Table(
     Column("ended_at", Float),
 )
 
-Index("idx_branches_session", branches.c.session_id)
+Index("idx_branches_session_created", branches.c.session_id, branches.c.created_at)
 Index("idx_branches_system_msg_id", branches.c.system_msg_id)
 Index("idx_branches_progression_id", branches.c.progression_id)
 

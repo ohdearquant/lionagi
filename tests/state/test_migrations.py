@@ -411,9 +411,12 @@ async def test_statedb_upgrade_adds_branches_session_created_index(tmp_path: Pat
     with sqlite3.connect(db_path) as conn:
         from lionagi.state.db import _SCHEMA_PATH
 
-        # schema.sql does not declare this index (it is only added via
-        # MIGRATION_INDEXES), so a fresh executescript already stands in for
-        # an "existing database" that predates this migration.
+        # schema.sql now declares this index directly (provisioning matches
+        # the runtime MIGRATION_INDEXES definition), so this fresh
+        # executescript already carries the index; the migration path below
+        # re-runs it idempotently (CREATE INDEX IF NOT EXISTS) and this test
+        # still proves the upgrade path is a no-op-safe superset for
+        # databases provisioned before this alignment.
         conn.executescript(_SCHEMA_PATH.read_text())
 
     state = StateDB(db_path)
