@@ -438,6 +438,7 @@ function SectionHeader({
   onToggleImplied?: () => void;
   showImplied?: boolean;
 }) {
+  const t = useTranslations("history.detail");
   return (
     <div className="mb-2 flex items-center gap-2">
       <h2 className="text-label font-semibold text-content-primary">{label}</h2>
@@ -454,20 +455,20 @@ function SectionHeader({
       )}
       {edgeCount != null && (
         <span className="rounded px-1.5 py-0 font-mono text-[length:var(--t-xs)] bg-surface-overlay text-content-muted">
-          {edgeCount} edges
+          {t("graphEdgeCount", { count: edgeCount })}
         </span>
       )}
       {hiddenCount != null && hiddenCount > 0 && (
         <>
           <span className="font-mono text-[length:var(--t-xs)] text-content-muted">
-            · {hiddenCount} implied hidden
+            {t("graphImpliedHidden", { count: hiddenCount })}
           </span>
           <button
             type="button"
             onClick={onToggleImplied}
             className="rounded border border-edge px-1.5 py-0 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary"
           >
-            {showImplied ? "hide implied" : "show implied edges"}
+            {showImplied ? t("graphHideImplied") : t("graphShowImplied")}
           </button>
         </>
       )}

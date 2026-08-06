@@ -442,7 +442,11 @@
       "noBranchErrorsPartial": "Tidak ada kesalahan dalam pesan yang dimuat.",
       "noFilesPartial": "Tidak ada operasi file terdeteksi dalam pesan yang dimuat.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count} sisi",
+      "graphImpliedHidden": "· {count} implisit disembunyikan",
+      "graphHideImplied": "sembunyikan implisit",
+      "graphShowImplied": "tampilkan sisi implisit"
     },
     "masterAria": "Daftar riwayat",
     "detailAria": "Detail item"

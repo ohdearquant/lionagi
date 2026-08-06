@@ -442,7 +442,11 @@
       "noBranchErrorsPartial": "已加载的消息中没有错误。",
       "noFilesPartial": "已加载的消息中未检测到文件操作。",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count} 条边",
+      "graphImpliedHidden": "· {count} 条隐含边已隐藏",
+      "graphHideImplied": "隐藏隐含边",
+      "graphShowImplied": "显示隐含边"
     },
     "masterAria": "历史列表",
     "detailAria": "条目详情"

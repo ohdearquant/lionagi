@@ -20,7 +20,7 @@ import {
   wrapWideRanks,
 } from "./useLayout";
 import { transitiveReduceDisplay } from "@/lib/operationGraph";
-import { fitZoomFor, FIT_ZOOM_FLOOR } from "./WorkerCanvas";
+import { fitZoomFor, FIT_ZOOM_FLOOR, MIN_INTERACTIVE_ZOOM } from "./WorkerCanvas";
 
 const bare = (id: string): Node => ({
   id,
@@ -501,10 +501,11 @@ describe("getLayoutedElements — deep chain with global fan-in (readability fix
     // A 13-node graph where every node also directly edges a terminal sink
     // is wider than a compact embed can show at full legibility — dagre
     // reserves routing room in every intervening rank for those long edges.
-    // This is exactly the case WorkerCanvas's minZoom={FIT_ZOOM_FLOOR} clamp
-    // exists for (see WorkerCanvas.test.ts): below this raw number the
-    // canvas overflows the panel and pans instead of shrinking illegibly
-    // further. The floor is a render-time clamp, not a layout guarantee —
+    // This is exactly the case the fitViewOptions floor exists for (see
+    // WorkerCanvas.test.ts): below this raw number the canvas overflows the
+    // panel and pans instead of shrinking illegibly further, and zooming out
+    // past the floor stays available for seeing the whole shape. The floor is
+    // a clamp on the fit we choose, not a layout guarantee —
     // depth-scaled ranksep and no-overlap (asserted above) are what layout
     // actually owns.
     const { nodes, height } = getLayoutedElements(deepChainFixture(), deepChainEdges, "LR");
@@ -594,8 +595,8 @@ describe("getLayoutedElements — deep-chain fixture reduced-by-default (RunDeta
     // narrows the bounding box, but neither changes rank COUNT for this
     // fixture's shape, so the raw fit zoom at this compact a panel still
     // falls under the floor — same story as the unreduced fixture above.
-    // WorkerCanvas's minZoom={FIT_ZOOM_FLOOR} is what actually guarantees
-    // legibility; the layout/reduction work minimizes how far under the
+    // The fitViewOptions floor is what actually guarantees legibility of the
+    // opening view; the layout/reduction work minimizes how far under the
     // floor a real run lands, and how often the clamp needs to engage at all.
     expect(reducedZoom).toBeGreaterThan(0);
     expect(reducedZoom).toBeLessThan(FIT_ZOOM_FLOOR);
@@ -613,13 +614,16 @@ describe("getLayoutedElements — deep-chain fixture reduced-by-default (RunDeta
 //
 // "Computed fit zoom >= floor": the raw arithmetic (fitZoomFor / the manual
 // formula used above) legitimately lands BELOW FIT_ZOOM_FLOOR for both
-// fixtures at a realistic compact-panel size — implementer-2 hand-verified
-// this for the wide fixture (~0.55) and the deep-chain fixture (~0.386), and
-// the "reduced layout... fit zoom" test above pins the same fact. The floor
-// is a render-time CLAMP (WorkerCanvas's `minZoom={FIT_ZOOM_FLOOR}`, covered
-// by WorkerCanvas.test.ts's source-contract tests), not something raw layout
-// arithmetic alone guarantees. So "computed fit zoom >= floor" is asserted
-// here against the CLAMPED value — what a viewer actually sees — computed
+// fixtures at a realistic compact-panel size (measured: ~0.557 for the wide
+// fixture, ~0.386 for the deep chain), and the "reduced layout... fit zoom"
+// test above pins the same fact. The floor is a clamp applied to the fit
+// (fitViewOptions, covered by WorkerCanvas.test.ts's source-contract tests),
+// not something raw layout arithmetic alone guarantees. Asserting the CLAMPED
+// value clears the floor would be vacuous, so the tests assert the two things
+// that can actually fail: the raw fit is under the floor (the trade is real),
+// and the interactive zoom range still reaches it (the graph stays viewable).
+// The clamped-value arithmetic below is kept because it documents the real
+// installed ReactFlow formula — computed
 // with the REAL installed ReactFlow formula (see the `fitZoomFor` defect
 // block further below: production `fitZoomFor` uses `1 + 2*padding` where
 // the installed `reactflow` package's `getViewportForBounds` uses
@@ -697,12 +701,23 @@ describe("getLayoutedElements — 30-sibling wide fan-out (acceptance fixture)",
     expect(width).toBeGreaterThan(height);
   });
 
-  it("computed (clamped) fit zoom meets the readability floor at a realistic panel size", () => {
+  it("stays reachable by zoom-out even though it cannot fit legibly", () => {
     const { nodes } = getLayoutedElements(nodes30(), fullEdges, "LR");
     const { width, height } = boundingBox(nodes);
     const viewport = { width: 1280, height: 560 };
-    const zoom = realReactFlowFitZoom(width, height, viewport, 0.15, FIT_ZOOM_FLOOR, 1);
-    expect(zoom).toBeGreaterThanOrEqual(FIT_ZOOM_FLOOR);
+
+    // What the graph would need to fit whole, with no floor applied. This is
+    // genuinely below the readability floor (~0.56 at this size), so the fit
+    // opens clamped and overflowing: that is the deliberate trade, legible by
+    // default rather than whole by default. Asserting the CLAMPED value clears
+    // the floor would prove nothing — the clamp guarantees it for any layout.
+    const rawFit = realReactFlowFitZoom(width, height, viewport, 0.15, 0, 1);
+    expect(rawFit).toBeLessThan(FIT_ZOOM_FLOOR);
+
+    // The half that protects the user: whatever the fit picks, the zoom
+    // control must still reach far enough out to show the graph whole. Putting
+    // the readability floor on the ReactFlow root breaks exactly this.
+    expect(MIN_INTERACTIVE_ZOOM).toBeLessThanOrEqual(rawFit);
   });
 });
 
@@ -800,14 +815,21 @@ describe("getLayoutedElements — 18-node deep chain with global fan-in (accepta
     }
   });
 
-  it("computed (clamped) fit zoom meets the readability floor at a realistic panel size, full and reduced alike", () => {
+  it("stays reachable by zoom-out at a realistic panel size, full and reduced alike", () => {
     const { kept } = transitiveReduceDisplay(edges18);
     const viewport = { width: 1280, height: 560 };
     for (const edgeSet of [edges18, kept]) {
       const { nodes } = getLayoutedElements(nodes18(), edgeSet, "LR");
       const { width, height } = boundingBox(nodes);
-      const zoom = realReactFlowFitZoom(width, height, viewport, 0.15, FIT_ZOOM_FLOOR, 1);
-      expect(zoom).toBeGreaterThanOrEqual(FIT_ZOOM_FLOOR);
+
+      // This fixture is ~1968x1692, so height binds and it needs ~0.29 to fit
+      // whole — well under the readability floor. Opening it at the floor
+      // therefore shows roughly the top half of the graph, and the zoom-out
+      // range is the ONLY way to see the rest: a root minZoom set to the
+      // readability floor leaves this graph permanently half-visible in a
+      // compact embed, which has no minimap either.
+      const rawFit = realReactFlowFitZoom(width, height, viewport, 0.15, 0, 1);
+      expect(MIN_INTERACTIVE_ZOOM).toBeLessThanOrEqual(rawFit);
     }
   });
 });
