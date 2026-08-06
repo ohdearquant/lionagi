@@ -529,12 +529,14 @@ async def test_stop_aggregates_usage_across_all_dag_leg_branches(
     columns must be the SUM across every branch registered there — the
     orchestrator branch plus every worker — not left at zero/NULL.
     """
-    orc_branch = Branch(name="orchestrator", messages=[_usage_message(10, 5, 0.001, 1)])
+    from lionagi.protocols.messages.manager import MessageManager
+
+    orc_branch = Branch(name="orchestrator")
     env = _minimal_env(orc_branch=orc_branch)
     await start_live_persist(env)
 
-    worker_a = Branch(name="worker-a", messages=[_usage_message(100, 50, 0.02, 3)])
-    worker_b = Branch(name="worker-b", messages=[_usage_message(200, 75, 0.03, 2)])
+    worker_a = Branch(name="worker-a")
+    worker_b = Branch(name="worker-b")
     env.session.include_branches(worker_a)
     env.session.include_branches(worker_b)
     _register_branch_hook(env._live_persist, worker_a)
@@ -545,6 +547,22 @@ async def test_stop_aggregates_usage_across_all_dag_leg_branches(
     # on the fix: orchestration sessions never populate a singular ctx["branch"].
     assert ctx.get("branch") is None
     assert len(ctx["hooks"]) == 3  # orchestrator + 2 workers
+
+    # Each leg's branch row is only lazily created on its first message (the
+    # persistence hook's on_first_msg callback): route one plain message
+    # per leg through its hook so a row exists to receive BRANCH_END usage,
+    # then attach the usage-bearing AssistantResponse straight onto the
+    # branch's own message pile (what _collect_branch_usage actually reads).
+    for branch, hook, usage in (
+        (orc_branch, ctx["hooks"][0][1], (10, 5, 0.001, 1)),
+        (worker_a, ctx["hooks"][1][1], (100, 50, 0.02, 3)),
+        (worker_b, ctx["hooks"][2][1], (200, 75, 0.03, 2)),
+    ):
+        first_msg = MessageManager.create_instruction(
+            instruction="go", sender="u", recipient=str(branch.id)
+        )
+        await hook(first_msg)
+        branch.msgs.messages.include(_usage_message(*usage))
 
     await stop_live_persist(env, status="completed")
 
@@ -558,6 +576,37 @@ async def test_stop_aggregates_usage_across_all_dag_leg_branches(
     # Must be a real sum across every leg, not just one branch's value and not zero.
     assert s["num_turns"] not in (0, 1, 3, 2)
     assert s["input_tokens"] not in (0, 10, 100, 200)
+
+    # Each branch persists its OWN usage tuple, not the session aggregate:
+    # a fixture where any two legs shared a value could not tell "wrote
+    # per-branch" from "wrote the session total three times".
+    async with StateDB() as db:
+        orc_row = await db.get_branch(str(orc_branch.id))
+        worker_a_row = await db.get_branch(str(worker_a.id))
+        worker_b_row = await db.get_branch(str(worker_b.id))
+
+    assert (
+        orc_row["input_tokens"],
+        orc_row["output_tokens"],
+        orc_row["total_cost_usd"],
+        orc_row["num_turns"],
+    ) == (10, 5, pytest.approx(0.001), 1)
+    assert (
+        worker_a_row["input_tokens"],
+        worker_a_row["output_tokens"],
+        worker_a_row["total_cost_usd"],
+        worker_a_row["num_turns"],
+    ) == (100, 50, pytest.approx(0.02), 3)
+    assert (
+        worker_b_row["input_tokens"],
+        worker_b_row["output_tokens"],
+        worker_b_row["total_cost_usd"],
+        worker_b_row["num_turns"],
+    ) == (200, 75, pytest.approx(0.03), 2)
+    # None of the per-branch rows equal the session total.
+    for row in (orc_row, worker_a_row, worker_b_row):
+        assert row["input_tokens"] != s["input_tokens"]
+        assert row["total_cost_usd"] != pytest.approx(s["total_cost_usd"])
 
 
 async def test_stop_finalizes_branch_status_for_all_dag_legs(
@@ -629,6 +678,43 @@ async def test_stop_does_not_clobber_worker_status_flow_already_finalized(
         worker_row = await db.get_branch(str(worker.id))
     assert worker_row["status"] == "completed"
     assert worker_row["ended_at"] == 111.0
+
+
+async def test_stop_writes_usage_even_when_worker_status_already_finalized(
+    temp_db_path: Path,
+):
+    """Usage must land on a branch row even when a per-op writer already
+    finalized its terminal status: the status/ended_at guard that protects
+    flow.py's own NodeCompleted/NodeFailed write must not also gate the
+    usage write, or a leg that finished before teardown would lose its
+    cost breakdown entirely."""
+    from lionagi.protocols.messages.manager import MessageManager
+
+    env = _minimal_env()
+    await start_live_persist(env)
+
+    worker = Branch(name="worker-done-usage")
+    env.session.include_branches(worker)
+    _register_branch_hook(env._live_persist, worker)
+    hook = env._live_persist["hooks"][-1][1]
+    msg = MessageManager.create_instruction(instruction="a", sender="u", recipient=str(worker.id))
+    await hook(msg)  # first message -> lazily creates the branch row
+    worker.msgs.messages.include(_usage_message(42, 7, 0.02, 2))
+
+    ctx = env._live_persist
+    # Simulate flow.py's NodeCompleted per-op write finalizing this leg early.
+    await ctx["db"].update_branch(str(worker.id), status="completed", ended_at=111.0)
+
+    await stop_live_persist(env, status="failed")
+
+    async with StateDB() as db:
+        worker_row = await db.get_branch(str(worker.id))
+    assert worker_row["status"] == "completed"  # guard: unchanged
+    assert worker_row["ended_at"] == 111.0  # guard: unchanged
+    assert worker_row["input_tokens"] == 42
+    assert worker_row["output_tokens"] == 7
+    assert worker_row["total_cost_usd"] == pytest.approx(0.02)
+    assert worker_row["num_turns"] == 2
 
 
 async def test_stop_removes_persistence_handler_from_bus(

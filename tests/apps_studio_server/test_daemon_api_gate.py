@@ -574,6 +574,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "ended_at",
         "graph",
         "id",
+        "input_tokens",
         "invocation_id",
         "invocation_kind",
         "last_message_at",
@@ -584,6 +585,8 @@ _SESSION_DETAIL_KEYS = sorted(
         "model",
         "name",
         "node_metadata",
+        "num_turns",
+        "output_tokens",
         "playbook_name",
         "project",
         "project_source",
@@ -598,6 +601,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "status_evidence_refs",
         "status_reason_code",
         "status_reason_summary",
+        "total_cost_usd",
         "updated_at",
     ]
 )

@@ -277,6 +277,11 @@ branches = Table(
     Column("status", Text),
     Column("started_at", Float),
     Column("ended_at", Float),
+    # Per-branch usage, populated at BRANCH_END.
+    Column("input_tokens", Integer),
+    Column("output_tokens", Integer),
+    Column("total_cost_usd", Float),
+    Column("num_turns", Integer),
 )
 
 Index("idx_branches_session", branches.c.session_id)

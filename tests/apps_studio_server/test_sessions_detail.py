@@ -60,6 +60,10 @@ async def seed_session(
     artifacts_path: str | None = None,
     artifact_contract_json: dict | None = None,
     artifact_verification_json: dict | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    total_cost_usd: float | None = None,
+    num_turns: int | None = None,
 ) -> str:
     prog_id = f"{session_id}-prog"
     async with StateDB(db_path) as db:
@@ -82,6 +86,18 @@ async def seed_session(
                 "source_kind": "live",
             }
         )
+        usage_fields = {
+            k: v
+            for k, v in {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_cost_usd": total_cost_usd,
+                "num_turns": num_turns,
+            }.items()
+            if v is not None
+        }
+        if usage_fields:
+            await db.update_session(session_id, **usage_fields)
     return prog_id
 
 
@@ -268,6 +284,50 @@ async def test_get_session_returns_graph_from_session_node_metadata(patched_sess
     assert graph["edges"] == [
         {"id": "e-collect-validate", "source": "collect", "target": "validate", "mode": "simple"}
     ]
+
+
+# ---------------------------------------------------------------------------
+# Test 1.7a: get_session usage fields land beside duration_ms
+# ---------------------------------------------------------------------------
+
+
+async def test_get_session_surfaces_usage_fields_beside_duration(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-usage-detail",
+        status="completed",
+        started_at=10.0,
+        ended_at=13.5,
+        input_tokens=1500,
+        output_tokens=2500,
+        total_cost_usd=0.0007,
+        num_turns=4,
+    )
+
+    result = await svc.get_session("sess-usage-detail")
+
+    assert result is not None
+    assert result["duration_ms"] == 3500.0
+    assert result["input_tokens"] == 1500
+    assert result["output_tokens"] == 2500
+    assert result["total_cost_usd"] == 0.0007
+    assert result["num_turns"] == 4
+
+
+async def test_get_session_distinguishes_unreported_cost_from_zero_cost(patched_sessions_db):
+    """None (unreported) and 0.0 (genuinely free) must round-trip distinctly."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-detail-no-cost", status="completed")
+    await seed_session(
+        db_path, session_id="sess-detail-free", status="completed", total_cost_usd=0.0
+    )
+
+    no_cost = await svc.get_session("sess-detail-no-cost")
+    free = await svc.get_session("sess-detail-free")
+
+    assert no_cost["total_cost_usd"] is None
+    assert free["total_cost_usd"] == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +606,13 @@ async def seed_branch(
     session_id: str,
     msg_ids: list[str] | None = None,
     name: str = "worker",
+    status: str | None = None,
+    started_at: float | None = None,
+    ended_at: float | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    total_cost_usd: float | None = None,
+    num_turns: int | None = None,
 ) -> str:
     """Create a progression + branch row; returns the progression id."""
     prog_id = f"{branch_id}-prog"
@@ -566,6 +633,21 @@ async def seed_branch(
                 "agent_name": name,
             }
         )
+        lifecycle_fields = {
+            k: v
+            for k, v in {
+                "status": status,
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_cost_usd": total_cost_usd,
+                "num_turns": num_turns,
+            }.items()
+            if v is not None
+        }
+        if lifecycle_fields:
+            await db.update_branch(branch_id, **lifecycle_fields)
     return prog_id
 
 
@@ -610,6 +692,40 @@ async def test_list_sessions_single_session_correct_fields(patched_sessions_db):
     assert row["branch_count"] == 0
     assert row["message_count"] == 0
     assert row["invocation_kind"] == "flow"
+
+
+async def test_list_sessions_surfaces_usage_fields(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-usage",
+        status="completed",
+        input_tokens=120,
+        output_tokens=340,
+        total_cost_usd=0.0042,
+        num_turns=3,
+    )
+
+    rows = await svc.list_sessions()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["input_tokens"] == 120
+    assert row["output_tokens"] == 340
+    assert row["total_cost_usd"] == 0.0042
+    assert row["num_turns"] == 3
+
+
+async def test_list_sessions_distinguishes_unreported_cost_from_zero_cost(patched_sessions_db):
+    """None (unreported) and 0.0 (genuinely free) must round-trip distinctly."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-no-cost", status="completed")
+    await seed_session(db_path, session_id="sess-free", status="completed", total_cost_usd=0.0)
+
+    rows = {row["id"]: row for row in await svc.list_sessions()}
+
+    assert rows["sess-no-cost"]["total_cost_usd"] is None
+    assert rows["sess-free"]["total_cost_usd"] == 0.0
 
 
 async def test_list_sessions_surfaces_status_reason(patched_sessions_db):
@@ -762,6 +878,77 @@ async def test_list_sessions_branch_and_message_counts(patched_sessions_db):
     assert row["id"] == "sess-cnt"
     assert row["branch_count"] == 1
     assert row["message_count"] == 2
+
+
+async def test_get_session_branch_surfaces_usage_and_derived_duration(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-branch-usage")
+    await seed_branch(
+        db_path,
+        branch_id="br-usage",
+        session_id="sess-branch-usage",
+        status="completed",
+        started_at=200.0,
+        ended_at=205.25,
+        input_tokens=800,
+        output_tokens=1600,
+        total_cost_usd=0.0031,
+        num_turns=2,
+    )
+
+    result = await svc.get_session("sess-branch-usage")
+
+    assert result is not None
+    branch = result["branches"][0]
+    assert branch["input_tokens"] == 800
+    assert branch["output_tokens"] == 1600
+    assert branch["total_cost_usd"] == 0.0031
+    assert branch["num_turns"] == 2
+    assert branch["duration_ms"] == 5250.0
+
+
+async def test_get_session_branch_duration_is_none_without_both_timestamps(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-branch-partial")
+    await seed_branch(
+        db_path,
+        branch_id="br-partial",
+        session_id="sess-branch-partial",
+        status="running",
+        started_at=200.0,
+        # ended_at intentionally omitted
+    )
+
+    result = await svc.get_session("sess-branch-partial")
+
+    branch = result["branches"][0]
+    assert branch["started_at"] == 200.0
+    assert branch["ended_at"] is None
+    assert branch["duration_ms"] is None
+
+
+async def test_get_session_branch_distinguishes_unreported_cost_from_zero_cost(
+    patched_sessions_db,
+):
+    """None (unreported) and 0.0 (genuinely free) must round-trip distinctly."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-branch-cost")
+    await seed_branch(
+        db_path, branch_id="br-no-cost", session_id="sess-branch-cost", status="completed"
+    )
+    await seed_branch(
+        db_path,
+        branch_id="br-free",
+        session_id="sess-branch-cost",
+        status="completed",
+        total_cost_usd=0.0,
+    )
+
+    result = await svc.get_session("sess-branch-cost")
+
+    branches = {b["id"]: b for b in result["branches"]}
+    assert branches["br-no-cost"]["total_cost_usd"] is None
+    assert branches["br-free"]["total_cost_usd"] == 0.0
 
 
 # ---------------------------------------------------------------------------

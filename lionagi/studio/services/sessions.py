@@ -257,6 +257,10 @@ async def list_sessions(
                 s.status_reason_code,
                 s.status_reason_summary,
                 s.node_metadata,
+                s.input_tokens,
+                s.output_tokens,
+                s.total_cost_usd,
+                s.num_turns,
                 COUNT(DISTINCT b.id) AS branch_count,
                 COALESCE(SUM(
                     json_array_length(p.collection)
@@ -328,6 +332,12 @@ async def list_sessions(
             # ADR-0057: denormalized status reason for the hot read path.
             "status_reason_code": row["status_reason_code"],
             "status_reason_summary": row["status_reason_summary"],
+            # Run usage (populated at RunEnd). total_cost_usd=None means
+            # unreported by the provider, never coerced to 0.0.
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "total_cost_usd": row["total_cost_usd"],
+            "num_turns": row["num_turns"],
         }
         for row in rows
     ]
@@ -652,7 +662,8 @@ async def get_session(
                       source_kind, status, started_at, ended_at, last_message_at,
                       model, provider, effort, agent_hash, invocation_id,
                       node_metadata, project, project_source,
-                      status_reason_code, status_reason_summary, status_evidence_refs
+                      status_reason_code, status_reason_summary, status_evidence_refs,
+                      input_tokens, output_tokens, total_cost_usd, num_turns
                FROM sessions WHERE id = ?""",
             (session_id,),
         )
@@ -677,7 +688,9 @@ async def get_session(
 
         try:
             branch_cur = await db.execute(
-                "SELECT id, name, created_at, progression_id, model, provider, agent_name, status, started_at, ended_at FROM branches WHERE session_id = ? ORDER BY created_at",
+                "SELECT id, name, created_at, progression_id, model, provider, agent_name, status, started_at, ended_at,"
+                " input_tokens, output_tokens, total_cost_usd, num_turns"
+                " FROM branches WHERE session_id = ? ORDER BY created_at",
                 (session_id,),
             )
         except Exception:
@@ -745,6 +758,13 @@ async def get_session(
             full_stats["files"].extend(branch_stats["files"])
 
             br_keys = br.keys()
+            branch_started_at = br["started_at"] if "started_at" in br_keys else None
+            branch_ended_at = br["ended_at"] if "ended_at" in br_keys else None
+            branch_duration_ms = (
+                (branch_ended_at - branch_started_at) * 1000
+                if branch_started_at is not None and branch_ended_at is not None
+                else None
+            )
             branches.append(
                 {
                     "id": branch_id,
@@ -764,8 +784,15 @@ async def get_session(
                     "provider": br["provider"],
                     "agent_name": br["agent_name"],
                     "status": br["status"] if "status" in br_keys else None,
-                    "started_at": br["started_at"] if "started_at" in br_keys else None,
-                    "ended_at": br["ended_at"] if "ended_at" in br_keys else None,
+                    "started_at": branch_started_at,
+                    "ended_at": branch_ended_at,
+                    # Run usage (populated at BRANCH_END). total_cost_usd=None
+                    # means unreported by the provider, never coerced to 0.0.
+                    "input_tokens": br["input_tokens"] if "input_tokens" in br_keys else None,
+                    "output_tokens": br["output_tokens"] if "output_tokens" in br_keys else None,
+                    "total_cost_usd": br["total_cost_usd"] if "total_cost_usd" in br_keys else None,
+                    "num_turns": br["num_turns"] if "num_turns" in br_keys else None,
+                    "duration_ms": branch_duration_ms,
                 }
             )
 
@@ -810,6 +837,12 @@ async def get_session(
         "started_at": started_at,
         "ended_at": ended_at,
         "duration_ms": duration_ms,
+        # Run usage (populated at RunEnd). total_cost_usd=None means
+        # unreported by the provider, never coerced to 0.0.
+        "input_tokens": session_row["input_tokens"],
+        "output_tokens": session_row["output_tokens"],
+        "total_cost_usd": session_row["total_cost_usd"],
+        "num_turns": session_row["num_turns"],
         # Full-session aggregate, not derived from the windowed page.
         "last_message_at": session_row["last_message_at"],
         "source_show": source_show,

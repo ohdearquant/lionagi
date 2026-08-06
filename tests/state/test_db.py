@@ -1284,6 +1284,137 @@ async def test_finalize_branch_repeated_call_does_not_flap_terminal_status(db: S
     assert row["ended_at"] == 100.0
 
 
+async def test_finalize_branch_writes_usage_fields_on_the_branch_row(db: StateDB):
+    """BRANCH_END usage payload lands on the branch's own row, not just the
+    session total."""
+    branch = await _make_branch(db)
+
+    await db.finalize_branch(
+        branch["id"],
+        status="completed",
+        ended_at=1.0,
+        input_tokens=10,
+        output_tokens=5,
+        total_cost_usd=0.001,
+        num_turns=1,
+    )
+
+    row = await db.get_branch(branch["id"])
+    assert row["input_tokens"] == 10
+    assert row["output_tokens"] == 5
+    assert row["total_cost_usd"] == pytest.approx(0.001)
+    assert row["num_turns"] == 1
+
+
+async def test_finalize_branch_distinguishes_null_cost_from_explicit_zero(db: StateDB):
+    """A provider that never reports cost leaves total_cost_usd NULL; a
+    provider that explicitly reports a free call stores 0.0. The two must
+    round-trip as distinguishable values, never coerced together."""
+    no_cost_branch = await _make_branch(db)
+    free_branch = await _make_branch(db)
+
+    await db.finalize_branch(
+        no_cost_branch["id"],
+        status="completed",
+        ended_at=1.0,
+        input_tokens=1,
+        output_tokens=1,
+        total_cost_usd=None,
+        num_turns=1,
+    )
+    await db.finalize_branch(
+        free_branch["id"],
+        status="completed",
+        ended_at=1.0,
+        input_tokens=1,
+        output_tokens=1,
+        total_cost_usd=0.0,
+        num_turns=1,
+    )
+
+    no_cost_row = await db.get_branch(no_cost_branch["id"])
+    free_row = await db.get_branch(free_branch["id"])
+    assert no_cost_row["total_cost_usd"] is None
+    assert free_row["total_cost_usd"] == 0.0
+    assert no_cost_row["total_cost_usd"] is not free_row["total_cost_usd"]
+
+
+async def test_finalize_branch_omitted_usage_field_does_not_clobber_prior_value(db: StateDB):
+    """A None usage field on a later call must not overwrite a value a
+    previous call already wrote. None means 'not reported this time', not
+    'clear it'. The second call's status guard is expected to be skipped
+    (the branch is already terminal), which is exactly the case where the
+    usage write must still land independent of that guard."""
+    branch = await _make_branch(db)
+
+    first = await db.finalize_branch(
+        branch["id"],
+        status="completed",
+        ended_at=1.0,
+        input_tokens=10,
+        total_cost_usd=None,
+    )
+    assert first is True
+    row = await db.get_branch(branch["id"])
+    assert row["input_tokens"] == 10
+    assert row["total_cost_usd"] is None
+
+    second = await db.finalize_branch(
+        branch["id"],
+        status="failed",
+        ended_at=999.0,
+        input_tokens=None,
+        total_cost_usd=0.5,
+    )
+    assert second is False  # already-terminal guard: status/ended_at untouched
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "completed"
+    assert row["ended_at"] == 1.0
+    assert row["input_tokens"] == 10
+    assert row["total_cost_usd"] == pytest.approx(0.5)
+
+
+async def test_finalize_branch_writes_usage_even_when_status_already_terminal(db: StateDB):
+    """A per-op writer that already stamped this branch terminal (flow.py's
+    NodeCompleted/NodeFailed) must not cost the branch its usage breakdown.
+    The status/ended_at guard must not gate the usage write too."""
+    branch = await _make_branch(db, status="completed")
+    await db.update_branch(branch["id"], ended_at=100.0)
+
+    updated = await db.finalize_branch(
+        branch["id"],
+        status="failed",
+        ended_at=999.0,
+        input_tokens=42,
+        output_tokens=7,
+        total_cost_usd=0.02,
+        num_turns=2,
+    )
+
+    assert updated is False  # status/ended_at guard still holds
+    row = await db.get_branch(branch["id"])
+    assert row["status"] == "completed"
+    assert row["ended_at"] == 100.0
+    assert row["input_tokens"] == 42
+    assert row["output_tokens"] == 7
+    assert row["total_cost_usd"] == pytest.approx(0.02)
+    assert row["num_turns"] == 2
+
+
+async def test_finalize_branch_missing_row_usage_is_harmless_noop(db: StateDB):
+    """A branch id with no row must not raise and must not fabricate one,
+    even when the payload carries usage fields."""
+    updated = await db.finalize_branch(
+        uid(),
+        status="completed",
+        input_tokens=1,
+        output_tokens=1,
+        total_cost_usd=1.0,
+        num_turns=1,
+    )
+    assert updated is False
+
+
 # ── Shows ─────────────────────────────────────────────────────────────────────
 
 
