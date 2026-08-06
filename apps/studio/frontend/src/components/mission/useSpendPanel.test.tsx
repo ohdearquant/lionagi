@@ -34,6 +34,16 @@ describe("useSpendPanel.ts — stale-window guard (source contract)", () => {
   it("re-runs the effect (and resets the flag) when the window changes", () => {
     expect(SRC).toMatch(/\}, \[window_\]\);/);
   });
+
+  it("declares a minimum focus-refresh-age guard", () => {
+    expect(SRC).toMatch(/MIN_FOCUS_REFRESH_AGE_MS/);
+  });
+
+  it("onFocus checks both in-flight and the min-refresh-age guard before refreshing", () => {
+    expect(SRC).toMatch(
+      /if \(inFlight \|\| Date\.now\(\) - lastRefreshAt < MIN_FOCUS_REFRESH_AGE_MS\) return;/,
+    );
+  });
 });
 
 vi.mock("@/lib/api", () => ({
@@ -185,6 +195,10 @@ describe("useSpendPanel — mounted behavior", () => {
 
     // A focus-triggered refresh of the same window that fails — the window
     // prop itself never changes, so the effect's data-reset never re-fires.
+    // Advance past the min-refresh-age guard first, or this focus event would
+    // be (correctly) suppressed as too soon after the mount refresh.
+    vi.useFakeTimers();
+    vi.advanceTimersByTime(6_000);
     const second = deferred<SpendStats>();
     vi.mocked(getSpendStats).mockReturnValueOnce(second.promise);
     await act(async () => {
@@ -192,9 +206,66 @@ describe("useSpendPanel — mounted behavior", () => {
       second.reject(new Error("network down"));
       await second.promise.catch(() => {});
     });
+    vi.useRealTimers();
 
     expect(latest?.data?.reported_usd).toBe(12.5); // last-known value retained
     expect(latest?.error).toBe("network down");
     expect(latest?.loading).toBe(false);
+  });
+
+  it("suppresses a focus event that fires soon after the previous refresh (min-refresh-age guard)", async () => {
+    const first = deferred<SpendStats>();
+    vi.mocked(getSpendStats).mockReturnValueOnce(first.promise);
+
+    act(() => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness, { window_: "24h" }));
+    });
+    await act(async () => {
+      first.resolve(makeSpend("24h"));
+      await first.promise;
+    });
+    expect(getSpendStats).toHaveBeenCalledTimes(1);
+
+    // Focus fires immediately after — well within the guard window — so it
+    // must not trigger another request.
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(getSpendStats).toHaveBeenCalledTimes(1);
+  });
+
+  it("two rapid focus events in the same tick trigger only one request (in-flight suppression)", async () => {
+    const first = deferred<SpendStats>();
+    vi.mocked(getSpendStats).mockReturnValueOnce(first.promise);
+
+    act(() => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness, { window_: "24h" }));
+    });
+    await act(async () => {
+      first.resolve(makeSpend("24h"));
+      await first.promise;
+    });
+
+    // Clear the min-refresh-age guard so this test isolates in-flight
+    // suppression specifically, not the age guard covered above.
+    vi.useFakeTimers();
+    vi.advanceTimersByTime(6_000);
+
+    const second = deferred<SpendStats>();
+    vi.mocked(getSpendStats).mockReturnValueOnce(second.promise);
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("focus")); // same tick, before the first settles
+    });
+    await act(async () => {
+      second.resolve(makeSpend("24h", { reported_usd: 42 }));
+      await second.promise;
+    });
+    vi.useRealTimers();
+
+    expect(getSpendStats).toHaveBeenCalledTimes(2); // mount + exactly one focus refresh
+    expect(latest?.data?.reported_usd).toBe(42);
   });
 });
