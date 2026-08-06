@@ -836,3 +836,108 @@ class TestPlaybookArtifactsPassThrough:
         call_kwargs = run_flow.call_args.kwargs
         pa = call_kwargs.get("playbook_artifacts")
         assert pa is None
+
+
+# ── A playbook launched with no subject ──────────────────────────────
+
+
+class TestPlaybookInputRequired:
+    """A playbook whose prompt names {input} needs a subject from the caller.
+
+    Without one, {input} used to be substituted with itself: the run started
+    against the literal string "{input}", every worker went looking for a
+    topic that did not exist, and the whole thing cost what a real run costs.
+    The generic "prompt is required" guard cannot catch it, because by the
+    time that guard runs the template has already been assigned as the prompt.
+    """
+
+    def _write(self, tmp_path, monkeypatch, prompt: str) -> None:
+        playbooks_dir = tmp_path / ".lionagi" / "playbooks"
+        playbooks_dir.mkdir(parents=True, exist_ok=True)
+        (playbooks_dir / "topical.playbook.yaml").write_text(
+            yaml.dump(
+                {
+                    "model": "claude-code/opus-4-7",
+                    "args": {"depth": {"type": "str", "default": "standard"}},
+                    "prompt": prompt,
+                }
+            )
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+
+    def test_refused_when_the_template_names_input_and_none_was_given(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        self._write(tmp_path, monkeypatch, "Topic: {input}\nDepth: {depth}")
+        args = _parse_flow_args(["-p", "topical", "--depth", "deep"])
+
+        with patch(
+            "lionagi.cli.orchestrate._run_flow",
+            AsyncMock(return_value=("done", "completed")),
+        ) as run_flow:
+            code = run_orchestrate(args)
+
+        assert code == 1
+        assert run_flow.call_count == 0
+
+    def test_the_refusal_says_a_subject_is_what_is_missing(self, monkeypatch, tmp_path, caplog):
+        # "prompt is required" would send the caller looking at a flag they
+        # cannot find; the thing to type is a subject.
+        self._write(tmp_path, monkeypatch, "Topic: {input}")
+        args = _parse_flow_args(["-p", "topical"])
+
+        with caplog.at_level("ERROR"):
+            with patch(
+                "lionagi.cli.orchestrate._run_flow",
+                AsyncMock(return_value=("done", "completed")),
+            ):
+                code = run_orchestrate(args)
+
+        assert code == 1
+        assert "subject" in caplog.text.lower()
+
+    def test_the_same_playbook_with_a_subject_still_runs(self, monkeypatch, tmp_path):
+        """Positive control: a check that refuses everything also passes the
+        two arms above."""
+        self._write(tmp_path, monkeypatch, "Topic: {input}\nDepth: {depth}")
+        args = _parse_flow_args(["-p", "topical", "--depth", "deep", "attention kernels"])
+
+        with patch(
+            "lionagi.cli.orchestrate._run_flow",
+            AsyncMock(return_value=("done", "completed")),
+        ) as run_flow:
+            code = run_orchestrate(args)
+
+        assert code == 0
+        assert run_flow.call_args.kwargs["prompt"] == "Topic: attention kernels\nDepth: deep"
+
+    def test_a_playbook_that_never_names_input_is_not_refused(self, monkeypatch, tmp_path):
+        """Fully parameterised by its own flags, so it has no subject to
+        miss. Refusing it would ground playbooks that never took one."""
+        self._write(tmp_path, monkeypatch, "Depth: {depth}")
+        args = _parse_flow_args(["-p", "topical", "--depth", "deep", "ignored"])
+
+        with patch(
+            "lionagi.cli.orchestrate._run_flow",
+            AsyncMock(return_value=("done", "completed")),
+        ) as run_flow:
+            code = run_orchestrate(args)
+
+        assert code == 0
+        assert run_flow.call_count == 1
+
+    def test_the_literal_placeholder_never_reaches_a_run(self, monkeypatch, tmp_path):
+        """The outcome that matters, stated as an outcome: whatever the exit
+        code, no run is ever started against an unfilled {input}."""
+        self._write(tmp_path, monkeypatch, "Topic: {input}\nDepth: {depth}")
+        args = _parse_flow_args(["-p", "topical"])
+
+        with patch(
+            "lionagi.cli.orchestrate._run_flow",
+            AsyncMock(return_value=("done", "completed")),
+        ) as run_flow:
+            run_orchestrate(args)
+
+        started = [c.kwargs.get("prompt", "") for c in run_flow.call_args_list]
+        assert not any("{input}" in p for p in started), started

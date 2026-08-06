@@ -473,20 +473,46 @@ def _validate_spec_fields(spec: dict) -> str | None:
     return None
 
 
+_PLACEHOLDER_RE = r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}"
+
+
+def prompt_placeholders(template: str) -> set[str]:
+    """The names a prompt template asks to have filled in."""
+    import re
+
+    return set(re.findall(_PLACEHOLDER_RE, template))
+
+
+def check_playbook_input(template: str, positional: str | None) -> str | None:
+    """Refuse a run whose template names a subject the caller never gave.
+
+    ``{input}`` is the one placeholder the framework binds itself, from the
+    text the caller typed. Left unbound it is substituted with itself, so a
+    playbook launched with no subject runs against the literal string
+    "{input}" and every worker goes looking for a topic that does not exist.
+    The run costs the same as a real one and its output reads like an
+    unhelpful answer rather than like a launch that should not have happened.
+    """
+    if not template or positional is not None:
+        return None
+    if "input" not in prompt_placeholders(template):
+        return None
+    return (
+        "this playbook's prompt needs a subject and none was given\n"
+        'Usage: li play <name> "<what to work on>" [--flag value ...]'
+    )
+
+
 def _interpolate_prompt(template: str, positional: str | None, playbook_args: dict) -> str:
     """Interpolate {input} + playbook args into the prompt template."""
     if not template:
         return positional or ""
 
+    import re
+
     ctx: dict = dict(playbook_args)
     if positional is not None:
         ctx["input"] = positional
-
-    import re
-
-    placeholders = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", template))
-    if not placeholders and positional is not None:
-        return template + "\n\n" + positional
 
     def _sub(match: re.Match[str]) -> str:
         key = match.group(1)
@@ -494,7 +520,13 @@ def _interpolate_prompt(template: str, positional: str | None, playbook_args: di
             return str(ctx[key])
         return match.group(0)
 
-    return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _sub, template)
+    # A template with no placeholders at all takes the caller's text as its
+    # subject. One that names placeholders is parameterised by them, and a
+    # positional it does not reference through {input} is not appended.
+    if not prompt_placeholders(template) and positional is not None:
+        return template + "\n\n" + positional
+
+    return re.sub(_PLACEHOLDER_RE, _sub, template)
 
 
 def _check_assembled_prompt(prompt: str) -> str | None:
@@ -1211,6 +1243,10 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             if args.agent is None and spec.get("agent"):
                 args.agent = spec["agent"]
             if spec.get("prompt"):
+                input_err = check_playbook_input(spec["prompt"], args.prompt)
+                if input_err is not None:
+                    log_error(input_err)
+                    return 1
                 args.prompt = _interpolate_prompt(spec["prompt"], args.prompt, playbook_ctx)
             if args.max_concurrent == 0 and spec.get("workers"):
                 args.max_concurrent = spec["workers"]
