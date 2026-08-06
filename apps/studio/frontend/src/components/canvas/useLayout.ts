@@ -295,6 +295,32 @@ export function enforceMinRankGap(nodes: Node[], minGap = 6): Node[] {
   return out;
 }
 
+// An LR layout puts every target to the right of its source, so an edge that
+// runs backwards can only be one the fold created: it leaves the end of a row
+// and re-enters at the start of the next. That edge is still a real dependency
+// in the graph, but on screen it is doing what the wrap at the end of a line of
+// text does, and drawing it like the others makes the reader look for a
+// dependency behind them. Detected from the final geometry rather than from the
+// fold's own bookkeeping, so it describes what the edge actually does on the
+// canvas whichever pass moved the nodes.
+export function markContinuationEdges(nodes: Node[], edges: Edge[]): Edge[] {
+  const xById = new Map<string, number>();
+  for (const node of nodes) xById.set(node.id, node.position.x);
+
+  let changed = false;
+  const out = edges.map((edge) => {
+    const sourceX = xById.get(edge.source);
+    const targetX = xById.get(edge.target);
+    // An endpoint the layout never placed says nothing about direction.
+    if (sourceX === undefined || targetX === undefined) return edge;
+    if (targetX >= sourceX) return edge;
+    changed = true;
+    return { ...edge, data: { ...(edge.data ?? {}), continuation: true } };
+  });
+
+  return changed ? out : edges;
+}
+
 export interface LayoutedGraph {
   nodes: Node[];
   edges: Edge[];
@@ -364,7 +390,7 @@ export function getLayoutedElements(
   }
   const height = finalNodes.length === 0 ? 0 : bottom - top + 2 * 24;
 
-  return { nodes: finalNodes, edges, height, ranks };
+  return { nodes: finalNodes, edges: markContinuationEdges(finalNodes, edges), height, ranks };
 }
 
 export function useAutoLayout() {

@@ -5,7 +5,7 @@
  * getBezierPath / EdgeLabelRenderer all expect a live ReactFlow provider).
  */
 import { describe, it, expect } from "vitest";
-import { computeEdgeVisualState, isLongRangeEdge } from "./ConditionEdge";
+import { computeEdgeVisualState, continuationVisualState, isLongRangeEdge } from "./ConditionEdge";
 
 describe("isLongRangeEdge — rank-distance routing threshold", () => {
   it("is short-range under the threshold", () => {
@@ -62,5 +62,41 @@ describe("computeEdgeVisualState — completed edges mute, active/selected stay 
     const selected = computeEdgeVisualState(true, false, false);
     expect(completed.strokeWidth).toBeLessThan(pending.strokeWidth);
     expect(selected.strokeWidth).toBeGreaterThan(pending.strokeWidth);
+  });
+});
+
+describe("continuationVisualState — the fold's return sweep recedes", () => {
+  const base = { strokeColor: "var(--dag-edge-done)", strokeOpacity: 1, strokeWidth: 2 };
+
+  it("thins and fades a continuation that is neither hovered nor selected", () => {
+    const out = continuationVisualState(base, false);
+    expect(out.strokeOpacity).toBeLessThan(base.strokeOpacity);
+    expect(out.strokeWidth).toBeLessThan(base.strokeWidth);
+  });
+
+  it("hands back the base state untouched once hovered or selected", () => {
+    // It is a real dependency underneath, so it has to come back to full
+    // strength when someone goes looking at it.
+    expect(continuationVisualState(base, true)).toBe(base);
+  });
+
+  it("keeps the colour the run state chose", () => {
+    // Muting is about weight, not hue: a continuation off a failed step still
+    // has to read as belonging to that step.
+    const failed = { ...base, strokeColor: "var(--dag-pending-border)" };
+    expect(continuationVisualState(failed, false).strokeColor).toBe(failed.strokeColor);
+  });
+
+  it("never makes an already-muted edge louder", () => {
+    // A completed edge arrives at 0.5. Assigning the continuation opacity
+    // outright rather than taking the lower of the two would brighten it.
+    const alreadyMuted = { ...base, strokeOpacity: 0.2 };
+    expect(continuationVisualState(alreadyMuted, false).strokeOpacity).toBeLessThanOrEqual(0.2);
+  });
+
+  it("does not mutate the state it was handed", () => {
+    const input = { ...base };
+    continuationVisualState(input, false);
+    expect(input).toEqual(base);
   });
 });

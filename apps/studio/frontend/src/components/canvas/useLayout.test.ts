@@ -20,6 +20,7 @@ import {
   rankSepForDepth,
   wrapWideRanks,
   foldWideGraph,
+  markContinuationEdges,
 } from "./useLayout";
 import { transitiveReduceDisplay } from "@/lib/operationGraph";
 import { fitZoomFor, FIT_ZOOM_FLOOR, MIN_INTERACTIVE_ZOOM } from "./WorkerCanvas";
@@ -1013,5 +1014,103 @@ describe("foldWideGraph — unit behaviour", () => {
       // Within a row, reading left to right must still read the chain in order.
       expect(indices).toEqual([...indices].sort((a, b) => a - b));
     }
+  });
+});
+
+describe("markContinuationEdges — the fold's return sweep is not a dependency", () => {
+  const at = (id: string, x: number): Node => ({ id, position: { x, y: 0 }, data: { label: id } });
+  const link = (source: string, target: string): Edge => ({
+    id: `${source}-${target}`,
+    source,
+    target,
+  });
+
+  it("marks an edge whose target was folded onto the row below its source", () => {
+    const marked = markContinuationEdges([at("a", 1400), at("b", 0)], [link("a", "b")]);
+    expect(marked[0].data).toMatchObject({ continuation: true });
+  });
+
+  it("leaves a forward edge alone, which is every edge in an unfolded LR graph", () => {
+    const edges = [link("a", "b")];
+    const marked = markContinuationEdges([at("a", 0), at("b", 300)], edges);
+    expect(marked[0].data?.continuation).toBeUndefined();
+  });
+
+  it("does not mark an edge between two nodes at the same x", () => {
+    // Equal x is not backwards. Marking it would put a continuation inside a
+    // wrapped rank's grid column, where nothing wrapped.
+    const marked = markContinuationEdges([at("a", 500), at("b", 500)], [link("a", "b")]);
+    expect(marked[0].data?.continuation).toBeUndefined();
+  });
+
+  it("returns the very same array when nothing is marked", () => {
+    // Identity, not just equality: the canvas re-lays out on every run tick and
+    // a fresh array each time would invalidate memoized edges for no reason.
+    const edges = [link("a", "b")];
+    const nodes = [at("a", 0), at("b", 300)];
+    expect(markContinuationEdges(nodes, edges)).toBe(edges);
+  });
+
+  it("keeps the data a marked edge already carried", () => {
+    const edges: Edge[] = [{ ...link("a", "b"), data: { mode: "code", rankDistance: 4 } }];
+    const marked = markContinuationEdges([at("a", 1400), at("b", 0)], edges);
+    expect(marked[0].data).toMatchObject({ mode: "code", rankDistance: 4, continuation: true });
+  });
+
+  it("says nothing about an edge whose endpoints the layout never placed", () => {
+    // An unplaced endpoint has no x, so it has no direction either. Guessing
+    // one would mark edges in the editor's fresh-connect path, which never folded.
+    const marked = markContinuationEdges([at("a", 1400)], [link("a", "ghost")]);
+    expect(marked[0].data?.continuation).toBeUndefined();
+  });
+
+  it("does not mutate the edges it was given", () => {
+    const edges = [link("a", "b")];
+    markContinuationEdges([at("a", 1400), at("b", 0)], edges);
+    expect(edges[0].data).toBeUndefined();
+  });
+});
+
+describe("getLayoutedElements — a folded chain marks exactly its row boundaries", () => {
+  const chain = (n: number) => {
+    const ids = Array.from({ length: n }, (_, i) => `s${i}`);
+    const edges: Edge[] = ids
+      .slice(0, -1)
+      .map((id, i) => ({ id: `${id}-${ids[i + 1]}`, source: id, target: ids[i + 1] }));
+    return { nodes: () => ids.map(full), edges };
+  };
+
+  it("marks a continuation on a chain long enough to fold", () => {
+    const c = chain(30);
+    const { edges } = getLayoutedElements(c.nodes(), c.edges, "LR");
+    expect(edges.filter((e) => e.data?.continuation).length).toBeGreaterThan(0);
+  });
+
+  it("marks one continuation per row boundary and no more", () => {
+    // A fold into R rows breaks the chain in R-1 places, so anything above that
+    // means ordinary dependencies are being drawn as wrapped text.
+    const c = chain(30);
+    const { nodes, edges } = getLayoutedElements(c.nodes(), c.edges, "LR");
+    const rowTops = new Set(nodes.map((n) => Math.round(n.position.y)));
+    const marked = edges.filter((e) => e.data?.continuation);
+    expect(marked).toHaveLength(rowTops.size - 1);
+  });
+
+  it("marks only edges that really do run backwards on the canvas", () => {
+    const c = chain(30);
+    const { nodes, edges } = getLayoutedElements(c.nodes(), c.edges, "LR");
+    const xById = new Map(nodes.map((n) => [n.id, n.position.x]));
+    for (const e of edges.filter((x) => x.data?.continuation)) {
+      expect(xById.get(e.target)!).toBeLessThan(xById.get(e.source)!);
+    }
+  });
+
+  it("marks nothing on a chain short enough that no fold happens", () => {
+    // The control. Without it every assertion above is satisfied by a function
+    // that marks whatever it likes on graphs that never wrapped.
+    const c = chain(4);
+    const { nodes, edges } = getLayoutedElements(c.nodes(), c.edges, "LR");
+    expect(new Set(nodes.map((n) => Math.round(n.position.y))).size).toBe(1);
+    expect(edges.filter((e) => e.data?.continuation)).toHaveLength(0);
   });
 });

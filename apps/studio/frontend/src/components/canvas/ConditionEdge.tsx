@@ -23,6 +23,9 @@ export interface ConditionEdgeData {
    * that predate a layout — e.g. a fresh onConnect in the editor — which
    * fall back to the short-edge bezier route. */
   rankDistance?: number;
+  /** Set by the layout when folding put this edge's target on the row below
+   * its source, so it sweeps back across the canvas. See markContinuationEdges. */
+  continuation?: boolean;
 }
 
 export function isLongRangeEdge(rankDistance: number | undefined): boolean {
@@ -33,6 +36,29 @@ export interface EdgeVisualState {
   strokeColor: string;
   strokeOpacity: number;
   strokeWidth: number;
+}
+
+// A continuation carries no information of its own: the reader already knows
+// the run continues, the same way they know a sentence continues on the next
+// line. So it is drawn to be followed and not read — finely dotted, thin, and
+// well under the weight of the dependencies around it. The dot pattern is
+// tighter than the dashes a code-mode condition uses, so the two never read as
+// the same kind of line. Hover and selection still restore it to full strength,
+// because it is a real dependency underneath and has to stay inspectable.
+const CONTINUATION_DASHARRAY = "2 6";
+const CONTINUATION_OPACITY = 0.35;
+const CONTINUATION_WIDTH = 1.25;
+
+export function continuationVisualState(
+  base: EdgeVisualState,
+  emphasized: boolean,
+): EdgeVisualState {
+  if (emphasized) return base;
+  return {
+    ...base,
+    strokeOpacity: Math.min(base.strokeOpacity, CONTINUATION_OPACITY),
+    strokeWidth: CONTINUATION_WIDTH,
+  };
 }
 
 // Completed edges recede once a run is done — a finished 18-node graph with
@@ -70,7 +96,11 @@ function ConditionEdgeComponent({
   const [hovered, setHovered] = useState(false);
   const completed = data?.sourceCompleted ?? false;
   const isCode = data?.mode === "code";
-  const isLongRange = isLongRangeEdge(data?.rankDistance);
+  const isContinuation = data?.continuation === true;
+  // A bezier drawn to a target that sits left of its source doubles back
+  // through its own start; the stepped route is the only one that reads as a
+  // return sweep, so a continuation takes it whatever its rank distance.
+  const isLongRange = isContinuation || isLongRangeEdge(data?.rankDistance);
 
   const [edgePath, labelX, labelY] = isLongRange
     ? getSmoothStepPath({
@@ -93,11 +123,10 @@ function ConditionEdgeComponent({
       });
 
   const emphasized = Boolean(selected) || hovered;
-  const { strokeColor, strokeOpacity, strokeWidth } = computeEdgeVisualState(
-    Boolean(selected),
-    completed,
-    emphasized,
-  );
+  const base = computeEdgeVisualState(Boolean(selected), completed, emphasized);
+  const { strokeColor, strokeOpacity, strokeWidth } = isContinuation
+    ? continuationVisualState(base, emphasized)
+    : base;
 
   return (
     <>
@@ -108,9 +137,12 @@ function ConditionEdgeComponent({
         stroke={strokeColor}
         strokeOpacity={strokeOpacity}
         strokeWidth={strokeWidth}
-        strokeDasharray={isCode ? "6 4" : undefined}
+        strokeDasharray={isContinuation ? CONTINUATION_DASHARRAY : isCode ? "6 4" : undefined}
         style={{ transition: "stroke 0.25s, stroke-width 0.15s, stroke-opacity 0.25s" }}
-        markerEnd={`url(#${completed ? "arrow-active" : "arrow"})`}
+        // An arrowhead is what makes a backwards edge read as a dependency on
+        // something already behind you. A wrapped line of text does not point
+        // back at itself either.
+        markerEnd={isContinuation ? undefined : `url(#${completed ? "arrow-active" : "arrow"})`}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       />
