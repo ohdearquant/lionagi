@@ -9,6 +9,7 @@ import contextlib
 import json
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1468,8 +1469,18 @@ async def _execute_dag(
             for _t in _survivors:
                 _t.cancel()
             if _survivors:
-                with contextlib.suppress(Exception):
+                # A survivor that itself swallows cancellation (or blocks in
+                # sync code) would otherwise hang this await forever — bound
+                # the wait too, and abandon whatever is still alive after it
+                # rather than let a single stuck link task block teardown.
+                with contextlib.suppress(Exception), move_on_after(2):
                     await _asyncio.gather(*_survivors, return_exceptions=True)
+                _abandoned = [t for t in _survivors if not t.done()]
+                if _abandoned:
+                    _warn(
+                        f"abandoned {len(_abandoned)} escalation-link task(s) "
+                        "still alive after cancellation grace period"
+                    )
 
         # Completion observers schedule persistence writes synchronously but the
         # writes themselves are async. Drain them while the live DB is still open.
@@ -1491,20 +1502,37 @@ async def _execute_dag(
                     # db/session teardown (teardown_persist) only runs after this
                     # function returns, so draining here, not firing untracked, is
                     # what keeps a late retry from writing into a store this run
-                    # has already closed. But a cancellation can also land on
-                    # *this* task after run_dag() already returned — the shield
-                    # above stops anyio-mediated cancellation, not a direct
-                    # cancel() on this task — so _dag_cancelled is False and this
-                    # gather is the one that would otherwise hang unbounded.
-                    # Catch that arrival and fall through to the same
-                    # grace+cancel path, then re-raise so the caller still
-                    # observes the cancellation.
-                    with contextlib.suppress(Exception):
-                        try:
-                            await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
-                        except _asyncio.CancelledError:
-                            await _drain_escalation_links_bounded()
-                            raise
+                    # has already closed.
+                    #
+                    # A cancellation can also land on *this* task after
+                    # run_dag() already returned — the CancelScope shield above
+                    # only stops anyio-mediated cancellation, not a direct
+                    # cancel() on this task — so _dag_cancelled stays False and
+                    # this is the await that would otherwise take it. gather()
+                    # only settles its own cancellation once every child
+                    # actually finishes, so a link task that swallows the one
+                    # cancel it's handed (or blocks past it) would leave a bare
+                    # `await gather(...)` parked here forever — asyncio.shield
+                    # lets this await raise promptly instead of waiting on the
+                    # children, which keep running in the background for
+                    # _drain_escalation_links_bounded() to actually finish off.
+                    # Re-raise afterward so the caller still observes the
+                    # cancellation — unless the try body already raised a real
+                    # exception, in which case that exception is what the
+                    # caller was waiting on and must win; a cancellation that
+                    # only landed during this teardown drain must not silently
+                    # replace it.
+                    _in_flight_exc = sys.exc_info()[1]
+                    try:
+                        with contextlib.suppress(Exception):
+                            await _asyncio.shield(
+                                _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
+                            )
+                    except _asyncio.CancelledError as _late_cancel:
+                        await _drain_escalation_links_bounded()
+                        if _in_flight_exc is not None:
+                            raise _in_flight_exc from _late_cancel
+                        raise
     t_exec_elapsed = time.monotonic() - t_exec
 
     op_results = dag_result.get("operation_results", {})
