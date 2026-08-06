@@ -34,6 +34,8 @@ vi.mock("@/lib/api", () => ({
   streamSession: vi.fn(() => () => {}),
   streamSignals: vi.fn(() => () => {}),
   resumeRun: vi.fn(),
+  // Never resolves: these tests are about the Overview stats, not resume state.
+  getResumeAvailability: vi.fn(() => new Promise(() => {})),
 }));
 
 const { default: RunDetail } = await import("./RunDetail");
