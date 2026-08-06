@@ -1430,6 +1430,29 @@ async def _execute_dag(
         prior_evidence = getattr(env, "_escalated_evidence", None) or []
         env._escalated_evidence = [*prior_evidence, *escalated_evidence]
 
+    # Gate-reject evidence (issue #2860): a mid-DAG gate node returned a
+    # REJECT verdict and the executor short-circuited its dependent subtree
+    # to skipped rather than let it run against the rejected baseline. This
+    # names the rejecting gate(s), not the (possibly many) skipped
+    # dependents, so `stop_live_persist` can record a "completed but gate
+    # rejected" reason instead of a plain clean-pass one.
+    gate_rejected_op_ids = {str(x) for x in dag_result.get("gate_rejected_operations", [])}
+    gate_rejected_evidence = [
+        {"kind": "gate_rejected_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+        for i in range(len(assignments))
+        if node_ids[i] in gate_rejected_op_ids
+    ]
+    for spawned_nid in sorted(gate_rejected_op_ids - known_nodes):
+        graph_node = graph_nodes.get(spawned_nid)
+        spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        evidence_id = spawn_id or spawned_nid
+        gate_rejected_evidence.append(
+            {"kind": "gate_rejected_operation", "id": evidence_id, "label": evidence_id}
+        )
+    if gate_rejected_evidence:
+        prior_gate_evidence = getattr(env, "_gate_rejected_evidence", None) or []
+        env._gate_rejected_evidence = [*prior_gate_evidence, *gate_rejected_evidence]
+
     agent_results: list[dict] = []
 
     def _record_result(result: dict) -> None:

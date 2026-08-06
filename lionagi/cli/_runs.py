@@ -497,6 +497,7 @@ async def _teardown_common(
     escalated_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
+    gate_rejected_evidence: list[dict] | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -669,6 +670,27 @@ async def _teardown_common(
         )
         final_evidence_refs = escalated_evidence
 
+    # A gate node rejected mid-DAG (issue #2860) and the executor
+    # short-circuited its dependent subtree to skipped instead of running
+    # those nodes against the rejected baseline. That is a correct, deliberate
+    # stop, not a failure -- status stays "completed" -- but the reason code
+    # must say so explicitly rather than reading identically to a clean pass.
+    if gate_rejected_evidence and final_status == "completed":
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["gate_rejections"] = gate_rejected_evidence
+        final_reason_code = RunReasons.COMPLETED_GATE_REJECTED
+        gate_names = ", ".join(
+            str(e.get("label") or e.get("id") or "") for e in gate_rejected_evidence
+        )
+        final_reason_summary = (
+            f"DAG completed successfully; {len(gate_rejected_evidence)} gate(s) rejected "
+            f"({gate_names}) and their dependent subtree was short-circuited instead of "
+            "running against the rejected baseline."
+        )
+        final_evidence_refs = gate_rejected_evidence
+
     # The synthesis artifact IS the run's output. A DAG that completed but
     # whose output write raised has not delivered anything -- that is a real
     # failure of the run, not a best-effort finalize hiccup, so this flips
@@ -821,6 +843,7 @@ async def teardown_persist(
     escalated_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
+    gate_rejected_evidence: list[dict] | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -844,6 +867,7 @@ async def teardown_persist(
             escalated_evidence=escalated_evidence,
             finalize_error=finalize_error,
             artifact_write_error=artifact_write_error,
+            gate_rejected_evidence=gate_rejected_evidence,
             cwd=cwd,
             engine_session_uid=engine_session_uid,
             defer_terminal=defer_terminal,

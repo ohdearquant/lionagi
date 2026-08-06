@@ -66,6 +66,11 @@ class RunReasons:
     COMPLETED_EMPTY_NO_EVIDENCE = "run.completed_empty.no_evidence"
     # DAG's own result stands even when a post-completion finalize step raised
     COMPLETED_FINALIZE_ERROR = "run.completed.finalize_error"
+    # a gate node rejected mid-DAG (issue #2860) and its dependent subtree was
+    # short-circuited to skipped rather than run against the rejected
+    # baseline -- the run genuinely completed, so status stays "completed",
+    # but the reason distinguishes it from a clean pass
+    COMPLETED_GATE_REJECTED = "run.completed.gate_rejected"
     # unlike COMPLETED_FINALIZE_ERROR, a raised write failure is a real failure
     # (status -> failed); distinct from FAILED_MISSING_ARTIFACT's post-hoc gap
     FAILED_ARTIFACT_WRITE = "run.failed.artifact_write"
