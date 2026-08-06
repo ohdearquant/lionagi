@@ -78,10 +78,14 @@ async def seed_branch(
     status: str | None = None,
     started_at: float | None = None,
     ended_at: float | None = None,
+    msg_ids: list[str] | None = None,
 ) -> None:
     prog_id = f"{branch_id}-prog"
     async with StateDB(db_path) as db:
-        await db.create_progression(prog_id)
+        if msg_ids:
+            await db.create_progression(prog_id, msg_ids)
+        else:
+            await db.create_progression(prog_id)
         await db.create_branch(
             {
                 "id": branch_id,
@@ -99,6 +103,21 @@ async def seed_branch(
         }
         if fields:
             await db.update_branch(branch_id, **fields)
+
+
+async def seed_message(db_path: Path, *, msg_id: str, created_at: float) -> None:
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": msg_id,
+                "created_at": created_at,
+                "content": {"text": "working"},
+                "sender": "worker",
+                "recipient": "user",
+                "role": "assistant",
+                "node_metadata": {},
+            }
+        )
 
 
 def job_status(run_id: str, *, detail: bool | None = None) -> dict[str, Any]:
@@ -186,10 +205,46 @@ async def test_detail_true_carries_nodes_for_a_planned_graph(isolated_state):
     assert nodes["write"]["started_at"] == 1010.0
     assert nodes["write"]["duration_s"] is not None and nodes["write"]["duration_s"] >= 0
 
-    # The still-running node shows up as a stall signal; the completed one does not.
-    stall_nodes = {s["node"] for s in detail["stalls"]}
-    assert stall_nodes == {"write"}
-    assert detail["stalls"][0]["seconds_idle"] >= 0
+    # The still-running node shows up as a stall signal; the completed one does
+    # not. No message was ever recorded for it, and a heartbeat is never
+    # persisted for a node that is still running (see _build_stalls) — the
+    # signal is honestly absent rather than fabricated from started_at.
+    stalls = {s["node"]: s for s in detail["stalls"]}
+    assert set(stalls) == {"write"}
+    assert stalls["write"]["idle_source"] == "none"
+    assert stalls["write"]["seconds_idle"] is None
+    assert stalls["write"]["last_activity"] is None
+
+
+async def test_detail_true_derives_stall_idle_from_last_message_at(isolated_state):
+    """When the running node's branch has a recorded message, the stall signal
+    is derived from that persisted timestamp and names its source — never from
+    started_at, which conflates "long-running" with "stalled"."""
+    db_path = isolated_state
+    run_id = "20260101T000000-mno345"
+    session_id = "55555555-5555-5555-5555-555555555555"
+    meta = {
+        "agents": [{"id": "a1", "name": "writer"}],
+        "operations": [{"id": "write", "agent_id": "a1", "depends_on": []}],
+    }
+    await seed_session(db_path, session_id=session_id, run_id=run_id, node_metadata=meta)
+    await seed_branch(
+        db_path,
+        branch_id=f"{session_id}-br1",
+        session_id=session_id,
+        name="write",
+        status="running",
+        started_at=1000.0,
+        msg_ids=["m1"],
+    )
+    await seed_message(db_path, msg_id="m1", created_at=1050.0)
+
+    result = await job_status_async(run_id, detail=True)
+    stall = result["detail"]["stalls"][0]
+    assert stall["node"] == "write"
+    assert stall["idle_source"] == "last_message_at"
+    assert stall["last_activity"] == 1050.0
+    assert isinstance(stall["seconds_idle"], float) and stall["seconds_idle"] >= 0
 
 
 async def test_detail_true_falls_back_to_branches_with_no_planned_graph(isolated_state):
@@ -250,6 +305,24 @@ async def test_detail_true_reports_artifact_contract_satisfaction(isolated_state
     assert entries["collect/out.md"]["satisfied"] is True
     assert entries["write/final.md"]["required_by"] == "write"
     assert entries["write/final.md"]["satisfied"] is False
+
+
+async def test_detail_true_is_soft_when_graph_metadata_is_malformed(isolated_state):
+    """A node id that is not hashable (e.g. a list) breaks a dict lookup deep
+    inside node/stall reshaping. That reshape sits behind the same fail-soft
+    boundary as every other detail-build failure, so this must answer with
+    detail_unavailable rather than raise past job.status."""
+    db_path = isolated_state
+    run_id = "20260101T000000-pqr678"
+    session_id = "66666666-6666-6666-6666-666666666666"
+    # early_graph is passed through node_metadata verbatim, with no shape
+    # validation — the same injection point a corrupted or hand-edited
+    # checkpoint could produce.
+    meta = {"early_graph": {"nodes": [{"id": []}], "edges": []}}
+    await seed_session(db_path, session_id=session_id, run_id=run_id, node_metadata=meta)
+
+    result = await job_status_async(run_id, detail=True)
+    assert "detail_unavailable" in result["detail"]
 
 
 async def test_detail_true_is_soft_when_the_studio_extra_is_absent(isolated_state, monkeypatch):
