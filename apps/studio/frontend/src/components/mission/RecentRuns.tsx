@@ -18,6 +18,7 @@ import Duration from "@/components/ui/Duration";
 import Skeleton from "@/components/ui/Skeleton";
 import { deriveDisplayStatus } from "@/lib/runStatus";
 import { formatCostUsd } from "@/lib/usageFormat";
+import { resolveRunLabel } from "@/lib/runLabel";
 import type { RunSummary } from "@/lib/types";
 import { groupConsecutiveRecentRuns, groupSpanSec } from "./recentGroups";
 import type { RecentGroup } from "./recentGroups";
@@ -159,7 +160,7 @@ function RunRow({
   first: boolean;
   statusLabel: (status: string) => string | undefined;
 }) {
-  const name = run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
+  const name = resolveRunLabel(run);
   const dur = durationSec(run, nowSec);
   return (
     <Link
