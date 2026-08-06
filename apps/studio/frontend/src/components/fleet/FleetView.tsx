@@ -1,14 +1,14 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
-import { listRuns, listRunProjects } from "@/lib/api";
-import type { RunProjectCount } from "@/lib/api";
+import { listRuns } from "@/lib/api";
 import { useFleet } from "./useFleet";
 import { createHistoryPager } from "./fleetReducer";
 import type { HistoryPager } from "./fleetReducer";
 import type { OrgUnit, AgentRow, RecentRow } from "./fleetReducer";
 import SessionDetail from "./SessionDetail";
 import FleetStaleBadge from "./FleetStaleBadge";
+import ProjectFilter from "./ProjectFilter";
 import SplitPane from "@/components/ui/SplitPane";
 import StatusDot from "@/components/ui/StatusDot";
 import { deriveDisplayStatus } from "@/lib/runStatus";
@@ -425,7 +425,6 @@ function FilterBar({
   project,
   projectNull,
   onProjectChange,
-  projectOptions,
   onClear,
 }: {
   searchDraft: string;
@@ -433,7 +432,6 @@ function FilterBar({
   project: string | null;
   projectNull: boolean;
   onProjectChange: (next: { project?: string; projectNull?: boolean }) => void;
-  projectOptions: RunProjectCount[];
   onClear: () => void;
 }) {
   const t = useTranslations("fleet");
@@ -448,27 +446,7 @@ function FilterBar({
         aria-label={t("filters.searchAria")}
         className="min-w-0 flex-1 rounded border border-edge bg-surface-base px-2 py-1 font-data text-[length:var(--t-xs)] text-content-primary placeholder:text-content-muted focus:border-accent/50 focus:outline-none"
       />
-      <select
-        aria-label={t("filters.projectAria")}
-        value={projectNull ? "__none__" : (project ?? "")}
-        onChange={(e) => {
-          const v = e.target.value;
-          if (v === "") onProjectChange({});
-          else if (v === "__none__") onProjectChange({ projectNull: true });
-          else onProjectChange({ project: v });
-        }}
-        className="shrink-0 rounded border border-edge bg-surface-base px-2 py-1 font-data text-[length:var(--t-xs)] text-content-primary focus:border-accent/50 focus:outline-none"
-      >
-        <option value="">{t("filters.allProjects")}</option>
-        <option value="__none__">{t("filters.noProject")}</option>
-        {projectOptions
-          .filter((p): p is RunProjectCount & { project: string } => p.project != null)
-          .map((p) => (
-            <option key={p.project} value={p.project}>
-              {p.project} ({p.count})
-            </option>
-          ))}
-      </select>
+      <ProjectFilter project={project} projectNull={projectNull} onChange={onProjectChange} />
       {hasFilter && (
         <button
           type="button"
@@ -579,21 +557,6 @@ export default function FleetView() {
       search: patchSearch(search, { project: undefined, project_null: undefined, q: undefined }),
     });
   }, [navigate, search]);
-
-  const [projectOptions, setProjectOptions] = useState<
-    Awaited<ReturnType<typeof listRunProjects>>["projects"]
-  >([]);
-  useEffect(() => {
-    let active = true;
-    listRunProjects()
-      .then((r) => {
-        if (active) setProjectOptions(r.projects);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, []);
 
   // History pagination. The 3s poll covers page 1 (200 runs); older pages are
   // fetched on demand and kept here — polls never clobber them. The visible
@@ -756,7 +719,6 @@ export default function FleetView() {
         project={urlProject}
         projectNull={urlProjectNull}
         onProjectChange={handleProjectChange}
-        projectOptions={projectOptions}
         onClear={handleClearFilters}
       />
 
