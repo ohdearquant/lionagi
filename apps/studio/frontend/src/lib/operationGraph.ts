@@ -120,6 +120,115 @@ export function transitiveReduce<E extends { source: string; target: string }>(e
   });
 }
 
+// ── Display-time transitive reduction with semantic guard ──────────────────────
+
+// An authored WorkerGraph edge can carry semantics beyond structure — a
+// condition, a map, a handler, or mode="code" — matching the richness
+// criteria in resolveGraphEdges (RunDetail.tsx). Such an edge is information
+// the designer put there on purpose, not a redundant ancestor link, so it
+// must never be dropped even when another path already reaches its target.
+function defaultIsRich(e: {
+  condition?: unknown;
+  map?: unknown;
+  handler?: unknown;
+  mode?: unknown;
+}): boolean {
+  return Boolean(e.condition) || Boolean(e.map) || Boolean(e.handler) || e.mode === "code";
+}
+
+// Whole-graph directed-cycle check (3-color DFS). Unlike transitiveReduce's
+// per-node inProgress guard — which silently treats a cyclic node as
+// unreachable and can still drop edges around it — this is a guard for the
+// entire reduction: depends_on graphs are expected to be acyclic, but if a
+// cycle is found every edge in it may be load-bearing for the cycle itself,
+// so reduction must not run at all.
+export function hasCycle<E extends { source: string; target: string }>(edges: E[]): boolean {
+  const adj = new Map<string, string[]>();
+  for (const e of edges) {
+    (adj.get(e.source) ?? adj.set(e.source, []).get(e.source)!).push(e.target);
+  }
+
+  const WHITE = 0,
+    GRAY = 1,
+    BLACK = 2;
+  const color = new Map<string, number>();
+
+  const dfs = (node: string): boolean => {
+    const c = color.get(node) ?? WHITE;
+    if (c === GRAY) return true;
+    if (c === BLACK) return false;
+    color.set(node, GRAY);
+    for (const next of adj.get(node) ?? []) {
+      if (dfs(next)) return true;
+    }
+    color.set(node, BLACK);
+    return false;
+  };
+
+  for (const node of adj.keys()) {
+    if (color.get(node) === undefined && dfs(node)) return true;
+  }
+  return false;
+}
+
+// Display-time transitive reduction for an authored WorkerGraph's edges.
+// Drops edge (u→v) only when v is reachable from u via a path of length ≥2
+// through OTHER edges that themselves survive as real dependencies. Two
+// guards distinguish this from transitiveReduce above:
+//   1. Whole-graph cycle detection — a cyclic graph is returned unchanged
+//      rather than reduced around the cycle.
+//   2. Semantically rich edges (see defaultIsRich) are never dropped, even
+//      when reachable via another path — they carry author intent, not
+//      structural redundancy.
+// Never mutates or re-persists the input; this only affects what is
+// rendered.
+export function transitiveReduceDisplay<E extends { source: string; target: string }>(
+  edges: E[],
+  options?: { isRich?: (e: E) => boolean },
+): { kept: E[]; hidden: E[] } {
+  if (edges.length === 0) return { kept: [], hidden: [] };
+  if (hasCycle(edges)) return { kept: edges, hidden: [] };
+
+  const isRich = options?.isRich ?? defaultIsRich;
+  const rich: E[] = [];
+  const plain: E[] = [];
+  for (const e of edges) {
+    (isRich(e) ? rich : plain).push(e);
+  }
+
+  const outEdges = new Map<string, E[]>();
+  for (const e of edges) {
+    (outEdges.get(e.source) ?? outEdges.set(e.source, []).get(e.source)!).push(e);
+  }
+
+  const reachableCache = new Map<string, Set<string>>();
+  const reachableFrom = (node: string): Set<string> => {
+    const cached = reachableCache.get(node);
+    if (cached) return cached;
+    const result = new Set<string>();
+    reachableCache.set(node, result); // seed before recursing; the graph is acyclic here
+    for (const e of outEdges.get(node) ?? []) {
+      result.add(e.target);
+      for (const r of reachableFrom(e.target)) result.add(r);
+    }
+    return result;
+  };
+
+  const hidden: E[] = [];
+  const survivingPlain = plain.filter((e) => {
+    for (const alt of outEdges.get(e.source) ?? []) {
+      if (alt === e || alt.target === e.target) continue;
+      if (reachableFrom(alt.target).has(e.target)) {
+        hidden.push(e);
+        return false;
+      }
+    }
+    return true;
+  });
+
+  return { kept: [...rich, ...survivingPlain], hidden };
+}
+
 // ── Graph builder ─────────────────────────────────────────────────────────────
 
 export function buildOperationGraph(events: SignalEvent[]): OperationGraphState {
