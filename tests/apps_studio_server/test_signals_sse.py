@@ -305,6 +305,62 @@ async def test_signals_endpoint_streams_existing_events(patched_app):
     assert len(done_frames) == 1
 
 
+async def test_signals_endpoint_streams_past_single_page_on_completed_session(patched_app):
+    """Regression: a session with more than one get_signals_after() page (500 rows)
+    must stream every row, including the tail, not just the first page.
+
+    Before the fix, the generator checked is_session_stream_done() right after
+    yielding one page — on an already-completed, stable session that check
+    passes immediately, so only the oldest page (the head of the stream) was
+    ever sent and everything after it was silently dropped."""
+    app, db_path, client = patched_app
+    await _seed_session(db_path, "long-stream-sess")
+
+    total = 520
+    async with StateDB(db_path) as db:
+        for i in range(total):
+            await db.insert_session_signal(
+                session_id="long-stream-sess",
+                kind="NodeStarted",
+                op_id=f"op-{i}",
+                ts=float(1000 + i),
+                payload={"name": f"op-{i}"},
+            )
+    async with StateDB(db_path) as db:
+        await db.update_status(
+            "session",
+            "long-stream-sess",
+            new_status="completed",
+            reason_code="run.completed.ok",
+        )
+    async with aiosqlite.connect(str(db_path)) as raw:
+        await raw.execute("UPDATE sessions SET updated_at = 1.0 WHERE id = 'long-stream-sess'")
+        await raw.commit()
+
+    collected: list[dict] = []
+    async with client as ac:
+        async with ac.stream("GET", "/api/sessions/long-stream-sess/signals") as resp:
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                payload = json.loads(line[6:])
+                collected.append(payload)
+                if payload.get("type") == "done":
+                    break
+
+    signal_rows = [e for e in collected if "kind" in e]
+    assert len(signal_rows) == total, (
+        f"expected all {total} signals, got {len(signal_rows)} — "
+        "the stream stopped after its first page"
+    )
+    # The tail (the last-inserted signal) must have made it through, not just
+    # the oldest page.
+    assert signal_rows[-1]["op_id"] == f"op-{total - 1}"
+    done_frames = [e for e in collected if e.get("type") == "done"]
+    assert len(done_frames) == 1
+
+
 async def test_signals_endpoint_ordering_by_seq(patched_app):
     app, db_path, client = patched_app
     await _seed_session(db_path, "order-sess")
