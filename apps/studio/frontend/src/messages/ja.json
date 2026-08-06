@@ -820,7 +820,34 @@
       },
       "more": "+{count, plural, other {# 件 — 履歴ですべて表示 →}}",
       "digestLatest": "最新: {name} · {age}前",
-      "streakCount": "{count, plural, other {#回失敗}}"
+      "streakCount": "{count, plural, other {#回失敗}}",
+      "disposition": {
+        "acknowledged": "確認済み",
+        "resolved": "解決済み",
+        "expected": "想定内",
+        "snoozed": "延期"
+      },
+      "action": {
+        "acknowledge": "確認",
+        "acknowledgeAria": "{name} を確認",
+        "resolve": "解決",
+        "resolveAria": "{name} を解決",
+        "snooze": "{duration} 延期",
+        "snoozeAria": "{name} を {duration} 延期",
+        "expected": "想定内としてマーク",
+        "expectedAria": "{name} を想定内としてマーク",
+        "undo": "元に戻す",
+        "undoAria": "{name} の処理を元に戻す",
+        "confirm": "確定",
+        "cancel": "キャンセル",
+        "notePlaceholder": "なぜ想定内ですか？",
+        "noteRequired": "メモが必要です",
+        "saveFailed": "保存されませんでした · {message}",
+        "expiryLabel": "有効期限"
+      },
+      "showDischarged": "処理済みを表示",
+      "hideDischarged": "処理済みを隠す",
+      "dischargedEmpty": "処理済みの項目はありません"
     },
     "liveBoard": {
       "title": "現在実行中",

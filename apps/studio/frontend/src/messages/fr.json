@@ -820,7 +820,34 @@
       },
       "more": "+{count, plural, one {# autre} other {# autres}} — tout voir dans l’Historique →",
       "digestLatest": "dernier : {name} · il y a {age}",
-      "streakCount": "{count}× en échec"
+      "streakCount": "{count}× en échec",
+      "disposition": {
+        "acknowledged": "pris en compte",
+        "resolved": "résolu",
+        "expected": "attendu",
+        "snoozed": "reporté"
+      },
+      "action": {
+        "acknowledge": "Prendre en compte",
+        "acknowledgeAria": "Prendre en compte {name}",
+        "resolve": "Résoudre",
+        "resolveAria": "Résoudre {name}",
+        "snooze": "Reporter {duration}",
+        "snoozeAria": "Reporter {name} de {duration}",
+        "expected": "Attendu",
+        "expectedAria": "Marquer {name} comme attendu",
+        "undo": "Annuler",
+        "undoAria": "Annuler la clôture de {name}",
+        "confirm": "Confirmer",
+        "cancel": "Annuler",
+        "notePlaceholder": "Pourquoi est-ce attendu ?",
+        "noteRequired": "Une note est requise",
+        "saveFailed": "Non enregistré · {message}",
+        "expiryLabel": "Expire dans"
+      },
+      "showDischarged": "Afficher les éléments clôturés",
+      "hideDischarged": "Masquer les éléments clôturés",
+      "dischargedEmpty": "Aucun élément clôturé"
     },
     "liveBoard": {
       "title": "En cours maintenant",

@@ -820,7 +820,34 @@
       },
       "more": "{count, plural, one {+# مزید — History میں سب دیکھیں →} other {+# مزید — History میں سب دیکھیں →}}",
       "digestLatest": "تازہ ترین: ⁨{name}⁩ · ⁨{age}⁩ پہلے",
-      "streakCount": "{count, plural, one {#× ناکام} other {#× ناکام}}"
+      "streakCount": "{count, plural, one {#× ناکام} other {#× ناکام}}",
+      "disposition": {
+        "acknowledged": "تسلیم شدہ",
+        "resolved": "حل شدہ",
+        "expected": "متوقع",
+        "snoozed": "ملتوی"
+      },
+      "action": {
+        "acknowledge": "تسلیم کریں",
+        "acknowledgeAria": "{name} تسلیم کریں",
+        "resolve": "حل کریں",
+        "resolveAria": "{name} حل کریں",
+        "snooze": "{duration} کے لیے ملتوی کریں",
+        "snoozeAria": "{name} کو {duration} کے لیے ملتوی کریں",
+        "expected": "متوقع کے طور پر نشان زد کریں",
+        "expectedAria": "{name} کو متوقع کے طور پر نشان زد کریں",
+        "undo": "کالعدم کریں",
+        "undoAria": "{name} کی نمٹائی کو کالعدم کریں",
+        "confirm": "تصدیق کریں",
+        "cancel": "منسوخ کریں",
+        "notePlaceholder": "یہ متوقع کیوں ہے؟",
+        "noteRequired": "ایک نوٹ درکار ہے",
+        "saveFailed": "محفوظ نہیں ہوا · {message}",
+        "expiryLabel": "میعاد ختم"
+      },
+      "showDischarged": "نمٹائے گئے دکھائیں",
+      "hideDischarged": "نمٹائے گئے چھپائیں",
+      "dischargedEmpty": "کوئی نمٹایا گیا آئٹم نہیں"
     },
     "liveBoard": {
       "title": "ابھی چل رہا ہے",

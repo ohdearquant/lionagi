@@ -820,7 +820,34 @@
       },
       "more": "+{count} more — view all in History →",
       "digestLatest": "latest: {name} · {age} ago",
-      "streakCount": "{count}× failed"
+      "streakCount": "{count}× failed",
+      "disposition": {
+        "acknowledged": "acknowledged",
+        "resolved": "resolved",
+        "expected": "expected",
+        "snoozed": "snoozed"
+      },
+      "action": {
+        "acknowledge": "Acknowledge",
+        "acknowledgeAria": "Acknowledge {name}",
+        "resolve": "Resolve",
+        "resolveAria": "Resolve {name}",
+        "snooze": "Snooze {duration}",
+        "snoozeAria": "Snooze {name} for {duration}",
+        "expected": "Expected",
+        "expectedAria": "Mark {name} as expected",
+        "undo": "Undo",
+        "undoAria": "Undo discharge of {name}",
+        "confirm": "Confirm",
+        "cancel": "Cancel",
+        "notePlaceholder": "Why is this expected?",
+        "noteRequired": "A note is required",
+        "saveFailed": "Not saved · {message}",
+        "expiryLabel": "Expires in"
+      },
+      "showDischarged": "Show discharged",
+      "hideDischarged": "Hide discharged",
+      "dischargedEmpty": "No discharged items"
     },
     "liveBoard": {
       "title": "Running now",

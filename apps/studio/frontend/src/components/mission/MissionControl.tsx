@@ -22,8 +22,10 @@ export default function MissionControl() {
   const board = useLiveBoard();
   const runningCount = board.activeRuns.length + board.activeInvocations.length;
   // Orphaned (daemon-restart housekeeping) runs never enter the attention
-  // list — they carry no human action — so this count is the whole list.
-  const attentionCount = board.attentionItems.length;
+  // list — they carry no human action. Acknowledged items stay visible in
+  // the panel below but leave this count: acknowledging is "seen, not
+  // fixed," not a discharge.
+  const attentionCount = board.unacknowledgedAttentionCount;
   // Skeletons are for the FIRST fetch only. dataState leaves "loading" for
   // good on the first DATA_OK/DATA_ERROR, so later polls (including a
   // background refresh failure) never re-trigger this branch.
@@ -85,10 +87,11 @@ export default function MissionControl() {
         <ZeroState />
       ) : (
         <>
-          {board.attentionItems.length > 0 && (
+          {(board.attentionItems.length > 0 || board.dischargedAttentionItems.length > 0) && (
             <>
               <AttentionQueue
                 items={board.attentionItems}
+                dischargedItems={board.dischargedAttentionItems}
                 nowSec={board.nowSec}
                 dataState={board.dataState}
               />

@@ -820,7 +820,34 @@
       },
       "more": "+{count, plural, other {# lagi}} — lihat semua di Riwayat →",
       "digestLatest": "terbaru: {name} · {age} lalu",
-      "streakCount": "{count, plural, other {#× gagal}}"
+      "streakCount": "{count, plural, other {#× gagal}}",
+      "disposition": {
+        "acknowledged": "diketahui",
+        "resolved": "terselesaikan",
+        "expected": "diharapkan",
+        "snoozed": "ditunda"
+      },
+      "action": {
+        "acknowledge": "Ketahui",
+        "acknowledgeAria": "Ketahui {name}",
+        "resolve": "Selesaikan",
+        "resolveAria": "Selesaikan {name}",
+        "snooze": "Tunda {duration}",
+        "snoozeAria": "Tunda {name} selama {duration}",
+        "expected": "Diharapkan",
+        "expectedAria": "Tandai {name} sebagai diharapkan",
+        "undo": "Urungkan",
+        "undoAria": "Urungkan penyelesaian {name}",
+        "confirm": "Konfirmasi",
+        "cancel": "Batal",
+        "notePlaceholder": "Mengapa ini diharapkan?",
+        "noteRequired": "Catatan wajib diisi",
+        "saveFailed": "Tidak tersimpan · {message}",
+        "expiryLabel": "Kedaluwarsa dalam"
+      },
+      "showDischarged": "Tampilkan yang terselesaikan",
+      "hideDischarged": "Sembunyikan yang terselesaikan",
+      "dischargedEmpty": "Tidak ada item yang terselesaikan"
     },
     "liveBoard": {
       "title": "Sedang berjalan",

@@ -820,7 +820,34 @@
       },
       "more": "+{count, plural, one {# еще — показать все в истории →} few {# еще — показать все в истории →} many {# еще — показать все в истории →} other {# еще — показать все в истории →}}",
       "digestLatest": "последнее: {name} · {age} назад",
-      "streakCount": "{count, plural, one {# сбой} few {# сбоя} many {# сбоев} other {# сбоя}} подряд"
+      "streakCount": "{count, plural, one {# сбой} few {# сбоя} many {# сбоев} other {# сбоя}} подряд",
+      "disposition": {
+        "acknowledged": "подтверждено",
+        "resolved": "решено",
+        "expected": "ожидаемо",
+        "snoozed": "отложено"
+      },
+      "action": {
+        "acknowledge": "Подтвердить",
+        "acknowledgeAria": "Подтвердить {name}",
+        "resolve": "Решить",
+        "resolveAria": "Решить {name}",
+        "snooze": "Отложить на {duration}",
+        "snoozeAria": "Отложить {name} на {duration}",
+        "expected": "Отметить как ожидаемое",
+        "expectedAria": "Отметить {name} как ожидаемое",
+        "undo": "Отменить",
+        "undoAria": "Отменить закрытие {name}",
+        "confirm": "Подтвердить",
+        "cancel": "Отмена",
+        "notePlaceholder": "Почему это ожидаемо?",
+        "noteRequired": "Требуется заметка",
+        "saveFailed": "Не сохранено · {message}",
+        "expiryLabel": "Истекает через"
+      },
+      "showDischarged": "Показать закрытые",
+      "hideDischarged": "Скрыть закрытые",
+      "dischargedEmpty": "Нет закрытых элементов"
     },
     "liveBoard": {
       "title": "Выполняется сейчас",

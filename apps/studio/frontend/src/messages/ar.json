@@ -820,7 +820,34 @@
       },
       "more": "+{count, plural, zero {لا مزيد — عرض الكل في السجل ←} one {# آخر — عرض الكل في السجل ←} two {# آخران — عرض الكل في السجل ←} few {# أخرى — عرض الكل في السجل ←} many {# آخر — عرض الكل في السجل ←} other {# آخر — عرض الكل في السجل ←}}",
       "digestLatest": "الأحدث: {name} · منذ {age}",
-      "streakCount": "{count, plural, zero {لا إخفاقات} one {فشل مرة واحدة} two {فشل مرتين} few {فشل # مرات} many {فشل # مرة} other {فشل # مرة}}"
+      "streakCount": "{count, plural, zero {لا إخفاقات} one {فشل مرة واحدة} two {فشل مرتين} few {فشل # مرات} many {فشل # مرة} other {فشل # مرة}}",
+      "disposition": {
+        "acknowledged": "تم الإقرار",
+        "resolved": "تم الحل",
+        "expected": "متوقع",
+        "snoozed": "مؤجل"
+      },
+      "action": {
+        "acknowledge": "إقرار",
+        "acknowledgeAria": "إقرار {name}",
+        "resolve": "حل",
+        "resolveAria": "حل {name}",
+        "snooze": "تأجيل {duration}",
+        "snoozeAria": "تأجيل {name} لمدة {duration}",
+        "expected": "وضع علامة كمتوقع",
+        "expectedAria": "وضع علامة على {name} كمتوقع",
+        "undo": "تراجع",
+        "undoAria": "التراجع عن معالجة {name}",
+        "confirm": "تأكيد",
+        "cancel": "إلغاء",
+        "notePlaceholder": "لماذا هذا متوقع؟",
+        "noteRequired": "الملاحظة مطلوبة",
+        "saveFailed": "لم يتم الحفظ · {message}",
+        "expiryLabel": "تنتهي خلال"
+      },
+      "showDischarged": "إظهار العناصر المعالجة",
+      "hideDischarged": "إخفاء العناصر المعالجة",
+      "dischargedEmpty": "لا توجد عناصر معالجة"
     },
     "liveBoard": {
       "title": "قيد التشغيل الآن",

@@ -820,7 +820,34 @@
       },
       "more": "+{count, plural, one {# más} other {# más}} — ver todo en Historial →",
       "digestLatest": "último: {name} · hace {age}",
-      "streakCount": "{count}× falló"
+      "streakCount": "{count}× falló",
+      "disposition": {
+        "acknowledged": "reconocido",
+        "resolved": "resuelto",
+        "expected": "esperado",
+        "snoozed": "pospuesto"
+      },
+      "action": {
+        "acknowledge": "Reconocer",
+        "acknowledgeAria": "Reconocer {name}",
+        "resolve": "Resolver",
+        "resolveAria": "Resolver {name}",
+        "snooze": "Posponer {duration}",
+        "snoozeAria": "Posponer {name} por {duration}",
+        "expected": "Esperado",
+        "expectedAria": "Marcar {name} como esperado",
+        "undo": "Deshacer",
+        "undoAria": "Deshacer el descargo de {name}",
+        "confirm": "Confirmar",
+        "cancel": "Cancelar",
+        "notePlaceholder": "¿Por qué es esperado?",
+        "noteRequired": "Se requiere una nota",
+        "saveFailed": "No guardado · {message}",
+        "expiryLabel": "Expira en"
+      },
+      "showDischarged": "Mostrar descargados",
+      "hideDischarged": "Ocultar descargados",
+      "dischargedEmpty": "No hay elementos descargados"
     },
     "liveBoard": {
       "title": "En ejecución ahora",

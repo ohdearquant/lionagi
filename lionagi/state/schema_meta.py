@@ -1149,3 +1149,52 @@ Index(
 )
 
 Index("idx_run_tags_tag", run_tags.c.tag)
+
+# ── attention_dispositions (Studio needs-attention discharge lifecycle) ────
+# One row per derived attention item (item_id == "run:<id>" | "inv:<id>" |
+# "sched:<id>", the id boardReducer.buildAttentionItems already builds).
+# Records what an operator decided about seeing a condition; the source
+# run/invocation/schedule status is never written here. See attention.py.
+
+attention_dispositions = Table(
+    "attention_dispositions",
+    metadata,
+    Column("item_id", Text, primary_key=True),
+    Column(
+        "state",
+        Text,
+        CheckConstraint(
+            "state IN ('acknowledged','resolved','expected','snoozed')",
+            name="ck_attention_dispositions_state",
+        ),
+        nullable=False,
+    ),
+    Column("note", Text),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("expires_at", Float),
+    Column("actor", Text, nullable=False),
+    Column("source_status", Text, nullable=False),
+)
+
+# ── attention_disposition_history (append-only discharge ledger) ──────────
+
+attention_disposition_history = Table(
+    "attention_disposition_history",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("item_id", Text, nullable=False),
+    Column("prior_state", Text),
+    # 'acknowledged' | 'resolved' | 'expected' | 'snoozed' | 'open' (undo/delete).
+    Column("new_state", Text, nullable=False),
+    Column("note", Text),
+    Column("actor", Text, nullable=False),
+    Column("source_status", Text),
+    Column("created_at", Float, nullable=False),
+)
+
+Index(
+    "idx_attention_disposition_history_item",
+    attention_disposition_history.c.item_id,
+    attention_disposition_history.c.created_at,
+)
