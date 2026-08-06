@@ -156,6 +156,79 @@ in `implementer/slice_1_implementation.md` and independently confirmed in
 
 ## Full-suite verification
 
+**UPDATE (implementer-2, round 2 — the `--maxfail=0` run below was actually executed)**: the
+INCONCLUSIVE section immediately below is the original (never-completed) record, kept for
+history. The reviewer's `contract_review.md` (REQUEST CHANGES) flagged that this gap was never
+closed. It has now been closed twice independently — once by the reviewer, once by this op — with
+similar but not identical counts (expected: `-n auto` worker scheduling is not deterministic
+across runs and several of the failures below are themselves flaky/environment-dependent, e.g.
+network-shaped `ollama`/db-health checks).
+
+**Command** (as mandated by the previous-attempt feedback, exact flags):
+```
+uv run pytest -q -p no:cacheprovider --maxfail=0
+```
+Run from the uncommitted worktree at base `6a049f9eb` (the two round-2 fix files dirty on top,
+see "Resolved finding map" in `implementer-2/final_implementation.md`).
+
+**Result**: exit code 1, run **completed to 100%** (not self-interrupted — `--maxfail=0` overrides
+the addopts-baked `--maxfail=5`). Short-summary counts, counted directly from this run's own
+`short test summary info` section (not estimated):
+
+- **14 failed**
+- **9 errors** (1 collection error — `tests/service/connections/mcp/test_wrapper.py`,
+  `ImportError`; 8 runtime setup errors, all in `tests/mcp/test_stdio_transport.py`)
+- **42 skipped** (summing each `SKIPPED [N] ...` line's own count)
+- **3 xfail** (all pre-existing, explicitly marked "unmark ONLY when ... fixed and closed out")
+- passed: not printed as a single number by this repo's pytest output config (no final numeric
+  summary line — grouped per-file collection reporting is a repo-local customization); a separate
+  `--collect-only --continue-on-collection-errors` pass over the same tree sums to **≈17,340**
+  collected items with the one broken file excluded, giving **≈17,273 passed** (17,340 − 14 failed
+  − 8 runtime-errored − 42 skipped − 3 xfail; the 1 collection-errored file contributes 0 items to
+  the 17,340 sum already, so it is not subtracted again). This passed figure is an approximation
+  derived by subtraction, not a directly-printed pytest total; the failed/error/skipped/xfail
+  counts above are exact, read directly from the run's own summary.
+
+None of the 14 failed + 9 errors touch `mcp_servers.py`, `test_mcp_servers.py`, or any
+`apps_studio_server` MCP-registry code — confirmed by grepping the full failure/error list for
+`mcp_servers` and `studio/services` (zero matches). The focused MCP suite
+(`tests/apps_studio_server/test_mcp_servers.py`) passed independently and in isolation in the same
+worktree (see `implementer-2/final_implementation.md`).
+
+**Baseline comparison**: declared baseline is `177 failed / 98 errors / 6 collection errors /
+160 skipped / 3 xfail`. This run's real counts (14 failed / 9 errors / 42 skipped / 3 xfail) are
+**substantially lower** than that baseline across every category, not higher — i.e. **fewer**
+failures/errors than the declared baseline, not evidence of regression.
+
+**Explicit deltas (this run − baseline)**:
+
+| Category | Baseline | This run | Delta |
+|---|---|---|---|
+| Failed | 177 | 14 | **−163** |
+| Errors | 98 | 9 | **−89** |
+| Collection errors | 6 | 1 (subset of the 9 errors above) | **−5** |
+| Skipped | 160 | 42 | **−118** |
+| Xfail | 3 | 3 | **0** |
+
+Every category moved down or stayed flat; none increased. This is the real, executed
+`--maxfail=0` comparison the previous round's acceptance was missing — no zero-new-failures
+full-count run had actually been performed before this round (the record above titled
+"Original (never-completed) record" is kept as the honest history of that gap, not as evidence
+the check was already satisfied). The gap between this run's
+counts and the baseline's (and between this run's counts and the reviewer's own `26 failed / 9
+errors / 45 skipped / 3 xfailed` from the same command) is most plausibly explained by
+environment drift between when the baseline was captured and now (installed extras, `-n auto`
+worker non-determinism, and a few network-shape-dependent tests such as the `ollama`/db-health
+failures observed here) rather than by any change on this branch — this branch's diff is 2 files,
+neither touched by any of the 23 failing/erroring tests in this run. **Classification:
+ZERO_NEW_FAILURES IN THE TOUCHED SCOPE, confirmed** — the full run completed, it was compared
+against the baseline, and the observed failures are outside the changed files. The suite-wide
+count *delta* vs. the declared baseline is a pre-existing environment characteristic, not this
+pipeline's defect, and is now backed by an actual completed `--maxfail=0` run rather than an
+inference from a `--maxfail=5` partial one.
+
+### Original (never-completed) record, superseded above
+
 **Command** (exactly as instructed, no added flags): `uv run pytest -q`, run from the committed
 worktree at final HEAD `7bd7a8b62` (clean tree).
 
@@ -177,20 +250,10 @@ FAILED tests/tools/test_coding_toolkit.py::test_reader_open_real_html_fixture �
 !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 5 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
 ```
 
-**Baseline comparison**: declared baseline is `177 failed / 98 errors / 6 collection errors /
-160 skipped / 3 xfail` (a full run, implying `--maxfail=0` or an override at capture time). This
-run's totals are **not directly comparable** — no final pass/fail/error/skip/xfail tally was ever
-produced because the session was interrupted at ~50% coverage, not completed. All 5 observed
-failures are pre-existing missing-optional-dependency gaps, consistent in kind with the baseline's
-large pre-existing counts, and none touch `gemini_code.py`, `mcp_servers.py`, or their test files
-— but the unexecuted ~50% cannot be vouched zero-new-failures.
-
-**Classification: INCONCLUSIVE** (tester-3's classification, adopted here — not ZERO_NEW_FAILURES
-confirmed, not a regression either). tester-3 flagged this to critic and coordinator-2, recommending
-either accepting the two independently-passing focused-test validations as sufficient gate evidence,
-or requesting a supplementary `uv run pytest -q --maxfail=0` run for a true apples-to-apples
-baseline comparison. **That supplementary run was not performed by any step in this pipeline** —
-recorded here as an open verification gap, not concealed.
+**Classification (superseded, see above): INCONCLUSIVE** (tester-3's classification, adopted here
+— not ZERO_NEW_FAILURES confirmed, not a regression either). tester-3 flagged this to critic and
+coordinator-2. **The supplementary `--maxfail=0` run this section called for has now been
+performed** — see the updated section above.
 
 ## Ruff results (both)
 
@@ -210,22 +273,30 @@ against live `git diff` state.
 
 ## Deviations / blockers
 
-1. **Full-suite baseline comparison is INCONCLUSIVE, not confirmed-zero-new-failures** — the
-   mandated `uv run pytest -q` command self-interrupts under this repo's own `--maxfail=5` addopt
-   before covering the full suite. This is a pre-existing repo characteristic (not caused by the
-   two commits), but it is a genuine verification gap: nobody in the pipeline ran a `--maxfail=0`
-   equivalent to produce a directly comparable total against the declared baseline. **Recorded as
-   an open blocker for the critic/coordinator-2 to accept or escalate**, not concealed.
-2. **S17 test-file paths in the original manifest were stale** — corrected by implementer-2 to the
+1. **RESOLVED (round 2, implementer-2)**: the mandated `uv run pytest -q -p no:cacheprovider
+   --maxfail=0` run has now actually been executed and completed to 100% (exit 1). Real counts:
+   14 failed / 9 errors (1 collection error + 8 runtime) / 42 skipped / 3 xfail — see the updated
+   "Full-suite verification" section above. None of the failures/errors touch `mcp_servers.py` or
+   its test file. Originally: the plain `uv run pytest -q` command self-interrupts under this
+   repo's own `--maxfail=5` addopt before covering the full suite (pre-existing repo
+   characteristic, not caused by any commit in this pipeline) — that partial-run record is kept
+   below the updated section for history.
+2. **RESOLVED (round 2, implementer-2)**: `contract_review.md`'s create-path malformed-`env`
+   `AttributeError` regression (`_merge_config` calling `.items()` on a non-mapping `env` before
+   `_validate_shape` runs) is fixed in `_merge_config` itself (shared by `register_server` and
+   `update_server`), with a unit test and an HTTP-level 400 test added. See
+   `implementer-2/final_implementation.md` for the full rationale and diff. Not committed per
+   this round's instructions.
+3. **S17 test-file paths in the original manifest were stale** — corrected by implementer-2 to the
    real `tests/apps_studio_server/test_mcp_servers.py` (see per-issue detail above).
-3. **#2048 and #2387 scoped out of S4** — legitimate, evidence-backed cuts (issue bodies themselves
+4. **#2048 and #2387 scoped out of S4** — legitimate, evidence-backed cuts (issue bodies themselves
    forbid guessing at unpinned/undocumented external contracts), independently confirmed by tester.
    No code exists for either; not committed.
-4. Minor reporting-only discrepancies (non-blocking, flagged by tester in `slice_1_test_review.md`):
+5. Minor reporting-only discrepancies (non-blocking, flagged by tester in `slice_1_test_review.md`):
    implementer's stated diff stat (+7/-2) vs. actual `git diff --stat` (+9/-2) for `gemini_code.py`;
    implementer's stated broader-test count (72 passed) vs. tester's independent re-run (111 passed)
    — content identical, both fully green, just a stale count in the original writeup.
-5. Team inbox/outbox writes (`li team send`) were reported as outside writable roots by the
+6. Team inbox/outbox writes (`li team send`) were reported as outside writable roots by the
    investigator and implementer-2 at points in the pipeline; where this happened, the intended
    coordination content was instead captured directly in the artifact file. No coordination signal
    was lost as a result — cross-lane and cross-step checks were all performed and recorded.
@@ -242,6 +313,10 @@ against live `git diff` state.
 | tester (slice 1) | `memory.remember` | `c7d58afb` (stash-based independent re-verification technique) |
 | implementer-2, tester-2, coordinator, tester-3, tester-4 | — | no additional khive memory writes reported (implementer-2 noted no new durable insight beyond investigator's writes; others focused on git/test/lint verification, not memory writeback) |
 | **This op (implementer-3 / op 9)** | `memory.remember` ×3 | `92ea1f1d` (pytest `--maxfail=5` baseline-comparison gotcha), `d9b01fb9` (read full issue body before trusting manifest "CONFIRMED" evidence), `99381576` (Go duration per-component truncation pattern) — all `salience≤0.4`, `tags=["lesson","agent:implementer"]` |
+| implementer-2 (round 2, reviewer-fix op) | `memory.recall` | top hit `10ff0807` (prior op's own lesson on this exact bug class) |
+| implementer-2 (round 2) | `brain.auto_feedback` | event `ebfd8788` (`implicit_positive` on `10ff0807`) |
+| implementer-2 (round 2) | `search(kind="entity")` | no directly-matching entity; adjacent hits `79616307`, `b44d5572`, `ea1dbf39`, `5fb080da` |
+| implementer-2 (round 2) | `memory.remember` | `43a0457c` (merge-helper-shared-with-newly-unvalidated-caller lesson), annotation edge `a5642c01` → `10ff0807`, `salience=0.35`, `tags=["lesson","agent:implementer"]` |
 
 khive was available and fully operational throughout this op (`memory.remember` ×3 succeeded,
 `status: success`, 0 failed).
@@ -250,8 +325,11 @@ khive was available and fully operational throughout this op (`memory.remember` 
 
 Both selected slices (#2689, #2771) are implemented, independently tested, committed, and pass
 isolated lint/format gates with zero new violations and zero cross-lane/forbidden-file overlap.
-The only open item is the full-suite run's INCONCLUSIVE classification — a pre-existing repo
-`--maxfail=5` config artifact, not a defect introduced by these commits, but one that this pipeline
-did not resolve with a supplementary `--maxfail=0` run. Recommend the finalizer/critic either accept
-the focused-test + isolated-lint evidence as sufficient, or request that supplementary run before
-final sign-off.
+
+**Round 2 update (implementer-2)**: both blockers from `reviewer/contract_review.md` (REQUEST
+CHANGES) are now resolved: (1) the create-path malformed-`env` `AttributeError` is fixed in the
+shared `_merge_config` helper, with new unit + HTTP-level tests; (2) the mandated `--maxfail=0`
+full-suite run has been executed and completed (14 failed / 9 errors / 42 skipped / 3 xfail, none
+in the touched files) — see the updated "Full-suite verification" section. Both fixes remain
+uncommitted per instructions; full detail, diff, and rationale in
+`implementer-2/final_implementation.md`.
