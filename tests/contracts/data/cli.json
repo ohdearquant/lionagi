@@ -6342,7 +6342,7 @@
               "choices": null,
               "default": null,
               "dest": "root",
-              "help": "Claude projects directory (default /Users/lion/.claude/projects).",
+              "help": "Claude projects directory (default ~/.claude/projects).",
               "nargs": null,
               "option_strings": [
                 "--root"
@@ -6353,7 +6353,7 @@
               "choices": null,
               "default": null,
               "dest": "codex_root",
-              "help": "Codex sessions directory (default /Users/lion/.codex/sessions).",
+              "help": "Codex sessions directory (default ~/.codex/sessions).",
               "nargs": null,
               "option_strings": [
                 "--codex-root"

@@ -50,6 +50,7 @@ _VOLATILE_ARGV = {
     ("doctor", "--machine"),  # reports a live timestamp and working-tree cleanliness
     ("play", "list"),  # playbook names read from ~/.lionagi/playbooks/, host-specific
     ("play", "nonexistent"),  # error text lists the same host-specific playbook names
+    ("skill", "list"),  # skill names read from ~/.lionagi/skills/, host-specific
 }
 _VOLATILE_MACHINE_ARGV = {
     ("handshake", "--machine"),  # data.comparison_ref reads live git state
@@ -391,3 +392,33 @@ def test_machine_envelope_shape_is_well_formed(case):
     envelope = json.loads(stdout)
     assert "ok" in envelope
     assert "contract_version" in envelope
+
+
+# Contract fixtures are committed to a public repository and are compared
+# byte-for-byte, so a captured value that varies per machine breaks both at
+# once: it publishes whatever the capturing developer's home directory held,
+# and it makes the suite pass only on that machine. Cases whose output is
+# genuinely host-dependent are excluded from comparison above and their stdout
+# is redacted rather than committed. This guards both properties at once.
+_HOST_STATE_PATTERNS = (
+    "/Users/",
+    "/home/",
+    "khive-work",
+)
+
+
+def test_fixtures_carry_no_host_specific_state():
+    offenders = []
+    for path in sorted(DATA_DIR.glob("*.json")):
+        text = path.read_text()
+        for pattern in _HOST_STATE_PATTERNS:
+            if pattern in text:
+                line = next((i for i, ln in enumerate(text.splitlines(), 1) if pattern in ln), None)
+                offenders.append(f"{path.name}:{line} contains {pattern!r}")
+    # Positive control: the check can see a planted value, so an empty result
+    # means "no host state" rather than "the search was broken".
+    assert any(p in "/Users/someone/x" for p in _HOST_STATE_PATTERNS)
+    assert not offenders, (
+        "contract fixtures must not carry host-specific state (see the note above): "
+        + "; ".join(offenders)
+    )

@@ -22,7 +22,7 @@
     ],
     "exit_code": 0,
     "stderr": "",
-    "stdout": "atlas-explore\natom-workflow\naxiom-conquer\nblame\ncalibrate\nchatgpt-research\nci\nclean\ncodex-pr-review\ncommit\ncreate-pdf\ndebug-help-seeking\ndeploy-ready\ndesign-cascade\ndisk-optimize\ndomain-validate\nfeature-scaffold\nfeed-ocean\nflow-it\nfmt\nforum\nhealth-check\nimpact\ninit\nkg-digest\nkhive-loop\nkhive-rust\nkhive-studio-loop\nleo-loop\nli-schedule\nlivestream-episode\nmad-science\nmeeting-prep\nmemory-recall\nmigrate-memory\noutreach-email\npr\npr-review\nprogress-research\nproof-audit\nrelease-prep\nreview\nscience-bakeoff\nsecurity-review\nsession-tasks\nshow\nstatus\nsummarize\nsurface-audit\nui-redesign-discipline\nverify\nvisual-qa\nwake-up\nwrite-playbook\n"
+    "stdout": "[redacted: this case's stdout lists the skills installed in the host's ~/.lionagi/skills, which varies per machine. The case is excluded from byte-for-byte comparison, so the literal list serves no oracle purpose and is not committed.]"
   },
   {
     "argv": [
@@ -49,7 +49,7 @@
     ],
     "exit_code": 0,
     "stderr": "",
-    "stdout": "{\"ok\": true, \"contract_version\": 1, \"data\": {\"checks\": {\"lionagi_version\": {\"status\": \"ok\", \"detail\": \"lionagi 0.33.0 at /private/tmp/li-opt-fixture-base-16e3d7ea6/lionagi/__init__.py (editable install)\"}, \"code_identity\": {\"status\": \"unknown\", \"detail\": \"lionagi 0.33.0 at /private/tmp/li-opt-fixture-base-16e3d7ea6/lionagi, 40 verbs registered, git 16e3d7ea6cf4 (detached) with uncommitted changes as read at 2026-08-06T11:43:12.143652+00:00 \u2014 the tree this process loaded from had uncommitted changes at 16e3d7ea6cf4, so that commit does not describe the code being run \u2014 some of it was only ever on disk\"}, \"python\": {\"status\": \"ok\", \"detail\": \"Python 3.10.15 \u2014 prefix /private/tmp/li-opt-fixture-base-16e3d7ea6/.venv\"}, \"import:lionagi\": {\"status\": \"ok\", \"detail\": \"import ok\"}, \"import:lionagi.session.branch\": {\"status\": \"ok\", \"detail\": \"import ok\"}, \"import:lionagi.cli.main\": {\"status\": \"ok\", \"detail\": \"import ok\"}, \"import:lionagi.service\": {\"status\": \"ok\", \"detail\": \"import ok\"}, \"import:lionagi.operations\": {\"status\": \"ok\", \"detail\": \"import ok\"}, \"dep:pydantic\": {\"status\": \"ok\", \"detail\": \"importable\"}, \"dep:aiohttp\": {\"status\": \"ok\", \"detail\": \"importable\"}, \"dep:sqlalchemy\": {\"status\": \"ok\", \"detail\": \"importable\"}, \"dep:aiosqlite\": {\"status\": \"ok\", \"detail\": \"importable\"}, \"dep:psutil\": {\"status\": \"ok\", \"detail\": \"importable\"}, \"studio_daemon\": {\"status\": \"warn\", \"detail\": \"Studio daemon unreachable at http://127.0.0.1:8765/api/admin/health (TimeoutError: timed out) \u2014 optional; scheduled/agent-spawn actions that route through it will fail until `li studio` is running.\"}, \"lionagi_home\": {\"status\": \"ok\", \"detail\": \"/Users/lion/.lionagi writable (runs/ dir ok)\"}}, \"failed\": [], \"unknown\": [\"code_identity\"]}, \"error\": null}\n"
+    "stdout": "[redacted: this case's stdout reports live host state (home paths, run ids, artifact directories, host-installed skill names). It is excluded from byte-for-byte comparison, so the literal text serves no oracle purpose and is not committed.]"
   },
   {
     "argv": [

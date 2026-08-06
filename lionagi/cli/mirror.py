@@ -23,6 +23,21 @@ from ._logging import hint, log_error, progress, warn
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+
+
+def _display_path(path: Path) -> str:
+    """Render a path under the home directory as ~/... for display.
+
+    Help text is the same on every machine this way. Printing the expanded
+    absolute path puts the running user's home directory into --help output,
+    which differs per machine and ends up in anything that captures it.
+    """
+    try:
+        return f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
 _OFFSETS_PATH = LIONAGI_HOME / "mirror" / "offsets.json"
 
 # A session whose newest message is within this window counts as live (running);
@@ -69,13 +84,13 @@ def add_mirror_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--root",
         default=None,
         metavar="DIR",
-        help=f"Claude projects directory (default {CLAUDE_PROJECTS_DIR}).",
+        help=f"Claude projects directory (default {_display_path(CLAUDE_PROJECTS_DIR)}).",
     )
     p.add_argument(
         "--codex-root",
         default=None,
         metavar="DIR",
-        help=f"Codex sessions directory (default {CODEX_SESSIONS_DIR}).",
+        help=f"Codex sessions directory (default {_display_path(CODEX_SESSIONS_DIR)}).",
     )
     p.add_argument(
         "--source",
