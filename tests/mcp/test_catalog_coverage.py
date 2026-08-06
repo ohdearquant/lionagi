@@ -209,3 +209,19 @@ def test_every_absence_states_a_reason_and_a_path(absent):
     assert len(absent.reason) > 40, (
         f"{absent.name} reason is too short to be one: {absent.reason!r}"
     )
+
+
+@pytest.mark.parametrize("verb", ["team.create", "team.show", "team.send", "team.receive"])
+def test_team_write_verbs_are_registered_not_absent(verb):
+    """Pinned the way the bug this catalog exists to prevent would break it.
+
+    These four used to be `AbsentVerb`s with the no-machine-seam reason —
+    `team.py` had no versioned machine result to give them. Once it does, the
+    catalog has to actually say so: a caller reading `available: false` here
+    would still be told to fall back to a filesystem path a sandboxed worker
+    cannot reach.
+    """
+    assert verb in VERBS, f"{verb} is still absent from the catalog"
+    assert verb not in {absent.name for absent in ABSENT}
+    assert VERBS[verb].executor == "machine"
+    assert VERBS[verb].cli_path == verb.replace("team.", "team ")
