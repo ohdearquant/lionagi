@@ -349,6 +349,31 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
+                # A "completed" child may still carry COMPLETED_GATE_REJECTED
+                # (a gate rejected mid-DAG and short-circuited its dependent
+                # subtree) — surface that at the invocation level too, or it
+                # flattens back to a plain clean-pass COMPLETED_OK and the
+                # distinction this reason code exists for is lost.
+                gate_rejected = [
+                    s
+                    for s in sessions
+                    if str(s.get("status_reason_code") or "") == RunReasons.COMPLETED_GATE_REJECTED
+                ]
+                if gate_rejected:
+                    gate_metadata = dict(metadata)
+                    gate_metadata["gate_rejected_session_ids"] = [
+                        s["id"] for s in gate_rejected if s.get("id")
+                    ]
+                    return (
+                        "completed",
+                        RunReasons.COMPLETED_GATE_REJECTED,
+                        "Flow completed successfully, but a gate rejected "
+                        "mid-DAG in at least one child session and its "
+                        "dependent subtree was short-circuited instead of "
+                        "running against the rejected baseline.",
+                        [{"kind": "session", "id": s["id"]} for s in gate_rejected if s.get("id")],
+                        gate_metadata,
+                    )
                 # A "completed" child may still carry COMPLETED_FINALIZE_ERROR
                 # (a guarded best-effort teardown step failed) — surface that
                 # degraded reason at the invocation level rather than hiding it.
@@ -1440,9 +1465,14 @@ async def _execute_dag(
     gate_rejected_evidence = [
         {"kind": "gate_rejected_operation", "id": agent_ids[i], "label": assignments[i].assignee}
         for i in range(len(assignments))
-        if node_ids[i] in gate_rejected_op_ids
+        # node_ids holds Operation UUIDs, not strings, despite the `list[str]`
+        # annotation -- compare on the string form so a planned (non-spawned)
+        # gate is recognized here instead of falling through to the spawned
+        # branch below and losing its assignee label.
+        if str(node_ids[i]) in gate_rejected_op_ids
     ]
-    for spawned_nid in sorted(gate_rejected_op_ids - known_nodes):
+    known_node_strs_for_gates = {str(n) for n in known_nodes}
+    for spawned_nid in sorted(gate_rejected_op_ids - known_node_strs_for_gates):
         graph_node = graph_nodes.get(spawned_nid)
         spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
         evidence_id = spawn_id or spawned_nid

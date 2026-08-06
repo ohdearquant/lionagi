@@ -564,6 +564,11 @@ class DependencyAwareExecutor:
         has_valid_path = False
         gate_reason: dict[str, Any] | None = None
 
+        # Every incoming edge must be inspected before honoring a valid path:
+        # the veto is "any incoming path through a rejected gate", not "the
+        # first-listed valid edge wins" -- a node with a valid non-gate edge
+        # listed before its rejected-gate edge must still be vetoed, so this
+        # never exits early on `has_valid_path=True`.
         for edge_id in incoming_edge_ids:
             edge = self.graph.internal_edges[edge_id]
             if edge.head in self.completion_events:
@@ -579,6 +584,12 @@ class DependencyAwareExecutor:
             if edge.head in self.skipped_operations:
                 continue
 
+            if has_valid_path:
+                # Already know this node has a valid path; still scanning
+                # remaining edges for a possible gate veto, so skip the
+                # redundant condition evaluation.
+                continue
+
             result_value = self.results.get(edge.head)
             if result_value is not None and not isinstance(result_value, str | int | float | bool):
                 result_value = to_dict(result_value, recursive=True)
@@ -588,7 +599,6 @@ class DependencyAwareExecutor:
 
             if await edge.check_condition(ctx):
                 has_valid_path = True
-                break
 
         if gate_reason is not None:
             self._skip_reasons[operation.id] = gate_reason

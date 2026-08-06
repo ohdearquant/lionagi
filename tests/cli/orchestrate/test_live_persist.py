@@ -1913,6 +1913,46 @@ async def test_missing_artifact_session_failure_propagates_to_invocation_status(
     assert inv_row["status"] == "failed"
 
 
+async def test_gate_rejection_reason_survives_child_to_invocation_resolution(
+    temp_db_path: Path,
+):
+    """A child session that completed with a gate reject (status stays
+    "completed", status_reason_code=COMPLETED_GATE_REJECTED) must carry that
+    reason code through _resolve_invocation_terminal_flow's "all children
+    completed" branch. That branch previously only special-cased
+    COMPLETED_FINALIZE_ERROR and flattened every other completed reason to a
+    plain COMPLETED_OK, silently erasing the gate-reject distinction at the
+    invocation level -- the layer a status-reader (Studio, `li status`)
+    actually queries.
+    """
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-gate-reject"
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    env._gate_rejected_evidence = [
+        {"kind": "gate_rejected_operation", "id": "reviewer", "label": "reviewer"}
+    ]
+
+    assert await stop_live_persist(env, status="completed") == "completed"
+
+    async with StateDB() as db:
+        session = await db.get_session(ctx["session_id"])
+    assert session["status_reason_code"] == RunReasons.COMPLETED_GATE_REJECTED
+
+    _status, reason_code, _summary, evidence, _metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+    assert reason_code == RunReasons.COMPLETED_GATE_REJECTED
+    assert any(entry.get("id") == ctx["session_id"] for entry in evidence)
+
+
 async def test_all_legs_completed_resolves_invocation_completed(
     temp_db_path: Path,
     tmp_path: Path,
@@ -2292,6 +2332,76 @@ async def test_execute_dag_escalation_without_artifact_declaration_fails_loud(
     evidence = s["status_evidence_refs"]
     evidence = _json.loads(evidence) if isinstance(evidence, str) else evidence
     assert any(e.get("id") == "worker" for e in evidence)
+
+
+async def test_execute_dag_gate_rejected_evidence_survives_uuid_node_ids(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """dag_state.node_ids holds real Operation UUIDs (not the plain strings
+    other _execute_dag tests stub in), and dag_result["gate_rejected_operations"]
+    holds their str() form -- exactly what the real executor/builder produce.
+    Comparing node_ids[i] to that string set directly is always False for a
+    UUID, so a planned gate's evidence entry was silently reclassified as a
+    "spawned" node and lost its agent label. This must not regress."""
+    from unittest.mock import MagicMock, patch
+    from uuid import uuid4
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    gate_node_id = uuid4()
+    assignments = [TaskAssignment(task="review the design", assignee="reviewer")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["reviewer"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[gate_node_id],
+        known_nodes={gate_node_id},
+        deps_by_node={gate_node_id: []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {gate_node_id: {"gate_verdict": "reject"}},
+            "spawned_operations": 0,
+            "gate_rejected_operations": [str(gate_node_id)],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    # The planned "reviewer" gate, not a synthesized "spawn-N" placeholder.
+    assert env._gate_rejected_evidence == [
+        {"kind": "gate_rejected_operation", "id": "reviewer", "label": "reviewer"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+    assert s["status_reason_code"] == "run.completed.gate_rejected"
 
 
 async def test_execute_dag_drains_inflight_branch_status_before_teardown(
