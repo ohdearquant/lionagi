@@ -1,0 +1,537 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+"""Focused tests for the run_progress Operator read tool and resolve_run()."""
+
+from __future__ import annotations
+
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import lionagi.state.db as state_db_mod
+
+aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
+fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
+
+from lionagi.state.db import StateDB  # noqa: E402
+
+pytestmark = pytest.mark.asyncio
+
+
+async def seed_session(
+    db_path: Path,
+    *,
+    session_id: str,
+    status: str = "completed",
+    name: str | None = None,
+    playbook_name: str | None = None,
+    agent_name: str | None = None,
+    model: str | None = None,
+    started_at: float | None = None,
+    ended_at: float | None = None,
+    project: str | None = None,
+    updated_at: float | None = None,
+) -> None:
+    prog_id = f"{session_id}-prog"
+    async with StateDB(db_path) as db:
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "progression_id": prog_id,
+                "name": name or f"run-{session_id}",
+                "playbook_name": playbook_name,
+                "status": status,
+                "agent_name": agent_name,
+                "model": model,
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "project": project,
+                "updated_at": updated_at if updated_at is not None else time.time(),
+                "invocation_kind": "agent",
+                "source_kind": "live",
+            }
+        )
+
+
+async def seed_branch(
+    db_path: Path,
+    *,
+    branch_id: str,
+    session_id: str,
+    name: str = "worker",
+    agent_name: str | None = None,
+    status: str | None = None,
+    started_at: float | None = None,
+    ended_at: float | None = None,
+) -> None:
+    prog_id = f"{branch_id}-prog"
+    async with StateDB(db_path) as db:
+        await db.create_progression(prog_id)
+        await db.create_branch(
+            {
+                "id": branch_id,
+                "created_at": 200.0,
+                "name": name,
+                "session_id": session_id,
+                "progression_id": prog_id,
+                "model": "gpt-5",
+                "provider": "openai",
+                "agent_name": agent_name or name,
+            }
+        )
+        fields: dict[str, Any] = {}
+        if status is not None:
+            fields["status"] = status
+        if started_at is not None:
+            fields["started_at"] = started_at
+        if ended_at is not None:
+            fields["ended_at"] = ended_at
+        if fields:
+            await db.update_branch(branch_id, **fields)
+
+
+@pytest.fixture
+def db_path(tmp_path: Path, monkeypatch: Any) -> Path:
+    path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", path)
+    return path
+
+
+async def test_run_progress_happy_path(db_path):
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="running", started_at=1000.0)
+    await seed_branch(
+        db_path,
+        branch_id=f"{sid}-br1",
+        session_id=sid,
+        name="planner",
+        status="completed",
+        started_at=1000.0,
+        ended_at=1010.0,
+    )
+    await seed_branch(
+        db_path,
+        branch_id=f"{sid}-br2",
+        session_id=sid,
+        name="critic",
+        status="running",
+        started_at=1010.0,
+    )
+
+    result = await run_progress({"run": sid})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is False
+    assert result["id"] == sid
+    assert result["status"] == "running"
+    assert result["opsTotal"] == 2
+    assert result["opsCompleted"] == 1
+    assert result["opsRunning"] == 1
+    assert result["opsFailed"] == 0
+    assert result["opsPending"] == 0
+    assert result["currentOps"] == [{"name": "critic", "agentName": "critic", "status": "running"}]
+    assert result["startedAt"] == 1000.0
+    assert "direct database read" in result["freshness"]
+
+
+async def test_run_progress_ambiguous_reference_and_cross_project_isolation(db_path):
+    """Two sessions sharing a name substring, in different projects, come back
+    as candidates that each report their own (redacted) project — never the
+    other session's data."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid_a = str(uuid.uuid4())
+    sid_b = str(uuid.uuid4())
+    await seed_session(
+        db_path,
+        session_id=sid_a,
+        name="nightly-triage-alpha",
+        project="/Users/admin/acme-research",
+        status="completed",
+    )
+    await seed_session(
+        db_path,
+        session_id=sid_b,
+        name="nightly-triage-beta",
+        project="/Users/admin/acme-ops",
+        status="failed",
+    )
+
+    result = await run_progress({"run": "nightly-triage"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is True
+    assert result["truncated"] is False
+    candidates_by_id = {c["id"]: c for c in result["candidates"]}
+    assert set(candidates_by_id) == {sid_a, sid_b}
+    assert candidates_by_id[sid_a]["project"] == "acme-research"
+    assert candidates_by_id[sid_b]["project"] == "acme-ops"
+    assert candidates_by_id[sid_a]["status"] == "completed"
+    assert candidates_by_id[sid_b]["status"] == "failed"
+
+
+async def test_run_progress_not_found(db_path):
+    from lionagi.studio.operator.run_progress import run_progress
+
+    async with StateDB(db_path):
+        pass
+
+    result = await run_progress({"run": str(uuid.uuid4())})
+    assert result == {"found": False}
+
+
+async def test_run_progress_zero_ops(db_path):
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="running", started_at=500.0)
+
+    result = await run_progress({"run": sid})
+
+    assert result["found"] is True
+    assert result["opsTotal"] == 0
+    assert result["opsCompleted"] == 0
+    assert result["opsRunning"] == 0
+    assert result["opsFailed"] == 0
+    assert result["opsPending"] == 0
+    assert result["currentOps"] == []
+
+
+async def test_run_progress_failed_run(db_path):
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="failed", started_at=10.0, ended_at=20.0)
+    await seed_branch(
+        db_path,
+        branch_id=f"{sid}-br1",
+        session_id=sid,
+        name="worker",
+        status="failed",
+        started_at=10.0,
+        ended_at=15.0,
+    )
+    await seed_branch(
+        db_path,
+        branch_id=f"{sid}-br2",
+        session_id=sid,
+        name="pending-op",
+    )
+
+    result = await run_progress({"run": sid})
+
+    assert result["status"] == "failed"
+    assert result["opsTotal"] == 2
+    assert result["opsFailed"] == 1
+    assert result["opsCompleted"] == 0
+    assert result["opsRunning"] == 0
+    assert result["opsPending"] == 1
+    assert result["elapsedSeconds"] == pytest.approx(10.0)
+
+
+async def test_run_progress_hex_prefix_resolution(db_path):
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = "a1b2c3d4-1111-2222-3333-444455556666"
+    await seed_session(db_path, session_id=sid, status="completed")
+
+    result = await run_progress({"run": "a1b2c3d4"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is False
+    assert result["id"] == sid
+
+
+async def test_run_progress_dashed_id_prefix_resolution(db_path):
+    """fetch_unique_row() matches any literal id prefix, not just an 8+ char
+    run of bare hex — a prefix spanning the first dash must resolve too, the
+    same way `cancel_run`/`li kill` already accept it."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = "a1b2c3d4-1111-2222-3333-444455556666"
+    await seed_session(db_path, session_id=sid, status="completed")
+
+    result = await run_progress({"run": "a1b2c3d4-11"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is False
+    assert result["id"] == sid
+
+
+async def test_run_progress_colliding_id_prefix_is_ambiguous(db_path):
+    """Two ids sharing a literal prefix must come back as candidates, not a
+    silent pick — mirrors fetch_unique_row()'s own AmbiguousIdError contract."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid_a = "deadbeef-1111-2222-3333-444455556666"
+    sid_b = "deadbeef-9999-8888-7777-666655554444"
+    await seed_session(db_path, session_id=sid_a, name="run-a", status="completed")
+    await seed_session(db_path, session_id=sid_b, name="run-b", status="running")
+
+    result = await run_progress({"run": "deadbeef"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is True
+    assert {c["id"] for c in result["candidates"]} == {sid_a, sid_b}
+
+
+async def test_run_progress_current_view(db_path, monkeypatch):
+    from lionagi.studio.operator.application_mcp import navigate  # noqa: F401
+    from lionagi.studio.operator.run_progress import run_progress
+    from lionagi.studio.operator.store import OperatorStore
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="completed")
+
+    store = OperatorStore(db_path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="how is the nightly run going?",
+        context={
+            "space": "history",
+            "route": "/fleet",
+            "filters": {},
+            "selection": {"s": sid},
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    result = await run_progress({"run": "current"})
+
+    assert result["found"] is True
+    assert result["id"] == sid
+
+
+async def test_run_progress_current_view_unknown_returns_not_found(db_path, monkeypatch):
+    from lionagi.studio.operator.run_progress import run_progress
+    from lionagi.studio.operator.store import OperatorStore
+
+    store = OperatorStore(db_path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="how is it going?",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    result = await run_progress({"run": "current"})
+    assert result == {"found": False}
+
+
+async def test_run_progress_too_short_reference_not_found(db_path):
+    from lionagi.studio.operator.run_progress import run_progress
+
+    async with StateDB(db_path):
+        pass
+
+    result = await run_progress({"run": "ab"})
+    assert result == {"found": False}
+
+
+async def test_run_progress_candidate_cap_and_truncation(db_path):
+    from lionagi.studio.operator.run_progress import run_progress
+
+    ids = []
+    for index in range(12):
+        sid = str(uuid.uuid4())
+        ids.append(sid)
+        await seed_session(
+            db_path,
+            session_id=sid,
+            name=f"sweep-run-{index:02d}",
+            status="completed",
+            updated_at=time.time() + index,
+        )
+
+    result = await run_progress({"run": "sweep-run"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is True
+    assert len(result["candidates"]) == 10
+    assert result["truncated"] is True
+
+
+async def test_run_progress_rejects_unknown_fields(db_path):
+    from pydantic import ValidationError
+
+    from lionagi.studio.operator.run_progress import RunProgressInput
+
+    with pytest.raises(ValidationError):
+        RunProgressInput.model_validate({"run": "x", "unexpected": True})
+
+
+# ── DAG progress: planned graph nodes with no materialized branch yet ─────
+
+
+async def test_run_progress_dag_progress_derives_from_graph_not_branches(db_path):
+    """A DAG can have planned nodes with no materialized branch yet; opsTotal
+    must reflect the graph, not len(branches), and each node's status must be
+    honestly reported -- including "unknown" for a node this tool cannot map
+    to any recorded lifecycle signal."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    node_metadata = {
+        "early_graph": {
+            "nodes": [
+                {"id": "plan", "label": "plan"},
+                {"id": "work", "label": "work"},
+                {"id": "review", "label": "review"},
+            ],
+            "edges": [
+                {"id": "e-plan-work", "source": "plan", "target": "work", "mode": "simple"},
+                {"id": "e-work-review", "source": "work", "target": "review", "mode": "simple"},
+            ],
+        }
+    }
+    async with StateDB(db_path) as db:
+        prog_id = f"{sid}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog_id,
+                "name": "graph-run",
+                "status": "running",
+                "started_at": 1000.0,
+                "node_metadata": node_metadata,
+                "invocation_kind": "agent",
+                "source_kind": "live",
+                "updated_at": time.time(),
+            }
+        )
+        # Only "plan" and "work" have ever materialized as branches -- "review"
+        # is a planned node with no branch row at all yet.
+        await db.create_progression(f"{sid}-plan-prog")
+        await db.create_branch(
+            {
+                "id": f"{sid}-plan",
+                "created_at": 1000.0,
+                "name": "plan",
+                "session_id": sid,
+                "progression_id": f"{sid}-plan-prog",
+                "model": "gpt-5",
+                "provider": "openai",
+                "agent_name": "plan",
+            }
+        )
+        await db.update_branch(
+            f"{sid}-plan", status="completed", started_at=1000.0, ended_at=1005.0
+        )
+        await db.insert_session_signal(
+            session_id=sid, kind="NodeCompleted", op_id="op-1", ts=1005.0, payload={"name": "plan"}
+        )
+        await db.insert_session_signal(
+            session_id=sid, kind="NodeStarted", op_id="op-2", ts=1006.0, payload={"name": "work"}
+        )
+
+    result = await run_progress({"run": sid})
+
+    assert result["hasGraph"] is True
+    assert result["opsTotal"] == 3
+    assert result["opsCompleted"] == 1
+    assert result["opsRunning"] == 1
+    assert result["opsFailed"] == 0
+    # "review" has no branch and no signal -- it folds into the pending
+    # scalar bucket (not yet observably started) while still being named
+    # "unknown" in the per-node projection below.
+    assert result["opsPending"] == 1
+
+    dag = result["dagProgress"]
+    assert dag["total"] == 3
+    assert dag["completed"] == 1
+    assert dag["running"] == 1
+    assert dag["failed"] == 0
+    assert dag["pending"] == 1
+    assert dag["unknownCount"] == 1
+    by_id = {node["id"]: node for node in dag["nodes"]}
+    assert by_id["plan"]["status"] == "succeeded"
+    assert by_id["work"]["status"] == "running"
+    assert by_id["review"]["status"] == "unknown"
+
+
+async def test_run_progress_no_graph_has_null_dag_progress(db_path):
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="completed")
+
+    result = await run_progress({"run": sid})
+
+    assert result["hasGraph"] is False
+    assert result["dagProgress"] is None
+
+
+# ── reference resolution: project isolation ───────────────────────────────
+
+
+async def _make_running_turn_with_project(db_path: Path, *, project: str | None) -> tuple[str, str]:
+    from lionagi.studio.operator.store import OperatorStore
+
+    store = OperatorStore(db_path)
+    conversation = await store.create_conversation()
+    cid = conversation["id"]
+    context: dict[str, Any] = {"space": "mission", "route": "/", "filters": {}}
+    if project is not None:
+        context["project"] = project
+    accepted = await store.submit_turn(
+        cid,
+        instruction="how is the nightly run going?",
+        context=context,
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    return cid, accepted["requestId"]
+
+
+async def test_run_progress_text_search_is_scoped_to_the_turns_project(db_path, monkeypatch):
+    """A name-substring reference must not resolve to -- or even reveal the
+    existence of -- a same-named run in a different project, when the calling
+    turn names one."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid_in_scope = str(uuid.uuid4())
+    sid_out_of_scope = str(uuid.uuid4())
+    await seed_session(
+        db_path,
+        session_id=sid_in_scope,
+        name="nightly-triage",
+        project="/Users/admin/acme-research",
+        status="completed",
+    )
+    await seed_session(
+        db_path,
+        session_id=sid_out_of_scope,
+        name="nightly-triage",
+        project="/Users/admin/acme-ops",
+        status="completed",
+    )
+
+    cid, request_id = await _make_running_turn_with_project(
+        db_path, project="/Users/admin/acme-research"
+    )
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+
+    result = await run_progress({"run": "nightly-triage"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is False
+    assert result["id"] == sid_in_scope

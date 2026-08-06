@@ -144,9 +144,37 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
         "mcp__studio_operator__navigate",
         "mcp__studio_operator__prefill_schedule",
         "mcp__studio_operator__launch_playbook",
+        "mcp__studio_operator__run_progress",
+        "mcp__studio_operator__run_findings",
+        "mcp__studio_operator__cancel_run",
     }
     # The first turn of a conversation has nothing to resume.
     assert "resume" not in kwargs
+
+
+def test_operator_mcp_tool_registries_agree_exactly_in_both_directions():
+    """`application_mcp.py`'s tool registry and `engine.py`'s allowlist must
+    name the exact same tools. A tool added to one but not the other is
+    either invisible to the Operator (allowlist missing it) or silently
+    unreachable despite being allowed (application registry missing it) --
+    both look exactly like a broken model from the outside."""
+    from lionagi.studio.operator.application_mcp import (
+        _TOOL_DESCRIPTIONS,
+        _TOOL_HANDLERS,
+        _TOOL_MODELS,
+    )
+    from lionagi.studio.operator.engine import _OPERATOR_MCP_TOOLS
+
+    application_names = set(_TOOL_MODELS)
+    assert application_names == set(_TOOL_HANDLERS)
+    assert application_names == set(_TOOL_DESCRIPTIONS)
+
+    prefix = "mcp__studio_operator__"
+    assert all(name.startswith(prefix) for name in _OPERATOR_MCP_TOOLS)
+    assert len(_OPERATOR_MCP_TOOLS) == len(set(_OPERATOR_MCP_TOOLS))
+    allowlist_names = {name.removeprefix(prefix) for name in _OPERATOR_MCP_TOOLS}
+
+    assert allowlist_names == application_names
 
 
 def test_operator_branch_resumes_the_conversations_provider_session(tmp_path):
@@ -478,6 +506,154 @@ async def test_application_mcp_playbook_mutation_after_proposal_conflicts_before
     assert failed_result["payload"]["ok"] is False
     assert failed_result["payload"]["error"]["code"] == "stale_context"
     assert await _audit_decisions(proposal["id"]) == ["confirmed", "failed"]
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+    await coordinator.shutdown()
+
+
+async def _seed_running_session(db) -> str:
+    import uuid
+
+    run_id = str(uuid.uuid4())
+    progression_id = str(uuid.uuid4())
+    await db.create_progression(progression_id)
+    await db.create_session(
+        {
+            "id": run_id,
+            "progression_id": progression_id,
+            "status": "running",
+            "started_at": time.time(),
+        }
+    )
+    return run_id
+
+
+@pytest.mark.asyncio
+async def test_application_mcp_cancel_run_allow_executes_via_the_real_default_coordinator(
+    tmp_path, monkeypatch
+):
+    """Unlike the `cancel_run` unit tests (which simulate the coordinator
+    wiring this integration step owns), this exercises the actual default
+    `OperatorCoordinator` -- no custom `command_executor` override -- proving
+    `coordinator.py::_execute_application_command`'s `cancel` branch really
+    dispatches to `cancel_run.execute_cancel_command` end to end. Mirrors
+    `test_application_mcp_launch_blocks_on_real_durable_human_proposal`
+    above: same real coordinator, same allow path, same durable proposal
+    gate, but for the lifecycle tool instead of the launch tool."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.cancel_run import cancel_run
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_running_session(db)
+
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="stop that run",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    task = asyncio.create_task(cancel_run({"run": run_id, "reason": "hung"}))
+    proposal = await _wait_proposal(store, accepted["requestId"])
+    assert not task.done()
+    assert proposal["commandType"] == "cancel"
+    assert proposal["command"] == {"session_id": run_id, "reason": "hung"}
+    assert proposal["risk"] == "execute"
+
+    decision = await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=proposal["targetVersion"],
+    )
+    result = await asyncio.wait_for(task, timeout=2)
+
+    assert decision["status"] == "succeeded"
+    assert result == {
+        "cancelled": True,
+        "status": "terminal",
+        "id": run_id,
+        "signal": "no_pid",
+        # False here because the run was in fact cancelled; the deny and
+        # not-found paths return True. Every other assertion on a cancel
+        # result carries this field, and it is what tells the operator
+        # whether anything actually changed.
+        "run_untouched": False,
+    }
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
+        assert row["status"] == "cancelled"
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_application_mcp_cancel_run_deny_leaves_run_untouched_via_real_coordinator(
+    tmp_path, monkeypatch
+):
+    """Same real default wiring as the allow-path test above, but denied:
+    proves the run is left exactly as it was and the coordinator's `cancel`
+    branch (and therefore `execute_cancel_command`) is never invoked -- a
+    denied proposal cannot reach the mutation regardless of which command
+    type it names."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.cancel_run import cancel_run
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_running_session(db)
+
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="stop that run",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    task = asyncio.create_task(cancel_run({"run": run_id}))
+    proposal = await _wait_proposal(store, accepted["requestId"])
+
+    decision = await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=False,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=proposal["targetVersion"],
+    )
+    result = await asyncio.wait_for(task, timeout=2)
+
+    assert decision["status"] == "failed"
+    assert decision["error"]["code"] == "denied"
+    assert result == {
+        "cancelled": False,
+        "reason": "denied",
+        "run_untouched": True,
+        "id": run_id,
+    }
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
+        assert row["status"] == "running"
     await store.finish_turn(accepted["requestId"], outcome="completed")
     await coordinator.shutdown()
 
