@@ -688,6 +688,156 @@ def _machine_list(argv: list[str]) -> dict[str, Any]:
     return _machine_list_data()
 
 
+def _machine_create(argv: list[str]) -> dict[str, Any]:
+    """`li team create NAME --members A,B --machine`."""
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li team create")
+    parser.add_argument("name")
+    parser.add_argument("-m", "--members", required=True)
+    args = parse_machine_argv(parser, argv)
+
+    members = [m.strip() for m in args.members.split(",") if m.strip()]
+    if not members:
+        raise MachineError("invalid_input", "--members requires at least one name")
+
+    team_id = uuid4().hex[:12]
+    path = _teams_dir() / f"{team_id}.json"
+    created_at = now_utc().isoformat()
+    with _locked_team(team_id, create_path=path) as data:
+        data.update(
+            {
+                "id": team_id,
+                "name": args.name,
+                "members": members,
+                "messages": [],
+                "created_at": created_at,
+            }
+        )
+    return {
+        "id": team_id,
+        "name": args.name,
+        "members": members,
+        "created_at": created_at,
+        "path": str(path),
+    }
+
+
+def _machine_show(argv: list[str]) -> dict[str, Any]:
+    """`li team show TEAM --machine`."""
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li team show")
+    parser.add_argument("team")
+    args = parse_machine_argv(parser, argv)
+
+    try:
+        data = _load_team(args.team)
+    except FileNotFoundError as exc:
+        raise MachineError("not_found", str(exc)) from exc
+    except AmbiguousIdError as exc:
+        raise MachineError("invalid_input", str(exc)) from exc
+    return {"team": data}
+
+
+def _machine_send(argv: list[str]) -> dict[str, Any]:
+    """`li team send CONTENT --team T --to R --machine`."""
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li team send")
+    parser.add_argument("content")
+    parser.add_argument("--team", "-t", required=True)
+    parser.add_argument("--to", required=True)
+    parser.add_argument("--from", dest="sender", default=None)
+    parser.add_argument("--from-op", dest="from_op", default=None)
+    parser.add_argument(
+        "--kind", default=None, choices=(MESSAGE_KIND, DONE_KIND, FINISHED_KIND, WAKEUP_KIND)
+    )
+    parser.add_argument("--artifacts", default=None)
+    args = parse_machine_argv(parser, argv)
+
+    try:
+        with _locked_team(args.team) as data:
+            if not data:
+                raise MachineError("not_found", f"Team '{args.team}' is empty or missing")
+
+            sender = args.sender or "_cli"
+            if args.to.lower() == "all":
+                recipients = ["*"]
+            else:
+                recipients = [r.strip() for r in args.to.split(",") if r.strip()]
+
+            artifacts = None
+            if args.artifacts:
+                artifacts = [a.strip() for a in args.artifacts.split(",") if a.strip()]
+            msg = _build_message(
+                sender,
+                recipients,
+                args.content,
+                kind=args.kind or MESSAGE_KIND,
+                from_op=args.from_op,
+                artifacts=artifacts,
+            )
+            data.setdefault("messages", []).append(msg)
+            team_id = data.get("id", args.team)
+    except FileNotFoundError as exc:
+        raise MachineError("not_found", str(exc)) from exc
+    except AmbiguousIdError as exc:
+        raise MachineError("invalid_input", str(exc)) from exc
+
+    return {
+        "message_id": msg["id"],
+        "team_id": team_id,
+        "to": recipients,
+        "timestamp": msg["timestamp"],
+    }
+
+
+def _machine_receive(argv: list[str]) -> dict[str, Any]:
+    """`li team receive --team T [--as MEMBER] --machine`."""
+    from .machine import MachineError, machine_parser, parse_machine_argv
+
+    parser = machine_parser("li team receive")
+    parser.add_argument("--team", "-t", required=True)
+    parser.add_argument("--as", dest="member", default=None)
+    args = parse_machine_argv(parser, argv)
+    me = args.member
+
+    try:
+        with _locked_team(args.team) as data:
+            if not data:
+                raise MachineError("not_found", f"Team '{args.team}' is empty or missing")
+            team_id = data.get("id", args.team)
+
+            msgs = data.get("messages", [])
+            unread: list[dict] = []
+            for msg in msgs:
+                read_by = _read_by_map(msg.get("read_by"))
+                if me and me in read_by:
+                    continue
+                targets = msg["to"]
+                if targets == ["*"] or (me and me in targets) or not me:
+                    unread.append(msg)
+
+            now = now_utc().isoformat()
+            for msg in unread:
+                read_by = _read_by_map(msg.get("read_by"))
+                if me and me not in read_by:
+                    read_by[me] = now
+                    msg["read_by"] = read_by
+    except FileNotFoundError as exc:
+        raise MachineError("not_found", str(exc)) from exc
+    except AmbiguousIdError as exc:
+        raise MachineError("invalid_input", str(exc)) from exc
+
+    return {
+        "team_id": team_id,
+        "messages": unread,
+        "member": me,
+        "count": len(unread),
+    }
+
+
 def machine_result(argv: list[str]) -> dict[str, Any]:
     """`li team <sub> --machine`."""
     from .machine import machine_subcommand
@@ -695,12 +845,14 @@ def machine_result(argv: list[str]) -> dict[str, Any]:
     return machine_subcommand(
         "team",
         argv,
-        {"list": _machine_list, "ls": _machine_list},
-        without_seam={
-            "create": "it writes a new team file",
-            "show": "it prints a team's messages for a human reader",
-            "send": "it appends a message to a team file",
-            "receive": "it marks the messages it returns as read, which is a write",
-            "recv": "it marks the messages it returns as read, which is a write",
+        {
+            "list": _machine_list,
+            "ls": _machine_list,
+            "create": _machine_create,
+            "show": _machine_show,
+            "send": _machine_send,
+            "receive": _machine_receive,
+            "recv": _machine_receive,
         },
+        without_seam={},
     )
