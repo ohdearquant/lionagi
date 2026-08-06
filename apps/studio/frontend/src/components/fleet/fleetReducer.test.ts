@@ -173,6 +173,96 @@ describe("fleetReducer — invocation join", () => {
     expect(s.orgUnits[0].agents).toHaveLength(1);
   });
 
+  // Shapes below are the two live rows measured off /api/runs: two plays,
+  // identical invocation_kind, and an invocation_id only on the one that the
+  // Studio launcher started.
+  it("groups a play that carries no invocation_id under its kind, not under direct", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [
+        makeRun({
+          run_id: "r1",
+          status: "running",
+          playbook_name: "lionagi-feature",
+          invocation_kind: "play",
+          invocation_id: null,
+          branch_count: 12,
+        }),
+      ],
+    );
+    expect(s.orgUnits).toHaveLength(1);
+    expect(s.orgUnits[0].id).toBe("__kind:play__");
+    expect(s.orgUnits[0].skill).toBe("play");
+    expect(s.orgUnits[0].agents.map((a) => a.id)).toEqual(["r1"]);
+    // The whole point: it must not have been filed as a lone agent run.
+    expect(s.orgUnits.find((u) => u.id === "__direct__")).toBeUndefined();
+  });
+
+  it("keeps a launcher-started play under its invocation while an MCP-started one gets its own group", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [makeInvocation({ id: "d3297fab", status: "running", skill: "launch:play" })],
+      [
+        makeRun({
+          run_id: "launched",
+          status: "running",
+          playbook_name: "research",
+          invocation_kind: "play",
+          invocation_id: "d3297fab",
+        }),
+        makeRun({
+          run_id: "orphan",
+          status: "running",
+          playbook_name: "lionagi-feature",
+          invocation_kind: "play",
+          invocation_id: null,
+        }),
+      ],
+    );
+    expect(s.orgUnits.find((u) => u.id === "d3297fab")?.agents.map((a) => a.id)).toEqual([
+      "launched",
+    ]);
+    expect(s.orgUnits.find((u) => u.id === "__kind:play__")?.agents.map((a) => a.id)).toEqual([
+      "orphan",
+    ]);
+    expect(s.orgUnits.find((u) => u.id === "__direct__")).toBeUndefined();
+  });
+
+  it("still puts a run with neither an invocation nor a kind in direct", () => {
+    // "direct" keeps its meaning; it did not just become a synonym for
+    // "unmatched".
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [makeRun({ run_id: "bare", status: "running", agent_name: "claude-code" })],
+    );
+    expect(s.orgUnits).toHaveLength(1);
+    expect(s.orgUnits[0].id).toBe("__direct__");
+  });
+
+  it("orders kind groups deterministically and leaves direct last", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [
+        makeRun({ run_id: "bare", status: "running" }),
+        makeRun({ run_id: "p", status: "running", invocation_kind: "play" }),
+        makeRun({ run_id: "f", status: "running", invocation_kind: "fanout" }),
+      ],
+    );
+    expect(s.orgUnits.map((u) => u.id)).toEqual(["__kind:fanout__", "__kind:play__", "__direct__"]);
+  });
+
+  it("treats a blank invocation_kind as absent rather than as a group name", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [makeRun({ run_id: "r1", status: "running", invocation_kind: "   " })],
+    );
+    expect(s.orgUnits[0].id).toBe("__direct__");
+  });
+
   it("invocation without runs still appears when no scope is active", () => {
     // Names the case that would have passed either way: no project/search
     // filter is in play here, so this test exercises the same code path

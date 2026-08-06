@@ -4,8 +4,11 @@
  * Join strategy: RunSummary.invocation_id → InvocationSummary.id.
  * Runs carry an optional invocation_id (set by `li invoke`). Active runs
  * with a matching invocation_id are grouped under that invocation as child
- * agent rows. Runs without a matching invocation_id land in a synthetic
- * "direct" group (id "__direct__"). Sessions are listed via
+ * agent rows. A run with no matching invocation falls back to its own
+ * invocation_kind — only the Studio launcher stamps an invocation_id, so a
+ * play started over MCP or from the CLI has none, and grouping it by kind is
+ * what keeps it from reading as a lone agent run. Only a run with neither
+ * lands in the synthetic "direct" group (id "__direct__"). Sessions are listed via
  * SessionSummary; they lack an invocation_id field in the list response,
  * so they are counted inside their parent invocation's session_count field
  * (already on InvocationSummary) rather than being individually grouped.
@@ -180,6 +183,8 @@ function buildOrgUnits(
   }
 
   const directAgents: AgentRow[] = [];
+  // Runs with no invocation record, bucketed by what the run says it is.
+  const kindAgents = new Map<string, AgentRow[]>();
 
   for (const run of runs) {
     if (!isActive(run)) continue;
@@ -200,9 +205,23 @@ function buildOrgUnits(
     const parent = run.invocation_id ? invMap.get(run.invocation_id) : undefined;
     if (parent) {
       parent.agents.push(row);
-    } else {
-      directAgents.push(row);
+      continue;
     }
+
+    // Only the Studio launcher stamps an invocation_id, so a play started any
+    // other way — over MCP, from the CLI — arrives with none. It still carries
+    // invocation_kind, which is the run saying what it is, so group on that.
+    // Falling through to "direct" would file a twelve-branch play under a
+    // heading that means "a single agent someone ran", and the heading would be
+    // describing the missing record rather than the run.
+    const kind = (run.invocation_kind ?? "").trim();
+    if (!kind) {
+      directAgents.push(row);
+      continue;
+    }
+    const bucket = kindAgents.get(kind);
+    if (bucket) bucket.push(row);
+    else kindAgents.set(kind, [row]);
   }
 
   const units: OrgUnit[] = [];
@@ -233,7 +252,30 @@ function buildOrgUnits(
     return (b.elapsedSec ?? 0) - (a.elapsedSec ?? 0);
   });
 
-  // Direct group — runs not under any invocation
+  // Kind groups — runs with no invocation record that still name their kind.
+  // Sorted by kind so the order does not depend on which run polled first.
+  for (const kind of [...kindAgents.keys()].sort()) {
+    const agents = kindAgents.get(kind)!;
+    agents.sort((a, b) => (b.elapsedSec ?? 0) - (a.elapsedSec ?? 0));
+    units.push({
+      id: `__kind:${kind}__`,
+      skill: kind,
+      // No launcher to name: the plugin chip belongs to an invocation record,
+      // and inventing one here would assert something we did not observe.
+      plugin: null,
+      status: "running",
+      elapsedSec: agents.reduce<number | null>(
+        (max, a) =>
+          a.elapsedSec != null && (max == null || a.elapsedSec > max) ? a.elapsedSec : max,
+        null,
+      ),
+      session_count: agents.length,
+      agents,
+      needsAttention: agents.some((a) => needsAttention(a)),
+    });
+  }
+
+  // Direct group — runs with neither an invocation nor a kind
   if (directAgents.length > 0) {
     directAgents.sort((a, b) => (b.elapsedSec ?? 0) - (a.elapsedSec ?? 0));
     const hasAttention = directAgents.some((a) => needsAttention(a));
