@@ -130,7 +130,7 @@ resolves that playbook's own declared arguments into the schema.
 
 ## The catalog
 
-40 verbs are reachable. Both tables in this section are checked against the
+44 verbs are reachable. Both tables in this section are checked against the
 registry by the test suite, so a verb added or withdrawn without updating them
 fails a test rather than going unnoticed. The registry is the authority; ask it
 directly with:
@@ -182,7 +182,11 @@ python -c "from lionagi.mcp import verbs as v; print(len(v.VERBS)); [print(n) fo
 | `state.ls` | Sessions in the lifecycle store with their branch and message counts. |
 | `state.stats` | Store and write-ahead-log size, per-table row counts, session status spread. |
 | `stats.runs` | Run counts and first/last timestamps, grouped by project/kind/agent/model/status. |
+| `team.create` | Create a new team with named members. |
 | `team.list` | Teams on disk with their members and message counts. |
+| `team.receive` | Read inbox messages. |
+| `team.send` | Send a message to team members. |
+| `team.show` | Show team details and messages. |
 
 <!-- mcp-catalog:available:end -->
 
@@ -194,7 +198,7 @@ against rather than a copy of it.
 
 ## Operations the surface does not offer
 
-Thirty further names are catalogued as **unavailable**, each with its
+Twenty-six further names are catalogued as **unavailable**, each with its
 reason. They are not omissions: a caller that asks what exists gets the name and
 why it cannot be called, which is a different answer from the name never having
 been considered. The right-hand column below abbreviates the reason; `help=true`
@@ -207,10 +211,6 @@ returns each one in full.
 | `casts` | The built-in roles and modes an agent can be composed from. | no machine result |
 | `orchestrate.ctl.status` | What a running flow's control plane reports about it. | no machine result |
 | `state.doctor` | Read-only inspection of the lifecycle store. | no machine result |
-| `team.create` | Messaging between agents working as a team. | no machine result |
-| `team.receive` | Messaging between agents working as a team. | no machine result |
-| `team.send` | Messaging between agents working as a team. | no machine result |
-| `team.show` | Messaging between agents working as a team. | no machine result |
 | `state.checkpoint` | Writes against the lifecycle store. | invalidating write |
 | `state.import` | Writes against the lifecycle store. | invalidating write |
 | `state.import-teams` | Writes against the lifecycle store. | invalidating write |
