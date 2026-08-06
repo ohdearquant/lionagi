@@ -147,6 +147,7 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
         "mcp__studio_operator__run_progress",
         "mcp__studio_operator__run_findings",
         "mcp__studio_operator__cancel_run",
+        "mcp__studio_operator__rename_conversation",
     }
     # The first turn of a conversation has nothing to resume.
     assert "resume" not in kwargs
@@ -327,6 +328,57 @@ async def test_operator_guidance_requires_reading_run_kind_before_describing_a_r
     # which on a route carrying only a URL pushed the model to narrate a view
     # it had never observed.
     assert "never say you cannot tell what they are looking at" not in _SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_rename_conversation_tool_sets_title_and_description_without_cross_clobber(
+    tmp_path, monkeypatch
+):
+    """The tool acts on the turn's own conversation, applies only the fields
+    it was handed (a title-only call must not erase a stored description),
+    refuses an empty call, and returns a redacted projection without the
+    provider/session internals the full conversation row carries."""
+    import pydantic
+
+    from lionagi.studio.operator.application_mcp import rename_conversation
+
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    other_cid = (await store.create_conversation(title="untouched"))["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="name this thread",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    both = await rename_conversation(
+        {"title": "Failure triage", "description": "Digging into overnight reds"}
+    )
+    assert both["conversation"] == {
+        "id": cid,
+        "title": "Failure triage",
+        "description": "Digging into overnight reds",
+    }
+
+    title_only = await rename_conversation({"title": "Overnight failure triage"})
+    assert title_only["conversation"]["title"] == "Overnight failure triage"
+    assert title_only["conversation"]["description"] == "Digging into overnight reds"
+
+    with pytest.raises(pydantic.ValidationError):
+        await rename_conversation({})
+
+    stored = await store.get_conversation(cid)
+    assert stored["title"] == "Overnight failure triage"
+    assert stored["description"] == "Digging into overnight reds"
+    untouched = await store.get_conversation(other_cid)
+    assert untouched["title"] == "untouched"
+    assert untouched["description"] is None
 
 
 @pytest.mark.asyncio

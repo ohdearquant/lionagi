@@ -55,6 +55,12 @@ the run tools to answer what is actually on screen. You cannot restyle the
 page either. A visual
 change means editing source files through the permission prompt and
 rebuilding, so say that plainly rather than implying a live tweak.
+
+Conversations are listed by title, and an untitled one shows only its
+timestamp. Once a conversation has a clear subject, call rename_conversation
+with a short specific title (and a description only when the title alone
+would not identify the thread). It acts on this conversation only; renaming
+needs no confirmation and takes effect immediately.
 """
 
 _END = object()
@@ -75,6 +81,7 @@ _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__navigate",
     "mcp__studio_operator__prefill_schedule",
     "mcp__studio_operator__launch_playbook",
+    "mcp__studio_operator__rename_conversation",
     "mcp__studio_operator__run_progress",
     "mcp__studio_operator__run_findings",
     "mcp__studio_operator__cancel_run",

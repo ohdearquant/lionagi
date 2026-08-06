@@ -459,6 +459,9 @@ export interface OperatorConversation {
   id: string;
   project?: string | null;
   title?: string | null;
+  /** Optional free-text summary; set by the human or by the Operator's own
+   * rename tool so a thread stays recognizable in a long list. */
+  description?: string | null;
   status: OperatorConversationStatus;
   pinned: boolean;
   nextSequence?: number;

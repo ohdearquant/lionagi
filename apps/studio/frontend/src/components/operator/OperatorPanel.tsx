@@ -1457,7 +1457,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
                                   selectConversation(conversation.id);
                                   setListPanelOpen(false);
                                 }}
-                                title={t("list.renamePlaceholder")}
+                                title={
+                                  conversation.description?.trim() || t("list.renamePlaceholder")
+                                }
                                 className="min-w-0 flex-1 truncate text-start text-meta text-content-primary outline-none"
                               >
                                 {conversation.pinned ? "★ " : ""}

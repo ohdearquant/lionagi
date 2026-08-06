@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   id                 TEXT PRIMARY KEY,
   project            TEXT,
   title              TEXT,
+  description        TEXT,
   status             TEXT NOT NULL DEFAULT 'active'
                      CHECK(status IN ('active', 'archived', 'deleted')),
   next_sequence      INTEGER NOT NULL DEFAULT 1,
@@ -251,6 +252,7 @@ class OperatorStore:
                         "resolved_provider": "TEXT",
                         "resolved_model": "TEXT",
                         "pinned": "INTEGER NOT NULL DEFAULT 0",
+                        "description": "TEXT",
                     },
                 )
                 await self._add_missing_columns(
@@ -331,6 +333,7 @@ class OperatorStore:
             "id": row["id"],
             "project": row["project"],
             "title": row["title"],
+            "description": row["description"],
             "status": row["status"],
             "pinned": bool(row["pinned"]),
             "nextSequence": row["next_sequence"],
@@ -482,10 +485,11 @@ class OperatorStore:
         conversation_id: str,
         *,
         title: str | None | object = _UNSET,
+        description: str | None | object = _UNSET,
         pinned: bool | object = _UNSET,
         status: str | object = _UNSET,
     ) -> dict[str, Any]:
-        """Apply a partial update: rename, pin/unpin, and/or archive/reactivate.
+        """Apply a partial update: rename, describe, pin/unpin, and/or archive/reactivate.
 
         Only the fields the caller actually names (not left at ``_UNSET``) are
         touched, so a rename never disturbs the pin state and vice versa.
@@ -517,6 +521,9 @@ class OperatorStore:
             if title is not _UNSET:
                 sets.append("title=?")
                 params.append(title)
+            if description is not _UNSET:
+                sets.append("description=?")
+                params.append(description)
             if pinned is not _UNSET:
                 sets.append("pinned=?")
                 params.append(1 if pinned else 0)

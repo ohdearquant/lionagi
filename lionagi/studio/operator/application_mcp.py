@@ -20,7 +20,14 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
 import anyio
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
 from .run_findings import RunFindingsInput, run_findings
@@ -91,6 +98,17 @@ class PrefillScheduleInput(_StrictInput):
         return value
 
 
+class RenameConversationInput(_StrictInput):
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1_000)
+
+    @model_validator(mode="after")
+    def _at_least_one(self) -> RenameConversationInput:
+        if self.title is None and self.description is None:
+            raise ValueError("Provide a title, a description, or both")
+        return self
+
+
 class LaunchPlaybookInput(_StrictInput):
     playbook: str = Field(
         min_length=1,
@@ -126,6 +144,7 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "navigate": NavigateInput,
     "prefill_schedule": PrefillScheduleInput,
     "launch_playbook": LaunchPlaybookInput,
+    "rename_conversation": RenameConversationInput,
     "run_progress": RunProgressInput,
     "run_findings": RunFindingsInput,
     "cancel_run": CancelRunInput,
@@ -168,6 +187,13 @@ _TOOL_DESCRIPTIONS = {
     ),
     "prefill_schedule": (
         "Request a typed schedule-form prefill for human review. This never creates a schedule."
+    ),
+    "rename_conversation": (
+        "Set this conversation's title and/or description so it is findable "
+        "later. Acts only on the current conversation, never another one. "
+        "Use a short specific title (what the conversation is about, not a "
+        "greeting) and a description only when the title alone would not be "
+        "enough to recognize the thread in a list."
     ),
     "launch_playbook": (
         "Propose launching one named Studio playbook. This blocks until the "
@@ -436,6 +462,27 @@ async def prefill_schedule(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def rename_conversation(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = RenameConversationInput.model_validate(arguments)
+    store, conversation_id, _request_id = _identity()
+    from .store import _UNSET
+
+    conversation = await store.update_conversation(
+        conversation_id,
+        title=args.title if args.title is not None else _UNSET,
+        description=args.description if args.description is not None else _UNSET,
+    )
+    # Only the fields this tool owns come back; the full conversation row
+    # carries provider/session internals the model has no need to see.
+    return {
+        "conversation": {
+            "id": conversation["id"],
+            "title": conversation["title"],
+            "description": conversation["description"],
+        }
+    }
+
+
 def _redacted_launch_result(proposal: dict[str, Any]) -> dict[str, Any]:
     raw = proposal.get("result")
     result = raw if isinstance(raw, dict) else {}
@@ -509,6 +556,7 @@ _TOOL_HANDLERS = {
     "navigate": navigate,
     "prefill_schedule": prefill_schedule,
     "launch_playbook": launch_playbook,
+    "rename_conversation": rename_conversation,
     "run_progress": run_progress,
     "run_findings": run_findings,
     "cancel_run": cancel_run,
