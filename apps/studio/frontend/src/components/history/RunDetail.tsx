@@ -13,7 +13,9 @@ import OperationGraphSection from "@/components/history/OperationGraphSection";
 import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
+import RunFilesSection from "@/components/history/RunFilesSection";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
+import { FileViewerModal } from "@/components/ui/Markdown";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import {
   ApiError,
@@ -837,32 +839,6 @@ function ErrorsSection({ errors, partial }: { errors: ErrorEntry[]; partial?: bo
   );
 }
 
-// ── Files section ─────────────────────────────────────────────────────────────
-
-function FilesSection({ files, partial }: { files: string[]; partial?: boolean }) {
-  const t = useTranslations("history.detail");
-  return (
-    <div id="run-files" className="scroll-mt-4">
-      <SectionHeader label={t("sectionFiles")} count={files.length} />
-      {files.length === 0 ? (
-        <div className="rounded border border-edge bg-surface-raised px-4 py-3 text-sm text-content-muted">
-          {partial ? t("noFilesPartial") : t("noFiles")}
-        </div>
-      ) : (
-        <div className="max-h-56 overflow-y-auto rounded border border-edge bg-surface-raised px-3 py-2">
-          <ul className="flex flex-col gap-0.5">
-            {files.map((f) => (
-              <li key={f} className="font-mono text-[length:var(--t-xs)] text-content-secondary">
-                {f}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Events section ────────────────────────────────────────────────────────────
 
 const KIND_BADGE: Record<string, { label: string; tone: string }> = {
@@ -1167,6 +1143,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   const [live, setLive] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [openFilePath, setOpenFilePath] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
@@ -1799,7 +1776,19 @@ export default function RunDetail({ id }: RunDetailProps) {
         loadingOlder={loadingOlder}
       />
       <ErrorsSection errors={errors} partial={partialWindow} />
-      <FilesSection files={files} partial={partialWindow} />
+      <RunFilesSection
+        files={files}
+        artifactRoot={session.artifacts_path}
+        partial={partialWindow}
+        onOpen={setOpenFilePath}
+      />
+      {openFilePath && (
+        <FileViewerModal
+          runId={session.id}
+          path={openFilePath}
+          onClose={() => setOpenFilePath(null)}
+        />
+      )}
       <EventsSection events={signalEvents} live={live && !done} />
       <div ref={bottomRef} />
     </div>

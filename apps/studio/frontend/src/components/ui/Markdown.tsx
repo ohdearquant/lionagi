@@ -132,7 +132,7 @@ function FileRef({
   return <>{fallback}</>;
 }
 
-function FileViewerModal({
+export function FileViewerModal({
   runId,
   path,
   onClose,
