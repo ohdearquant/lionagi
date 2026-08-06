@@ -117,6 +117,100 @@ export function wrapWideRanks(nodes: Node[]): Node[] {
   return out;
 }
 
+// Past this width a graph cannot be read at its fit zoom in the embeds this
+// canvas lives in: a ~1280px panel with the standard 15% fit padding drops
+// under the 0.65 readability floor once the graph passes roughly this many
+// pixels, so everything beyond it is a strip you can only pan across. Folding
+// trades one unbroken left-to-right line for several rows that each read
+// left-to-right, which is the trade a paragraph of text already makes.
+const FOLD_MAX_ROW_WIDTH = 1500;
+// ...and fold only a graph that is FLAT, meaning it has no vertical structure
+// of its own to lose. Folding invents rows, and a downstream node placed on
+// the next row sits to the LEFT of its source — the one thing a left-to-right
+// graph otherwise guarantees. That price is worth paying for a chain, whose
+// rows are empty of meaning anyway, and not worth paying for a graph that
+// already reads in two dimensions. Two full node-rows plus their separator is
+// 2*98 + 36 = 232px, so a graph taller than this has real cross-axis content:
+// a wrapped fan-out (measured ~536px tall) is deliberately out of scope here,
+// because wrapWideRanks above already owns that shape and made its own trade.
+const FOLD_MAX_FLAT_HEIGHT = 240;
+const FOLD_ROW_GAP = 56;
+
+// Fold a wide, flat graph into stacked rows, each row still reading
+// left-to-right. Within a row the geometry is dagre's own, translated as a
+// block, so rank spacing and sibling order survive untouched. The cost is the
+// edge that leaves the end of one row and re-enters at the start of the next:
+// it sweeps back across the canvas the way a wrapped line of text does.
+export function foldWideGraph(nodes: Node[]): Node[] {
+  if (nodes.length === 0) return nodes;
+
+  const left = Math.min(...nodes.map((n) => n.position.x));
+  const right = Math.max(...nodes.map((n) => n.position.x + NODE_WIDTH));
+  const top = Math.min(...nodes.map((n) => n.position.y));
+  const bottom = Math.max(...nodes.map((n) => n.position.y + estimateNodeHeight(n)));
+  const width = right - left;
+  const height = bottom - top;
+
+  if (width <= FOLD_MAX_ROW_WIDTH) return nodes;
+  if (height > FOLD_MAX_FLAT_HEIGHT) return nodes;
+
+  // After wrapWideRanks every column shares one x, so columns are the unit
+  // that moves. Folding by column keeps a wrapped fan-out's grid intact.
+  const byX = new Map<number, Node[]>();
+  for (const node of nodes) {
+    const key = Math.round(node.position.x);
+    const col = byX.get(key);
+    if (col) col.push(node);
+    else byX.set(key, [node]);
+  }
+  const xs = [...byX.keys()].sort((a, b) => a - b);
+
+  const rows: number[][] = [];
+  let current: number[] = [];
+  let rowStartX = 0;
+  for (const x of xs) {
+    if (current.length === 0) {
+      current = [x];
+      rowStartX = x;
+      continue;
+    }
+    if (x - rowStartX + NODE_WIDTH > FOLD_MAX_ROW_WIDTH) {
+      rows.push(current);
+      current = [x];
+      rowStartX = x;
+    } else {
+      current.push(x);
+    }
+  }
+  if (current.length > 0) rows.push(current);
+  if (rows.length <= 1) return nodes;
+
+  const out: Node[] = [];
+  let yOffset = 0;
+  for (const row of rows) {
+    const rowX0 = row[0];
+    let rowTop = Infinity;
+    let rowBottom = -Infinity;
+    for (const x of row) {
+      for (const node of byX.get(x) ?? []) {
+        rowTop = Math.min(rowTop, node.position.y);
+        rowBottom = Math.max(rowBottom, node.position.y + estimateNodeHeight(node));
+      }
+    }
+    for (const x of row) {
+      for (const node of byX.get(x) ?? []) {
+        out.push({
+          ...node,
+          position: { x: left + (x - rowX0), y: node.position.y - rowTop + yOffset },
+        });
+      }
+    }
+    yOffset += rowBottom - rowTop + FOLD_ROW_GAP;
+  }
+
+  return out;
+}
+
 // dagre's ranksep is one constant paid at EVERY rank boundary, so a 10-rank
 // chain pays it 9 times over — the deeper the graph, the more that constant
 // alone inflates the bounding box fitView has to shrink to fit. Shallow
@@ -266,7 +360,10 @@ export function getLayoutedElements(
   // The wrap keys ranks by their shared x, which holds only for LR (constant
   // node width). TB ranks share y instead; no caller lays out TB today.
   const wrappedNodes = direction === "LR" ? wrapWideRanks(layoutedNodes) : layoutedNodes;
-  const finalNodes = enforceMinRankGap(wrappedNodes);
+  // Fold after wrapping, so a wrapped fan-out moves as one block rather than
+  // having its grid columns split across two rows.
+  const foldedNodes = direction === "LR" ? foldWideGraph(wrappedNodes) : wrappedNodes;
+  const finalNodes = enforceMinRankGap(foldedNodes);
 
   // Bounding-box height of the laid-out graph (post-wrap, post-gap), so
   // containers can size to what the layout actually needs — a linear

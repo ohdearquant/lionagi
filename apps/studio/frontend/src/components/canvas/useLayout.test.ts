@@ -18,6 +18,7 @@ import {
   maxGraphDepth,
   rankSepForDepth,
   wrapWideRanks,
+  foldWideGraph,
 } from "./useLayout";
 import { transitiveReduceDisplay } from "@/lib/operationGraph";
 import { fitZoomFor, FIT_ZOOM_FLOOR, MIN_INTERACTIVE_ZOOM } from "./WorkerCanvas";
@@ -874,6 +875,147 @@ describe("fitZoomFor — must match the installed ReactFlow getViewportForBounds
         `fitZoomFor(${width}x${height} in ${vw}x${vh} @padding ${padding}) = ${production}, ` +
           `but the installed reactflow's own getViewportForBounds computes ${real} for the same inputs`,
       ).toBeCloseTo(real, 5);
+    }
+  });
+});
+
+describe("getLayoutedElements — a long sequential chain folds into readable rows", () => {
+  // The wide fan-out above is one failure shape; this is the other. A run whose
+  // work is mostly sequential produces one node per rank, so the graph grows
+  // only along x: measured before this fold, an 18-step chain laid out
+  // 4596x98 (aspect 46.9) and a 30-step chain 7692x98 (aspect 78.5). The
+  // second matters most — its fit zoom was 0.128, BELOW the 0.2 interactive
+  // zoom floor, so no zoom gesture could show it whole. The pre-existing
+  // "18-node deep chain" fixture is not this shape at all: its global fan-in
+  // makes it 1968x1692, aspect 1.16, which is why these cases needed their own
+  // coverage rather than being assumed covered.
+  const chainOf = (n: number) => {
+    const ids = Array.from({ length: n }, (_, i) => `s${i}`);
+    const edges: Edge[] = ids
+      .slice(0, -1)
+      .map((id, i) => ({ id: `${id}-${ids[i + 1]}`, source: id, target: ids[i + 1] }));
+    return { nodes: () => ids.map(full), edges, ids };
+  };
+
+  const boxOf = (nodes: Node[]) => {
+    const left = Math.min(...nodes.map((n) => n.position.x));
+    const right = Math.max(...nodes.map((n) => n.position.x + 210));
+    const top = Math.min(...nodes.map((n) => n.position.y));
+    const bottom = Math.max(...nodes.map((n) => n.position.y + estimateNodeHeight(n)));
+    return { width: right - left, height: bottom - top };
+  };
+
+  // The same arithmetic the canvas uses to pick a fit zoom, against a realistic
+  // compact-embed viewport.
+  const fitFor = (nodes: Node[]) => {
+    const { width, height } = boxOf(nodes);
+    const padding = 0.15;
+    return Math.min(1280 / (width * (1 + 2 * padding)), 560 / (height * (1 + 2 * padding)), 1);
+  };
+
+  it("brings an 18-step chain up to a fit zoom that clears the readability floor", () => {
+    const c = chainOf(18);
+    const { nodes } = getLayoutedElements(c.nodes(), c.edges, "LR");
+    expect(fitFor(nodes)).toBeGreaterThanOrEqual(FIT_ZOOM_FLOOR);
+  });
+
+  it("brings a 30-step chain back above the interactive zoom floor it used to sit under", () => {
+    // This is the case the zoom floor alone could not rescue: unfolded, the
+    // whole graph only fit at 0.128 and MIN_INTERACTIVE_ZOOM is 0.2.
+    const c = chainOf(30);
+    const { nodes } = getLayoutedElements(c.nodes(), c.edges, "LR");
+    expect(fitFor(nodes)).toBeGreaterThan(MIN_INTERACTIVE_ZOOM);
+  });
+
+  it("stacks the chain into more than one row instead of one strip", () => {
+    const c = chainOf(18);
+    const { nodes } = getLayoutedElements(c.nodes(), c.edges, "LR");
+    const distinctRows = new Set(nodes.map((n) => Math.round(n.position.y / 50)));
+    expect(distinctRows.size).toBeGreaterThan(1);
+    expect(boxOf(nodes).width).toBeLessThan(4596);
+  });
+
+  it("keeps every node and never overlaps two of them after folding", () => {
+    const c = chainOf(30);
+    const { nodes } = getLayoutedElements(c.nodes(), c.edges, "LR");
+    expect(nodes.map((n) => n.id).sort()).toEqual([...c.ids].sort());
+    assertNoOverlap(nodes);
+  });
+
+  it("leaves a chain that already fits on one line alone", () => {
+    // Folding a 4-step pipeline into a 2x2 block would be a regression: it
+    // reads perfectly well as one line and already fits at near-full zoom.
+    const c = chainOf(4);
+    const { nodes } = getLayoutedElements(c.nodes(), c.edges, "LR");
+    const rows = new Set(nodes.map((n) => Math.round(n.position.y)));
+    expect(rows.size).toBe(1);
+  });
+
+  it("leaves the wide-BUT-TALL fan-in fixture untouched — folding only helps flat graphs", () => {
+    // The guard that keeps this from being a blanket "fold anything wide".
+    // This fixture is past the row-width limit, so width alone would fold it;
+    // what saves it is having real cross-axis content (measured ~1692px tall,
+    // far past the flat-height limit). Folding would cost it the one thing a
+    // left-to-right graph guarantees — downstream sitting right of its source
+    // — to buy nothing, because its rows already carry meaning.
+    const laid = getLayoutedElements(deepChainFixture(), deepChainEdges, "LR").nodes;
+    expect(boxOf(laid).width).toBeGreaterThan(1500);
+    expect(boxOf(laid).height).toBeGreaterThan(240);
+    // Unfolded, the deepest node still sits to the RIGHT of every root.
+    const critic = laid.find((n) => n.id === "critic")!;
+    const roots = laid.filter((n) => deepChainRoots.includes(n.id));
+    for (const r of roots) expect(critic.position.x).toBeGreaterThan(r.position.x);
+  });
+
+  it("leaves an already-wrapped wide fan-out to wrapWideRanks, sink still rightmost", () => {
+    // A fan-out that wrapWideRanks has gridded is wide (~1900px) but has four
+    // rows of workers, so it is not flat and must not be folded on top of that
+    // treatment — the sink would land on a new row, left of the workers.
+    const workers = Array.from({ length: 24 }, (_, i) => `w${i + 1}`);
+    const fan: Edge[] = [
+      ...workers.map((w) => ({ id: `root-${w}`, source: "root", target: w })),
+      ...workers.map((w) => ({ id: `${w}-sink`, source: w, target: "sink" })),
+    ];
+    const { nodes } = getLayoutedElements(
+      [full("root"), ...workers.map(full), full("sink")],
+      fan,
+      "LR",
+    );
+    expect(boxOf(nodes).height).toBeGreaterThan(240);
+    const sinkX = nodes.find((n) => n.id === "sink")!.position.x;
+    for (const w of workers) {
+      expect(sinkX).toBeGreaterThan(nodes.find((n) => n.id === w)!.position.x);
+    }
+  });
+});
+
+describe("foldWideGraph — unit behaviour", () => {
+  it("is an identity for an empty graph and for a graph inside the width limit", () => {
+    expect(foldWideGraph([])).toEqual([]);
+    const narrow = [
+      { ...full("a"), position: { x: 0, y: 0 } },
+      { ...full("b"), position: { x: 300, y: 0 } },
+    ];
+    expect(foldWideGraph(narrow)).toBe(narrow);
+  });
+
+  it("preserves left-to-right order within each row it produces", () => {
+    const wide = Array.from({ length: 12 }, (_, i) => ({
+      ...full(`n${i}`),
+      position: { x: i * 260, y: 0 },
+    }));
+    const folded = foldWideGraph(wide);
+    const byRow = new Map<number, Node[]>();
+    for (const n of folded) {
+      const row = Math.round(n.position.y / 50);
+      byRow.set(row, [...(byRow.get(row) ?? []), n]);
+    }
+    expect(byRow.size).toBeGreaterThan(1);
+    for (const row of byRow.values()) {
+      const sortedByX = [...row].sort((a, b) => a.position.x - b.position.x);
+      const indices = sortedByX.map((n) => Number(n.id.slice(1)));
+      // Within a row, reading left to right must still read the chain in order.
+      expect(indices).toEqual([...indices].sort((a, b) => a - b));
     }
   });
 });
