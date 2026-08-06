@@ -1,21 +1,23 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression coverage for critic round-2 MAJ-1 / reviewer MAJ-1: `_MembersDeque`
-ownership keyed by TYPE (``isinstance`` + length), not IDENTITY
-(``order._members_ref is self._members``). Whenever a single `_MembersDeque`
-wrapper ends up referenced by two `Progression` instances -- `model_copy()`,
-`Progression.model_construct(order=other.order)`, cross-instance field
-assignment, or a `deque.copy()` of the wrapper assigned elsewhere -- a
-length-preserving mutation performed through one instance must still leave
-BOTH instances reporting membership that exactly matches their own `order`'s
-real contents. At HEAD `8ce47446a` ownership is rebound blindly on rebuild,
-so these tests are expected to FAIL until ownership is identity-checked.
+"""Membership-cache ownership must be keyed by identity, not by type.
 
-Also covers MIN-1: an automated `dir(deque)` sweep proving every mutating
-`deque` method is either overridden by `_MembersDeque` or on an explicit,
-reviewed non-mutating/id-preserving allowlist, so a missed mutator (the
-`__imul__` gap identified in round 2) cannot pass by review vigilance alone.
+`Progression` keeps a `_MembersDeque` wrapper so that `x in progression` is
+O(1). Deciding which `Progression` owns a given wrapper by type and length
+(``isinstance`` plus a size check) is not enough, because a single wrapper can
+end up referenced by two instances -- through `model_copy()`,
+`Progression.model_construct(order=other.order)`, cross-instance field
+assignment, or a `deque.copy()` of the wrapper assigned elsewhere. Once that
+happens, a length-preserving mutation through one instance leaves the other
+reporting membership that no longer matches its own `order`, and no length
+check can see it. Ownership is therefore checked by identity
+(``order._members_ref is self._members``); these tests pin that.
+
+The final test sweeps `dir(deque)` and requires every mutating method to be
+either overridden by `_MembersDeque` or on an explicit allowlist of read-only,
+id-set-preserving methods, so that a newly missed mutator fails the suite
+rather than depending on someone noticing it.
 """
 
 from __future__ import annotations
@@ -108,7 +110,7 @@ def test_deque_copy_of_members_deque_assigned_unbound_wrapper():
 
 
 # ---------------------------------------------------------------------------
-# MIN-1: exhaustive accounting of every `deque` mutator.
+# Exhaustive accounting of every `deque` mutator.
 # ---------------------------------------------------------------------------
 
 
