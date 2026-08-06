@@ -1321,15 +1321,22 @@ export function detectPlanPayload(text: string): PlanDetection {
   return { kind: "json", value: parsed };
 }
 
+// A plan is model-produced and unbounded — nothing upstream caps how many
+// assignments it can contain. Render only the first N so a pathological
+// (or adversarial) plan can't force hundreds of DOM rows into the page.
+const PLAN_ASSIGNMENTS_RENDER_CAP = 50;
+
 function PlanAssignmentsView({ assignments }: { assignments: PlanAssignment[] }) {
   const t = useTranslations("runCard");
+  const visible = assignments.slice(0, PLAN_ASSIGNMENTS_RENDER_CAP);
+  const overflow = assignments.length - visible.length;
   return (
     <div className="flex flex-col gap-2">
       <div className="text-[length:var(--t-xs)] uppercase tracking-wide text-content-muted">
         {t("planAssignments", { count: assignments.length })}
       </div>
       <ol className="flex flex-col gap-2">
-        {assignments.map((a, i) => (
+        {visible.map((a, i) => (
           <li key={i} className="rounded border border-edge bg-surface-raised px-3 py-2">
             <div className="flex flex-wrap items-baseline gap-2">
               <Badge tone="default">{a.assignee}</Badge>
@@ -1346,6 +1353,11 @@ function PlanAssignmentsView({ assignments }: { assignments: PlanAssignment[] })
           </li>
         ))}
       </ol>
+      {overflow > 0 && (
+        <div className="text-[length:var(--t-xs)] text-content-muted">
+          {t("moreLines", { count: overflow })}
+        </div>
+      )}
     </div>
   );
 }

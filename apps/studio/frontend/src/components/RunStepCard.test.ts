@@ -427,4 +427,84 @@ describe("detectPlanPayload — orchestrator plan JSON structural detection", ()
   it("falls back to pretty-printed JSON for an empty assignments array", () => {
     expect(detectPlanPayload(JSON.stringify({ assignments: [] })).kind).toBe("json");
   });
+
+  it("treats a non-list `dependencies` value as no dependencies rather than crashing", () => {
+    const result = detectPlanPayload(
+      JSON.stringify({
+        assignments: [{ task: "t", assignee: "a", dependencies: "step1, step2" }],
+      }),
+    );
+    expect(result.kind).toBe("assignments");
+    if (result.kind !== "assignments") throw new Error("expected assignments");
+    expect(result.assignments).toEqual([{ assignee: "a", task: "t", dependencies: [] }]);
+  });
+
+  it("treats a non-list `depends_on` value the same way", () => {
+    const result = detectPlanPayload(
+      JSON.stringify({ assignments: [{ task: "t", assignee: "a", depends_on: 42 }] }),
+    );
+    expect(result.kind).toBe("assignments");
+    if (result.kind !== "assignments") throw new Error("expected assignments");
+    expect(result.assignments).toEqual([{ assignee: "a", task: "t", dependencies: [] }]);
+  });
+});
+
+describe("PlanAssignmentsView (via RunStepCard conversation tab) — large-plan rendering", () => {
+  let container: HTMLDivElement | null = null;
+  let root: Root | null = null;
+
+  afterEach(() => {
+    if (root) {
+      act(() => root?.unmount());
+    }
+    container?.remove();
+    container = null;
+    root = null;
+  });
+
+  it("caps rendered assignments on a large plan and shows an overflow indicator", async () => {
+    const assignments = Array.from({ length: 100 }, (_, i) => ({
+      task: `task ${i}`,
+      assignee: `worker-${i}`,
+      depends_on: [],
+    }));
+    const planText = JSON.stringify({ assignments });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    await act(async () => {
+      root = createRoot(container!);
+      root!.render(
+        React.createElement(
+          IntlProvider,
+          { locale: "en", messages: enMessages } as unknown as React.ComponentProps<
+            typeof IntlProvider
+          >,
+          React.createElement(RunStepCard, {
+            step: step({}, [{ role: "assistant", content: planText }]),
+            defaultExpanded: true,
+          }),
+        ),
+      );
+      await Promise.resolve();
+    });
+
+    const conversationTab = container.querySelector<HTMLButtonElement>(
+      '[role="tab"][id$="-tab-conversation"]',
+    );
+    expect(conversationTab).not.toBeNull();
+    await act(async () => {
+      conversationTab?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    // Every assignee is unique ("worker-0".."worker-99"), so counting the
+    // badge elements the plan view renders is an exact proxy for row count.
+    const renderedRows = Array.from(container.querySelectorAll("li")).filter((li) =>
+      /^worker-\d+$/.test(li.querySelector("span")?.textContent ?? ""),
+    );
+    expect(renderedRows.length).toBeLessThan(100);
+    expect(renderedRows.length).toBeGreaterThan(0);
+    expect(container.textContent).toContain(`+${100 - renderedRows.length} more`);
+  });
 });
