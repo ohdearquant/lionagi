@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "Bu çalıştırmanın devam ettirilip ettirilemeyeceği kontrol ediliyor…",
+    "availabilityFailed": "Bu çalıştırmanın devam ettirilip ettirilemeyeceği belirlenemedi.",
+    "notResumable": "Bu çalıştırma devam ettirilemez.",
+    "continueDescription": "Kaydedilmiş planı kaldığı yerden yeniden oynatır — yeni talimat yok, seçilecek dal yok.",
+    "continueSubmit": "Devam et",
+    "continueDegraded": "Eksik bağlam olmadan yine de devam et"
   },
   "operator": {
     "title": "Operator",
@@ -442,7 +448,10 @@
       "noBranchErrorsPartial": "yüklenen mesajlarda hata yok.",
       "noFilesPartial": "yüklenen mesajlarda dosya işlemi algılanmadı.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "rename": "Oturumu yeniden adlandır",
+      "renamePlaceholder": "Oturum adı",
+      "renameSaveFailed": "Yeni ad kaydedilemedi."
     },
     "masterAria": "geçmiş listesi",
     "detailAria": "öğe ayrıntısı"

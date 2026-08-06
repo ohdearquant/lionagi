@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "এই রানটি পুনরায় শুরু করা যায় কিনা তা যাচাই করা হচ্ছে…",
+    "availabilityFailed": "এই রানটি পুনরায় শুরু করা যায় কিনা তা নির্ধারণ করা যায়নি।",
+    "notResumable": "এই রানটি পুনরায় শুরু করা যায় না।",
+    "continueDescription": "যেখানে থেমেছিল সেখান থেকে সংরক্ষিত পরিকল্পনা পুনরায় চালায় — নতুন নির্দেশ নেই, বেছে নেওয়ার জন্য শাখা নেই।",
+    "continueSubmit": "চালিয়ে যান",
+    "continueDegraded": "অনুপস্থিত প্রসঙ্গ ছাড়াই তবুও চালিয়ে যান"
   },
   "operator": {
     "title": "Operator",
@@ -442,7 +448,10 @@
       "noBranchErrorsPartial": "লোড করা মেসেজে কোনো ত্রুটি নেই।",
       "noFilesPartial": "লোড করা মেসেজে কোনো ফাইল অপারেশন শনাক্ত হয়নি।",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "rename": "সেশনের নাম পরিবর্তন করুন",
+      "renamePlaceholder": "সেশনের নাম",
+      "renameSaveFailed": "নতুন নাম সংরক্ষণ করা যায়নি।"
     },
     "masterAria": "হিস্ট্রি তালিকা",
     "detailAria": "আইটেমের বিস্তারিত"

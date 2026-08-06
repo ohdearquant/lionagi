@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "جارٍ التحقق مما إذا كان يمكن استئناف هذا التشغيل…",
+    "availabilityFailed": "تعذر تحديد ما إذا كان يمكن استئناف هذا التشغيل.",
+    "notResumable": "لا يمكن استئناف هذا التشغيل.",
+    "continueDescription": "يعيد تشغيل الخطة المحفوظة من حيث توقفت — بلا تعليمات جديدة وبلا فرع للاختيار.",
+    "continueSubmit": "متابعة",
+    "continueDegraded": "المتابعة على أي حال، بدون السياق المفقود"
   },
   "operator": {
     "title": "Operator",
@@ -442,7 +448,10 @@
       "noBranchErrorsPartial": "لا توجد أخطاء في الرسائل المحمّلة.",
       "noFilesPartial": "لم تُكتشف عمليات على الملفات في الرسائل المحمّلة.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "rename": "إعادة تسمية الجلسة",
+      "renamePlaceholder": "اسم الجلسة",
+      "renameSaveFailed": "تعذر حفظ الاسم الجديد."
     },
     "masterAria": "قائمة السجل",
     "detailAria": "تفاصيل العنصر"

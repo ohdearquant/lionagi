@@ -62,7 +62,13 @@
       "copy": "复制",
       "copied": "已复制",
       "help": "如果浏览器无法恢复，请在终端中使用此命令。"
-    }
+    },
+    "checkingAvailability": "正在检查此运行是否可以恢复…",
+    "availabilityFailed": "无法确定此运行是否可以恢复。",
+    "notResumable": "此运行无法恢复。",
+    "continueDescription": "从中断处重放已保存的计划——无需新指令，也无需选择分支。",
+    "continueSubmit": "继续",
+    "continueDegraded": "仍然继续，忽略缺失的上下文"
   },
   "operator": {
     "title": "操作台",
@@ -442,7 +448,10 @@
       "noBranchErrorsPartial": "已加载的消息中没有错误。",
       "noFilesPartial": "已加载的消息中未检测到文件操作。",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "rename": "重命名会话",
+      "renamePlaceholder": "会话名称",
+      "renameSaveFailed": "无法保存新名称。"
     },
     "masterAria": "历史列表",
     "detailAria": "条目详情"

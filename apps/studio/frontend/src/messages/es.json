@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "Comprobando si esta ejecución se puede reanudar…",
+    "availabilityFailed": "No se pudo determinar si esta ejecución se puede reanudar.",
+    "notResumable": "Esta ejecución no se puede reanudar.",
+    "continueDescription": "Reproduce el plan guardado desde donde se detuvo; sin nueva instrucción ni rama que elegir.",
+    "continueSubmit": "Continuar",
+    "continueDegraded": "Continuar de todos modos, sin el contexto faltante"
   },
   "operator": {
     "title": "Operator",
@@ -442,7 +448,10 @@
       "noBranchErrorsPartial": "No hay errores en los mensajes cargados.",
       "noFilesPartial": "No se detectaron operaciones de archivo en los mensajes cargados.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "rename": "Renombrar sesión",
+      "renamePlaceholder": "Nombre de la sesión",
+      "renameSaveFailed": "No se pudo guardar el nuevo nombre."
     },
     "masterAria": "Lista de historial",
     "detailAria": "Detalle del elemento"

@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "Memeriksa apakah proses ini dapat dilanjutkan…",
+    "availabilityFailed": "Tidak dapat menentukan apakah proses ini dapat dilanjutkan.",
+    "notResumable": "Proses ini tidak dapat dilanjutkan.",
+    "continueDescription": "Memutar ulang rencana yang tersimpan dari titik terakhir — tanpa instruksi baru, tanpa cabang untuk dipilih.",
+    "continueSubmit": "Lanjutkan",
+    "continueDegraded": "Tetap lanjutkan, tanpa konteks yang hilang"
   },
   "operator": {
     "title": "Operator",
@@ -442,7 +448,10 @@
       "noBranchErrorsPartial": "Tidak ada kesalahan dalam pesan yang dimuat.",
       "noFilesPartial": "Tidak ada operasi file terdeteksi dalam pesan yang dimuat.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "rename": "Ganti nama sesi",
+      "renamePlaceholder": "Nama sesi",
+      "renameSaveFailed": "Tidak dapat menyimpan nama baru."
     },
     "masterAria": "Daftar riwayat",
     "detailAria": "Detail item"

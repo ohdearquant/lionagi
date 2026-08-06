@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "이 실행을 재개할 수 있는지 확인하는 중…",
+    "availabilityFailed": "이 실행을 재개할 수 있는지 확인할 수 없습니다.",
+    "notResumable": "이 실행은 재개할 수 없습니다.",
+    "continueDescription": "중단된 지점부터 저장된 계획을 다시 실행합니다 — 새 지침이나 선택할 브랜치가 없습니다.",
+    "continueSubmit": "계속",
+    "continueDegraded": "누락된 컨텍스트 없이 계속 진행"
   },
   "operator": {
     "title": "Operator",
@@ -442,7 +448,10 @@
       "noBranchErrorsPartial": "로드된 메시지에 오류가 없습니다.",
       "noFilesPartial": "로드된 메시지에서 감지된 파일 작업이 없습니다.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "rename": "세션 이름 변경",
+      "renamePlaceholder": "세션 이름",
+      "renameSaveFailed": "새 이름을 저장하지 못했습니다."
     },
     "masterAria": "기록 목록",
     "detailAria": "항목 세부 정보"

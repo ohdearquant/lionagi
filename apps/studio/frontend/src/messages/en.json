@@ -57,6 +57,12 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Checking whether this run can be resumed…",
+    "availabilityFailed": "Could not determine whether this run can be resumed.",
+    "notResumable": "This run cannot be resumed.",
+    "continueDescription": "Replays the saved plan from where it stopped — no new instruction, no branch to pick.",
+    "continueSubmit": "Continue",
+    "continueDegraded": "Continue anyway, without the missing context",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -442,7 +448,10 @@
       "noBranchErrorsPartial": "No errors in the loaded messages.",
       "noFilesPartial": "No file operations detected in the loaded messages.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "rename": "Rename session",
+      "renamePlaceholder": "Session name",
+      "renameSaveFailed": "Could not save the new name."
     },
     "masterAria": "History list",
     "detailAria": "Item detail"

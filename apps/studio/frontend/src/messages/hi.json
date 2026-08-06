@@ -62,7 +62,13 @@
       "copy": "Copy",
       "copied": "Copied",
       "help": "Use this command in a terminal if browser resume is unavailable."
-    }
+    },
+    "checkingAvailability": "जाँच की जा रही है कि क्या यह रन फिर से शुरू किया जा सकता है…",
+    "availabilityFailed": "यह निर्धारित नहीं किया जा सका कि यह रन फिर से शुरू किया जा सकता है या नहीं।",
+    "notResumable": "इस रन को फिर से शुरू नहीं किया जा सकता।",
+    "continueDescription": "जहाँ यह रुका था वहीं से सहेजी गई योजना को फिर से चलाता है — कोई नया निर्देश नहीं, कोई शाखा चुनने की आवश्यकता नहीं।",
+    "continueSubmit": "जारी रखें",
+    "continueDegraded": "फिर भी जारी रखें, गुम संदर्भ के बिना"
   },
   "operator": {
     "title": "Operator",
@@ -442,7 +448,10 @@
       "noBranchErrorsPartial": "लोड किए गए मैसेज में कोई त्रुटि नहीं।",
       "noFilesPartial": "लोड किए गए मैसेज में कोई फ़ाइल ऑपरेशन नहीं मिला।",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "rename": "सत्र का नाम बदलें",
+      "renamePlaceholder": "सत्र का नाम",
+      "renameSaveFailed": "नया नाम सहेजा नहीं जा सका।"
     },
     "masterAria": "इतिहास सूची",
     "detailAria": "आइटम विवरण"

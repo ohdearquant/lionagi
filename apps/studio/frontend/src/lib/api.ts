@@ -17,6 +17,7 @@ import type {
   OperatorProposalResult,
   OperatorTurnAccepted,
   OperatorTurnRequest,
+  ResumeAvailability,
   RunDetail,
   RunResumeRequest,
   RunResumeResponse,
@@ -765,6 +766,14 @@ export async function resumeRun(
   });
 }
 
+// Read-only precheck (services/run_resume.py resume_availability) so the UI
+// can determine resumability BEFORE rendering the resume action — a run
+// with no checkpoint reads as an explicit, explained state rather than a
+// dead or guessed-at control.
+export async function getResumeAvailability(runId: string): Promise<ResumeAvailability> {
+  return fetchJson<ResumeAvailability>(`/api/runs/${encodeURIComponent(runId)}/resume`);
+}
+
 export interface RunFileContent {
   path: string;
   content: string;
@@ -1166,6 +1175,17 @@ export interface SessionBranch {
 export interface SessionDetail {
   id: string;
   name: string;
+  // The user-owned rename label (services/sessions.py rename_session) — never
+  // system-written, so it survives whatever the run itself writes to `name`.
+  // Absent for a session nobody has renamed.
+  user_label?: string | null;
+  // Single resolved-display-name source (services/sessions.py
+  // resolve_session_display_name): user_label > name > agent_name >
+  // playbook_name > id prefix. Always render THIS, never `name` directly —
+  // a second call site computing its own fallback chain is how the label
+  // and the header disagree.
+  display_name?: string;
+  invocation_kind?: string | null;
   created_at: number;
   updated_at: number;
   status?: string | null;
@@ -1225,6 +1245,23 @@ export async function getSession(
   if (params?.messageCursor != null) query.set("message_cursor", params.messageCursor);
   const qs = query.toString();
   return fetchJson<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
+}
+
+export interface RenameSessionResponse {
+  session_id: string;
+  user_label: string | null;
+  display_name: string;
+}
+
+// Whitespace-only `label` clears the user_label (the display falls back to
+// the existing name/agent_name/playbook_name/id chain) rather than erroring
+// (services/sessions.py rename_session_route).
+export async function renameSession(id: string, label: string): Promise<RenameSessionResponse> {
+  return fetchJson<RenameSessionResponse>(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
 }
 
 export function streamSession(
@@ -1296,6 +1333,11 @@ export interface InvocationSummary {
   // ADR-0026: project provenance from the most-recently updated child session.
   project?: string | null;
   project_source?: string | null;
+  // Denormalized status reason — a failed "resume:flow" invocation carries
+  // the resume subprocess's own refusal text here (e.g. a degraded-context
+  // refusal naming its pending ops), not just a generic "failed".
+  status_reason_code?: string | null;
+  status_reason_summary?: string | null;
 }
 
 export interface InvocationSession {
