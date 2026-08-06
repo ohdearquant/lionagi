@@ -540,6 +540,7 @@
       "triggering": "Déclenchement…",
       "runStarted": "Exécution démarrée : {id}",
       "triggerFailed": "Échec du déclenchement",
+      "toggleFailed": "Échec du basculement",
       "every": "toutes les {interval}",
       "in": "dans {delta}",
       "overdue": "en retard de {delta}",

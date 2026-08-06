@@ -540,6 +540,7 @@
       "triggering": "جارٍ التشغيل…",
       "runStarted": "بدأ التشغيل: {id}",
       "triggerFailed": "فشل التشغيل",
+      "toggleFailed": "فشل التبديل",
       "every": "كل {interval}",
       "in": "بعد {delta}",
       "overdue": "متأخر {delta}",

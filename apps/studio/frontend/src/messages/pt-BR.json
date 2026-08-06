@@ -540,6 +540,7 @@
       "triggering": "Acionando…",
       "runStarted": "Execução iniciada: {id}",
       "triggerFailed": "Falha ao acionar",
+      "toggleFailed": "Falha ao alternar",
       "every": "a cada {interval}",
       "in": "em {delta}",
       "overdue": "atrasado {delta}",

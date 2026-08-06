@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslations } from "use-intl";
 import { disableSchedule, enableSchedule } from "@/lib/api";
+import { useToast } from "@/components/ui/Toast";
 
 export default function EnabledToggle({
   scheduleId,
@@ -12,6 +13,7 @@ export default function EnabledToggle({
   onToggled: () => void;
 }) {
   const t = useTranslations("schedules.card");
+  const { toast } = useToast();
   const [busy, setBusy] = useState(false);
 
   async function handleClick(e: React.MouseEvent) {
@@ -25,7 +27,7 @@ export default function EnabledToggle({
       }
       onToggled();
     } catch {
-      // silent — UI stays consistent until next reload
+      toast(t("toggleFailed"), "error");
     } finally {
       setBusy(false);
     }

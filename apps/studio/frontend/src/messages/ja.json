@@ -540,6 +540,7 @@
       "triggering": "トリガー中…",
       "runStarted": "実行を開始しました: {id}",
       "triggerFailed": "トリガーに失敗しました",
+      "toggleFailed": "切り替えに失敗しました",
       "every": "{interval}ごと",
       "in": "{delta}後",
       "overdue": "{delta}遅延",
