@@ -182,10 +182,16 @@ def _mcp_servers_gate(mcp: object) -> tuple[dict[str, dict], list[str]]:
     returned dict — never left in it — so a caller can keep going without
     calling a dict method on something that turned out not to be one. An empty
     inline entry (``{}``) is rejected to match a behavioral divergence observed
-    against `claude plugin validate` (2.1.220): this validator used to accept
-    it silently where Claude Code itself refuses it. Both the per-plugin and
-    the standalone-scan branch share this gate, so a fix here fixes both at once
-    and the two can never drift back apart.
+    against the upstream `claude plugin validate` command (Claude Code
+    2.1.224): this validator used to accept it silently where that command
+    refuses it with ``mcpServers: Invalid input``. The captured command
+    output backing that observation is checked in at
+    testdata/claude_plugin_validate_empty_mcp_server.txt (rejection) and
+    testdata/claude_plugin_validate_nonempty_mcp_server.txt (a well-formed
+    entry, for contrast) alongside this script, so the parity claim is
+    checkable against a recorded run rather than resting on prose alone. Both
+    the per-plugin and the standalone-scan branch share this gate, so a fix
+    here fixes both at once and the two can never drift back apart.
     """
     if mcp is None:
         return {}, []
