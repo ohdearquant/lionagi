@@ -51,6 +51,33 @@ class RunResumeInProgressError(RuntimeError):
     """Another queued or executing resume already owns this branch."""
 
 
+class RunResumeUnsupportedKindError(ValueError):
+    """This run's invocation kind has no supported instruction-based resume.
+
+    ``li o flow --resume`` (the underlying path for a 'play' or 'flow' kind
+    run -- a Studio 'play' launch expands to `li o flow -p NAME`) replays a
+    checkpointed plan verbatim and reads no other flow flags -- there is no
+    way to hand it a new instruction, unlike `li agent -r`. Building the
+    agent-resume argv against one of that run's branches anyway would run
+    something disconnected from the actual play/flow orchestration while
+    claiming to "resume" it. Only 'agent' kind is supported.
+    """
+
+    def __init__(self, invocation_kind: str | None) -> None:
+        self.invocation_kind = invocation_kind
+        if invocation_kind is None:
+            message = (
+                "This run has no recorded invocation kind, so it is not "
+                "known whether it can be resumed with a new instruction"
+            )
+        else:
+            message = (
+                f"Runs of kind {invocation_kind!r} cannot be resumed with a "
+                "new instruction through this path; only 'agent' runs support it"
+            )
+        super().__init__(message)
+
+
 class RunResumeRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=MAX_SPEC_PROMPT_CHARS)
     branch_id: str | None = None
@@ -83,8 +110,13 @@ def _validate_resume_inputs(
         _svc_validate_action_model(model)
 
 
-async def _resolve_branch(run_id: str, requested_branch_id: str | None) -> str:
-    """Resolve one branch owned by *run_id* without hydrating its messages."""
+async def _resolve_branch(run_id: str, requested_branch_id: str | None) -> tuple[str, str | None]:
+    """Resolve one branch owned by *run_id* without hydrating its messages.
+
+    Also returns the run's own ``invocation_kind`` -- the caller uses it to
+    decide whether this run supports resuming with a new instruction at all
+    (see `RunResumeUnsupportedKindError`) before ever building a CLI argv.
+    """
     _svc_validate_identifier(run_id, "run_id")
     if state_db_known_absent():
         raise RunNotFoundError(f"Run {run_id!r} not found")
@@ -93,6 +125,7 @@ async def _resolve_branch(run_id: str, requested_branch_id: str | None) -> str:
         session = await db.get_session(run_id)
         if session is None:
             raise RunNotFoundError(f"Run {run_id!r} not found")
+        invocation_kind = session.get("invocation_kind")
         branches = await db.list_branches(run_id)
 
     branch_ids = [str(branch["id"]) for branch in branches]
@@ -101,7 +134,7 @@ async def _resolve_branch(run_id: str, requested_branch_id: str | None) -> str:
             raise RunBranchMembershipError(
                 f"Branch {requested_branch_id!r} does not belong to run {run_id!r}"
             )
-        return requested_branch_id
+        return requested_branch_id, invocation_kind
 
     if not branch_ids:
         raise RunBranchConflictError(f"Run {run_id!r} has no branch to resume")
@@ -109,7 +142,7 @@ async def _resolve_branch(run_id: str, requested_branch_id: str | None) -> str:
         raise RunBranchConflictError(
             f"Run {run_id!r} has {len(branch_ids)} branches; branch_id is required"
         )
-    return branch_ids[0]
+    return branch_ids[0], invocation_kind
 
 
 async def _run_status(run_id: str) -> str:
@@ -201,6 +234,30 @@ def _build_resume_argv(
     return argv
 
 
+# Explicit per-kind dispatch, keyed by `sessions.invocation_kind`. A kind
+# with no entry here -- 'play', 'flow', 'fanout', 'show-play', or a missing
+# kind -- raises `RunResumeUnsupportedKindError` rather than silently
+# building an agent-resume argv against a branch that command was never
+# meant to drive (see that error's docstring for why 'play'/'flow' cannot
+# be added here without a fundamentally different, instruction-less resume
+# contract).
+_RESUME_ARGV_BUILDERS = {"agent": _build_resume_argv}
+
+
+def _build_resume_argv_for_kind(
+    invocation_kind: str | None,
+    executable_prefix: list[str],
+    *,
+    branch_id: str,
+    instruction: str,
+    model: str | None,
+) -> list[str]:
+    builder = _RESUME_ARGV_BUILDERS.get(invocation_kind) if invocation_kind else None
+    if builder is None:
+        raise RunResumeUnsupportedKindError(invocation_kind)
+    return builder(executable_prefix, branch_id=branch_id, instruction=instruction, model=model)
+
+
 def _write_queued_resume_config(
     *,
     run_id: str,
@@ -239,7 +296,12 @@ async def resume_run(
 ) -> dict[str, Any]:
     """Launch a follow-up turn on an existing run's durable branch."""
     _validate_resume_inputs(instruction, branch_id=branch_id, model=model)
-    resolved_branch_id = await _resolve_branch(run_id, branch_id)
+    resolved_branch_id, invocation_kind = await _resolve_branch(run_id, branch_id)
+    if invocation_kind not in _RESUME_ARGV_BUILDERS:
+        # Fail before touching the executable resolver, the resume-in-progress
+        # lock, or the queue -- an unsupported kind is refused outright, never
+        # queued to fail later once a source run finally goes terminal.
+        raise RunResumeUnsupportedKindError(invocation_kind)
 
     executable_prefix, resolve_error = _subprocess.resolve_li_executable()
     if executable_prefix is None:
@@ -290,7 +352,8 @@ async def resume_run(
             ]
         else:
             await _ensure_branch_snapshot_available(resolved_branch_id)
-            argv = _build_resume_argv(
+            argv = _build_resume_argv_for_kind(
+                invocation_kind,
                 executable_prefix,
                 branch_id=resolved_branch_id,
                 instruction=instruction,
