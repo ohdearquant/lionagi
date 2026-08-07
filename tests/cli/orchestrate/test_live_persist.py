@@ -2904,9 +2904,13 @@ async def test_execute_dag_bounds_escalation_link_drain_on_cancellation(
             await asyncio.wait_for(execute_task, timeout=5)
         elapsed = time.monotonic() - start
 
-    assert elapsed < 5, f"teardown took {elapsed}s — the escalation-link drain is unbounded again"
-    assert link_cancelled.is_set()
-    await stop_live_persist(env, status="completed")
+    try:
+        assert elapsed < 5, (
+            f"teardown took {elapsed}s — the escalation-link drain is unbounded again"
+        )
+        assert link_cancelled.is_set()
+    finally:
+        await stop_live_persist(env, status="completed")
 
 
 async def test_execute_dag_bounds_escalation_link_drain_on_late_cancellation(
@@ -3012,11 +3016,13 @@ async def test_execute_dag_bounds_escalation_link_drain_on_late_cancellation(
             await asyncio.wait_for(execute_task, timeout=8)
         elapsed = time.monotonic() - start
 
-    assert elapsed < 6, (
-        f"teardown took {elapsed}s — a late-arriving cancellation still hangs the drain"
-    )
-    assert link_cancelled.is_set()
-    await stop_live_persist(env, status="completed")
+    try:
+        assert elapsed < 6, (
+            f"teardown took {elapsed}s — a late-arriving cancellation still hangs the drain"
+        )
+        assert link_cancelled.is_set()
+    finally:
+        await stop_live_persist(env, status="completed")
 
 
 async def test_execute_dag_bounds_escalation_link_drain_survivor_await(
@@ -3130,11 +3136,13 @@ async def test_execute_dag_bounds_escalation_link_drain_survivor_await(
             await asyncio.wait_for(execute_task, timeout=8)
         elapsed = time.monotonic() - start
 
-    assert elapsed < 6, (
-        f"teardown took {elapsed}s — the escalation-link survivor await is unbounded again"
-    )
-    assert link_cancelled.is_set()
-    await stop_live_persist(env, status="completed")
+    try:
+        assert elapsed < 6, (
+            f"teardown took {elapsed}s — the escalation-link survivor await is unbounded again"
+        )
+        assert link_cancelled.is_set()
+    finally:
+        await stop_live_persist(env, status="completed")
 
 
 async def test_execute_dag_late_cancellation_does_not_clobber_dag_exception(
@@ -4219,17 +4227,20 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
             await asyncio.wait_for(execute_task, timeout=8)
         elapsed = asyncio.get_event_loop().time() - start
 
-    assert elapsed < 6, f"teardown took {elapsed}s -- the control-log drain is unbounded again"
-    assert write_cancelled.is_set(), (
-        "the hung control-log write must be cancelled during teardown, not left running"
-    )
-    assert any("cancelled" in w and "control-log-metadata" in w for w in warnings), (
-        "a cancelled-after-timeout metadata write must be recorded through the "
-        f"caller-visible warning sink, not dropped silently; got {warnings!r}"
-    )
-    # _teardown_common's final metadata merge (lionagi/cli/_runs.py:538) also calls
-    # update_session() with node_metadata whenever extras is non-empty, which it is
-    # here (the control log). The hanging double must not still be wired for that
-    # call or this cleanup step hangs too.
-    monkeypatch.setattr(ctx["db"], "update_session", real_update_session)
-    await stop_live_persist(env, status="completed")
+    try:
+        assert elapsed < 6, f"teardown took {elapsed}s -- the control-log drain is unbounded again"
+        assert write_cancelled.is_set(), (
+            "the hung control-log write must be cancelled during teardown, not left running"
+        )
+        assert any("cancelled" in w and "control-log-metadata" in w for w in warnings), (
+            "a cancelled-after-timeout metadata write must be recorded through the "
+            f"caller-visible warning sink, not dropped silently; got {warnings!r}"
+        )
+    finally:
+        # _teardown_common's final metadata merge (lionagi/cli/_runs.py:538) also calls
+        # update_session() with node_metadata whenever extras is non-empty, which it is
+        # here (the control log). The hanging double must not still be wired for that
+        # call or this cleanup step hangs too. This must run even if an assertion
+        # above fails, or the hanging double stays wired and later cleanup hangs.
+        monkeypatch.setattr(ctx["db"], "update_session", real_update_session)
+        await stop_live_persist(env, status="completed")
