@@ -471,3 +471,100 @@ describe("library URL sel param — playbook subKind encoding", () => {
     expect(parseSel("playbook:no-subkind")).toBeNull();
   });
 });
+
+// ─── Skill + plugin detail panes (2733, 2734) ─────────────────────────────────
+//
+// Skills and plugins used to both open into the same placeholder detail view.
+// These tests cover the fix: dedicated components, dispatched by kind, with
+// skill editing gated to standalone (non-plugin-owned) skills only.
+
+describe("routes/library.tsx — dispatches skill/plugin kind to their own detail panes", () => {
+  const src = fs.readFileSync(path.join(ROUTES_DIR, "library.tsx"), "utf-8");
+
+  it("imports SkillDetail and PluginDetail", () => {
+    expect(src).toMatch(/import\s*\{\s*SkillDetail\s*\}\s*from/);
+    expect(src).toMatch(/import\s*\{\s*PluginDetail\s*\}\s*from/);
+  });
+
+  it("dispatches skill kind to SkillDetail, plugin kind to PluginDetail", () => {
+    expect(src).toMatch(/parsed\?\.kind === "skill"[\s\S]{0,80}<SkillDetail/);
+    expect(src).toMatch(/parsed\?\.kind === "plugin"[\s\S]{0,80}<PluginDetail/);
+  });
+
+  it("hides the toolbar create button on skill/plugin tabs (NO_CREATE_KINDS)", () => {
+    expect(src).toMatch(/NO_CREATE_KINDS\s*=\s*new Set<LibraryKind>\(\["skill",\s*"plugin"\]\)/);
+    expect(src).toMatch(/!NO_CREATE_KINDS\.has\(kindFilter/);
+  });
+
+  it("gives an empty skill/plugin tab its own copy, distinct from the search-filtered message", () => {
+    expect(src).toMatch(/isEmptyLibraryTab/);
+    expect(src).toMatch(/t\("empty\.allSkill"\)/);
+    expect(src).toMatch(/t\("empty\.allSkillHint"\)/);
+    expect(src).toMatch(/t\("empty\.allPlugin"\)/);
+    expect(src).toMatch(/t\("empty\.allPluginHint"\)/);
+  });
+});
+
+describe("SkillDetail — detail pane contract", () => {
+  const filePath = path.join(LIBRARY_DIR, "SkillDetail.tsx");
+  const src = fs.readFileSync(filePath, "utf-8");
+
+  it("exists at components/library/SkillDetail.tsx", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("exports SkillDetail", () => {
+    expect(src).toMatch(/export function SkillDetail/);
+  });
+
+  it("accepts onBack prop (collapsed back affordance)", () => {
+    expect(src).toMatch(/onBack\?/);
+  });
+
+  it("does not import shell/Drawer", () => {
+    expect(src).not.toMatch(/from.*shell\/Drawer/);
+  });
+
+  it("validates content server-side before saving", () => {
+    expect(src).toMatch(/validateSkill/);
+  });
+
+  it("plugin-owned skills render read-only, not the edit affordance", () => {
+    expect(src).toMatch(/pluginOwnedSkillHint/);
+    expect(src).toMatch(/readOnly/);
+  });
+
+  it("pulls usage stats from useInvocationStats, not a raw fetch", () => {
+    expect(src).toMatch(/useInvocationStats/);
+  });
+});
+
+describe("PluginDetail — detail pane contract", () => {
+  const filePath = path.join(LIBRARY_DIR, "PluginDetail.tsx");
+  const src = fs.readFileSync(filePath, "utf-8");
+
+  it("exists at components/library/PluginDetail.tsx", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("exports PluginDetail", () => {
+    expect(src).toMatch(/export function PluginDetail/);
+  });
+
+  it("accepts onBack prop (collapsed back affordance)", () => {
+    expect(src).toMatch(/onBack\?/);
+  });
+
+  it("does not import shell/Drawer", () => {
+    expect(src).not.toMatch(/from.*shell\/Drawer/);
+  });
+
+  it("navigates into a bundled skill or agent as a nested sub-view", () => {
+    expect(src).toMatch(/setNested\(\s*\{\s*kind:\s*"skill"/);
+    expect(src).toMatch(/setNested\(\s*\{\s*kind:\s*"agent"/);
+  });
+
+  it("pulls usage stats from useInvocationStats, not a raw fetch", () => {
+    expect(src).toMatch(/useInvocationStats/);
+  });
+});

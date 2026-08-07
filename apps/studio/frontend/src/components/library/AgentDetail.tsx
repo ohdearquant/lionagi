@@ -9,7 +9,12 @@ import {
   getCasts,
   deleteAgent,
 } from "@/lib/api";
-import type { CastMode, DefinitionDetail, DefinitionVersion } from "@/lib/api";
+import type {
+  CastMode,
+  DefinitionDetail,
+  DefinitionVersion,
+  DefinitionVersionDetail,
+} from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Button from "@/components/ui/Button";
@@ -78,7 +83,7 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedOk, setSavedOk] = useState(false);
 
-  const [previewVer, setPreviewVer] = useState<DefinitionDetail | null>(null);
+  const [previewVer, setPreviewVer] = useState<DefinitionVersionDetail | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [modes, setModes] = useState<CastMode[]>([]);
@@ -325,9 +330,11 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
                   {t("saveDone")}
                 </span>
               )}
-              <span className="font-data text-[length:var(--t-xs)] text-content-muted">
-                v{def.version}
-              </span>
+              {def.version != null && (
+                <span className="font-data text-[length:var(--t-xs)] text-content-muted">
+                  v{def.version}
+                </span>
+              )}
               {isProtected && (
                 <span
                   title="System agent — not editable or deletable"
@@ -494,7 +501,7 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex shrink-0 items-center justify-between border-b border-edge px-4 py-2">
           <SectionLabel>{t("systemPrompt")}</SectionLabel>
-          {def.versions.length > 0 && (
+          {def.versions && def.versions.length > 0 && (
             <span className="text-[length:var(--t-xs)] text-content-muted">
               {t("versionCount", { count: def.versions.length })}
             </span>
@@ -532,8 +539,9 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
         )}
       </div>
 
-      {/* Version history strip */}
-      {!editing && def.versions.length > 0 && (
+      {/* Version history strip — omitted (not crashed) when the history
+          store is unreadable; def.content above still renders either way. */}
+      {!editing && def.versions && def.versions.length > 0 && (
         <div className="shrink-0 overflow-x-auto border-t border-edge">
           <div className="flex gap-0" style={{ minWidth: "max-content" }}>
             {[...def.versions]

@@ -521,8 +521,15 @@ async def _teardown_common(
     # Fetched before this call's own write so started_at reflects session
     # creation, not a value this same update is about to touch.
     session_before_teardown = await db.get_session(session_id) or {}
+
+    # ended_at and duration_ms are terminal fields and must land in the same
+    # atomic write as the status transition below (see the
+    # CAS/TransitionRejectedError branch) -- never written here on their own, or
+    # a failed/lost status write leaves a row with status="running" carrying a
+    # non-null end time and duration. duration_ms is derived from ended_at, so
+    # it inherits that requirement rather than merely resembling it.
     ended_at = time.time()
-    update_kwargs: dict[str, Any] = {"ended_at": ended_at}
+    duration_ms: float | None = None
     started_at = session_before_teardown.get("started_at")
     if isinstance(started_at, int | float):
         # The prerequisite for telling "never started" / "hung before first
@@ -530,7 +537,8 @@ async def _teardown_common(
         # duration_ms was previously left NULL on every session regardless of
         # outcome, which is loudest on a zero-turn timeout: the record could
         # not even say how long nothing happened for.
-        update_kwargs["duration_ms"] = max(0.0, (ended_at - started_at) * 1000)
+        duration_ms = max(0.0, (ended_at - started_at) * 1000)
+    update_kwargs: dict[str, Any] = {}
     if all_msgs:
         update_kwargs["first_msg_id"] = all_msgs[0]
         update_kwargs["last_msg_id"] = all_msgs[-1]
@@ -547,7 +555,8 @@ async def _teardown_common(
         markers = identity_markers or {}
         update_kwargs["node_metadata"] = json.dumps({**existing_metadata, **extras, **markers})
 
-    await db.update_session(session_id, **update_kwargs)
+    if update_kwargs:
+        await db.update_session(session_id, **update_kwargs)
 
     reason_code, reason_summary, evidence_refs = resolve_run_reason(
         status=status, exception=exception
@@ -834,6 +843,11 @@ async def _teardown_common(
                 actor=session_id,
                 metadata=metadata,
                 expected_statuses={pre_write_status},
+                extra_fields=(
+                    {"ended_at": ended_at}
+                    if duration_ms is None
+                    else {"ended_at": ended_at, "duration_ms": duration_ms}
+                ),
             )
             if not written:
                 # CAS miss: a concurrent teardown of the same session won the race.

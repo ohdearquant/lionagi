@@ -468,3 +468,44 @@ def test_runs_list_node_metadata_dead_pid_reports_stale_without_monkeypatch(tmp_
     target = next((run for run in r.json()["runs"] if run["id"] == sid), None)
     assert target is not None
     assert target["effective_health"] == "stale"
+
+
+def test_runs_list_reports_status_ended_at_mismatch_count(tmp_path, monkeypatch):
+    """A row whose status is 'running' but whose ended_at is already stamped
+    (issue #2844 -- status and ended_at disagreeing) must be visible as a
+    recomputed consistency count on the listing envelope, not something a
+    caller can only find by cross-checking every row's two fields by hand."""
+    db_path = tmp_path / "state.db"
+    good_running_id = str(uuid.uuid4())
+    good_completed_id = str(uuid.uuid4())
+    mismatched_id = str(uuid.uuid4())
+
+    async def _seed() -> None:
+        async with StateDB(db_path) as db:
+            for sid, status in (
+                (good_running_id, "running"),
+                (good_completed_id, "completed"),
+                (mismatched_id, "running"),
+            ):
+                pid = str(uuid.uuid4())
+                await db.create_progression(pid)
+                await db.create_session(
+                    {
+                        "id": sid,
+                        "progression_id": pid,
+                        "name": "test-mismatch",
+                        "status": status,
+                        "started_at": time.time() - 60,
+                    }
+                )
+            # Simulate the write-path bug directly at the data layer: ended_at
+            # stamped while status is still "running".
+            await db.update_session(mismatched_id, ended_at=time.time())
+
+    _run(_seed())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status_ended_at_mismatches"] == 1

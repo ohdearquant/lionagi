@@ -263,14 +263,14 @@ CREATE INDEX IF NOT EXISTS idx_branches_system_msg_id
 CREATE INDEX IF NOT EXISTS idx_branches_progression_id
   ON branches(progression_id);
 
--- ── Definitions (versioned agent + playbook files) ───────────────────────────
+-- ── Definitions (versioned agent + playbook + skill files) ───────────────────
 -- Disk files remain source of truth; this table tracks edit history.
 -- Current version = MAX(version) per (kind, name).
 
 CREATE TABLE IF NOT EXISTS definitions (
   id          TEXT    PRIMARY KEY,
   kind        TEXT    NOT NULL
-              CHECK(kind IN ('agent', 'playbook')),  -- ADR-0016 editable set
+              CHECK(kind IN ('agent', 'playbook', 'skill')),  -- ADR-0016 editable set
   name        TEXT    NOT NULL,           -- e.g. 'analyst', 'review-flow'
   path        TEXT    NOT NULL,           -- disk path relative to .lionagi/
   content     TEXT    NOT NULL,           -- full file content at this version

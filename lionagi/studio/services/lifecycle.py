@@ -113,7 +113,13 @@ async def reap_stale_invocations(
                         started_at,
                         effective_deadline,
                     )
-                    await db.update_invocation(inv_id, ended_at=now)
+                    # ended_at rides in extra_fields so it lands in the same
+                    # atomic UPDATE as the status transition — a winning CAS
+                    # followed by a separate update_invocation() call could
+                    # leave status="timed_out" with ended_at never patched if
+                    # that second write failed (issue #2844). Preserving a
+                    # pre-existing ended_at (rather than overwriting it) is
+                    # still decided off this same pre-write snapshot.
                     transitioned = await db.update_status(
                         "invocation",
                         inv_id,
@@ -129,6 +135,7 @@ async def reap_stale_invocations(
                             "started_at": started_at,
                         },
                         expected_statuses={"running"},
+                        extra_fields={"ended_at": now} if inv.get("ended_at") is None else None,
                     )
                     if transitioned:
                         reaped += 1
@@ -152,7 +159,8 @@ async def reap_stale_invocations(
                         inv_id,
                         zero_session_grace_seconds,
                     )
-                    await db.update_invocation(inv_id, ended_at=now)
+                    # See the deadline-exceeded branch above for why ended_at
+                    # rides in extra_fields instead of a follow-up write.
                     transitioned = await db.update_status(
                         "invocation",
                         inv_id,
@@ -167,6 +175,7 @@ async def reap_stale_invocations(
                             "updated_at": updated_at,
                         },
                         expected_statuses={"running"},
+                        extra_fields={"ended_at": now} if inv.get("ended_at") is None else None,
                     )
                     if transitioned:
                         reaped += 1
@@ -232,8 +241,9 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
             _log.info("Reaping null-status session %s: process is dead", sid)
             try:
                 async with StateDB() as db:
-                    if row["ended_at"] is None:
-                        await db.update_session(sid, ended_at=now)
+                    # ended_at rides in extra_fields so it lands in the same
+                    # atomic UPDATE as the status transition; see
+                    # reap_stale_invocations for why a follow-up write is unsafe.
                     transitioned = await db.update_status(
                         "session",
                         sid,
@@ -245,6 +255,7 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
                         actor="studio_lifecycle_reaper",
                         metadata={"detector": "null_status_dead_process"},
                         expected_statuses={None},
+                        extra_fields={"ended_at": now} if row["ended_at"] is None else None,
                     )
                 if transitioned:
                     reaped += 1
@@ -302,8 +313,10 @@ async def reap_phantom_sessions(
                 if current.get("status") != "running":
                     # Already transitioned by another path.
                     continue
-                if current.get("ended_at") is None:
-                    await db.update_session(sid, ended_at=now)
+                # ended_at rides in extra_fields on both branches below so it
+                # lands in the same atomic UPDATE as the status transition;
+                # see reap_stale_invocations for why a follow-up write is unsafe.
+                _extra = {"ended_at": now} if current.get("ended_at") is None else None
                 if current.get("agent_name") == "claude-code":
                     # A mirrored external session has no lionagi process, so the
                     # phantom model misfires: an idle transcript is a normal
@@ -319,6 +332,7 @@ async def reap_phantom_sessions(
                         actor=actor,
                         metadata={"mirror_idle_reaped": True},
                         expected_statuses={"running"},
+                        extra_fields=_extra,
                     )
                 else:
                     transitioned = await db.update_status(
@@ -338,6 +352,7 @@ async def reap_phantom_sessions(
                         actor=actor,
                         metadata={"phantom_reaped": True, "phantom_reason": phantom_reason},
                         expected_statuses={"running"},
+                        extra_fields=_extra,
                     )
             if transitioned:
                 _log.info("Phantom session %s reaped (reason=%s)", sid, phantom_reason)
@@ -438,6 +453,9 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                     # version we validated: a claim landing between this read
                     # and the write bumps updated_at, so the guarded write loses
                     # the race and we skip rather than block a live play.
+                    # ended_at rides in extra_fields so it lands in the same
+                    # atomic UPDATE as the status transition; see
+                    # reap_stale_invocations for why a follow-up write is unsafe.
                     transitioned = await db.update_status(
                         "play",
                         play_id,
@@ -455,12 +473,9 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                         },
                         expected_statuses=_REAPABLE_PLAY_STATUSES,
                         expected_updated_at=updated_at_raw,
+                        extra_fields={"ended_at": now} if row.get("ended_at") is None else None,
                     )
                     if transitioned:
-                        # Stamp ended_at only after the guarded transition wins,
-                        # so a lost CAS never mutates a row we did not reap.
-                        if row.get("ended_at") is None:
-                            await db.update_play(play_id, ended_at=now)
                         reaped += 1
                     else:
                         _log.debug("Play %s skipped (status changed before CAS lock)", play_id)

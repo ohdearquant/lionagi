@@ -298,8 +298,25 @@ describe("selectedRunId validation", () => {
 
 // ─── Formatter helpers ────────────────────────────────────────────────────────
 
-import { formatElapsed, formatCompactCount, patchSearch } from "./FleetView";
+import { formatElapsed, formatCompactCount, patchSearch, isPlayRoot } from "./FleetView";
 import { resetDetailScrollPosition } from "./SessionDetail";
+
+// ─── isPlayRoot — the play-vs-single-agent discriminator (issue #2842) ───────
+
+describe("isPlayRoot", () => {
+  it("is true for every multi-agent invocation_kind", () => {
+    expect(isPlayRoot("play")).toBe(true);
+    expect(isPlayRoot("flow")).toBe(true);
+    expect(isPlayRoot("fanout")).toBe(true);
+    expect(isPlayRoot("show-play")).toBe(true);
+  });
+
+  it("is false for a single agent and for a missing kind", () => {
+    expect(isPlayRoot("agent")).toBe(false);
+    expect(isPlayRoot(null)).toBe(false);
+    expect(isPlayRoot(undefined)).toBe(false);
+  });
+});
 
 // ─── patchSearch — URL search patching without smuggling `undefined` in ──────
 // FleetSearch's index signature is RetiredSearchValue (no `undefined`), so a

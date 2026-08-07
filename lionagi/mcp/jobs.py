@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
+import logging
 import math
 import os
 import shlex
@@ -36,6 +37,8 @@ from lionagi.ln._proc import (
 )
 
 from . import config
+
+_log = logging.getLogger(__name__)
 
 # Per-run mutation lock: platform's own advisory file lock.
 if sys.platform == "win32":  # pragma: no cover - POSIX is what CI runs
@@ -234,6 +237,11 @@ _RUN_ID_ATTEMPTS = 8
 _PROMPT_FILENAME = "prompt.txt"
 _MCP_SNAPSHOT_FILENAME = "mcp-servers.json"
 _RESERVATION_CONTENTS = (_PROMPT_FILENAME, _MCP_SNAPSHOT_FILENAME)
+# Written into a reservation directory only when its giveback could not remove
+# it, never as part of a submission's own state — kept out of
+# _RESERVATION_CONTENTS so a later giveback attempt doesn't try to unlink it
+# before the directory itself is gone.
+_RESERVATION_STRANDED_MARKER = "RESERVATION_ROLLBACK_INCOMPLETE"
 
 
 def _reserve_run_dir() -> tuple[str, Path]:
@@ -257,7 +265,7 @@ def _reserve_run_dir() -> tuple[str, Path]:
     )
 
 
-def _discard_reservation(d: Path) -> None:
+def _discard_reservation(d: Path) -> bool:
     """Give a reserved directory back, along with what a submission put in it.
 
     A submission that fails partway through writing has already left files
@@ -275,6 +283,13 @@ def _discard_reservation(d: Path) -> None:
     on the short list above stops the removal. A removal that fails for any other
     reason leaves a directory nobody claimed, which is worth less than the error
     that sent us here.
+
+    Returns whether the directory is actually gone afterward. When it is not —
+    the one case this function suppresses rather than raises for — a marker is
+    left in what remains of it, so a directory found later under the jobs root
+    with no job record reads as a giveback that could not run rather than as one
+    that succeeded; both leave the same absence of a job otherwise, and nothing
+    else here tells them apart.
     """
     for name in _RESERVATION_CONTENTS:
         try:
@@ -285,6 +300,49 @@ def _discard_reservation(d: Path) -> None:
         d.rmdir()
     except OSError:
         pass
+    given_back = not d.exists()
+    if not given_back:
+        with contextlib.suppress(OSError):
+            (d / _RESERVATION_STRANDED_MARKER).write_text(
+                "this reservation's giveback could not fully run: the "
+                "directory below the jobs root was left behind rather than "
+                "removed or claimed by a job.\n"
+            )
+    return given_back
+
+
+def _discard_reservation_and_warn(d: Path, run_id: str) -> None:
+    """Give a reservation back, and say so when the giveback itself fails.
+
+    ``_discard_reservation``'s own marker only helps an operator who later
+    goes looking under the jobs root. The boolean it returns is the only
+    signal available at the moment the failure actually happens, so every
+    caller that discards a reservation on an error path must act on it here
+    rather than let a `False` disappear along with the exception it rode in on.
+
+    The boolean says nothing about whether the marker write itself landed —
+    that write is best-effort and suppresses its own ``OSError`` — so this
+    checks the marker's actual presence afterward rather than assuming it from
+    the directory surviving. An operator reading the warning must not be sent
+    looking for a file that was never written.
+    """
+    if _discard_reservation(d):
+        return
+    marker = d / _RESERVATION_STRANDED_MARKER
+    if marker.exists():
+        _log.warning(
+            "reservation rollback for run %s could not remove %s; marked %s",
+            run_id,
+            d,
+            marker,
+        )
+    else:
+        _log.warning(
+            "reservation rollback for run %s could not remove %s; the "
+            "stranding marker could not be written either",
+            run_id,
+            d,
+        )
 
 
 # --- record I/O ----------------------------------------------------------------
@@ -1115,7 +1173,7 @@ def submit(
         if mcp_servers is not None and mcp_config_path is not None:
             _write_mcp_server_snapshot(Path(mcp_config_path), mcp_servers)
     except BaseException:
-        _discard_reservation(d)
+        _discard_reservation_and_warn(d, run_id)
         raise
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
@@ -1173,7 +1231,7 @@ def submit(
         # back, reached one step later. This is the last point where giving it
         # back is the right answer: past this line the run exists, and a failure
         # is marked on the record rather than erased along with it.
-        _discard_reservation(d)
+        _discard_reservation_and_warn(d, run_id)
         raise
 
     try:

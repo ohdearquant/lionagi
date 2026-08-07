@@ -1045,6 +1045,18 @@ def test_derive_metadata_others_when_cwd_gone() -> None:
     assert state.project_source == "cwd_missing"
 
 
+def test_derive_metadata_captures_raw_cwd_as_artifact_root(tmp_path: Path) -> None:
+    # issue #2848: the raw cwd (not the bucketed project name) is the session's
+    # artifact root -- every file the CLI touched lives under it.
+    work = tmp_path / "my-workspace"
+    work.mkdir()
+    state = _FileState(session_uid=SID)
+    _derive_metadata(
+        state, [_user_text("u1", "hi", ts="2026-06-20T00:00:00.000Z") | {"cwd": str(work)}]
+    )
+    assert state.cwd == str(work)
+
+
 @pytest.mark.asyncio
 async def test_mirror_session_backfills_missing_project(temp_db_path: Path) -> None:
     # A session first mirrored with no project must be backfilled on a later pass
@@ -1068,6 +1080,37 @@ async def test_mirror_session_backfills_missing_project(temp_db_path: Path) -> N
     assert after["project_source"] == "cwd_dir"
     # Provenance backfill is not activity: the liveness clock must not move.
     assert after["updated_at"] == before["updated_at"]
+
+
+@pytest.mark.asyncio
+async def test_mirror_session_writes_artifacts_path_from_cwd(temp_db_path: Path) -> None:
+    # issue #2848: a mirrored CLI session's cwd is its artifact root -- the run
+    # file viewer is otherwise structurally dead for every mirrored session.
+    events = _conversation()
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=SID, events=events, tool_names={}, cwd="/work/acme-widget"
+        )
+        row = await db.get_session(session_db_id(SID))
+    assert row["artifacts_path"] == "/work/acme-widget"
+
+
+@pytest.mark.asyncio
+async def test_mirror_session_does_not_clobber_an_existing_artifacts_path(
+    temp_db_path: Path,
+) -> None:
+    # A launcher-set artifact root is more precise than the mirror's cwd guess
+    # and must never be overwritten by a later mirror pass.
+    events = _conversation()
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=SID, events=events, tool_names={}, cwd="/work/first-guess"
+        )
+        await mirror_session(
+            db, session_uid=SID, events=events, tool_names={}, cwd="/work/second-guess"
+        )
+        row = await db.get_session(session_db_id(SID))
+    assert row["artifacts_path"] == "/work/first-guess"
 
 
 # ── conversation-lineage detector ────────────────────────────────────────────
@@ -1202,6 +1245,92 @@ async def test_idle_session_backfilled_with_project(temp_db_path: Path, tmp_path
         row = await db.get_session(session_db_id(uid))
     assert row["project"] == "ghost-proj"
     assert row["project_source"] == "cwd_dir"
+
+
+@pytest.mark.asyncio
+async def test_idle_session_backfilled_with_artifacts_path_even_when_project_already_set(
+    temp_db_path: Path, tmp_path: Path
+) -> None:
+    # issue #2848: the dominant NULL-artifacts_path population is sessions the
+    # mirror already attributed a project to (in an earlier process) before this
+    # fix existed -- artifacts_path must backfill on its own, not only when
+    # project is also missing.
+    work = tmp_path / "ghost-proj-2"
+    work.mkdir()
+    uid = "ffffffff-0000-0000-0000-000000000006"
+    root = tmp_path / "projects"
+    path = root / "-w-proj" / f"{uid}.jsonl"
+    events = [
+        _lineage_event(uid, "f-1", None, "user", "hi") | {"cwd": str(work)},
+        _lineage_event(uid, "f-2", "f-1", "assistant", "ok"),
+    ]
+    _write_lineage_file(path, events)
+    async with StateDB() as db:
+        # Simulate a pre-fix row: project already attributed, artifacts_path never was.
+        await mirror_session(
+            db, session_uid=uid, events=events, tool_names={}, project="ghost-proj-2"
+        )
+        before = await db.get_session(session_db_id(uid))
+        assert before["project"] == "ghost-proj-2"
+        assert before["artifacts_path"] is None
+        offsets = {str(path): path.stat().st_size}
+        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        row = await db.get_session(session_db_id(uid))
+    assert row["artifacts_path"] == str(work)
+    assert row["project"] == "ghost-proj-2"
+
+
+@pytest.mark.asyncio
+async def test_attr_peeked_flag_not_set_on_backfill_failure(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same failure-atomicity requirement as the codex idle backfill
+    (test_codex_provenance_peeked_flag_not_set_on_backfill_failure): a
+    transient set_session_provenance failure inside the idle project
+    backfill must not permanently mark this in-memory state as peeked, or no
+    later pass in this process ever retries it."""
+    from lionagi.cli import mirror as mirror_mod
+
+    work = tmp_path / "ghost-proj-flaky"
+    work.mkdir()
+    uid = "eeeeeeee-0000-0000-0000-000000000099"
+    root = tmp_path / "projects"
+    path = root / "-w-proj" / f"{uid}.jsonl"
+    events = [
+        _lineage_event(uid, "g-1", None, "user", "hi") | {"cwd": str(work)},
+        _lineage_event(uid, "g-2", "g-1", "assistant", "ok"),
+    ]
+    _write_lineage_file(path, events)
+
+    attempts = []
+    real_attribute = mirror_mod._attribute_idle
+
+    async def flaky_attribute(db, state, cwd):
+        attempts.append(state.session_uid)
+        if len(attempts) == 1:
+            raise RuntimeError("set_session_provenance transient failure")
+        return await real_attribute(db, state, cwd)
+
+    monkeypatch.setattr(mirror_mod, "_attribute_idle", flaky_attribute)
+
+    async with StateDB() as db:
+        await mirror_session(db, session_uid=uid, events=events, tool_names={}, project=None)
+        assert (await db.get_session(session_db_id(uid)))["project"] is None
+
+        offsets = {str(path): path.stat().st_size}
+        states: dict[str, _FileState] = {}
+        # _one_pass's own per-transcript exception handler swallows the raise.
+        await _one_pass(db, root, states, offsets, since=None, live_window=300)
+        state = states[str(path)]
+        assert not state.attr_peeked, (
+            "the flag was set even though the backfill raised, so no later pass will retry it"
+        )
+
+        await _one_pass(db, root, states, offsets, since=None, live_window=300)
+        row = await db.get_session(session_db_id(uid))
+    assert state.attr_peeked
+    assert row["project"] == "ghost-proj-flaky"
+    assert len(attempts) == 2, f"backfill was attempted {len(attempts)} time(s), not 2"
 
 
 @pytest.mark.asyncio
@@ -1441,6 +1570,128 @@ async def test_interactive_rollout_still_mirrors(tmp_path):
         row = await db.get_session(codex_sid(uid))
         assert row is not None
         assert row["source_kind"] == CODEX_SOURCE_KIND
+
+
+async def test_interactive_rollout_records_artifacts_path_from_header_cwd(tmp_path):
+    # issue #2848: the session_meta header's cwd is the rollout's artifact root,
+    # the same gap claude_mirror had.
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000005"
+    path = tmp_path / "rollout-artifacts.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "Codex Desktop"))
+    state = _FileState(session_uid="")
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await _mirror_one_codex(db, path, state, {})
+        row = await db.get_session(codex_sid(uid))
+    assert row["artifacts_path"] == "/x"
+
+
+async def test_codex_mirror_session_does_not_clobber_an_existing_artifacts_path(tmp_path):
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000006"
+    records = [
+        {
+            "type": "response_item",
+            "timestamp": "2026-07-31T09:00:01Z",
+            "payload": {"type": "message", "role": "user", "id": "m1", "content": [{"text": "q"}]},
+        }
+    ]
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(
+            db, rollout_uid=uid, records=records, tool_names={}, cwd="/work/first-guess"
+        )
+        await codex_mirror_session(
+            db, rollout_uid=uid, records=records, tool_names={}, cwd="/work/second-guess"
+        )
+        row = await db.get_session(codex_sid(uid))
+    assert row["artifacts_path"] == "/work/first-guess"
+
+
+async def test_idle_codex_rollout_backfills_artifacts_path_from_header_cwd(tmp_path):
+    # An existing row (mirrored before cwd attribution existed, or by a process
+    # that crashed before this pass) has artifacts_path=NULL. A later process
+    # restarts with its offset already restored to EOF -- _read_new_events
+    # yields no records even though the header (re-read on this fresh
+    # _FileState) still carries cwd. Without an idle backfill this row's
+    # artifacts_path would never be set.
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000007"
+    path = tmp_path / "rollout-idle.jsonl"
+    contents = _codex_rollout_lines(uid, "Codex Desktop")
+    path.write_text(contents)
+
+    records = [json.loads(line) for line in contents.splitlines()]
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(db, rollout_uid=uid, records=records, tool_names={}, cwd=None)
+        before = await db.get_session(codex_sid(uid))
+        assert before is not None
+        assert before["artifacts_path"] is None
+
+        # Fresh state (as after a restart), offset restored to EOF.
+        state = _FileState(session_uid="", offset=len(contents.encode()))
+        written = await _mirror_one_codex(db, path, state, {})
+        assert written == 0
+
+        row = await db.get_session(codex_sid(uid))
+    assert row["artifacts_path"] == "/x"
+
+
+async def test_codex_provenance_peeked_flag_not_set_on_backfill_failure(tmp_path, monkeypatch):
+    """codex_provenance_peeked is never persisted -- it only exists to avoid a
+    redundant DB round-trip on every idle pass within one process's lifetime.
+    Setting it before the backfill it guards succeeds means a transient
+    set_session_provenance failure (e.g. a DB hiccup) permanently blocks
+    retry for the rest of that process, even though the flag's own docstring
+    promise is "attempted", not "attempted once and given up on"."""
+    from lionagi.cli import mirror as mirror_mod
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000010"
+    path = tmp_path / "rollout-idle-flaky.jsonl"
+    contents = _codex_rollout_lines(uid, "Codex Desktop")
+    path.write_text(contents)
+    records = [json.loads(line) for line in contents.splitlines()]
+
+    attempts = []
+    real_attribute = mirror_mod._attribute_idle_codex
+
+    async def flaky_attribute(db, state):
+        attempts.append(state.session_uid)
+        if len(attempts) == 1:
+            raise RuntimeError("set_session_provenance transient failure")
+        return await real_attribute(db, state)
+
+    monkeypatch.setattr(mirror_mod, "_attribute_idle_codex", flaky_attribute)
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(db, rollout_uid=uid, records=records, tool_names={}, cwd=None)
+        before = await db.get_session(codex_sid(uid))
+        assert before["artifacts_path"] is None
+
+        state = _FileState(session_uid="", offset=len(contents.encode()))
+        with pytest.raises(RuntimeError):
+            await _mirror_one_codex(db, path, state, {})
+        assert not state.codex_provenance_peeked, (
+            "the flag was set even though the backfill raised, so no later pass will retry it"
+        )
+
+        written = await _mirror_one_codex(db, path, state, {})
+        assert written == 0
+        assert state.codex_provenance_peeked
+
+        row = await db.get_session(codex_sid(uid))
+    assert row["artifacts_path"] == "/x"
+    assert len(attempts) == 2, f"backfill was attempted {len(attempts)} time(s), not 2"
 
 
 async def test_partial_header_defers_classification_instead_of_bypassing_it(tmp_path):

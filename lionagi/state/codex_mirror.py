@@ -406,6 +406,7 @@ async def mirror_session(
     provider: str | None = "openai",
     name: str | None = None,
     status: str = "running",
+    cwd: str | None = None,
     node_metadata: dict[str, Any] | None = None,
     source_path: str | None = None,
     turn: dict[str, Any] | None = None,
@@ -504,6 +505,7 @@ async def mirror_session(
                 "effort": (turn or {}).get("effort"),
                 "project": project,
                 "project_source": project_source,
+                "artifacts_path": cwd,
                 "node_metadata": meta,
                 "started_at": first_ts,
                 "updated_at": last_ts,
@@ -512,6 +514,7 @@ async def mirror_session(
     else:
         cc_session_id = rollout_uid if existing.get("cc_session_id") is None else None
         provenance_project = project if project and not existing.get("project") else None
+        provenance_artifacts_path = cwd if cwd and not existing.get("artifacts_path") else None
         # A file mirrored across several passes accumulates its counts, so the
         # subtraction a consumer does is against the whole file rather than the
         # last batch of it.
@@ -524,6 +527,7 @@ async def mirror_session(
             cc_session_id=cc_session_id,
             project=provenance_project,
             project_source=project_source if provenance_project is not None else None,
+            artifacts_path=provenance_artifacts_path,
             node_metadata=meta,
         )
     await db.create_branch(

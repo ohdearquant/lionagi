@@ -38,6 +38,15 @@ export function isDeadHealth(health: string | null | undefined): boolean {
   return health != null && DEAD_HEALTH.has(health);
 }
 
+/**
+ * Whether an invocation's health means liveness genuinely could not be
+ * determined (e.g. no child session has landed yet) — distinct from
+ * isDeadHealth, which means a process was observed and it's gone.
+ */
+export function isUnknownHealth(health: string | null | undefined): boolean {
+  return health === "unknown";
+}
+
 /** Placeholder card count while the first fetch is in flight. */
 const SKELETON_CARDS = 4;
 
@@ -111,11 +120,14 @@ function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
 function InvocationCard({ inv, nowSec }: { inv: InvocationSummary; nowSec: number }) {
   const t = useTranslations("mission");
   const elapsed = elapsedSec(inv.started_at, nowSec);
-  // InvocationSummary carries no per-message heartbeat field — updated_at is
-  // the coarsest available proxy for "last activity" (bumped on any change
-  // to the invocation row, not strictly a heartbeat). Flagged as a data-field
-  // gap: a real invocation heartbeat would need a backend addition.
-  const lastActivity = elapsedSec(inv.updated_at ?? inv.started_at, nowSec);
+  // Health axis, same as RunCard: never an unconditional "running" dot
+  // regardless of whether there's evidence behind it (issue #2851).
+  const dead = isDeadHealth(inv.health);
+  const unknown = isUnknownHealth(inv.health);
+  // last_activity_at is the real worst-of child-session heartbeat now that
+  // the backend computes one; updated_at (bumped on any row change, not
+  // strictly a heartbeat) is only the fallback for older/unhealthy rows.
+  const lastActivity = elapsedSec(inv.last_activity_at ?? inv.updated_at ?? inv.started_at, nowSec);
 
   return (
     <Link
@@ -123,14 +135,21 @@ function InvocationCard({ inv, nowSec }: { inv: InvocationSummary; nowSec: numbe
       className="group flex flex-col gap-2 rounded border border-edge bg-surface-raised p-3 transition-colors duration-100"
     >
       <div className="flex items-center gap-2">
-        <StatusDot status="running" />
+        <StatusDot status={dead ? "stale" : unknown ? "unknown" : "running"} />
         <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] font-medium text-content-primary group-hover:opacity-80">
           {inv.skill}
         </span>
+        {dead && (
+          <span className="shrink-0 font-data text-[length:var(--t-xs)] uppercase text-content-muted">
+            {t("liveBoard.staleLabel")}
+          </span>
+        )}
       </div>
 
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate font-data tabular-nums text-[length:var(--t-xs)] text-status-running">
+        <span
+          className={`min-w-0 flex-1 truncate font-data tabular-nums text-[length:var(--t-xs)] ${dead || unknown ? "text-content-muted" : "text-status-running"}`}
+        >
           {t("liveBoard.durationStatus", {
             duration: formatElapsed(elapsed),
             age: formatElapsed(lastActivity),
@@ -269,9 +288,14 @@ function BoardTableRow({ card, nowSec }: { card: LiveCard; nowSec: number }) {
   const elapsed = elapsedSec(startedAt, nowSec);
   const lastActivityAt = isRun
     ? (card.run.last_message_at ?? card.run.started_at ?? undefined)
-    : (card.invocation.updated_at ?? card.invocation.started_at);
+    : (card.invocation.last_activity_at ??
+      card.invocation.updated_at ??
+      card.invocation.started_at);
   const lastActivity = elapsedSec(lastActivityAt, nowSec);
-  const dead = isRun && isDeadHealth(card.run.effective_health);
+  const dead = isRun
+    ? isDeadHealth(card.run.effective_health)
+    : isDeadHealth(card.invocation.health);
+  const unknown = !isRun && isUnknownHealth(card.invocation.health);
   const status = isRun ? card.run.status : card.invocation.status;
   const linkProps = isRun ? runDeepLink(card.run.run_id) : invocationDeepLink();
 
@@ -287,9 +311,9 @@ function BoardTableRow({ card, nowSec }: { card: LiveCard; nowSec: number }) {
       </td>
       <td className="px-3 py-2">
         <span className="flex items-center gap-1.5">
-          <StatusDot status={dead ? "stale" : status} />
+          <StatusDot status={dead ? "stale" : unknown ? "unknown" : status} />
           <span className="font-data text-[length:var(--t-xs)] text-content-secondary">
-            {dead ? t("liveBoard.staleLabel") : status}
+            {dead ? t("liveBoard.staleLabel") : unknown ? "unknown" : status}
           </span>
         </span>
       </td>

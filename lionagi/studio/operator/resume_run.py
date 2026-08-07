@@ -3,17 +3,21 @@
 """Studio Operator lifecycle service/adapter: ``resume_run``.
 
 Delegates to the real, supported ``POST /runs/{run_id}/resume`` surface
-(`lionagi/studio/services/run_resume.py::resume_run`) for every dispatch
-decision -- this adapter does not re-derive which invocation kinds are
-resumable or what inputs they accept; it forwards the caller's arguments and
-reports back whatever the service decides. For an ``agent`` run that means
-the same ``li agent -r`` path a human resuming from the CLI or Studio UI
-uses, continuing the branch with a new instruction. For a ``play``/``flow``/
-``show-play`` run it means replaying the run's persisted checkpoint via
-``li o flow --resume`` -- the checkpoint owns the plan, so no instruction is
-accepted for those kinds. Gated on the same durable human allow/deny
-proposal flow ``cancel_run``/``launch_playbook`` use, since it starts a new
-process.
+(`lionagi/studio/services/run_resume.py::resume_run`) for the actual launch
+decision -- this adapter never picks an argv or a resume path itself. It
+does read the run's recorded ``invocation_kind`` before creating a proposal,
+though: that is what lets the proposal's summary say the true thing the
+dispatcher is about to do, and lets an argument combination the dispatcher
+would always reject (e.g. an instruction for a checkpoint-replay kind) be
+refused before a human ever sees an approvable proposal for it, instead of
+after they approve one that was always going to fail. For an ``agent`` run
+that means the same ``li agent -r`` path a human resuming from the CLI or
+Studio UI uses, continuing the branch with a new instruction. For a
+``play``/``flow``/``show-play`` run it means replaying the run's persisted
+checkpoint via ``li o flow --resume`` -- the checkpoint owns the plan, so no
+instruction is accepted for those kinds. Gated on the same durable human
+allow/deny proposal flow ``cancel_run``/``launch_playbook`` use, since it
+starts a new process.
 
 This is a distinct operation from "un-pausing a paused run": the session
 lifecycle policy has no edge back out of a terminal state such as
@@ -74,6 +78,49 @@ class ResumeRunInput(_StrictInput):
     # Only meaningful for a checkpoint-replay run; never defaulted to true
     # automatically. See run_resume.py::_resume_flow_run.
     allow_degraded_context: bool = False
+
+
+def _kind_argument_mismatch(
+    run_id: str, kind: str | None, args: ResumeRunInput
+) -> tuple[str, str] | None:
+    """Mirror ``run_resume.py::_dispatch_resume_by_kind``'s argument-vs-kind
+    rules so a combination the dispatcher would refuse never gets far enough
+    to become a proposal. Returns ``None`` when the combination is fine, or
+    an ``(reason, message)`` pair matching the ``error``/``message`` shape
+    ``execute_resume_command`` would have produced for the same rejection --
+    the only thing this changes is when the caller learns it, not what they
+    are told.
+    """
+    from lionagi.studio.services.run_resume import FLOW_RESUME_KINDS
+
+    if kind == "agent":
+        if args.instruction is None:
+            return "invalid_input", "instruction is required to resume an agent run"
+        return None
+    if kind in FLOW_RESUME_KINDS:
+        if args.instruction is not None:
+            return (
+                "invalid_input",
+                f"invocation_kind {kind!r} replays the persisted checkpoint plan; "
+                "instruction is not accepted",
+            )
+        if args.branch is not None:
+            return (
+                "invalid_input",
+                f"invocation_kind {kind!r} replays the persisted checkpoint plan; "
+                "branch_id is not accepted",
+            )
+        if args.model is not None:
+            return (
+                "invalid_input",
+                f"invocation_kind {kind!r} replays the persisted checkpoint plan; "
+                "model is not accepted",
+            )
+        return None
+    return (
+        "conflict",
+        f"Run {run_id!r} has invocation_kind {kind!r}, which does not support resume.",
+    )
 
 
 def _identity() -> tuple[OperatorStore, str, str]:
@@ -141,6 +188,18 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
         }
 
     run_id = resolution["session_id"]
+
+    from lionagi.state.db import StateDB, read_only_open_supported
+
+    async with StateDB(readonly=read_only_open_supported()) as db:
+        session = await db.get_session(run_id)
+    kind = session.get("invocation_kind") if session is not None else None
+
+    mismatch = _kind_argument_mismatch(run_id, kind, args)
+    if mismatch is not None:
+        reason, message = mismatch
+        return {"resumed": False, "reason": reason, "id": run_id, "message": message}
+
     command = {
         "run_id": run_id,
         "instruction": args.instruction,
@@ -151,7 +210,15 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
     stable = store.canonical_hash(
         {"requestId": request_id, "tool": "resume_run", "command": command}
     )
-    summary = f"Resume run {run_id[:12]} with a new instruction"
+    # The mismatch check above already confirmed kind matches the argument
+    # shape (agent+instruction, or a flow kind with none), so the summary
+    # can be phrased from the run's own recorded kind rather than from
+    # argument presence -- the two can no longer disagree.
+    summary = (
+        f"Resume run {run_id[:12]} with a new instruction"
+        if kind == "agent"
+        else f"Resume run {run_id[:12]} by replaying its checkpoint"
+    )
     proposal = await store.create_proposal(
         conversation_id,
         request_id,

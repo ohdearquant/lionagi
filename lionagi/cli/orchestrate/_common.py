@@ -323,14 +323,22 @@ def _build_worker_operate_node(
     context: list,
     messenger_bound: bool,
     depends_on: list[str] | None = None,
+    node_id: str | None = None,
 ) -> str:
     """Add the static `operate` node for a worker branch (shared by fanout.py
     and flow.py); passes `actions=True` only when the messenger tool is bound.
+
+    `node_id`, when given, becomes the node's `reference_id` in metadata —
+    the identity the executor's queued/started/terminal signals resolve to.
+    Without it, the queued signal falls back to the operation's UUID prefix
+    while the started signal falls back to the branch name, so the same op
+    is announced under two different names.
     """
     return builder.add_operation(
         "operate",
         branch=branch,
         depends_on=depends_on,
+        node_id=node_id,
         instruction=instruction,
         context=context,
         **({"actions": True} if messenger_bound else {}),

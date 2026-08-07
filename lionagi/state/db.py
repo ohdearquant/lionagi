@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import shutil
 import sqlite3
 import struct
@@ -67,6 +68,7 @@ from lionagi.state.reasons import (
 from lionagi.state.reasons import (
     validate_reason_code as _validate_reason_code,
 )
+from lionagi.state.schema_meta import definitions as _definitions_table
 from lionagi.state.schema_meta import metadata
 from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
@@ -431,9 +433,12 @@ TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 # the sweeps use to answer "is this still alive", a question they only ask of
 # rows their status filter already selected.
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
-    "session": frozenset({"ended_at", "node_metadata"}),
+    # duration_ms is derived from ended_at, so it carries the same requirement:
+    # it must land in the status write, never in a separate earlier one.
+    "session": frozenset({"ended_at", "duration_ms", "node_metadata"}),
     "invocation": frozenset({"ended_at"}),
     "schedule_run": frozenset({"ended_at", "error_detail", "exit_code"}),
+    "play": frozenset({"ended_at"}),
 }
 
 # ── ADR-0035 status vocabulary (valid, not just terminal) ──────────────
@@ -476,7 +481,7 @@ _PLAY_STATUSES = frozenset(
     }
 )
 
-_DEFINITION_KINDS = frozenset({"agent", "playbook"})
+_DEFINITION_KINDS = frozenset({"agent", "playbook", "skill"})
 
 
 def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
@@ -971,6 +976,9 @@ class StateDB:
             # schedule_runs.status and a NOT NULL schedule_id, from before
             # schedule_runs was generalized into the task-application entity.
             await self._drop_legacy_schedule_runs_check()
+            # Existing DBs carry a 2-value CHECK on definitions.kind that
+            # omits 'skill', from before the skill editor.
+            await self._drop_legacy_definitions_kind_check()
         async with self._engine.begin() as conn:
             await self._refuse_newer_schema(conn)
             await conn.run_sync(metadata.create_all)
@@ -2081,6 +2089,123 @@ class StateDB:
             _rebuild,
         )
 
+    # The pre-skill-editor definitions.kind CHECK admitted exactly these two
+    # values. A substring search for "'skill'" over the whole CREATE TABLE
+    # SQL false-positives on unrelated columns (e.g. a message TEXT DEFAULT
+    # 'skill'), so detection parses the kind CHECK constraint's own value
+    # set instead of scanning the statement for a marker string.
+    _LEGACY_DEFINITIONS_KIND_VALUES = frozenset({"agent", "playbook"})
+
+    @staticmethod
+    def _definitions_kind_check_values(create_sql: str) -> frozenset[str] | None:
+        """Extract the allowed ``kind`` values from a ``definitions`` CREATE
+        TABLE statement's CHECK constraint, or ``None`` if no such
+        constraint is found in the SQL."""
+        match = re.search(r"\bkind\b\s+IN\s*\(([^)]*)\)", create_sql, re.IGNORECASE)
+        if match is None:
+            return None
+        return frozenset(re.findall(r"'([^']*)'", match.group(1)))
+
+    async def _drop_legacy_definitions_kind_check(self) -> None:
+        """Rebuild ``definitions`` if it still carries the pre-skill-editor kind CHECK.
+
+        SQLite cannot widen a CHECK constraint via ALTER TABLE, so this uses
+        the same rename → CREATE new → INSERT SELECT → DROP old pattern as
+        ``_drop_legacy_action_kind_check``. ``definitions`` is not itself an
+        FK target, but the foreign_keys-off dance is applied anyway to match
+        every other rebuild in this file rather than special-casing this one
+        on an invariant that could change later.
+        """
+        if self.dialect != "sqlite":
+            return
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='definitions'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None or row["sql"] is None:
+            return
+        create_sql: str = row["sql"]
+        if self._definitions_kind_check_values(create_sql) != self._LEGACY_DEFINITIONS_KIND_VALUES:
+            # Not the known legacy 2-value CHECK (already migrated, or an
+            # unrecognized shape) -- leave it alone.
+            return
+
+        # definitions holds every version of every agent/playbook/skill ever
+        # saved through Studio -- same stakes as schedule_runs, same
+        # pre-rebuild backup.
+        await self._backup_before_rebuild("definitions")
+
+        async with self._engine.connect() as conn:
+            index_rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE type='index' AND tbl_name='definitions' AND sql IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            index_sqls = [r["sql"] for r in index_rows]
+
+            cols_rows = (
+                (await conn.execute(text("PRAGMA table_info(definitions)"))).mappings().all()
+            )
+            cols = [r["name"] for r in cols_rows]
+        col_list = ", ".join(cols)
+
+        # Derive the rebuild DDL from the canonical schema_meta Table rather
+        # than a hand-kept literal, so this migration path can never drift
+        # from the live schema (schema.sql / schema_meta.py parity is
+        # test-enforced).
+        rebuild_table = _definitions_table.to_metadata(MetaData(), name="definitions_new")
+        create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
+
+        async def _rebuild() -> None:
+            async with self._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                try:
+                    await driver.execute("PRAGMA foreign_keys = OFF")
+                    await driver.commit()
+                    await driver.execute("BEGIN IMMEDIATE")
+                    try:
+                        await self._refuse_newer_sqlite_schema(driver)
+                        await driver.execute(create_stmt)
+                        insert_sql = (
+                            f"INSERT INTO definitions_new ({col_list}) "  # noqa: S608
+                            f"SELECT {col_list} FROM definitions"
+                        )
+                        await driver.execute(insert_sql)
+                        await driver.execute("DROP TABLE definitions")
+                        await driver.execute("ALTER TABLE definitions_new RENAME TO definitions")
+                        for idx_sql in index_sqls:
+                            await driver.execute(idx_sql)
+                        await driver.commit()
+                    except BaseException:
+                        await driver.rollback()
+                        raise
+                finally:
+                    await _restore_foreign_keys(conn, driver)
+
+        await self._rebuild_check_constraint(
+            "definitions",
+            lambda sql: (
+                sql is not None
+                and self._definitions_kind_check_values(sql) != self._LEGACY_DEFINITIONS_KIND_VALUES
+            ),
+            _rebuild,
+        )
+
     # ── Schema version ─────────────────────────────────────────────────
 
     async def schema_version(self) -> str | None:
@@ -3051,6 +3176,7 @@ class StateDB:
         project: str | None = None,
         project_source: str | None = None,
         cc_session_id: str | None = None,
+        artifacts_path: str | None = None,
     ) -> None:
         """Write attribution/provenance fields without touching updated_at.
 
@@ -3060,6 +3186,11 @@ class StateDB:
         project_source are written together (the source is meaningless alone).
         The session update and the projects-registry upsert run as one locked
         write so neither can commit without the other.
+
+        ``artifacts_path`` is written via ``COALESCE`` rather than a plain
+        assignment: a mirrored CLI session's artifact root is its transcript's
+        ``cwd``, a weaker signal than a launcher-set root (issue #2848), so a
+        later, more precise write must never be clobbered by an earlier guess.
         """
         sets: list[str] = []
         params: dict[str, Any] = {}
@@ -3074,6 +3205,9 @@ class StateDB:
         if cc_session_id is not None:
             sets.append("cc_session_id = :cc_session_id")
             params["cc_session_id"] = cc_session_id
+        if artifacts_path is not None:
+            sets.append('artifacts_path = COALESCE("artifacts_path", :artifacts_path)')
+            params["artifacts_path"] = artifacts_path
         if not sets:
             return
         params["_id"] = session_id
@@ -4695,6 +4829,7 @@ class StateDB:
         self,
         *,
         skill: str | None = None,
+        plugin: str | None = None,
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -4750,6 +4885,9 @@ class StateDB:
         if skill:
             conds.append("inv.skill = :skill")
             params["skill"] = skill
+        if plugin:
+            conds.append("inv.plugin = :plugin")
+            params["plugin"] = plugin
         if status:
             conds.append("inv.status = :status")
             params["status"] = status
@@ -4761,6 +4899,38 @@ class StateDB:
         async with self._read() as conn:
             rows = (await conn.execute(text(query), params)).mappings().all()
         return [self._row_to_dict(r) for r in rows]
+
+    async def count_invocations(
+        self,
+        *,
+        skill: str | None = None,
+        plugin: str | None = None,
+        status: str | None = None,
+    ) -> int:
+        """Real total matching the same filters ``list_invocations`` accepts.
+
+        ``list_invocations`` is paginated (its ``limit`` caps at 200 at the
+        route layer); counting the rows of one page instead of this is what
+        makes a well-used skill's invocation count silently plateau at 200
+        with nothing distinguishing that from an exact count.
+        """
+        conds: list[str] = []
+        params: dict[str, Any] = {}
+        if skill:
+            conds.append("skill = :skill")
+            params["skill"] = skill
+        if plugin:
+            conds.append("plugin = :plugin")
+            params["plugin"] = plugin
+        if status:
+            conds.append("status = :status")
+            params["status"] = status
+        query = "SELECT COUNT(*) AS n FROM invocations"
+        if conds:
+            query += " WHERE " + " AND ".join(conds)
+        async with self._read() as conn:
+            row = (await conn.execute(text(query), params)).mappings().first()
+        return row["n"]
 
     async def list_sessions_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:
         async with self._read() as conn:

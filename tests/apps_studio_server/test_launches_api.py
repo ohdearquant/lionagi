@@ -514,6 +514,87 @@ class TestSpawnDetachedTerminalUpdate:
         validate_reason_code(captured["reason_code"])
 
 
+class TestSpawnDetachedEndedAtAtomicity:
+    """ended_at must ride the same atomic update_status() write as the
+    terminal status, not a separate update_invocation() call that could
+    independently fail after a winning status transition and leave the row
+    terminal with ended_at unset."""
+
+    def test_normal_exit_never_calls_update_invocation(self):
+        """The completed/failed path stamps ended_at via extra_fields; it
+        must never fall back to a standalone update_invocation() call."""
+        from lionagi.studio.services import launches
+
+        captured = {}
+        mock_db = AsyncMock()
+
+        async def _capture_status(entity_type, entity_id, **kw):
+            captured.update(kw)
+
+        mock_db.update_status = _capture_status
+
+        async def _fake_spawn(argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None):
+            return (0, "")
+
+        with patch("lionagi.studio.services.launches.StateDB") as MockDB:
+            MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+            MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+            with patch(
+                "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                side_effect=_fake_spawn,
+            ):
+                asyncio.run(
+                    launches._spawn_detached(["uv", "run", "li"], "inv-atomic1", tmp_path=None)
+                )
+
+        mock_db.update_invocation.assert_not_called()
+        assert isinstance(captured.get("extra_fields", {}).get("ended_at"), float)
+
+    def test_cancelled_never_calls_update_invocation(self):
+        """The cancellation path stamps ended_at via extra_fields too; it
+        must never fall back to a standalone update_invocation() call."""
+        from lionagi.studio.services import launches
+
+        captured = {}
+        mock_db = AsyncMock()
+
+        async def _capture_status(entity_type, entity_id, **kw):
+            captured.update(kw)
+
+        mock_db.update_status = _capture_status
+
+        async def _blocking_spawn(argv, inv_id, *, tmp_path=None, cwd=None, action_kind=None):
+            await asyncio.sleep(999)
+            return (0, "")
+
+        async def _run():
+            async def _inner():
+                with patch("lionagi.studio.services.launches.StateDB") as MockDB:
+                    MockDB.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+                    MockDB.return_value.__aexit__ = AsyncMock(return_value=False)
+                    with patch(
+                        "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+                        side_effect=_blocking_spawn,
+                    ):
+                        await launches._spawn_detached(
+                            ["uv", "run", "li"], "inv-atomic2", tmp_path=None
+                        )
+
+            task = asyncio.ensure_future(_inner())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_run())
+        assert captured.get("new_status") == "cancelled"
+        mock_db.update_invocation.assert_not_called()
+        assert isinstance(captured.get("extra_fields", {}).get("ended_at"), float)
+
+
 # ---------------------------------------------------------------------------
 # MAJOR 1 — Admission cap: 429 when in-flight launches >= MAX_LAUNCHES
 # ---------------------------------------------------------------------------

@@ -689,6 +689,7 @@ async def _build_dag(
             instruction=instruction,
             context=ctx,
             messenger_bound=messenger_bound,
+            node_id=agent_ids[i],
         )
         node_ids.append(node)
 
@@ -2334,7 +2335,10 @@ async def _run_flow(
                         invocation_id, fallback_status=_terminal_status
                     )
                     async with StateDB() as _inv_db:
-                        await _inv_db.update_invocation(invocation_id, ended_at=_ended_at)
+                        # ended_at rides in extra_fields so it lands in the same
+                        # atomic transition as the status write below -- a
+                        # separate prior update_invocation() call could persist
+                        # ended_at on a row this status write then fails to move.
                         await _inv_db.update_status(
                             "invocation",
                             invocation_id,
@@ -2345,6 +2349,7 @@ async def _run_flow(
                             source="executor",
                             actor=invocation_id,
                             metadata=inv_meta,
+                            extra_fields={"ended_at": _ended_at},
                         )
                 except Exception:
                     import logging as _logging

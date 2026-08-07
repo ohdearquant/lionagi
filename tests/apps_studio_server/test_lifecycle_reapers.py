@@ -221,6 +221,129 @@ def test_reap_stale_invocations_zero_session_within_grace(tmp_path, monkeypatch)
     assert inv["status"] == "running"
 
 
+def test_reap_stale_invocations_deadline_lost_cas_does_not_stamp_ended_at(tmp_path, monkeypatch):
+    """A lost CAS race on the deadline path must not leave ended_at stamped
+    while status is still "running" — the same "status and ended_at
+    disagree" defect as issue #2844, on the invocation deadline path.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    old_started = time.time() - 8000  # well past default 7200s deadline
+    iid = run_async(_seed_invocation(db_path, started_at=old_started, session_count=1))
+
+    async def _lost_race(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(StateDB, "update_status", _lost_race)
+
+    from lionagi.studio.services.lifecycle import reap_stale_invocations
+
+    count = run_async(reap_stale_invocations(deadline_seconds=7200))
+    assert count == 0
+
+    inv = run_async(_get_invocation(db_path, iid))
+    assert inv is not None
+    assert inv["status"] == "running"
+    assert inv["ended_at"] is None
+
+
+def test_reap_stale_invocations_zero_session_lost_cas_does_not_stamp_ended_at(
+    tmp_path, monkeypatch
+):
+    """A lost CAS race on the zero-session path must not leave ended_at
+    stamped while status is still "running" — the same "status and ended_at
+    disagree" defect as issue #2844, on the invocation zero-session path.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    stale_updated = time.time() - 600  # 10 min ago, past 5 min grace
+    iid = run_async(
+        _seed_invocation(
+            db_path,
+            started_at=time.time() - 120,
+            updated_at=stale_updated,
+            session_count=0,
+        )
+    )
+
+    async def _lost_race(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(StateDB, "update_status", _lost_race)
+
+    from lionagi.studio.services.lifecycle import reap_stale_invocations
+
+    count = run_async(reap_stale_invocations(deadline_seconds=7200, zero_session_grace_seconds=300))
+    assert count == 0
+
+    inv = run_async(_get_invocation(db_path, iid))
+    assert inv is not None
+    assert inv["status"] == "running"
+    assert inv["ended_at"] is None
+
+
+def test_reap_stale_invocations_deadline_write_is_atomic_with_ended_at(tmp_path, monkeypatch):
+    """The winning transition must stamp ended_at in the SAME write as the
+    status change, not depend on a follow-up update_invocation() call that
+    could independently fail and leave status="timed_out" with ended_at=None
+    while `reaped` still counts the row (the "winning CAS can still lose
+    ended_at" defect). Proven by making update_invocation() raise: the
+    reaper must never call it at all for this transition.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    old_started = time.time() - 8000
+    iid = run_async(_seed_invocation(db_path, started_at=old_started, session_count=1))
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("update_invocation must not be called by this reaper")
+
+    monkeypatch.setattr(StateDB, "update_invocation", _boom)
+
+    from lionagi.studio.services.lifecycle import reap_stale_invocations
+
+    count = run_async(reap_stale_invocations(deadline_seconds=7200))
+    assert count == 1
+
+    inv = run_async(_get_invocation(db_path, iid))
+    assert inv["status"] == "timed_out"
+    assert inv["ended_at"] is not None
+
+
+def test_reap_stale_invocations_zero_session_write_is_atomic_with_ended_at(tmp_path, monkeypatch):
+    """Same atomicity requirement as the deadline path, for the zero-session
+    branch."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    stale_updated = time.time() - 600
+    iid = run_async(
+        _seed_invocation(
+            db_path,
+            started_at=time.time() - 120,
+            updated_at=stale_updated,
+            session_count=0,
+        )
+    )
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("update_invocation must not be called by this reaper")
+
+    monkeypatch.setattr(StateDB, "update_invocation", _boom)
+
+    from lionagi.studio.services.lifecycle import reap_stale_invocations
+
+    count = run_async(reap_stale_invocations(deadline_seconds=7200, zero_session_grace_seconds=300))
+    assert count == 1
+
+    inv = run_async(_get_invocation(db_path, iid))
+    assert inv["status"] == "timed_out"
+    assert inv["ended_at"] is not None
+
+
 # ── per-action-kind deadline override ────────────────────────────────────────
 
 
@@ -508,6 +631,83 @@ def test_reap_null_status_sessions_fresh_unknown_liveness_not_reaped(tmp_path, m
     assert sess["status"] is None
 
 
+def test_reap_null_status_sessions_lost_cas_does_not_stamp_ended_at(tmp_path, monkeypatch):
+    """A lost CAS race on the status write must not leave ended_at stamped
+    with status still NULL — that mismatch is exactly the "status and
+    ended_at disagree" defect: a reader trusting either field alone is wrong.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    stale_time = time.time() - 7200  # past default 1h grace
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            artifacts_path=None,
+            started_at=stale_time,
+            updated_at=stale_time,
+        )
+    )
+
+    import lionagi.studio.services.lifecycle as lc_mod
+
+    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+
+    async def _lost_race(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(StateDB, "update_status", _lost_race)
+
+    from lionagi.studio.services.lifecycle import reap_null_status_sessions
+
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
+    assert count == 0
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess is not None
+    assert sess["status"] is None
+    assert sess["ended_at"] is None
+
+
+def test_reap_null_status_sessions_write_is_atomic_with_ended_at(tmp_path, monkeypatch):
+    """The winning transition must stamp ended_at in the same write as the
+    status change, not depend on a follow-up update_session() call. Proven
+    by making update_session() raise: the reaper must never call it at all
+    for this transition."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    stale_time = time.time() - 7200
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            artifacts_path=None,
+            started_at=stale_time,
+            updated_at=stale_time,
+        )
+    )
+
+    import lionagi.studio.services.lifecycle as lc_mod
+
+    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("update_session must not be called by this reaper")
+
+    monkeypatch.setattr(StateDB, "update_session", _boom)
+
+    from lionagi.studio.services.lifecycle import reap_null_status_sessions
+
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
+    assert count == 1
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess["status"] == "failed"
+    assert sess["ended_at"] is not None
+
+
 # ── automatic phantom reaper ─────────────────────────────────────────────────
 
 
@@ -671,6 +871,80 @@ def test_reap_phantom_sessions_skips_healthy_running(tmp_path, monkeypatch):
 
     sess = run_async(_get_session(db_path, sid))
     assert sess["status"] == "running"
+
+
+def test_reap_phantom_sessions_lost_cas_does_not_stamp_ended_at(tmp_path, monkeypatch):
+    """A lost CAS race on the status write must not leave ended_at stamped
+    while status is still "running" — that mismatch is exactly the
+    "status and ended_at disagree" defect from issue #2844.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    missing_dir = str(tmp_path / "ghost_artifacts_lost_race")
+    stale_time = time.time() - 7200
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status="running",
+            started_at=stale_time,
+            updated_at=stale_time,
+            artifacts_path=missing_dir,
+        )
+    )
+
+    async def _lost_race(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(StateDB, "update_status", _lost_race)
+
+    from lionagi.studio.services.lifecycle import reap_phantom_sessions
+
+    count = run_async(reap_phantom_sessions(stale_hours=1.0))
+    assert count == 0
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess is not None
+    assert sess["status"] == "running"
+    assert sess["ended_at"] is None
+
+
+def test_reap_phantom_sessions_write_is_atomic_with_ended_at(tmp_path, monkeypatch):
+    """The winning transition must stamp ended_at in the same write as the
+    status change, not depend on a follow-up update_session() call that
+    could independently fail and leave status="failed" with ended_at=None
+    while `reaped` still counts the row. Proven by making update_session()
+    raise: the reaper must never call it at all for this transition (covers
+    both the generic-failed and mirror-idle-completed branches, which share
+    the same extra_fields construction)."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    missing_dir = str(tmp_path / "ghost_artifacts_atomic")
+    stale_time = time.time() - 7200
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status="running",
+            started_at=stale_time,
+            updated_at=stale_time,
+            artifacts_path=missing_dir,
+        )
+    )
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("update_session must not be called by this reaper")
+
+    monkeypatch.setattr(StateDB, "update_session", _boom)
+
+    from lionagi.studio.services.lifecycle import reap_phantom_sessions
+
+    count = run_async(reap_phantom_sessions(stale_hours=1.0))
+    assert count == 1
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess["status"] == "failed"
+    assert sess["ended_at"] is not None
 
 
 # ── admin prune delegates to transition-based reaper ─────────────────────────
