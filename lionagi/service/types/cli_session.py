@@ -34,9 +34,60 @@ class CLISession:
     duration_api_ms: int | None = None
     is_error: bool = False
     summary: dict | None = None
+    activity: dict | None = None
 
     def populate_summary(self) -> None:
         self.summary = _extract_summary(self)
+
+    def populate_activity(self) -> None:
+        self.activity = _extract_activity(self)
+
+
+# Tool-name families, named once because two extractors classify against
+# them. Two copies of these lists could drift into disagreeing about whether
+# a given tool counts as a file edit.
+_READ_TOOLS = ("Read", "read", "read_file")
+_WRITE_TOOLS = ("Write", "write", "write_file", "create_file")
+_EDIT_TOOLS = ("Edit", "edit", "edit_file", "patch", "MultiEdit")
+
+
+def _extract_activity(session: CLISession) -> dict[str, Any]:
+    """Bounded, metadata-only record of what a leg did.
+
+    Carries no tool inputs by design. Tool arguments hold file paths, shell
+    command strings and prompts, so a block containing them could not be
+    recorded on the default path without a redactor in front of it; counting
+    instead of quoting removes the need for one. The full detail, inputs
+    included, stays available through populate_summary() under the caller's
+    explicit opt-in.
+
+    Usage and cost are absent for a different reason: they already travel in
+    the response metadata and are summed per branch downstream, so repeating
+    them here would create a second value for one fact, free to disagree
+    with the first.
+
+    Size is bounded by the number of DISTINCT tool names rather than by the
+    number of calls, so a long run costs the same few keys as a short one.
+    """
+    tool_counts: dict[str, int] = {}
+    file_operations = {"reads": 0, "writes": 0, "edits": 0}
+
+    for tool_use in session.tool_uses:
+        tool_name = tool_use.get("name", "unknown")
+        tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+
+        if tool_name in _READ_TOOLS:
+            file_operations["reads"] += 1
+        elif tool_name in _WRITE_TOOLS:
+            file_operations["writes"] += 1
+        elif tool_name in _EDIT_TOOLS:
+            file_operations["edits"] += 1
+
+    return {
+        "tool_counts": tool_counts,
+        "total_tool_calls": sum(tool_counts.values()),
+        "file_operations": file_operations,
+    }
 
 
 def _extract_summary(session: CLISession) -> dict[str, Any]:
@@ -53,17 +104,17 @@ def _extract_summary(session: CLISession) -> dict[str, Any]:
         tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
         tool_details.append({"tool": tool_name, "id": tool_id, "input": tool_input})
 
-        if tool_name in ("Read", "read", "read_file"):
+        if tool_name in _READ_TOOLS:
             file_path = tool_input.get("file_path", tool_input.get("path", "unknown"))
             file_operations["reads"].append(file_path)
             key_actions.append(f"Read {file_path}")
 
-        elif tool_name in ("Write", "write", "write_file", "create_file"):
+        elif tool_name in _WRITE_TOOLS:
             file_path = tool_input.get("file_path", tool_input.get("path", "unknown"))
             file_operations["writes"].append(file_path)
             key_actions.append(f"Wrote {file_path}")
 
-        elif tool_name in ("Edit", "edit", "edit_file", "patch", "MultiEdit"):
+        elif tool_name in _EDIT_TOOLS:
             file_path = tool_input.get("file_path", tool_input.get("path", "unknown"))
             file_operations["edits"].append(file_path)
             key_actions.append(f"Edited {file_path}")
