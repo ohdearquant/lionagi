@@ -429,6 +429,10 @@
       "noMessages": "chưa ghi nhận tin nhắn",
       "waitingEvents": "đang chờ sự kiện vòng đời…",
       "noEvents": "chưa ghi nhận sự kiện vòng đời",
+      "showOlderEvents": "Hiển thị {count, number} sự kiện cũ hơn",
+      "expandEventDetails": "Hiển thị chi tiết sự kiện",
+      "gateOutcome": "Cổng: {verdict} · {major} lớn, {minor} nhỏ",
+      "gateOutcomeSimple": "Cổng: {verdict}",
       "live": "trực tiếp",
       "noBranchErrors": "không phát hiện lỗi trên bất kỳ nhánh nào.",
       "noFiles": "không phát hiện thao tác tệp.",
@@ -548,7 +552,17 @@
       "last": "gần nhất",
       "never": "chưa từng chạy",
       "paused": "Đã tạm dừng",
-      "notScheduled": "Chưa lên lịch"
+      "notScheduled": "Chưa lên lịch",
+      "health": {
+        "healthy": "Khỏe mạnh",
+        "failing": "Thất bại",
+        "overdue": "Quá hạn",
+        "neverFired": "Chưa từng chạy",
+        "noEvidence": "Không có bằng chứng",
+        "lastOutcome": "lần cuối {outcome} {delta} trước",
+        "neverFiredSince": "chưa từng chạy kể từ {date}",
+        "noEvidenceHint": "không có lần chạy nào được ghi nhận"
+      }
     },
     "run": {
       "elapsed": "đã qua {delta}",
@@ -978,6 +992,8 @@
     "roleUser": "người dùng",
     "roleThinking": "đang nghĩ",
     "roleResponse": "phản hồi",
+    "planAssignments": "{count, plural, other {# phân công}}",
+    "planDependsOn": "phụ thuộc vào:",
     "tabAria": "thẻ {label} {position}/{total}"
   },
   "workflow": {

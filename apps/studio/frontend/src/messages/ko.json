@@ -429,6 +429,10 @@
       "noMessages": "기록된 메시지 없음",
       "waitingEvents": "수명 주기 이벤트 대기 중…",
       "noEvents": "기록된 수명 주기 이벤트 없음",
+      "showOlderEvents": "이전 이벤트 {count, number}개 표시",
+      "expandEventDetails": "이벤트 세부정보 표시",
+      "gateOutcome": "게이트: {verdict} · 주요 {major}건, 경미 {minor}건",
+      "gateOutcomeSimple": "게이트: {verdict}",
       "live": "라이브",
       "noBranchErrors": "모든 브랜치에서 감지된 오류가 없습니다.",
       "noFiles": "감지된 파일 작업이 없습니다.",
@@ -548,7 +552,17 @@
       "last": "마지막",
       "never": "실행된 적 없음",
       "paused": "일시중지됨",
-      "notScheduled": "예약 안 됨"
+      "notScheduled": "예약 안 됨",
+      "health": {
+        "healthy": "정상",
+        "failing": "실패",
+        "overdue": "지연",
+        "neverFired": "실행된 적 없음",
+        "noEvidence": "증거 없음",
+        "lastOutcome": "{delta} 전 {outcome}",
+        "neverFiredSince": "{date}부터 실행된 적 없음",
+        "noEvidenceHint": "실행 기록 없음"
+      }
     },
     "run": {
       "elapsed": "{delta} 경과",
@@ -978,6 +992,8 @@
     "roleUser": "사용자",
     "roleThinking": "생각 중",
     "roleResponse": "응답",
+    "planAssignments": "{count, plural, other {할당 #개}}",
+    "planDependsOn": "의존 대상:",
     "tabAria": "{label} 탭 {position}/{total}"
   },
   "workflow": {

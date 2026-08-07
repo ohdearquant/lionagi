@@ -13,6 +13,7 @@ from lionagi.libs.path_safety import has_traversal
 from ..registry import studio_route
 from ._io import read_json_file as _read_json
 from ._path_safety import public_path, safe_path_join
+from .redaction import abbreviate_path, demo_mode_enabled, project_agent_fields
 
 _THIS = Path(__file__).resolve()
 _REPO_ROOT = _THIS.parents[3]  # lionagi/studio/services/plugins.py → parents[3] = repo root
@@ -91,8 +92,16 @@ def _plugin_summary(
     name: str,
     description: str,
     source: str,
+    *,
+    redact: bool = False,
 ) -> dict[str, Any]:
-    """Build the summary dict for list_plugins() from a plugin directory."""
+    """Build the summary dict shared by list_plugins() and get_plugin().
+
+    ``redact=True`` abbreviates ``path`` to a bare filename, the same
+    projection the detail route applies -- callers of this summary (the list
+    route and the detail route) must agree on it rather than each deciding
+    independently.
+    """
     plugin_json = _read_json(plugin_dir / ".claude-plugin" / "plugin.json") or {}
     skills = _scan_skills(plugin_dir)
     agents = _scan_agents(plugin_dir)
@@ -100,6 +109,10 @@ def _plugin_summary(
     has_mcp = (plugin_dir / ".mcp.json").exists()
     if not has_mcp and plugin_json.get("mcpServers"):
         has_mcp = True
+
+    path = public_path(plugin_dir)
+    if redact and path:
+        path = abbreviate_path(path)
 
     return {
         "name": str(plugin_json.get("name") or name),
@@ -110,7 +123,7 @@ def _plugin_summary(
         "agent_count": len(agents),
         "has_hooks": has_hooks,
         "has_mcp": has_mcp,
-        "path": public_path(plugin_dir),
+        "path": path,
     }
 
 
@@ -119,9 +132,18 @@ def _plugin_detail(
     name: str,
     description: str,
     source: str,
+    *,
+    redact: bool = False,
 ) -> dict[str, Any]:
-    """Build the full detail dict for get_plugin() from a plugin directory."""
-    summary = _plugin_summary(plugin_dir, name, description, source)
+    """Build the full detail dict for get_plugin() from a plugin directory.
+
+    ``redact=True`` projects the embedded ``agents`` records and the
+    filesystem ``path`` through the same classification table the dedicated
+    ``/plugins/{plugin}/agents/{agent}`` route already applies -- this route
+    otherwise returns those agents' descriptions and the on-disk path
+    unfiltered, mirroring content a sibling route already redacts.
+    """
+    summary = _plugin_summary(plugin_dir, name, description, source, redact=redact)
     skills = _scan_skills(plugin_dir)
     agents = _scan_agents(plugin_dir)
 
@@ -142,6 +164,9 @@ def _plugin_detail(
             readme = readme_path.read_text()
         except OSError:
             pass
+
+    if redact:
+        agents = [project_agent_fields(a, redact=True) for a in agents]
 
     return {
         **summary,
@@ -230,28 +255,28 @@ def _iter_thirdparty_plugins() -> list[tuple[Path, str, str, str]]:
     return results
 
 
-def list_plugins() -> list[dict[str, Any]]:
+def list_plugins(*, redact: bool = False) -> list[dict[str, Any]]:
     """Scan marketplace/ and ~/.claude/plugins/cache/ for installed plugins."""
     out: list[dict[str, Any]] = []
 
     for plugin_dir, name, desc in _iter_marketplace_plugins():
-        out.append(_plugin_summary(plugin_dir, name, desc, "marketplace"))
+        out.append(_plugin_summary(plugin_dir, name, desc, "marketplace", redact=redact))
 
     for plugin_dir, name, desc, mp_name in _iter_thirdparty_plugins():
-        out.append(_plugin_summary(plugin_dir, name, desc, mp_name))
+        out.append(_plugin_summary(plugin_dir, name, desc, mp_name, redact=redact))
 
     return out
 
 
-def get_plugin(name: str) -> dict[str, Any] | None:
+def get_plugin(name: str, *, redact: bool = False) -> dict[str, Any] | None:
     """Full plugin detail including skills, agents, hooks, mcp, readme."""
     for plugin_dir, pname, desc in _iter_marketplace_plugins():
         if pname == name:
-            return _plugin_detail(plugin_dir, pname, desc, "marketplace")
+            return _plugin_detail(plugin_dir, pname, desc, "marketplace", redact=redact)
 
     for plugin_dir, pname, desc, mp_name in _iter_thirdparty_plugins():
         if pname == name:
-            return _plugin_detail(plugin_dir, pname, desc, mp_name)
+            return _plugin_detail(plugin_dir, pname, desc, mp_name, redact=redact)
 
     return None
 
@@ -324,13 +349,13 @@ def get_plugin_agent(plugin_name: str, agent_name: str) -> dict[str, Any] | None
 
 @studio_route("/plugins", method="GET", area="plugins")
 async def list_plugins_endpoint() -> dict[str, Any]:
-    plugins = await anyio.to_thread.run_sync(list_plugins)
+    plugins = await anyio.to_thread.run_sync(partial(list_plugins, redact=demo_mode_enabled()))
     return {"plugins": plugins}
 
 
 @studio_route("/plugins/{name}", method="GET", area="plugins")
 async def get_plugin_endpoint(name: str) -> dict[str, Any]:
-    plugin = await anyio.to_thread.run_sync(partial(get_plugin, name))
+    plugin = await anyio.to_thread.run_sync(partial(get_plugin, name, redact=demo_mode_enabled()))
     if not plugin:
         raise HTTPException(status_code=404, detail=f"Plugin {name} not found")
     return plugin
@@ -355,4 +380,7 @@ async def get_plugin_agent_endpoint(plugin_name: str, agent_name: str) -> dict[s
             status_code=404,
             detail=f"Agent {agent_name} not found in plugin {plugin_name}",
         )
-    return agent
+    # A plugin agent's markdown body is the same kind of owner-authored
+    # content as a Library agent's system prompt -- it goes through the same
+    # classification table rather than a full-content mirror one route over.
+    return project_agent_fields(agent, redact=demo_mode_enabled())

@@ -15,6 +15,12 @@ from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 
 from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join, validate_name_component
+from .redaction import (
+    RedactedPayloadError,
+    demo_mode_enabled,
+    project_agent_fields,
+    reject_if_redacted_payload,
+)
 
 _AGENTS_ROOT = LIONAGI_HOME / "agents"
 _log = logging.getLogger(__name__)
@@ -71,6 +77,24 @@ def _normalize_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+_SCALAR_FRONTMATTER_TYPES = (str, int, float, bool, type(None))
+
+
+def _display_scalar(value: Any) -> Any:
+    """Return the display form of a scalar-shaped frontmatter value; a
+    mapping or list is returned unchanged, not ``str()``-coerced.
+
+    A ``str()`` call accepts any input, so coercing a nested mapping before
+    it reaches :func:`redaction.project_agent_fields` would turn it into a
+    plain string -- a shape the classification table's scalar check admits
+    verbatim, defeating the very check meant to catch it. Leaving a non-scalar
+    value's real shape intact lets that check see and drop it instead.
+    """
+    if isinstance(value, _SCALAR_FRONTMATTER_TYPES):
+        return str(value) if value not in (None, "") else ""
+    return value
+
+
 def _canonical_model(model: Any, provider: Any) -> str:
     model_s = str(model or "").strip()
     if not model_s:
@@ -95,8 +119,8 @@ def list_agents() -> list[dict[str, Any]]:
         entry: dict[str, Any] = {
             "name": path.stem,
             "path": public_path(path),
-            "provider": str(fm.get("provider") or ""),
-            "model": str(fm.get("model") or ""),
+            "provider": _display_scalar(fm.get("provider")),
+            "model": _display_scalar(fm.get("model")),
             "description": str(fm.get("description") or ""),
             **{k: v for k, v in fm.items() if k not in ("model", "description", "provider")},
         }
@@ -128,8 +152,8 @@ def get_agent(name: str) -> dict[str, Any] | None:
     result: dict[str, Any] = {
         "name": stem,
         "path": public_path(path),
-        "provider": str(fm.get("provider") or ""),
-        "model": str(fm.get("model") or ""),
+        "provider": _display_scalar(fm.get("provider")),
+        "model": _display_scalar(fm.get("model")),
         "system_prompt": fm.get("system_prompt") or (body if body else None),
         "guidance": fm.get("guidance") or None,
     }
@@ -295,6 +319,14 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if _is_protected_system(existing_fm):
         raise AgentProtectedError(f"Agent '{stem}' is a system agent and cannot be edited")
 
+    # While demo mode is on, a client that fetched the redacted view and posted
+    # it back unmodified must not be able to overwrite the real file with the
+    # placeholder text -- the other write path onto agent files (the generic
+    # definitions save route) carries the same guard; see redaction.py.
+    reject_if_redacted_payload(
+        data.get("system_prompt"), data.get("guidance"), data.get("description")
+    )
+
     fm: dict[str, Any] = dict(existing_fm)
     incoming = _normalize_frontmatter(data)
     _canonicalize_casts(incoming)
@@ -333,6 +365,8 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
 @studio_route("/agents/", method="GET", area="agents", name="list_agents")
 async def list_agents_route() -> dict[str, Any]:
     agents = await anyio.to_thread.run_sync(list_agents)
+    redact = demo_mode_enabled()
+    agents = [project_agent_fields(a, redact=redact) for a in agents]
     return {"agents": agents}
 
 
@@ -341,7 +375,7 @@ async def get_agent_route(name: str) -> dict[str, Any]:
     agent = await anyio.to_thread.run_sync(partial(get_agent, name))
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
-    return agent
+    return project_agent_fields(agent, redact=demo_mode_enabled())
 
 
 @studio_route("/agents/{name}", method="POST", area="agents", name="create_agent")
@@ -349,11 +383,12 @@ async def create_agent_route(
     name: str, body: Annotated[dict[str, Any], Body(default_factory=dict)]
 ) -> dict[str, Any]:
     try:
-        return await anyio.to_thread.run_sync(partial(create_agent, name, body))
+        created = await anyio.to_thread.run_sync(partial(create_agent, name, body))
     except AgentExistsError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
+    return project_agent_fields(created, redact=demo_mode_enabled())
 
 
 @studio_route("/agents/{name}", method="PUT", area="agents", name="update_agent")
@@ -362,13 +397,13 @@ async def update_agent_route(
 ) -> dict[str, Any]:
     try:
         updated = await anyio.to_thread.run_sync(partial(update_agent, name, body))
-    except AgentProtectedError as e:
+    except (AgentProtectedError, RedactedPayloadError) as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
-    return updated
+    return project_agent_fields(updated, redact=demo_mode_enabled())
 
 
 @studio_route("/agents/{name}", method="DELETE", area="agents", name="delete_agent")

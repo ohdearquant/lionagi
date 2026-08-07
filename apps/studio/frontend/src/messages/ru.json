@@ -429,6 +429,10 @@
       "noMessages": "Сообщения не записаны",
       "waitingEvents": "Ожидание событий жизненного цикла…",
       "noEvents": "События жизненного цикла не записаны",
+      "showOlderEvents": "Показать {count, number} более ранних событий",
+      "expandEventDetails": "Показать детали события",
+      "gateOutcome": "Гейт: {verdict} · {major} крит., {minor} незнач.",
+      "gateOutcomeSimple": "Гейт: {verdict}",
       "live": "активно",
       "noBranchErrors": "Ошибки не обнаружены ни в одной ветке.",
       "noFiles": "Операции с файлами не обнаружены.",
@@ -548,7 +552,17 @@
       "last": "последний",
       "never": "никогда не запускалось",
       "paused": "Приостановлено",
-      "notScheduled": "Не запланировано"
+      "notScheduled": "Не запланировано",
+      "health": {
+        "healthy": "Исправно",
+        "failing": "Сбой",
+        "overdue": "Просрочено",
+        "neverFired": "Никогда не запускался",
+        "noEvidence": "Нет данных",
+        "lastOutcome": "последний раз {outcome} {delta} назад",
+        "neverFiredSince": "никогда не запускался с {date}",
+        "noEvidenceHint": "выполнение не зафиксировано"
+      }
     },
     "run": {
       "elapsed": "прошло {delta}",
@@ -978,6 +992,8 @@
     "roleUser": "пользователь",
     "roleThinking": "размышление",
     "roleResponse": "ответ",
+    "planAssignments": "{count, plural, one {# назначение} few {# назначения} many {# назначений} other {# назначения}}",
+    "planDependsOn": "зависит от:",
     "tabAria": "вкладка {label}, {position} из {total}"
   },
   "workflow": {

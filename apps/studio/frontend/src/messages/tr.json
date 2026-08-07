@@ -429,6 +429,10 @@
       "noMessages": "kayıtlı mesaj yok",
       "waitingEvents": "yaşam döngüsü olayları bekleniyor…",
       "noEvents": "kayıtlı yaşam döngüsü olayı yok",
+      "showOlderEvents": "{count, number} daha eski etkinliği göster",
+      "expandEventDetails": "Etkinlik ayrıntılarını göster",
+      "gateOutcome": "Geçit: {verdict} · {major} büyük, {minor} küçük",
+      "gateOutcomeSimple": "Geçit: {verdict}",
       "live": "canlı",
       "noBranchErrors": "hiçbir dalda hata algılanmadı.",
       "noFiles": "dosya işlemi algılanmadı.",
@@ -548,7 +552,17 @@
       "last": "son",
       "never": "hiç çalışmadı",
       "paused": "Duraklatıldı",
-      "notScheduled": "Zamanlanmadı"
+      "notScheduled": "Zamanlanmadı",
+      "health": {
+        "healthy": "Sağlıklı",
+        "failing": "Başarısız",
+        "overdue": "Gecikmiş",
+        "neverFired": "Hiç çalışmadı",
+        "noEvidence": "Kanıt yok",
+        "lastOutcome": "son {outcome} {delta} önce",
+        "neverFiredSince": "{date} tarihinden beri hiç çalışmadı",
+        "noEvidenceHint": "kaydedilmiş çalıştırma yok"
+      }
     },
     "run": {
       "elapsed": "{delta} geçti",
@@ -978,6 +992,8 @@
     "roleUser": "kullanıcı",
     "roleThinking": "düşünüyor",
     "roleResponse": "yanıt",
+    "planAssignments": "{count, plural, other {# görev ataması}}",
+    "planDependsOn": "bağımlı olduğu:",
     "tabAria": "{label} sekmesi {position}/{total}"
   },
   "workflow": {

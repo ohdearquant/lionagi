@@ -429,6 +429,10 @@
       "noMessages": "メッセージは記録されていません",
       "waitingEvents": "ライフサイクルイベントを待機中…",
       "noEvents": "ライフサイクルイベントは記録されていません",
+      "showOlderEvents": "{count, number} 件の古いイベントを表示",
+      "expandEventDetails": "イベントの詳細を表示",
+      "gateOutcome": "ゲート: {verdict} · 重大 {major} 件、軽微 {minor} 件",
+      "gateOutcomeSimple": "ゲート: {verdict}",
       "live": "ライブ",
       "noBranchErrors": "すべてのブランチでエラーは検出されていません。",
       "noFiles": "ファイル操作は検出されていません。",
@@ -548,7 +552,17 @@
       "last": "前回",
       "never": "未実行",
       "paused": "一時停止中",
-      "notScheduled": "未スケジュール"
+      "notScheduled": "未スケジュール",
+      "health": {
+        "healthy": "正常",
+        "failing": "失敗",
+        "overdue": "遅延",
+        "neverFired": "一度も実行されていません",
+        "noEvidence": "証拠なし",
+        "lastOutcome": "{delta}前に{outcome}",
+        "neverFiredSince": "{date}以降一度も実行されていません",
+        "noEvidenceHint": "実行記録なし"
+      }
     },
     "run": {
       "elapsed": "{delta}経過",
@@ -978,6 +992,8 @@
     "roleUser": "ユーザー",
     "roleThinking": "思考",
     "roleResponse": "応答",
+    "planAssignments": "{count, plural, other {# 件の割り当て}}",
+    "planDependsOn": "依存先:",
     "tabAria": "{label}タブ {position}/{total}"
   },
   "workflow": {
