@@ -2296,15 +2296,25 @@ class StateDB:
         one that finds the link already current) does not double-count.
         Repointing away from a prior invocation also decrements that
         invocation's count, so it stops claiming a session it no longer has.
+
+        On PostgreSQL the prior-invocation read takes ``FOR UPDATE``: SQLite's
+        ``_tx()`` already serializes writers with its own write lock plus
+        ``BEGIN IMMEDIATE``, so a second attach cannot even start its SELECT
+        until the first has committed. PostgreSQL at READ COMMITTED has no
+        such serialization — a second concurrent attach could read the same
+        prior invocation_id a first attach is about to repoint away from,
+        then decrement that stale value after its own UPDATE's WHERE clause
+        re-evaluates against the row the first attach already moved.
+        Locking the row before reading it forces the second attach to block
+        until the first commits, so it re-reads the invocation the first
+        attach actually left the session on.
         """
         now = time.time()
         async with self._tx() as conn:
-            prev_row = (
-                await conn.execute(
-                    text("SELECT invocation_id FROM sessions WHERE id = :sid"),
-                    {"sid": session_id},
-                )
-            ).first()
+            prev_query = "SELECT invocation_id FROM sessions WHERE id = :sid"
+            if self.dialect == "postgresql":
+                prev_query += " FOR UPDATE"
+            prev_row = (await conn.execute(text(prev_query), {"sid": session_id})).first()
             prev_invocation_id = prev_row[0] if prev_row else None
 
             result = await conn.execute(
