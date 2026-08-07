@@ -1264,6 +1264,53 @@ async def test_do_kill_all_stale_access_denied_not_cancelled(
         ] == "running", "AccessDenied must not be treated as a dead/recycled pid"
 
 
+async def test_do_kill_all_stale_unverifiable_pid_persists_first_observed_marker(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A row skipped as unverifiable must retain evidence of that across sweeps.
+
+    Before this fix the fail-safe "treat as live" decision was only a local
+    counter for the one sweep: the record kept no `unverifiable_since` or
+    count, so a permanently-uninspectable pid was silently skipped on every
+    run forever with nothing durable to show for it. The first sweep must
+    record when this was first observed; a second sweep must keep that
+    timestamp fixed while advancing the count, not restart the clock.
+    """
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    assert s["status"] == "running"
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    first_seen = meta["unverifiable_since"]
+    assert isinstance(first_seen, float)
+    assert meta["unverifiable_count"] == 1
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta["unverifiable_since"] == first_seen, "first-observed marker must not reset"
+    assert meta["unverifiable_count"] == 2
+
+
 async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_sweep(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

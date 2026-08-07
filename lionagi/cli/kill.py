@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import time
@@ -636,6 +637,7 @@ async def _do_kill_all_stale(
     skipped_recent = 0
     skipped_unverifiable = 0
     skipped_unlinked_plays = 0
+    unverifiable_tracked = 0
 
     live_status_for: dict[str, str] = {
         "sessions": "running",
@@ -707,8 +709,35 @@ async def _do_kill_all_stale(
                         # We couldn't read enough of the process to confirm
                         # identity either way (e.g. AccessDenied). Treat as
                         # live rather than sweep it out from under a worker
-                        # we simply can't inspect.
+                        # we simply can't inspect. That decision must not be
+                        # only a per-sweep counter: persist when this was
+                        # first observed so a permanently-uninspectable pid
+                        # leaves durable evidence instead of being silently
+                        # skipped forever with nothing to show for it.
                         skipped_unverifiable += 1
+                        if not dry_run:
+                            since = meta.get("unverifiable_since")
+                            if not isinstance(since, (int, float)):
+                                since = time.time()
+                            count = meta.get("unverifiable_count")
+                            count = (count + 1) if isinstance(count, int) else 1
+                            new_meta = {
+                                **meta,
+                                "unverifiable_since": since,
+                                "unverifiable_count": count,
+                            }
+                            if entity_type == "session":
+                                # update_session()'s generic field path has no
+                                # JSON bindparam for node_metadata (unlike
+                                # create_session/update_invocation), so this
+                                # must be pre-serialized like every other
+                                # session node_metadata writer in the CLI.
+                                await db.update_session(
+                                    entity_id, node_metadata=json.dumps(new_meta)
+                                )
+                            else:
+                                await db.update_invocation(entity_id, node_metadata=new_meta)
+                            unverifiable_tracked += 1
                         if verbose:
                             print(
                                 f"  skip {entity_type} {entity_id[:12]}: process {pid} "
@@ -867,6 +896,17 @@ async def _do_kill_all_stale(
         f"skipped_unverifiable_pid={skipped_unverifiable}, "
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )
+    if unverifiable_tracked:
+        # Durable evidence, not just this sweep's counter: a row that stays
+        # uninspectable forever (e.g. permission denied) never reaches any
+        # other outcome, so its unverifiable_since/count are now visible on
+        # the row itself rather than only inferred from repeated sweeps.
+        warn(
+            f"{unverifiable_tracked} running row(s) recorded first-observed "
+            "unverifiable-pid evidence this sweep (node_metadata.unverifiable_since / "
+            "unverifiable_count) — no automatic disposition is applied; inspect "
+            "with `li status` and resolve manually."
+        )
     if skipped_unlinked_plays:
         # One line per sweep, not one per row: a play created by a live run
         # never records the sessions it started, so this is a property of how
