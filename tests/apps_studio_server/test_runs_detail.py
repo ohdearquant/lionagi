@@ -246,7 +246,10 @@ async def test_get_run_passes_artifact_json_fields(patched_runs_svc):
 
     assert result is not None
     assert result["artifact_contract_json"] == contract
-    assert result["artifact_verification_json"] == verification
+    resolved = result["artifact_verification_json"]
+    assert {k: v for k, v in resolved.items() if k != "staleness_check"} == verification
+    # `verification` has no checked_at/produced, so staleness cannot be derived.
+    assert resolved["staleness_check"] == "unknown"
 
 
 # ---------------------------------------------------------------------------
