@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import argparse
 
-import lionagi.cli.main as cli_main
+from lionagi._auto import build_cli_parser, seed_for
 from lionagi.cli.orchestrate.fanout import _parse_worker_pool
 
 
 def _fanout_parser() -> argparse.ArgumentParser:
-    parser, _ = cli_main._build_parser(cli_main._COMMAND_BY_NAME["orchestrate"])
+    parser = build_cli_parser(seed_for("orchestrate")).parser
     top_subparsers = next(
         action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     )

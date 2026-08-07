@@ -527,15 +527,15 @@ async def test_spawned_cli_session_is_included_in_schedule_spend(tmp_path, monke
             import argparse
             import asyncio
 
-            import lionagi.cli.main as cli_main
+            from lionagi._auto import build_cli_parser, seed_for
             from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist
             from lionagi.session.branch import Branch
             from lionagi.state.db import StateDB
 
 
             def agent_options():
-                spec = cli_main._COMMAND_BY_NAME["agent"]
-                parser, _ = cli_main._build_parser(spec)
+                seed = seed_for("agent")
+                parser = build_cli_parser(seed).parser
                 subcommands = next(
                     action
                     for action in parser._actions

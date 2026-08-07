@@ -793,9 +793,9 @@ def _run_machine_command(argv: list[str]) -> dict[str, Any]:
     if module_name is not None:
         return import_module(module_name, __package__).machine_result(rest)
 
-    from .main import _COMMAND_BY_NAME
+    from lionagi._auto import command_exists
 
-    if name in _COMMAND_BY_NAME or name in ("play", "skill", "wait"):
+    if command_exists(name) or name in ("play", "skill", "wait"):
         raise MachineError(
             "unavailable",
             f"li {name} has no machine-mode result in contract version "

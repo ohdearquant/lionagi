@@ -78,8 +78,10 @@ def _command_parser(command: str, *subs: str) -> argparse.ArgumentParser:
     ``option_strings``/``_actions`` off the live parser is immune to
     argparse's rendered-help formatting changing across Python versions.
     """
-    spec = cli_main._COMMAND_BY_NAME[command]
-    parser, _ = cli_main._build_parser(spec)
+    from lionagi._auto import build_cli_parser, seed_for
+
+    seed = seed_for(command)
+    parser = build_cli_parser(seed).parser
     for name in (command, *subs):
         sub_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
         parser = sub_action.choices[name]
@@ -104,7 +106,9 @@ def _positional_dests(command: str, *subs: str) -> list[str]:
 
 
 def _top_level_subcommand_set() -> list[str]:
-    parser, _ = cli_main._build_parser(None)
+    from lionagi._auto import build_cli_parser
+
+    parser = build_cli_parser(None).parser
     sub_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     return sorted(sub_action.choices.keys())
 
@@ -264,8 +268,8 @@ SCHEDULE_OBSERVABILITY_SUBCOMMAND_SHAPES = {
 class TestTopLevelCommandRegistryGolden:
     def test_top_level_command_set_is_pinned(self):
         """A command (or alias) silently added to or removed from
-        `_COMMAND_REGISTRY` must fail this golden until the change to the
-        set of things `li` accepts as a first argument is deliberate."""
+        the typed CLI seed registry must fail this golden until the change to
+        the set of things `li` accepts as a first argument is deliberate."""
         assert _top_level_subcommand_set() == sorted(TOP_LEVEL_COMMANDS)
 
 

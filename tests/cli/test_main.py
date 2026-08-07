@@ -431,12 +431,13 @@ def test_cli_package_getattr_raises_for_unknown_attr():
 
 def test_command_registry_loaders_expose_parser_and_handler():
     """Every registry entry resolves before a command-specific parse needs it."""
-    import lionagi.cli.main as main_module
+    from lionagi._auto import build_cli_parser, iter_cli_seeds
 
-    for spec in main_module._COMMAND_REGISTRY:
-        module = spec.loader()
-        assert callable(getattr(module, spec.parser_factory))
-        assert callable(getattr(module, spec.handler))
+    for seed in iter_cli_seeds():
+        build = build_cli_parser(seed)
+        assert build.registration is not None
+        assert callable(build.registration.cli.parser_factory)
+        assert callable(build.registration.handler)
 
 
 def test_version_and_root_help_work_in_fresh_cli_processes():
@@ -467,17 +468,13 @@ def test_leaf_command_parse_error_preserves_full_root_usage():
 def test_broken_command_loader_reports_error_without_traceback(capsys, monkeypatch):
     import lionagi.cli.main as main_module
 
-    monkeypatch.setitem(
-        main_module._COMMAND_BY_NAME,
-        "agent",
-        main_module._CommandSpec(
-            "agent",
-            "broken",
-            lambda: __import__("missing_lionagi_command_module"),
-            "add_agent_subparser",
-            "run_agent",
-        ),
-    )
+    def _boom(selected):
+        raise ModuleNotFoundError(
+            "No module named 'missing_lionagi_command_module'",
+            name="missing_lionagi_command_module",
+        )
+
+    monkeypatch.setattr(main_module, "build_cli_parser", _boom)
     rc = main_module.main(["agent", "--help"])
     # A module missing from the environment is reported as an unusable
     # environment, not as a failed run: exit 1 here is what a run that started
@@ -500,20 +497,10 @@ def test_a_command_loader_failing_for_another_reason_is_an_ordinary_failure(caps
     """
     import lionagi.cli.main as main_module
 
-    def _explode():
+    def _explode(selected):
         raise RuntimeError("bad module")
 
-    monkeypatch.setitem(
-        main_module._COMMAND_BY_NAME,
-        "agent",
-        main_module._CommandSpec(
-            "agent",
-            "broken",
-            _explode,
-            "add_agent_subparser",
-            "run_agent",
-        ),
-    )
+    monkeypatch.setattr(main_module, "build_cli_parser", _explode)
     rc = main_module.main(["agent", "--help"])
     assert rc == 1
     err = capsys.readouterr().err
