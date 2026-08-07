@@ -54,7 +54,7 @@
       "agent",
       "--machine"
     ],
-    "stdout": "{\"ok\": false, \"contract_version\": 1, \"data\": null, \"error\": {\"kind\": \"unavailable\", \"message\": \"li agent has no machine-mode result in contract version 1; it is a human-facing command\", \"detail\": null}}\n",
+    "stdout": "[redacted: this case is classified as reporting live agent run state and is excluded from byte-for-byte stdout comparison. Pinning today's literal text would carry no oracle value and risks silently committing live state if the implementation starts reporting it, so it is not committed.]",
     "stderr": "",
     "exit_code": 0,
     "envelope_ok": false

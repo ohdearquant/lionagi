@@ -29,8 +29,8 @@
       "agent",
       "status"
     ],
-    "stdout": "SESSION  1fe58be6-1b2a-41a8-8a9c-870f308968fd\n  status:      running\n  label:       implementer\n  model:       claude/claude-sonnet-5\n  provider:    claude\n  project:     ohdearquant/lionagi\n  last active: 2026-08-07 05:39:54\n  resume:      li agent -r 5ca320f1-16ab-474e-9b22-1930df903919 \"...\"\n",
-    "stderr": "Linked SQLite 3.46.0 predates the fix for the WAL-reset corruption race (fixed in 3.51.3; backported to 3.44.6 and 3.50.7). WAL is still enabled because concurrent readers and writers depend on it; upgrade the SQLite library to remove the exposure.\n",
+    "stdout": "[redacted: this case's stdout reports live session state (session id, status, timestamps, project label, and a resume command carrying a fresh session id) that varies per run and host. The case is excluded from byte-for-byte comparison, so the literal text serves no oracle purpose and is not committed.]",
+    "stderr": "[redacted: this case's stderr reports the host's linked SQLite library version and its CVE posture, which varies per machine. The case is excluded from byte-for-byte comparison, so the literal text serves no oracle purpose and is not committed.]",
     "exit_code": 3
   },
   {
@@ -72,7 +72,7 @@
       "play",
       "list"
     ],
-    "stdout": "arch-discovery\natlas-calibrate\natlas-place\naudit\nbackend-wire\nci-gate-systematization\ndoc-alignment\nfeature\nfirm-audit\nkhive\nkhive-issue-triage\nkhive-kg-curation\nlionagi-consolidate\nlionagi-feature\nlionagi-issue-triage\nlionagi-rearchitect\nlndl-symbolic-design\nperf-loop\nplay-plan\npr-review\nproduct-polish\nprogress-research\nresearch\nresolve-issues\nrust-ui\nshowcase-alpha\nshowcase-beta\nshowcase-break\nshowcase-discovery\nshowcase-polish\nshowcase-tool\nstyx-emitter\ntest-coverage\nui\n",
+    "stdout": "[redacted: this case's stdout lists the playbooks installed in the host's ~/.lionagi/playbooks, which varies per machine. The case is excluded from byte-for-byte comparison, so the literal list serves no oracle purpose and is not committed.]",
     "stderr": "",
     "exit_code": 0
   },
@@ -82,7 +82,7 @@
       "nonexistent"
     ],
     "stdout": "",
-    "stderr": "error: playbook not found: 'nonexistent'. Available: arch-discovery, atlas-calibrate, atlas-place, audit, backend-wire, ci-gate-systematization, doc-alignment, feature, firm-audit, khive\n",
+    "stderr": "[redacted: this case's stderr embeds the same host-specific playbook name list as the 'play list' case (read from ~/.lionagi/playbooks), which varies per machine. The case is excluded from byte-for-byte comparison, so the literal text serves no oracle purpose and is not committed.]",
     "exit_code": 1
   },
   {

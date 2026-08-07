@@ -29,6 +29,8 @@ Waiver:
 from __future__ import annotations
 
 import json
+import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -382,3 +384,84 @@ def test_fixtures_carry_no_host_specific_state():
         "contract fixtures must not carry host-specific state (see the note above): "
         + "; ".join(offenders)
     )
+
+
+# `test_fixtures_carry_no_host_specific_state` above only catches leaks that
+# happen to match one of a few path patterns. That is a pattern-shaped check:
+# it says nothing about a captured field that leaks host state through some
+# other shape (a session id, a library version, a CVE posture, a directory
+# listing). The check below instead enumerates the *population* every
+# byte-for-byte comparison already excludes as volatile (the same
+# _VOLATILE_ARGV / _VOLATILE_MACHINE_ARGV sets test_cli_specialized_paths_
+# match_baseline and test_machine_classification_matches_baseline read) and
+# requires every captured stream of every case in that population to be
+# either empty or carry the redaction marker -- never literal captured text.
+# A case's content having no *currently visible* host-specific value is not
+# an exemption: if it is excluded from comparison, pinning its literal bytes
+# has no oracle value and is pure downside if the command ever starts
+# reporting live state through that field.
+_REDACTION_MARKER_RE = re.compile(r"^\[redacted: .+\]$", re.DOTALL)
+
+
+def _volatile_argv_for(file_name: str) -> set[tuple[str, ...]]:
+    if file_name == "specialized":
+        return set(_VOLATILE_ARGV)
+    if file_name == "machine":
+        return set(_VOLATILE_ARGV) | set(_VOLATILE_MACHINE_ARGV)
+    return set()
+
+
+def _unredacted_fields(file_name: str, cases: list) -> list[str]:
+    """(file, argv, field) labels for every case classified volatile for
+    *file_name* whose captured stream is neither empty nor the redaction
+    marker -- i.e. still carries literal captured output."""
+    volatile = _volatile_argv_for(file_name)
+    offenders = []
+    for case in cases:
+        argv = tuple(case["argv"])
+        if argv not in volatile:
+            continue
+        for field in ("stdout", "stderr"):
+            value = case.get(field, "")
+            if value and not _REDACTION_MARKER_RE.match(value):
+                offenders.append(f"{file_name}.json {argv} {field}")
+    return offenders
+
+
+def test_volatile_fixture_cases_are_fully_redacted():
+    offenders = []
+    for file_name in ("specialized", "machine"):
+        offenders += _unredacted_fields(file_name, _load(file_name))
+    assert not offenders, (
+        "volatile fixture cases still carry literal captured output instead of the "
+        "redaction marker: " + "; ".join(offenders)
+    )
+
+
+def test_redaction_check_flags_unredacted_volatile_stdout():
+    """Mutation arm (a): a disposable copy with a volatile case's stdout put
+    back to literal text must turn the population check red, naming the case."""
+    argv = ("agent", "status")
+    cases = [{"argv": list(argv), "stdout": "SESSION deadbeef-...", "stderr": "[redacted: ok]"}]
+    assert _unredacted_fields("specialized", cases) == [f"specialized.json {argv} stdout"]
+
+
+def test_redaction_check_flags_unredacted_volatile_stderr():
+    """Mutation arm (b): same as (a) but for stderr -- this is the arm that
+    matters, since the original defect was a stderr leak the stdout-only
+    remedy would not have caught."""
+    argv = ("agent", "status")
+    cases = [{"argv": list(argv), "stdout": "[redacted: ok]", "stderr": "Linked SQLite 3.46.0 ..."}]
+    assert _unredacted_fields("specialized", cases) == [f"specialized.json {argv} stderr"]
+
+
+def test_redaction_check_flags_a_newly_classified_volatile_case(monkeypatch):
+    """Mutation arm (c): growing the volatile classification with an
+    unredacted case turns the check red without any edit to this test file --
+    proving the check is derived from the live classification, not a
+    hand-written list of cases."""
+    new_argv = ("totally", "new", "specialized", "case")
+    assert new_argv not in _VOLATILE_ARGV
+    monkeypatch.setattr(sys.modules[__name__], "_VOLATILE_ARGV", _VOLATILE_ARGV | {new_argv})
+    cases = [{"argv": list(new_argv), "stdout": "literal unredacted output", "stderr": ""}]
+    assert _unredacted_fields("specialized", cases) == [f"specialized.json {new_argv} stdout"]
