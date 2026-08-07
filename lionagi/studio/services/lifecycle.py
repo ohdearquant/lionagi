@@ -232,8 +232,6 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
             _log.info("Reaping null-status session %s: process is dead", sid)
             try:
                 async with StateDB() as db:
-                    if row["ended_at"] is None:
-                        await db.update_session(sid, ended_at=now)
                     transitioned = await db.update_status(
                         "session",
                         sid,
@@ -246,6 +244,12 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
                         metadata={"detector": "null_status_dead_process"},
                         expected_statuses={None},
                     )
+                    if transitioned:
+                        # Stamp ended_at only after the guarded transition wins,
+                        # so a lost CAS never leaves ended_at set on a row whose
+                        # status did not actually move (issue #2844).
+                        if row["ended_at"] is None:
+                            await db.update_session(sid, ended_at=now)
                 if transitioned:
                     reaped += 1
                 else:
@@ -302,8 +306,6 @@ async def reap_phantom_sessions(
                 if current.get("status") != "running":
                     # Already transitioned by another path.
                     continue
-                if current.get("ended_at") is None:
-                    await db.update_session(sid, ended_at=now)
                 if current.get("agent_name") == "claude-code":
                     # A mirrored external session has no lionagi process, so the
                     # phantom model misfires: an idle transcript is a normal
@@ -339,6 +341,11 @@ async def reap_phantom_sessions(
                         metadata={"phantom_reaped": True, "phantom_reason": phantom_reason},
                         expected_statuses={"running"},
                     )
+                if transitioned and current.get("ended_at") is None:
+                    # Stamp ended_at only after the guarded transition wins,
+                    # so a lost CAS never leaves ended_at set on a row whose
+                    # status did not actually move (issue #2844).
+                    await db.update_session(sid, ended_at=now)
             if transitioned:
                 _log.info("Phantom session %s reaped (reason=%s)", sid, phantom_reason)
                 reaped += 1
