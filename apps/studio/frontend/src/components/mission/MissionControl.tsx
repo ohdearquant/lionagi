@@ -7,19 +7,25 @@
  * time. No manual refresh. No page reload.
  */
 
+import { useState } from "react";
 import { useTranslations } from "use-intl";
 import StaleBadge from "./StaleBadge";
 import AttentionQueue, { AttentionQueueSkeleton } from "./AttentionQueue";
 import LiveBoard, { LiveBoardSkeleton } from "./LiveBoard";
 import RecentRuns, { RecentRunsSkeleton } from "./RecentRuns";
 import Pulse, { PulseSkeleton } from "./Pulse";
+import SpendPanel, { SpendPanelSkeleton } from "./SpendPanel";
 import ZeroState from "./ZeroState";
 import Skeleton from "@/components/ui/Skeleton";
 import { useLiveBoard } from "./useLiveBoard";
+import type { ActivityWindow } from "@/lib/api";
 
 export default function MissionControl() {
   const t = useTranslations("mission");
   const board = useLiveBoard();
+  // Owned here, not inside Pulse, so SpendPanel can follow the same window
+  // selection without a second selector of its own.
+  const [activityWindow, setActivityWindow] = useState<ActivityWindow>("24h");
   const runningCount = board.activeRuns.length + board.activeInvocations.length;
   // Orphaned (daemon-restart housekeeping) runs never enter the attention
   // list — they carry no human action — so this count is the whole list.
@@ -76,8 +82,9 @@ export default function MissionControl() {
           <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
           <LiveBoardSkeleton />
           <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
-          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
             <PulseSkeleton />
+            <SpendPanelSkeleton />
             <RecentRunsSkeleton />
           </div>
         </>
@@ -107,9 +114,10 @@ export default function MissionControl() {
 
           <hr className="border-t border-edge" style={{ border: "none", borderTopWidth: "1px" }} />
 
-          {/* Pulse + Recent share a row on wide screens; stack below 1280px. */}
-          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-            <Pulse />
+          {/* Pulse + Spend + Recent share a row on wide screens; stack below 1280px. */}
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
+            <Pulse window={activityWindow} onWindowChange={setActivityWindow} />
+            <SpendPanel window={activityWindow} />
             <RecentRuns runs={board.recentRuns} nowSec={board.nowSec} />
           </div>
         </>

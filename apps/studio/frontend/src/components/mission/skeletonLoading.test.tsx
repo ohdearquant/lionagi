@@ -80,6 +80,7 @@ describe("section skeleton exports — shape-mirroring components", () => {
     { file: "AttentionQueue.tsx", symbol: "AttentionQueueSkeleton" },
     { file: "LiveBoard.tsx", symbol: "LiveBoardSkeleton" },
     { file: "Pulse.tsx", symbol: "PulseSkeleton" },
+    { file: "SpendPanel.tsx", symbol: "SpendPanelSkeleton" },
     { file: "RecentRuns.tsx", symbol: "RecentRunsSkeleton" },
   ];
 
@@ -108,10 +109,11 @@ describe("section skeleton exports — shape-mirroring components", () => {
 describe("MissionControl.tsx — wires skeletons ahead of empty/live branches", () => {
   const src = read("MissionControl.tsx");
 
-  it("imports all four section skeletons", () => {
+  it("imports all five section skeletons", () => {
     expect(src).toMatch(/AttentionQueueSkeleton/);
     expect(src).toMatch(/LiveBoardSkeleton/);
     expect(src).toMatch(/PulseSkeleton/);
+    expect(src).toMatch(/SpendPanelSkeleton/);
     expect(src).toMatch(/RecentRunsSkeleton/);
   });
 

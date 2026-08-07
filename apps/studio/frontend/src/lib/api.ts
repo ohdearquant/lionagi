@@ -694,6 +694,8 @@ export function streamOperatorConversation(
 
 // ─── Runs ─────────────────────────────────────────────────────────────────────
 
+export type RunSort = "recent" | "cost";
+
 export interface RunListParams {
   page?: number;
   per_page?: number;
@@ -702,6 +704,8 @@ export interface RunListParams {
   project?: string;
   project_null?: boolean;
   search?: string;
+  /** "recent" (default) or "cost" — highest reported spend first, server-side. */
+  sort?: RunSort;
 }
 
 export interface RunListResponse {
@@ -725,6 +729,7 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
     query.set("project", params.project);
   }
   if (params?.search) query.set("search", params.search);
+  if (params?.sort) query.set("sort", params.sort);
   for (const value of params?.status ?? []) query.append("status", value);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   // The daemon registers this list route with a trailing slash (unlike
@@ -1860,6 +1865,41 @@ export interface ActivityStats {
 
 export async function getActivityStats(window: ActivityWindow): Promise<ActivityStats> {
   return fetchJson<ActivityStats>(`/api/stats/activity?window=${window}`);
+}
+
+// Cost-visibility contract: `reported_usd` is `null` whenever no session in
+// the window reported a cost — never coerced to 0. `coverage` is the
+// fraction of the window's sessions (including in-flight/non-terminal ones)
+// that reported a cost at all.
+export interface SpendStats {
+  window: ActivityWindow;
+  reported_usd: number | null;
+  reported_count: number;
+  unreported_count: number;
+  total_count: number;
+  coverage: number | null;
+}
+
+export async function getSpendStats(window: ActivityWindow): Promise<SpendStats> {
+  return fetchJson<SpendStats>(`/api/stats/spend?window=${window}`);
+}
+
+export interface SpendRollupRow {
+  key: string | null;
+  reported_usd: number | null;
+  reported_count: number;
+  unreported_count: number;
+}
+
+export interface SpendRollup {
+  window: ActivityWindow;
+  by_project: SpendRollupRow[];
+  by_agent: SpendRollupRow[];
+  by_playbook: SpendRollupRow[];
+}
+
+export async function getSpendRollup(window: ActivityWindow): Promise<SpendRollup> {
+  return fetchJson<SpendRollup>(`/api/stats/spend/rollup?window=${window}`);
 }
 
 // ─── Schedules (ADR-0027) ───────────────────────────────────────────────────

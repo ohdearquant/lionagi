@@ -1441,6 +1441,13 @@ async def setup_orchestration_persist(
             "artifacts_path": artifacts_path,
             "artifact_contract": artifact_contract,
             "identity_markers": _identity_markers,
+            # The RESOLVED project (explicit arg, or detect_project() fallback) —
+            # what the session row above actually got, not the caller's raw
+            # argument. Anything downstream attributing other data to this run's
+            # project (e.g. an escalation-leg mirror link) must read this, not
+            # re-derive or pass through the unresolved `project` parameter.
+            "project": _proj,
+            "project_source": _proj_src,
         }
 
         # Bind to the already-open DB so signals write without a per-signal open.
@@ -1593,6 +1600,12 @@ async def start_live_persist(
         extra_node_metadata=extra_node_metadata,
     )
     env._live_persist = ctx
+    # The resolved project (what the session row actually got — explicit arg or
+    # detect_project() fallback), for anything downstream that needs to attribute
+    # more data to this run's project (e.g. an escalation-leg mirror link). `ctx`
+    # is None when persistence setup itself failed, and `project` unresolved
+    # then too since setup never got to resolving it.
+    env._project = ctx.get("project") if ctx else None
 
 
 async def stop_live_persist(
@@ -1606,6 +1619,7 @@ async def stop_live_persist(
     escalated_evidence = getattr(env, "_escalated_evidence", None)
     finalize_error = getattr(env, "_finalize_error", None)
     artifact_write_error = getattr(env, "_artifact_write_error", None)
+    gate_rejected_evidence = getattr(env, "_gate_rejected_evidence", None)
     final_status = await teardown_persist(
         ctx,
         status=status,
@@ -1614,6 +1628,7 @@ async def stop_live_persist(
         escalated_evidence=escalated_evidence,
         finalize_error=finalize_error,
         artifact_write_error=artifact_write_error,
+        gate_rejected_evidence=gate_rejected_evidence,
         cwd=env.cwd,
     )
     env._run_manifest["status"] = final_status

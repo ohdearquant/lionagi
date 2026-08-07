@@ -232,6 +232,39 @@ async def test_maybe_fire_disables_and_records_when_over_budget():
 
 
 @pytest.mark.asyncio
+async def test_disable_still_lands_when_the_annotation_reread_fails():
+    """The rollup reread only annotates the disable record; a failure there
+    must not abort the disable or the skipped-run write."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.sum_schedule_spend = AsyncMock(
+        side_effect=[
+            {"cost_usd": 10.0, "tokens": 0, "unreported_sessions": 0},
+            RuntimeError("second read failed"),
+        ]
+    )
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(budget_usd=10.0, next_fire_at=1000.0)
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        await engine._maybe_fire(schedule, now=1000.0)
+
+    mock_tracked.assert_not_called()
+    svc.update_schedule.assert_awaited_once_with("sched-001", enabled=0)
+    svc.create_schedule_run.assert_awaited_once()
+    (run_payload,), _ = svc.create_schedule_run.await_args
+    assert run_payload["trigger_context"]["budget_exhausted"] is True
+    budget_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.kwargs.get("reason_code") == "schedule.budget.exhausted"
+    ]
+    assert budget_calls
+    assert budget_calls[0].kwargs["metadata"]["unreported_sessions"] is None
+
+
+@pytest.mark.asyncio
 async def test_maybe_fire_fires_normally_when_under_budget():
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
@@ -554,6 +587,7 @@ async def test_spawned_cli_session_is_included_in_schedule_spend(tmp_path, monke
     assert await state.sum_schedule_spend(schedule_id) == {
         "cost_usd": pytest.approx(2.5),
         "tokens": 150,
+        "unreported_sessions": 0,
     }
 
     await state.close()
@@ -614,6 +648,7 @@ async def test_sum_schedule_spend_aggregates_across_sessions():
 
     assert spend["cost_usd"] == pytest.approx(1.5 + 3.0)
     assert spend["tokens"] == (100 + 50) + (200 + 100)
+    assert spend["unreported_sessions"] == 0
 
     await state.close()
 
@@ -636,7 +671,76 @@ async def test_sum_schedule_spend_zero_for_schedule_with_no_runs():
     )
 
     spend = await state.sum_schedule_spend("sched-spend-empty")
-    assert spend == {"cost_usd": 0.0, "tokens": 0}
+    assert spend == {"cost_usd": 0.0, "tokens": 0, "unreported_sessions": 0}
+
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_sum_schedule_spend_counts_unreported_terminal_sessions():
+    """A terminal session with NULL total_cost_usd is unreported, not free.
+
+    Regression coverage for the bug this fix addresses: before, COALESCE(SUM(...), 0)
+    let an unreported session's cost silently disappear into the $0 headline total
+    with no trace it had ever run. unreported_sessions is the trace.
+    """
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await state.create_schedule(
+        {
+            "id": "sched-spend-unreported",
+            "name": "spend-unreported",
+            "trigger_type": "interval",
+            "interval_sec": 60,
+            "action_kind": "agent",
+        }
+    )
+
+    # s0: reported cost. s1: terminal (completed) but never reported cost --
+    # counts as unreported. s2: still running -- unreported cost is expected
+    # and must NOT count as a gap.
+    statuses_and_costs = [
+        ("completed", 1.5),
+        ("completed", None),
+        ("running", None),
+    ]
+    for i, (status, cost) in enumerate(statuses_and_costs):
+        inv_id = f"inv-unrep-{i}"
+        await state.create_invocation({"id": inv_id, "skill": "agent", "started_at": 1.0})
+        await state.create_schedule_run(
+            {
+                "id": f"run-unrep-{i}",
+                "schedule_id": "sched-spend-unreported",
+                "invocation_id": inv_id,
+                "trigger_context": {},
+                "action_kind": "agent",
+                "action_args": [],
+                "status": "completed",
+                "chain_depth": 0,
+                "fired_at": 1.0,
+            }
+        )
+        prog_id = f"prog-unrep-{i}"
+        await state.create_progression(prog_id)
+        sess_id = f"sess-unrep-{i}"
+        await state.create_session(
+            {
+                "id": sess_id,
+                "progression_id": prog_id,
+                "status": status,
+                "invocation_id": inv_id,
+            }
+        )
+        if cost is not None:
+            await state.update_session(sess_id, total_cost_usd=cost)
+
+    spend = await state.sum_schedule_spend("sched-spend-unreported")
+
+    assert spend["cost_usd"] == pytest.approx(1.5)
+    assert spend["unreported_sessions"] == 1
 
     await state.close()
 

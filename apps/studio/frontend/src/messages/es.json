@@ -789,6 +789,8 @@
     },
     "history": {
       "label": "Historial de sesiones",
+      "sortRecent": "Reciente",
+      "sortCost": "Mayor costo",
       "all": "Todo",
       "completed": "Completadas",
       "failed": "Fallidas",
@@ -866,6 +868,15 @@
       "completionRate": "{rate}% completado",
       "noTerminalRuns": "No hay ejecuciones terminales en la ventana",
       "total": "{count, plural, one {# en total} other {# en total}}",
+      "staleHint": "mostrando último estado conocido · falló la actualización"
+    },
+    "spend": {
+      "title": "Gasto reportado",
+      "loading": "Cargando gasto…",
+      "error": "Gasto no disponible · {message}",
+      "unreachable": "API inaccesible",
+      "empty": "No hay ejecuciones en la ventana",
+      "coverage": "{reported} de {total} reportadas",
       "staleHint": "mostrando último estado conocido · falló la actualización"
     },
     "stale": {

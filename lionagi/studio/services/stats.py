@@ -105,6 +105,94 @@ async def get_activity_stats_route(
     return await get_activity_stats(window)
 
 
+async def get_spend_stats(window: str) -> dict[str, Any]:
+    """Reported-spend aggregate for the Mission Control spend panel.
+
+    Shares _ACTIVITY_WINDOWS with get_activity_stats so the spend panel and
+    the activity panel bucket the same window boundary the same way — the
+    two cards must describe the same population for a stated window.
+    """
+    if window not in _ACTIVITY_WINDOWS:
+        raise HTTPException(status_code=422, detail="window must be one of: 24h, 7d")
+    bucket_seconds, bucket_count = _ACTIVITY_WINDOWS[window]
+    now = time.time()
+    now_bucket_start = int(now // bucket_seconds) * bucket_seconds
+    window_start = now_bucket_start - (bucket_count - 1) * bucket_seconds
+
+    if state_db_known_absent():
+        reported_usd: float | None = None
+        reported_count = 0
+        unreported_count = 0
+    else:
+        async with StateDB() as db:
+            agg = await db.spend_stats(window_start=window_start)
+        reported_usd = agg["reported_usd"]
+        reported_count = agg["reported_count"]
+        unreported_count = agg["unreported_count"]
+
+    total_count = reported_count + unreported_count
+    coverage = (reported_count / total_count) if total_count else None
+
+    return {
+        "window": window,
+        "reported_usd": reported_usd,
+        "reported_count": reported_count,
+        "unreported_count": unreported_count,
+        "total_count": total_count,
+        "coverage": coverage,
+    }
+
+
+@studio_route("/stats/spend", method="GET", area="stats", tags=[], name="get_spend_stats")
+async def get_spend_stats_route(
+    window: str = Query(default="24h", description="Spend window: 24h or 7d"),
+) -> dict[str, Any]:
+    return await get_spend_stats(window)
+
+
+_SPEND_ROLLUP_DIMENSIONS = ("project", "agent", "playbook")
+_SPEND_ROLLUP_LIMIT = 20
+
+
+async def get_spend_rollup(window: str) -> dict[str, Any]:
+    """Session-grain spend rollups (by project, by session-level agent,
+    by playbook) for the same window as get_spend_stats.
+
+    Branch-level attribution (by model, by the per-branch agent role within
+    a multi-agent flow) is Stage 2 in the cost-visibility design and ships
+    only after a coverage check against branch-level total_cost_usd clears
+    an agreed threshold — not built here.
+    """
+    if window not in _ACTIVITY_WINDOWS:
+        raise HTTPException(status_code=422, detail="window must be one of: 24h, 7d")
+    bucket_seconds, bucket_count = _ACTIVITY_WINDOWS[window]
+    now = time.time()
+    now_bucket_start = int(now // bucket_seconds) * bucket_seconds
+    window_start = now_bucket_start - (bucket_count - 1) * bucket_seconds
+
+    rollups: dict[str, list[dict[str, Any]]] = {d: [] for d in _SPEND_ROLLUP_DIMENSIONS}
+    if not state_db_known_absent():
+        async with StateDB() as db:
+            for dimension in _SPEND_ROLLUP_DIMENSIONS:
+                rollups[dimension] = await db.spend_rollup(
+                    window_start=window_start, dimension=dimension, limit=_SPEND_ROLLUP_LIMIT
+                )
+
+    return {
+        "window": window,
+        "by_project": rollups["project"],
+        "by_agent": rollups["agent"],
+        "by_playbook": rollups["playbook"],
+    }
+
+
+@studio_route("/stats/spend/rollup", method="GET", area="stats", tags=[], name="get_spend_rollup")
+async def get_spend_rollup_route(
+    window: str = Query(default="24h", description="Spend window: 24h or 7d"),
+) -> dict[str, Any]:
+    return await get_spend_rollup(window)
+
+
 async def _table_counts(db: Any) -> dict[str, int]:
     counts: dict[str, int] = {}
     for table in (
