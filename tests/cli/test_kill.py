@@ -1135,6 +1135,58 @@ async def test_do_kill_all_stale_recycled_pid_swept_with_correlation(
         ] == "cancelled", "recycled pid with mismatched create_time must be swept"
 
 
+async def test_do_kill_all_stale_not_ours_evidence_reports_pid_was_alive(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The cancellation evidence for a recycled-pid sweep must say the pid WAS
+    alive, distinguishing "gone" from "alive but not ours" -- the two call for
+    different operator follow-up, and only one of them means the process is
+    actually gone.
+    """
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_psutil = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli"]
+    fake_proc.environ.return_value = {}
+    fake_proc.create_time.return_value = 999.0  # does NOT match recorded 100.0
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": old_start,
+                "node_metadata": {"pid": 12345, "pid_create_time": 100.0},
+            }
+        )
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    assert s["status"] == "cancelled"
+    evidence_raw = s["status_evidence_refs"]
+    evidence = json.loads(evidence_raw) if isinstance(evidence_raw, str) else evidence_raw
+    assert isinstance(evidence, list) and evidence
+    entry = evidence[0]
+    assert entry["pid_alive"] is True, (
+        "the pid WAS alive -- only its recorded identity didn't match"
+    )
+    assert entry["identity_verdict"] == "not_ours"
+
+
 async def test_do_kill_all_stale_matching_correlation_skips_live(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

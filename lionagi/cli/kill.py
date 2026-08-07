@@ -674,7 +674,9 @@ async def _do_kill_all_stale(
                 # Correlate against the row's own session id/create_time (same
                 # fields the direct-kill path uses) so a recycled pid occupied
                 # by a different lionagi process doesn't pass as "still alive".
-                if pid is not None and _pid_alive(pid):
+                pid_alive_now = pid is not None and _pid_alive(pid)
+                verdict: str | None = None
+                if pid_alive_now:
                     meta = (
                         row_dict.get("node_metadata")
                         if isinstance(row_dict.get("node_metadata"), dict)
@@ -729,7 +731,11 @@ async def _do_kill_all_stale(
                 evidence: dict[str, Any] = {
                     "kind": "stale_kill",
                     "pid": pid,
-                    "pid_alive": False,
+                    # Numeric liveness and identity are two different questions
+                    # (issue: a live-but-recycled pid used to hardcode False
+                    # here, indistinguishable from a genuinely dead pid).
+                    "pid_alive": pid_alive_now,
+                    "identity_verdict": verdict,
                     "killed_at": time.time(),
                     "threshold_seconds": threshold_seconds,
                 }
