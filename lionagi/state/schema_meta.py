@@ -292,7 +292,7 @@ definitions = Table(
     Column(
         "kind",
         Text,
-        CheckConstraint("kind IN ('agent','playbook')", name="ck_definitions_kind"),
+        CheckConstraint("kind IN ('agent','playbook','skill')", name="ck_definitions_kind"),
         nullable=False,
     ),
     Column("name", Text, nullable=False),

@@ -67,6 +67,7 @@ from lionagi.state.reasons import (
 from lionagi.state.reasons import (
     validate_reason_code as _validate_reason_code,
 )
+from lionagi.state.schema_meta import definitions as _definitions_table
 from lionagi.state.schema_meta import metadata
 from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
@@ -476,7 +477,7 @@ _PLAY_STATUSES = frozenset(
     }
 )
 
-_DEFINITION_KINDS = frozenset({"agent", "playbook"})
+_DEFINITION_KINDS = frozenset({"agent", "playbook", "skill"})
 
 
 def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
@@ -971,6 +972,9 @@ class StateDB:
             # schedule_runs.status and a NOT NULL schedule_id, from before
             # schedule_runs was generalized into the task-application entity.
             await self._drop_legacy_schedule_runs_check()
+            # Existing DBs carry a 2-value CHECK on definitions.kind that
+            # omits 'skill', from before the skill editor.
+            await self._drop_legacy_definitions_kind_check()
         async with self._engine.begin() as conn:
             await self._refuse_newer_schema(conn)
             await conn.run_sync(metadata.create_all)
@@ -2078,6 +2082,107 @@ class StateDB:
         await self._rebuild_check_constraint(
             "schedule_runs",
             lambda sql: sql is not None and self._LEGACY_SCHEDULE_RUNS_QUEUE_MARKER in sql,
+            _rebuild,
+        )
+
+    # Substring present only in a definitions CREATE SQL whose kind CHECK
+    # admits 'skill'; its absence indicates a legacy DB whose definitions
+    # table still carries the pre-skill-editor 2-value CHECK.
+    _LEGACY_DEFINITIONS_SKILL_MARKER = "'skill'"
+
+    async def _drop_legacy_definitions_kind_check(self) -> None:
+        """Rebuild ``definitions`` if it still carries the pre-skill-editor kind CHECK.
+
+        SQLite cannot widen a CHECK constraint via ALTER TABLE, so this uses
+        the same rename → CREATE new → INSERT SELECT → DROP old pattern as
+        ``_drop_legacy_action_kind_check``. ``definitions`` is not itself an
+        FK target, but the foreign_keys-off dance is applied anyway to match
+        every other rebuild in this file rather than special-casing this one
+        on an invariant that could change later.
+        """
+        if self.dialect != "sqlite":
+            return
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='definitions'"
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None or row["sql"] is None:
+            return
+        create_sql: str = row["sql"]
+        if self._LEGACY_DEFINITIONS_SKILL_MARKER in create_sql:
+            # Table was already created / rebuilt with 'skill' in the CHECK.
+            return
+
+        # definitions holds every version of every agent/playbook/skill ever
+        # saved through Studio -- same stakes as schedule_runs, same
+        # pre-rebuild backup.
+        await self._backup_before_rebuild("definitions")
+
+        async with self._engine.connect() as conn:
+            index_rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE type='index' AND tbl_name='definitions' AND sql IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            index_sqls = [r["sql"] for r in index_rows]
+
+            cols_rows = (
+                (await conn.execute(text("PRAGMA table_info(definitions)"))).mappings().all()
+            )
+            cols = [r["name"] for r in cols_rows]
+        col_list = ", ".join(cols)
+
+        # Derive the rebuild DDL from the canonical schema_meta Table rather
+        # than a hand-kept literal, so this migration path can never drift
+        # from the live schema (schema.sql / schema_meta.py parity is
+        # test-enforced).
+        rebuild_table = _definitions_table.to_metadata(MetaData(), name="definitions_new")
+        create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
+
+        async def _rebuild() -> None:
+            async with self._engine.connect() as conn:
+                driver = (await conn.get_raw_connection()).driver_connection
+                try:
+                    await driver.execute("PRAGMA foreign_keys = OFF")
+                    await driver.commit()
+                    await driver.execute("BEGIN IMMEDIATE")
+                    try:
+                        await self._refuse_newer_sqlite_schema(driver)
+                        await driver.execute(create_stmt)
+                        insert_sql = (
+                            f"INSERT INTO definitions_new ({col_list}) "  # noqa: S608
+                            f"SELECT {col_list} FROM definitions"
+                        )
+                        await driver.execute(insert_sql)
+                        await driver.execute("DROP TABLE definitions")
+                        await driver.execute("ALTER TABLE definitions_new RENAME TO definitions")
+                        for idx_sql in index_sqls:
+                            await driver.execute(idx_sql)
+                        await driver.commit()
+                    except BaseException:
+                        await driver.rollback()
+                        raise
+                finally:
+                    await _restore_foreign_keys(conn, driver)
+
+        await self._rebuild_check_constraint(
+            "definitions",
+            lambda sql: sql is not None and self._LEGACY_DEFINITIONS_SKILL_MARKER in sql,
             _rebuild,
         )
 
