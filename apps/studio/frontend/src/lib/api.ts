@@ -2227,6 +2227,23 @@ export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
   return fetchJson<EngineRunSummary>(`/api/engine-runs/${encodeURIComponent(runId)}`);
 }
 
+// ─── Shows / plays ──────────────────────────────────────────────────────────
+
+/** A play currently sitting in the `gated` lifecycle status, read live. */
+export interface GatedPlaySummary {
+  id: string;
+  topic: string;
+  play_name: string;
+  started_at: number | null;
+  updated_at: number | null;
+  feedback: string | null;
+  session_id: string | null;
+}
+
+export async function listGatedPlays(): Promise<GatedPlaySummary[]> {
+  return fetchJson<GatedPlaySummary[]>("/api/shows/gated-plays");
+}
+
 // ─── Engine definitions ───────────────────────────────────────────────────────
 
 /** Per-stage override persisted on an engine definition. */

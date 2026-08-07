@@ -8,7 +8,7 @@
  */
 
 import type { RunSummary, ScheduleSummary } from "@/lib/types";
-import type { AttentionDisposition, InvocationSummary } from "@/lib/api";
+import type { AttentionDisposition, GatedPlaySummary, InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus, isOrphanedReason } from "@/lib/runStatus";
 import { resolveRunLabel } from "@/lib/runLabel";
 
@@ -35,6 +35,12 @@ export interface BoardState {
   schedulesKnown: boolean;
   /** Server-persisted discharge dispositions, keyed by attention item id. */
   dispositions: Record<string, AttentionDisposition>;
+  /**
+   * Plays currently in the `gated` lifecycle status, read live from the
+   * shows/plays backend — the only real source of a production gate.
+   * Sessions and invocations have no `gated` status in their vocabulary.
+   */
+  gatedPlays: GatedPlaySummary[];
   /** Items needing operator attention — open + acknowledged (visible by default). */
   attentionItems: AttentionItem[];
   /**
@@ -62,7 +68,7 @@ export type AttentionReason = "streak" | "failed" | "stale" | "stuck" | "gated";
 
 export interface AttentionItem {
   id: string;
-  kind: "run" | "invocation" | "schedule";
+  kind: "run" | "invocation" | "schedule" | "play";
   name: string;
   reason: AttentionReason;
   startedAt: number | null;
@@ -70,7 +76,10 @@ export interface AttentionItem {
   status: string;
   /** Consecutive-failure count — present on "streak" items only. */
   streakCount?: number;
-  /** One-line failure reason — present on "failed" items when the run carries one. */
+  /**
+   * One-line context — the failure reason on "failed" items when the run
+   * carries one, or the gate feedback on "gated" play items.
+   */
   reasonSummary?: string;
   /** Server-persisted discharge state, joined by id. Absent = "open". */
   disposition?: AttentionDisposition;
@@ -88,6 +97,8 @@ export type BoardAction =
       schedules: ScheduleSummary[] | null;
       /** null = dispositions fetch failed this cycle — keep the last-known map. */
       dispositions?: Record<string, AttentionDisposition> | null;
+      /** null = gated-plays fetch failed this cycle — keep the last-known list. */
+      gatedPlays?: GatedPlaySummary[] | null;
       nowSec: number;
     }
   | { type: "DATA_ERROR"; message: string }
@@ -107,7 +118,15 @@ const RUNNING_STATUSES = new Set([
   "open",
 ]);
 const FAILED_STATUSES = new Set(["failed", "error", "failure"]);
-const GATED_STATUSES = new Set(["needs_review", "blocked", "gated"]);
+// "blocked" deliberately excluded: it is a terminal play status (a dead-end,
+// e.g. an invalid dependency), never an awaiting-approval one — treating it
+// as gated would put a run that finished this way perpetually "waiting" for
+// a decision nobody can make. The real gated signal for plays is sourced
+// live in buildAttentionItems() below, not inferred from a status string
+// here — sessions/invocations have no "gated" status in their own
+// vocabulary; these two aliases exist only for a legacy/synthetic status
+// string that predates that split.
+const GATED_STATUSES = new Set(["needs_review", "gated"]);
 
 /** Failures older than this belong to History, not the attention queue. */
 const FAILED_ATTENTION_WINDOW_SEC = 24 * 60 * 60;
@@ -138,8 +157,25 @@ function buildAttentionItems(
   schedules: ScheduleSummary[],
   nowSec: number,
   dispositions: Record<string, AttentionDisposition>,
+  gatedPlays: GatedPlaySummary[],
 ): { active: AttentionItem[]; discharged: AttentionItem[] } {
   const items: AttentionItem[] = [];
+
+  // Plays are the only entity whose lifecycle actually contains "gated" — a
+  // human-actionable state waiting on a real decision, not inferred from a
+  // run/invocation status string that can never carry it.
+  for (const play of gatedPlays) {
+    items.push({
+      id: play.id,
+      kind: "play",
+      name: `${play.topic} / ${play.play_name}`,
+      reason: "gated",
+      startedAt: play.started_at,
+      href: "/fleet",
+      status: "gated",
+      ...(play.feedback ? { reasonSummary: play.feedback } : {}),
+    });
+  }
 
   for (const sched of schedules) {
     if (!sched.enabled) continue;
@@ -323,6 +359,7 @@ export function initialBoardState(): BoardState {
     schedules: [],
     schedulesKnown: false,
     dispositions: {},
+    gatedPlays: [],
     attentionItems: [],
     dischargedAttentionItems: [],
     unacknowledgedAttentionCount: 0,
@@ -345,6 +382,7 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
       const schedules = action.schedules ?? state.schedules;
       const schedulesKnown = state.schedulesKnown || action.schedules !== null;
       const dispositions = action.dispositions ?? state.dispositions;
+      const gatedPlays = action.gatedPlays ?? state.gatedPlays;
       const activeRuns = deriveActiveRuns(runs);
       const activeInvocations = deriveActiveInvocations(invocations);
       const recentRuns = deriveRecentRuns(runs);
@@ -354,12 +392,17 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
         schedules,
         nowSec,
         dispositions,
+        gatedPlays,
       );
       const unacknowledgedAttentionCount = attentionItems.filter((i) => !i.disposition).length;
       // A degraded schedules fetch before the first successful one leaves an
       // empty placeholder list — never declare the system empty from it.
       const systemEmpty =
-        schedulesKnown && runs.length === 0 && invocations.length === 0 && schedules.length === 0;
+        schedulesKnown &&
+        runs.length === 0 &&
+        invocations.length === 0 &&
+        schedules.length === 0 &&
+        gatedPlays.length === 0;
       return {
         ...state,
         nowSec,
@@ -369,6 +412,7 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
         schedules,
         schedulesKnown,
         dispositions,
+        gatedPlays,
         attentionItems,
         dischargedAttentionItems,
         unacknowledgedAttentionCount,

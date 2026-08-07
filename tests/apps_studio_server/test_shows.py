@@ -117,6 +117,56 @@ def test_show_detail_not_found(patched_app):
 
 
 # ---------------------------------------------------------------------------
+# /api/shows/gated-plays — real gate signal for the Mission Control queue
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def show_with_gated_play(shows_root: Path) -> str:
+    """A show with one play sitting in the `gated` lifecycle status."""
+    topic = "gated-show"
+    show_dir = shows_root / topic
+    play_dir = show_dir / "play-001"
+    play_dir.mkdir(parents=True)
+
+    (show_dir / "_show.md").write_text("# Show: gated-show\n\nA gated test show.")
+    meta = {"status": "gated", "started_at": "2024-01-01T00:00:00Z"}
+    (play_dir / "_meta.json").write_text(json.dumps(meta))
+    verdict = {"gate_passed": False, "feedback": "needs another pass"}
+    (play_dir / "_verdict.json").write_text(json.dumps(verdict))
+
+    return topic
+
+
+def test_gated_plays_route_not_swallowed_by_topic_route(patched_app):
+    """/shows/gated-plays must resolve to the dedicated route, not be parsed
+    as a topic named 'gated-plays' by /shows/{topic} — route registration
+    order matters here."""
+    r = patched_app.get("/api/shows/gated-plays")
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+def test_gated_plays_surfaces_a_real_gated_play(patched_app, show_with_gated_play):
+    r = patched_app.get("/api/shows/gated-plays")
+    assert r.status_code == 200
+    items = r.json()
+    assert len(items) == 1
+    item = items[0]
+    assert item["topic"] == show_with_gated_play
+    assert item["play_name"] == "play-001"
+    assert item["id"] == f"play:{show_with_gated_play}:play-001"
+    assert item["feedback"] == "needs another pass"
+
+
+def test_gated_plays_excludes_non_gated_plays(patched_app, show_with_play):
+    """show_with_play's play has status 'success', not 'gated'."""
+    r = patched_app.get("/api/shows/gated-plays")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+# ---------------------------------------------------------------------------
 # Path traversal tests (Fix 1)
 # ---------------------------------------------------------------------------
 

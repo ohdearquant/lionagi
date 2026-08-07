@@ -28,7 +28,7 @@ import SectionLabel from "@/components/ui/SectionLabel";
 import Chip from "@/components/ui/Chip";
 import Skeleton from "@/components/ui/Skeleton";
 import { type AttentionItem, type AttentionReason } from "./boardReducer";
-import { runDeepLink, invocationDeepLink, scheduleDeepLink } from "@/lib/runDeepLink";
+import { runDeepLink, invocationDeepLink, scheduleDeepLink, playDeepLink } from "@/lib/runDeepLink";
 import { putAttentionDisposition, deleteAttentionDisposition, ApiError } from "@/lib/api";
 import type { AttentionDispositionState } from "@/lib/api";
 import { formatElapsed } from "@/lib/elapsed";
@@ -260,6 +260,13 @@ function ItemLink({
   if (item.kind === "schedule") {
     return (
       <Link {...scheduleDeepLink(id)} className={className} style={style}>
+        {children}
+      </Link>
+    );
+  }
+  if (item.kind === "play") {
+    return (
+      <Link {...playDeepLink()} className={className} style={style}>
         {children}
       </Link>
     );

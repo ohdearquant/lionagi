@@ -249,6 +249,45 @@ async def get_show(topic: str) -> dict[str, Any] | None:
     }
 
 
+async def list_gated_plays() -> list[dict[str, Any]]:
+    """Every play, across every show, currently sitting in the ``gated``
+    lifecycle status — read live (DB-first per show, filesystem fallback),
+    the same precedence ``get_show()`` uses.
+
+    The ``plays`` table is populated once by ``import_shows()`` and never
+    resynced afterward (a show already in the DB is skipped on re-import),
+    so it cannot be trusted as a live source on its own; a show never
+    imported has no DB row at all. Going through ``get_show()`` per show
+    gets the same fallback it already implements instead of duplicating it.
+    """
+    shows = await list_shows()
+    out: list[dict[str, Any]] = []
+    for summary in shows:
+        topic = summary.get("topic")
+        if not topic:
+            continue
+        show = await get_show(topic)
+        if show is None:
+            continue
+        for play in show.get("plays", []):
+            meta = play.get("meta") or {}
+            if meta.get("status") != "gated":
+                continue
+            verdict = play.get("verdict") or {}
+            out.append(
+                {
+                    "id": f"play:{topic}:{play['name']}",
+                    "topic": topic,
+                    "play_name": play["name"],
+                    "started_at": meta.get("started_at"),
+                    "updated_at": play.get("updated_at"),
+                    "feedback": verdict.get("feedback"),
+                    "session_id": play.get("session_id"),
+                }
+            )
+    return out
+
+
 async def import_shows() -> dict[str, int]:
     if not SHOWS_ROOT.exists():
         return {"shows_imported": 0, "plays_imported": 0}
@@ -580,6 +619,13 @@ async def watch_show(topic: str) -> AsyncGenerator[str]:
 @studio_route("/shows/", method="GET", area="shows", name="list_shows")
 async def list_shows_route() -> list[dict[str, Any]]:
     return await list_shows()
+
+
+# Registered before /shows/{topic} — a path param route would otherwise
+# swallow this literal segment as a topic name.
+@studio_route("/shows/gated-plays", method="GET", area="shows", name="list_gated_plays")
+async def list_gated_plays_route() -> list[dict[str, Any]]:
+    return await list_gated_plays()
 
 
 # ADR-0077: state-mutating (INSERT OR IGNORE), so POST not GET. The CLI command

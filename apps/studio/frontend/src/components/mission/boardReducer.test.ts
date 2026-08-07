@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
 import type { RunSummary, ScheduleSummary } from "@/lib/types";
-import type { AttentionDisposition, InvocationSummary } from "@/lib/api";
+import type { AttentionDisposition, GatedPlaySummary, InvocationSummary } from "@/lib/api";
 import { resolveRunLabel } from "@/lib/runLabel";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -51,6 +51,7 @@ function dispatchOk(
   nowSec = 1_000_000,
   schedules: ScheduleSummary[] | null = null,
   dispositions: Record<string, AttentionDisposition> | null = null,
+  gatedPlays: GatedPlaySummary[] | null = null,
 ): BoardState {
   return boardReducer(state, {
     type: "DATA_OK",
@@ -58,8 +59,21 @@ function dispatchOk(
     invocations,
     schedules,
     dispositions,
+    gatedPlays,
     nowSec,
   });
+}
+
+function makeGatedPlay(
+  overrides: Partial<GatedPlaySummary> & { id: string; topic: string; play_name: string },
+): GatedPlaySummary {
+  return {
+    started_at: null,
+    updated_at: null,
+    feedback: null,
+    session_id: null,
+    ...overrides,
+  };
 }
 
 function makeDisposition(
@@ -267,6 +281,29 @@ describe("boardReducer — attention queue derivation", () => {
     expect(s.attentionItems).toHaveLength(1);
     expect(s.attentionItems[0].reason).toBe("gated");
     expect(s.attentionItems[0].kind).toBe("invocation");
+  });
+
+  it("a gated PLAY is sourced live and reaches the queue with kind play and its feedback as reasonSummary", () => {
+    const s = dispatchOk(initialBoardState(), [], [], 1_000_000, null, null, [
+      makeGatedPlay({
+        id: "play:show-1:p1",
+        topic: "show-1",
+        play_name: "p1",
+        feedback: "needs another pass on the retry logic",
+      }),
+    ]);
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0]).toMatchObject({
+      id: "play:show-1:p1",
+      kind: "play",
+      reason: "gated",
+      reasonSummary: "needs another pass on the retry logic",
+    });
+  });
+
+  it("a run in the terminal 'blocked' status is never treated as gated", () => {
+    const s = dispatchOk(initialBoardState(), [makeRun({ run_id: "r1", status: "blocked" })]);
+    expect(s.attentionItems).toHaveLength(0);
   });
 
   it("sorts gated before stuck before failed before stale", () => {
