@@ -121,6 +121,25 @@ class TestALifecycleRecordWithoutAnEndTime:
         assert out["finished_at_precision"] == jobs.FINISHED_AT_UPPER_BOUND
 
 
+class TestASpawnFailureRecordsAnObservation:
+    """`_record_spawn_failure` has two write arms — no record yet for this run
+    (the directory is reserved but `job.json` never landed) and a record that
+    already exists with `finished_at=None` — and both must stamp "observed":
+    the caller that caught the failed spawn watched it happen just now.
+    """
+
+    def test_the_file_create_arm_records_an_observation(self, sandbox):
+        rid = jobs.new_run_id()
+        config.job_dir(rid).mkdir(parents=True)
+        jobs._record_spawn_failure(rid, OSError(8, "Exec format error"))
+        assert _precision(rid) == jobs.FINISHED_AT_OBSERVED
+
+    def test_the_merge_existing_arm_records_an_observation(self, sandbox):
+        rid = _started()
+        jobs._record_spawn_failure(rid, OSError(8, "Exec format error"))
+        assert _precision(rid) == jobs.FINISHED_AT_OBSERVED
+
+
 class TestThePathsThatWatchedItEnd:
     def test_a_kill_records_an_observation(self, sandbox, monkeypatch, no_delivery):
         rid = _started()
@@ -143,6 +162,29 @@ class TestReadingItBack:
         """
         rid = _started(status="completed", finished_at="2026-07-25T01:00:00+00:00")
         assert _precision(rid) is None
+
+    def test_status_reports_a_legacy_record_as_unknown(self, sandbox):
+        """The public reader, not just the raw record, must say "unknown".
+
+        `status()` reads `finished_at_precision` with `.get()` (jobs.py:1634), so
+        a record written before the field existed must still come back through
+        the real function with the value None rather than raising or defaulting.
+        """
+        rid = _started(status="completed", finished_at="2026-07-25T01:00:00+00:00")
+        st = jobs.status(rid)
+        assert st["finished_at"] == "2026-07-25T01:00:00+00:00"
+        assert st["finished_at_precision"] is None
+
+    def test_list_jobs_reports_a_legacy_record_as_unknown(self, sandbox):
+        """`list_jobs()` copies the field from `status()` (jobs.py:2152) — a
+        legacy record must flow through without a KeyError and with precision
+        None in the row, not just in the underlying `status()` call.
+        """
+        rid = _started(status="completed", finished_at="2026-07-25T01:00:00+00:00")
+        rows = jobs.list_jobs()
+        row = next(r for r in rows if r["run_id"] == rid)
+        assert row["finished_at"] == "2026-07-25T01:00:00+00:00"
+        assert row["finished_at_precision"] is None
 
     def test_every_terminal_path_answers(self, sandbox, monkeypatch, no_delivery):
         """A field only some writers set is a field a reader cannot use.
