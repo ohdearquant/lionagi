@@ -523,6 +523,21 @@ async def _teardown_common(
         update_kwargs["last_msg_id"] = all_msgs[-1]
 
     if extras:
+        # NOT routed through merge_session_node_metadata(): `extras` here can
+        # carry a nested-dict value (finalize_orchestration's
+        # "khive_injection" telemetry block, set on env._finalize_extras
+        # before this runs -- see _orchestration.py's finalize_orchestration
+        # and flow.py/fanout.py's stop_live_persist call in their `finally`),
+        # and the atomic merge intentionally rejects a dict-valued patch key
+        # (sqlite/postgres would merge it differently -- see
+        # StateDB._merge_node_metadata). Switching this call to the atomic
+        # merge would turn today's benign-if-racy read-modify-write into a
+        # hard ValueError on every run with injection activity. This is a
+        # real, not-yet-closed instance of the same clobber class the sweep
+        # fix above closes; closing it safely needs a schema decision
+        # (flatten khive_injection to scalar keys, or a merge-helper variant
+        # that tolerates one level of nested object) that is out of scope
+        # for this round.
         session = await db.get_session(session_id) or {}
         existing_metadata = session.get("node_metadata") or {}
         if isinstance(existing_metadata, str):
@@ -568,15 +583,13 @@ async def _teardown_common(
 
         # Record the link durably (id is deterministic) so `li monitor run <id>` can
         # resolve status later, even if this teardown's bounded wait ran out first.
+        # Merged atomically -- `linked_id` is a single scalar, so unlike the
+        # extras merge above there is no nested-value contract to give up by
+        # using merge_session_node_metadata() instead of a read here plus a
+        # whole-column update_session() write below.
         metadata = dict(metadata or {})
         metadata["linked_engine_session_id"] = linked_id
-        existing_node_meta = session_row.get("node_metadata") or {}
-        if isinstance(existing_node_meta, str):
-            existing_node_meta = json.loads(existing_node_meta)
-        await db.update_session(
-            session_id,
-            node_metadata=json.dumps({**existing_node_meta, "linked_engine_session_id": linked_id}),
-        )
+        await db.merge_session_node_metadata(session_id, {"linked_engine_session_id": linked_id})
 
         if linked is not None and linked["status"] in SESSION_TERMINAL_STATUSES:
             reason_by_status = {

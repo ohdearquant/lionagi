@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import signal
 import time
@@ -721,22 +720,23 @@ async def _do_kill_all_stale(
                                 since = time.time()
                             count = meta.get("unverifiable_count")
                             count = (count + 1) if isinstance(count, int) else 1
-                            new_meta = {
-                                **meta,
+                            # Merge only the two marker fields through the
+                            # atomic UPDATE. A whole-column snapshot built
+                            # from `meta` (read at the top of this loop) and
+                            # written back with update_session()/
+                            # update_invocation() can land after a concurrent
+                            # writer's own atomic merge (e.g. the flow
+                            # segment/control-log writers) and silently
+                            # overwrite whatever they just added — the same
+                            # clobber this patch closes on the flow side.
+                            marker_patch = {
                                 "unverifiable_since": since,
                                 "unverifiable_count": count,
                             }
                             if entity_type == "session":
-                                # update_session()'s generic field path has no
-                                # JSON bindparam for node_metadata (unlike
-                                # create_session/update_invocation), so this
-                                # must be pre-serialized like every other
-                                # session node_metadata writer in the CLI.
-                                await db.update_session(
-                                    entity_id, node_metadata=json.dumps(new_meta)
-                                )
+                                await db.merge_session_node_metadata(entity_id, marker_patch)
                             else:
-                                await db.update_invocation(entity_id, node_metadata=new_meta)
+                                await db.merge_invocation_node_metadata(entity_id, marker_patch)
                             unverifiable_tracked += 1
                         if verbose:
                             print(

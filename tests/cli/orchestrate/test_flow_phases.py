@@ -1171,7 +1171,7 @@ async def test_execute_dag_segment_writer_merges_into_real_statedb(
     write onto node_metadata a concurrent writer (here: a pre-existing
     kill-sweep unverifiable-pid marker) already put there -- not replace the
     column outright. A test that calls `_persist_node_metadata_patch`
-    directly, as the round-2 regression does, proves the helper merges but
+    directly, as an isolated helper test does, proves the helper merges but
     not that these two callbacks are still wired to it; this one drives the
     actual NodeStarted/NodeCompleted signals through a real Session and reads
     the result back off a real StateDB."""

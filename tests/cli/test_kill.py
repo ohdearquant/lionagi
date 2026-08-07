@@ -1391,6 +1391,87 @@ async def test_do_kill_all_stale_unverifiable_markers_survive_flow_metadata_writ
     )
 
 
+async def test_do_kill_all_stale_sweep_write_does_not_clobber_interleaved_flow_write(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A flow metadata write landing INSIDE the sweep's own read-to-write
+    window must survive the sweep's write, not just a flow write that lands
+    between two separate sweep calls.
+
+    test_do_kill_all_stale_unverifiable_markers_survive_flow_metadata_write
+    (above) only proves the marker survives a full sweep -> explicit flow
+    write -> full sweep round trip; each sweep call there completes its own
+    read and write before the flow write is ever issued, so it cannot catch
+    a whole-column writer racing a concurrent write. This test forces the
+    flow write to fire from inside the sweep's SELECT (the read the sweep's
+    marker-write patch is computed from), before the sweep's own write for
+    that row runs, reproducing the exact interleaving a whole-column
+    `update_session(node_metadata=json.dumps(new_meta))` write loses:
+    seed the unverifiable markers, let the sweep read the row, land a flow
+    segment write, then let the sweep write its markers back.
+    """
+    from lionagi.cli.orchestrate.flow import _persist_node_metadata_patch
+
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+        # Seed the markers the way a prior sweep would have, so this sweep's
+        # read sees a `meta` dict that already carries them (matching round
+        # 6's reproduction, which seeded unverifiable_since/count before the
+        # interleaving).
+        await db.merge_session_node_metadata(
+            sid, {"unverifiable_since": 111.0, "unverifiable_count": 1}
+        )
+
+    real_fetch_all = StateDB.fetch_all
+    flow_write_done = asyncio.Event()
+
+    async def gated_fetch_all(self, query, params):
+        result = await real_fetch_all(self, query, params)
+        if "FROM sessions WHERE status" in query and not flow_write_done.is_set():
+            # This is the sweep's read of live session rows -- the read the
+            # per-row `meta`/marker computation below is taken from. Land a
+            # concurrent flow write right now, before the sweep issues its
+            # own write for this row.
+            async with StateDB() as flow_db:
+                await _persist_node_metadata_patch(
+                    flow_db, sid, {"segments": [{"branch_name": "worker-1"}]}
+                )
+            flow_write_done.set()
+        return result
+
+    monkeypatch.setattr(StateDB, "fetch_all", gated_fetch_all)
+    try:
+        assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+    finally:
+        monkeypatch.setattr(StateDB, "fetch_all", real_fetch_all)
+
+    assert flow_write_done.is_set(), "the gated fetch_all never fired the interleaved flow write"
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta.get("unverifiable_since") == 111.0
+    assert meta.get("unverifiable_count") == 2, (
+        "the sweep's own marker write must still land after the interleaved flow write"
+    )
+    assert meta.get("segments") == [{"branch_name": "worker-1"}], (
+        "a flow write landing inside the sweep's read-to-write window must survive "
+        "the sweep's own metadata write, not be clobbered by a whole-column snapshot"
+    )
+
+
 async def test_persist_node_metadata_patch_concurrent_writers_both_land(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

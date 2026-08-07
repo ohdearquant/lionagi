@@ -576,6 +576,7 @@ async def test_merge_node_metadata_dialect_parity(sqlite_db: StateDB, pg_url):
 
     pg = StateDB(url=pg_url)
     await pg.open()
+    executed = 0
     try:
         assert pg.dialect == "postgresql"
         for name, initial, patch, expected in _MERGE_PARITY_CASES:
@@ -587,6 +588,7 @@ async def test_merge_node_metadata_dialect_parity(sqlite_db: StateDB, pg_url):
                 assert got == expected, (
                     f"{name} on {db.dialect}: expected {expected!r}, got {got!r}"
                 )
+                executed += 1
 
         for name, initial, patch, expected in _MERGE_PARITY_NONOBJECT_CASES:
             for db in (sqlite_db, pg):
@@ -597,6 +599,7 @@ async def test_merge_node_metadata_dialect_parity(sqlite_db: StateDB, pg_url):
                 assert got == expected, (
                     f"{name} on {db.dialect}: expected {expected!r}, got {got!r}"
                 )
+                executed += 1
 
         # True SQL NULL (the column's state before any session ever set it) is
         # treated as an absent object to merge into, on both dialects.
@@ -610,6 +613,7 @@ async def test_merge_node_metadata_dialect_parity(sqlite_db: StateDB, pg_url):
             await db.merge_session_node_metadata(sid, {"x": 1})
             got = _node_metadata(await db.get_session(sid))
             assert got == {"x": 1}, f"SQL NULL on {db.dialect}: got {got!r}"
+            executed += 1
 
         # JSON null (create_session's default when node_metadata is omitted --
         # SQLAlchemy's JSON bind serializes Python None to the JSON null
@@ -622,8 +626,44 @@ async def test_merge_node_metadata_dialect_parity(sqlite_db: StateDB, pg_url):
             await db.merge_session_node_metadata(sid, {"x": 1})
             got = _node_metadata(await db.get_session(sid))
             assert got == {"x": 1}, f"JSON null default on {db.dialect}: got {got!r}"
+            executed += 1
     finally:
         await pg.close()
+
+    # An empty case table would pass silently and look identical to a real
+    # comparison run -- assert the exact population this test is derived
+    # from, computed independently of the loops above, and print it so a
+    # future reader (or CI log) can tell "compared N cases" from "compared
+    # nothing" without re-deriving the arithmetic by hand.
+    expected_executed = (
+        len(_MERGE_PARITY_CASES) * 2 + len(_MERGE_PARITY_NONOBJECT_CASES) * 2 + 2 + 2
+    )
+    print(f"merge_node_metadata_dialect_parity: {executed} dialect comparisons executed")
+    assert executed == expected_executed, (
+        f"expected {expected_executed} dialect comparisons "
+        f"(({len(_MERGE_PARITY_CASES)} + {len(_MERGE_PARITY_NONOBJECT_CASES)}) * 2 dialects "
+        f"+ 2 SQL-NULL + 2 JSON-null), got {executed} -- a case table shrank or a loop stopped "
+        "short without failing an assertion above"
+    )
+
+
+# (name, initial node_metadata, patch) -- every row here must raise ValueError
+# on both dialects before any SQL runs.
+_MERGE_REJECTS_NESTED_CASES = [
+    ("synthetic_nested_object", {}, {"nested": {"a": 1}}),
+    (
+        # The exact input measured to diverge between dialects while this fix
+        # was developed: sqlite's json_patch would merge
+        # {"nullable": None, "value": 1} into the stored "nested" key
+        # recursively, while Postgres's jsonb `||` would replace any existing
+        # "nested" key with it shallowly instead. Permanently pinned here so
+        # the refusal contract keeps covering the exact input that motivated
+        # it, not just a synthetic stand-in for the same shape.
+        "first_measured_divergence",
+        {},
+        {"nested": {"nullable": None, "value": 1}},
+    ),
+]
 
 
 async def test_merge_node_metadata_rejects_nested_object_patch_on_both_dialects(
@@ -636,9 +676,12 @@ async def test_merge_node_metadata_rejects_nested_object_patch_on_both_dialects(
     pg = StateDB(url=pg_url)
     await pg.open()
     try:
-        for db in (sqlite_db, pg):
-            with pytest.raises(ValueError, match="nested object patch"):
-                await db.merge_session_node_metadata(_uid(), {"nested": {"a": 1}})
+        for name, initial, patch in _MERGE_REJECTS_NESTED_CASES:
+            for db in (sqlite_db, pg):
+                sid = _uid()
+                await _seed_node_metadata(db, sid, initial)
+                with pytest.raises(ValueError, match="nested object patch"):
+                    await db.merge_session_node_metadata(sid, patch)
     finally:
         await pg.close()
 
