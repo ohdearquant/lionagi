@@ -379,7 +379,34 @@ class TestStoreProbe:
             blocker.rollback()
             blocker.close()
 
-    def test_a_caller_that_gives_up_first_also_leaves_nothing_running(self, seeded):
+        # The real-thread assertion above passes the same way whether or not
+        # the predicate checks is_alive() -- by the time it runs, a
+        # correctly-cleaned-up worker has already dropped out of
+        # threading.enumerate() entirely, so a target-only predicate and the
+        # correct one agree by coincidence, not because either was exercised.
+        # Force the discriminating case: splice a terminating-but-not-alive
+        # stand-in into the real thread listing and confirm _workers() (the
+        # same computation the assertion above relies on) does not count it.
+        real_enumerate = threading.enumerate
+
+        class _TerminatingWorker:
+            def __init__(self) -> None:
+                # Set on the instance, not the class -- a plain function
+                # assigned as a class attribute binds as a method on access
+                # (breaking `is target` identity below).
+                self._target = _connection_worker_thread
+
+            def is_alive(self) -> bool:
+                return False
+
+        monkeypatch.setattr(
+            threading, "enumerate", lambda: [*real_enumerate(), _TerminatingWorker()]
+        )
+        assert _workers() == before, (
+            "a terminating-but-not-alive worker must not be counted as live"
+        )
+
+    def test_a_caller_that_gives_up_first_also_leaves_nothing_running(self, seeded, monkeypatch):
         """The same cleanup, with the cancellation coming from outside.
 
         Readiness is served inside a request, and a request can be abandoned:
@@ -430,6 +457,31 @@ class TestStoreProbe:
         finally:
             blocker.rollback()
             blocker.close()
+
+        # Same coincidence as the previous test: by assertion time a
+        # correctly-cleaned-up worker is already gone from
+        # threading.enumerate(), so this passes whether or not the predicate
+        # checks is_alive(). Splice in a terminating-but-not-alive stand-in
+        # and confirm _workers() -- the same computation the assertion above
+        # relies on -- does not count it as live.
+        real_enumerate = threading.enumerate
+
+        class _TerminatingWorker:
+            def __init__(self) -> None:
+                # Set on the instance, not the class -- a plain function
+                # assigned as a class attribute binds as a method on access
+                # (breaking `is target` identity below).
+                self._target = _connection_worker_thread
+
+            def is_alive(self) -> bool:
+                return False
+
+        monkeypatch.setattr(
+            threading, "enumerate", lambda: [*real_enumerate(), _TerminatingWorker()]
+        )
+        assert _workers() == before, (
+            "a terminating-but-not-alive worker must not be counted as live"
+        )
 
     def test_live_connection_worker_predicate_excludes_a_reaped_thread(self):
         """Both arms of the worker-count predicate: a thread still actually

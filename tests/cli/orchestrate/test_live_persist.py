@@ -4036,3 +4036,191 @@ async def test_execute_dag_run_level_cancellation_skips_reconciliation_entirely(
     assert not getattr(env, "_failed_operation_evidence", None)
 
     await stop_live_persist(env, status="cancelled")
+
+
+async def test_execute_dag_records_control_log_write_failure_when_update_session_raises(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """A control-log metadata write (``update_session()``) that raises used to
+    be swallowed by a bare ``contextlib.suppress(Exception)`` inside the
+    fire-and-forget task -- the applied control was recorded in memory but the
+    write that was supposed to persist it silently vanished. It must now be
+    logged instead of dropped."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate import flow as flow_module
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+
+    monkeypatch.setattr(flow_module, "_CONTROL_POLL_INTERVAL", 0.01)
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    calls = {"n": 0}
+
+    async def _list_pending(session_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [{"id": "control-1", "verb": "pause"}]
+        return []
+
+    real_update_session = ctx["db"].update_session
+
+    async def _raising_update_session(session_id, **kwargs):
+        if "node_metadata" in kwargs:
+            raise RuntimeError("db unavailable")
+        return await real_update_session(session_id, **kwargs)
+
+    monkeypatch.setattr(ctx["db"], "list_pending_session_controls", _list_pending)
+    monkeypatch.setattr(ctx["db"], "update_session", _raising_update_session)
+
+    async def _stub_apply_session_control(db, executor, row):
+        return "applied"
+
+    monkeypatch.setattr(flow_module, "_apply_session_control", _stub_apply_session_control)
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["test/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        kwargs["executor_ref"]["executor"] = object()
+        # Long enough for the (fast-forwarded) control poller to tick at
+        # least once before this returns.
+        await asyncio.sleep(0.1)
+        return {"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with (
+        patch.object(PlanningEngine, "new_run", return_value=engine_run),
+        caplog.at_level("WARNING", logger="lionagi.cli.orchestrate.flow"),
+    ):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    await stop_live_persist(env, status="completed")
+
+    assert any(
+        "control-log metadata write failed" in record.message for record in caplog.records
+    ), "a raising control-log write must be logged, not silently dropped"
+
+
+async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The same drain, but ``update_session()`` hangs instead of raising.
+    Before the fix, the finally block's plain ``gather()`` over the
+    control-log tasks had no bound: a hung write meant ``_execute_dag`` never
+    returned, teardown never ran, and the live database stayed open forever.
+    The drain must now give the write a grace period, then cancel and
+    abandon it -- completing in bounded time and recording that it did."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate import flow as flow_module
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+
+    monkeypatch.setattr(flow_module, "_CONTROL_POLL_INTERVAL", 0.01)
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    calls = {"n": 0}
+
+    async def _list_pending(session_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [{"id": "control-1", "verb": "pause"}]
+        return []
+
+    real_update_session = ctx["db"].update_session
+    write_started = asyncio.Event()
+    write_cancelled = asyncio.Event()
+
+    async def _hanging_update_session(session_id, **kwargs):
+        if "node_metadata" not in kwargs:
+            return await real_update_session(session_id, **kwargs)
+        write_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            write_cancelled.set()
+            raise
+
+    monkeypatch.setattr(ctx["db"], "list_pending_session_controls", _list_pending)
+    monkeypatch.setattr(ctx["db"], "update_session", _hanging_update_session)
+
+    async def _stub_apply_session_control(db, executor, row):
+        return "applied"
+
+    monkeypatch.setattr(flow_module, "_apply_session_control", _stub_apply_session_control)
+
+    warnings: list[str] = []
+    monkeypatch.setattr(flow_module, "_warn", warnings.append)
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["test/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        kwargs["executor_ref"]["executor"] = object()
+        # Hangs until _execute_dag's own task is cancelled from outside --
+        # by that point the control-log write is already in flight.
+        await write_started.wait()
+        await asyncio.Event().wait()
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with patch.object(PlanningEngine, "new_run", return_value=engine_run):
+        execute_task = asyncio.create_task(
+            _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+        )
+        await write_started.wait()
+        execute_task.cancel()
+
+        start = asyncio.get_event_loop().time()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(execute_task, timeout=8)
+        elapsed = asyncio.get_event_loop().time() - start
+
+    assert elapsed < 6, f"teardown took {elapsed}s -- the control-log drain is unbounded again"
+    assert write_cancelled.is_set(), (
+        "the hung control-log write must be cancelled during teardown, not left running"
+    )
+    await stop_live_persist(env, status="completed")

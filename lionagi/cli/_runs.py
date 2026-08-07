@@ -997,7 +997,12 @@ async def teardown_persist(
             persisted = None
         if persisted is not None and persisted.get("status"):
             return persisted["status"]
-        return status
+        # The readback itself failed (or found nothing) -- there is no
+        # evidence the requested terminal status ever reached the database.
+        # Reporting `status` here would be the same false-terminal-status
+        # class this teardown path exists to prevent, so surface an
+        # explicit unknown outcome instead of a guess.
+        return "unknown"
     finally:
         # Release branch ownership even when the bookkeeping above failed -- a
         # stranded owner marker would make the long-lived branch unresumable.
