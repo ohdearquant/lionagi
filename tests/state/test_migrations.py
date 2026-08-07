@@ -244,6 +244,8 @@ async def test_migration_columns_constant_is_importable():
         "session_controls",  # claimed_at, added with the claim protocol
         "engine_runs",  # Phase C Move 2 — new table registered for future migrations
         "dispatch_outbox",  # ADR-0092 — new table registered for future migrations
+        "attention_dispositions",  # revision fencing column
+        "attention_disposition_history",  # sequence append-order column
     }
     assert set(MIGRATION_COLUMNS.keys()) == expected_tables
 

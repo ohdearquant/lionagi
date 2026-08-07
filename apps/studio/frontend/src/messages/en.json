@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Checking whether this run can be resumed…",
+    "availabilityFailed": "Could not determine whether this run can be resumed.",
+    "notResumable": "This run cannot be resumed.",
+    "continueDescription": "Replays the saved plan from where it stopped — no new instruction, no branch to pick.",
+    "continueSubmit": "Continue",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -429,8 +434,12 @@
       "noMessages": "No messages recorded",
       "waitingEvents": "Waiting for lifecycle events…",
       "noEvents": "No lifecycle events recorded",
+      "showOlderEvents": "Show {count, number} older events",
+      "expandEventDetails": "Show event details",
+      "gateOutcome": "Gate: {verdict} · {major} major, {minor} minor",
+      "gateOutcomeSimple": "Gate: {verdict}",
       "live": "live",
-      "noBranchErrors": "No errors detected across all branches.",
+      "noBranchErrors": "No runtime errors across all branches.",
       "noFiles": "No file operations detected.",
       "sectionInvocation": "Invocation",
       "invocationSiblingRuns": "Sibling runs",
@@ -439,7 +448,7 @@
       "olderRemaining": "{count} older messages",
       "statToolCallsRecent": "Tool calls (recent)",
       "statErrorsRecent": "Errors (recent)",
-      "noBranchErrorsPartial": "No errors in the loaded messages.",
+      "noBranchErrorsPartial": "No runtime errors in the loaded messages.",
       "noFilesPartial": "No file operations detected in the loaded messages.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
       "reloadConversation": "Reload conversation"
@@ -540,6 +549,7 @@
       "triggering": "Triggering…",
       "runStarted": "Run started: {id}",
       "triggerFailed": "Failed to trigger",
+      "toggleFailed": "Failed to toggle",
       "every": "every {interval}",
       "in": "in {delta}",
       "overdue": "overdue {delta}",
@@ -547,7 +557,17 @@
       "last": "last",
       "never": "never run",
       "paused": "Paused",
-      "notScheduled": "Not scheduled"
+      "notScheduled": "Not scheduled",
+      "health": {
+        "healthy": "Healthy",
+        "failing": "Failing",
+        "overdue": "Overdue",
+        "neverFired": "Never fired",
+        "noEvidence": "No evidence",
+        "lastOutcome": "last {outcome} {delta} ago",
+        "neverFiredSince": "never fired since {date}",
+        "noEvidenceHint": "no execution recorded"
+      }
     },
     "run": {
       "elapsed": "{delta} elapsed",
@@ -784,6 +804,8 @@
     },
     "history": {
       "label": "Session history",
+      "sortRecent": "Recent",
+      "sortCost": "Highest cost",
       "all": "All",
       "completed": "Completed",
       "failed": "Failed",
@@ -797,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -820,7 +850,34 @@
       },
       "more": "+{count} more — view all in History →",
       "digestLatest": "latest: {name} · {age} ago",
-      "streakCount": "{count}× failed"
+      "streakCount": "{count}× failed",
+      "disposition": {
+        "acknowledged": "acknowledged",
+        "resolved": "resolved",
+        "expected": "expected",
+        "snoozed": "snoozed"
+      },
+      "action": {
+        "acknowledge": "Acknowledge",
+        "acknowledgeAria": "Acknowledge {name}",
+        "resolve": "Resolve",
+        "resolveAria": "Resolve {name}",
+        "snooze": "Snooze {duration}",
+        "snoozeAria": "Snooze {name} for {duration}",
+        "expected": "Expected",
+        "expectedAria": "Mark {name} as expected",
+        "undo": "Undo",
+        "undoAria": "Undo discharge of {name}",
+        "confirm": "Confirm",
+        "cancel": "Cancel",
+        "notePlaceholder": "Why is this expected?",
+        "noteRequired": "A note is required",
+        "saveFailed": "Not saved · {message}",
+        "expiryLabel": "Expires in"
+      },
+      "showDischarged": "Show discharged",
+      "hideDischarged": "Hide discharged",
+      "dischargedEmpty": "No discharged items"
     },
     "liveBoard": {
       "title": "Running now",
@@ -861,6 +918,15 @@
       "completionRate": "{rate}% completion",
       "noTerminalRuns": "No terminal runs in window",
       "total": "{count} total",
+      "staleHint": "showing last known · refresh failed"
+    },
+    "spend": {
+      "title": "Reported spend",
+      "loading": "Loading spend…",
+      "error": "Spend unavailable · {message}",
+      "unreachable": "API unreachable",
+      "empty": "No runs in window",
+      "coverage": "{reported} of {total} reported",
       "staleHint": "showing last known · refresh failed"
     },
     "stale": {
@@ -958,6 +1024,8 @@
     "roleUser": "user",
     "roleThinking": "thinking",
     "roleResponse": "response",
+    "planAssignments": "{count, plural, one {# assignment} other {# assignments}}",
+    "planDependsOn": "depends on:",
     "tabAria": "{label} tab {position} of {total}"
   },
   "workflow": {

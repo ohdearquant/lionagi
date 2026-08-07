@@ -81,4 +81,102 @@ describe("ExpectedArtifacts", () => {
     expect(view.textContent).not.toContain("PENDING");
     expect(view.textContent).not.toContain("MISSING");
   });
+
+  it("shows when a recorded verdict was taken instead of presenting it as current", () => {
+    const view = renderExpectedArtifacts({
+      status: "passed",
+      checked_at: 1700000000,
+      missing_required: [],
+      missing_optional: [],
+      produced: [
+        { id: "report", path: "REPORT.md", size: 5, present: true },
+        { id: "notes", path: "NOTES.md", size: 3, present: true },
+      ],
+    });
+
+    expect(view.textContent).toContain("verified at completion,");
+    // A provisional (mid-run) reading is not a completion snapshot and must
+    // not claim one.
+    const provisionalView = renderExpectedArtifacts({
+      status: "failed",
+      checked_at: 1700000000,
+      missing_required: [],
+      missing_optional: [{ id: "notes", path: "NOTES.md", required: false }],
+      produced: [{ id: "report", path: "REPORT.md", size: 5, present: true }],
+      provisional: true,
+    });
+    expect(provisionalView.textContent).not.toContain("verified at completion,");
+  });
+
+  it("does not claim staleness for a fresh recorded verdict", () => {
+    const view = renderExpectedArtifacts({
+      status: "passed",
+      checked_at: 1700000000,
+      missing_required: [],
+      missing_optional: [],
+      produced: [{ id: "report", path: "REPORT.md", size: 5, present: true }],
+    });
+
+    expect(view.textContent).not.toContain("no longer present");
+    expect(view.textContent).not.toContain("files changed since verification");
+    expect(view.textContent).not.toContain("NO LONGER PRESENT");
+  });
+
+  it("flags a produced artifact whose file changed after verification", () => {
+    const view = renderExpectedArtifacts({
+      status: "passed",
+      checked_at: 1700000000,
+      missing_required: [],
+      missing_optional: [],
+      produced: [{ id: "report", path: "REPORT.md", size: 5, present: true }],
+      changed_since_verification: ["report"],
+    });
+
+    expect(view.textContent).toContain("files changed since verification");
+    expect(view.textContent).toContain("changed since verification");
+  });
+
+  it("flags a produced artifact whose file is no longer present", () => {
+    const view = renderExpectedArtifacts({
+      status: "passed",
+      checked_at: 1700000000,
+      missing_required: [],
+      missing_optional: [],
+      produced: [{ id: "report", path: "REPORT.md", size: 5, present: true }],
+      absent_since_verification: ["report"],
+    });
+
+    expect(view.textContent).toContain("no longer present");
+    expect(view.textContent).toContain("NO LONGER PRESENT");
+    expect(view.textContent).not.toContain("OK (5 B)");
+  });
+
+  it("labels a legacy recorded verdict as staleness unknown, not fresh", () => {
+    // No staleness_check field at all — the shape of a payload recorded
+    // before the disk check existed, or a list row where the caller
+    // deliberately skipped it. It must not render the same as a verdict
+    // that was checked and came back clean.
+    const view = renderExpectedArtifacts({
+      status: "passed",
+      checked_at: 1700000000,
+      missing_required: [],
+      missing_optional: [],
+      produced: [{ id: "report", path: "REPORT.md", size: 5, present: true }],
+    });
+
+    expect(view.textContent).toContain("staleness unknown");
+  });
+
+  it("does not show staleness unknown once the disk check has run, even when clean", () => {
+    const view = renderExpectedArtifacts({
+      status: "passed",
+      checked_at: 1700000000,
+      missing_required: [],
+      missing_optional: [],
+      produced: [{ id: "report", path: "REPORT.md", size: 5, present: true }],
+      staleness_check: "checked",
+    });
+
+    expect(view.textContent).not.toContain("staleness unknown");
+  });
 });

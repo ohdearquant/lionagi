@@ -56,13 +56,13 @@ def test_validate_shape_rejects_bad_env_values():
     assert any("'env'" in e for e in errors)
 
 
-def test_validate_shape_accepts_env_null_value_as_deletion_marker():
-    """`update_server` treats a `None` env value as "delete this key" (see
-    `_merge_config`), so a `/validate` call against the same patch body must
-    not reject it -- otherwise a patch the save path accepts fails shape
-    validation first (#2771)."""
-    errors = mcp_mod._validate_shape("myserver", {"command": "python3", "env": {"KEY": None}})
-    assert errors == []
+def test_merge_config_rejects_non_dict_env_without_crashing():
+    """A malformed env patch (a string, not a mapping) must reach
+    `_validate_shape`'s ordinary type check as a normal shape error, not
+    crash `_merge_config`'s per-key iteration with an AttributeError."""
+    merged = mcp_mod._merge_config({"command": "python3"}, {"env": "not-a-dict"})
+    errors = mcp_mod._validate_shape("myserver", merged)
+    assert any("'env'" in e for e in errors)
 
 
 def test_validate_shape_rejects_bad_url():
@@ -150,12 +150,10 @@ def test_register_malformed_config_raises(tmp_path, monkeypatch):
 
 
 def test_register_strips_none_env_values(tmp_path, monkeypatch):
-    """`_validate_shape` accepts a `None` env value because `update_server`
-    treats it as a deletion marker for an *existing* key (#2771). On create
-    there is no existing key to delete, so `register_server` must not persist
-    the literal `None` verbatim -- that config is exactly what would land in
-    the registry and the derived `.mcp.json` a spawned CLI reads, handing it
-    an env var whose value is `null` instead of a real string (#2771 regr.).
+    """`register_server` merges the incoming config onto an empty base before
+    validating and storing it, so a `None` env value on create is dropped by
+    the same rule that removes it on update -- persisted nowhere, including
+    the derived ``.mcp.json`` a spawned CLI reads.
     """
     registry_path, synced_path = _point_registry_at(tmp_path, monkeypatch)
 
@@ -179,9 +177,8 @@ def test_register_rejects_non_mapping_env(tmp_path, monkeypatch):
     """A non-mapping `env` (e.g. a string) must be rejected by `_validate_shape`
     as a normal 'env must be an object' error, not crash `_merge_config`'s
     `None`-stripping loop with `AttributeError` when it calls `.items()` on a
-    non-dict value -- the create path merges before validating (#2771 fix),
-    so the merge step itself must tolerate malformed input it hasn't
-    validated yet.
+    non-dict value -- the create path merges before validating, so the merge
+    step itself must tolerate malformed input it hasn't validated yet.
     """
     _point_registry_at(tmp_path, monkeypatch)
 
@@ -694,6 +691,301 @@ def test_route_validate_malformed(mcp_client):
     body = resp.json()
     assert body["ok"] is False
     assert body["errors"]
+
+
+# ---------------------------------------------------------------------------
+# Validate/Save parity -- Validate must accept exactly the edits Save
+# accepts. Save (PUT) merges a patch onto the stored config; a Validate that
+# shape-checks the raw patch instead rejects perfectly ordinary partial
+# edits (e.g. one that only changes `args`) and, worse, the env-deletion
+# patch Save requires to drop a key (an explicit `null` value, since a
+# client never sees secret values to resend them).
+# ---------------------------------------------------------------------------
+
+
+_PARITY_PATCH_CORPUS = [
+    ("env_deletion", {"env": {"API_KEY": None}}),
+    ("env_omitted", {"args": ["-m", "different_module"]}),
+    ("full_config", {"command": "python3", "args": ["-m", "srv"], "env": {"OTHER": "v"}}),
+    ("invalid_nested_types", {"env": {"KEY": 5}}),
+    ("unknown_field", {"totally_unknown_field": "whatever", "args": ["-m", "srv"]}),
+    ("env_not_a_dict", {"env": "not-a-dict"}),
+    ("env_int", {"env": 5}),
+    ("env_list", {"env": []}),
+    ("env_empty_string", {"env": ""}),
+    ("args_null", {"args": None}),
+    ("timeout_empty_string", {"timeout": ""}),
+]
+
+
+@pytest.mark.parametrize("case_name,patch", _PARITY_PATCH_CORPUS)
+def test_route_validate_and_save_agree_on_the_same_patch(mcp_client, case_name, patch):
+    """The same patch corpus driven through both endpoints must agree on
+    accept vs reject, so a merge-semantics field handled by one and not the
+    other fails this test instead of shipping as a live divergence. Every
+    entry is also checked for a 5xx -- a validator that crashes on the input
+    it exists to judge is a standing property this corpus enforces, not a
+    one-off assertion for the malformed-env cases alone."""
+    mcp_client.post("/api/mcp/servers/", json={"name": "myserver", **STDIO_CONFIG})
+
+    validate_resp = mcp_client.post(
+        "/api/mcp/servers/myserver/validate", json={"name": "myserver", **patch}
+    )
+    assert validate_resp.status_code < 500, (
+        f"{case_name}: validate returned {validate_resp.status_code} ({validate_resp.text})"
+    )
+    validate_body = validate_resp.json()
+
+    save_resp = mcp_client.put("/api/mcp/servers/myserver", json=patch)
+    assert save_resp.status_code < 500, (
+        f"{case_name}: save returned {save_resp.status_code} ({save_resp.text})"
+    )
+
+    assert validate_body["ok"] == (save_resp.status_code == 200), (
+        f"{case_name}: validate ok={validate_body['ok']!r} "
+        f"(errors={validate_body.get('errors')!r}) but save status="
+        f"{save_resp.status_code} ({save_resp.text})"
+    )
+
+
+@pytest.mark.parametrize("case_name,patch", _PARITY_PATCH_CORPUS)
+def test_route_validate_and_register_agree_at_create_time(mcp_client, case_name, patch):
+    """The same corpus again, but merged onto an empty base (a name that does
+    not exist yet) instead of onto an already-stored config -- validate and
+    register must still agree, and neither may 500 on a malformed patch."""
+    name = f"fresh-{case_name}"
+
+    validate_resp = mcp_client.post(
+        "/api/mcp/servers/" + name + "/validate", json={"name": name, **patch}
+    )
+    assert validate_resp.status_code < 500, (
+        f"{case_name}: validate returned {validate_resp.status_code} ({validate_resp.text})"
+    )
+    validate_body = validate_resp.json()
+
+    register_resp = mcp_client.post("/api/mcp/servers/", json={"name": name, **patch})
+    assert register_resp.status_code < 500, (
+        f"{case_name}: register returned {register_resp.status_code} ({register_resp.text})"
+    )
+
+    assert validate_body["ok"] == (register_resp.status_code == 201), (
+        f"{case_name}: validate ok={validate_body['ok']!r} "
+        f"(errors={validate_body.get('errors')!r}) but register status="
+        f"{register_resp.status_code} ({register_resp.text})"
+    )
+
+
+def test_route_env_deletion_patch_validate_and_save_parity_end_to_end(mcp_client):
+    """The concrete regression this fixes: the exact edit Save performs
+    (deleting an env key via an explicit `null`) must validate successfully,
+    and the key must actually be gone after the save that follows."""
+    mcp_client.post("/api/mcp/servers/", json={"name": "myserver", **STDIO_CONFIG})
+
+    validate_resp = mcp_client.post(
+        "/api/mcp/servers/myserver/validate",
+        json={"name": "myserver", "env": {"API_KEY": None}},
+    )
+    assert validate_resp.status_code == 200
+    assert validate_resp.json()["ok"] is True
+
+    save_resp = mcp_client.put("/api/mcp/servers/myserver", json={"env": {"API_KEY": None}})
+    assert save_resp.status_code == 200
+    assert "API_KEY" not in save_resp.json()["env_keys"]
+
+
+@pytest.mark.parametrize(
+    "case_name,patch",
+    [
+        ("env_list", {"command": "python3", "env": []}),
+        ("env_empty_string", {"command": "python3", "env": ""}),
+        ("args_null", {"command": "python3", "args": None}),
+        ("timeout_empty_string", {"command": "python3", "timeout": ""}),
+    ],
+)
+def test_create_time_malformed_falsy_values_are_rejected_not_laundered(
+    mcp_client, case_name, patch
+):
+    """The regression this fixes: a falsy but wrong-typed value (`[]`/`""`
+    where env wants a mapping, a bare `None` where args wants a list, `""`
+    where timeout wants a number) must reach `_validate_shape` and fail it,
+    not be normalized into "key absent" by the merge before validation ever
+    runs. Both endpoints must actually reject -- not just agree with each
+    other, which parity alone would not catch if both silently accepted."""
+    name = f"fresh-{case_name}"
+
+    validate_resp = mcp_client.post(
+        f"/api/mcp/servers/{name}/validate", json={"name": name, **patch}
+    )
+    assert validate_resp.status_code == 200
+    assert validate_resp.json()["ok"] is False, f"{case_name}: validate accepted {patch!r}"
+    assert validate_resp.json()["errors"]
+
+    register_resp = mcp_client.post("/api/mcp/servers/", json={"name": name, **patch})
+    assert register_resp.status_code == 400, (
+        f"{case_name}: register accepted {patch!r} ({register_resp.text})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# URL-transport parity -- `_validate_shape` used to gate every args/env shape
+# check behind `has_command`, so a URL config (no `command` at all) skipped
+# them outright; `_merge_config` separately laundered a fresh url+malformed
+# patch by popping the stdio-only fields before `_validate_shape` ever saw
+# them. Both mechanisms are covered here, for both create-time (url and the
+# malformed field in the same request) and update-time (a patch that edits
+# only the malformed field on an already-registered url server, never
+# resending `url`) -- the two shapes each mechanism above was specific to.
+# ---------------------------------------------------------------------------
+
+_URL_MALFORMED_PATCH_CORPUS = [
+    ("env_list", {"env": []}),
+    ("env_empty_string", {"env": ""}),
+    ("env_int", {"env": 0}),
+    ("env_false", {"env": False}),
+    ("args_null", {"args": None}),
+    ("args_empty_string", {"args": ""}),
+    ("args_dict", {"args": {}}),
+]
+
+
+@pytest.mark.parametrize("case_name,patch", _URL_MALFORMED_PATCH_CORPUS)
+def test_url_transport_create_time_malformed_args_env_are_rejected(mcp_client, case_name, patch):
+    """`timeout` already rejected regardless of transport; this is the same
+    guarantee for `args`/`env` on a server that has no `command` at all."""
+    name = f"url-fresh-{case_name}"
+    body = {"name": name, **URL_CONFIG, **patch}
+
+    validate_resp = mcp_client.post(f"/api/mcp/servers/{name}/validate", json=body)
+    assert validate_resp.status_code == 200
+    assert validate_resp.json()["ok"] is False, f"{case_name}: validate accepted {patch!r}"
+    assert validate_resp.json()["errors"]
+
+    register_resp = mcp_client.post("/api/mcp/servers/", json=body)
+    assert register_resp.status_code == 400, (
+        f"{case_name}: register accepted {patch!r} ({register_resp.text})"
+    )
+    assert mcp_client.get("/api/mcp/servers/").json()["servers"] == []
+
+
+@pytest.mark.parametrize("case_name,patch", _URL_MALFORMED_PATCH_CORPUS)
+def test_url_transport_update_time_malformed_args_env_are_rejected(
+    mcp_client, tmp_path, case_name, patch
+):
+    """The shape the create-time corpus above cannot exercise: a save that
+    edits only `args`/`env` on an already-registered url server without
+    resending `url`, so `_merge_config`'s transport-switch pop (keyed on
+    `patch.get("url")`) never fires and the malformed value would otherwise
+    sit in `merged` unexamined by a `has_command`-gated check."""
+    mcp_client.post("/api/mcp/servers/", json={"name": "myserver", **URL_CONFIG})
+    registry_path = tmp_path / "mcp_servers.json"
+    before = json.loads(registry_path.read_text())
+
+    validate_resp = mcp_client.post(
+        "/api/mcp/servers/myserver/validate", json={"name": "myserver", **patch}
+    )
+    assert validate_resp.status_code == 200
+    assert validate_resp.json()["ok"] is False, f"{case_name}: validate accepted {patch!r}"
+
+    save_resp = mcp_client.put("/api/mcp/servers/myserver", json=patch)
+    assert save_resp.status_code == 400, f"{case_name}: save accepted {patch!r} ({save_resp.text})"
+
+    after = json.loads(registry_path.read_text())
+    assert after == before, f"{case_name}: registry bytes changed on a rejected save"
+
+
+def test_url_transport_well_formed_env_accepted_at_create_time(mcp_client):
+    """The pin for the inert-field question: a well-formed `env` on a URL
+    server is never read by the http transport, but it is not malformed --
+    the norm elsewhere in this service is to accept and store a well-formed
+    inert field rather than reject it, and this is that case for `env`."""
+    resp = mcp_client.post(
+        "/api/mcp/servers/",
+        json={"name": "myserver", **URL_CONFIG, "env": {"TOKEN": "value"}},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["env_keys"] == ["TOKEN"]
+
+
+def test_url_transport_well_formed_env_accepted_on_update_without_url(mcp_client):
+    """Same pin, but as a save that edits only `env` on an already-registered
+    url server without resending `url` -- the shape the transport-switch pop
+    in `_merge_config` must leave alone because the patch itself supplied it."""
+    mcp_client.post("/api/mcp/servers/", json={"name": "myserver", **URL_CONFIG})
+
+    resp = mcp_client.put("/api/mcp/servers/myserver", json={"env": {"TOKEN": "value"}})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["env_keys"] == ["TOKEN"]
+
+
+def test_update_env_empty_list_is_rejected_not_silently_ignored(tmp_path, monkeypatch):
+    """Before this fix, `env: []` on an update was normalized to `{}` by
+    `patch["env"] or {}` and merged as a no-op -- the existing env survived
+    untouched and the save reported success, silently diverging from
+    validate (which already rejected a non-dict env). That divergence is
+    closed deliberately, as a tightening: update now rejects the same
+    malformed value validate always did, and the config on disk is
+    untouched by the rejected patch."""
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    result = asyncio.run(mcp_mod.validate_config("myserver", {"env": []}, check_connection=False))
+    assert result["ok"] is False
+
+    with pytest.raises(mcp_mod.McpServerError):
+        mcp_mod.update_server("myserver", {"env": []})
+
+    on_disk = json.loads(registry_path.read_text())
+    assert on_disk["servers"]["myserver"]["config"]["env"] == STDIO_CONFIG["env"]
+
+
+def test_update_env_null_top_level_is_a_no_op_not_a_wipe(tmp_path, monkeypatch):
+    """A bare `env: null` carries no individual keys to delete, unlike
+    `env: {KEY: null}` -- it leaves the existing env untouched. This is
+    distinct from `env: []`, a malformed container that is now rejected
+    outright rather than silently normalized to the same no-op."""
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    updated = mcp_mod.update_server("myserver", {"env": None})
+
+    assert updated["env_keys"] == ["API_KEY"]
+    on_disk = json.loads(registry_path.read_text())
+    assert on_disk["servers"]["myserver"]["config"]["env"] == STDIO_CONFIG["env"]
+
+
+def test_update_args_null_is_rejected_not_treated_as_absent(tmp_path, monkeypatch):
+    """Unlike `timeout`, `_validate_shape` has no reading of `args: null` as
+    valid -- args must always be a list. So, unlike `timeout: null` (which
+    clears the field), `args: null` is written through to the shape check
+    and rejected, on update exactly as it is on create."""
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    with pytest.raises(mcp_mod.McpServerError):
+        mcp_mod.update_server("myserver", {"args": None})
+
+    on_disk = json.loads(registry_path.read_text())
+    assert on_disk["servers"]["myserver"]["config"]["args"] == STDIO_CONFIG["args"]
+
+
+def test_validate_create_time_null_env_against_empty_base_is_key_absent(tmp_path, monkeypatch):
+    """A server that does not exist yet has nothing to merge onto but an
+    empty config, so a null env value there means "the key was never
+    added" -- the same outcome the merge produces for an existing server --
+    rather than the shape error a literal `None` would otherwise trip."""
+    _point_registry_at(tmp_path, monkeypatch)
+
+    result = asyncio.run(
+        mcp_mod.validate_config(
+            "brand-new",
+            {"command": "python3", "env": {"API_KEY": None}},
+            check_connection=False,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["errors"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -571,3 +571,81 @@ def test_definitions_save_route_allows_ordinary_agent(tmp_path, monkeypatch):
     r = client.post("/api/definitions/agent/useragent", json={"content": "# updated"})
     assert r.status_code == 200, r.text
     assert (agents_dir / "useragent.md").read_text().strip() == "# updated"
+
+
+# ---------------------------------------------------------------------------
+# The definitions save route also has to run the same cast role/mode
+# validation POST/PUT /api/agents/{name} apply -- otherwise a payload the
+# agents API rejects can still land on disk through the raw markdown door.
+# ---------------------------------------------------------------------------
+
+
+def test_definitions_save_route_rejects_unknown_role(tmp_path, monkeypatch):
+    client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
+
+    content = (
+        "---\nprovider: claude\nmodel: claude-sonnet-4-6\nrole: not-a-real-role\n---\n\nBody.\n"
+    )
+    r = client.post("/api/definitions/agent/bogus-role", json={"content": content})
+
+    assert r.status_code == 422, r.text
+    assert not (agents_dir / "bogus-role.md").exists()
+
+
+def test_definitions_save_route_rejects_unknown_mode(tmp_path, monkeypatch):
+    client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
+
+    content = (
+        "---\nprovider: claude\nmodel: claude-sonnet-4-6\nmode: not-a-real-mode\n---\n\nBody.\n"
+    )
+    r = client.post("/api/definitions/agent/bogus-mode", json={"content": content})
+
+    assert r.status_code == 422, r.text
+    assert not (agents_dir / "bogus-mode.md").exists()
+
+
+def test_definitions_save_route_rejects_same_payload_agents_api_rejects(tmp_path, monkeypatch):
+    """The exact role value POST /api/agents/{name} rejects must also be
+    rejected via the definitions route, with the same error class (422) --
+    otherwise the definitions door is a bypass for the agents door's guard."""
+    client, _ = _make_definitions_client(tmp_path, monkeypatch)
+
+    r_agents = client.post(
+        "/api/agents/via-agents-api",
+        json={"provider": "claude", "model": "claude-sonnet-4-6", "role": "not-a-real-role"},
+    )
+    assert r_agents.status_code == 422, r_agents.text
+
+    content = (
+        "---\nprovider: claude\nmodel: claude-sonnet-4-6\nrole: not-a-real-role\n---\n\nBody.\n"
+    )
+    r_defs = client.post("/api/definitions/agent/via-definitions-api", json={"content": content})
+    assert r_defs.status_code == 422, r_defs.text
+
+
+def test_definitions_save_route_allows_valid_role_and_mode(tmp_path, monkeypatch):
+    """A payload that would be accepted by the agents API still saves through
+    the definitions route -- the new guard must not reject valid casts."""
+    from lionagi.casts.pattern import list_modes, list_roles
+
+    client, agents_dir = _make_definitions_client(tmp_path, monkeypatch)
+    role = list_roles()[0]
+    mode = list_modes()[0]
+
+    content = f"---\nprovider: claude\nmodel: claude-sonnet-4-6\nrole: {role}\nmode: {mode}\n---\n\nBody.\n"
+    r = client.post("/api/definitions/agent/valid-cast", json={"content": content})
+
+    assert r.status_code == 200, r.text
+    assert (agents_dir / "valid-cast.md").read_text() == content
+
+
+def test_definitions_save_route_ignores_validation_for_non_agent_kind(tmp_path, monkeypatch):
+    """role/mode validation is agent-specific; a playbook save must not be
+    affected even though its content also happens to mention 'role'."""
+    client, _ = _make_definitions_client(tmp_path, monkeypatch)
+
+    r = client.post(
+        "/api/definitions/playbook/some-playbook",
+        json={"content": "role: not-a-real-role\nsteps: []\n"},
+    )
+    assert r.status_code == 200, r.text

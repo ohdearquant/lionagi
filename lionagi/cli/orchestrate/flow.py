@@ -9,6 +9,7 @@ import contextlib
 import json
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -150,6 +151,14 @@ _CONTROL_POLL_INTERVAL = 2.0
 # Sentinel: apply ran but no finalize write landed. The poller must stop the
 # tick here rather than let later controls overtake it in the DB.
 _CONTROL_UNSTAMPED = "unstamped"
+
+# ── Escalation mirror linking — attributes an escalated leg's CLI transcript
+# back to this run instead of leaving it an unlinked, misattributed session.
+# The transcript mirror may run in another process and lag behind this run's
+# own completion, so the link write gets a few bounded retries rather than
+# firing once and giving up.
+_ESCALATION_LINK_RETRIES = 5
+_ESCALATION_LINK_RETRY_INTERVAL = 1.0
 
 # ── Team lifecycle (done-signal / wakeup rounds / quiescence) ───────────────
 # Driven by ReactiveExecutor's on_op_complete hook, not a poll loop (which
@@ -349,6 +358,31 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
+                # A "completed" child may still carry COMPLETED_GATE_REJECTED
+                # (a gate rejected mid-DAG and short-circuited its dependent
+                # subtree) — surface that at the invocation level too, or it
+                # flattens back to a plain clean-pass COMPLETED_OK and the
+                # distinction this reason code exists for is lost.
+                gate_rejected = [
+                    s
+                    for s in sessions
+                    if str(s.get("status_reason_code") or "") == RunReasons.COMPLETED_GATE_REJECTED
+                ]
+                if gate_rejected:
+                    gate_metadata = dict(metadata)
+                    gate_metadata["gate_rejected_session_ids"] = [
+                        s["id"] for s in gate_rejected if s.get("id")
+                    ]
+                    return (
+                        "completed",
+                        RunReasons.COMPLETED_GATE_REJECTED,
+                        "Flow completed successfully, but a gate rejected "
+                        "mid-DAG in at least one child session and its "
+                        "dependent subtree was short-circuited instead of "
+                        "running against the rejected baseline.",
+                        [{"kind": "session", "id": s["id"]} for s in gate_rejected if s.get("id")],
+                        gate_metadata,
+                    )
                 # A "completed" child may still carry COMPLETED_FINALIZE_ERROR
                 # (a guarded best-effort teardown step failed) — surface that
                 # degraded reason at the invocation level rather than hiding it.
@@ -934,6 +968,7 @@ async def _execute_dag(
     _executor_ref: dict[str, object] = {}
     _checkpoint_tasks: list = []
     _branch_status_tasks: list = []
+    _escalation_link_tasks: list = []
 
     _checkpoint_writer: CheckpointWriter | None = None
     if checkpoint_config is not None:
@@ -1258,6 +1293,68 @@ async def _execute_dag(
                 f"woke {', '.join(sorted(state.pending_targets))}"
             )
 
+    def _link_escalation_mirror(node: Any) -> None:
+        """Attribute an escalation child's CLI transcript to this run.
+
+        No-ops for anything that isn't an escalation child (no ``escalated_from``
+        metadata) or that didn't run on a CLI engine (``provider_session_id`` unset —
+        API-provider retries have nothing for the transcript mirror to link). The
+        session uid a CLI engine reports is the same one the mirror keys its session
+        row by, so it is the only thing this run and a detached mirror sweep share.
+        """
+        metadata = getattr(node, "metadata", None)
+        parent_op_id = metadata.get("escalated_from") if metadata else None
+        if not parent_op_id:
+            return
+        chat_model = getattr(getattr(node, "_branch", None), "chat_model", None)
+        session_uid = getattr(chat_model, "provider_session_id", None) if chat_model else None
+        if not session_uid:
+            return
+        ctx = getattr(env, "_live_persist", None)
+        db = ctx.get("db") if ctx else None
+        if db is None:
+            return
+        escalated_label = metadata.get("escalated_from_name") or parent_op_id[:8]
+        display_name = f"escalation of {escalated_label}"
+        project = getattr(env, "_project", None)
+        project_source = "escalation_parent" if project else None
+
+        async def _do() -> None:
+            from lionagi.state.claude_mirror import link_escalation_session
+
+            for attempt in range(_ESCALATION_LINK_RETRIES):
+                if attempt:
+                    await _asyncio.sleep(_ESCALATION_LINK_RETRY_INTERVAL)
+                try:
+                    linked = await link_escalation_session(
+                        db,
+                        session_uid=session_uid,
+                        run_id=env.run.run_id,
+                        name=display_name,
+                        project=project,
+                        project_source=project_source,
+                        parent_op_id=parent_op_id,
+                    )
+                except Exception:  # noqa: BLE001 — a link failure must not affect the run
+                    logger.exception(
+                        "escalation mirror link failed for session %s", session_uid[:8]
+                    )
+                    return
+                if linked:
+                    return
+            logger.warning(
+                "escalation mirror link: no mirrored session for %s after %d retries",
+                session_uid[:8],
+                _ESCALATION_LINK_RETRIES,
+            )
+
+        _escalation_link_tasks.append(_asyncio.ensure_future(_do()))
+
+    def _on_op_complete(node: Any) -> None:
+        """ReactiveExecutor.on_op_complete callback: called for every completed node."""
+        _link_escalation_mirror(node)
+        _on_team_op_complete(node)
+
     async def _control_poll_loop() -> None:
         while True:
             await _asyncio.sleep(_CONTROL_POLL_INTERVAL)
@@ -1341,6 +1438,7 @@ async def _execute_dag(
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
     _exchange = getattr(env, "exchange", None)
     _exch_task = _asyncio.ensure_future(_exchange.run(0.5)) if _exchange is not None else None
+    _dag_cancelled = False
     try:
         dag_result = await eng_run.run_dag(
             env.builder.get_graph(),
@@ -1364,8 +1462,11 @@ async def _execute_dag(
                 register_branch_hook(env._live_persist, branch) if env._live_persist else None
             ),
             spawn_branch_setup=_spawn_branch_setup if reactive else None,
-            on_op_complete=_on_team_op_complete if _team_coordinator is not None else None,
+            on_op_complete=_on_op_complete,
         )
+    except _asyncio.CancelledError:
+        _dag_cancelled = True
+        raise
     finally:
         _hb_task.cancel()
         _ctl_task.cancel()
@@ -1379,6 +1480,33 @@ async def _execute_dag(
                 await _exch_task
             # Route any final outbox sends left over after the last collect tick.
             await _exchange.collect_all()
+
+        async def _drain_escalation_links_bounded() -> None:
+            # An escalation-link row is nice-to-have attribution, not run
+            # data — losing one to cancellation is acceptable, but a hung
+            # link write (stuck DB call) blocking teardown indefinitely is
+            # not. Give in-flight links a short grace period to land
+            # normally, then cancel whatever is left and wait for it to
+            # actually unwind before returning.
+            with contextlib.suppress(Exception), move_on_after(2):
+                await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
+            _survivors = [t for t in _escalation_link_tasks if not t.done()]
+            for _t in _survivors:
+                _t.cancel()
+            if _survivors:
+                # A survivor that itself swallows cancellation (or blocks in
+                # sync code) would otherwise hang this await forever — bound
+                # the wait too, and abandon whatever is still alive after it
+                # rather than let a single stuck link task block teardown.
+                with contextlib.suppress(Exception), move_on_after(2):
+                    await _asyncio.gather(*_survivors, return_exceptions=True)
+                _abandoned = [t for t in _survivors if not t.done()]
+                if _abandoned:
+                    _warn(
+                        f"abandoned {len(_abandoned)} escalation-link task(s) "
+                        "still alive after cancellation grace period"
+                    )
+
         # Completion observers schedule persistence writes synchronously but the
         # writes themselves are async. Drain them while the live DB is still open.
         with CancelScope(shield=True):
@@ -1388,6 +1516,48 @@ async def _execute_dag(
             if _checkpoint_tasks:
                 with contextlib.suppress(Exception):
                     await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
+            if _escalation_link_tasks:
+                if _dag_cancelled:
+                    # Cancellation already landed while run_dag() was running,
+                    # so go straight to the bounded path.
+                    await _drain_escalation_links_bounded()
+                else:
+                    # Bounded by _ESCALATION_LINK_RETRIES * _ESCALATION_LINK_RETRY_INTERVAL
+                    # (a few seconds worst case) in the happy path — the outer
+                    # db/session teardown (teardown_persist) only runs after this
+                    # function returns, so draining here, not firing untracked, is
+                    # what keeps a late retry from writing into a store this run
+                    # has already closed.
+                    #
+                    # A cancellation can also land on *this* task after
+                    # run_dag() already returned — the CancelScope shield above
+                    # only stops anyio-mediated cancellation, not a direct
+                    # cancel() on this task — so _dag_cancelled stays False and
+                    # this is the await that would otherwise take it. gather()
+                    # only settles its own cancellation once every child
+                    # actually finishes, so a link task that swallows the one
+                    # cancel it's handed (or blocks past it) would leave a bare
+                    # `await gather(...)` parked here forever — asyncio.shield
+                    # lets this await raise promptly instead of waiting on the
+                    # children, which keep running in the background for
+                    # _drain_escalation_links_bounded() to actually finish off.
+                    # Re-raise afterward so the caller still observes the
+                    # cancellation — unless the try body already raised a real
+                    # exception, in which case that exception is what the
+                    # caller was waiting on and must win; a cancellation that
+                    # only landed during this teardown drain must not silently
+                    # replace it.
+                    _in_flight_exc = sys.exc_info()[1]
+                    try:
+                        with contextlib.suppress(Exception):
+                            await _asyncio.shield(
+                                _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
+                            )
+                    except _asyncio.CancelledError as _late_cancel:
+                        await _drain_escalation_links_bounded()
+                        if _in_flight_exc is not None:
+                            raise _in_flight_exc from _late_cancel
+                        raise
     t_exec_elapsed = time.monotonic() - t_exec
 
     op_results = dag_result.get("operation_results", {})
@@ -1412,9 +1582,13 @@ async def _execute_dag(
     escalated_evidence = [
         {"kind": "escalated_operation", "id": agent_ids[i], "label": assignments[i].assignee}
         for i in range(len(assignments))
-        if node_ids[i] in escalated_op_ids
+        # node_ids holds Operation UUIDs, not strings, despite the `list[str]`
+        # annotation -- compare on the string form so a planned (non-spawned)
+        # escalated op is recognized here instead of falling through to the
+        # spawned branch below and losing its assignee label.
+        if str(node_ids[i]) in escalated_op_ids
     ]
-    for spawned_nid in sorted(escalated_op_ids - known_nodes):
+    for spawned_nid in sorted(escalated_op_ids - known_node_strs):
         # Surface the stamped spawn_id (e.g. "spawn-3") instead of the
         # internal UUID, matching the artifact dirs/contract entries produced.
         graph_node = graph_nodes.get(spawned_nid)
@@ -1429,6 +1603,113 @@ async def _execute_dag(
         # already have appended entries to env._escalated_evidence mid-run.
         prior_evidence = getattr(env, "_escalated_evidence", None) or []
         env._escalated_evidence = [*prior_evidence, *escalated_evidence]
+
+    # Node-failure evidence: an operation's invoke() raised and
+    # DependencyAwareExecutor recorded EventStatus.FAILED for it, but that
+    # per-node failure was folded into completed_operations right alongside
+    # genuine completions and never rolled up into the run's own status --
+    # a run whose terminal (or any other) node died could still read as an
+    # ordinary clean completion. Mirrors the escalation evidence above: name
+    # the failed op(s) here, let stop_live_persist flip status/reason.
+    failed_op_ids = {str(x) for x in dag_result.get("failed_operations", [])}
+    failed_evidence = [
+        {"kind": "failed_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+        for i in range(len(assignments))
+        if str(node_ids[i]) in failed_op_ids
+    ]
+    for spawned_nid in sorted(failed_op_ids - known_node_strs):
+        graph_node = graph_nodes.get(spawned_nid)
+        spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        evidence_id = spawn_id or spawned_nid
+        failed_evidence.append(
+            {"kind": "failed_operation", "id": evidence_id, "label": evidence_id}
+        )
+    if failed_evidence:
+        prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior_failed_evidence, *failed_evidence]
+
+    # Lost-node evidence: a node in the fixed initial plan (node_ids /
+    # assignments, indexed 1:1) whose result never landed in
+    # operation_results at all -- distinct from a node that ran and failed
+    # (already caught above) or was legitimately never meant to run. Every
+    # other accounted-for fate is excluded explicitly: an edge-condition skip
+    # is named in skipped_operations; a leg that gave up via EscalationRequest
+    # is named in escalated_operations and already fails the run through the
+    # escalated-evidence backstop above with its own, more specific reason;
+    # a reactive/budget-refused spawn was never a planned node to begin with
+    # (dropped_spawns never touches node_ids). A cancelled run never reaches
+    # this line -- run_dag raises and the whole evidence block above is
+    # skipped -- so no separate check is needed for it. What remains here is
+    # a node the plan expected but execution never observed in any of those
+    # ways; treat it as a failure with its own evidence rather than letting
+    # it render as "(no response)" below.
+    skipped_op_ids = {str(x) for x in dag_result.get("skipped_operations", [])}
+    observed_op_ids = {str(k) for k in op_results}
+    lost_evidence = [
+        {"kind": "lost_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+        for i in range(len(assignments))
+        if str(node_ids[i]) not in observed_op_ids
+        and str(node_ids[i]) not in skipped_op_ids
+        and str(node_ids[i]) not in escalated_op_ids
+    ]
+    if lost_evidence:
+        prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior_failed_evidence, *lost_evidence]
+
+    # Lost-spawn evidence: mirrors the lost-node check above, but for the
+    # reactive surface. spawned_ids (when the executor reports it) is the
+    # roster of every node _accept_node actually accepted into the graph --
+    # spawned_operations is only a running count and can't answer "which
+    # nodes were accepted" on its own. An accepted spawn that reached a
+    # terminal EventStatus (e.g. CANCELLED) without ever producing a result
+    # is absent from operation_results, failed_operations, and
+    # skipped_operations alike; without this check it would also read as a
+    # clean completion. A spawn the executor refused to accept in the first
+    # place (dropped_spawns) never enters spawned_ids, so it stays excluded
+    # here exactly as dropped_spawns already is above.
+    spawned_ids = {str(x) for x in dag_result.get("spawned_ids", [])}
+    lost_spawn_ids = (
+        spawned_ids - observed_op_ids - skipped_op_ids - escalated_op_ids - failed_op_ids
+    )
+    lost_spawn_evidence = []
+    for spawned_nid in sorted(lost_spawn_ids):
+        graph_node = graph_nodes.get(spawned_nid)
+        spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        evidence_id = spawn_id or spawned_nid
+        lost_spawn_evidence.append(
+            {"kind": "lost_operation", "id": evidence_id, "label": evidence_id}
+        )
+    if lost_spawn_evidence:
+        prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior_failed_evidence, *lost_spawn_evidence]
+
+    # Gate-reject evidence (issue #2860): a mid-DAG gate node returned a
+    # REJECT verdict and the executor short-circuited its dependent subtree
+    # to skipped rather than let it run against the rejected baseline. This
+    # names the rejecting gate(s), not the (possibly many) skipped
+    # dependents, so `stop_live_persist` can record a "completed but gate
+    # rejected" reason instead of a plain clean-pass one.
+    gate_rejected_op_ids = {str(x) for x in dag_result.get("gate_rejected_operations", [])}
+    gate_rejected_evidence = [
+        {"kind": "gate_rejected_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+        for i in range(len(assignments))
+        # node_ids holds Operation UUIDs, not strings, despite the `list[str]`
+        # annotation -- compare on the string form so a planned (non-spawned)
+        # gate is recognized here instead of falling through to the spawned
+        # branch below and losing its assignee label.
+        if str(node_ids[i]) in gate_rejected_op_ids
+    ]
+    known_node_strs_for_gates = {str(n) for n in known_nodes}
+    for spawned_nid in sorted(gate_rejected_op_ids - known_node_strs_for_gates):
+        graph_node = graph_nodes.get(spawned_nid)
+        spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        evidence_id = spawn_id or spawned_nid
+        gate_rejected_evidence.append(
+            {"kind": "gate_rejected_operation", "id": evidence_id, "label": evidence_id}
+        )
+    if gate_rejected_evidence:
+        prior_gate_evidence = getattr(env, "_gate_rejected_evidence", None) or []
+        env._gate_rejected_evidence = [*prior_gate_evidence, *gate_rejected_evidence]
 
     agent_results: list[dict] = []
 
@@ -1963,6 +2244,11 @@ async def _run_flow(
     if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
         _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
 
+    # start_live_persist resolves `project` (explicit arg, or detect_project()
+    # fallback) and stashes the RESOLVED value on env._project — what the
+    # session row actually gets — for _execute_dag's escalation-mirror-link
+    # hook, which runs deeper in the call chain and must inherit the same
+    # project the run itself was attributed, not re-guess from cwd.
     await start_live_persist(
         env,
         invocation_kind=_invocation_kind,

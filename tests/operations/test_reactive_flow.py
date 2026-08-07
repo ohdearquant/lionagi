@@ -70,6 +70,51 @@ async def test_spawn_injects_node_into_running_graph():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_spawn_is_named_in_spawned_ids_roster():
+    """An accepted spawn whose EventStatus is already CANCELLED by the time
+    the executor gets to run it (e.g. a quiescence/budget cutoff mid-run)
+    produces no entry in operation_results, failed_operations, or
+    skipped_operations -- ``_execute_operation``'s terminal-status fast path
+    just marks the completion event and returns. ``spawned_operations`` (a
+    count) still reports it, but a caller reconciling outcomes needs to know
+    *which* node that was: ``spawned_ids`` is the accept-time roster that
+    answers that, independent of whatever terminal fate the node reached."""
+
+    async def spawner(**kw):
+        return SpawnRequest(instruction="follow-up", independent=True)
+
+    session = _session_with_ops(spawner=spawner)
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        from lionagi.protocols.generic.event import EventStatus
+
+        child = create_operation("follow_up", parameters={})
+        # Simulate the child already having reached a terminal CANCELLED
+        # status before the executor's own dependency wait/dispatch runs.
+        child.execution.status = EventStatus.CANCELLED
+        return child
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("spawner")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True, node_builder=node_builder)
+
+    assert result["spawned_operations"] == 1
+    assert len(result["spawned_ids"]) == 1
+    cancelled_id = result["spawned_ids"][0]
+
+    # The false-success gap this fix closes: the cancelled child is in none
+    # of the outcome sets a naive reconciliation would check.
+    assert cancelled_id not in result["operation_results"]
+    assert cancelled_id not in result["failed_operations"]
+    assert cancelled_id not in result["skipped_operations"]
+    assert cancelled_id not in result["escalated_operations"]
+    # ...yet it is unambiguously present in the accept-time roster.
+    assert cancelled_id in result["spawned_ids"]
+
+
+@pytest.mark.asyncio
 async def test_recursive_spawn_until_condition():
     """A node can spawn a node that spawns again — the DAG grows transitively."""
     counter = {"n": 0}
@@ -352,6 +397,40 @@ def test_cycle_injection_rejected():
     assert len(dropped) == 1
     assert dropped[0]["op_id"] == str(a.id)
     assert set(dropped[0]) == {"reason", "assignee", "emitter_id", "op_id"}
+
+
+def test_reinjecting_existing_node_does_not_pollute_spawned_ids():
+    """Re-injecting a node that is already in the graph (e.g. a caller
+    re-submitting a cancelled initial op via the public inject() API) must
+    not read as a new spawn. ``_accept_node`` only adds the node to the
+    graph when it is not already present (``newly_added``), but used to bump
+    the spawn counter and add the node's id to ``_spawned_ids``
+    unconditionally -- landing an initial plan node's own id in the
+    spawned-node roster with no result/failed/skipped/escalated outcome to
+    show for it."""
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.protocols.graph.graph import Graph
+
+    session = _session_with_ops()
+    graph = Graph()
+    initial = create_operation("op", parameters={})
+    graph.add_node(initial)
+
+    executor = ReactiveExecutor(session, graph)
+    executor._running = True
+
+    class _DummyTG:
+        def start_soon(self, *a, **k):
+            pass
+
+    executor._tg = _DummyTG()
+
+    # `initial` is already a node in the graph -- inject() re-accepts it
+    # (returns True, same as a genuinely new spawn) but must not count or
+    # roster it as one.
+    assert executor.inject(initial, independent=True) is True
+    assert executor._spawn_count == 0
+    assert initial.id not in executor._spawned_ids
 
 
 def test_builder_error_recorded_as_dropped_spawn():

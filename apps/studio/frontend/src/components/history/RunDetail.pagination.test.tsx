@@ -34,6 +34,11 @@ vi.mock("@/lib/api", () => ({
   streamSession: vi.fn(() => () => {}),
   streamSignals: vi.fn(() => () => {}),
   resumeRun: vi.fn(),
+  getResumeAvailability: vi.fn().mockResolvedValue({
+    run_id: "test",
+    invocation_kind: "agent",
+    resumable: true,
+  }),
 }));
 
 const { default: RunDetail } = await import("./RunDetail");

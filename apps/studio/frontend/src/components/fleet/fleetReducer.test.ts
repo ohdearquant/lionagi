@@ -3,12 +3,14 @@ import {
   fleetReducer,
   initialFleetState,
   terminalRecentRows,
+  terminalRecentRowsServerOrder,
   createHistoryPager,
 } from "./fleetReducer";
 import type { FleetState } from "./fleetReducer";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus } from "@/lib/runStatus";
+import { resolveRunLabel } from "@/lib/runLabel";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -171,6 +173,17 @@ describe("fleetReducer — invocation join", () => {
     expect(s.orgUnits).toHaveLength(1);
     expect(s.orgUnits[0].id).toBe("__direct__");
     expect(s.orgUnits[0].agents).toHaveLength(1);
+  });
+
+  it("an agent row's name matches the shared resolver, never a raw playbook/agent fallback", () => {
+    const run = makeRun({
+      run_id: "r1",
+      status: "running",
+      playbook_name: "pr-merge-review",
+      agent_name: "implementer",
+    });
+    const s = dispatchOk(initialFleetState(), [], [run]);
+    expect(s.orgUnits[0].agents[0].name).toBe(resolveRunLabel(run));
   });
 
   it("invocation without runs still appears when no scope is active", () => {
@@ -450,6 +463,61 @@ describe("terminalRecentRows", () => {
     expect(rows[79].id).toBe("r0");
     expect(rows.some((r) => r.id === "live")).toBe(false);
   });
+
+  it("preserves a null total_cost_usd as unreported, not a coerced 0", () => {
+    const rows = terminalRecentRows([
+      makeRun({ run_id: "r1", status: "completed", total_cost_usd: null }),
+    ]);
+    expect(rows[0].totalCostUsd).toBeNull();
+  });
+
+  it("preserves a genuine zero total_cost_usd distinctly from unreported", () => {
+    const rows = terminalRecentRows([
+      makeRun({ run_id: "r1", status: "completed", total_cost_usd: 0 }),
+    ]);
+    expect(rows[0].totalCostUsd).toBe(0);
+  });
+
+  it("carries a reported cost through", () => {
+    const rows = terminalRecentRows([
+      makeRun({ run_id: "r1", status: "completed", total_cost_usd: 4.5 }),
+    ]);
+    expect(rows[0].totalCostUsd).toBe(4.5);
+  });
+});
+
+describe("terminalRecentRowsServerOrder", () => {
+  it("preserves the input order instead of re-sorting by ended_at", () => {
+    // Deliberately out of ended_at order — as /api/runs/?sort=cost would
+    // return: highest cost first, unrelated to recency.
+    const runs = [
+      makeRun({ run_id: "cheap", status: "completed", ended_at: 5_000, total_cost_usd: 1 }),
+      makeRun({ run_id: "pricey", status: "completed", ended_at: 1_000, total_cost_usd: 99 }),
+      makeRun({ run_id: "free", status: "completed", ended_at: 3_000, total_cost_usd: 0 }),
+    ];
+    const rows = terminalRecentRowsServerOrder(runs);
+    expect(rows.map((r) => r.id)).toEqual(["cheap", "pricey", "free"]);
+  });
+
+  it("still excludes active runs", () => {
+    const rows = terminalRecentRowsServerOrder([
+      makeRun({ run_id: "live", status: "running", started_at: 1 }),
+      makeRun({ run_id: "done", status: "completed", ended_at: 1 }),
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(["done"]);
+  });
+
+  it("a recent row's name matches the shared resolver, never a raw playbook/agent fallback", () => {
+    const run = makeRun({
+      run_id: "r1",
+      status: "completed",
+      ended_at: 1_000,
+      playbook_name: "pr-merge-review",
+      agent_name: "implementer",
+    });
+    const rows = terminalRecentRows([run]);
+    expect(rows[0].name).toBe(resolveRunLabel(run));
+  });
 });
 
 // ─── Status/verdict unification (design-brief §0/§0b) ────────────────────────
@@ -559,5 +627,49 @@ describe("createHistoryPager", () => {
     d.settle()({ runs: [], has_next: false });
     await p;
     expect(pager.inFlight()).toBe(false);
+  });
+
+  it("a custom mapRows (cost order) is applied to later pages instead of the recency default — the 'Highest cost' history sort must not have its order undone once paging kicks in", async () => {
+    const d = deferredFetch();
+    const pager = createHistoryPager(d.fetchPage, 2, terminalRecentRowsServerOrder);
+    const p = pager.loadNext();
+    // Deliberately out of ended_at order, as /api/runs/?sort=cost returns it —
+    // terminalRecentRows (the default mapRows) would re-sort this by recency.
+    d.settle()({
+      runs: [
+        makeRun({ run_id: "pricey", status: "completed", ended_at: 1, total_cost_usd: 99 }),
+        makeRun({ run_id: "cheap", status: "completed", ended_at: 5, total_cost_usd: 1 }),
+      ],
+      has_next: true,
+    });
+    const page = await p;
+    expect(page?.rows.map((r) => r.id)).toEqual(["pricey", "cheap"]);
+  });
+
+  it("cost sort + status filter: a matching row beyond the first cost-ranked page surfaces on the next page, and hasMore stays true until the server says otherwise — it never reads as a complete, silently-truncated list", async () => {
+    const d = deferredFetch();
+    const pager = createHistoryPager(d.fetchPage, 2, terminalRecentRowsServerOrder);
+
+    // First cost-ranked page: no "failed" rows at all.
+    const first = pager.loadNext();
+    d.settle()({
+      runs: [makeRun({ run_id: "expensive-ok", status: "completed", total_cost_usd: 500 })],
+      has_next: true,
+    });
+    const page1 = await first;
+    expect(page1?.hasMore).toBe(true);
+    const filteredPage1 = (page1?.rows ?? []).filter((r) => deriveDisplayStatus(r) === "failed");
+    expect(filteredPage1).toHaveLength(0); // none yet — but hasMore says keep going, not "done"
+
+    // Second cost-ranked page: the matching row was here all along.
+    const second = pager.loadNext();
+    d.settle()({
+      runs: [makeRun({ run_id: "cheap-failed", status: "failed", total_cost_usd: 1 })],
+      has_next: false,
+    });
+    const page2 = await second;
+    expect(page2?.hasMore).toBe(false);
+    const filteredPage2 = (page2?.rows ?? []).filter((r) => deriveDisplayStatus(r) === "failed");
+    expect(filteredPage2.map((r) => r.id)).toEqual(["cheap-failed"]);
   });
 });

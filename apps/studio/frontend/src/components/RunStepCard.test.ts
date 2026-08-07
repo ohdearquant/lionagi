@@ -23,6 +23,7 @@ import {
   collapsedTextFor,
   extractFilePaths,
   pathFromArgs,
+  detectPlanPayload,
 } from "./RunStepCard";
 import type { RunMessage, RunStep } from "@/lib/types";
 
@@ -362,5 +363,148 @@ describe("pathFromArgs — shell-derived file paths", () => {
     expect(
       pathFromArgs({ command: "cat /repo/src/a.py /repo/src/../src/a.py" }, "", "Bash"),
     ).toEqual(["/repo/src/a.py"]);
+  });
+});
+
+describe("detectPlanPayload — orchestrator plan JSON structural detection", () => {
+  it("detects an {assignments:[...]} payload and extracts assignee/task/depends_on", () => {
+    const text = JSON.stringify({
+      assignments: [
+        { task: "Design the schema", assignee: "architect", depends_on: [] },
+        { task: "Implement it", assignee: "implementer", depends_on: ["Design the schema"] },
+      ],
+    });
+    const result = detectPlanPayload(text);
+    expect(result.kind).toBe("assignments");
+    if (result.kind !== "assignments") throw new Error("expected assignments");
+    expect(result.assignments).toEqual([
+      { assignee: "architect", task: "Design the schema", dependencies: [] },
+      {
+        assignee: "implementer",
+        task: "Implement it",
+        dependencies: ["Design the schema"],
+      },
+    ]);
+  });
+
+  it("accepts a `role` alias in place of `assignee` and `dependencies` in place of `depends_on`", () => {
+    const text = JSON.stringify({
+      assignments: [{ task: "Review the PR", role: "reviewer", dependencies: ["Implement it"] }],
+    });
+    const result = detectPlanPayload(text);
+    expect(result.kind).toBe("assignments");
+    if (result.kind !== "assignments") throw new Error("expected assignments");
+    expect(result.assignments).toEqual([
+      { assignee: "reviewer", task: "Review the PR", dependencies: ["Implement it"] },
+    ]);
+  });
+
+  it("tolerates leading/trailing whitespace around the JSON text", () => {
+    const text = `  \n${JSON.stringify({ assignments: [{ task: "t", assignee: "a" }] })}\n  `;
+    expect(detectPlanPayload(text).kind).toBe("assignments");
+  });
+
+  it("falls back to pretty-printed JSON for a JSON payload that isn't the assignments shape", () => {
+    const result = detectPlanPayload(JSON.stringify({ foo: "bar", n: 1 }));
+    expect(result.kind).toBe("json");
+    if (result.kind !== "json") throw new Error("expected json");
+    expect(result.value).toEqual({ foo: "bar", n: 1 });
+  });
+
+  it("falls back to pretty-printed JSON when an assignment entry is missing task or assignee", () => {
+    const result = detectPlanPayload(JSON.stringify({ assignments: [{ task: "only a task" }] }));
+    expect(result.kind).toBe("json");
+  });
+
+  it("returns none for ordinary prose, never attempting a parse", () => {
+    expect(detectPlanPayload("Here is my plan: first we design, then we build.").kind).toBe("none");
+  });
+
+  it("returns none for malformed JSON that merely starts with a brace", () => {
+    expect(detectPlanPayload("{not valid json").kind).toBe("none");
+  });
+
+  it("falls back to pretty-printed JSON for an empty assignments array", () => {
+    expect(detectPlanPayload(JSON.stringify({ assignments: [] })).kind).toBe("json");
+  });
+
+  it("treats a non-list `dependencies` value as no dependencies rather than crashing", () => {
+    const result = detectPlanPayload(
+      JSON.stringify({
+        assignments: [{ task: "t", assignee: "a", dependencies: "step1, step2" }],
+      }),
+    );
+    expect(result.kind).toBe("assignments");
+    if (result.kind !== "assignments") throw new Error("expected assignments");
+    expect(result.assignments).toEqual([{ assignee: "a", task: "t", dependencies: [] }]);
+  });
+
+  it("treats a non-list `depends_on` value the same way", () => {
+    const result = detectPlanPayload(
+      JSON.stringify({ assignments: [{ task: "t", assignee: "a", depends_on: 42 }] }),
+    );
+    expect(result.kind).toBe("assignments");
+    if (result.kind !== "assignments") throw new Error("expected assignments");
+    expect(result.assignments).toEqual([{ assignee: "a", task: "t", dependencies: [] }]);
+  });
+});
+
+describe("PlanAssignmentsView (via RunStepCard conversation tab) — large-plan rendering", () => {
+  let container: HTMLDivElement | null = null;
+  let root: Root | null = null;
+
+  afterEach(() => {
+    if (root) {
+      act(() => root?.unmount());
+    }
+    container?.remove();
+    container = null;
+    root = null;
+  });
+
+  it("caps rendered assignments on a large plan and shows an overflow indicator", async () => {
+    const assignments = Array.from({ length: 100 }, (_, i) => ({
+      task: `task ${i}`,
+      assignee: `worker-${i}`,
+      depends_on: [],
+    }));
+    const planText = JSON.stringify({ assignments });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    await act(async () => {
+      root = createRoot(container!);
+      root!.render(
+        React.createElement(
+          IntlProvider,
+          { locale: "en", messages: enMessages } as unknown as React.ComponentProps<
+            typeof IntlProvider
+          >,
+          React.createElement(RunStepCard, {
+            step: step({}, [{ role: "assistant", content: planText }]),
+            defaultExpanded: true,
+          }),
+        ),
+      );
+      await Promise.resolve();
+    });
+
+    const conversationTab = container.querySelector<HTMLButtonElement>(
+      '[role="tab"][id$="-tab-conversation"]',
+    );
+    expect(conversationTab).not.toBeNull();
+    await act(async () => {
+      conversationTab?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    // Every assignee is unique ("worker-0".."worker-99"), so counting the
+    // badge elements the plan view renders is an exact proxy for row count.
+    const renderedRows = Array.from(container.querySelectorAll("li")).filter((li) =>
+      /^worker-\d+$/.test(li.querySelector("span")?.textContent ?? ""),
+    );
+    expect(renderedRows.length).toBeLessThan(100);
+    expect(renderedRows.length).toBeGreaterThan(0);
+    expect(container.textContent).toContain(`+${100 - renderedRows.length} more`);
   });
 });
