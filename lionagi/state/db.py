@@ -2269,6 +2269,21 @@ class StateDB:
                 session.get("project_source") or "git_remote",
             )
 
+    @staticmethod
+    def _decrement_invocation_session_count_sql(dialect: str) -> str:
+        # SQLite MAX(a,b) is a scalar greatest; Postgres MAX() is an aggregate,
+        # so the 2-arg scalar form must be GREATEST() there. Floor at zero so
+        # a stale or out-of-order decrement never reports a negative count.
+        if dialect == "sqlite":
+            return (
+                "UPDATE invocations SET session_count = MAX(session_count - 1, 0), "
+                "updated_at = :now WHERE id = :inv_id"
+            )
+        return (
+            "UPDATE invocations SET session_count = GREATEST(session_count - 1, 0), "
+            "updated_at = :now WHERE id = :inv_id"
+        )
+
     async def attach_session_invocation(self, session_id: str, invocation_id: str) -> None:
         """Point an existing session row at *invocation_id*.
 
@@ -2279,9 +2294,19 @@ class StateDB:
         the same sessions.invocation_id + invocations.session_count linkage
         applied to a row that already exists, guarded so a repeat call (or
         one that finds the link already current) does not double-count.
+        Repointing away from a prior invocation also decrements that
+        invocation's count, so it stops claiming a session it no longer has.
         """
         now = time.time()
         async with self._tx() as conn:
+            prev_row = (
+                await conn.execute(
+                    text("SELECT invocation_id FROM sessions WHERE id = :sid"),
+                    {"sid": session_id},
+                )
+            ).first()
+            prev_invocation_id = prev_row[0] if prev_row else None
+
             result = await conn.execute(
                 text(
                     "UPDATE sessions SET invocation_id = :inv_id, updated_at = :now "
@@ -2290,6 +2315,11 @@ class StateDB:
                 {"inv_id": invocation_id, "now": now, "sid": session_id},
             )
             if result.rowcount:
+                if prev_invocation_id and prev_invocation_id != invocation_id:
+                    await conn.execute(
+                        text(self._decrement_invocation_session_count_sql(self.dialect)),
+                        {"now": now, "inv_id": prev_invocation_id},
+                    )
                 await conn.execute(
                     text(
                         "UPDATE invocations SET session_count = session_count + 1, "

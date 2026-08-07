@@ -194,7 +194,9 @@ async def test_attach_session_invocation_links_an_unlinked_session(db: StateDB):
 async def test_attach_session_invocation_relinks_a_resumed_session(db: StateDB):
     """The resume case: a session already attributed to the invocation that
     originally created it is re-pointed at the invocation that resumed it,
-    so the resume's own invocation record can find the session it drove."""
+    so the resume's own invocation record can find the session it drove —
+    and the invocation it left behind stops claiming a session it no longer
+    has, so the lifecycle reaper's session_count == 0 check still fires."""
     original = await _make_invocation(db)
     resume = await _make_invocation(db)
     session = await _make_session(db, invocation_id=original["id"], status="running")
@@ -204,6 +206,31 @@ async def test_attach_session_invocation_relinks_a_resumed_session(db: StateDB):
     assert (await db.get_session(session["id"]))["invocation_id"] == resume["id"]
     assert (await db.get_invocation(resume["id"]))["session_count"] == 1
     assert [r["id"] for r in await db.list_sessions_for_invocation(resume["id"])] == [session["id"]]
+
+    assert (await db.get_invocation(original["id"]))["session_count"] == 0
+    assert await db.list_sessions_for_invocation(original["id"]) == []
+
+
+async def test_attach_session_invocation_chain_resume_only_decrements_the_immediate_prior(
+    db: StateDB,
+):
+    """A session resumed twice — old -> mid -> new. The mid invocation is
+    itself vacated when the session leaves it for new, so it must land back
+    at zero rather than staying inflated because it was never the FIRST
+    invocation in the chain."""
+    old = await _make_invocation(db)
+    mid = await _make_invocation(db)
+    new = await _make_invocation(db)
+    session = await _make_session(db, invocation_id=old["id"], status="running")
+
+    await db.attach_session_invocation(session["id"], mid["id"])
+    await db.attach_session_invocation(session["id"], new["id"])
+
+    assert (await db.get_invocation(old["id"]))["session_count"] == 0
+    assert (await db.get_invocation(mid["id"]))["session_count"] == 0
+    assert (await db.get_invocation(new["id"]))["session_count"] == 1
+    assert await db.list_sessions_for_invocation(mid["id"]) == []
+    assert [r["id"] for r in await db.list_sessions_for_invocation(new["id"])] == [session["id"]]
 
 
 async def test_attach_session_invocation_is_a_noop_when_already_current(db: StateDB):

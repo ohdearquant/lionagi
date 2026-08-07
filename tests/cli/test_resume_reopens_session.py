@@ -352,6 +352,12 @@ async def test_a_resumed_leg_links_its_session_to_its_own_invocation(temp_db_pat
         sessions = await db.list_sessions_for_invocation("resume-inv")
         assert [s["id"] for s in sessions] == [second["session_id"]]
 
+        # The invocation the session left behind must stop claiming it, or
+        # the lifecycle reaper's session_count == 0 check never fires for it.
+        first_invocation = await db.get_invocation("first-inv")
+        assert first_invocation["session_count"] == 0
+        assert await db.list_sessions_for_invocation("first-inv") == []
+
 
 @pytest.mark.asyncio
 async def test_a_resume_whose_session_is_pruned_mid_setup_still_records_itself(
