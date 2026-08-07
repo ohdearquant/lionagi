@@ -832,6 +832,12 @@ class SchedulerEngine:
             schedules = await self._svc.list_schedules(enabled=True)
             now = time.time()
             for s in schedules:
+                if s.get("trigger_type") == "github_poll":
+                    # github_poll's cadence is last_fired_at + poll_interval_sec
+                    # (see _tick_github), not next_fire_at -- a stale or
+                    # legacy-persisted next_fire_at here is not a missed
+                    # scheduled occurrence.
+                    continue
                 next_fire_at = s.get("next_fire_at")
                 if next_fire_at is None or next_fire_at > now:
                     continue

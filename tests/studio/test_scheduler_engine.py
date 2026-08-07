@@ -2002,6 +2002,58 @@ async def test_recompute_armed_cron_schedules_unchanged_no_log(monkeypatch, capl
     assert not any("shifted" in r.message for r in caplog.records)
 
 
+@pytest.mark.asyncio
+async def test_check_missed_fires_excludes_github_poll(monkeypatch):
+    """A stale github_poll next_fire_at is not a missed scheduled occurrence
+    -- that trigger's cadence is driven by last_fired_at/poll_interval_sec,
+    not next_fire_at (see _tick_github). _check_missed_fires() must leave it
+    alone. An interval schedule with the same stale next_fire_at is the
+    positive control: it must still record a missed-fire skip."""
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.state.reasons import ScheduleReasons
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fixed_now = time.time()
+    monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
+
+    github_schedule = _minimal_schedule(
+        id="sched-gh",
+        trigger_type="github_poll",
+        cron_expr=None,
+        next_fire_at=fixed_now - 3600,
+        missed_fire_policy="skip",
+    )
+    interval_schedule = _minimal_schedule(
+        id="sched-interval",
+        trigger_type="interval",
+        cron_expr=None,
+        interval_sec=60,
+        next_fire_at=fixed_now - 3600,
+        missed_fire_policy="skip",
+    )
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[github_schedule, interval_schedule])
+    engine = SchedulerEngine(svc=svc)
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        await engine._check_missed_fires()
+
+    mock_tracked.assert_not_called()
+    skip_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.kwargs.get("reason_code") == ScheduleReasons.SKIPPED_MISSED_FIRE
+    ]
+    skipped_run_schedule_ids = set()
+    for c in skip_calls:
+        for ref in c.kwargs.get("evidence_refs") or []:
+            if ref.get("kind") == "schedule":
+                skipped_run_schedule_ids.add(ref.get("id"))
+
+    assert "sched-gh" not in skipped_run_schedule_ids
+    assert "sched-interval" in skipped_run_schedule_ids
+
+
 # ---------------------------------------------------------------------------
 # max_runs / one-shot semantics
 # ---------------------------------------------------------------------------
