@@ -266,19 +266,26 @@ export function stepKeyForBranch(branch: SessionBranch): string {
 }
 
 // Execution-graph nodes are keyed by authored role/assignment name
-// (WorkerStepNode.id); branches carry agent_name, falling back to name, then
-// an id prefix. Try each field in that priority order across the branch
-// list — first match wins.
+// (WorkerStepNode.id). branch.name is the durable, unique identity a
+// session assigns per branch; agent_name is only a role label shared by
+// every branch filling that role (e.g. two "implementer" branches from a
+// fan-out), so trying it first can match the WRONG branch whenever a role
+// repeats. Prefer the unique identity first: exact branch name, then an id
+// prefix, and only fall back to agent_name when exactly one branch carries
+// it — with two or more candidates it cannot disambiguate, so it does not
+// guess.
 export function matchGraphNodeToBranch(
   nodeId: string,
   branches: SessionBranch[],
 ): SessionBranch | null {
-  return (
-    branches.find((b) => b.agent_name === nodeId) ??
-    branches.find((b) => b.name === nodeId) ??
-    branches.find((b) => b.id.slice(0, 8) === nodeId) ??
-    null
-  );
+  const byName = branches.find((b) => b.name === nodeId);
+  if (byName) return byName;
+
+  const byIdPrefix = branches.find((b) => b.id.slice(0, 8) === nodeId);
+  if (byIdPrefix) return byIdPrefix;
+
+  const byAgentName = branches.filter((b) => b.agent_name === nodeId);
+  return byAgentName.length === 1 ? byAgentName[0] : null;
 }
 
 // Single source of truth for BOTH the always-visible progress summary and

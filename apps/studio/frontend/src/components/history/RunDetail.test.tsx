@@ -1495,14 +1495,44 @@ function makeBranch(overrides: Partial<import("@/lib/api").SessionBranch>) {
 }
 
 describe("history/RunDetail.tsx — matchGraphNodeToBranch (graph-node drill-down)", () => {
-  it("match arm: resolves by agent_name first", async () => {
+  it("match arm: resolves by exact branch name first, ahead of agent_name", async () => {
+    // branch.name is unique/durable per session; agent_name is a role label
+    // shared by every branch with that role. An exact name match must win
+    // even when a different branch's agent_name also matches the node id.
     const { matchGraphNodeToBranch } = await import("./RunDetail");
     const branches = [
       makeBranch({ id: "b1", name: "analyst-role", agent_name: "analyst" }),
       makeBranch({ id: "b2", name: "analyst", agent_name: null }),
     ];
     const match = matchGraphNodeToBranch("analyst", branches);
+    expect(match?.id).toBe("b2");
+  });
+
+  it("match arm: falls back to agent_name only when exactly one branch carries it", async () => {
+    const { matchGraphNodeToBranch } = await import("./RunDetail");
+    const branches = [makeBranch({ id: "b1", name: "analyst-role", agent_name: "analyst" })];
+    const match = matchGraphNodeToBranch("analyst", branches);
     expect(match?.id).toBe("b1");
+  });
+
+  it("match arm: two branches sharing a role's agent_name is ambiguous — resolves via the unique branch name instead, regardless of list order", async () => {
+    // The reviewer's duplicate-implementer scenario: {name:"implementer-2",
+    // agent_name:"implementer"} ordered before the branch whose exact name
+    // is the clicked node id. agent_name alone can't disambiguate (both
+    // branches carry it) — the exact name match must win, and win the same
+    // way whichever order the branches list arrives in.
+    const { matchGraphNodeToBranch } = await import("./RunDetail");
+    const forward = [
+      makeBranch({ id: "b1", name: "implementer-2", agent_name: "implementer" }),
+      makeBranch({ id: "b2", name: "implementer", agent_name: "implementer" }),
+    ];
+    expect(matchGraphNodeToBranch("implementer", forward)?.id).toBe("b2");
+
+    const reversed = [
+      makeBranch({ id: "b2", name: "implementer", agent_name: "implementer" }),
+      makeBranch({ id: "b1", name: "implementer-2", agent_name: "implementer" }),
+    ];
+    expect(matchGraphNodeToBranch("implementer", reversed)?.id).toBe("b2");
   });
 
   it("match arm: falls back to name when no agent_name matches", async () => {
