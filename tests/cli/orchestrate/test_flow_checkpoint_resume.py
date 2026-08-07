@@ -123,7 +123,9 @@ class _FakeBuilder:
         self._nodes: dict[str, _FakeNode] = {}
         self._counter = 0
 
-    def add_operation(self, op_type, *, branch=None, depends_on=None, instruction="", context=None):
+    def add_operation(
+        self, op_type, *, branch=None, depends_on=None, instruction="", context=None, node_id=None
+    ):
         node_id = f"node-{self._counter}"
         self._counter += 1
         self._nodes[node_id] = _FakeNode(node_id)

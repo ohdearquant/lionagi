@@ -478,7 +478,17 @@
       "graphNodeStatusPaused": "tạm dừng",
       "graphNodeStatusDone": "xong",
       "graphNodeStatusFailed": "thất bại",
-      "graphNodeStatusEscalated": "đã leo thang"
+      "graphNodeStatusEscalated": "đã leo thang",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "danh sách lịch sử",
     "detailAria": "chi tiết mục"

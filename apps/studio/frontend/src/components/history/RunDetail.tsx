@@ -16,6 +16,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { useTranslations } from "use-intl";
 import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
@@ -37,6 +38,13 @@ import { deriveDisplayStatus, deriveVerdict, isEffectivelyActive } from "@/lib/r
 import type { Verdict } from "@/lib/runStatus";
 import type { RunMessage, RunResumeResponse, RunStep, WorkerGraph } from "@/lib/types";
 import type { NodeExecStatus } from "@/components/canvas/StepNode";
+import {
+  deriveProgressCounts,
+  computeElapsedSeconds,
+  formatElapsed,
+  reconcileNodeStatuses,
+} from "@/lib/execGraphProgress";
+import type { ProgressCounts } from "@/lib/execGraphProgress";
 
 const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
 
@@ -249,6 +257,68 @@ export function mergeCompletedSession(
   return { ...previous, ...fresh, branches };
 }
 
+// The BranchesSection identity every branch renders under (RunStepCard's
+// `id="step-${step.step}"` anchor and expandedSteps entry). Factored out so
+// the graph drill-down (matchGraphNodeToBranch → this) and the step list
+// (branchToRunStep → this) can never key a branch two different ways.
+export function stepKeyForBranch(branch: SessionBranch): string {
+  return branch.name || branch.id.slice(0, 8);
+}
+
+// Execution-graph nodes are keyed by authored role/assignment name
+// (WorkerStepNode.id). branch.name is the durable, unique identity a
+// session assigns per branch; agent_name is only a role label shared by
+// every branch filling that role (e.g. two "implementer" branches from a
+// fan-out), so trying it first can match the WRONG branch whenever a role
+// repeats. Prefer the unique identity first: exact branch name, then an id
+// prefix, and only fall back to agent_name when exactly one branch carries
+// it — with two or more candidates it cannot disambiguate, so it does not
+// guess.
+export function matchGraphNodeToBranch(
+  nodeId: string,
+  branches: SessionBranch[],
+): SessionBranch | null {
+  const byName = branches.find((b) => b.name === nodeId);
+  if (byName) return byName;
+
+  const byIdPrefix = branches.find((b) => b.id.slice(0, 8) === nodeId);
+  if (byIdPrefix) return byIdPrefix;
+
+  const byAgentName = branches.filter((b) => b.agent_name === nodeId);
+  return byAgentName.length === 1 ? byAgentName[0] : null;
+}
+
+// Single source of truth for BOTH the always-visible progress summary and
+// the graph nodes' own coloring (WorkerCanvas's nodeStatuses prop): both
+// callers pass the SAME reconciled map returned here, so they cannot
+// diverge. Applies the terminal-run invariants (descendant-terminal
+// suppression, unknown-status collapse on a done run) from
+// lib/execGraphProgress before either consumer sees the map.
+export function computeReconciledNodeStatuses(
+  runGraph: Pick<WorkerGraph, "nodes" | "edges"> | null,
+  nodeStatuses: Record<string, NodeExecStatus> | undefined,
+  done: boolean,
+): Record<string, NodeExecStatus> | undefined {
+  if (!runGraph) return nodeStatuses;
+  return reconcileNodeStatuses(
+    runGraph.nodes.map((n) => n.id),
+    runGraph.edges.map((e) => ({ source: e.source, target: e.target })),
+    nodeStatuses,
+    done,
+  );
+}
+
+export function computeProgressCountsForGraph(
+  runGraph: Pick<WorkerGraph, "nodes"> | null,
+  reconciledStatuses: Record<string, NodeExecStatus> | undefined,
+): ProgressCounts | null {
+  if (!runGraph) return null;
+  return deriveProgressCounts(
+    runGraph.nodes.map((n) => n.id),
+    reconciledStatuses,
+  );
+}
+
 export function branchToRunStep(
   branch: SessionBranch,
   status: string,
@@ -362,7 +432,7 @@ export function branchToRunStep(
     (options ? null : Math.max(branch.message_total ?? 0, runMessages.length));
 
   return {
-    step: branch.name || branch.id.slice(0, 8),
+    step: stepKeyForBranch(branch),
     status,
     result: {
       agent: branch.agent_name ?? branch.name ?? branch.id.slice(0, 8),
@@ -491,6 +561,57 @@ function SectionHeader({
   );
 }
 
+// ── Execution-graph progress summary ────────────────────────────────────────
+// Always visible beside the graph header — never scrolled out of view or
+// hidden behind a click — so a viewer answers "how far along, what's
+// running, did anything fail" without touching the graph. counts is derived
+// from the exact reconciled status map passed to WorkerCanvas's
+// nodeStatuses prop (see reconciledNodeStatuses above), so this bar can
+// never disagree with what the graph nodes render.
+
+function ProgressSummaryBar({
+  counts,
+  elapsedLabel,
+  t,
+}: {
+  counts: ProgressCounts;
+  elapsedLabel: string;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const pending = counts.pending + counts.queued + counts.awaitingApproval + counts.paused;
+  return (
+    <div
+      data-testid="run-progress-summary"
+      role={counts.hasFailure ? "alert" : undefined}
+      className={`mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded border px-3 py-1.5 font-mono text-[length:var(--t-xs)] ${
+        counts.hasFailure
+          ? "border-status-error bg-status-error-bg text-status-error"
+          : "border-edge bg-surface-raised text-content-secondary"
+      }`}
+    >
+      <span>
+        {t("progressTotal")} {counts.total}
+      </span>
+      <span>
+        {t("progressCompleted")} {counts.completed}
+      </span>
+      <span>
+        {t("progressRunning")} {counts.running}
+      </span>
+      <span className={counts.hasFailure ? "font-semibold" : undefined}>
+        {counts.hasFailure ? "⚠ " : ""}
+        {t("progressFailed")} {counts.failed}
+      </span>
+      <span>
+        {t("progressPending")} {pending}
+      </span>
+      <span className="ml-auto">
+        {t("progressElapsed")} {elapsedLabel}
+      </span>
+    </div>
+  );
+}
+
 // ── Overview section ──────────────────────────────────────────────────────────
 
 interface OverviewData {
@@ -595,6 +716,7 @@ function BranchesSection({
   onLoadOlder,
   olderMessagesRemaining,
   loadingOlder,
+  highlightedStepKey,
 }: {
   steps: RunStep[];
   live: boolean;
@@ -606,6 +728,10 @@ function BranchesSection({
   onLoadOlder?: () => void;
   olderMessagesRemaining?: number;
   loadingOlder?: boolean;
+  /** The step (RunStepCard) a graph-node drill-down just resolved to — ringed
+   * so the click's target is unmistakable. Cleared automatically after the
+   * pulse. */
+  highlightedStepKey?: string | null;
 }) {
   const t = useTranslations("history.detail");
   return (
@@ -628,18 +754,27 @@ function BranchesSection({
           </div>
         ) : (
           steps.map((step) => (
-            <RunStepCard
+            <div
               key={step.step}
-              step={step}
-              expanded={expandedSteps.has(step.step)}
-              onToggleExpand={onToggleExpand}
-              runId={runId}
-              artifactRoot={artifactRoot}
-              runFiles={runFiles}
-              onLoadOlder={onLoadOlder}
-              olderMessagesRemaining={olderMessagesRemaining}
-              loadingOlder={loadingOlder}
-            />
+              data-highlighted={step.step === highlightedStepKey || undefined}
+              className={
+                step.step === highlightedStepKey
+                  ? "rounded ring-2 ring-accent ring-offset-2 ring-offset-surface-base transition-shadow"
+                  : undefined
+              }
+            >
+              <RunStepCard
+                step={step}
+                expanded={expandedSteps.has(step.step)}
+                onToggleExpand={onToggleExpand}
+                runId={runId}
+                artifactRoot={artifactRoot}
+                runFiles={runFiles}
+                onLoadOlder={onLoadOlder}
+                olderMessagesRemaining={olderMessagesRemaining}
+                loadingOlder={loadingOlder}
+              />
+            </div>
           ))
         )}
       </div>
@@ -1199,6 +1334,17 @@ export function EventsSection({
 // that floor for every graph taller than the cap. The enclosing page scrolls
 // past a tall card; the canvas itself only pans once it's still wider/taller
 // than the floor-zoomed viewport.
+//
+// This is an intentional floor/grow-only POLICY, not a best-effort
+// approximation of computeReservedHeight's exact number: a mid-run layout
+// that computes a smaller height than what's already committed is NOT
+// applied (growing then shrinking the panel mid-stream would jump the page
+// under the reader — see onDagLayoutHeight below), and a computed height
+// below DAG_MIN_HEIGHT is floored rather than passed through. So the panel
+// height can legitimately exceed the graph's actual rendered height for a
+// run that shrank its layout after growing it, or for one that never
+// exceeded the floor. Pinned by
+// "the dag panel height policy is floor/grow-only" in RunDetail.test.tsx.
 const DAG_MIN_HEIGHT = 280;
 
 export interface RunDetailProps {
@@ -1233,9 +1379,23 @@ export default function RunDetail({ id }: RunDetailProps) {
   );
   const [live, setLive] = useState(false);
   const [done, setDone] = useState(false);
+  // Stable no-op: the expanded overlay doesn't drive the inline panel's
+  // height, but an inline arrow here would be a fresh reference every render
+  // and re-trigger WorkerCanvas's layout effect, resetting execStatus on
+  // every unrelated RunDetail rerender.
+  const noopLayoutHeight = useCallback(() => {}, []);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
+  // Graph-node drill-down: the branch a click resolved to (scrolled +
+  // highlighted below), or the node id a click found NO branch for (shown as
+  // an explicit not-started/no-branch state instead of a silent no-op).
+  const [highlightedStepKey, setHighlightedStepKey] = useState<string | null>(null);
+  const [unmatchedNodeId, setUnmatchedNodeId] = useState<string | null>(null);
+  // Full-width expand overlay for the execution graph — closed by its own
+  // button or Escape; never by anything else, so a stray keypress elsewhere
+  // can't dismiss it.
+  const [graphExpanded, setGraphExpanded] = useState(false);
   const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const loadingOlderRef = useRef(false);
@@ -1426,6 +1586,57 @@ export default function RunDetail({ id }: RunDetailProps) {
       return updated;
     });
   }, []);
+
+  // Graph-node drill-down. ReactFlow renders each node wrapper with a
+  // `data-id` attribute (its own internals, not StepNode/WorkerCanvas
+  // markup we own) — delegating the click here means the graph can be wired
+  // to the branch list without adding a callback prop to WorkerCanvas.
+  const handleGraphNodeClick = useCallback(
+    (nodeId: string) => {
+      const match = matchGraphNodeToBranch(nodeId, session?.branches ?? []);
+      if (!match) {
+        setUnmatchedNodeId(nodeId);
+        setHighlightedStepKey(null);
+        return;
+      }
+      setUnmatchedNodeId(null);
+      const key = stepKeyForBranch(match);
+      setExpandedSteps((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+      setHighlightedStepKey(key);
+    },
+    [session],
+  );
+
+  const handleDagPanelClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const target = (event.target as HTMLElement).closest<HTMLElement>(
+        ".react-flow__node[data-id]",
+      );
+      const nodeId = target?.dataset.id;
+      if (nodeId) handleGraphNodeClick(nodeId);
+    },
+    [handleGraphNodeClick],
+  );
+
+  // A finished drill-down highlight fades on its own rather than lingering
+  // until the next click — it is a "look here" pulse, not a persistent
+  // selection state.
+  useEffect(() => {
+    if (!highlightedStepKey) return;
+    const el = document.getElementById(`step-${highlightedStepKey}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const timer = setTimeout(() => setHighlightedStepKey(null), 2500);
+    return () => clearTimeout(timer);
+  }, [highlightedStepKey]);
+
+  useEffect(() => {
+    if (!graphExpanded) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setGraphExpanded(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [graphExpanded]);
 
   const hiddenOlderCount = useMemo(() => {
     // The cursor gates the arithmetic instead of sitting beside it. The
@@ -1643,6 +1854,33 @@ export default function RunDetail({ id }: RunDetailProps) {
     return result;
   }, [runGraph, signalEvents]);
 
+  // The SAME reconciled map feeds both the always-visible progress summary
+  // and the graph nodes below (WorkerCanvas nodeStatuses prop) — one source,
+  // so the header can never disagree with what a node renders. Reconciling
+  // here (rather than trusting the raw signal-derived map) also applies the
+  // terminal-run invariants: a node cannot still read "running" once a
+  // descendant has reached a terminal status, and once the run itself is
+  // done, any node with no terminal signal collapses to "pending" (absence
+  // of information) instead of visually reading as live work.
+  const reconciledNodeStatuses = useMemo(
+    () => computeReconciledNodeStatuses(runGraph, nodeStatuses, done),
+    [runGraph, nodeStatuses, done],
+  );
+
+  const progressCounts = useMemo(
+    () => computeProgressCountsForGraph(runGraph, reconciledNodeStatuses),
+    [runGraph, reconciledNodeStatuses],
+  );
+
+  // Elapsed wall-clock ticks once a second only while the run is actually
+  // live; a finished or not-yet-loaded run has nothing left to advance.
+  const [elapsedNow, setElapsedNow] = useState<number>(() => Date.now() / 1000);
+  useEffect(() => {
+    if (!live || done) return;
+    const interval = setInterval(() => setElapsedNow(Date.now() / 1000), 1000);
+    return () => clearInterval(interval);
+  }, [live, done]);
+
   if (error) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -1686,6 +1924,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   const partialWindow = session.branches.some((b) => (b.message_total ?? 0) > b.messages.length);
   const durationSec =
     startRef != null && endRef != null ? Math.max(0, Math.round(endRef - startRef)) : null;
+  const elapsedLabel = formatElapsed(computeElapsedSeconds(startRef, endRef, elapsedNow));
   const loadedToolCallCount = steps.reduce((n, s) => {
     return n + (s.messages ?? []).filter((m) => m.role === "tool_call").length;
   }, 0);
@@ -1760,7 +1999,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         verification={session.artifact_verification_json}
       />
       {runGraph && shouldRenderAuthoredGraph(runGraph, opGraph) ? (
-        <div id="run-dag" className="scroll-mt-4">
+        <div id="run-dag" className="w-full scroll-mt-4">
           <SectionHeader
             label={t("sectionExecutionGraph")}
             count={runGraph.nodes.length}
@@ -1768,27 +2007,101 @@ export default function RunDetail({ id }: RunDetailProps) {
             hiddenCount={hiddenCount}
             onToggleImplied={() => setShowImpliedEdges((v) => !v)}
             showImplied={showImpliedEdges}
+            trailing={
+              <button
+                type="button"
+                onClick={() => setGraphExpanded(true)}
+                aria-label={t("expandGraph")}
+                className="ml-auto rounded border border-edge px-2 py-0.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary"
+              >
+                {t("expandGraph")}
+              </button>
+            }
           />
+          {progressCounts && (
+            <ProgressSummaryBar counts={progressCounts} elapsedLabel={elapsedLabel} t={t} />
+          )}
+          {unmatchedNodeId && (
+            <div
+              role="status"
+              data-testid="run-dag-unmatched-node"
+              className="mt-2 rounded border border-edge bg-surface-overlay px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary"
+            >
+              {t("nodeNoBranch", { node: unmatchedNodeId })}
+            </div>
+          )}
           {/* A fan-out of dozens of workers cannot be legible in the same
               280px that fits a five-step pipeline — the panel takes its height
               from the laid-out graph's bounding box so fitView has room to
               keep nodes readable, and a linear pipeline stays short no matter
-              how many steps it has. */}
+              how many steps it has. Full content width: no max-width wrapper
+              constrains this panel narrower than its flex parent. */}
+          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- delegates to ReactFlow's own node buttons (WorkerCanvas/StepNode own their keyboard handling); this div only reads the bubbled click's data-id */}
           <div
             style={{ height: dagHeight }}
-            className="rounded border border-edge bg-surface-raised shadow-card overflow-hidden"
+            className="mt-2 w-full rounded border border-edge bg-surface-raised shadow-card overflow-hidden"
+            onClick={handleDagPanelClick}
           >
             <Suspense fallback={null}>
               <WorkerCanvas
                 graph={{ ...runGraph, edges: displayEdges }}
                 editable={false}
                 execSteps={execSteps}
-                nodeStatuses={nodeStatuses}
+                nodeStatuses={reconciledNodeStatuses}
                 compact
                 onLayoutHeight={onDagLayoutHeight}
+                live={live}
+                done={done}
               />
             </Suspense>
           </div>
+          {graphExpanded && (
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label={t("sectionExecutionGraph")}
+              className="fixed inset-4 z-50 flex flex-col rounded border border-edge bg-surface-raised shadow-card"
+            >
+              <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
+                <SectionHeader
+                  label={t("sectionExecutionGraph")}
+                  count={runGraph.nodes.length}
+                  edgeCount={displayEdges.length}
+                  hiddenCount={hiddenCount}
+                  onToggleImplied={() => setShowImpliedEdges((v) => !v)}
+                  showImplied={showImpliedEdges}
+                />
+                <button
+                  type="button"
+                  onClick={() => setGraphExpanded(false)}
+                  aria-label={t("collapseGraph")}
+                  className="rounded border border-edge px-2 py-0.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary"
+                >
+                  {t("closeExpandedGraph")}
+                </button>
+              </div>
+              {progressCounts && (
+                <div className="px-3 pt-2">
+                  <ProgressSummaryBar counts={progressCounts} elapsedLabel={elapsedLabel} t={t} />
+                </div>
+              )}
+              {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- see note on the inline panel's identical delegation above */}
+              <div className="min-h-0 flex-1 p-3" onClick={handleDagPanelClick}>
+                <Suspense fallback={null}>
+                  <WorkerCanvas
+                    graph={{ ...runGraph, edges: displayEdges }}
+                    editable={false}
+                    execSteps={execSteps}
+                    nodeStatuses={reconciledNodeStatuses}
+                    compact
+                    onLayoutHeight={noopLayoutHeight}
+                    live={live}
+                    done={done}
+                  />
+                </Suspense>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         opGraph.nodes.length > 0 && (
@@ -1838,6 +2151,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         onLoadOlder={handleLoadOlder}
         olderMessagesRemaining={hiddenOlderCount}
         loadingOlder={loadingOlder}
+        highlightedStepKey={highlightedStepKey}
       />
       <ErrorsSection errors={errors} partial={partialWindow} gateOutcome={gateOutcome} />
       <FilesSection files={runFiles} partial={partialWindow} />

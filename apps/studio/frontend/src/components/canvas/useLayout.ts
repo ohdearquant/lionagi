@@ -372,6 +372,49 @@ export interface LayoutedGraph {
   /** node id -> longest-path depth (rank index), for edge rank-distance
    * styling (ConditionEdge's long-range smooth-step routing). */
   ranks: Map<string, number>;
+  /** UNSCALED bounding-box width, for computeReservedHeight callers. */
+  width: number;
+}
+
+// fitView is width-constrained for any graph wider than its container (true
+// of almost every real run graph), so the zoom actually applied is clamped
+// to what dagre's own container-fit contract already uses in WorkerCanvas:
+// padding 0.15, max 1 (never zoomed in past 1:1 to fit). The floor is
+// FIT_ZOOM_FLOOR below — defined here (not in WorkerCanvas.tsx, which
+// imports from this module) so the reservation arithmetic and the canvas's
+// actual fitView clamp can never diverge onto two different floors.
+export const DAG_FIT_PADDING = 0.15;
+export const DAG_MAX_ZOOM = 1;
+
+// ─── Readability floor ───────────────────────────────────
+//
+// fitView shrinks the whole graph to fit the container, with no regard for
+// whether the result is still legible. StepNode's smallest text (label,
+// role, assignment, stats rows) all render at --t-xs (11px, theme.css) —
+// ConditionEdge's condition chip matches. Below a 7px screen size even
+// anti-aliased text stops being legible, so the floor is the zoom at which
+// an 11px glyph lands on 7px: 7 / 11 = 0.636, rounded up to 0.65 for a small
+// margin. Below the floor the canvas overflows its container instead of
+// shrinking further; ReactFlow's own pan/zoom-out takes over from there.
+export const FIT_ZOOM_FLOOR = 0.65;
+
+// getLayoutedElements (below) reports the graph's UNSCALED bounding-box
+// size. A container that reserves height at that value reserves for a shape
+// the graph never actually draws: at the zoom fitView will actually apply —
+// width-constrained and clamped to the same floor/ceiling WorkerCanvas uses
+// — the rendered height is smaller. Given the bbox and the container width
+// the panel will actually have, this returns the height that will actually
+// render, so a wide graph does not leave the rest of its reserved panel
+// empty.
+export function computeReservedHeight(
+  bboxWidth: number,
+  bboxHeight: number,
+  containerWidth: number,
+): number {
+  if (bboxWidth <= 0 || bboxHeight <= 0 || containerWidth <= 0) return bboxHeight;
+  const fitZoom = containerWidth / (bboxWidth * (1 + DAG_FIT_PADDING));
+  const zoom = Math.min(DAG_MAX_ZOOM, Math.max(FIT_ZOOM_FLOOR, fitZoom));
+  return bboxHeight * zoom;
 }
 
 export function getLayoutedElements(
@@ -428,13 +471,24 @@ export function getLayoutedElements(
   // fan-out is exactly as tall as its grid.
   let top = Infinity;
   let bottom = -Infinity;
+  let left = Infinity;
+  let right = -Infinity;
   for (const node of finalNodes) {
     top = Math.min(top, node.position.y);
     bottom = Math.max(bottom, node.position.y + estimateNodeHeight(node));
+    left = Math.min(left, node.position.x);
+    right = Math.max(right, node.position.x + NODE_WIDTH);
   }
   const height = finalNodes.length === 0 ? 0 : bottom - top + 2 * 24;
+  const width = finalNodes.length === 0 ? 0 : right - left + 2 * 28;
 
-  return { nodes: finalNodes, edges: markContinuationEdges(finalNodes, edges), height, ranks };
+  return {
+    nodes: finalNodes,
+    edges: markContinuationEdges(finalNodes, edges),
+    height,
+    width,
+    ranks,
+  };
 }
 
 export function useAutoLayout() {

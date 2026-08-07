@@ -478,7 +478,17 @@
       "graphNodeStatusPaused": "일시중지",
       "graphNodeStatusDone": "완료",
       "graphNodeStatusFailed": "실패",
-      "graphNodeStatusEscalated": "에스컬레이션"
+      "graphNodeStatusEscalated": "에스컬레이션",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "기록 목록",
     "detailAria": "항목 세부 정보"

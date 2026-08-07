@@ -478,7 +478,17 @@
       "graphNodeStatusPaused": "duraklatıldı",
       "graphNodeStatusDone": "tamamlandı",
       "graphNodeStatusFailed": "başarısız",
-      "graphNodeStatusEscalated": "yükseltildi"
+      "graphNodeStatusEscalated": "yükseltildi",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "geçmiş listesi",
     "detailAria": "öğe ayrıntısı"
