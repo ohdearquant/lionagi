@@ -214,6 +214,34 @@ def test_cli_specialized_paths_match_baseline():
         assert got["stderr"] == exp["stderr"], f"stderr changed for {argv}"
 
 
+def test_specialized_baseline_covers_ci_matrix():
+    """Every Python minor the full-matrix CI job runs (_capture._CI_MATRIX_PYVERS,
+    mirroring .github/workflows/ci.yml:174) must have a pinned specialized-CLI
+    baseline entry. PRs only exercise the oldest+newest of that matrix, so a
+    missing entry for any interpreter in between is invisible to every check
+    a PR can run and only breaks main once a push runs the full matrix."""
+    missing = [
+        v for v in _capture._CI_MATRIX_PYVERS if v not in _capture._SPECIALIZED_BASELINE_BY_PYVER
+    ]
+    assert not missing, f"no pinned specialized-CLI baseline for CI-matrix Python(s): {missing}"
+
+
+def test_specialized_baseline_name_resolves_for_known_interpreter(monkeypatch):
+    """Mutation arm (a): a Python minor present in the mapping resolves to
+    its pinned baseline name instead of raising."""
+    monkeypatch.setattr(_capture.sys, "version_info", (3, 10, 99, "final", 0))
+    assert _capture.specialized_baseline_name() == "specialized"
+
+
+def test_specialized_baseline_name_raises_for_unknown_interpreter(monkeypatch):
+    """Mutation arm (b): a Python minor absent from the mapping raises
+    RuntimeError rather than silently falling back -- this is what makes a
+    matrix gap a guaranteed failure instead of a silent breakage on main."""
+    monkeypatch.setattr(_capture.sys, "version_info", (3, 99, 0, "final", 0))
+    with pytest.raises(RuntimeError, match="no pinned specialized-CLI baseline"):
+        _capture.specialized_baseline_name()
+
+
 def test_mcp_available_paths_match_baseline():
     expected = _load("mcp")
     live = _capture.capture_mcp()
