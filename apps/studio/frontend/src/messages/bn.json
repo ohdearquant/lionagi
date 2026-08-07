@@ -462,7 +462,17 @@
       "graphNodeStatusPaused": "স্থগিত",
       "graphNodeStatusDone": "সম্পন্ন",
       "graphNodeStatusFailed": "ব্যর্থ",
-      "graphNodeStatusEscalated": "এস্কেলেটেড"
+      "graphNodeStatusEscalated": "এস্কেলেটেড",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "হিস্ট্রি তালিকা",
     "detailAria": "আইটেমের বিস্তারিত"

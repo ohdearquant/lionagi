@@ -462,7 +462,17 @@
       "graphNodeStatusPaused": "已暂停",
       "graphNodeStatusDone": "完成",
       "graphNodeStatusFailed": "失败",
-      "graphNodeStatusEscalated": "已升级"
+      "graphNodeStatusEscalated": "已升级",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "历史列表",
     "detailAria": "条目详情"

@@ -462,7 +462,17 @@
       "graphNodeStatusPaused": "一時停止",
       "graphNodeStatusDone": "完了",
       "graphNodeStatusFailed": "失敗",
-      "graphNodeStatusEscalated": "エスカレーション"
+      "graphNodeStatusEscalated": "エスカレーション",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "履歴一覧",
     "detailAria": "項目の詳細"
