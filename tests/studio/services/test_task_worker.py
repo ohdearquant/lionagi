@@ -424,3 +424,77 @@ async def test_stale_worker_cannot_finalize_a_reclaimed_lease(db: StateDB) -> No
     assert row["status"] == "running"
     assert row["leased_by"] == "w2"
     assert row["lease_expires_at"] == t0 + 3600
+
+
+# ── Global slot reservation hook (#2751) ─────────────────────────────────
+
+
+async def test_worker_tick_respects_injected_global_slot_reservation(db: StateDB) -> None:
+    """The ad-hoc worker takes no global concurrency slot today, so real
+    top-level concurrency is the configured cap plus one. worker_tick/
+    claim_and_execute accept an optional reserve_slot/release_slot pair: a
+    refused reservation leaves the row queued and never calls execute (the
+    row is left for the next tick, same posture as every other admission
+    deferral); an allowed reservation executes normally and releases the
+    slot once the row reaches a terminal status."""
+    run_id = await _submit_host_task(db)
+
+    reserve_calls: list[int] = []
+
+    async def _refusing_reserve() -> tuple[bool, object | None]:
+        reserve_calls.append(1)
+        return False, None
+
+    counts = await worker_tick(
+        db, worker_id="w1", execute=_noop_execute, reserve_slot=_refusing_reserve
+    )
+    assert counts["claimed"] == 0
+    assert reserve_calls == [1]
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "queued"
+
+    release_calls: list[object] = []
+
+    async def _allowing_reserve() -> tuple[bool, object | None]:
+        return True, "token-a"
+
+    def _release(claim: object) -> None:
+        release_calls.append(claim)
+
+    counts = await worker_tick(
+        db,
+        worker_id="w1",
+        execute=_noop_execute,
+        reserve_slot=_allowing_reserve,
+        release_slot=_release,
+    )
+    assert counts["claimed"] == 1
+    assert release_calls == ["token-a"]
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "completed"
+
+
+async def test_worker_tick_releases_slot_when_execute_raises(db: StateDB) -> None:
+    """The reserved slot must be released even when execute() raises, or a
+    crashing action would permanently leak a global concurrency slot."""
+    run_id = await _submit_host_task(db)
+
+    async def _boom_execute(row: dict) -> tuple[int, str]:
+        raise RuntimeError("boom")
+
+    release_calls: list[object] = []
+
+    async def _allowing_reserve() -> tuple[bool, object | None]:
+        return True, "token-b"
+
+    counts = await worker_tick(
+        db,
+        worker_id="w1",
+        execute=_boom_execute,
+        reserve_slot=_allowing_reserve,
+        release_slot=release_calls.append,
+    )
+    assert counts["claimed"] == 1
+    assert release_calls == ["token-b"]
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "failed"

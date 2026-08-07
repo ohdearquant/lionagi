@@ -1077,14 +1077,31 @@ class SchedulerEngine:
         """ADR-0071 D4: reap lapsed leases and claim/execute eligible host
         task applications. Not interval-gated for the same reason as
         ``_deliver_due_dispatches`` — the 30s tick is the latency floor.
+
+        Each execution reserves one of this daemon's global concurrent-fire
+        slots (``_reserve_global_slot``) so ad-hoc executions count against
+        ``MAX_SCHEDULED_CONCURRENT`` the same way scheduled fires do —
+        without this, real top-level concurrency was the configured cap plus
+        one worker lane (see #2751).
         """
         from lionagi.state.db import StateDB
         from lionagi.studio.scheduler import worker as _worker
 
         if not _worker.TASK_WORKER_ENABLED:
             return
+
+        def _release(claim: Any) -> None:
+            if claim is not None:
+                claim.release()
+
         async with StateDB() as db:
-            await _worker.worker_tick(db, worker_id=self._task_worker_id, now=now)
+            await _worker.worker_tick(
+                db,
+                worker_id=self._task_worker_id,
+                now=now,
+                reserve_slot=self._reserve_global_slot,
+                release_slot=_release,
+            )
 
     async def _tick_github(self, schedule: dict, now: float) -> None:
         poll_interval = resolve_schedule_cadence_seconds(schedule)

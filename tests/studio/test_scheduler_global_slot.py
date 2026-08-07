@@ -526,3 +526,75 @@ async def test_maybe_record_deferred_throttles_after_first(monkeypatch):
     assert svc.create_schedule_run.await_count == 1
     await engine._maybe_record_deferred(schedule, now=1000.0)
     assert svc.create_schedule_run.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# _run_task_worker_tick — ad-hoc executions now count against the cap (#2751)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_worker_pass_reserves_global_slot_and_counts_against_cap(monkeypatch, tmp_path):
+    """Measured, not inferred: with the cap already saturated by (simulated)
+    scheduled fires, a queued ad-hoc task must stay queued rather than
+    execute as a cap+1'th concurrent action. Freeing capacity lets it
+    execute and the slot is released once the row reaches a terminal
+    status. Before this fix the worker never called _reserve_global_slot at
+    all, so this row would have executed regardless of cap saturation."""
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as studio_config
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.services.task_applications import TaskApplication, submit_task
+
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 4)
+
+    async with StateDB(fake_db) as db:
+        run_id = await submit_task(
+            db, TaskApplication(action_kind="agent", args={}, execution_target="host")
+        )
+
+    engine = SchedulerEngine(svc=_make_svc())
+
+    holders = []
+    for _ in range(4):
+        allowed, claim = await engine._reserve_global_slot()
+        assert allowed is True
+        holders.append(claim)
+    assert engine._global_inflight == 4
+
+    await engine._run_task_worker_tick(1_000.0)
+
+    async with StateDB(fake_db) as db:
+        row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "queued", (
+        "saturated cap must defer the ad-hoc row, not run it as a cap+1'th concurrent execution"
+    )
+    assert engine._global_inflight == 4
+
+    for claim in holders:
+        claim.release()
+    assert engine._global_inflight == 0
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.resolve_li_executable",
+            return_value=(["uv", "run", "li"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._run_task_worker_tick(1_001.0)
+
+    async with StateDB(fake_db) as db:
+        row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "completed"
+    assert engine._global_inflight == 0
