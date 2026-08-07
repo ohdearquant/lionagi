@@ -118,6 +118,48 @@ async def test_resolve_terminal_completed_empty_child_taints_invocation():
 
 
 @pytest.mark.asyncio
+async def test_resolve_terminal_nonterminal_child_not_trusted_as_completed():
+    """A leader process exiting 0 is not evidence that a still-running child
+    session's own work finished (see #2535 -- the terminal stamp today comes
+    from the leader's stderr pipe closing, not from the work ending). A
+    child session that has not reached ANY terminal status must not be
+    silently trusted via the fallback_status="completed" path -- it belongs
+    on completed_empty (no positive evidence), the same bucket a
+    known-empty child already uses."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.services.scheduler_state import resolve_invocation_terminal
+
+    svc = _make_svc()
+    svc.list_sessions_for_invocation.return_value = [
+        {"id": "s1", "status": "running"},
+    ]
+    status, rc, rs, refs, meta = await resolve_invocation_terminal(
+        svc, "inv-1", fallback_status="completed", exit_code=0
+    )
+    assert status == "completed_empty"
+    assert rc == RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_all_children_terminal_completed_still_trusted():
+    """Positive control for the above: when every child session has
+    genuinely reached a terminal 'completed' status, the invocation is
+    still trusted as 'completed' -- the new non-terminal-child guard must
+    not fire when there is nothing left running."""
+    from lionagi.studio.services.scheduler_state import resolve_invocation_terminal
+
+    svc = _make_svc()
+    svc.list_sessions_for_invocation.return_value = [
+        {"id": "s1", "status": "completed"},
+        {"id": "s2", "status": "completed"},
+    ]
+    status, rc, rs, refs, meta = await resolve_invocation_terminal(
+        svc, "inv-1", fallback_status="completed", exit_code=0
+    )
+    assert status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_resolve_terminal_failed_child():
     from lionagi.studio.services.scheduler_state import resolve_invocation_terminal
 
