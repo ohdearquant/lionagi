@@ -969,6 +969,8 @@ async def _execute_dag(
     _checkpoint_tasks: list = []
     _branch_status_tasks: list = []
     _escalation_link_tasks: list = []
+    _segment_tasks: list = []
+    _control_log_tasks: list = []
 
     _checkpoint_writer: CheckpointWriter | None = None
     if checkpoint_config is not None:
@@ -1032,7 +1034,7 @@ async def _execute_dag(
                     ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
                 )
 
-        _asyncio.ensure_future(_do())
+        _segment_tasks.append(_asyncio.ensure_future(_do()))
 
     def _update_branch_status(branch_name: str, new_status: str):
         ctx = getattr(env, "_live_persist", None)
@@ -1198,7 +1200,7 @@ async def _execute_dag(
                     ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
                 )
 
-        _asyncio.ensure_future(_do())
+        _control_log_tasks.append(_asyncio.ensure_future(_do()))
 
     # Only wired when team messaging + reactive mode are on and at least
     # one worker got a branch built (nothing to inject otherwise).
@@ -1516,6 +1518,12 @@ async def _execute_dag(
             if _checkpoint_tasks:
                 with contextlib.suppress(Exception):
                     await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
+            if _segment_tasks:
+                with contextlib.suppress(Exception):
+                    await _asyncio.gather(*_segment_tasks, return_exceptions=True)
+            if _control_log_tasks:
+                with contextlib.suppress(Exception):
+                    await _asyncio.gather(*_control_log_tasks, return_exceptions=True)
             if _escalation_link_tasks:
                 if _dag_cancelled:
                     # Cancellation already landed while run_dag() was running,
