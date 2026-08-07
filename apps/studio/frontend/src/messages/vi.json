@@ -540,6 +540,7 @@
       "triggering": "đang kích hoạt…",
       "runStarted": "đã bắt đầu lần chạy: {id}",
       "triggerFailed": "kích hoạt thất bại",
+      "toggleFailed": "chuyển đổi thất bại",
       "every": "mỗi {interval}",
       "in": "trong {delta}",
       "overdue": "trễ {delta}",

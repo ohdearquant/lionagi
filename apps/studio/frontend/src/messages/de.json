@@ -540,6 +540,7 @@
       "triggering": "Wird ausgelöst…",
       "runStarted": "Ausführung gestartet: {id}",
       "triggerFailed": "Auslösen fehlgeschlagen",
+      "toggleFailed": "Umschalten fehlgeschlagen",
       "every": "alle {interval}",
       "in": "in {delta}",
       "overdue": "überfällig {delta}",

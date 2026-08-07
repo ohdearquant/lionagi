@@ -15,25 +15,12 @@ import { deriveDisplayStatus } from "@/lib/runStatus";
 import { formatCostUsd } from "@/lib/usageFormat";
 import { Route } from "@/routes/fleet";
 import type { RetiredSearchValue } from "@/lib/retiredRoutes";
+import { formatElapsed as formatElapsedShared } from "@/lib/elapsed";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 export function formatElapsed(sec: number | null): string {
-  if (sec == null || !Number.isFinite(sec) || sec < 0) return "—";
-  if (sec < 60) return `${sec}s`;
-  const m = Math.floor(sec / 60);
-  if (m < 60) {
-    const s = sec % 60;
-    return s > 0 ? `${m}m ${s}s` : `${m}m`;
-  }
-  const h = Math.floor(m / 60);
-  if (h < 24) {
-    const mm = m - h * 60;
-    return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
-  }
-  const d = Math.floor(h / 24);
-  const hh = h - d * 24;
-  return hh > 0 ? `${d}d ${hh}h` : `${d}d`;
+  return formatElapsedShared(sec, { capAtDays: true });
 }
 
 // Compact count for a legibility-sensitive slot: under 1000 renders the exact
