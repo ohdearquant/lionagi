@@ -74,6 +74,19 @@ class AmbiguousRunReferenceError(ValueError):
         super().__init__(f"ambiguous run reference -- matches {len(candidates)} sessions")
 
 
+class MissingOwnerContextError(ValueError):
+    """The calling turn has no durable project mapping to authorize against.
+
+    Raised before any row is resolved, signalled, or reported on -- a turn
+    with no owner/project context must never fall back to matching every
+    project's runs. Mirrors ``run_progress.py``'s own copy of this error --
+    kept separate rather than a shared import for the same reason
+    ``_allowed_project`` below is its own copy.
+    """
+
+    code = "missing_owner_context"
+
+
 def _identity() -> tuple[OperatorStore, str, str]:
     import os
 
@@ -120,30 +133,37 @@ async def _current_run_id(store: OperatorStore, request_id: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-async def _allowed_project(store: OperatorStore, request_id: str) -> str | None:
-    """The project this Operator turn is scoped to, or ``None`` when there is
-    no scoping context to enforce. Mirrors ``run_progress.py::_allowed_project``
-    -- kept as a separate small copy rather than a shared import so this
-    module's identity/store handling stays self-contained the same way
-    ``_current_run_id`` above already does."""
+async def _allowed_project(store: OperatorStore, request_id: str) -> str:
+    """The project this Operator turn is scoped to.
+
+    Raises :class:`MissingOwnerContextError` rather than returning a
+    sentinel when the turn's own context names no project -- a turn with no
+    owner mapping must never be treated as authorized for every project's
+    runs. Mirrors ``run_progress.py::_allowed_project`` -- kept as a
+    separate small copy rather than a shared import so this module's
+    identity/store handling stays self-contained the same way
+    ``_current_run_id`` above already does.
+    """
     turn = await store.get_turn(request_id)
     context = turn.get("context")
-    if not isinstance(context, dict):
-        return None
-    project = context.get("project")
-    return project if isinstance(project, str) and project else None
+    project = context.get("project") if isinstance(context, dict) else None
+    if not isinstance(project, str) or not project:
+        raise MissingOwnerContextError(
+            "operator turn has no project context -- refusing to resolve or cancel any run"
+        )
+    return project
 
 
-def _owns(row_project: Any, project: str | None) -> bool:
+def _owns(row_project: Any, project: str) -> bool:
     """Whether a session's ``project`` column is visible to a turn scoped to
-    ``project``. A turn with no project context (``project is None``)
-    preserves the pre-existing unscoped behavior -- see
-    ``_allowed_project``'s own docstring for why that fallback is
-    intentional rather than a hole."""
-    return project is None or row_project == project
+    ``project``. ``project`` is always a real, non-empty value -- callers
+    obtain it from ``_allowed_project``, which raises rather than returning
+    a sentinel for "no owner", so there is no value here that means "every
+    project"."""
+    return row_project == project
 
 
-async def _owned_rows(db: Any, ids: list[str], project: str | None) -> list[dict[str, Any]]:
+async def _owned_rows(db: Any, ids: list[str], project: str) -> list[dict[str, Any]]:
     """Re-fetch *ids* and keep only the rows ``project`` may see, preserving
     the input order. Used to strip foreign-project rows out of an
     ``AmbiguousIdError``'s candidate list before it ever reaches the human --
@@ -159,7 +179,7 @@ async def _owned_rows(db: Any, ids: list[str], project: str | None) -> list[dict
     return [by_id[i] for i in ids if i in by_id and _owns(by_id[i].get("project"), project)]
 
 
-async def _resolve_run(db: Any, ref: str, *, project: str | None) -> dict[str, Any] | None:
+async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | None:
     """Resolve *ref* to exactly one `sessions` row (a Studio "run").
 
     Mirrors `lionagi.cli._util.fetch_unique_row`'s exact-id-then-prefix
@@ -170,12 +190,12 @@ async def _resolve_run(db: Any, ref: str, *, project: str | None) -> dict[str, A
     rather than picking one -- never guess which process to signal.
 
     Every arm -- exact id, ambiguous prefix, and the name/playbook substring
-    scan below -- is scoped to ``project`` (the calling turn's own project,
-    when it names one): a lifecycle tool must not resolve, let alone propose
-    cancelling, another project's run by id, prefix, or label. A foreign
-    exact/prefix match is reported exactly like a nonexistent one (``None``)
-    rather than as e.g. "already terminal", which would itself confirm the
-    id exists.
+    scan below -- is scoped to ``project`` (the calling turn's own project --
+    callers always name one; see ``_allowed_project``): a lifecycle tool
+    must not resolve, let alone propose cancelling, another project's run by
+    id, prefix, or label. A foreign exact/prefix match is reported exactly
+    like a nonexistent one (``None``) rather than as e.g. "already
+    terminal", which would itself confirm the id exists.
     """
     from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
 
@@ -202,18 +222,11 @@ async def _resolve_run(db: Any, ref: str, *, project: str | None) -> dict[str, A
         return None
 
     pattern = f"%{_escape_like(ref)}%"
-    if project:
-        rows = await db.fetch_all(
-            "SELECT * FROM sessions WHERE (name LIKE ? ESCAPE '\\' OR playbook_name LIKE ? ESCAPE '\\') "
-            "AND project = ? ORDER BY started_at DESC LIMIT 11",
-            (pattern, pattern, project),
-        )
-    else:
-        rows = await db.fetch_all(
-            "SELECT * FROM sessions WHERE (name LIKE ? ESCAPE '\\' OR playbook_name LIKE ? ESCAPE '\\') "
-            "ORDER BY started_at DESC LIMIT 11",
-            (pattern, pattern),
-        )
+    rows = await db.fetch_all(
+        "SELECT * FROM sessions WHERE (name LIKE ? ESCAPE '\\' OR playbook_name LIKE ? ESCAPE '\\') "
+        "AND project = ? ORDER BY started_at DESC LIMIT 11",
+        (pattern, pattern, project),
+    )
     if not rows:
         return None
     if len(rows) > 1:
@@ -418,10 +431,15 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         if row is None:
             return {"status": "not_found", "id": run_id}
         row_dict = db._row_to_dict(row)
-        if project is not None and row_dict.get("project") != project:
-            # Fails exactly like a nonexistent id -- confirming a foreign
-            # run's terminal status here would be the same disclosure the
-            # resolution-time ownership check exists to prevent.
+        # A command built by cancel_run() above always carries the caller's
+        # own (non-empty) project -- _allowed_project() raises rather than
+        # letting a turn with no owner mapping reach this point. A missing
+        # or empty project here is therefore itself an ownership failure,
+        # not a value meaning "unscoped, allow any row" -- it fails exactly
+        # like a project mismatch, and exactly like a nonexistent id:
+        # confirming a foreign run's terminal status here would be the same
+        # disclosure the resolution-time ownership check exists to prevent.
+        if not isinstance(project, str) or not project or row_dict.get("project") != project:
             return {"status": "not_found", "id": run_id}
         if row_dict.get("status") != "running":
             return {"status": "already_terminal", "id": run_id}

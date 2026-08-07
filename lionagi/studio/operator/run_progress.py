@@ -26,7 +26,21 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .redact import MAX_CANDIDATES, public_project, scrub_text
 
-__all__ = ("RunProgressInput", "resolve_run", "run_progress")
+__all__ = ("MissingOwnerContextError", "RunProgressInput", "resolve_run", "run_progress")
+
+
+class MissingOwnerContextError(ValueError):
+    """The calling turn has no durable project mapping to authorize against.
+
+    Raised before any row is resolved or reported on -- a turn whose
+    identity is present but whose own context names no project must never
+    fall back to matching every project's runs. Mirrors
+    ``cancel_run.py``'s own copy of this error -- kept separate rather than
+    a shared import for the same reason ``_allowed_project`` below is its
+    own copy.
+    """
+
+    code = "missing_owner_context"
 
 
 class _StrictModel(BaseModel):
@@ -126,16 +140,20 @@ async def _fetch_ambiguous_candidates(
 
 async def _allowed_project() -> str | None:
     """The project this Operator turn is scoped to, or ``None`` when there is
-    no scoping context to enforce.
+    no turn identity to enforce at all.
 
     Reads the same durable turn identity ``cancel_run.py``/``get_current_view``
     use. Falls open (no restriction) only when the turn identity environment
     is entirely absent — a real MCP subprocess always has it set (see
-    ``engine.py::build_operator_branch``); tests and direct calls that omit it
-    get the pre-existing unscoped behavior rather than a hard failure. When
-    the identity *is* present, a lookup failure propagates rather than
-    silently falling open, since that would defeat the isolation this exists
-    to provide.
+    ``engine.py::build_operator_branch``); tests and direct calls that omit
+    the whole identity get the pre-existing unscoped behavior rather than a
+    hard failure. When the identity *is* present -- a real turn exists --
+    but that turn's own context names no project, this raises
+    :class:`MissingOwnerContextError` rather than falling open: a turn with
+    an owner but no declared project must never be treated as authorized
+    for every project's runs. A lookup failure for a present identity also
+    propagates rather than silently falling open, since that would defeat
+    the isolation this exists to provide.
     """
     import os
 
@@ -150,10 +168,12 @@ async def _allowed_project() -> str | None:
     store = OperatorStore(db_path)
     turn = await store.get_turn(request_id)
     context = turn.get("context")
-    if not isinstance(context, dict):
-        return None
-    project = context.get("project")
-    return project if isinstance(project, str) and project else None
+    project = context.get("project") if isinstance(context, dict) else None
+    if not isinstance(project, str) or not project:
+        raise MissingOwnerContextError(
+            "operator turn has no project context -- refusing to resolve any run"
+        )
+    return project
 
 
 async def _find_sessions_by_text(

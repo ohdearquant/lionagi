@@ -712,6 +712,35 @@ async def test_run_findings_exact_id_of_a_foreign_project_run_is_not_found(db_pa
     assert result == {"found": False}
 
 
+async def test_run_findings_turn_with_no_project_context_fails_closed(db_path, monkeypatch):
+    """A turn whose identity is present but whose own context names no
+    project must never fall back to matching every project's runs --
+    run_findings inherits this from resolve_run() (run_progress.py) the same
+    way it already inherits project scoping."""
+    from lionagi.studio.operator.run_findings import run_findings
+    from lionagi.studio.operator.run_progress import MissingOwnerContextError
+    from lionagi.studio.operator.store import OperatorStore
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, name="nightly-triage", status="completed")
+
+    store = OperatorStore(db_path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="what did that run find?",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    with pytest.raises(MissingOwnerContextError):
+        await run_findings({"run": sid})
+
+
 async def test_run_findings_env_secret_value_is_redacted_even_without_a_known_shape(
     db_path, monkeypatch
 ):

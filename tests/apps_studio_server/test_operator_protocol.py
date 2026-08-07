@@ -567,7 +567,7 @@ async def test_application_mcp_playbook_mutation_after_proposal_conflicts_before
     await coordinator.shutdown()
 
 
-async def _seed_running_session(db) -> str:
+async def _seed_running_session(db, *, project: str = "/Users/admin/test-project") -> str:
     import uuid
 
     run_id = str(uuid.uuid4())
@@ -579,6 +579,7 @@ async def _seed_running_session(db) -> str:
             "progression_id": progression_id,
             "status": "running",
             "started_at": time.time(),
+            "project": project,
         }
     )
     return run_id
@@ -611,7 +612,12 @@ async def test_application_mcp_cancel_run_allow_executes_via_the_real_default_co
     accepted = await store.submit_turn(
         cid,
         instruction="stop that run",
-        context={"space": "mission", "route": "/", "filters": {}},
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/test-project",
+        },
         expected_last_sequence=0,
     )
     assert await store.mark_running(accepted["requestId"])
@@ -623,7 +629,11 @@ async def test_application_mcp_cancel_run_allow_executes_via_the_real_default_co
     proposal = await _wait_proposal(store, accepted["requestId"])
     assert not task.done()
     assert proposal["commandType"] == "cancel"
-    assert proposal["command"] == {"session_id": run_id, "reason": "hung", "project": None}
+    assert proposal["command"] == {
+        "session_id": run_id,
+        "reason": "hung",
+        "project": "/Users/admin/test-project",
+    }
     assert proposal["risk"] == "execute"
 
     decision = await coordinator.decide(
@@ -679,7 +689,12 @@ async def test_application_mcp_cancel_run_deny_leaves_run_untouched_via_real_coo
     accepted = await store.submit_turn(
         cid,
         instruction="stop that run",
-        context={"space": "mission", "route": "/", "filters": {}},
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/test-project",
+        },
         expected_last_sequence=0,
     )
     assert await store.mark_running(accepted["requestId"])
@@ -742,6 +757,7 @@ async def test_application_mcp_resume_run_is_reachable_end_to_end(tmp_path, monk
                 "status": "completed",
                 "started_at": time.time(),
                 "invocation_kind": "agent",
+                "project": "/Users/admin/test-project",
             }
         )
         branch_progression_id = str(uuid.uuid4())
@@ -781,7 +797,12 @@ async def test_application_mcp_resume_run_is_reachable_end_to_end(tmp_path, monk
     accepted = await store.submit_turn(
         cid,
         instruction="continue that run",
-        context={"space": "mission", "route": "/", "filters": {}},
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/test-project",
+        },
         expected_last_sequence=0,
     )
     assert await store.mark_running(accepted["requestId"])

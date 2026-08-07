@@ -18,6 +18,7 @@ import pytest
 
 from lionagi.studio.operator.cancel_run import (
     CancelRunInput,
+    MissingOwnerContextError,
     cancel_run,
     execute_cancel_command,
 )
@@ -33,6 +34,9 @@ def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
 
 
+DEFAULT_TEST_PROJECT = "/Users/admin/test-project"
+
+
 async def _seed_session(
     db,
     *,
@@ -41,6 +45,7 @@ async def _seed_session(
     name: str | None = None,
     playbook_name: str | None = None,
     started_at: float | None = None,
+    project: str | None = DEFAULT_TEST_PROJECT,
 ) -> str:
     sid = str(uuid.uuid4())
     progression_id = str(uuid.uuid4())
@@ -55,6 +60,7 @@ async def _seed_session(
             "playbook_name": playbook_name,
             "started_at": started_at if started_at is not None else time.time(),
             "node_metadata": node_meta,
+            "project": project,
         }
     )
     return sid
@@ -80,7 +86,8 @@ async def _make_running_turn(
     accepted = await store.submit_turn(
         cid,
         instruction="stop the run",
-        context=context or {"space": "mission", "route": "/", "filters": {}},
+        context=context
+        or {"space": "mission", "route": "/", "filters": {}, "project": DEFAULT_TEST_PROJECT},
         expected_last_sequence=0,
     )
     assert await store.mark_running(accepted["requestId"])
@@ -189,7 +196,11 @@ async def test_cancel_run_allow_path_terminates_and_persists_cancel(tmp_path, mo
     proposal = await _wait_proposal(store, request_id)
     assert not task.done()
     assert proposal["commandType"] == "cancel"
-    assert proposal["command"] == {"session_id": run_id, "reason": "stuck", "project": None}
+    assert proposal["command"] == {
+        "session_id": run_id,
+        "reason": "stuck",
+        "project": DEFAULT_TEST_PROJECT,
+    }
     assert proposal["risk"] == "execute"
 
     decision = await coordinator.decide(
@@ -202,7 +213,9 @@ async def test_cancel_run_allow_path_terminates_and_persists_cancel(tmp_path, mo
     result = await asyncio.wait_for(task, timeout=2)
 
     assert decision["status"] == "succeeded"
-    assert calls == [("cancel", {"session_id": run_id, "reason": "stuck", "project": None})]
+    assert calls == [
+        ("cancel", {"session_id": run_id, "reason": "stuck", "project": DEFAULT_TEST_PROJECT})
+    ]
     assert result == {
         "cancelled": True,
         "status": "terminal",
@@ -357,6 +370,7 @@ async def test_cancel_run_current_resolves_via_the_turns_own_selection(tmp_path,
             "route": "/fleet",
             "filters": {},
             "selection": {"s": run_id},
+            "project": DEFAULT_TEST_PROJECT,
         },
     )
     _set_identity(monkeypatch, path, cid, request_id)
@@ -404,7 +418,9 @@ async def test_execute_cancel_command_no_pid_still_persists_cancel(tmp_path, mon
     async with StateDB() as db:
         run_id = await _seed_session(db, status="running", pid=None)
 
-    result = await execute_cancel_command({"session_id": run_id, "reason": "no pid on this run"})
+    result = await execute_cancel_command(
+        {"session_id": run_id, "reason": "no pid on this run", "project": DEFAULT_TEST_PROJECT}
+    )
     assert result == {"status": "terminal", "id": run_id, "signal": "no_pid"}
 
     async with StateDB() as db:
@@ -426,7 +442,7 @@ async def test_execute_cancel_command_already_terminal_is_a_no_op(tmp_path, monk
     async with StateDB() as db:
         run_id = await _seed_session(db, status="failed", pid=None)
 
-    result = await execute_cancel_command({"session_id": run_id})
+    result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     assert result == {"status": "already_terminal", "id": run_id}
 
     async with StateDB() as db:
@@ -492,10 +508,13 @@ async def test_execute_cancel_command_reaps_a_running_child_invocation(tmp_path,
                 "name": "parent-run",
                 "started_at": time.time(),
                 "invocation_id": invocation_id,
+                "project": DEFAULT_TEST_PROJECT,
             }
         )
 
-    result = await execute_cancel_command({"session_id": run_id, "reason": "stuck"})
+    result = await execute_cancel_command(
+        {"session_id": run_id, "reason": "stuck", "project": DEFAULT_TEST_PROJECT}
+    )
     assert result == {"status": "terminal", "id": run_id, "signal": "no_pid"}
 
     async with StateDB() as db:
@@ -547,10 +566,11 @@ async def test_execute_cancel_command_a_terminal_child_invocation_is_left_alone(
                 "name": "parent-run",
                 "started_at": time.time(),
                 "invocation_id": invocation_id,
+                "project": DEFAULT_TEST_PROJECT,
             }
         )
 
-    result = await execute_cancel_command({"session_id": run_id})
+    result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     assert result == {"status": "terminal", "id": run_id, "signal": "no_pid"}
 
     async with StateDB() as db:
@@ -591,7 +611,7 @@ async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelle
 
     monkeypatch.setattr(kill_mod, "_kill_one", fake_kill_one)
 
-    result = await execute_cancel_command({"session_id": run_id})
+    result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     assert result == {"status": "identity_mismatch", "id": run_id, "signal": "identity_mismatch"}
 
     async with StateDB() as db:
@@ -637,7 +657,7 @@ async def test_execute_cancel_command_terminalized_during_approval_is_not_cancel
     real_kill_one = kill_mod._kill_one
     monkeypatch.setattr(kill_mod, "_kill_one", racing_kill_one)
 
-    result = await execute_cancel_command({"session_id": run_id})
+    result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
     assert result["status"] == "already_terminal"
     assert result["id"] == run_id
 
@@ -742,10 +762,11 @@ async def test_cancel_run_text_search_is_scoped_to_the_turns_project(tmp_path, m
     }
 
 
-async def test_cancel_run_text_search_without_project_context_stays_unscoped(tmp_path, monkeypatch):
+async def test_cancel_run_text_search_without_project_context_fails_closed(tmp_path, monkeypatch):
     """No turn/project context (e.g. a caller that never named a project)
-    preserves the pre-existing unscoped behavior -- both same-named runs come
-    back as candidates rather than one being silently dropped."""
+    must never fall back to unscoped resolution -- a turn with no owner
+    mapping is refused with a typed error before either same-named run in a
+    different project is ever read back, let alone offered as a candidate."""
     from lionagi.state.db import StateDB
 
     path = tmp_path / "state.db"
@@ -757,14 +778,61 @@ async def test_cancel_run_text_search_without_project_context_stays_unscoped(tmp
         await db.update_session(second, project="/Users/admin/acme-ops")
 
     store = OperatorStore(path)
-    cid, request_id = await _make_running_turn(store)
+    cid, request_id = await _make_running_turn(
+        store, context={"space": "mission", "route": "/", "filters": {}}
+    )
     _set_identity(monkeypatch, path, cid, request_id)
 
-    result = await cancel_run({"run": "nightly-triage"})
+    with pytest.raises(MissingOwnerContextError):
+        await cancel_run({"run": "nightly-triage"})
 
-    assert result["cancelled"] is False
-    assert result["reason"] == "ambiguous_reference"
-    assert set(result["candidates"]) == {first, second}
+    assert await store.list_proposals_for_request(request_id) == []
+
+
+async def test_cancel_run_current_without_project_context_fails_closed(tmp_path, monkeypatch):
+    """The 'current' arm must also refuse a turn with no owner mapping --
+    the selection lookup itself needs no project, but the row it resolves to
+    must never be read back without one."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_session(db, status="completed", pid=None)
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "history",
+            "route": "/fleet",
+            "filters": {},
+            "selection": {"s": run_id},
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    with pytest.raises(MissingOwnerContextError):
+        await cancel_run({"run": "current"})
+
+
+async def test_execute_cancel_command_without_project_fails_closed(tmp_path, monkeypatch):
+    """The execution-time re-check must itself require a non-None project --
+    a command missing its owner project context must never be treated as
+    authorized to signal any row, even one that also has no project set."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_session(db, status="running", pid=None, project=None)
+
+    result = await execute_cancel_command({"session_id": run_id})
+    assert result == {"status": "not_found", "id": run_id}
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
+        assert row["status"] == "running"
 
 
 async def test_cancel_run_exact_id_of_a_foreign_project_terminal_run_is_not_found(

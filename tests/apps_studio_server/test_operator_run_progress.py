@@ -287,7 +287,9 @@ async def test_run_progress_current_view(db_path, monkeypatch):
     from lionagi.studio.operator.store import OperatorStore
 
     sid = str(uuid.uuid4())
-    await seed_session(db_path, session_id=sid, status="completed")
+    await seed_session(
+        db_path, session_id=sid, status="completed", project="/Users/admin/test-project"
+    )
 
     store = OperatorStore(db_path)
     cid = (await store.create_conversation())["id"]
@@ -299,6 +301,7 @@ async def test_run_progress_current_view(db_path, monkeypatch):
             "route": "/fleet",
             "filters": {},
             "selection": {"s": sid},
+            "project": "/Users/admin/test-project",
         },
         expected_last_sequence=0,
     )
@@ -322,7 +325,12 @@ async def test_run_progress_current_view_unknown_returns_not_found(db_path, monk
     accepted = await store.submit_turn(
         cid,
         instruction="how is it going?",
-        context={"space": "mission", "route": "/", "filters": {}},
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/test-project",
+        },
         expected_last_sequence=0,
     )
     assert await store.mark_running(accepted["requestId"])
@@ -632,3 +640,45 @@ async def test_run_progress_ambiguous_id_prefix_hides_foreign_project_candidates
     assert result["found"] is True
     assert result["ambiguous"] is False
     assert result["id"] == owned
+
+
+# ── reference resolution: missing owner context fails closed ──────────────
+
+
+async def test_run_progress_turn_with_no_project_context_fails_closed(db_path, monkeypatch):
+    """A turn whose identity is present but whose own context names no
+    project must never fall back to matching every project's runs -- it is
+    refused with a typed error before any row is read, not merely before one
+    foreign row is exposed."""
+    from lionagi.studio.operator.run_progress import MissingOwnerContextError, resolve_run
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, name="nightly-triage", status="completed")
+
+    cid, request_id = await _make_running_turn_with_project(db_path, project=None)
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+
+    with pytest.raises(MissingOwnerContextError):
+        await resolve_run("nightly-triage")
+
+    with pytest.raises(MissingOwnerContextError):
+        await resolve_run(sid)
+
+    with pytest.raises(MissingOwnerContextError):
+        await resolve_run("current")
+
+
+async def test_run_progress_no_identity_at_all_stays_unscoped(db_path):
+    """Distinct from the above: when the turn identity environment is
+    entirely absent (no durable turn exists at all -- the pre-existing
+    direct-call/test convenience), resolution still falls open rather than
+    raising. Only a real turn with a missing project mapping fails closed."""
+    from lionagi.studio.operator.run_progress import resolve_run
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, name="nightly-triage", status="completed")
+
+    result = await resolve_run(sid)
+    assert result == {"found": True, "ambiguous": False, "session_id": sid}
