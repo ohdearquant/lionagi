@@ -478,11 +478,22 @@ async def check_server_connection(name: str) -> dict[str, Any] | None:
 async def validate_config(
     name: str, config: dict[str, Any], *, check_connection: bool = False
 ) -> dict[str, Any]:
-    """Validate a config before it is saved. Shape is always checked;
-    connection is only attempted when the caller opts in, and the response
-    says explicitly whether it was -- a shape check that silently claimed to
-    prove a server works would be worse than no check at all."""
-    errors = _validate_shape(name, config)
+    """Validate a config before it is saved. ``config`` is a patch, not
+    necessarily a complete config -- an edit can carry a `None` env value
+    that means "delete this key", which never stands alone as a usable
+    shape. ``update_server`` merges a patch onto the stored config before
+    validating it; this runs the same merge so validation checks what would
+    actually be persisted, not the raw patch. A server that does not exist
+    yet merges onto an empty config, which is exactly the shape a save
+    would produce for a first-time registration.
+
+    Shape is always checked; connection is only attempted when the caller
+    opts in, and the response says explicitly whether it was -- a shape
+    check that silently claimed to prove a server works would be worse than
+    no check at all."""
+    existing = (_load_registry().get(name) or {}).get("config") or {}
+    merged = _merge_config(existing, config)
+    errors = _validate_shape(name, merged)
     result: dict[str, Any] = {
         "ok": not errors,
         "errors": errors or None,
@@ -491,7 +502,7 @@ async def validate_config(
         "connection_error": None,
     }
     if not errors and check_connection:
-        outcome = await _attempt_connection(config)
+        outcome = await _attempt_connection(merged)
         result["connection_checked"] = True
         result["connection_ok"] = outcome["ok"]
         result["connection_error"] = outcome["error"]

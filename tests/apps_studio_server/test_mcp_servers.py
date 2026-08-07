@@ -640,6 +640,84 @@ def test_route_validate_malformed(mcp_client):
 
 
 # ---------------------------------------------------------------------------
+# Validate/Save parity -- Validate must accept exactly the edits Save
+# accepts. Save (PUT) merges a patch onto the stored config; a Validate that
+# shape-checks the raw patch instead rejects perfectly ordinary partial
+# edits (e.g. one that only changes `args`) and, worse, the env-deletion
+# patch Save requires to drop a key (an explicit `null` value, since a
+# client never sees secret values to resend them).
+# ---------------------------------------------------------------------------
+
+
+_PARITY_PATCH_CORPUS = [
+    ("env_deletion", {"env": {"API_KEY": None}}),
+    ("env_omitted", {"args": ["-m", "different_module"]}),
+    ("full_config", {"command": "python3", "args": ["-m", "srv"], "env": {"OTHER": "v"}}),
+    ("invalid_nested_types", {"env": {"KEY": 5}}),
+    ("unknown_field", {"totally_unknown_field": "whatever", "args": ["-m", "srv"]}),
+]
+
+
+@pytest.mark.parametrize("case_name,patch", _PARITY_PATCH_CORPUS)
+def test_route_validate_and_save_agree_on_the_same_patch(mcp_client, case_name, patch):
+    """The same patch corpus driven through both endpoints must agree on
+    accept vs reject, so a merge-semantics field handled by one and not the
+    other fails this test instead of shipping as a live divergence."""
+    mcp_client.post("/api/mcp/servers/", json={"name": "myserver", **STDIO_CONFIG})
+
+    validate_resp = mcp_client.post(
+        "/api/mcp/servers/myserver/validate", json={"name": "myserver", **patch}
+    )
+    assert validate_resp.status_code == 200
+    validate_body = validate_resp.json()
+
+    save_resp = mcp_client.put("/api/mcp/servers/myserver", json=patch)
+
+    assert validate_body["ok"] == (save_resp.status_code == 200), (
+        f"{case_name}: validate ok={validate_body['ok']!r} "
+        f"(errors={validate_body.get('errors')!r}) but save status="
+        f"{save_resp.status_code} ({save_resp.text})"
+    )
+
+
+def test_route_env_deletion_patch_validate_and_save_parity_end_to_end(mcp_client):
+    """The concrete regression this fixes: the exact edit Save performs
+    (deleting an env key via an explicit `null`) must validate successfully,
+    and the key must actually be gone after the save that follows."""
+    mcp_client.post("/api/mcp/servers/", json={"name": "myserver", **STDIO_CONFIG})
+
+    validate_resp = mcp_client.post(
+        "/api/mcp/servers/myserver/validate",
+        json={"name": "myserver", "env": {"API_KEY": None}},
+    )
+    assert validate_resp.status_code == 200
+    assert validate_resp.json()["ok"] is True
+
+    save_resp = mcp_client.put("/api/mcp/servers/myserver", json={"env": {"API_KEY": None}})
+    assert save_resp.status_code == 200
+    assert "API_KEY" not in save_resp.json()["env_keys"]
+
+
+def test_validate_create_time_null_env_against_empty_base_is_key_absent(tmp_path, monkeypatch):
+    """A server that does not exist yet has nothing to merge onto but an
+    empty config, so a null env value there means "the key was never
+    added" -- the same outcome the merge produces for an existing server --
+    rather than the shape error a literal `None` would otherwise trip."""
+    _point_registry_at(tmp_path, monkeypatch)
+
+    result = asyncio.run(
+        mcp_mod.validate_config(
+            "brand-new",
+            {"command": "python3", "env": {"API_KEY": None}},
+            check_connection=False,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["errors"] is None
+
+
+# ---------------------------------------------------------------------------
 # A stored status belongs to the configuration it sits on -- the connection
 # check refuses to write one for a configuration it never probed, and an
 # ordinary edit must not leave one behind for a configuration it replaced.
