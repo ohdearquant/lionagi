@@ -1161,6 +1161,10 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         if not session.result:
             texts = [c.content for c in session.chunks if c.type == "text" and c.content]
             session.result = "\n".join(texts)
+        # Unconditional: the bounded activity record carries no tool inputs,
+        # so it needs no redaction and costs a few keys. The full summary,
+        # which does carry inputs, stays opt-in.
+        session.populate_activity()
         if request.cli_include_summary:
             session.populate_summary()
 

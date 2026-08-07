@@ -677,6 +677,10 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         if not session.result:
             texts = [c.text for c in session.chunks if c.text is not None]
             session.result = "\n".join(texts)
+        # Unconditional: the bounded activity record carries no tool inputs,
+        # so it needs no redaction and costs a few keys. The full summary,
+        # which does carry inputs, stays opt-in.
+        session.populate_activity()
         if request.cli_include_summary:
             session.populate_summary()
 
