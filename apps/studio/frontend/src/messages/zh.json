@@ -788,6 +788,8 @@
     },
     "history": {
       "label": "会话历史",
+      "sortRecent": "最近",
+      "sortCost": "费用最高",
       "all": "全部",
       "completed": "已完成",
       "failed": "失败",
@@ -865,6 +867,15 @@
       "completionRate": "完成率 {rate}%",
       "noTerminalRuns": "窗口内暂无已结束的运行",
       "total": "共 {count} 次",
+      "staleHint": "显示上次数据 · 刷新失败"
+    },
+    "spend": {
+      "title": "已报告支出",
+      "loading": "正在加载支出…",
+      "error": "支出不可用 · {message}",
+      "unreachable": "无法连接 API",
+      "empty": "窗口内无运行记录",
+      "coverage": "{total} 个中已报告 {reported} 个",
       "staleHint": "显示上次数据 · 刷新失败"
     },
     "stale": {

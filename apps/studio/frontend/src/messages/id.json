@@ -788,6 +788,8 @@
     },
     "history": {
       "label": "Riwayat sesi",
+      "sortRecent": "Terbaru",
+      "sortCost": "Biaya tertinggi",
       "all": "Semua",
       "completed": "Selesai",
       "failed": "Gagal",
@@ -865,6 +867,15 @@
       "completionRate": "{rate}% selesai",
       "noTerminalRuns": "Tidak ada eksekusi yang selesai dalam jendela",
       "total": "{count, plural, other {# total}}",
+      "staleHint": "menampilkan yang terakhir diketahui · penyegaran gagal"
+    },
+    "spend": {
+      "title": "Pengeluaran yang dilaporkan",
+      "loading": "Memuat pengeluaran…",
+      "error": "Pengeluaran tidak tersedia · {message}",
+      "unreachable": "API tidak terjangkau",
+      "empty": "Tidak ada run dalam jendela ini",
+      "coverage": "{reported} dari {total} dilaporkan",
       "staleHint": "menampilkan yang terakhir diketahui · penyegaran gagal"
     },
     "stale": {

@@ -16,6 +16,7 @@ from typing import Any
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.ln._json_dump import raise_if_non_finite
+from lionagi.state.session_naming import sanitize_prompt_name
 from lionagi.studio.config import MIRROR_PREVIEW_CHARS
 
 from ._logging import hint, log_error, progress, warn
@@ -349,11 +350,15 @@ def _derive_metadata(state: _FileState, events: list[dict[str, Any]]) -> None:
                 if model:
                     state.model = model
                     break
-    # Prefer the first real user prompt as the session name.
+    # Prefer the first real user prompt as the session name, sanitized so a
+    # prompt that folds in the framework's system-message banner doesn't
+    # leak it into the displayed name.
     if events and (state.name is None or state.name.startswith("Claude · ")):
         prompt = _first_prompt(events)
         if prompt:
-            state.name = prompt[:72]
+            sanitized = sanitize_prompt_name(prompt)
+            if sanitized:
+                state.name = sanitized
 
 
 def _peek_head(path: Path) -> tuple[str, str | None]:
@@ -555,7 +560,9 @@ def _derive_codex_metadata(state: _FileState, records: list[dict[str, Any]]) -> 
     if state.name is None:
         prompt = _first_codex_prompt(records)
         if prompt:
-            state.name = prompt[:72]
+            sanitized = sanitize_prompt_name(prompt)
+            if sanitized:
+                state.name = sanitized
 
 
 def _first_codex_prompt(records: list[dict[str, Any]]) -> str | None:

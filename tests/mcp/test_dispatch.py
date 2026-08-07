@@ -35,7 +35,16 @@ def spawn_op(op: str, args: dict) -> dict:
 
 @pytest.fixture
 def submitted(monkeypatch):
-    """Capture what a spawn verb hands the job engine; nothing is spawned."""
+    """Capture what a spawn verb hands the job engine; nothing is spawned.
+
+    The profile resolver is stubbed to accept any name: these tests are about
+    dispatch mechanics (positionals, cwd, prompts), not about which profile
+    files happen to exist on the machine running them — that resolution is
+    covered on its own in test_roster.py and test_admission_*.py.
+    """
+    import lionagi.cli._providers as providers
+
+    monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
     seen: dict = {}
 
     def fake_submit(kind, flags, **kwargs):

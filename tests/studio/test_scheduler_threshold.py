@@ -54,6 +54,7 @@ def _make_svc() -> AsyncMock:
     svc.count_schedule_runs = AsyncMock(return_value=0)
     svc.sum_schedule_spend = AsyncMock(return_value={"cost_usd": 0.0, "tokens": 0})
     svc.metric_value = AsyncMock(return_value=0.0)
+    svc.metric_unreported_sessions = AsyncMock(return_value=0)
     svc.get_invocation = AsyncMock(return_value=None)
     svc.compute_files_overlap = AsyncMock(return_value={"count": 0, "top": []})
     return svc
@@ -225,6 +226,43 @@ async def test_evaluate_threshold_breach_returns_breach_dict_when_over():
         "value": 42.0,
         "threshold": 10.0,
         "window_minutes": 15,
+    }
+    svc.metric_unreported_sessions.assert_awaited_once_with("total_cost_usd", 5000.0 - 15 * 60)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_threshold_breach_flags_partial_spend_when_sessions_unreported():
+    """A total_cost_usd breach whose window has unreported sessions must say so.
+
+    Regression coverage: COALESCE(SUM(total_cost_usd), 0) treats an unreported
+    session as $0, so a breach dict with no unreported_sessions/spend_is_partial
+    keys would read as a complete, trustworthy total even when it isn't.
+    """
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.metric_value = AsyncMock(return_value=42.0)
+    svc.metric_unreported_sessions = AsyncMock(return_value=3)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        threshold_config={
+            "metric": "total_cost_usd",
+            "op": "gte",
+            "value": 10.0,
+            "window_minutes": 15,
+        }
+    )
+
+    breach = await engine._evaluate_threshold_breach(schedule, now=5000.0)
+
+    assert breach == {
+        "metric": "total_cost_usd",
+        "op": "gte",
+        "value": 42.0,
+        "threshold": 10.0,
+        "window_minutes": 15,
+        "unreported_sessions": 3,
+        "spend_is_partial": True,
     }
 
 
@@ -822,6 +860,62 @@ async def test_metric_value_total_cost_usd_sums_only_in_window():
 
     total = await state.metric_value("total_cost_usd", window_start=50.0)
     assert total == pytest.approx(4.0)
+
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_metric_unreported_sessions_counts_null_cost_terminal_sessions_in_window():
+    """A terminal session in the window with NULL total_cost_usd is unreported.
+
+    Regression coverage: metric_value("total_cost_usd", ...) sums
+    COALESCE(total_cost_usd, 0), so this session's absence is invisible to
+    it -- metric_unreported_sessions is the only thing that surfaces it.
+    """
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await _make_session(state, "s1", status="completed", ended_at=100.0, total_cost_usd=1.5)
+    # s2 never got a total_cost_usd update -- terminal but unreported.
+    await state.create_progression("prog-s2")
+    await state.create_session(
+        {
+            "id": "s2",
+            "progression_id": "prog-s2",
+            "status": "completed",
+            "started_at": 99.0,
+            "ended_at": 110.0,
+        }
+    )
+    # s3-running: unreported cost is expected mid-flight, not a gap.
+    await state.create_progression("prog-s3")
+    await state.create_session(
+        {
+            "id": "s3-running",
+            "progression_id": "prog-s3",
+            "status": "running",
+            "started_at": 105.0,
+        }
+    )
+    # s4-before-window: unreported but outside the window.
+    await state.create_progression("prog-s4")
+    await state.create_session(
+        {
+            "id": "s4-before-window",
+            "progression_id": "prog-s4",
+            "status": "completed",
+            "started_at": 9.0,
+            "ended_at": 10.0,
+        }
+    )
+
+    unreported = await state.metric_unreported_sessions("total_cost_usd", window_start=50.0)
+    assert unreported == 1
+
+    other_metric = await state.metric_unreported_sessions("failed_sessions", window_start=50.0)
+    assert other_metric == 0
 
     await state.close()
 
