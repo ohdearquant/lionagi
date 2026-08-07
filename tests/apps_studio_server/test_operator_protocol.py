@@ -1033,6 +1033,75 @@ async def test_application_mcp_resume_run_delegates_flow_kind_to_checkpoint_repl
     await coordinator.shutdown()
 
 
+async def test_application_mcp_resume_run_rejects_instruction_for_flow_kind_before_proposal(
+    tmp_path, monkeypatch
+):
+    """A flow-kind run supplied an instruction must never produce an
+    approvable proposal describing a replay-with-instruction: the real
+    dispatcher (`run_resume.py::_dispatch_resume_by_kind`) rejects an
+    instruction for a checkpoint-replay kind, so offering that as an
+    approvable action would let a human approve something the executor was
+    always going to refuse. No proposal may be created at all -- the
+    mismatch must be caught before `store.create_proposal`, not surfaced as
+    a later execution failure."""
+    import uuid
+
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.resume_run import resume_run
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    run_id = str(uuid.uuid4())
+    async with StateDB() as db:
+        progression_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "progression_id": progression_id,
+                "status": "completed",
+                "started_at": time.time(),
+                "invocation_kind": "flow",
+                "project": "studio-test-project",
+            }
+        )
+
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="continue that run",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "studio-test-project",
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    result = await asyncio.wait_for(
+        resume_run({"run": run_id, "instruction": "keep going with step two"}), timeout=2
+    )
+
+    assert result["resumed"] is False
+    assert result["reason"] == "invalid_input"
+    assert result["id"] == run_id
+    assert "instruction" in result["message"]
+
+    proposals = await store.list_proposals_for_request(accepted["requestId"])
+    assert proposals == []
+
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+    await coordinator.shutdown()
+
+
 async def _noop() -> None:
     return None
 
