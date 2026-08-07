@@ -553,8 +553,10 @@
         "failing": "ناکام",
         "overdue": "تاخیر شدہ",
         "neverFired": "کبھی نہیں چلی",
+        "noEvidence": "کوئی ثبوت نہیں",
         "lastOutcome": "آخری بار {outcome} {delta} پہلے",
-        "neverFiredSince": "{date} سے کبھی نہیں چلی"
+        "neverFiredSince": "{date} سے کبھی نہیں چلی",
+        "noEvidenceHint": "کوئی عملدرآمد ریکارڈ نہیں"
       }
     },
     "run": {

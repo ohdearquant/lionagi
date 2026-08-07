@@ -553,8 +553,10 @@
         "failing": "실패",
         "overdue": "지연",
         "neverFired": "실행된 적 없음",
+        "noEvidence": "증거 없음",
         "lastOutcome": "{delta} 전 {outcome}",
-        "neverFiredSince": "{date}부터 실행된 적 없음"
+        "neverFiredSince": "{date}부터 실행된 적 없음",
+        "noEvidenceHint": "실행 기록 없음"
       }
     },
     "run": {

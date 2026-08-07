@@ -553,8 +553,10 @@
         "failing": "Başarısız",
         "overdue": "Gecikmiş",
         "neverFired": "Hiç çalışmadı",
+        "noEvidence": "Kanıt yok",
         "lastOutcome": "son {outcome} {delta} önce",
-        "neverFiredSince": "{date} tarihinden beri hiç çalışmadı"
+        "neverFiredSince": "{date} tarihinden beri hiç çalışmadı",
+        "noEvidenceHint": "kaydedilmiş çalıştırma yok"
       }
     },
     "run": {

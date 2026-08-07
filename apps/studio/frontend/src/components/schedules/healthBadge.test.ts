@@ -53,6 +53,11 @@ describe("scheduleHealthBadge", () => {
     expect(scheduleHealthBadge(s)).toEqual({ kind: "never-fired", sinceMs: 1_700_000_000_000 });
   });
 
+  it("carries no timestamp for no-evidence — retention/bounds prevent proving anything, not a known since", () => {
+    const s = schedule({ health_state: "no-evidence", health_since: 1_700_000_000 });
+    expect(scheduleHealthBadge(s)).toEqual({ kind: "no-evidence" });
+  });
+
   it("carries last outcome + when for healthy", () => {
     const s = schedule({
       health_state: "healthy",

@@ -26,4 +26,8 @@ describe("ScheduleCards — health badge wiring", () => {
   it("never-fired and disabled never render as a healthy-looking color", () => {
     expect(SRC).toMatch(/never-fired.*:\s*"var\(--content-muted\)"/);
   });
+
+  it("no-evidence never renders as a healthy-looking color", () => {
+    expect(SRC).toMatch(/"no-evidence":\s*"var\(--content-muted\)"/);
+  });
 });

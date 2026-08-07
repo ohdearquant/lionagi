@@ -553,8 +553,10 @@
         "failing": "فاشل",
         "overdue": "متأخر",
         "neverFired": "لم يعمل مطلقًا",
+        "noEvidence": "لا يوجد دليل",
         "lastOutcome": "آخر {outcome} منذ {delta}",
-        "neverFiredSince": "لم يعمل مطلقًا منذ {date}"
+        "neverFiredSince": "لم يعمل مطلقًا منذ {date}",
+        "noEvidenceHint": "لا يوجد تنفيذ مسجل"
       }
     },
     "run": {

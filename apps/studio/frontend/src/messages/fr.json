@@ -553,8 +553,10 @@
         "failing": "En échec",
         "overdue": "En retard",
         "neverFired": "Jamais exécutée",
+        "noEvidence": "Aucune preuve",
         "lastOutcome": "dernière fois {outcome} il y a {delta}",
-        "neverFiredSince": "jamais exécutée depuis {date}"
+        "neverFiredSince": "jamais exécutée depuis {date}",
+        "noEvidenceHint": "aucune exécution enregistrée"
       }
     },
     "run": {

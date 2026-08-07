@@ -75,18 +75,26 @@ function NextFire({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: numbe
   );
 }
 
-const HEALTH_COLOR: Record<"healthy" | "failing" | "overdue" | "never-fired", string> = {
+const HEALTH_COLOR: Record<
+  "healthy" | "failing" | "overdue" | "never-fired" | "no-evidence",
+  string
+> = {
   healthy: "var(--content-secondary)",
   failing: "var(--status-warning)",
   overdue: "var(--status-warning)",
   "never-fired": "var(--content-muted)",
+  "no-evidence": "var(--content-muted)",
 };
 
-const HEALTH_LABEL_KEY: Record<"healthy" | "failing" | "overdue" | "never-fired", string> = {
+const HEALTH_LABEL_KEY: Record<
+  "healthy" | "failing" | "overdue" | "never-fired" | "no-evidence",
+  string
+> = {
   healthy: "healthy",
   failing: "failing",
   overdue: "overdue",
   "never-fired": "neverFired",
+  "no-evidence": "noEvidence",
 };
 
 /**
@@ -113,6 +121,8 @@ function HealthBadge({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: nu
       year: "numeric",
     });
     evidence = t("neverFiredSince", { date });
+  } else if (badge.kind === "no-evidence") {
+    evidence = t("noEvidenceHint");
   } else if (badge.outcome && badge.outcomeAtMs != null) {
     const outcome = KNOWN_RUN_STATUSES.has(badge.outcome)
       ? tStatus(badge.outcome as Parameters<typeof tStatus>[0])

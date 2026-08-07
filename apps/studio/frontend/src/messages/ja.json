@@ -553,8 +553,10 @@
         "failing": "失敗",
         "overdue": "遅延",
         "neverFired": "一度も実行されていません",
+        "noEvidence": "証拠なし",
         "lastOutcome": "{delta}前に{outcome}",
-        "neverFiredSince": "{date}以降一度も実行されていません"
+        "neverFiredSince": "{date}以降一度も実行されていません",
+        "noEvidenceHint": "実行記録なし"
       }
     },
     "run": {

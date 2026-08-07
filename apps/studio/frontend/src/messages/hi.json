@@ -553,8 +553,10 @@
         "failing": "विफल",
         "overdue": "लंबित",
         "neverFired": "कभी नहीं चली",
+        "noEvidence": "कोई प्रमाण नहीं",
         "lastOutcome": "पिछली बार {outcome} {delta} पहले",
-        "neverFiredSince": "{date} से कभी नहीं चली"
+        "neverFiredSince": "{date} से कभी नहीं चली",
+        "noEvidenceHint": "कोई निष्पादन दर्ज नहीं"
       }
     },
     "run": {

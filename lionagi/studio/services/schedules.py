@@ -413,17 +413,23 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
 _HEALTH_OVERDUE_MULTIPLIER = 3
 _HEALTH_OVERDUE_GRACE_FLOOR_SEC = 300  # 5 minutes
 
+# Failing contract: the single latest executed run's outcome is enough to
+# call a schedule failing -- N=1, deliberately. This is a demo-facing badge;
+# one failed run is worth a glance, not something to smooth over by waiting
+# for a streak to build. A newer execution that isn't failed/timed_out resets
+# straight back to healthy, since only the latest execution is evaluated.
+_HEALTH_FAILING_THRESHOLD = 1
+_HEALTH_FAILING_OUTCOMES = ("failed", "timed_out")
+
 
 def _schedule_cadence_seconds(row: dict[str, Any]) -> float | None:
-    trigger_type = row.get("trigger_type")
-    if trigger_type == "interval":
-        return row.get("interval_sec")
-    if trigger_type == "github_poll":
-        # Matches the scheduler's own poll fallback when poll_interval_sec is unset.
-        return row.get("poll_interval_sec") or 300
-    # cron/at cadence isn't a fixed period; overdue detection is skipped for
-    # them rather than guessed from next_fire_at.
-    return None
+    # Shares the scheduler's own cadence resolution rather than retyping its
+    # fallback chain -- cron/at have no fixed period and resolve to None,
+    # which skips overdue detection for them rather than guessing from
+    # next_fire_at.
+    from ..scheduler.engine import resolve_schedule_cadence_seconds
+
+    return resolve_schedule_cadence_seconds(row)
 
 
 def compute_schedule_health(
@@ -431,18 +437,25 @@ def compute_schedule_health(
 ) -> dict[str, Any]:
     """Derive a read-only health verdict for one schedule.
 
-    States: disabled (not enabled), never-fired (enabled, no row has ever
-    actually executed), overdue (enabled, cadence known, and no execution
-    evidence within grace of the expected cadence), failing (last executed
-    outcome was failed/timed_out), healthy (otherwise).
+    States: disabled (not enabled), never-fired (enabled, zero schedule_runs
+    rows recorded at all -- the closest thing to a confident "never ran"
+    this table can support), no-evidence (enabled, rows are recorded but
+    none of them are execution evidence -- e.g. a skip/queue-only history,
+    or genuine evidence that retention has since pruned away; this table
+    cannot tell those apart, so it reports "cannot tell" rather than
+    guessing either way), overdue (enabled, cadence known, and no execution
+    evidence within grace of the expected cadence), failing (the single
+    latest executed run's outcome was failed/timed_out -- see
+    _HEALTH_FAILING_THRESHOLD), healthy (otherwise).
     """
     last_executed_at = evidence.get("last_executed_run_at")
     last_executed_status = evidence.get("last_executed_status")
+    last_recorded_at = evidence.get("last_recorded_run_at")
 
     if not row.get("enabled"):
         state = "disabled"
     elif last_executed_at is None:
-        state = "never-fired"
+        state = "never-fired" if last_recorded_at is None else "no-evidence"
     else:
         cadence_seconds = _schedule_cadence_seconds(row)
         overdue = (
@@ -458,7 +471,7 @@ def compute_schedule_health(
         )
         if overdue:
             state = "overdue"
-        elif last_executed_status in ("failed", "timed_out"):
+        elif last_executed_status in _HEALTH_FAILING_OUTCOMES:
             state = "failing"
         else:
             state = "healthy"

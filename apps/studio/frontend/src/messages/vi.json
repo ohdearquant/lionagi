@@ -553,8 +553,10 @@
         "failing": "Thất bại",
         "overdue": "Quá hạn",
         "neverFired": "Chưa từng chạy",
+        "noEvidence": "Không có bằng chứng",
         "lastOutcome": "lần cuối {outcome} {delta} trước",
-        "neverFiredSince": "chưa từng chạy kể từ {date}"
+        "neverFiredSince": "chưa từng chạy kể từ {date}",
+        "noEvidenceHint": "không có lần chạy nào được ghi nhận"
       }
     },
     "run": {

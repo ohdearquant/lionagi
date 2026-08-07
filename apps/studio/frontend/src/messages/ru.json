@@ -553,8 +553,10 @@
         "failing": "Сбой",
         "overdue": "Просрочено",
         "neverFired": "Никогда не запускался",
+        "noEvidence": "Нет данных",
         "lastOutcome": "последний раз {outcome} {delta} назад",
-        "neverFiredSince": "никогда не запускался с {date}"
+        "neverFiredSince": "никогда не запускался с {date}",
+        "noEvidenceHint": "выполнение не зафиксировано"
       }
     },
     "run": {

@@ -553,8 +553,10 @@
         "failing": "失败",
         "overdue": "逾期",
         "neverFired": "从未运行",
+        "noEvidence": "无证据",
         "lastOutcome": "{delta}前{outcome}",
-        "neverFiredSince": "自 {date} 起从未运行"
+        "neverFiredSince": "自 {date} 起从未运行",
+        "noEvidenceHint": "未记录任何执行"
       }
     },
     "run": {

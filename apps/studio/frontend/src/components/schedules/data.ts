@@ -188,13 +188,17 @@ export function sortSchedulesForCards(schedules: ScheduleSummary[]): ScheduleSum
 export type HealthBadgeState =
   | { kind: "hidden" }
   | { kind: "healthy" | "failing" | "overdue"; outcome: string | null; outcomeAtMs: number | null }
-  | { kind: "never-fired"; sinceMs: number };
+  | { kind: "never-fired"; sinceMs: number }
+  | { kind: "no-evidence" };
 
 export function scheduleHealthBadge(s: ScheduleSummary): HealthBadgeState {
   const state = s.health_state;
   if (!state || state === "disabled") return { kind: "hidden" };
   if (state === "never-fired") {
     return { kind: "never-fired", sinceMs: toMs(s.health_since ?? 0) };
+  }
+  if (state === "no-evidence") {
+    return { kind: "no-evidence" };
   }
   return {
     kind: state,

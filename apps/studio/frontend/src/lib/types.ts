@@ -393,7 +393,7 @@ export interface ScheduleSummary {
   last_status?: string | null;
   /** Server-computed verdict from cadence + recorded schedule_runs, never
    * from next_fire_at (a promise, not evidence). */
-  health_state?: "healthy" | "failing" | "overdue" | "never-fired" | "disabled";
+  health_state?: "healthy" | "failing" | "overdue" | "never-fired" | "no-evidence" | "disabled";
   health_last_outcome?: string | null;
   health_last_outcome_at?: number | null;
   health_since?: number;

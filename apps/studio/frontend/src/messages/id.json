@@ -553,8 +553,10 @@
         "failing": "Gagal",
         "overdue": "Terlambat",
         "neverFired": "Belum pernah berjalan",
+        "noEvidence": "Tidak ada bukti",
         "lastOutcome": "terakhir {outcome} {delta} lalu",
-        "neverFiredSince": "belum pernah berjalan sejak {date}"
+        "neverFiredSince": "belum pernah berjalan sejak {date}",
+        "noEvidenceHint": "tidak ada eksekusi tercatat"
       }
     },
     "run": {

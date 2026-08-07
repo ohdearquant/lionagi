@@ -553,8 +553,10 @@
         "failing": "Failing",
         "overdue": "Overdue",
         "neverFired": "Never fired",
+        "noEvidence": "No evidence",
         "lastOutcome": "last {outcome} {delta} ago",
-        "neverFiredSince": "never fired since {date}"
+        "neverFiredSince": "never fired since {date}",
+        "noEvidenceHint": "no execution recorded"
       }
     },
     "run": {

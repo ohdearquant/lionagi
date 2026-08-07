@@ -225,6 +225,24 @@ def resolve_schedule_timezone(schedule: dict) -> ScheduleTimezone:
         return ScheduleTimezone("UTC", TZ_SOURCE_UTC_UNLOADABLE_NAME, ZoneInfo("UTC"))
 
 
+def resolve_schedule_cadence_seconds(schedule: dict) -> float | None:
+    """Fixed-period cadence *schedule* fires on, or ``None`` if it has none.
+
+    ``interval`` cadence is ``interval_sec`` as declared, with no fallback.
+    ``github_poll`` falls back to ``interval_sec`` and then a 300s default
+    when ``poll_interval_sec`` is unset -- this must stay the single source
+    of that fallback chain, since both the tick loop that decides whether a
+    poll is due and any reader estimating a schedule's health need the same
+    answer. ``cron``/``at`` have no fixed period and resolve to ``None``.
+    """
+    trigger_type = schedule.get("trigger_type")
+    if trigger_type == "interval":
+        return schedule.get("interval_sec")
+    if trigger_type == "github_poll":
+        return schedule.get("poll_interval_sec") or schedule.get("interval_sec") or 300
+    return None
+
+
 class SchedulerCwdInheritRefusedError(RuntimeError):
     """A schedule carrying an explicit execution root could not resolve any of
     its configured directories, so the resolver refused to inherit the
@@ -1034,7 +1052,7 @@ class SchedulerEngine:
             await _worker.worker_tick(db, worker_id=self._task_worker_id, now=now)
 
     async def _tick_github(self, schedule: dict, now: float) -> None:
-        poll_interval = schedule.get("poll_interval_sec") or schedule.get("interval_sec") or 300
+        poll_interval = resolve_schedule_cadence_seconds(schedule)
         last = schedule.get("last_fired_at") or 0
         if now - last < poll_interval:
             return
@@ -2685,14 +2703,11 @@ class SchedulerEngine:
             except Exception:
                 _log.exception("Invalid cron expression: %s", expr)
                 return None
-        elif schedule["trigger_type"] == "interval":
-            interval = schedule.get("interval_sec")
-            if not interval:
+        elif schedule["trigger_type"] in ("interval", "github_poll"):
+            cadence = resolve_schedule_cadence_seconds(schedule)
+            if not cadence:
                 return None
-            return ref_time + interval
-        elif schedule["trigger_type"] == "github_poll":
-            poll = schedule.get("poll_interval_sec") or schedule.get("interval_sec") or 300
-            return ref_time + poll
+            return ref_time + cadence
         elif schedule["trigger_type"] == "at":
             # A point-in-time trigger fires exactly once -- there is no next
             # occurrence to compute. Callers use _next_fire_field() to turn

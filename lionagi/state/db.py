@@ -221,6 +221,13 @@ def state_db_known_absent() -> bool:
 # explicitly with ("running", *TERMINAL_RUN_STATUSES).
 TERMINAL_RUN_STATUSES: tuple[str, ...] = ("completed", "failed", "cancelled", "timed_out")
 
+# Lifecycle states that count as "a run actually executed", for health/evidence
+# reads that must not mistake a pending row for proof anything happened.
+# 'running' is included even though it isn't terminal -- it has started.
+# 'queued', 'waiting_dependency' and 'retry_wait' (ADR-0071's durable queue)
+# are pending, not evidence, exactly like 'skipped' already was.
+EXECUTED_RUN_STATUSES: tuple[str, ...] = ("running", *TERMINAL_RUN_STATUSES)
+
 _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin", "system"})
 
 _SESSION_COLUMNS = frozenset(
@@ -3945,42 +3952,57 @@ class StateDB:
     async def schedule_health_evidence(self, schedule_ids: list[str]) -> dict[str, dict[str, Any]]:
         """Batched read of the run evidence a health verdict needs.
 
+        Two independent top-1-per-schedule reads, each filtering to the rows
+        that qualify *before* ranking them -- ranking an unfiltered window
+        and then filtering inside it (the previous shape) can push a real
+        execution out of the window entirely once enough non-qualifying rows
+        pile up in front of it, which silently manufactures "never
+        happened" out of "didn't fit in the slice".
+
         A 'recorded' row is any top-level (chain_depth=0) schedule_runs row,
-        including 'skipped'. An 'executed' row excludes 'skipped' -- a missed-
-        fire or overlap skip moves the cursor but nothing ran, so it must not
-        stand in for real evidence when deciding whether a schedule is silent.
+        in any status -- proof the schedule's cursor has moved at least
+        once, whether or not anything actually ran. An 'executed' row is
+        further restricted to :data:`EXECUTED_RUN_STATUSES` (started or
+        terminal) -- 'skipped', 'queued', 'waiting_dependency' and
+        'retry_wait' move the cursor, or sit waiting to, without a run
+        happening, so none of them may stand in for real evidence.
         """
         if not schedule_ids:
             return {}
         id_placeholders = ", ".join(f":id{i}" for i in range(len(schedule_ids)))
-        params = {f"id{i}": sid for i, sid in enumerate(schedule_ids)}
-        query = (
-            "SELECT schedule_id, status, fired_at FROM ("  # noqa: S608
-            "  SELECT schedule_id, status, fired_at,"
-            "         ROW_NUMBER() OVER ("
-            "           PARTITION BY schedule_id ORDER BY fired_at DESC, id DESC"
-            "         ) AS rn"
-            f"  FROM schedule_runs WHERE schedule_id IN ({id_placeholders}) AND chain_depth = 0"
-            ") ranked WHERE rn <= 50 ORDER BY schedule_id, rn"
-        )
+        params: dict[str, Any] = {f"id{i}": sid for i, sid in enumerate(schedule_ids)}
+
+        def _latest_per_schedule(extra_where: str) -> str:
+            return (
+                "SELECT schedule_id, status, fired_at FROM ("  # noqa: S608
+                "  SELECT schedule_id, status, fired_at,"
+                "         ROW_NUMBER() OVER ("
+                "           PARTITION BY schedule_id ORDER BY fired_at DESC, id DESC"
+                "         ) AS rn"
+                f"  FROM schedule_runs WHERE schedule_id IN ({id_placeholders})"
+                f"    AND chain_depth = 0{extra_where}"
+                ") ranked WHERE rn = 1"
+            )
+
+        executed_placeholders = ", ".join(f":exec{i}" for i in range(len(EXECUTED_RUN_STATUSES)))
+        executed_params = dict(params)
+        executed_params.update({f"exec{i}": s for i, s in enumerate(EXECUTED_RUN_STATUSES)})
+
+        recorded_query = _latest_per_schedule("")
+        executed_query = _latest_per_schedule(f" AND status IN ({executed_placeholders})")
+
         async with self._read() as conn:
-            rows = (await conn.execute(text(query), params)).mappings().all()
-        grouped: dict[str, list[Any]] = {}
-        for row in rows:
-            grouped.setdefault(row["schedule_id"], []).append(row)
+            recorded_rows = (await conn.execute(text(recorded_query), params)).mappings().all()
+            executed_rows = (
+                (await conn.execute(text(executed_query), executed_params)).mappings().all()
+            )
+        last_recorded = {r["schedule_id"]: r["fired_at"] for r in recorded_rows}
+        last_executed = {r["schedule_id"]: r for r in executed_rows}
         result: dict[str, dict[str, Any]] = {}
         for sid in schedule_ids:
-            ranked = grouped.get(sid)
-            if not ranked:
-                result[sid] = {
-                    "last_recorded_run_at": None,
-                    "last_executed_status": None,
-                    "last_executed_run_at": None,
-                }
-                continue
-            executed = next((r for r in ranked if r["status"] != "skipped"), None)
+            executed = last_executed.get(sid)
             result[sid] = {
-                "last_recorded_run_at": ranked[0]["fired_at"],
+                "last_recorded_run_at": last_recorded.get(sid),
                 "last_executed_status": executed["status"] if executed else None,
                 "last_executed_run_at": executed["fired_at"] if executed else None,
             }
