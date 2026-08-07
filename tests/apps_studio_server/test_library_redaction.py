@@ -568,6 +568,51 @@ def test_plugin_detail_route_redacts_nested_agents_and_path(tmp_path, monkeypatc
 
 
 # ---------------------------------------------------------------------------
+# /api/plugins (the list route) builds each entry from the same summary the
+# detail route abbreviates -- it must agree with /api/plugins/{name} instead
+# of shipping the unabridged on-disk path one route over.
+# ---------------------------------------------------------------------------
+
+
+def test_plugin_list_route_redacts_path_matching_detail_route(tmp_path, monkeypatch):
+    import lionagi.studio.services.plugins as plugins_mod
+
+    client, _agents_dir = _make_redaction_client(tmp_path, monkeypatch)
+
+    plugin_dir = tmp_path / "fakeplugin4"
+    plugin_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        plugins_mod,
+        "_iter_marketplace_plugins",
+        lambda: [(plugin_dir, "fakeplugin4", "a fake plugin")],
+    )
+    monkeypatch.setattr(plugins_mod, "_iter_thirdparty_plugins", lambda: [])
+    monkeypatch.setattr(plugins_mod, "public_path", lambda p, **kw: f"marketplace/{p.name}/nested")
+
+    # Must-MATCH arm: with the switch off, the list route serves the full path.
+    normal = client.get("/api/plugins")
+    assert normal.status_code == 200, normal.text
+    normal_entry = next(p for p in normal.json()["plugins"] if p["name"] == "fakeplugin4")
+    assert normal_entry["path"] == "marketplace/fakeplugin4/nested"
+    assert normal_entry["agent_count"] == 0
+
+    # Must-NOT-match arm: with the switch on, the list route abbreviates the
+    # path the same way the detail route already does.
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    redacted = client.get("/api/plugins")
+    assert redacted.status_code == 200, redacted.text
+    redacted_entry = next(p for p in redacted.json()["plugins"] if p["name"] == "fakeplugin4")
+    assert redacted_entry["path"] == "nested"
+    # Topology fields are untouched -- this route never leaked agent content,
+    # only the filesystem path.
+    assert redacted_entry["agent_count"] == 0
+
+    detail = client.get("/api/plugins/fakeplugin4")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["path"] == redacted_entry["path"]
+
+
+# ---------------------------------------------------------------------------
 # A scalar-shaped safe key's guard is only as good as the value it inspects.
 # list_agents()/get_agent() used to str()-coerce provider/model *before* the
 # classification table saw them, so a nested mapping smuggled in under

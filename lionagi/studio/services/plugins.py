@@ -92,8 +92,16 @@ def _plugin_summary(
     name: str,
     description: str,
     source: str,
+    *,
+    redact: bool = False,
 ) -> dict[str, Any]:
-    """Build the summary dict for list_plugins() from a plugin directory."""
+    """Build the summary dict shared by list_plugins() and get_plugin().
+
+    ``redact=True`` abbreviates ``path`` to a bare filename, the same
+    projection the detail route applies -- callers of this summary (the list
+    route and the detail route) must agree on it rather than each deciding
+    independently.
+    """
     plugin_json = _read_json(plugin_dir / ".claude-plugin" / "plugin.json") or {}
     skills = _scan_skills(plugin_dir)
     agents = _scan_agents(plugin_dir)
@@ -101,6 +109,10 @@ def _plugin_summary(
     has_mcp = (plugin_dir / ".mcp.json").exists()
     if not has_mcp and plugin_json.get("mcpServers"):
         has_mcp = True
+
+    path = public_path(plugin_dir)
+    if redact and path:
+        path = abbreviate_path(path)
 
     return {
         "name": str(plugin_json.get("name") or name),
@@ -111,7 +123,7 @@ def _plugin_summary(
         "agent_count": len(agents),
         "has_hooks": has_hooks,
         "has_mcp": has_mcp,
-        "path": public_path(plugin_dir),
+        "path": path,
     }
 
 
@@ -131,7 +143,7 @@ def _plugin_detail(
     otherwise returns those agents' descriptions and the on-disk path
     unfiltered, mirroring content a sibling route already redacts.
     """
-    summary = _plugin_summary(plugin_dir, name, description, source)
+    summary = _plugin_summary(plugin_dir, name, description, source, redact=redact)
     skills = _scan_skills(plugin_dir)
     agents = _scan_agents(plugin_dir)
 
@@ -154,9 +166,6 @@ def _plugin_detail(
             pass
 
     if redact:
-        summary = dict(summary)
-        if summary.get("path"):
-            summary["path"] = abbreviate_path(summary["path"])
         agents = [project_agent_fields(a, redact=True) for a in agents]
 
     return {
@@ -246,15 +255,15 @@ def _iter_thirdparty_plugins() -> list[tuple[Path, str, str, str]]:
     return results
 
 
-def list_plugins() -> list[dict[str, Any]]:
+def list_plugins(*, redact: bool = False) -> list[dict[str, Any]]:
     """Scan marketplace/ and ~/.claude/plugins/cache/ for installed plugins."""
     out: list[dict[str, Any]] = []
 
     for plugin_dir, name, desc in _iter_marketplace_plugins():
-        out.append(_plugin_summary(plugin_dir, name, desc, "marketplace"))
+        out.append(_plugin_summary(plugin_dir, name, desc, "marketplace", redact=redact))
 
     for plugin_dir, name, desc, mp_name in _iter_thirdparty_plugins():
-        out.append(_plugin_summary(plugin_dir, name, desc, mp_name))
+        out.append(_plugin_summary(plugin_dir, name, desc, mp_name, redact=redact))
 
     return out
 
@@ -340,7 +349,7 @@ def get_plugin_agent(plugin_name: str, agent_name: str) -> dict[str, Any] | None
 
 @studio_route("/plugins", method="GET", area="plugins")
 async def list_plugins_endpoint() -> dict[str, Any]:
-    plugins = await anyio.to_thread.run_sync(list_plugins)
+    plugins = await anyio.to_thread.run_sync(partial(list_plugins, redact=demo_mode_enabled()))
     return {"plugins": plugins}
 
 
