@@ -628,6 +628,53 @@ def _run_import_trace(seed_name: str, timeout: float = 20.0) -> dict[str, Any]:
         }
 
 
+_COMPAT_TRACE_SCRIPT = (
+    "import sys, json, importlib, warnings\n"
+    "name = sys.argv[1]\n"
+    "try:\n"
+    "    with warnings.catch_warnings(record=True) as w:\n"
+    "        warnings.simplefilter('always')\n"
+    "        mod = importlib.import_module(name)\n"
+    "        result = {\n"
+    "            'ok': True,\n"
+    "            'dir': sorted(n for n in dir(mod) if not n.startswith('_')),\n"
+    "            'warning_categories': sorted({wi.category.__name__ for wi in w}),\n"
+    "        }\n"
+    "except Exception as e:\n"
+    "    result = {'ok': False, 'error': f'{type(e).__name__}: {e}'}\n"
+    "print(json.dumps(result))\n"
+)
+
+
+def _run_compat_trace(module_name: str, timeout: float = 20.0) -> dict[str, Any]:
+    """Import *module_name* alone in a fresh subprocess and report its public
+    ``dir()``. A compat module's own ``__init__.py`` declares its intended
+    re-exports, but Python also binds any submodule onto its parent package's
+    namespace the moment *anything* imports that submodule dotted-path --
+    including unrelated code elsewhere in the process (e.g. a lazy import
+    inside a different module). In-process capture would pick up whichever of
+    those happened to run first in this pytest worker, making the result
+    depend on suite composition rather than the compat module's own surface.
+    A fresh subprocess with a declared import set (only *module_name* itself)
+    removes that dependency."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _COMPAT_TRACE_SCRIPT, module_name],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if proc.returncode != 0:
+        return {"ok": False, "error": f"exit {proc.returncode}: {proc.stderr.strip()[-2000:]}"}
+    try:
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as e:
+        return {
+            "ok": False,
+            "error": f"unparseable output: {e}: stdout={proc.stdout!r} stderr={proc.stderr!r}",
+        }
+
+
 def capture_import_laziness() -> dict[str, Any]:
     """Fresh-process ``sys.modules`` traces proving selected-only CLI loading.
 
@@ -661,9 +708,6 @@ COMPAT_MODULES: tuple[str, ...] = (
 
 
 def capture_imports() -> dict[str, Any]:
-    import importlib
-    import warnings
-
     import lionagi
 
     root_all = list(lionagi.__all__)
@@ -682,19 +726,7 @@ def capture_imports() -> dict[str, Any]:
     lazy_map = getattr(lionagi, "_LAZY_MAP", None) or {}
     lazy_map_keys = sorted(lazy_map.keys())
 
-    compat: dict[str, Any] = {}
-    for m in COMPAT_MODULES:
-        try:
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                mod = importlib.import_module(m)
-                compat[m] = {
-                    "ok": True,
-                    "dir": sorted(n for n in dir(mod) if not n.startswith("_")),
-                    "warning_categories": sorted({wi.category.__name__ for wi in w}),
-                }
-        except Exception as e:  # noqa: BLE001
-            compat[m] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    compat: dict[str, Any] = {m: _run_compat_trace(m) for m in COMPAT_MODULES}
 
     return {
         "root_all": sorted(root_all),
