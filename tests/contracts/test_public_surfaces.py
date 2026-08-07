@@ -30,6 +30,8 @@ Waiver:
 
 from __future__ import annotations
 
+import argparse
+import ast
 import json
 import re
 import sys
@@ -525,3 +527,145 @@ def test_new_case_becomes_committable_only_via_declaration(monkeypatch):
     assert new_argv not in _volatile_argv_for("specialized")
     cases = [{"argv": list(new_argv), "stdout": "literal reviewed output", "stderr": ""}]
     assert _unredacted_fields("specialized", cases) == []
+
+
+# ── Token-level check on committable streams ─────────────────────────────
+#
+# A case-level committable declaration means a human read that command's
+# output once and judged it safe. That judgment decays: the SAME command can
+# grow a host-shaped token in its output later (a new flag whose default
+# reads an env var, a dependency bump that changes an error message) without
+# ever leaving the allowlist, so nothing above would catch it. This check
+# re-verifies every committable case's CURRENT captured content, token by
+# token, against a vocabulary derived from the repo's own CLI/MCP source
+# (plus the Python argparse stdlib, whose boilerplate -- "usage:", "show
+# this help message and exit" -- these commands' output is partly built
+# from) and a small closed-class set of English function words. A token
+# that cannot be traced to either source is rejected: that is exactly the
+# shape a leaked identifier, hostname, or internal label would take.
+_WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
+
+# Closed-class grammar words: articles, prepositions, conjunctions. This is
+# the only hand-typed piece of the token rule, deliberately small and
+# closed -- it does not grow with the CLI surface the way command/option
+# vocabulary does, so (unlike a hand-typed noun list) it does not rot.
+_ENGLISH_FUNCTION_WORDS = frozenset(
+    """
+    a an the this that these those is are was were be been being to of in
+    on at for and or nor not no if then else than as by from into onto
+    with without via before after above below over under between
+    """.split()
+)
+
+
+def _repo_cli_vocabulary() -> frozenset[str]:
+    """Lowercased word-tokens from every string literal in: the Python
+    argparse stdlib module (the source of the "usage:" / "positional
+    arguments:" / "show this help message and exit" boilerplate every
+    argparse-backed case's output is partly made of), this repo's own
+    CLI/MCP/studio source tree, and this suite's own capture harness
+    (tests/contracts/_capture.py -- the source of literal argv values like
+    "bogus-unknown-command" and "capture-test" that get echoed back into
+    some error messages). Derived at test time from the current tree, not
+    pinned to a snapshot, so it tracks the CLI surface instead of rotting
+    against it -- this is the "repo's own tracked CLI vocabulary" the round
+    3 brief asks for, not a hand-typed word list.
+    """
+    roots = [
+        Path(argparse.__file__),
+        _capture.REPO_ROOT / "lionagi" / "cli",
+        _capture.REPO_ROOT / "lionagi" / "studio",
+        _capture.REPO_ROOT / "lionagi" / "mcp",
+        _capture.REPO_ROOT / "lionagi" / "casts" / "surfaces.py",
+        _capture.REPO_ROOT / "lionagi" / "_auto.py",
+        Path(__file__).resolve().parent / "_capture.py",
+    ]
+    files: set[Path] = set()
+    for root in roots:
+        if root.is_file():
+            files.add(root)
+        elif root.is_dir():
+            files.update(root.rglob("*.py"))
+
+    words: set[str] = set()
+    for path in files:
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                words.update(m.group(0).lower() for m in _WORD_RE.finditer(node.value))
+    return frozenset(words)
+
+
+def _unrecognized_tokens(text: str, vocabulary: frozenset[str]) -> list[str]:
+    """Word-tokens (length >= 2) in *text* that are neither repo-tracked CLI
+    vocabulary nor a closed-class English function word. Tokens of length 1
+    (single option-letter fragments, duration-unit suffixes like the "m" in
+    "15m") and non-alphabetic runs (numbers, version strings, UUIDs, paths --
+    already covered by test_fixtures_carry_no_host_specific_state and the
+    _VOLATILE_ARGV redaction requirement) are out of scope for this check by
+    construction: _WORD_RE only matches letter runs."""
+    allowed = vocabulary | _ENGLISH_FUNCTION_WORDS
+    offenders = []
+    for match in _WORD_RE.finditer(text):
+        token = match.group(0).lower()
+        if len(token) < 2:
+            continue
+        if token not in allowed:
+            offenders.append(token)
+    return offenders
+
+
+def test_repo_cli_vocabulary_is_not_vacuous():
+    """Positive control: the vocabulary derivation actually finds words, and
+    finds ones we know must be there (both argparse-stdlib boilerplate and
+    this repo's own CLI vocabulary) -- so an empty offenders list from the
+    checks below means "nothing unrecognized", not "the scan is broken"."""
+    vocabulary = _repo_cli_vocabulary()
+    assert len(vocabulary) > 500
+    assert "usage" in vocabulary  # argparse stdlib boilerplate
+    assert "schedule" in vocabulary  # this repo's own CLI vocabulary
+
+
+def test_committable_case_tokens_are_recognized_vocabulary():
+    """Every committable case's LIVE captured stdout/stderr -- checked fresh
+    each run, not just the frozen fixture -- must be built entirely from
+    tokens the repo's own CLI source (plus argparse's stdlib boilerplate and
+    a small closed-class grammar list) can account for. This is what catches
+    a declared-safe command's output growing a host-shaped token later: the
+    case-level declaration only asserts the command was safe when it was
+    reviewed, not that it stays safe forever."""
+    vocabulary = _repo_cli_vocabulary()
+    live_specialized = {tuple(c["argv"]): c for c in _capture.capture_specialized()}
+    live_machine = {tuple(c["argv"]): c for c in _capture.capture_machine()}
+
+    offenders: dict[str, list[str]] = {}
+    for argv in _COMMITTABLE_SPECIALIZED_ARGV:
+        case = live_specialized[argv]
+        for field in ("stdout", "stderr"):
+            bad = _unrecognized_tokens(case.get(field, ""), vocabulary)
+            if bad:
+                offenders[f"specialized {argv} {field}"] = bad
+    for argv in _COMMITTABLE_MACHINE_ARGV:
+        case = live_machine[argv]
+        for field in ("stdout", "stderr"):
+            bad = _unrecognized_tokens(case.get(field, ""), vocabulary)
+            if bad:
+                offenders[f"machine {argv} {field}"] = bad
+
+    assert not offenders, (
+        "committable case output contains tokens absent from the repo's own "
+        "tracked CLI vocabulary -- either a genuine leak, or the source root "
+        f"list in _repo_cli_vocabulary() needs to grow: {offenders}"
+    )
+
+
+def test_token_check_flags_a_host_shaped_token_in_a_committable_stream():
+    """Mutation arm (b): a committable case's declaration only vouches for
+    the text a human actually read. Splice a host-shaped token -- not a
+    UUID or a path, since test_fixtures_carry_no_host_specific_state already
+    catches those shapes; the point of this check is what that one does not
+    catch -- into an otherwise-real committable stream and confirm it goes
+    red, naming exactly the injected words."""
+    vocabulary = _repo_cli_vocabulary()
+    stream = "usage: li [-h] quixotic-fizzbuzz-workstation\n"
+    assert _unrecognized_tokens(stream, vocabulary) == ["quixotic", "fizzbuzz", "workstation"]
