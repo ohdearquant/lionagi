@@ -185,13 +185,22 @@ class _FakeBuilder:
 
 
 class _FakeDB:
-    """Minimal live-persist db stub — records update_session calls."""
+    """Minimal live-persist db stub — records update_session calls and
+    round-trips node_metadata through get_session the way the real StateDB
+    does (JSON-serialized on write, dict on read)."""
 
-    def __init__(self):
+    def __init__(self, seed_node_metadata: dict | None = None):
         self.calls: list[tuple] = []
+        self._node_metadata: dict = dict(seed_node_metadata or {})
 
     async def update_session(self, session_id, **kw):
         self.calls.append((session_id, kw))
+        if "node_metadata" in kw:
+            raw = kw["node_metadata"]
+            self._node_metadata = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+
+    async def get_session(self, session_id):
+        return {"node_metadata": dict(self._node_metadata)}
 
 
 class _FakeBranch:
@@ -245,6 +254,42 @@ async def test_build_dag_populates_node_ids(tmp_path):
     # directory — and the roster still names both workers.
     assert env.expected_worker_ids == ["researcher", "implementer"]
     assert env.worker_artifact_dirs == {}
+
+
+@pytest.mark.asyncio
+async def test_build_dag_early_graph_write_preserves_unrelated_metadata(tmp_path):
+    """_build_dag's early-DAG-snapshot write must merge onto node_metadata,
+    not replace it — a kill-sweep may have stamped unverifiable-pid evidence
+    (unverifiable_since/unverifiable_count) on this session row before the
+    flow got this far, and this write must not erase it."""
+    env = _make_env(tmp_path)
+    db = _FakeDB(seed_node_metadata={"unverifiable_since": 111.0, "unverifiable_count": 2})
+    env._live_persist = {
+        "db": db,
+        "session_id": "sess-1",
+        "identity_markers": {"pid": 4242, "pid_create_time": 1.5},
+    }
+    assignments = [TaskAssignment(task="research it", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+
+    with patch(
+        "lionagi.cli.orchestrate.flow.build_worker_branch",
+        return_value=(_FakeBranch("researcher"), "codex/gpt-5.5", None, False),
+    ):
+        await _build_dag(env, "do stuff", plan_result, reactive_spec="off")
+
+    assert db._node_metadata["unverifiable_since"] == 111.0
+    assert db._node_metadata["unverifiable_count"] == 2
+    assert db._node_metadata["pid"] == 4242
+    assert db._node_metadata.get("agents") is not None, (
+        "the early-graph snapshot itself must still land"
+    )
 
 
 @pytest.mark.asyncio

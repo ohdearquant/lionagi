@@ -75,6 +75,18 @@ async def _persist_session_phase(env, phase: str) -> None:
             await ctx["db"].update_session(ctx["session_id"], current_phase=phase)
 
 
+async def _persist_node_metadata_patch(db, session_id: str, patch: dict) -> None:
+    """Merge *patch* into the session's node_metadata rather than replacing
+    the column outright, so fields written out-of-band by other callers
+    (e.g. the kill-sweep's unverifiable-pid markers) survive ordinary flow
+    progress writes instead of being reset by them."""
+    row = await db.get_session(session_id)
+    existing = row.get("node_metadata") if row else None
+    if not isinstance(existing, dict):
+        existing = {}
+    await db.update_session(session_id, node_metadata=json.dumps({**existing, **patch}))
+
+
 # ── Artifact-contract text — shared by planned legs and spawned nodes ─────────
 # Shared by _build_dag and _execute_dag's decorate_instruction closure so
 # both use one namespacing rule instead of two copies drifting apart.
@@ -723,8 +735,8 @@ async def _build_dag(
     if ctx_lp and ctx_lp.get("db"):
         with contextlib.suppress(Exception):
             _markers = ctx_lp.get("identity_markers") or {}
-            await ctx_lp["db"].update_session(
-                ctx_lp["session_id"], node_metadata=json.dumps({**early_graph, **_markers})
+            await _persist_node_metadata_patch(
+                ctx_lp["db"], ctx_lp["session_id"], {**early_graph, **_markers}
             )
 
     # Persist the per-leg role/profile artifact declarations (ADR-0064 D3),
@@ -1026,10 +1038,9 @@ async def _execute_dag(
 
         async def _do():
             with contextlib.suppress(Exception):
-                # Merge kill-identity markers last so segment writes keep the PID.
                 _markers = ctx.get("identity_markers") or {}
-                await ctx["db"].update_session(
-                    ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
+                await _persist_node_metadata_patch(
+                    ctx["db"], ctx["session_id"], {**extras, **_markers}
                 )
 
         _asyncio.ensure_future(_do())
@@ -1194,8 +1205,8 @@ async def _execute_dag(
         async def _do():
             with contextlib.suppress(Exception):
                 _markers = ctx.get("identity_markers") or {}
-                await ctx["db"].update_session(
-                    ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
+                await _persist_node_metadata_patch(
+                    ctx["db"], ctx["session_id"], {**extras, **_markers}
                 )
 
         _asyncio.ensure_future(_do())
