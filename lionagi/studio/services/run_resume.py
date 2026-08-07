@@ -96,7 +96,7 @@ class RunResumeRequest(BaseModel):
 # that misdescribes why. Treating it as unsupported instead is the honest,
 # structurally-correct answer, decided by what the kind can ever produce, not
 # by kind membership in a set built for a different execution shape.
-_FLOW_RESUME_KINDS = frozenset({"play", "flow", "show-play"})
+FLOW_RESUME_KINDS = frozenset({"play", "flow", "show-play"})
 
 
 _resume_admission_lock = asyncio.Lock()
@@ -575,7 +575,7 @@ async def _dispatch_resume_by_kind(
             run_id, instruction=instruction, branch_id=branch_id, model=model
         )
 
-    if kind in _FLOW_RESUME_KINDS:
+    if kind in FLOW_RESUME_KINDS:
         if instruction is not None:
             raise ValueError(
                 f"invocation_kind {kind!r} replays the persisted checkpoint plan; "
@@ -651,7 +651,7 @@ async def resume_availability(run_id: str) -> dict[str, Any]:
             "branch_id": branch_id,
         }
 
-    if kind in _FLOW_RESUME_KINDS:
+    if kind in FLOW_RESUME_KINDS:
         try:
             run_dir, _checkpoint = await _resolve_flow_checkpoint(run_id)
         except RunResumeCheckpointError as exc:
