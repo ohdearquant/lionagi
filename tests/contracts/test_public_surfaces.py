@@ -109,9 +109,9 @@ def _sorted_json(value):
     return json.dumps(value, indent=2, sort_keys=True)
 
 
-def test_http_route_count_is_134():
+def test_http_route_count_is_135():
     live = _capture.capture_http()
-    assert live["count"] == 134
+    assert live["count"] == 135
 
 
 def _routes_by_key(payload: dict) -> dict[str, dict]:

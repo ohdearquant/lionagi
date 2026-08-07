@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-08-07
+
+0.34.0 was tagged but never published to PyPI: its release build stopped on a
+public-surface contract test, so this is the first 0.34.x on PyPI. The library
+and Studio changes are the same as 0.34.0; only the fix below is new.
+
+### Fixed
+
+- Recorded the `GET /api/shows/gated-plays` endpoint in the public HTTP surface
+  baseline. The endpoint shipped in 0.34.0, but the frozen route baseline and
+  its expected route count were left at the previous 134 routes, so the surface
+  gate failed against the live 135. The baseline now matches the shipped app:
+  one route added, none removed or changed, and no schema changes.
+
 ## [0.34.0] - 2026-08-07
 
 A Studio-heavy release. Most of the work is in the local Studio daemon and its
