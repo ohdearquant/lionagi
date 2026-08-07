@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
+import logging
 import math
 import os
 import shlex
@@ -36,6 +37,8 @@ from lionagi.ln._proc import (
 )
 
 from . import config
+
+_log = logging.getLogger(__name__)
 
 # Per-run mutation lock: platform's own advisory file lock.
 if sys.platform == "win32":  # pragma: no cover - POSIX is what CI runs
@@ -306,6 +309,24 @@ def _discard_reservation(d: Path) -> bool:
                 "removed or claimed by a job.\n"
             )
     return given_back
+
+
+def _discard_reservation_and_warn(d: Path, run_id: str) -> None:
+    """Give a reservation back, and say so when the giveback itself fails.
+
+    ``_discard_reservation``'s own marker only helps an operator who later
+    goes looking under the jobs root. The boolean it returns is the only
+    signal available at the moment the failure actually happens, so every
+    caller that discards a reservation on an error path must act on it here
+    rather than let a `False` disappear along with the exception it rode in on.
+    """
+    if not _discard_reservation(d):
+        _log.warning(
+            "reservation rollback for run %s could not remove %s; marked %s",
+            run_id,
+            d,
+            d / _RESERVATION_STRANDED_MARKER,
+        )
 
 
 # --- record I/O ----------------------------------------------------------------
@@ -1136,7 +1157,7 @@ def submit(
         if mcp_servers is not None and mcp_config_path is not None:
             _write_mcp_server_snapshot(Path(mcp_config_path), mcp_servers)
     except BaseException:
-        _discard_reservation(d)
+        _discard_reservation_and_warn(d, run_id)
         raise
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
@@ -1194,7 +1215,7 @@ def submit(
         # back, reached one step later. This is the last point where giving it
         # back is the right answer: past this line the run exists, and a failure
         # is marked on the record rather than erased along with it.
-        _discard_reservation(d)
+        _discard_reservation_and_warn(d, run_id)
         raise
 
     try:

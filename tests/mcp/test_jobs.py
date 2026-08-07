@@ -11,6 +11,7 @@ from __future__ import annotations
 import builtins
 import errno
 import json
+import logging
 import math
 import os
 import signal
@@ -3168,6 +3169,40 @@ def test_a_clean_rollback_leaves_no_stranded_marker(sandbox):
     assert jobs._discard_reservation(d) is True
 
     assert not d.exists()
+
+
+def test_a_marker_write_that_also_fails_still_reaches_the_caller_as_a_warning(
+    sandbox, monkeypatch, caplog
+):
+    """The marker is best-effort; the caller's own diagnostics are not.
+
+    Both cleanup call sites in `submit()` reach a rollback through
+    `_discard_reservation_and_warn`, never `_discard_reservation` directly.
+    When the giveback fails AND the marker write meant to record that also
+    fails (disk full, permissions), the boolean returned by
+    `_discard_reservation` is the only signal left — this asserts the wrapper
+    actually turns it into a warning instead of letting it join the exception
+    being reraised on the way out.
+    """
+    d = config.JOBS_DIR / "20260101T000000-666666"
+    d.mkdir(parents=True)
+    (d / "console.log").write_bytes(b"a run wrote this\n")
+
+    real_write_text = Path.write_text
+
+    def refuse_the_marker(self, *args, **kwargs):
+        if self.name == jobs._RESERVATION_STRANDED_MARKER:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", refuse_the_marker)
+
+    with caplog.at_level(logging.WARNING, logger=jobs._log.name):
+        jobs._discard_reservation_and_warn(d, "20260101T000000-666666")
+
+    assert not (d / jobs._RESERVATION_STRANDED_MARKER).exists()
+    assert d.exists()
+    assert any("20260101T000000-666666" in record.message for record in caplog.records)
 
 
 def test_a_lock_that_cannot_be_taken_says_so_even_when_the_descriptor_will_not_close(
