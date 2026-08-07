@@ -881,8 +881,14 @@ async def test_reconcile_finalizes_dispatched_orphan_from_terminal_session_evide
 
     async with StateDB(db_path) as db:
         run = await db.get_schedule_run(run_id)
+        invocation = await db.get_invocation(inv_id)
     assert run["status"] == "completed"
     assert run["ended_at"] is not None
+    # The linked invocation must be finalized too, not left "running"
+    # forever -- otherwise the normal invocation telemetry/signal/chain
+    # side effects never happen for a run this pass just marked completed.
+    assert invocation["status"] == "completed"
+    assert invocation["ended_at"] is not None
 
 
 @pytest.mark.asyncio

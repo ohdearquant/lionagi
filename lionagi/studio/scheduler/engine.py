@@ -919,6 +919,7 @@ class SchedulerEngine:
 
         for row in rows:
             run_id = row["id"]
+            sid = row.get("schedule_id")
             inv_id = row.get("invocation_id")
             if not inv_id:
                 continue
@@ -935,7 +936,7 @@ class SchedulerEngine:
             if any(s not in SESSION_TERMINAL_STATUSES for s in child_statuses):
                 continue  # at least one child still genuinely non-terminal
 
-            inv_status, inv_rc, inv_rs, inv_ev, _inv_meta = await resolve_invocation_terminal(
+            inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
                 self._svc, inv_id, fallback_status="completed"
             )
             run_status = _SCHEDULE_RUN_STATUS_FROM_INVOCATION.get(inv_status)
@@ -947,6 +948,16 @@ class SchedulerEngine:
                 )
                 continue
 
+            end_time = time.time()
+            chain_depth = row.get("chain_depth") or 0
+            trigger_context = row.get("trigger_context") or {}
+            action_kind = row.get("action_kind") or ""
+
+            # Guarded CAS below is the idempotency boundary against a race
+            # with another finalizer (the live _fire() path, the deadline
+            # reaper, or a concurrent reconciliation pass): losing it means
+            # someone else already owns finalizing this row's follow-on
+            # effects, so this pass does nothing further for it.
             written = await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
@@ -961,16 +972,90 @@ class SchedulerEngine:
                 source="system",
                 actor="scheduler_startup_reconciliation",
                 metadata={"invocation_id": inv_id, "invocation_status": inv_status},
-                extra_fields={"ended_at": time.time()},
+                extra_fields={"ended_at": end_time},
             )
-            if written:
-                _log.info(
-                    "Reconciled dispatched-orphan schedule_run %s as %s from child "
-                    "session evidence (invocation %s)",
-                    run_id,
-                    run_status,
-                    inv_id,
+            if not written:
+                continue
+            _log.info(
+                "Reconciled dispatched-orphan schedule_run %s as %s from child "
+                "session evidence (invocation %s)",
+                run_id,
+                run_status,
+                inv_id,
+            )
+            await self._dispatch_signal(
+                build_schedule_run_signal(
+                    entity_id=run_id,
+                    new_status=run_status,
+                    reason_code=inv_rc,
+                    schedule_id=sid or "",
+                    action_kind=action_kind,
+                    chain_depth=chain_depth,
+                    trigger_context=trigger_context,
                 )
+            )
+
+            # Finalize the linked invocation too -- otherwise it stays
+            # "running" forever and every normal terminal-invocation side
+            # effect (telemetry flush, chain follow-on) never fires for a
+            # run this pass just marked completed/failed/etc.
+            inv_written = await self._guarded_terminal_status(
+                "invocation",
+                inv_id,
+                new_status=inv_status,
+                reason_code=inv_rc,
+                reason_summary=inv_rs,
+                evidence_refs=inv_ev,
+                source="system",
+                actor="scheduler_startup_reconciliation",
+                metadata=inv_meta,
+                extra_fields={"ended_at": end_time},
+            )
+            if inv_written:
+                await flush_run_telemetry(
+                    self._svc, self._signal_bus, run_id=run_id, invocation_id=inv_id
+                )
+            else:
+                self._signal_bus.pop_run_counters(run_id)
+
+            schedule = await self._svc.get_schedule(sid) if sid else None
+            if schedule is None:
+                continue
+            await self._check_max_runs(schedule, chain_depth)
+            if chain_depth < _MAX_CHAIN_DEPTH:
+                chain_action = None
+                if run_status == "completed" and schedule.get("on_success"):
+                    chain_action = schedule["on_success"]
+                elif run_status != "completed" and schedule.get("on_fail"):
+                    chain_action = schedule["on_fail"]
+
+                if chain_action:
+                    chain_schedule = {**schedule, **chain_action}
+                    chain_schedule["action_kind"] = chain_action.get(
+                        "kind", chain_action.get("action_kind", schedule["action_kind"])
+                    )
+                    if "model" in chain_action:
+                        chain_schedule["action_model"] = chain_action["model"]
+                    if "prompt" in chain_action:
+                        chain_schedule["action_prompt"] = chain_action["prompt"]
+                    if "agent" in chain_action:
+                        chain_schedule["action_agent"] = chain_action["agent"]
+                    if "playbook" in chain_action:
+                        chain_schedule["action_playbook"] = chain_action["playbook"]
+
+                    chain_ctx = {
+                        **trigger_context,
+                        "chain_from": run_id,
+                        "parent_status": run_status,
+                    }
+                    chain_run_id = uuid.uuid4().hex[:12]
+                    self._tracked_fire(
+                        chain_schedule,
+                        chain_run_id,
+                        trigger_context=chain_ctx,
+                        chain_parent_id=run_id,
+                        chain_depth=chain_depth + 1,
+                    )
 
     async def _check_missed_fires(self) -> None:
         try:
