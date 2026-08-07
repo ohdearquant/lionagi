@@ -2722,13 +2722,29 @@ class SchedulerEngine:
             # earlier so a cancellation mid-run is classified the same way.
             dispatched = True
             end_time = time.time()
-            status = "completed" if exit_code == 0 else "failed"
-            if exit_code == 0:
+
+            # Resolved BEFORE the schedule_run write below, so that write --
+            # and the signal, telemetry, and chain decisions that follow --
+            # all agree with the invocation's own resolved outcome instead
+            # of trusting the leader's raw exit_code in isolation. A clean
+            # exit (exit_code == 0) with a child session that has not
+            # independently reached a terminal status resolves to
+            # "completed_empty", not "completed": this scheduler treats
+            # that as NOT success, so it cannot pick the same schedule_run
+            # status/reason, signal, or on_success chain action a genuine
+            # completion would.
+            exit_status = "completed" if exit_code == 0 else "failed"
+            inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
+                self._svc, inv_id, fallback_status=exit_status, exit_code=exit_code
+            )
+            success = inv_status == "completed"
+            status = _SCHEDULE_RUN_STATUS_FROM_INVOCATION.get(inv_status, exit_status)
+            if success:
                 reason_code = RunReasons.COMPLETED_OK
                 reason_summary = "Scheduled process completed successfully."
             else:
-                reason_code = RunReasons.FAILED_EXIT_NONZERO
-                reason_summary = f"Scheduled process exited non-zero: {exit_code}."
+                reason_code = inv_rc
+                reason_summary = inv_rs
 
             written = await self._guarded_terminal_status(
                 "schedule_run",
@@ -2739,7 +2755,7 @@ class SchedulerEngine:
                 evidence_refs=[{"kind": "invocation", "id": inv_id}],
                 source="executor",
                 actor=run_id,
-                metadata={"exit_code": exit_code},
+                metadata={"exit_code": exit_code, "invocation_status": inv_status},
                 extra_fields={
                     "exit_code": exit_code,
                     "ended_at": end_time,
@@ -2759,9 +2775,6 @@ class SchedulerEngine:
                         error_detail=stderr_tail if exit_code != 0 else "",
                     )
                 )
-            inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
-                self._svc, inv_id, fallback_status=status, exit_code=exit_code
-            )
             inv_written = await self._guarded_terminal_status(
                 "invocation",
                 inv_id,
@@ -2790,9 +2803,9 @@ class SchedulerEngine:
 
             if chain_depth < _MAX_CHAIN_DEPTH:
                 chain_action = None
-                if exit_code == 0 and schedule.get("on_success"):
+                if success and schedule.get("on_success"):
                     chain_action = schedule["on_success"]
-                elif exit_code != 0 and schedule.get("on_fail"):
+                elif not success and schedule.get("on_fail"):
                     chain_action = schedule["on_fail"]
 
                 if chain_action:

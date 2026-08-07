@@ -620,6 +620,70 @@ async def test_fire_on_success_chain_fires():
 
 
 @pytest.mark.asyncio
+async def test_fire_running_child_with_on_success_does_not_run_success_chain():
+    """A clean leader exit (exit_code=0) with a child session that has not
+    independently reached a terminal status resolves to "completed_empty",
+    not "completed" -- the leader's exit is not evidence the child's work
+    finished. completed_empty is NOT success for scheduling purposes: the
+    schedule_run row's reason_code and the on_success chain decision must
+    both agree with that resolved outcome instead of the raw exit code."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.list_sessions_for_invocation = AsyncMock(
+        return_value=[{"id": "sess-1", "status": "running"}]
+    )
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        on_success={"kind": "agent", "prompt": "chained prompt", "model": "gpt-4.1-mini"}
+    )
+
+    fire_calls: list[tuple] = []
+    original_fire = engine._fire
+
+    async def _patched_fire(sched, run_id, *, trigger_context, chain_parent_id=None, chain_depth=0):
+        fire_calls.append((sched["id"], chain_depth))
+        if chain_depth > 0:
+            return
+        return await original_fire(
+            sched,
+            run_id,
+            trigger_context=trigger_context,
+            chain_parent_id=chain_parent_id,
+            chain_depth=chain_depth,
+        )
+
+    engine._fire = _patched_fire  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await original_fire(schedule, "run-empty-success", trigger_context={}, chain_depth=0)
+
+    terminal_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.args[:2] == ("schedule_run", "run-empty-success")
+        and c.kwargs.get("new_status") in ("completed", "failed")
+    ]
+    assert terminal_calls
+    (call,) = terminal_calls
+    assert call.kwargs["new_status"] == "completed"
+    assert call.kwargs["reason_code"] == RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
+
+    chained = [c for c in fire_calls if c[1] == 1]
+    assert not chained, "on_success must not fire for a completed_empty (no-evidence) outcome"
+
+
+@pytest.mark.asyncio
 async def test_fire_invocation_finalization_cas_miss_is_checked_and_does_not_raise():
     """A concurrent finalizer (e.g. the deadline reaper) may already have
     moved the invocation to a terminal status by the time _fire() records its
@@ -662,10 +726,17 @@ async def test_fire_invocation_finalization_cas_miss_is_checked_and_does_not_rai
 
 
 @pytest.mark.asyncio
-async def test_fire_exception_after_terminal_schedule_run_does_not_rewrite_failed():
-    """A late exception after the schedule_run terminal write already
-    succeeded (e.g. resolve_invocation_terminal blowing up) must not attempt
-    an unguarded terminal rewrite from the broad-except handler."""
+async def test_fire_exception_during_invocation_resolution_marks_run_failed_once():
+    """resolve_invocation_terminal() is now consulted BEFORE the
+    schedule_run terminal write in the normal path -- its resolved outcome
+    must be used consistently for the schedule row's own status/reason, not
+    only the invocation row (a completed_empty invocation must not let the
+    schedule row or an on_success chain report success). A raise during
+    that resolution therefore skips the normal-path schedule_run write
+    entirely; the broad-except handler catches it, writes a single guarded
+    'failed' schedule_run terminal status, and still finalizes the
+    invocation via its own retried resolution call."""
+    from lionagi.state.reasons import RunReasons
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
     svc = _make_svc()
@@ -674,22 +745,16 @@ async def test_fire_exception_after_terminal_schedule_run_does_not_rewrite_faile
     async def _update_status(entity_type, entity_id, *, new_status, **kwargs):
         if entity_type == "schedule_run" and new_status in ("completed", "failed"):
             schedule_run_terminal_calls.append(kwargs)
-            if len(schedule_run_terminal_calls) > 1:
-                assert "expected_statuses" in kwargs, (
-                    "a second schedule_run terminal write from the broad-except "
-                    "handler must be guarded, not an unconditional overwrite"
-                )
-                return False
         return True
 
     svc.update_status = AsyncMock(side_effect=_update_status)
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule()
 
-    # resolve_invocation_terminal() raises on its first call (right after the
-    # schedule_run terminal write in the normal path), but the broad-except
-    # handler's own call to it must still succeed so the test can observe the
-    # handler's schedule_run rewrite attempt in isolation.
+    # resolve_invocation_terminal() raises on its first call (now the very
+    # first thing the normal path awaits after spawn_and_wait returns), but
+    # the broad-except handler's own retry call to it must still succeed so
+    # the test can observe the handler finalizing both rows in isolation.
     resolve_calls = {"n": 0}
 
     async def _resolve_invocation_terminal(*args, **kwargs):
@@ -714,7 +779,12 @@ async def test_fire_exception_after_terminal_schedule_run_does_not_rewrite_faile
     ):
         await engine._fire(schedule, "run-late-exc", trigger_context={"scheduled": True})
 
-    assert len(schedule_run_terminal_calls) == 2
+    assert resolve_calls["n"] == 2, "the broad-except handler must retry invocation resolution"
+    assert len(schedule_run_terminal_calls) == 1, (
+        "the schedule_run terminal write only happens once, from the except handler, "
+        "since resolving the invocation now gates the normal-path write itself"
+    )
+    assert schedule_run_terminal_calls[0]["reason_code"] == RunReasons.FAILED_EXCEPTION
 
 
 @pytest.mark.asyncio
