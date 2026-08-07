@@ -430,8 +430,23 @@ def capture_specialized() -> list[dict[str, Any]]:
 # its own pinned literal baseline instead.
 _SPECIALIZED_BASELINE_BY_PYVER: dict[tuple[int, int], str] = {
     (3, 10): "specialized",
+    (3, 11): "specialized",  # measured byte-identical to 3.10's capture
+    (3, 12): "specialized_py312",
+    (3, 13): "specialized_py314",  # measured byte-identical to 3.14's capture
     (3, 14): "specialized_py314",
 }
+
+# Every Python minor CI actually runs, mirroring the full-matrix branch of
+# .github/workflows/ci.yml:174 (`test.strategy.matrix.python-version`). PRs
+# only run the oldest+newest of these, so a PR's own green does not prove
+# the other three still resolve -- see test_specialized_baseline_covers_ci_matrix.
+_CI_MATRIX_PYVERS: tuple[tuple[int, int], ...] = (
+    (3, 10),
+    (3, 11),
+    (3, 12),
+    (3, 13),
+    (3, 14),
+)
 
 
 def specialized_baseline_name() -> str:
