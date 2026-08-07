@@ -429,6 +429,10 @@
       "noMessages": "کوئی پیغام ریکارڈ نہیں ہوا",
       "waitingEvents": "لائف سائیکل ایونٹس کا انتظار…",
       "noEvents": "کوئی لائف سائیکل ایونٹ ریکارڈ نہیں ہوا",
+      "showOlderEvents": "{count, number} پرانے واقعات دکھائیں",
+      "expandEventDetails": "ایونٹ کی تفصیلات دکھائیں",
+      "gateOutcome": "گیٹ: {verdict} · {major} بڑے، {minor} چھوٹے",
+      "gateOutcomeSimple": "گیٹ: {verdict}",
       "live": "لائیو",
       "noBranchErrors": "تمام برانچز میں کوئی خرابی نہیں ملی۔",
       "noFiles": "کوئی فائل آپریشن نہیں ملا۔",
@@ -540,6 +544,7 @@
       "triggering": "ٹرگر ہو رہا ہے…",
       "runStarted": "رن شروع ہوا: ⁨{id}⁩",
       "triggerFailed": "ٹرگر ناکام",
+      "toggleFailed": "ٹوگل ناکام",
       "every": "ہر ⁨{interval}⁩",
       "in": "⁨{delta}⁩ میں",
       "overdue": "⁨{delta}⁩ تاخیر سے",
@@ -547,7 +552,17 @@
       "last": "آخری",
       "never": "کبھی نہیں چلا",
       "paused": "موقوف",
-      "notScheduled": "شیڈول نہیں"
+      "notScheduled": "شیڈول نہیں",
+      "health": {
+        "healthy": "صحت مند",
+        "failing": "ناکام",
+        "overdue": "تاخیر شدہ",
+        "neverFired": "کبھی نہیں چلی",
+        "noEvidence": "کوئی ثبوت نہیں",
+        "lastOutcome": "آخری بار {outcome} {delta} پہلے",
+        "neverFiredSince": "{date} سے کبھی نہیں چلی",
+        "noEvidenceHint": "کوئی عملدرآمد ریکارڈ نہیں"
+      }
     },
     "run": {
       "elapsed": "⁨{delta}⁩ گزر چکا",
@@ -784,6 +799,8 @@
     },
     "history": {
       "label": "سیشن ہسٹری",
+      "sortRecent": "حالیہ",
+      "sortCost": "سب سے زیادہ لاگت",
       "all": "سب",
       "completed": "مکمل",
       "failed": "ناکام",
@@ -890,6 +907,15 @@
       "total": "{count, plural, one {کل #} other {کل #}}",
       "staleHint": "آخری معلوم دکھایا جا رہا ہے · ریفریش ناکام"
     },
+    "spend": {
+      "title": "رپورٹ شدہ خرچ",
+      "loading": "خرچ لوڈ ہو رہا ہے…",
+      "error": "خرچ دستیاب نہیں · {message}",
+      "unreachable": "API تک رسائی نہیں",
+      "empty": "اس ونڈو میں کوئی رن نہیں",
+      "coverage": "{total} میں سے {reported} رپورٹ ہوئیں",
+      "staleHint": "آخری معلوم دکھایا جا رہا ہے · ریفریش ناکام"
+    },
     "stale": {
       "error": "خرابی · ⁨{message}⁩",
       "unreachable": "API تک رسائی نہیں",
@@ -985,6 +1011,8 @@
     "roleUser": "یوزر",
     "roleThinking": "سوچ رہا ہے",
     "roleResponse": "جواب",
+    "planAssignments": "{count, plural, one {# تفویض} other {# تفویضات}}",
+    "planDependsOn": "انحصار:",
     "tabAria": "⁨{label}⁩ ٹیب ⁨{position}⁩ از ⁨{total}⁩"
   },
   "workflow": {

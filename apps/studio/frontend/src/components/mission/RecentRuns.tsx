@@ -16,7 +16,9 @@ import SectionLabel from "@/components/ui/SectionLabel";
 import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import Duration from "@/components/ui/Duration";
 import Skeleton from "@/components/ui/Skeleton";
+import { formatElapsed } from "@/lib/elapsed";
 import { deriveDisplayStatus } from "@/lib/runStatus";
+import { formatCostUsd } from "@/lib/usageFormat";
 import { resolveRunLabel } from "@/lib/runLabel";
 import type { RunSummary } from "@/lib/types";
 import { groupConsecutiveRecentRuns, groupSpanSec } from "./recentGroups";
@@ -62,12 +64,7 @@ function durationSec(run: RunSummary, nowSec: number): number | null {
 }
 
 function formatSpan(sec: number): string {
-  if (sec < 60) return `${sec}s`;
-  const m = Math.floor(sec / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  const mm = m - h * 60;
-  return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
+  return formatElapsed(sec, { showSeconds: false, subMinuteDecimal: true });
 }
 
 const KNOWN_STATUSES = new Set([
@@ -171,6 +168,11 @@ function RunRow({
       <StatusVerdictChips run={run} statusLabel={statusLabel(deriveDisplayStatus(run))} />
       <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-secondary">
         {name}
+      </span>
+      {/* Bare formatted value, no label — keeps this compact strip free of a
+          new locale key (same call the run-detail branch-row header made). */}
+      <span className="shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
+        {formatCostUsd(run.total_cost_usd)}
       </span>
       <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
         <Duration value={dur} />

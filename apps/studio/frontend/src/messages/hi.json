@@ -429,6 +429,10 @@
       "noMessages": "कोई मैसेज रिकॉर्ड नहीं है",
       "waitingEvents": "लाइफ़साइकल इवेंट की प्रतीक्षा…",
       "noEvents": "कोई लाइफ़साइकल इवेंट रिकॉर्ड नहीं है",
+      "showOlderEvents": "{count, number} पुरानी घटनाएं दिखाएं",
+      "expandEventDetails": "इवेंट विवरण दिखाएं",
+      "gateOutcome": "गेट: {verdict} · {major} प्रमुख, {minor} छोटे",
+      "gateOutcomeSimple": "गेट: {verdict}",
       "live": "लाइव",
       "noBranchErrors": "किसी भी ब्रांच में त्रुटि नहीं मिली।",
       "noFiles": "कोई फ़ाइल ऑपरेशन नहीं मिला।",
@@ -540,6 +544,7 @@
       "triggering": "ट्रिगर हो रहा है…",
       "runStarted": "रन शुरू हुआ: {id}",
       "triggerFailed": "ट्रिगर विफल",
+      "toggleFailed": "टॉगल विफल",
       "every": "हर {interval}",
       "in": "{delta} में",
       "overdue": "{delta} से ओवरड्यू",
@@ -547,7 +552,17 @@
       "last": "पिछला",
       "never": "कभी रन नहीं हुआ",
       "paused": "रोका गया",
-      "notScheduled": "निर्धारित नहीं"
+      "notScheduled": "निर्धारित नहीं",
+      "health": {
+        "healthy": "स्वस्थ",
+        "failing": "विफल",
+        "overdue": "लंबित",
+        "neverFired": "कभी नहीं चली",
+        "noEvidence": "कोई प्रमाण नहीं",
+        "lastOutcome": "पिछली बार {outcome} {delta} पहले",
+        "neverFiredSince": "{date} से कभी नहीं चली",
+        "noEvidenceHint": "कोई निष्पादन दर्ज नहीं"
+      }
     },
     "run": {
       "elapsed": "{delta} बीत गया",
@@ -784,6 +799,8 @@
     },
     "history": {
       "label": "सेशन इतिहास",
+      "sortRecent": "हाल की",
+      "sortCost": "सर्वाधिक लागत",
       "all": "सभी",
       "completed": "पूरा हुआ",
       "failed": "विफल",
@@ -890,6 +907,15 @@
       "total": "कुल {count}",
       "staleHint": "आखिरी ज्ञात दिखा रहा है · रीफ़्रेश विफल"
     },
+    "spend": {
+      "title": "रिपोर्ट किया गया खर्च",
+      "loading": "खर्च लोड हो रहा है…",
+      "error": "खर्च अनुपलब्ध · {message}",
+      "unreachable": "API पहुँच से बाहर है",
+      "empty": "विंडो में कोई रन नहीं",
+      "coverage": "{total} में से {reported} रिपोर्ट की गईं",
+      "staleHint": "आखिरी ज्ञात दिखा रहा है · रीफ़्रेश विफल"
+    },
     "stale": {
       "error": "त्रुटि · {message}",
       "unreachable": "API पहुँच से बाहर है",
@@ -985,6 +1011,8 @@
     "roleUser": "यूज़र",
     "roleThinking": "सोच रहा है",
     "roleResponse": "रिस्पॉन्स",
+    "planAssignments": "{count, plural, one {# असाइनमेंट} other {# असाइनमेंट}}",
+    "planDependsOn": "इस पर निर्भर है:",
     "tabAria": "{label} टैब {position}/{total}"
   },
   "workflow": {

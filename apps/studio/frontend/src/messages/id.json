@@ -429,6 +429,10 @@
       "noMessages": "Tidak ada pesan tercatat",
       "waitingEvents": "Menunggu peristiwa siklus hidup…",
       "noEvents": "Tidak ada peristiwa siklus hidup tercatat",
+      "showOlderEvents": "Tampilkan {count, number} peristiwa yang lebih lama",
+      "expandEventDetails": "Tampilkan detail peristiwa",
+      "gateOutcome": "Gate: {verdict} · {major} besar, {minor} kecil",
+      "gateOutcomeSimple": "Gate: {verdict}",
       "live": "live",
       "noBranchErrors": "Tidak ada kesalahan terdeteksi di semua branch.",
       "noFiles": "Tidak ada operasi file terdeteksi.",
@@ -540,6 +544,7 @@
       "triggering": "Memicu…",
       "runStarted": "Eksekusi dimulai: {id}",
       "triggerFailed": "Gagal memicu",
+      "toggleFailed": "Gagal mengalihkan",
       "every": "setiap {interval}",
       "in": "dalam {delta}",
       "overdue": "terlambat {delta}",
@@ -547,7 +552,17 @@
       "last": "terakhir",
       "never": "tidak pernah dijalankan",
       "paused": "Dijeda",
-      "notScheduled": "Tidak dijadwalkan"
+      "notScheduled": "Tidak dijadwalkan",
+      "health": {
+        "healthy": "Sehat",
+        "failing": "Gagal",
+        "overdue": "Terlambat",
+        "neverFired": "Belum pernah berjalan",
+        "noEvidence": "Tidak ada bukti",
+        "lastOutcome": "terakhir {outcome} {delta} lalu",
+        "neverFiredSince": "belum pernah berjalan sejak {date}",
+        "noEvidenceHint": "tidak ada eksekusi tercatat"
+      }
     },
     "run": {
       "elapsed": "{delta} berlalu",
@@ -784,6 +799,8 @@
     },
     "history": {
       "label": "Riwayat sesi",
+      "sortRecent": "Terbaru",
+      "sortCost": "Biaya tertinggi",
       "all": "Semua",
       "completed": "Selesai",
       "failed": "Gagal",
@@ -890,6 +907,15 @@
       "total": "{count, plural, other {# total}}",
       "staleHint": "menampilkan yang terakhir diketahui · penyegaran gagal"
     },
+    "spend": {
+      "title": "Pengeluaran yang dilaporkan",
+      "loading": "Memuat pengeluaran…",
+      "error": "Pengeluaran tidak tersedia · {message}",
+      "unreachable": "API tidak terjangkau",
+      "empty": "Tidak ada run dalam jendela ini",
+      "coverage": "{reported} dari {total} dilaporkan",
+      "staleHint": "menampilkan yang terakhir diketahui · penyegaran gagal"
+    },
     "stale": {
       "error": "kesalahan · {message}",
       "unreachable": "API tidak terjangkau",
@@ -985,6 +1011,8 @@
     "roleUser": "pengguna",
     "roleThinking": "berpikir",
     "roleResponse": "respons",
+    "planAssignments": "{count, plural, other {# penugasan}}",
+    "planDependsOn": "bergantung pada:",
     "tabAria": "tab {label} {position} dari {total}"
   },
   "workflow": {

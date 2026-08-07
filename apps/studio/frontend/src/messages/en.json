@@ -429,8 +429,12 @@
       "noMessages": "No messages recorded",
       "waitingEvents": "Waiting for lifecycle events…",
       "noEvents": "No lifecycle events recorded",
+      "showOlderEvents": "Show {count, number} older events",
+      "expandEventDetails": "Show event details",
+      "gateOutcome": "Gate: {verdict} · {major} major, {minor} minor",
+      "gateOutcomeSimple": "Gate: {verdict}",
       "live": "live",
-      "noBranchErrors": "No errors detected across all branches.",
+      "noBranchErrors": "No runtime errors across all branches.",
       "noFiles": "No file operations detected.",
       "sectionInvocation": "Invocation",
       "invocationSiblingRuns": "Sibling runs",
@@ -439,7 +443,7 @@
       "olderRemaining": "{count} older messages",
       "statToolCallsRecent": "Tool calls (recent)",
       "statErrorsRecent": "Errors (recent)",
-      "noBranchErrorsPartial": "No errors in the loaded messages.",
+      "noBranchErrorsPartial": "No runtime errors in the loaded messages.",
       "noFilesPartial": "No file operations detected in the loaded messages.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
       "reloadConversation": "Reload conversation"
@@ -540,6 +544,7 @@
       "triggering": "Triggering…",
       "runStarted": "Run started: {id}",
       "triggerFailed": "Failed to trigger",
+      "toggleFailed": "Failed to toggle",
       "every": "every {interval}",
       "in": "in {delta}",
       "overdue": "overdue {delta}",
@@ -547,7 +552,17 @@
       "last": "last",
       "never": "never run",
       "paused": "Paused",
-      "notScheduled": "Not scheduled"
+      "notScheduled": "Not scheduled",
+      "health": {
+        "healthy": "Healthy",
+        "failing": "Failing",
+        "overdue": "Overdue",
+        "neverFired": "Never fired",
+        "noEvidence": "No evidence",
+        "lastOutcome": "last {outcome} {delta} ago",
+        "neverFiredSince": "never fired since {date}",
+        "noEvidenceHint": "no execution recorded"
+      }
     },
     "run": {
       "elapsed": "{delta} elapsed",
@@ -784,6 +799,8 @@
     },
     "history": {
       "label": "Session history",
+      "sortRecent": "Recent",
+      "sortCost": "Highest cost",
       "all": "All",
       "completed": "Completed",
       "failed": "Failed",
@@ -890,6 +907,15 @@
       "total": "{count} total",
       "staleHint": "showing last known · refresh failed"
     },
+    "spend": {
+      "title": "Reported spend",
+      "loading": "Loading spend…",
+      "error": "Spend unavailable · {message}",
+      "unreachable": "API unreachable",
+      "empty": "No runs in window",
+      "coverage": "{reported} of {total} reported",
+      "staleHint": "showing last known · refresh failed"
+    },
     "stale": {
       "error": "error · {message}",
       "unreachable": "API unreachable",
@@ -985,6 +1011,8 @@
     "roleUser": "user",
     "roleThinking": "thinking",
     "roleResponse": "response",
+    "planAssignments": "{count, plural, one {# assignment} other {# assignments}}",
+    "planDependsOn": "depends on:",
     "tabAria": "{label} tab {position} of {total}"
   },
   "workflow": {

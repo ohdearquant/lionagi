@@ -429,6 +429,10 @@
       "noMessages": "No hay mensajes registrados",
       "waitingEvents": "Esperando eventos de ciclo de vida…",
       "noEvents": "No hay eventos de ciclo de vida registrados",
+      "showOlderEvents": "Mostrar {count, number} eventos anteriores",
+      "expandEventDetails": "Mostrar detalles del evento",
+      "gateOutcome": "Puerta: {verdict} · {major} mayores, {minor} menores",
+      "gateOutcomeSimple": "Puerta: {verdict}",
       "live": "en vivo",
       "noBranchErrors": "No se detectaron errores en ninguna rama.",
       "noFiles": "No se detectaron operaciones de archivo.",
@@ -540,6 +544,7 @@
       "triggering": "Activando...",
       "runStarted": "Ejecución iniciada: {id}",
       "triggerFailed": "No se pudo disparar",
+      "toggleFailed": "No se pudo cambiar",
       "every": "cada {interval}",
       "in": "en {delta}",
       "overdue": "retrasada hace {delta}",
@@ -547,7 +552,17 @@
       "last": "última",
       "never": "nunca ejecutada",
       "paused": "En pausa",
-      "notScheduled": "Sin programar"
+      "notScheduled": "Sin programar",
+      "health": {
+        "healthy": "Saludable",
+        "failing": "Con fallos",
+        "overdue": "Atrasada",
+        "neverFired": "Nunca se ejecutó",
+        "noEvidence": "Sin evidencia",
+        "lastOutcome": "última vez {outcome} hace {delta}",
+        "neverFiredSince": "nunca se ejecutó desde {date}",
+        "noEvidenceHint": "no se registró ninguna ejecución"
+      }
     },
     "run": {
       "elapsed": "{delta} transcurrido",
@@ -784,6 +799,8 @@
     },
     "history": {
       "label": "Historial de sesiones",
+      "sortRecent": "Reciente",
+      "sortCost": "Mayor costo",
       "all": "Todo",
       "completed": "Completadas",
       "failed": "Fallidas",
@@ -890,6 +907,15 @@
       "total": "{count, plural, one {# en total} other {# en total}}",
       "staleHint": "mostrando último estado conocido · falló la actualización"
     },
+    "spend": {
+      "title": "Gasto reportado",
+      "loading": "Cargando gasto…",
+      "error": "Gasto no disponible · {message}",
+      "unreachable": "API inaccesible",
+      "empty": "No hay ejecuciones en la ventana",
+      "coverage": "{reported} de {total} reportadas",
+      "staleHint": "mostrando último estado conocido · falló la actualización"
+    },
     "stale": {
       "error": "error · {message}",
       "unreachable": "API inaccesible",
@@ -985,6 +1011,8 @@
     "roleUser": "usuario",
     "roleThinking": "pensando",
     "roleResponse": "respuesta",
+    "planAssignments": "{count, plural, one {# asignación} other {# asignaciones}}",
+    "planDependsOn": "depende de:",
     "tabAria": "pestaña {label} {position} de {total}"
   },
   "workflow": {

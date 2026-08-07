@@ -385,6 +385,193 @@ async def test_mirror_session_is_idempotent(temp_db_path: Path) -> None:
     assert first == second  # no duplicate appends
 
 
+# ── link_escalation_session: escalation-leg mirror attribution ──────────────
+
+
+@pytest.mark.asyncio
+async def test_link_escalation_session_overwrites_orphan_attribution(
+    temp_db_path: Path,
+) -> None:
+    """The mirror already created the orphan (cwd-guessed project, first-prompt
+    name) before the escalation call site learned the CLI session id — the
+    common case, since the mirror polls continuously while the leg is running.
+    The link write must override both, and stamp a pointer back to the parent op.
+    """
+    from lionagi.state.claude_mirror import link_escalation_session
+
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=_conversation(),
+            tool_names={},
+            project="gate-runner-4",
+            project_source="cwd_dir",
+            name="Guidance: |-\n  LION_SYSTEM_MESSAGE",
+            status="running",
+        )
+        before = await db.get_session(session_db_id(SID))
+        assert before["run_id"] is None
+        assert before["project"] == "gate-runner-4"
+
+        linked = await link_escalation_session(
+            db,
+            session_uid=SID,
+            run_id="run-20260806-abc123",
+            name="escalation of gate-runner-4",
+            project="acme/widget",
+            project_source="escalation_parent",
+            parent_op_id="parent-op-1",
+        )
+        after = await db.get_session(session_db_id(SID))
+
+    assert linked is True
+    assert after["run_id"] == "run-20260806-abc123"
+    assert after["project"] == "acme/widget"
+    assert after["project_source"] == "escalation_parent"
+    assert after["name"] == "escalation of gate-runner-4"
+    assert after["node_metadata"]["escalated_from_session"] == "parent-op-1"
+
+
+@pytest.mark.asyncio
+async def test_link_escalation_session_leaves_project_alone_when_run_project_unknown(
+    temp_db_path: Path,
+) -> None:
+    """An unresolved run project is not evidence the mirror's cwd guess is wrong
+    — name/run_id/pointer still get linked, but project is left as the mirror's
+    best-effort value rather than overwritten with NULL."""
+    from lionagi.state.claude_mirror import link_escalation_session
+
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=_conversation(),
+            tool_names={},
+            project="gate-runner-4",
+            project_source="cwd_dir",
+            name="Guidance: |-\n  LION_SYSTEM_MESSAGE",
+            status="running",
+        )
+
+        linked = await link_escalation_session(
+            db,
+            session_uid=SID,
+            run_id="run-20260806-abc123",
+            name="escalation of gate-runner-4",
+            project=None,
+            project_source=None,
+            parent_op_id="parent-op-1",
+        )
+        after = await db.get_session(session_db_id(SID))
+
+    assert linked is True
+    assert after["run_id"] == "run-20260806-abc123"
+    assert after["name"] == "escalation of gate-runner-4"
+    assert after["project"] == "gate-runner-4"
+    assert after["project_source"] == "cwd_dir"
+
+
+@pytest.mark.asyncio
+async def test_link_escalation_session_returns_false_when_row_missing(
+    temp_db_path: Path,
+) -> None:
+    """The escalation call site can learn the CLI session id before the mirror's
+    next sweep has even created the row; the caller is expected to retry rather
+    than lose the link, so this must report the miss, not raise or fabricate a row."""
+    from lionagi.state.claude_mirror import link_escalation_session
+
+    async with StateDB() as db:
+        linked = await link_escalation_session(
+            db,
+            session_uid=SID,
+            run_id="run-20260806-abc123",
+            name="escalation of gate-runner-4",
+            project="acme/widget",
+            project_source="escalation_parent",
+            parent_op_id="parent-op-1",
+        )
+        row = await db.get_session(session_db_id(SID))
+
+    assert linked is False
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_link_escalation_session_survives_a_later_mirror_pass(
+    temp_db_path: Path,
+) -> None:
+    """A later mirror pass replays its own (still cwd/first-prompt-derived, in
+    the poller's in-memory _FileState) name/project on every call — mirror_session
+    must not let that clobber a link already recorded, since the mirror has no
+    way to know the row it is about to rewrite was already linked."""
+    from lionagi.state.claude_mirror import link_escalation_session
+
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=_conversation(),
+            tool_names={},
+            project="gate-runner-4",
+            project_source="cwd_dir",
+            name="Guidance: |-\n  LION_SYSTEM_MESSAGE",
+            status="running",
+        )
+        await link_escalation_session(
+            db,
+            session_uid=SID,
+            run_id="run-20260806-abc123",
+            name="escalation of gate-runner-4",
+            project="acme/widget",
+            project_source="escalation_parent",
+            parent_op_id="parent-op-1",
+        )
+
+        # Next mirror poll pass: same stale in-memory name/project, more events.
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=_conversation(),
+            tool_names={},
+            project="gate-runner-4",
+            project_source="cwd_dir",
+            name="Guidance: |-\n  LION_SYSTEM_MESSAGE",
+            status="running",
+        )
+        after = await db.get_session(session_db_id(SID))
+
+    assert after["run_id"] == "run-20260806-abc123"
+    assert after["project"] == "acme/widget"
+    assert after["name"] == "escalation of gate-runner-4"
+
+
+@pytest.mark.asyncio
+async def test_non_escalation_transcript_gets_ordinary_cwd_attribution(
+    temp_db_path: Path,
+) -> None:
+    """A top-level (non-escalation) CLI leg is never handed to
+    link_escalation_session, so its cwd-derived project and first-prompt name
+    are the mirror's own, unmodified best-effort attribution."""
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=_conversation(),
+            tool_names={},
+            project="acme/widget",
+            project_source="cwd",
+            name="do the thing",
+            status="running",
+        )
+        row = await db.get_session(session_db_id(SID))
+
+    assert row["run_id"] is None
+    assert row["project"] == "acme/widget"
+    assert row["name"] == "do the thing"
+    assert (row.get("node_metadata") or {}).get("escalated_from_session") is None
+
+
 @pytest.mark.asyncio
 async def test_reconcile_flips_running_to_completed_when_idle(temp_db_path: Path) -> None:
     async with StateDB() as db:

@@ -363,3 +363,51 @@ async def link_session_lineage(
         parent_uid=parent_uid,
         parent_event_uuid=parent_event_uuid,
     )
+
+
+async def link_escalation_session(
+    db: StateDB,
+    *,
+    session_uid: str,
+    run_id: str,
+    name: str,
+    project: str | None,
+    project_source: str | None,
+    parent_op_id: str,
+) -> bool:
+    """Attribute a mirrored CLI transcript to the run whose escalation spawned it.
+
+    A flow escalation (``operations.flow._schedule_escalation``) retries a node on a
+    higher-tier CLI engine as an in-session child op; the engine's own transcript is
+    mirrored independently (by this module, possibly in another process) under a
+    session uid the mirror has no way to connect back to the run. The escalation call
+    site learns that uid once the child op's branch reports it
+    (``branch.chat_model.provider_session_id``) and calls this to stamp the link —
+    overwriting the mirror's cwd-guessed ``project`` and first-prompt-derived ``name``,
+    which are wrong for an escalation leg by construction: its transcript's ``cwd`` is
+    the leg's scratch workspace, not a project, and its first prompt is the injected
+    escalation guidance, not a task description. The mirror never revisits either
+    field once a session row exists, so this write is never clobbered by a later sweep.
+
+    Returns ``False`` if the mirror hasn't created the session row yet — the escalation
+    call site is expected to retry for a bounded window rather than lose the link,
+    since which side writes first is a race with no fixed winner.
+    """
+    sid = session_db_id(session_uid)
+    existing = await db.get_session(sid)
+    if existing is None:
+        return False
+    meta = dict(existing.get("node_metadata") or {})
+    meta["escalated_from_session"] = parent_op_id
+    fields: dict[str, Any] = {
+        "name": name,
+        "run_id": run_id,
+        "node_metadata": json.dumps(meta),
+    }
+    # An unresolved run project is not evidence the mirror's cwd guess is wrong —
+    # leave it alone rather than overwrite a real (if imprecise) value with NULL.
+    if project:
+        fields["project"] = project
+        fields["project_source"] = project_source
+    await db.update_session(sid, **fields)
+    return True

@@ -107,6 +107,12 @@ export interface RunSummary {
   // ADR-0029: artifact contract and verification result.
   artifact_contract_json?: ArtifactContract | null;
   artifact_verification_json?: ArtifactVerification | null;
+  // Cost-visibility contract: `null` means the provider never reported a
+  // cost for this run (unknown); a genuine `0` is a distinct, real value.
+  // Never coerce one into the other — format with usageFormat.ts.
+  total_cost_usd?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
 }
 
 export interface RunMessage {
@@ -391,6 +397,12 @@ export interface ScheduleSummary {
   github_filter?: { event?: string; base?: string; state?: string } | null;
   consecutive_failures?: number;
   last_status?: string | null;
+  /** Server-computed verdict from cadence + recorded schedule_runs, never
+   * from next_fire_at (a promise, not evidence). */
+  health_state?: "healthy" | "failing" | "overdue" | "never-fired" | "no-evidence" | "disabled";
+  health_last_outcome?: string | null;
+  health_last_outcome_at?: number | null;
+  health_since?: number;
   created_at: number;
   updated_at: number;
 }

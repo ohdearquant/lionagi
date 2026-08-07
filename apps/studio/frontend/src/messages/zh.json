@@ -429,6 +429,10 @@
       "noMessages": "暂无消息记录",
       "waitingEvents": "等待生命周期事件…",
       "noEvents": "暂无生命周期事件",
+      "showOlderEvents": "显示 {count, number} 条更早的事件",
+      "expandEventDetails": "显示事件详情",
+      "gateOutcome": "关卡：{verdict} · {major} 个重大，{minor} 个次要",
+      "gateOutcomeSimple": "关卡：{verdict}",
       "live": "实时",
       "noBranchErrors": "所有分支均未检测到错误。",
       "noFiles": "未检测到文件操作。",
@@ -540,6 +544,7 @@
       "triggering": "触发中…",
       "runStarted": "已触发：{id}",
       "triggerFailed": "触发失败",
+      "toggleFailed": "切换失败",
       "every": "每 {interval}",
       "in": "{delta}后",
       "overdue": "已逾期 {delta}",
@@ -547,7 +552,17 @@
       "last": "上次",
       "never": "从未运行",
       "paused": "已暂停",
-      "notScheduled": "未排期"
+      "notScheduled": "未排期",
+      "health": {
+        "healthy": "健康",
+        "failing": "失败",
+        "overdue": "逾期",
+        "neverFired": "从未运行",
+        "noEvidence": "无证据",
+        "lastOutcome": "{delta}前{outcome}",
+        "neverFiredSince": "自 {date} 起从未运行",
+        "noEvidenceHint": "未记录任何执行"
+      }
     },
     "run": {
       "elapsed": "已运行 {delta}",
@@ -784,6 +799,8 @@
     },
     "history": {
       "label": "会话历史",
+      "sortRecent": "最近",
+      "sortCost": "费用最高",
       "all": "全部",
       "completed": "已完成",
       "failed": "失败",
@@ -890,6 +907,15 @@
       "total": "共 {count} 次",
       "staleHint": "显示上次数据 · 刷新失败"
     },
+    "spend": {
+      "title": "已报告支出",
+      "loading": "正在加载支出…",
+      "error": "支出不可用 · {message}",
+      "unreachable": "无法连接 API",
+      "empty": "窗口内无运行记录",
+      "coverage": "{total} 个中已报告 {reported} 个",
+      "staleHint": "显示上次数据 · 刷新失败"
+    },
     "stale": {
       "error": "错误 · {message}",
       "unreachable": "API 不可达",
@@ -985,6 +1011,8 @@
     "roleUser": "用户",
     "roleThinking": "思考",
     "roleResponse": "回复",
+    "planAssignments": "{count} 个任务分配",
+    "planDependsOn": "依赖于：",
     "tabAria": "{label} 标签页,第 {position} 个,共 {total} 个"
   },
   "workflow": {
