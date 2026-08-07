@@ -163,6 +163,9 @@ def test_dir_deque_mutators_all_overridden_or_allowlisted():
         "__getattribute__",
         "__delattr__",
         "__setattr__",
+        # Present in dir(deque) from Python 3.14: both read-only.
+        "__getstate__",
+        "__module__",
     }
 
     unaccounted = [
