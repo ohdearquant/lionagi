@@ -32,7 +32,6 @@ async def _seed_run(
     run_id: str,
     status: str = "completed",
     branch_ids: list[str] | None = None,
-    invocation_kind: str | None = "agent",
 ) -> None:
     async with StateDB(db_path) as db:
         session_progression_id = f"{run_id}-progression"
@@ -43,7 +42,7 @@ async def _seed_run(
                 "progression_id": session_progression_id,
                 "name": f"run-{run_id}",
                 "status": status,
-                "invocation_kind": invocation_kind,
+                "invocation_kind": "agent",
             }
         )
         for index, branch_id in enumerate(branch_ids or []):
@@ -400,63 +399,6 @@ def test_branch_must_belong_to_run(resume_harness):
 
     assert response.status_code == 422, response.text
     assert "does not belong" in response.json()["detail"]
-    assert launched == []
-
-
-@pytest.mark.parametrize("invocation_kind", ["play", "flow", "fanout", "show-play"])
-def test_non_agent_invocation_kind_cannot_resume_with_a_new_instruction(
-    resume_harness, invocation_kind
-):
-    """`li o flow --resume` (the underlying CLI path for a play/flow-kind
-    run) replays a checkpointed plan verbatim and reads no other flow flags
-    -- it has no way to accept a new instruction. Building `li agent -r` on
-    one of that run's branches regardless, as the old unconditional code
-    did, would silently run something disconnected from the actual
-    play/flow orchestration. Only 'agent' kind is supported here."""
-    _svc, db_path, client, launched = resume_harness
-    run_id = str(uuid.uuid4())
-    branch_id = str(uuid.uuid4())
-    _run(
-        _seed_run(
-            db_path,
-            run_id=run_id,
-            branch_ids=[branch_id],
-            invocation_kind=invocation_kind,
-        )
-    )
-
-    response = client.post(
-        f"/api/runs/{run_id}/resume",
-        json={"instruction": "Continue with the next step."},
-    )
-
-    assert response.status_code == 422, response.text
-    assert invocation_kind in response.json()["detail"]
-    assert launched == []
-
-
-def test_missing_invocation_kind_cannot_resume_with_a_new_instruction(resume_harness):
-    """A run recorded with no invocation kind at all is not known to
-    support instruction-based resume -- refuse rather than silently
-    assuming 'agent'."""
-    _svc, db_path, client, launched = resume_harness
-    run_id = str(uuid.uuid4())
-    branch_id = str(uuid.uuid4())
-    _run(
-        _seed_run(
-            db_path,
-            run_id=run_id,
-            branch_ids=[branch_id],
-            invocation_kind=None,
-        )
-    )
-
-    response = client.post(
-        f"/api/runs/{run_id}/resume",
-        json={"instruction": "Continue with the next step."},
-    )
-
-    assert response.status_code == 422, response.text
     assert launched == []
 
 

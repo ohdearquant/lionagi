@@ -391,7 +391,10 @@ async def test_run_findings_oversized_artifact_contract_is_capped(db_path):
     assert artifacts["contractTruncated"] is True
     assert artifacts["contract"] != huge_contract
     assert artifacts["verificationTruncated"] is False
-    assert artifacts["verification"] == {"status": "ok"}
+    # resolve_artifact_verification labels a stored verdict it cannot
+    # re-check against current disk state (no real artifacts_path here)
+    # rather than silently reporting it as fresh.
+    assert artifacts["verification"] == {"status": "ok", "staleness_check": "unknown"}
 
     import json
 

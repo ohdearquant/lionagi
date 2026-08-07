@@ -872,6 +872,142 @@ async def test_application_mcp_resume_run_is_reachable_end_to_end(tmp_path, monk
     await coordinator.shutdown()
 
 
+async def test_application_mcp_resume_run_delegates_flow_kind_to_checkpoint_replay(
+    tmp_path, monkeypatch
+):
+    """resume_run is a thin pass-through onto the service's per-kind dispatch,
+    not a second kind classifier: a 'flow' run has no branch to reopen, so the
+    Operator tool must forward straight to `li o flow --resume` with no
+    instruction, and report back invocationKind/checkpointRunId instead of
+    the agent path's branchId -- exercised through the real coordinator, the
+    same as the agent-kind end-to-end test above."""
+    import uuid
+
+    import lionagi.cli.orchestrate._checkpoint as ckmod
+    import lionagi.studio.services.run_resume as resume_svc
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.application_mcp import _dispatch
+    from lionagi.studio.operator.resume_run import resume_run
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    runs_root = tmp_path / "runs"
+    monkeypatch.setattr(ckmod, "RUNS_ROOT", runs_root)
+
+    run_id = str(uuid.uuid4())
+    cli_run_id = f"cli-run-{uuid.uuid4()}"
+    async with StateDB() as db:
+        progression_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "progression_id": progression_id,
+                "status": "completed",
+                "started_at": time.time(),
+                "invocation_kind": "flow",
+                "project": "/Users/admin/test-project",
+                "node_metadata": {"run_id": cli_run_id},
+            }
+        )
+    run_dir = runs_root / cli_run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "checkpoint.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "session_id": "irrelevant-to-studio",
+                "prompt": "original prompt",
+                "plan": [{"agent_id": "worker-1", "assignee": "worker", "dep_indices": []}],
+                "flow_context": {},
+                "ops": {},
+                "spawned": [],
+                "config": {},
+            }
+        )
+    )
+
+    launched: list[tuple[list[str], dict]] = []
+
+    async def _fake_launch(argv, **kwargs):
+        launched.append((argv, kwargs))
+        return "resumeinv456"
+
+    monkeypatch.setattr(resume_svc._launches, "launch_detached_argv", _fake_launch)
+    monkeypatch.setattr(
+        resume_svc._subprocess, "resolve_li_executable", lambda: (["/opt/lionagi/bin/li"], None)
+    )
+
+    tools_list = await _dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    tool_names = {tool["name"] for tool in tools_list["result"]["tools"]}
+    assert "resume_run" in tool_names
+
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="continue that run",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/test-project",
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    # No instruction: the checkpoint owns the plan for a flow-kind resume.
+    task = asyncio.create_task(resume_run({"run": run_id}))
+    proposal = await _wait_proposal(store, accepted["requestId"])
+    assert not task.done()
+    assert proposal["commandType"] == "resume"
+
+    decision = await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=proposal["targetVersion"],
+    )
+    result = await asyncio.wait_for(task, timeout=2)
+
+    assert decision["status"] == "succeeded"
+    assert result == {
+        "resumed": True,
+        "id": run_id,
+        "invocationId": "resumeinv456",
+        "invocationKind": "flow",
+        "checkpointRunId": cli_run_id,
+    }
+    assert launched == [
+        (
+            ["/opt/lionagi/bin/li", "orchestrate", "flow", "--resume", run_id],
+            {
+                "skill": "resume:flow",
+                "plugin": "studio_run_resume",
+                "prompt": None,
+                "tmp_path": None,
+                "action_kind": "flow",
+                "node_metadata": {
+                    "run_id": run_id,
+                    "invocation_kind": "flow",
+                    "resume": True,
+                    "allow_degraded_context": False,
+                    "checkpoint_run_id": cli_run_id,
+                },
+            },
+        )
+    ]
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+    await coordinator.shutdown()
+
+
 async def _noop() -> None:
     return None
 
@@ -1093,7 +1229,7 @@ async def test_scripted_turn_streams_and_is_visible_as_canonical_run(tmp_path, m
         db_branches = await db.list_branches(run_id)
     assert session is not None
     assert [row["id"] for row in db_branches] == [branch_id]
-    assert await _resolve_branch(run_id, None) == (branch_id, "agent")
+    assert await _resolve_branch(run_id, None) == branch_id
     await _ensure_branch_snapshot_available(branch_id)
     snapshot_run_id, snapshot_path = find_branch(branch_id)
     assert snapshot_run_id == session["run_id"]
