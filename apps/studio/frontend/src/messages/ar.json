@@ -462,7 +462,17 @@
       "graphNodeStatusPaused": "متوقف مؤقتًا",
       "graphNodeStatusDone": "تم",
       "graphNodeStatusFailed": "فشل",
-      "graphNodeStatusEscalated": "تم التصعيد"
+      "graphNodeStatusEscalated": "تم التصعيد",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "قائمة السجل",
     "detailAria": "تفاصيل العنصر"

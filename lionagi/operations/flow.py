@@ -8,6 +8,7 @@ not build their own executor."""
 import asyncio
 import contextlib
 import contextvars
+import inspect
 import logging
 import math
 import os
@@ -145,6 +146,9 @@ class DependencyAwareExecutor:
         self._alcall = alcall_params or AlcallParams()
         self._default_branch = default_branch
         self.on_progress = None
+        # Cached once per executor: does the installed on_progress callback
+        # accept the name_is_fallback provenance kwarg? None = not yet probed.
+        self._on_progress_accepts_fallback: bool | None = None
         # Persistence-only seam: invoked with every branch cloned during
         # pre-allocation, so a caller can wire persistence onto branches that
         # didn't exist when it set up the session's initial ones.
@@ -169,6 +173,10 @@ class DependencyAwareExecutor:
         self._gate_rejections: dict[Any, dict[str, Any]] = {}
         self._skip_reasons: dict[Any, dict[str, Any]] = {}
         self._op_start_times = {}
+        # Identity bookkeeping so every started operation gets exactly one
+        # terminal on_progress signal, whichever exit path it takes.
+        self._started_ops: set = set()
+        self._terminal_emitted: set = set()
         self._pause_event: ConcurrencyEvent | None = None
         # Fire-and-forget flow signal tasks, retained until each finishes so a
         # weakly referenced task can't disappear before it runs.
@@ -204,8 +212,8 @@ class DependencyAwareExecutor:
         nodes = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
         if self.on_progress:
             for node in nodes:
-                _name = node.metadata.get("reference_id", str(node.id)[:8])
-                self.on_progress(str(node.id), _name, "queued", 0.0)
+                _name, _fallback = self._display_name(node)
+                self._emit_progress(str(node.id), _name, "queued", 0.0, _fallback)
         async with create_task_group() as tg:
             self._tg = tg
             try:
@@ -373,6 +381,96 @@ class DependencyAwareExecutor:
 
         self._emit_best_effort(_factory)
 
+    def _display_name(self, operation: Operation) -> tuple[str, bool]:
+        """Resolve a lifecycle-signal display name before a branch is bound:
+        the authored ``reference_id`` if the caller set one, else the op_id's
+        own 8-char prefix as a last resort. Returns ``(name, is_fallback)`` so
+        callers know whether the name is genuine without re-deriving it from
+        string equality against the op_id prefix (a real name can coincide
+        with that prefix by chance).
+        """
+        ref_id = operation.metadata.get("reference_id")
+        if ref_id is not None:
+            return ref_id, False
+        return str(operation.id)[:8], True
+
+    def _branch_display_name(self, operation: Operation, branch: Any) -> tuple[str, bool]:
+        """Resolve a lifecycle-signal display name once a branch is bound:
+        the branch's own name if one was ever assigned (even by a hook that
+        runs after queue-time), else the same fallback as ``_display_name``.
+        Returns ``(name, is_fallback)``.
+        """
+        branch_name = getattr(branch, "name", None)
+        if branch_name:
+            return branch_name, False
+        return self._display_name(operation)
+
+    def _emit_progress(
+        self, op_id: str, name: str, status: str, elapsed: float, name_is_fallback: bool
+    ) -> None:
+        """Invoke ``self.on_progress`` with the name-provenance bit, if the
+        installed callback accepts it. Older callbacks (only 4 positional
+        params, no ``**kwargs``) get the original call shape so they keep
+        working unchanged; the provenance bit is additive, not required.
+        """
+        if not self.on_progress:
+            return
+        if self._on_progress_accepts_fallback is None:
+            try:
+                params = inspect.signature(self.on_progress).parameters.values()
+                self._on_progress_accepts_fallback = any(
+                    p.name == "name_is_fallback" or p.kind is inspect.Parameter.VAR_KEYWORD
+                    for p in params
+                )
+            except (TypeError, ValueError):
+                self._on_progress_accepts_fallback = False
+        if self._on_progress_accepts_fallback:
+            self.on_progress(op_id, name, status, elapsed, name_is_fallback=name_is_fallback)
+        else:
+            self.on_progress(op_id, name, status, elapsed)
+
+    def _emit_terminal_once(
+        self,
+        operation: Operation,
+        branch_name: str,
+        status: str,
+        elapsed: float,
+        name_is_fallback: bool,
+    ) -> None:
+        """Emit a terminal on_progress signal for `operation` at most once.
+
+        Every call site that reaches a terminal outcome (completed, failed,
+        skipped, cancelled, or an unexpected flow-level error) goes through
+        here, so a race between two exit paths for the same operation can
+        never announce two terminal signals for one identity.
+        """
+        if operation.id in self._terminal_emitted:
+            return
+        self._terminal_emitted.add(operation.id)
+        self._emit_progress(str(operation.id), branch_name, status, elapsed, name_is_fallback)
+
+    def _emit_abandoned_terminal(self, operation: Operation) -> None:
+        """Safety net for cancellation and unexpected flow-level errors.
+
+        If `operation` already emitted "started" but execution left
+        `_execute_operation` through the CancelledError or generic-Exception
+        handler without going through the normal completed/failed paths, the
+        node would otherwise render as perpetually running. Emit a "failed"
+        terminal (there is no separate cancelled/abandoned signal kind) so
+        every start still gets exactly one terminal outcome. No-op if this
+        operation never started, or a terminal was already emitted for it.
+        """
+        if operation.id not in self._started_ops:
+            return
+        if operation.id in self._terminal_emitted:
+            return
+        import time as _time
+
+        branch = self.operation_branches.get(operation.id, self.session.default_branch)
+        branch_name, name_is_fallback = self._branch_display_name(operation, branch)
+        elapsed = _time.monotonic() - self._op_start_times.get(operation.id, _time.monotonic())
+        self._emit_terminal_once(operation, branch_name, "failed", elapsed, name_is_fallback)
+
     async def _execute_operation(self, operation: Operation, limiter: CapacityLimiter):
         if operation.execution.status in Event._TERMINAL_STATUSES:
             if self.verbose:
@@ -415,11 +513,9 @@ class DependencyAwareExecutor:
                         str(operation.id)[:8],
                     )
 
-                if self.on_progress:
-                    ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
-                    branch = self.operation_branches.get(operation.id, self.session.default_branch)
-                    branch_name = getattr(branch, "name", None) or ref_id
-                    self.on_progress(str(operation.id), branch_name, "failed", 0.0)
+                branch = self.operation_branches.get(operation.id, self.session.default_branch)
+                branch_name, name_is_fallback = self._branch_display_name(operation, branch)
+                self._emit_terminal_once(operation, branch_name, "failed", 0.0, name_is_fallback)
 
                 self.completion_events[operation.id].set()
                 return
@@ -438,18 +534,17 @@ class DependencyAwareExecutor:
             async with limiter:
                 self._prepare_operation(operation)
 
-                ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
                 branch = self.operation_branches.get(operation.id, self.session.default_branch)
-                branch_name = getattr(branch, "name", None) or ref_id
+                branch_name, name_is_fallback = self._branch_display_name(operation, branch)
 
                 import time as _time
 
                 self._op_start_times[operation.id] = _time.monotonic()
+                self._started_ops.add(operation.id)
 
-                if self.on_progress:
-                    self.on_progress(str(operation.id), branch_name, "started", 0)
+                self._emit_progress(str(operation.id), branch_name, "started", 0, name_is_fallback)
                 if self.verbose:
-                    logger.debug("Executing operation: %s", ref_id)
+                    logger.debug("Executing operation: %s", branch_name)
 
                 operation._branch = branch
                 self._render_pending_operator_steers(operation)
@@ -469,19 +564,20 @@ class DependencyAwareExecutor:
                         response_context = operation.response["context"]
                         if not isinstance(response_context, Mapping):
                             error = TypeError(
-                                f"Operation {ref_id} response['context'] must be a Mapping, "
+                                f"Operation {branch_name} response['context'] must be a Mapping, "
                                 f"got {type(response_context).__name__}."
                             )
                             operation.execution.status = EventStatus.FAILED
                             operation.execution.error = error
                             self.results[operation.id] = {"error": str(error)}
                             self.failed_operations.add(operation.id)
-                            if self.on_progress:
-                                self.on_progress(str(operation.id), branch_name, "failed", elapsed)
+                            self._emit_terminal_once(
+                                operation, branch_name, "failed", elapsed, name_is_fallback
+                            )
                             if self.verbose:
                                 logger.error(
                                     "Operation %s failed (%.1fs): %s",
-                                    ref_id,
+                                    branch_name,
                                     elapsed,
                                     error,
                                 )
@@ -489,10 +585,11 @@ class DependencyAwareExecutor:
 
                         deep_update(self.context.content, dict(response_context))
 
-                    if self.on_progress:
-                        self.on_progress(str(operation.id), branch_name, "completed", elapsed)
+                    self._emit_terminal_once(
+                        operation, branch_name, "completed", elapsed, name_is_fallback
+                    )
                     if self.verbose:
-                        logger.debug("Completed operation: %s (%.1fs)", ref_id, elapsed)
+                        logger.debug("Completed operation: %s (%.1fs)", branch_name, elapsed)
 
                     if operation.metadata.get("is_gate"):
                         self._record_gate_verdict(operation)
@@ -500,18 +597,24 @@ class DependencyAwareExecutor:
                 elif operation.execution.status == EventStatus.FAILED:
                     self.results[operation.id] = {"error": str(operation.execution.error)}
                     self.failed_operations.add(operation.id)
-                    if self.on_progress:
-                        self.on_progress(str(operation.id), branch_name, "failed", elapsed)
+                    self._emit_terminal_once(
+                        operation, branch_name, "failed", elapsed, name_is_fallback
+                    )
                     if self.verbose:
                         logger.error(
                             "Operation %s failed (%.1fs): %s",
-                            ref_id,
+                            branch_name,
                             elapsed,
                             operation.execution.error,
                         )
 
         except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
             self.completion_events[operation.id].set()
+            # Cancellation (task-group teardown, timeout, abandonment) skips
+            # the normal completed/failed paths above; emit the terminal
+            # this started operation is still owed so it never renders as
+            # perpetually running.
+            self._emit_abandoned_terminal(operation)
             raise
 
         except Exception as e:
@@ -522,6 +625,8 @@ class DependencyAwareExecutor:
 
             if self.verbose:
                 logger.error("Operation %s failed: %s", str(operation.id)[:8], e)
+
+            self._emit_abandoned_terminal(operation)
 
         finally:
             self.completion_events[operation.id].set()
@@ -884,8 +989,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 self._tg = tg
                 for node in initial:
                     if self.on_progress:
-                        _name = node.metadata.get("reference_id", str(node.id)[:8])
-                        self.on_progress(str(node.id), _name, "queued", 0.0)
+                        _name, _fallback = self._display_name(node)
+                        self._emit_progress(str(node.id), _name, "queued", 0.0, _fallback)
                     tg.start_soon(self._run_tracked, node)
         finally:
             self._running = False
@@ -952,8 +1057,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
                         self._tg = tg
                         for node in initial:
                             if self.on_progress:
-                                _name = node.metadata.get("reference_id", str(node.id)[:8])
-                                self.on_progress(str(node.id), _name, "queued", 0.0)
+                                _name, _fallback = self._display_name(node)
+                                self._emit_progress(str(node.id), _name, "queued", 0.0, _fallback)
                             tg.start_soon(self._run_tracked, node)
                 except get_cancelled_exc_class():
                     raise  # let driver_cancel_scope absorb our own cancellation
@@ -1226,8 +1331,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
             self._assign_injected_branch(child, emitter_id, independent)
             self._emit_node_spawned(child, emitter_id, independent)
             if self.on_progress:
-                _name = child.metadata.get("reference_id", str(child.id)[:8])
-                self.on_progress(str(child.id), _name, "queued", 0.0)
+                _name, _fallback = self._display_name(child)
+                self._emit_progress(str(child.id), _name, "queued", 0.0, _fallback)
         return True
 
     def _emit_node_spawned(self, child: Operation, emitter_id: Any, independent: bool) -> None:
