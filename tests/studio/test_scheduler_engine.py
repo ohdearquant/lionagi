@@ -625,8 +625,9 @@ async def test_fire_running_child_with_on_success_does_not_run_success_chain():
     independently reached a terminal status resolves to "completed_empty",
     not "completed" -- the leader's exit is not evidence the child's work
     finished. completed_empty is NOT success for scheduling purposes: the
-    schedule_run row's reason_code and the on_success chain decision must
-    both agree with that resolved outcome instead of the raw exit code."""
+    schedule_run row's status, reason_code, emitted signal class, and the
+    on_success chain decision must all independently agree with that
+    resolved outcome instead of the raw exit code."""
     from lionagi.state.reasons import RunReasons
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
@@ -668,6 +669,7 @@ async def test_fire_running_child_with_on_success_does_not_run_success_chain():
     ):
         await original_fire(schedule, "run-empty-success", trigger_context={}, chain_depth=0)
 
+    # Assertion 1: status. completed_empty must not be recorded as "completed".
     terminal_calls = [
         c
         for c in svc.update_status.await_args_list
@@ -676,9 +678,24 @@ async def test_fire_running_child_with_on_success_does_not_run_success_chain():
     ]
     assert terminal_calls
     (call,) = terminal_calls
-    assert call.kwargs["new_status"] == "completed"
+    assert call.kwargs["new_status"] == "failed"
+
+    # Assertion 2: reason. The finer completed_empty distinction must survive
+    # in the reason_code even though the coarse status is "failed".
     assert call.kwargs["reason_code"] == RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
 
+    # Assertion 3: signal class. build_schedule_run_signal() derives the
+    # signal class from the same mapped status, so a completed_empty outcome
+    # must mint ScheduleRunFailed, never ScheduleRunSucceeded.
+    node_metadata_calls = [
+        c.kwargs["node_metadata"]
+        for c in svc.update_invocation.await_args_list
+        if "node_metadata" in c.kwargs
+    ]
+    assert len(node_metadata_calls) == 1
+    assert node_metadata_calls[0]["coordination"]["signals"]["emitted"] == {"ScheduleRunFailed": 1}
+
+    # Assertion 4: chaining. on_success must not fire for a no-evidence outcome.
     chained = [c for c in fire_calls if c[1] == 1]
     assert not chained, "on_success must not fire for a completed_empty (no-evidence) outcome"
 

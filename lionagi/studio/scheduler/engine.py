@@ -57,9 +57,15 @@ _MAX_PREDISPATCH_REFUSALS = 3
 # maps resolve_invocation_terminal()'s invocation-vocabulary result onto the
 # nearest schedule_run status; the finer distinction still survives in the
 # written reason_code (COMPLETED_EMPTY_NO_EVIDENCE, ABORTED_USER, etc).
+# completed_empty maps to "failed", not "completed": a clean leader exit
+# with no completion evidence from the child is explicitly NOT success (see
+# resolve_invocation_terminal's own precedence comment), and the mapped
+# status is also what selects the schedule_run signal class in
+# build_schedule_run_signal() -- mapping it to "completed" would mint
+# ScheduleRunSucceeded for a run nothing confirms actually finished.
 _SCHEDULE_RUN_STATUS_FROM_INVOCATION: dict[str, str] = {
     "completed": "completed",
-    "completed_empty": "completed",
+    "completed_empty": "failed",
     "failed": "failed",
     "timed_out": "timed_out",
     "cancelled": "cancelled",
