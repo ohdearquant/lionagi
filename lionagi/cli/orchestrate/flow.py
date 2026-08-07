@@ -79,12 +79,14 @@ async def _persist_node_metadata_patch(db, session_id: str, patch: dict) -> None
     """Merge *patch* into the session's node_metadata rather than replacing
     the column outright, so fields written out-of-band by other callers
     (e.g. the kill-sweep's unverifiable-pid markers) survive ordinary flow
-    progress writes instead of being reset by them."""
-    row = await db.get_session(session_id)
-    existing = row.get("node_metadata") if row else None
-    if not isinstance(existing, dict):
-        existing = {}
-    await db.update_session(session_id, node_metadata=json.dumps({**existing, **patch}))
+    progress writes instead of being reset by them.
+
+    Delegates to StateDB.merge_session_node_metadata(), a single atomic
+    UPDATE, rather than reading the row here and writing it back: two
+    concurrent calls to this function both reading before either writes is
+    exactly the race that used to lose one side's patch.
+    """
+    await db.merge_session_node_metadata(session_id, patch)
 
 
 # ── Artifact-contract text — shared by planned legs and spawned nodes ─────────

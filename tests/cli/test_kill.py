@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import signal
@@ -1388,6 +1389,68 @@ async def test_do_kill_all_stale_unverifiable_markers_survive_flow_metadata_writ
     assert meta["segments"] == [{"branch_name": "worker-1", "status": "completed"}], (
         "the flow metadata write itself must still land"
     )
+
+
+async def test_persist_node_metadata_patch_concurrent_writers_both_land(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Two concurrent flow-metadata writers merging onto the SAME session row
+    must both survive -- the read and the write have to happen as one atomic
+    database operation, not a get_session() followed by a separate
+    update_session(), or the second writer's read (taken before the first
+    writer's write lands) silently clobbers the first writer's patch.
+
+    This is not a hypothetical: the segment writer and the control-log writer
+    (flow.py's _persist_segments / _persist_control_log) both merge onto the
+    same session row, from independent callbacks that DAG execution can fire
+    close together, and a stale-sweep can write between either of them.
+
+    get_session() is gated so both callers finish their read before either
+    is allowed to proceed -- the worst-case interleaving -- rather than
+    relying on incidental asyncio scheduling to happen to hit it. Under the
+    fix neither caller calls get_session() at all (the merge is one atomic
+    UPDATE), so the gate never fires and sits inert; this instrumentation
+    only forces the window open for a read-then-write implementation.
+    """
+    from lionagi.cli.orchestrate.flow import _persist_node_metadata_patch
+
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321)
+        await db.merge_session_node_metadata(sid, {"seed": 1})
+
+    real_get_session = StateDB.get_session
+    barrier = asyncio.Event()
+    entered = 0
+
+    async def gated_get_session(self, session_id):
+        nonlocal entered
+        result = await real_get_session(self, session_id)
+        entered += 1
+        if entered >= 2:
+            barrier.set()
+        await barrier.wait()
+        return result
+
+    monkeypatch.setattr(StateDB, "get_session", gated_get_session)
+
+    async def _write(patch):
+        async with StateDB() as db:
+            await _persist_node_metadata_patch(db, sid, patch)
+
+    await asyncio.gather(_write({"left": 1}), _write({"right": 2}))
+
+    # Un-gate before the verification read: it must not itself wait on a
+    # barrier only the (absent, under the fix) get_session() callers could
+    # have opened past count 1.
+    monkeypatch.setattr(StateDB, "get_session", real_get_session)
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta.get("seed") == 1, "pre-existing metadata must survive both concurrent writes"
+    assert meta.get("left") == 1, "the first writer's patch must not be lost to the race"
+    assert meta.get("right") == 2, "the second writer's patch must not be lost to the race"
 
 
 async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_sweep(

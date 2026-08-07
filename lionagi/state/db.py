@@ -3013,6 +3013,95 @@ class StateDB:
                     params,
                 )
 
+    @staticmethod
+    def _merge_node_metadata_sql(dialect: str) -> str:
+        """One UPDATE that reads-merges-writes node_metadata inside the
+        database, so no Python-level get_session() sits between the read and
+        the write for a concurrent caller to interleave with. Merge-patch
+        semantics (RFC 7396): a null value in *patch* deletes the matching
+        key instead of storing null -- callers relying on the old
+        read-then-`{**existing, **patch}` behavior never passed null values
+        (checked: identity markers, segment/control logs), so this is not an
+        observed behavior change, but it is one for any future caller.
+
+        A malformed or non-object existing value (not a dict -- an array,
+        scalar, or on sqlite even non-JSON text) is not silently discarded:
+        it is preserved verbatim under `_discarded_node_metadata` /
+        `_discarded_at` in the merged result, so the previous state is
+        recoverable instead of destroyed. Postgres's native `json` column
+        can never hold non-JSON text (the driver rejects it on write), so
+        that half of the guard is sqlite-only in practice; the non-object
+        (array/scalar) half applies to both.
+
+        A JSON `null` (the 4-byte text "null", valid JSON but not SQL NULL)
+        is treated the same as SQL NULL -- i.e. as absent, not as a foreign
+        shape to preserve. This is not a rare case: SQLAlchemy's JSON bind
+        type serializes a Python `None` passed as node_metadata (e.g.
+        create_session() called without that field) to the JSON null
+        literal rather than an actual SQL NULL, so this is the column's
+        default value on a large share of existing rows, confirmed by
+        reading one back after a real create_session() call.
+        """
+        if dialect == "sqlite":
+            return (
+                "UPDATE sessions SET "
+                "node_metadata = json_patch("
+                "  CASE"
+                "    WHEN node_metadata IS NULL THEN '{}'"
+                "    WHEN NOT json_valid(node_metadata) THEN"
+                "      json_object('_discarded_node_metadata', node_metadata,"
+                "                  '_discarded_at', :now)"
+                "    WHEN json_type(node_metadata) = 'object' THEN node_metadata"
+                "    WHEN json_type(node_metadata) = 'null' THEN '{}'"
+                "    ELSE json_object('_discarded_node_metadata', json(node_metadata),"
+                "                     '_discarded_at', :now)"
+                "  END,"
+                "  :patch"
+                "), "
+                "updated_at = :now "
+                "WHERE id = :id"
+            )
+        return (
+            "UPDATE sessions SET "
+            # jsonb `||` merges keys but keeps an explicit null (unlike sqlite's
+            # json_patch, which deletes the key per RFC 7396); jsonb_strip_nulls
+            # afterward makes the two dialects agree on null-deletes-key. The one
+            # divergence from strict RFC 7396: a null already in the *existing*
+            # row on a key the patch never touches would also be stripped here,
+            # where RFC 7396 would leave it. No caller has ever stored an
+            # intentional null (checked: identity markers, segment/control logs
+            # are numbers/strings/lists), so this does not affect current usage.
+            "node_metadata = jsonb_strip_nulls("
+            "  CASE"
+            "    WHEN node_metadata IS NULL THEN '{}'::jsonb"
+            "    WHEN jsonb_typeof(node_metadata::jsonb) = 'object' THEN node_metadata::jsonb"
+            "    WHEN jsonb_typeof(node_metadata::jsonb) = 'null' THEN '{}'::jsonb"
+            "    ELSE jsonb_build_object('_discarded_node_metadata', node_metadata::jsonb,"
+            "                            '_discarded_at', to_jsonb(CAST(:now AS double precision)))"
+            "  END || CAST(:patch AS jsonb)"
+            ")::json, "
+            "updated_at = :now "
+            "WHERE id = :id"
+        )
+
+    async def merge_session_node_metadata(self, session_id: str, patch: dict[str, Any]) -> None:
+        """Atomically merge *patch* into the session's node_metadata column.
+
+        Replaces the former get_session() + update_session(node_metadata=...)
+        pair: that was a read in one operation and a write in another, so two
+        concurrent callers could both read the same row and each write back a
+        patch that clobbered the other's. This runs as a single UPDATE, so
+        the merge is serialized by the database (the sqlite write lock for
+        that dialect; ordinary row-level MVCC locking on postgres) instead of
+        racing in Python.
+        """
+        now = time.time()
+        async with self._tx() as conn:
+            stmt = text(self._merge_node_metadata_sql(self.dialect)).bindparams(
+                bindparam("patch", type_=JSON)
+            )
+            await conn.execute(stmt, {"patch": patch, "now": now, "id": session_id})
+
     async def update_artifact_verification(
         self,
         session_id: str,
