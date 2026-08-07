@@ -44,6 +44,8 @@ class SchedulerStateService(Protocol):
 
     async def metric_value(self, metric: str, window_start: float) -> float: ...
 
+    async def metric_unreported_sessions(self, metric: str, window_start: float) -> int: ...
+
     async def create_schedule_run(self, run: dict[str, Any]) -> None: ...
 
     async def create_schedule_run_and_advance(
@@ -139,6 +141,10 @@ class _DBSchedulerStateService:
     async def metric_value(self, metric: str, window_start: float) -> float:
         async with StateDB() as db:
             return await db.metric_value(metric, window_start)
+
+    async def metric_unreported_sessions(self, metric: str, window_start: float) -> int:
+        async with StateDB() as db:
+            return await db.metric_unreported_sessions(metric, window_start)
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None:
         async with StateDB() as db:

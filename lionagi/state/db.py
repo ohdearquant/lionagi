@@ -4035,21 +4035,38 @@ class StateDB:
         total_cost_usd / (input_tokens + output_tokens). Used for the
         budget_usd / budget_tokens pre-fire gate: mirrors count_schedule_runs
         but sums a spend column instead of counting rows.
+
+        ``total_cost_usd`` is NULL when a session's cost was never reported
+        (the engine that ran it doesn't price itself), not when the session
+        was free -- COALESCE(...,0) on the sum is still the right headline
+        total, but a schedule whose spawned sessions mostly went unreported
+        would otherwise read as cheap rather than unmeasured. ``unreported_sessions``
+        counts terminal sessions (SESSION_TERMINAL_STATUSES) with a NULL
+        total_cost_usd; a still-running session's cost is expected to be
+        unknown until it finishes and isn't counted as a gap.
         """
+        status_placeholders = ", ".join(
+            f":status{i}" for i in range(len(SESSION_TERMINAL_STATUSES))
+        )
+        params: dict[str, Any] = {"schedule_id": schedule_id}
+        params.update({f"status{i}": s for i, s in enumerate(SESSION_TERMINAL_STATUSES)})
         query = (
-            "SELECT COALESCE(SUM(s.total_cost_usd), 0) AS cost_usd, "
+            "SELECT COALESCE(SUM(s.total_cost_usd), 0) AS cost_usd, "  # noqa: S608
             "COALESCE(SUM(s.input_tokens), 0) AS input_tokens, "
-            "COALESCE(SUM(s.output_tokens), 0) AS output_tokens "
+            "COALESCE(SUM(s.output_tokens), 0) AS output_tokens, "
+            "SUM(CASE WHEN s.total_cost_usd IS NULL "
+            f"AND s.status IN ({status_placeholders}) THEN 1 ELSE 0 END) AS unreported_sessions "
             "FROM schedule_runs sr JOIN sessions s ON s.invocation_id = sr.invocation_id "
             "WHERE sr.schedule_id = :schedule_id"
         )
         async with self._read() as conn:
-            row = (await conn.execute(text(query), {"schedule_id": schedule_id})).mappings().first()
+            row = (await conn.execute(text(query), params)).mappings().first()
         if not row:
-            return {"cost_usd": 0.0, "tokens": 0}
+            return {"cost_usd": 0.0, "tokens": 0, "unreported_sessions": 0}
         return {
             "cost_usd": float(row["cost_usd"] or 0),
             "tokens": int(row["input_tokens"] or 0) + int(row["output_tokens"] or 0),
+            "unreported_sessions": int(row["unreported_sessions"] or 0),
         }
 
     # Threshold-alert metrics (studio-wide, not scoped to a single schedule's
@@ -4155,6 +4172,34 @@ class StateDB:
                 (await conn.execute(text(query), {"window_start": window_start})).mappings().first()
             )
         return float(row["n"]) if row and row["n"] is not None else 0.0
+
+    async def metric_unreported_sessions(self, metric: str, window_start: float) -> int:
+        """Count terminal sessions in the metric's window with a NULL total_cost_usd.
+
+        Companion to the ``total_cost_usd`` branch of ``metric_value()``:
+        that query's COALESCE(SUM(total_cost_usd), 0) is the right headline
+        sum but treats an unreported session's cost as zero, so a threshold
+        alert on a mostly-unreported window can silently read as "cheap"
+        instead of "unmeasured". Only ``total_cost_usd`` has a NULL/reported
+        distinction to expose -- every other metric returns 0. A still-
+        running session's cost is expected to be NULL and isn't a gap.
+        """
+        if metric != "total_cost_usd":
+            return 0
+        status_placeholders = ", ".join(
+            f":status{i}" for i in range(len(SESSION_TERMINAL_STATUSES))
+        )
+        params: dict[str, Any] = {"window_start": window_start}
+        params.update({f"status{i}": s for i, s in enumerate(SESSION_TERMINAL_STATUSES)})
+        query = (
+            "SELECT COUNT(*) AS n FROM sessions "  # noqa: S608
+            "WHERE COALESCE(ended_at, started_at, created_at) >= :window_start "
+            "AND total_cost_usd IS NULL "
+            f"AND status IN ({status_placeholders})"
+        )
+        async with self._read() as conn:
+            row = (await conn.execute(text(query), params)).mappings().first()
+        return int(row["n"]) if row and row["n"] is not None else 0
 
     async def schedule_run_streak(self, schedule_id: str) -> tuple[int, str | None]:
         """Consecutive terminal 'failed' streak and most recent status, newest-first, capped at 50 rows."""
