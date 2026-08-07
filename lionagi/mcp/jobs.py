@@ -118,6 +118,25 @@ TERMINAL_SOURCE_SPAWN_FAILURE = "spawn_failure"
 TERMINAL_SOURCE_ORPHAN_REAPER = "mcp_orphan_reaper"
 TERMINAL_SOURCE_KILL = "mcp_kill"
 
+# How `finished_at` was arrived at, recorded beside it because the two answer
+# different questions and only one of them is always knowable.
+#
+# OBSERVED means the run's own end was seen: the process was killed here, the
+# terminal hook fired, the spawn failed at that moment, or the lifecycle record
+# carried a real end time.
+#
+# UPPER_BOUND means nobody saw the end and the stored value is when the end was
+# *noticed*. It is a real bound (the run had ended by then) and it is never the
+# duration. Written by the paths that cannot know better, so that "we do not
+# know when this ended" is representable instead of being replaced by a
+# confident wrong value.
+#
+# A record written before this field existed carries neither. Absent is its own
+# answer and must not be read as OBSERVED: that would restate the same guess one
+# layer up.
+FINISHED_AT_OBSERVED = "observed"
+FINISHED_AT_UPPER_BOUND = "upper_bound"
+
 # Why a guarded mutation has no record to work on: RECORD_ABSENT means the run
 # is unknown; LOCK_UNAVAILABLE means the write was refused, so a caller may retry.
 RECORD_ABSENT = "absent"
@@ -1231,6 +1250,8 @@ def _record_spawn_failure(run_id: str, exc: Exception) -> SpawnError:
         "spawn_state": "failed",
         "status": "failed",
         "finished_at": _now_iso(),
+        # The spawn failed here, so this is the end as it happened.
+        "finished_at_precision": FINISHED_AT_OBSERVED,
         "reason": reason,
         "terminal_source": TERMINAL_SOURCE_SPAWN_FAILURE,
     }
@@ -1246,6 +1267,7 @@ def _record_spawn_failure(run_id: str, exc: Exception) -> SpawnError:
             if current.get("finished_at") is None:
                 current["status"] = "failed"
                 current["finished_at"] = _now_iso()
+                current["finished_at_precision"] = FINISHED_AT_OBSERVED
                 current["terminal_source"] = TERMINAL_SOURCE_SPAWN_FAILURE
             record = current
     except OSError:
@@ -1285,9 +1307,16 @@ def _cache_lifecycle_end(
     if job is None or lifecycle is None or not lifecycle.get("terminal"):
         return job
     ended = lifecycle.get("ended_at")
+    # A lifecycle record that carries its own end time is an observation. One
+    # that does not leaves the same gap the reaper has, and the same substituted
+    # value: now, standing in for a moment nobody recorded.
+    observed_end = _iso_from_epoch(ended)
     fields = {
         "status": lifecycle.get("status", job.get("status")),
-        "finished_at": _iso_from_epoch(ended) or _now_iso(),
+        "finished_at": observed_end or _now_iso(),
+        "finished_at_precision": (
+            FINISHED_AT_OBSERVED if observed_end else FINISHED_AT_UPPER_BOUND
+        ),
         "reason_code": lifecycle.get("reason_code"),
         "terminal_source": TERMINAL_SOURCE_LIFECYCLE,
     }
@@ -1474,6 +1503,7 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
                 "outcome": OUTCOME_INDETERMINATE,
                 "reason_code": reason_code,
                 "finished_at": observed_at,
+                "finished_at_precision": FINISHED_AT_UPPER_BOUND,
                 "terminal_source": TERMINAL_SOURCE_ORPHAN_REAPER,
                 "terminal_evidence": {"kind": EVIDENCE_PROCESS_GONE, "finding": finding},
             }
@@ -1599,6 +1629,9 @@ def status(run_id: str) -> dict[str, Any]:
         "pid": pid,
         "submitted_at": (job or {}).get("submitted_at"),
         "finished_at": (job or {}).get("finished_at"),
+        # Whether finished_at is the end or only a bound on it. Null on records
+        # written before the field existed, which is not the same as "observed".
+        "finished_at_precision": (job or {}).get("finished_at_precision"),
         "notify_delivery": (job or {}).get("notify_delivery"),
         "mcp_config": (job or {}).get("mcp_config"),
         "mcp_config_source": (job or {}).get("mcp_config_source"),
@@ -1693,6 +1726,8 @@ def _mark_killed(job: dict[str, Any]) -> WriteResult:
         else:
             current["status"] = "killed"
             current["finished_at"] = _now_iso()
+            # The kill happened here, so the end is observed rather than noticed.
+            current["finished_at_precision"] = FINISHED_AT_OBSERVED
             current["terminal_source"] = TERMINAL_SOURCE_KILL
         return WriteResult(current, guard.state)
 
@@ -2114,6 +2149,7 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "spawn_state": st["spawn_state"],
                 "submitted_at": st["submitted_at"],
                 "finished_at": st["finished_at"],
+                "finished_at_precision": st["finished_at_precision"],
                 "terminal_source": st["terminal_source"],
                 "record_state": st["record_state"],
                 "notify_delivery_state": _notify_delivery_state(st["notify_delivery"]),
@@ -2303,6 +2339,8 @@ def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
         job["status"] = cli_status
         job["cli_status"] = cli_status
         job["finished_at"] = _now_iso()
+        # The hook fires as the run ends, so this is the end as it happened.
+        job["finished_at_precision"] = FINISHED_AT_OBSERVED
         job["terminal_source"] = TERMINAL_SOURCE_HOOK
         return WriteResult(job, guard.state)
 
