@@ -678,6 +678,68 @@ async def test_run_findings_cross_project_isolation(db_path):
     assert "alpha" not in str(result_b)
 
 
+async def test_run_findings_exact_id_of_a_foreign_project_run_is_not_found(db_path, monkeypatch):
+    """run_findings inherits resolve_run() from run_progress.py -- an exact-id
+    reference to a run outside the calling turn's project must not resolve,
+    the same way the text-search arm is already scoped."""
+    from lionagi.studio.operator.run_findings import run_findings
+    from lionagi.studio.operator.store import OperatorStore
+
+    foreign = str(uuid.uuid4())
+    await seed_session(
+        db_path, session_id=foreign, name="foreign-run", project="acme/ops", status="completed"
+    )
+
+    store = OperatorStore(db_path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="what did that run find?",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "acme/research",
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    result = await run_findings({"run": foreign})
+    assert result == {"found": False}
+
+
+async def test_run_findings_env_secret_value_is_redacted_even_without_a_known_shape(
+    db_path, monkeypatch
+):
+    """scrub_text's patterns only catch a secret that is *shaped* like one
+    (a known prefix, an assignment, a header). A run's own config can carry
+    an arbitrary secret value with none of those shapes -- this must still
+    be redacted if it is echoed back verbatim in a message."""
+    from lionagi.studio.operator.run_findings import run_findings
+
+    monkeypatch.setenv("ACME_APP_API_KEY", "greenelephant")
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="completed")
+    branch_id = f"{sid}-br1"
+    await seed_branch(db_path, branch_id=branch_id, session_id=sid, name="worker")
+    await seed_text_message(
+        db_path,
+        branch_id=branch_id,
+        message_id=f"{sid}-m1",
+        role="assistant",
+        content={"assistant_response": "the configured secret is greenelephant, reused it"},
+    )
+
+    result = await run_findings({"run": sid, "kind": "messages"})
+
+    assert "greenelephant" not in str(result)
+    assert result["messages"]["items"][0]["content"].endswith("reused it")
+
+
 async def test_run_findings_rejects_unknown_fields(db_path):
     from pydantic import ValidationError
 

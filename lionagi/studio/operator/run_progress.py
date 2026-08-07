@@ -24,7 +24,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .redact import MAX_CANDIDATES, public_project
+from .redact import MAX_CANDIDATES, public_project, scrub_text
 
 __all__ = ("RunProgressInput", "resolve_run", "run_progress")
 
@@ -69,23 +69,44 @@ async def _resolve_current() -> str | None:
     return None
 
 
+def _scrub(value: Any) -> Any:
+    """Pass a non-string value through unchanged; scrub a string the same
+    way every other free-text projection in this module is scrubbed. A
+    name/model/playbook label is operator-supplied text, not a validated
+    enum, so it can carry the same secret- or path-shaped substrings a
+    message body can."""
+    return scrub_text(value) if isinstance(value, str) else value
+
+
 def _candidate(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row.get("id"),
-        "name": row.get("name"),
-        "playbookName": row.get("playbook_name"),
-        "agentName": row.get("agent_name"),
+        "name": _scrub(row.get("name")),
+        "playbookName": _scrub(row.get("playbook_name")),
+        "agentName": _scrub(row.get("agent_name")),
         "status": row.get("status"),
         "project": public_project(row.get("project")),
     }
 
 
-async def _fetch_ambiguous_candidates(db: Any, ids: list[str]) -> list[dict[str, Any]]:
-    """Re-fetch the display columns for the ids an AmbiguousIdError named.
+def _owns(row_project: Any, project: str | None) -> bool:
+    """Whether a session's ``project`` column is visible to a turn scoped to
+    ``project``. ``project is None`` preserves the pre-existing unscoped
+    behavior (see ``_allowed_project``'s own docstring)."""
+    return project is None or row_project == project
+
+
+async def _fetch_ambiguous_candidates(
+    db: Any, ids: list[str], *, project: str | None
+) -> list[dict[str, Any]]:
+    """Re-fetch the display columns for the ids an AmbiguousIdError named,
+    dropping any row ``project`` may not see.
 
     fetch_unique_row()/AmbiguousIdError only carry ids (see
     lionagi/cli/_util.py) — enough to disambiguate on the CLI, not enough to
     show a project/status card here, so this does one bounded follow-up read.
+    A foreign-project row is stripped out entirely rather than merely
+    de-emphasized: it must not appear as a candidate at all.
     """
     if not ids:
         return []
@@ -96,7 +117,11 @@ async def _fetch_ambiguous_candidates(db: Any, ids: list[str]) -> list[dict[str,
         tuple(ids),
     )
     by_id = {row["id"]: row for row in rows}
-    return [_candidate(by_id[session_id]) for session_id in ids if session_id in by_id]
+    return [
+        _candidate(by_id[session_id])
+        for session_id in ids
+        if session_id in by_id and _owns(by_id[session_id].get("project"), project)
+    ]
 
 
 async def _allowed_project() -> str | None:
@@ -162,21 +187,29 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     name/playbook substring matching 2-``MAX_CANDIDATES`` sessions, comes
     back as candidates; more than ``MAX_CANDIDATES`` text matches come back
     as the newest ``MAX_CANDIDATES`` plus ``truncated: True``.
+
+    Every arm -- exact id, ambiguous prefix, "current", and the text search
+    below -- is scoped to the calling turn's project (when it names one). A
+    foreign project's run is reported exactly like a nonexistent one, never
+    as e.g. an ambiguity candidate or a resolved id, which would themselves
+    confirm the id exists.
     """
     from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
     from lionagi.state.db import StateDB
-    from lionagi.studio.services.runs import get_run
 
     normalized = ref.strip()
     if not normalized:
         return {"found": False}
 
+    project = await _allowed_project()
+
     if normalized.lower() == "current":
         session_id = await _resolve_current()
         if session_id is None:
             return {"found": False}
-        run = await get_run(session_id)
-        if run is None:
+        async with StateDB(readonly=True) as db:
+            row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        if row is None or not _owns(row.get("project"), project):
             return {"found": False}
         return {"found": True, "ambiguous": False, "session_id": session_id}
 
@@ -184,11 +217,15 @@ async def resolve_run(ref: str) -> dict[str, Any]:
         try:
             row = await fetch_unique_row(db, "sessions", normalized)
         except AmbiguousIdError as exc:
-            candidates = await _fetch_ambiguous_candidates(db, exc.candidates)
+            owned = await _fetch_ambiguous_candidates(db, exc.candidates, project=project)
+            if not owned:
+                return {"found": False}
+            if len(owned) == 1:
+                return {"found": True, "ambiguous": False, "session_id": owned[0]["id"]}
             return {
                 "found": True,
                 "ambiguous": True,
-                "candidates": candidates,
+                "candidates": owned,
                 # fetch_unique_row's own prefix scan caps at 6 rows (see
                 # lionagi/cli/_util.py::_CANDIDATES_SHOWN) before this
                 # function ever sees the list, so hitting that cap is the
@@ -196,12 +233,13 @@ async def resolve_run(ref: str) -> dict[str, Any]:
                 "truncated": len(exc.candidates) > 5,
             }
         if row is not None:
+            if not _owns(row.get("project"), project):
+                return {"found": False}
             return {"found": True, "ambiguous": False, "session_id": row["id"]}
 
     if len(normalized) < 3:
         return {"found": False}
 
-    project = await _allowed_project()
     rows = await _find_sessions_by_text(normalized, limit=MAX_CANDIDATES + 1, project=project)
     return _resolution_from_rows(rows)
 
@@ -380,8 +418,8 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
             ops_running += 1
             current_ops.append(
                 {
-                    "name": branch.get("name"),
-                    "agentName": branch.get("agent_name"),
+                    "name": _scrub(branch.get("name")),
+                    "agentName": _scrub(branch.get("agent_name")),
                     "status": status,
                 }
             )
@@ -426,9 +464,9 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
         "opsFailed": ops_failed,
         "opsPending": ops_pending,
         "currentOps": current_ops,
-        "model": run.get("model"),
-        "playbookName": run.get("playbook_name"),
-        "agentName": run.get("agent_name"),
+        "model": _scrub(run.get("model")),
+        "playbookName": _scrub(run.get("playbook_name")),
+        "agentName": _scrub(run.get("agent_name")),
         "project": public_project(run.get("project")),
         "hasGraph": bool(run.get("graph")),
         "dagProgress": dag_progress,

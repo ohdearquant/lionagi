@@ -535,3 +535,100 @@ async def test_run_progress_text_search_is_scoped_to_the_turns_project(db_path, 
     assert result["found"] is True
     assert result["ambiguous"] is False
     assert result["id"] == sid_in_scope
+
+
+async def test_run_progress_exact_id_of_a_foreign_project_run_is_not_found(db_path, monkeypatch):
+    """An exact-id/prefix match must obey the same project ownership the
+    text-search arm already enforces."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    foreign = str(uuid.uuid4())
+    await seed_session(
+        db_path,
+        session_id=foreign,
+        name="foreign-run",
+        project="/Users/admin/acme-ops",
+        status="running",
+    )
+
+    cid, request_id = await _make_running_turn_with_project(
+        db_path, project="/Users/admin/acme-research"
+    )
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+
+    result = await run_progress({"run": foreign})
+    assert result == {"found": False}
+
+    # A prefix match must be scoped the same way.
+    result = await run_progress({"run": foreign[:8]})
+    assert result == {"found": False}
+
+
+async def test_run_progress_current_of_a_foreign_project_run_is_not_found(db_path, monkeypatch):
+    """The 'current' reference must not bypass project ownership either --
+    the human's own selection is not itself proof of ownership."""
+    from lionagi.studio.operator.run_progress import run_progress
+    from lionagi.studio.operator.store import OperatorStore
+
+    foreign = str(uuid.uuid4())
+    await seed_session(
+        db_path,
+        session_id=foreign,
+        name="foreign-run",
+        project="/Users/admin/acme-ops",
+        status="completed",
+    )
+
+    store = OperatorStore(db_path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="how is this run going?",
+        context={
+            "space": "history",
+            "route": "/fleet",
+            "filters": {},
+            "project": "/Users/admin/acme-research",
+            "selection": {"s": foreign},
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    result = await run_progress({"run": "current"})
+    assert result == {"found": False}
+
+
+async def test_run_progress_ambiguous_id_prefix_hides_foreign_project_candidates(
+    db_path, monkeypatch
+):
+    """A short id-prefix collision must drop foreign-project candidates and
+    resolve uniquely when only one owned row survives."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    owned = "deadbeef-1111-2222-3333-444455556666"
+    foreign = "deadbeef-9999-8888-7777-666655554444"
+    await seed_session(
+        db_path, session_id=owned, name="owned-run", project="/Users/admin/acme-research"
+    )
+    await seed_session(
+        db_path, session_id=foreign, name="foreign-run", project="/Users/admin/acme-ops"
+    )
+
+    cid, request_id = await _make_running_turn_with_project(
+        db_path, project="/Users/admin/acme-research"
+    )
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+
+    result = await run_progress({"run": "deadbeef"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is False
+    assert result["id"] == owned
