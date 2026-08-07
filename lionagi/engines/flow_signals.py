@@ -55,12 +55,19 @@ async def flow_progress_signals(
         depends_on = meta.get("depends_on", [])
         # Prefer the authored node id so every lifecycle signal maps back to the
         # designer DAG; fall back to the executor's name (engine's own ops, reactive spawns).
-        # Pinned here (first call for this op_id, always "queued") so later
+        # Pin the first GENUINELY resolved name for this op_id so later
         # started/completed/failed calls reuse it even if a branch-naming hook
         # (spawn_branch_setup) later renames the operation's cloned branch --
         # the branch name is a display concern, not the correlation key.
-        sig_name = meta.get("name") or name
-        meta["name"] = sig_name
+        # A name that equals the op_id's own 8-char prefix is flow.py's "no
+        # reference_id / no branch bound yet" placeholder (see execute()'s
+        # queued-time fallback), not a genuine name -- pinning it would freeze
+        # a placeholder over the real display name a later signal resolves.
+        sig_name = meta.get("name")
+        if sig_name is None:
+            sig_name = name
+            if name != op_id[:8]:
+                meta["name"] = sig_name
         if status == "queued":
             sig: Any = NodeQueued(
                 op_id=op_id, name=sig_name, parent_id=parent_id, depends_on=depends_on
