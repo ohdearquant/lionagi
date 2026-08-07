@@ -138,6 +138,27 @@ def _routes_by_key(payload: dict) -> dict[str, dict]:
     return by_key
 
 
+def _openapi_by_shape(payload: dict) -> dict:
+    """Project a ``capture_http()`` payload's openapi block for comparison,
+    with ``info.version`` dropped.
+
+    ``info.version`` is the application's own version string. Every release
+    bump changes it by design, and it describes the build rather than the
+    shape of the HTTP surface. Comparing it makes each version bump a
+    behavior-preservation failure on a pull request that changed no route --
+    and since the baseline is only meant to be regenerated when an
+    intentional route change lands, the two get coupled: either the version
+    is stale in the fixture, or every release carries a regenerated baseline
+    whose diff is indistinguishable from a real surface change. The package
+    version is asserted from the package metadata; this gate covers the
+    surface. Same reasoning as ``ordinal`` above: drop the field that is not
+    a fact about the routes.
+    """
+    openapi = payload["openapi"]
+    info = {k: v for k, v in openapi.get("info", {}).items() if k != "version"}
+    return {**openapi, "info": info}
+
+
 def test_http_routes_match_baseline():
     """http.json is generated from this branch's own base commit and is
     identical (per route, keyed by (methods, path) -- see _routes_by_key) to
@@ -149,7 +170,7 @@ def test_http_routes_match_baseline():
     live = _capture.capture_http()
     assert live["count"] == expected["count"]
     assert _sorted_json(_routes_by_key(live)) == _sorted_json(_routes_by_key(expected))
-    assert _sorted_json(live["openapi"]) == _sorted_json(expected["openapi"])
+    assert _sorted_json(_openapi_by_shape(live)) == _sorted_json(_openapi_by_shape(expected))
 
 
 def test_http_all_routes_have_responses_field():

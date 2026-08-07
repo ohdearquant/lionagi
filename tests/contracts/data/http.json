@@ -6191,7 +6191,7 @@
     "openapi": "3.1.0",
     "info": {
       "title": "Lion Studio Server",
-      "version": "0.34.0"
+      "version": "0.34.1"
     },
     "paths": {
       "/api/admin/doctor": {

@@ -19,6 +19,12 @@ and Studio changes are the same as 0.34.0; only the fix below is new.
   its expected route count were left at the previous 134 routes, so the surface
   gate failed against the live 135. The baseline now matches the shipped app:
   one route added, none removed or changed, and no schema changes.
+- Stopped the HTTP surface gate from comparing the application's own version
+  string, which every release bump changes by design. It described the build
+  rather than the shape of the surface, so it coupled two unrelated things: a
+  release that changed no route still had to carry a regenerated baseline, and
+  that regenerated diff was indistinguishable from a real surface change. The
+  route set, schemas, and title are still compared.
 
 ## [0.34.0] - 2026-08-07
 
