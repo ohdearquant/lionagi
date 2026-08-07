@@ -72,6 +72,10 @@ async def _execute_application_command(
         from .cancel_run import execute_cancel_command
 
         return await execute_cancel_command(command)
+    if command_type == "resume":
+        from .resume_run import execute_resume_command
+
+        return await execute_resume_command(command)
     if command_type != "launch":
         raise ValueError(f"Unsupported Operator application command: {command_type!r}")
     from lionagi.studio.services.launches import launch

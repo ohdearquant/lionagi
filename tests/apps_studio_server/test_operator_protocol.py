@@ -147,17 +147,45 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
         "mcp__studio_operator__run_progress",
         "mcp__studio_operator__run_findings",
         "mcp__studio_operator__cancel_run",
+        "mcp__studio_operator__resume_run",
     }
     # The first turn of a conversation has nothing to resume.
     assert "resume" not in kwargs
 
 
+# The tool set the Operator is actually supposed to expose. Asserted
+# against both registries below -- registry *parity* alone (each registry
+# matching the other) would stay green even if a tool were missing from
+# both at once, which is exactly how `resume_run` shipped fully built and
+# unreachable: both registries agreed with each other while agreeing to
+# omit it.
+_REQUIRED_OPERATOR_TOOLS = frozenset(
+    {
+        "list_recent_runs",
+        "run_stats",
+        "get_current_view",
+        "list_schedules",
+        "list_agents",
+        "list_playbooks",
+        "navigate",
+        "prefill_schedule",
+        "launch_playbook",
+        "run_progress",
+        "run_findings",
+        "cancel_run",
+        "resume_run",
+    }
+)
+
+
 def test_operator_mcp_tool_registries_agree_exactly_in_both_directions():
     """`application_mcp.py`'s tool registry and `engine.py`'s allowlist must
-    name the exact same tools. A tool added to one but not the other is
-    either invisible to the Operator (allowlist missing it) or silently
-    unreachable despite being allowed (application registry missing it) --
-    both look exactly like a broken model from the outside."""
+    name the exact same tools, and that set must be the required set -- a
+    tool added to one but not the other is either invisible to the Operator
+    (allowlist missing it) or silently unreachable despite being allowed
+    (application registry missing it), both look exactly like a broken model
+    from the outside, and a tool omitted from both registries agreeing with
+    each other is a regression neither half alone can catch."""
     from lionagi.studio.operator.application_mcp import (
         _TOOL_DESCRIPTIONS,
         _TOOL_HANDLERS,
@@ -168,6 +196,7 @@ def test_operator_mcp_tool_registries_agree_exactly_in_both_directions():
     application_names = set(_TOOL_MODELS)
     assert application_names == set(_TOOL_HANDLERS)
     assert application_names == set(_TOOL_DESCRIPTIONS)
+    assert application_names == _REQUIRED_OPERATOR_TOOLS
 
     prefix = "mcp__studio_operator__"
     assert all(name.startswith(prefix) for name in _OPERATOR_MCP_TOOLS)
@@ -338,6 +367,34 @@ async def test_application_mcp_effects_are_typed_durable_and_client_acknowledged
         )
     ) == {"effectId": navigation["effectId"], "status": "applied"}
     await store.finish_turn(accepted["requestId"], outcome="completed")
+
+
+@pytest.mark.asyncio
+async def test_application_mcp_generic_value_error_scrubs_known_env_secret_values(monkeypatch):
+    """The generic `ValueError` arm in `_dispatch` returns `str(exc)`
+    unmodified today -- any tool handler that raises a ValueError whose
+    message happens to include a run's own secret value would leak it
+    straight through this arm."""
+    import lionagi.studio.operator.application_mcp as app_mcp
+
+    monkeypatch.setenv("ACME_APP_TOKEN", "greenelephant")
+
+    async def boom(_arguments):
+        raise ValueError("could not resolve using token greenelephant")
+
+    monkeypatch.setitem(app_mcp._TOOL_HANDLERS, "list_recent_runs", boom)
+
+    response = await app_mcp._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "list_recent_runs", "arguments": {}},
+        }
+    )
+
+    text = response["result"]["content"][0]["text"]
+    assert "greenelephant" not in text
 
 
 @pytest.mark.asyncio
@@ -566,7 +623,7 @@ async def test_application_mcp_cancel_run_allow_executes_via_the_real_default_co
     proposal = await _wait_proposal(store, accepted["requestId"])
     assert not task.done()
     assert proposal["commandType"] == "cancel"
-    assert proposal["command"] == {"session_id": run_id, "reason": "hung"}
+    assert proposal["command"] == {"session_id": run_id, "reason": "hung", "project": None}
     assert proposal["risk"] == "execute"
 
     decision = await coordinator.decide(
@@ -656,6 +713,137 @@ async def test_application_mcp_cancel_run_deny_leaves_run_untouched_via_real_coo
         assert row["status"] == "running"
     await store.finish_turn(accepted["requestId"], outcome="completed")
     await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_application_mcp_resume_run_is_reachable_end_to_end(tmp_path, monkeypatch):
+    """`resume_run` must be listed by `tools/list`, callable through the same
+    durable proposal gate `cancel_run`/`launch_playbook` use, and actually
+    dispatched by the real default `OperatorCoordinator` -- not merely
+    present in source with no registry entry and no coordinator branch."""
+    import uuid
+
+    import lionagi.studio.services.run_resume as resume_svc
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.application_mcp import _dispatch
+    from lionagi.studio.operator.resume_run import resume_run
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    run_id = str(uuid.uuid4())
+    branch_id = str(uuid.uuid4())
+    async with StateDB() as db:
+        progression_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "progression_id": progression_id,
+                "status": "completed",
+                "started_at": time.time(),
+                "invocation_kind": "agent",
+            }
+        )
+        branch_progression_id = str(uuid.uuid4())
+        await db.create_progression(branch_progression_id)
+        await db.create_branch(
+            {
+                "id": branch_id,
+                "created_at": 1.0,
+                "name": "worker",
+                "session_id": run_id,
+                "progression_id": branch_progression_id,
+                "model": "claude_code/sonnet",
+                "provider": "claude_code",
+            }
+        )
+
+    launched: list[tuple[list[str], dict]] = []
+
+    async def _fake_launch(argv, **kwargs):
+        launched.append((argv, kwargs))
+        return "resumeinv123"
+
+    monkeypatch.setattr(resume_svc._launches, "launch_detached_argv", _fake_launch)
+    monkeypatch.setattr(
+        resume_svc._subprocess, "resolve_li_executable", lambda: (["/opt/lionagi/bin/li"], None)
+    )
+    monkeypatch.setattr(resume_svc, "_ensure_branch_snapshot_available", lambda _bid: _noop())
+
+    tools_list = await _dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    tool_names = {tool["name"] for tool in tools_list["result"]["tools"]}
+    assert "resume_run" in tool_names
+
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="continue that run",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    task = asyncio.create_task(
+        resume_run({"run": run_id, "instruction": "keep going with step two"})
+    )
+    proposal = await _wait_proposal(store, accepted["requestId"])
+    assert not task.done()
+    assert proposal["commandType"] == "resume"
+
+    decision = await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=proposal["targetVersion"],
+    )
+    result = await asyncio.wait_for(task, timeout=2)
+
+    assert decision["status"] == "succeeded"
+    assert result == {
+        "resumed": True,
+        "id": run_id,
+        "branchId": branch_id,
+        "invocationId": "resumeinv123",
+    }
+    assert launched == [
+        (
+            [
+                "/opt/lionagi/bin/li",
+                "agent",
+                "-r",
+                branch_id,
+                "--prompt",
+                "keep going with step two",
+            ],
+            {
+                "skill": "resume:agent",
+                "plugin": "studio_run_resume",
+                "prompt": "keep going with step two",
+                "tmp_path": None,
+                "action_kind": "agent",
+                "node_metadata": {
+                    "run_id": run_id,
+                    "branch_id": branch_id,
+                    "resume": True,
+                    "queued_for_terminal": False,
+                    "model": None,
+                },
+            },
+        )
+    ]
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+    await coordinator.shutdown()
+
+
+async def _noop() -> None:
+    return None
 
 
 async def _wait_done(
@@ -875,7 +1063,7 @@ async def test_scripted_turn_streams_and_is_visible_as_canonical_run(tmp_path, m
         db_branches = await db.list_branches(run_id)
     assert session is not None
     assert [row["id"] for row in db_branches] == [branch_id]
-    assert await _resolve_branch(run_id, None) == branch_id
+    assert await _resolve_branch(run_id, None) == (branch_id, "agent")
     await _ensure_branch_snapshot_available(branch_id)
     snapshot_run_id, snapshot_path = find_branch(branch_id)
     assert snapshot_run_id == session["run_id"]

@@ -23,6 +23,8 @@ import anyio
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
+from .redact import scrub_text
+from .resume_run import RESUME_RUN_DESCRIPTION, ResumeRunInput, resume_run
 from .run_findings import RunFindingsInput, run_findings
 from .run_progress import RunProgressInput, run_progress
 from .store import OperatorStore
@@ -129,6 +131,7 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "run_progress": RunProgressInput,
     "run_findings": RunFindingsInput,
     "cancel_run": CancelRunInput,
+    "resume_run": ResumeRunInput,
 }
 
 _TOOL_DESCRIPTIONS = {
@@ -192,6 +195,7 @@ _TOOL_DESCRIPTIONS = {
         "full is capped and says so via its own 'truncated' flag."
     ),
     "cancel_run": CANCEL_RUN_DESCRIPTION,
+    "resume_run": RESUME_RUN_DESCRIPTION,
 }
 
 _TOOL_SCHEMAS = [
@@ -496,6 +500,7 @@ _TOOL_HANDLERS = {
     "run_progress": run_progress,
     "run_findings": run_findings,
     "cancel_run": cancel_run,
+    "resume_run": resume_run,
 }
 
 
@@ -546,7 +551,7 @@ async def _dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
                 error=True,
             )
         except ValueError as exc:
-            return _tool_response(message_id, {"error": str(exc)}, error=True)
+            return _tool_response(message_id, {"error": scrub_text(str(exc))}, error=True)
         except Exception:  # noqa: BLE001
             return _tool_response(
                 message_id,
