@@ -3121,6 +3121,11 @@ async def test_concurrent_claim_branch_id_converges_on_one_id(tmp_path):
 
 # -- Part 2: the rename_session Operator tool -----------------------------
 
+# Neutral, non-host-shaped project label for the rename_session tests below
+# -- unlike `_seed_running_session`'s own default, this deliberately avoids
+# looking like a machine path.
+_RENAME_TEST_PROJECT = "studio-test-project"
+
 
 @pytest.mark.asyncio
 async def test_application_mcp_rename_session_allow_executes_via_the_real_default_coordinator(
@@ -3138,7 +3143,7 @@ async def test_application_mcp_rename_session_allow_executes_via_the_real_defaul
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     async with StateDB() as db:
-        run_id = await _seed_running_session(db)
+        run_id = await _seed_running_session(db, project=_RENAME_TEST_PROJECT)
 
     store = OperatorStore(path)
     coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
@@ -3151,7 +3156,7 @@ async def test_application_mcp_rename_session_allow_executes_via_the_real_defaul
             "space": "mission",
             "route": "/",
             "filters": {},
-            "project": "/Users/admin/test-project",
+            "project": _RENAME_TEST_PROJECT,
         },
         expected_last_sequence=0,
     )
@@ -3167,7 +3172,7 @@ async def test_application_mcp_rename_session_allow_executes_via_the_real_defaul
     assert proposal["command"] == {
         "session_id": run_id,
         "name": "nightly backfill",
-        "project": "/Users/admin/test-project",
+        "project": _RENAME_TEST_PROJECT,
     }
     assert proposal["risk"] == "mutate"
 
@@ -3209,7 +3214,7 @@ async def test_application_mcp_rename_session_deny_leaves_run_untouched_via_real
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     async with StateDB() as db:
-        run_id = await _seed_running_session(db)
+        run_id = await _seed_running_session(db, project=_RENAME_TEST_PROJECT)
 
     store = OperatorStore(path)
     coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
@@ -3222,7 +3227,7 @@ async def test_application_mcp_rename_session_deny_leaves_run_untouched_via_real
             "space": "mission",
             "route": "/",
             "filters": {},
-            "project": "/Users/admin/test-project",
+            "project": _RENAME_TEST_PROJECT,
         },
         expected_last_sequence=0,
     )
@@ -3280,7 +3285,7 @@ async def test_rename_session_not_found_reports_reason_without_creating_a_propos
             "space": "mission",
             "route": "/",
             "filters": {},
-            "project": "/Users/admin/test-project",
+            "project": _RENAME_TEST_PROJECT,
         },
         expected_last_sequence=0,
     )
@@ -3295,3 +3300,68 @@ async def test_rename_session_not_found_reports_reason_without_creating_a_propos
 
     await store.finish_turn(accepted["requestId"], outcome="completed")
     await coordinator.shutdown()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("bad\nname", id="embedded-newline"),
+        pytest.param("bad\x00name", id="embedded-nul"),
+        pytest.param("bad‮name", id="bidi-control-rlo"),
+        pytest.param("bad name", id="line-separator"),
+        pytest.param("bad name", id="paragraph-separator"),
+        pytest.param("bad\x7fname", id="delete-control"),
+    ],
+)
+def test_rename_session_input_rejects_unicode_control_characters(name):
+    """`RenameSessionInput.name` must refuse Unicode `Cc`/`Cf`/`Zl`/`Zp`
+    characters before a proposal is ever created -- the value is copied
+    verbatim into the proposal command and reaches `db.update_session`,
+    which validates column names, not values. Category-based, not an
+    enumerated blocklist, so this covers control characters the author
+    never explicitly thought of."""
+    from pydantic import ValidationError
+
+    from lionagi.studio.operator.rename_session import RenameSessionInput
+
+    with pytest.raises(ValidationError):
+        RenameSessionInput.model_validate({"run": "some-run", "name": name})
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("café", id="accented-latin"),
+        pytest.param("日本語のセッション", id="cjk"),
+        pytest.param("nightly backfill 🎉", id="emoji"),
+        pytest.param("nightly backfill", id="internal-space"),
+    ],
+)
+def test_rename_session_input_keeps_non_ascii_names(name):
+    """The control-character check must not overshoot into rejecting
+    ordinary non-ASCII text: accented Latin, CJK, emoji, and an internal
+    space all name a run just as validly as plain ASCII does."""
+    from lionagi.studio.operator.rename_session import RenameSessionInput
+
+    args = RenameSessionInput.model_validate({"run": "some-run", "name": name})
+    assert args.name == name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("   ", id="whitespace-only"),
+        pytest.param("x" * 161, id="over-length"),
+    ],
+)
+def test_rename_session_input_still_rejects_empty_whitespace_and_over_length(name):
+    """The pre-existing length/whitespace rejections must keep working
+    alongside the new control-character check, not be silently dropped by
+    it."""
+    from pydantic import ValidationError
+
+    from lionagi.studio.operator.rename_session import RenameSessionInput
+
+    with pytest.raises(ValidationError):
+        RenameSessionInput.model_validate({"run": "some-run", "name": name})
