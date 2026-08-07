@@ -680,6 +680,9 @@ _PARITY_PATCH_CORPUS = [
     ("env_not_a_dict", {"env": "not-a-dict"}),
     ("env_int", {"env": 5}),
     ("env_list", {"env": []}),
+    ("env_empty_string", {"env": ""}),
+    ("args_null", {"args": None}),
+    ("timeout_empty_string", {"timeout": ""}),
 ]
 
 
@@ -756,6 +759,90 @@ def test_route_env_deletion_patch_validate_and_save_parity_end_to_end(mcp_client
     save_resp = mcp_client.put("/api/mcp/servers/myserver", json={"env": {"API_KEY": None}})
     assert save_resp.status_code == 200
     assert "API_KEY" not in save_resp.json()["env_keys"]
+
+
+@pytest.mark.parametrize(
+    "case_name,patch",
+    [
+        ("env_list", {"command": "python3", "env": []}),
+        ("env_empty_string", {"command": "python3", "env": ""}),
+        ("args_null", {"command": "python3", "args": None}),
+        ("timeout_empty_string", {"command": "python3", "timeout": ""}),
+    ],
+)
+def test_create_time_malformed_falsy_values_are_rejected_not_laundered(
+    mcp_client, case_name, patch
+):
+    """The regression this fixes: a falsy but wrong-typed value (`[]`/`""`
+    where env wants a mapping, a bare `None` where args wants a list, `""`
+    where timeout wants a number) must reach `_validate_shape` and fail it,
+    not be normalized into "key absent" by the merge before validation ever
+    runs. Both endpoints must actually reject -- not just agree with each
+    other, which parity alone would not catch if both silently accepted."""
+    name = f"fresh-{case_name}"
+
+    validate_resp = mcp_client.post(
+        f"/api/mcp/servers/{name}/validate", json={"name": name, **patch}
+    )
+    assert validate_resp.status_code == 200
+    assert validate_resp.json()["ok"] is False, f"{case_name}: validate accepted {patch!r}"
+    assert validate_resp.json()["errors"]
+
+    register_resp = mcp_client.post("/api/mcp/servers/", json={"name": name, **patch})
+    assert register_resp.status_code == 400, (
+        f"{case_name}: register accepted {patch!r} ({register_resp.text})"
+    )
+
+
+def test_update_env_empty_list_is_rejected_not_silently_ignored(tmp_path, monkeypatch):
+    """Before this fix, `env: []` on an update was normalized to `{}` by
+    `patch["env"] or {}` and merged as a no-op -- the existing env survived
+    untouched and the save reported success, silently diverging from
+    validate (which already rejected a non-dict env). That divergence is
+    closed deliberately, as a tightening: update now rejects the same
+    malformed value validate always did, and the config on disk is
+    untouched by the rejected patch."""
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    result = asyncio.run(mcp_mod.validate_config("myserver", {"env": []}, check_connection=False))
+    assert result["ok"] is False
+
+    with pytest.raises(mcp_mod.McpServerError):
+        mcp_mod.update_server("myserver", {"env": []})
+
+    on_disk = json.loads(registry_path.read_text())
+    assert on_disk["servers"]["myserver"]["config"]["env"] == STDIO_CONFIG["env"]
+
+
+def test_update_env_null_top_level_is_a_no_op_not_a_wipe(tmp_path, monkeypatch):
+    """A bare `env: null` carries no individual keys to delete, unlike
+    `env: {KEY: null}` -- it leaves the existing env untouched. This is
+    distinct from `env: []`, a malformed container that is now rejected
+    outright rather than silently normalized to the same no-op."""
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    updated = mcp_mod.update_server("myserver", {"env": None})
+
+    assert updated["env_keys"] == ["API_KEY"]
+    on_disk = json.loads(registry_path.read_text())
+    assert on_disk["servers"]["myserver"]["config"]["env"] == STDIO_CONFIG["env"]
+
+
+def test_update_args_null_is_rejected_not_treated_as_absent(tmp_path, monkeypatch):
+    """Unlike `timeout`, `_validate_shape` has no reading of `args: null` as
+    valid -- args must always be a list. So, unlike `timeout: null` (which
+    clears the field), `args: null` is written through to the shape check
+    and rejected, on update exactly as it is on create."""
+    registry_path, _ = _point_registry_at(tmp_path, monkeypatch)
+    mcp_mod.register_server("myserver", STDIO_CONFIG)
+
+    with pytest.raises(mcp_mod.McpServerError):
+        mcp_mod.update_server("myserver", {"args": None})
+
+    on_disk = json.loads(registry_path.read_text())
+    assert on_disk["servers"]["myserver"]["config"]["args"] == STDIO_CONFIG["args"]
 
 
 def test_validate_create_time_null_env_against_empty_base_is_key_absent(tmp_path, monkeypatch):

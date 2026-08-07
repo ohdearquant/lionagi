@@ -345,7 +345,20 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
     not wipe the env block it never saw. ``env`` merges key-by-key; a `None`
     value for a key removes it (the client's explicit way to drop a secret
     without knowing its value). Any other field replaces wholesale when
-    present, and a `None`/empty value removes it.
+    present, and only an explicit `None` removes it -- a wrong-typed falsy
+    value (``""``, ``[]``) is *not* treated as "key absent": it is written
+    into the merged config as-is and left for ``_validate_shape`` to reject,
+    the same way a raw, unmerged config would. Laundering a malformed value
+    into "absent" here would make it validate by accident.
+
+    ``args`` is the one exception to "`None` removes it": unlike ``timeout``
+    (where `None` means "no timeout", a value ``_validate_shape`` accepts),
+    the shape check has no such reading for ``args`` -- it must always be a
+    list, empty or not. Treating ``args: null`` as "key absent" would delete
+    a malformed value into a *valid* one (the default ``[]``) instead of
+    leaving it for the shape check to reject, so it is written through like
+    any other wrong-typed value; the typed empty list is the actual way to
+    clear it.
 
     A transport switch drops every field belonging to the transport being
     left, not just the one that names it. The shape check only requires
@@ -359,13 +372,15 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
         if key not in patch:
             continue
         value = patch[key]
-        if value in (None, ""):
+        if value is None and key != "args":
             merged.pop(key, None)
         else:
             merged[key] = value
 
     if "env" in patch:
-        incoming_env = patch["env"] or {}
+        incoming_env = patch["env"]
+        if incoming_env is None:
+            incoming_env = {}
         if isinstance(incoming_env, dict):
             merged_env = dict(existing.get("env") or {})
             for env_key, env_value in incoming_env.items():
@@ -375,10 +390,10 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
                     merged_env[env_key] = env_value
             merged["env"] = merged_env
         else:
-            # Not a mapping at all (e.g. a string or a number) -- pass it
-            # through untouched so `_validate_shape`'s own env type check
-            # reports it as an ordinary shape error, instead of this merge
-            # crashing on `.items()` before validation ever runs.
+            # Not a mapping at all (e.g. a string, a list, or a number) --
+            # pass it through untouched so `_validate_shape`'s own env type
+            # check reports it as an ordinary shape error, instead of this
+            # merge crashing on `.items()` before validation ever runs.
             merged["env"] = incoming_env
 
     if patch.get("url"):
