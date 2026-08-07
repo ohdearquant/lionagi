@@ -61,7 +61,7 @@ Studio admin surface all consume it, through the module's own
 no caller outside `_code_identity.py`. `lionagi/cli/_runs.py` and
 `lionagi/cli/orchestrate/` consume it by neither route. So `li doctor` will
 tell an operator exactly where their checkout sits, while a nineteen-agent run
-beside it records nothing.
+beside it records no such thing.
 
 ## Decision
 
@@ -230,13 +230,19 @@ cannot see: correct base, correct trunk, wrong understanding. Preconditions
 check that the ground has not moved, not that the run is looking at the right
 ground.
 
-Measurement should land before any of this. `CLISession.populate_summary()` is
-called by all four CLI providers — `anthropic/claude_code.py`,
-`openai/codex.py`, `google/gemini_code.py` and `pi/cli.py` — and the field it
-fills is read by nothing, so a successful fifty-leg run records zero everywhere.
-The cost figures motivating this ADR were obtained by counting output
-directories by hand. Policy set on anecdote is policy that cannot be evaluated
-afterwards.
+Measurement should land before any of this, and the gap is narrower and more
+specific than it first appears. `CLISession.populate_summary()` is called by
+all four CLI providers — `anthropic/claude_code.py`, `openai/codex.py`,
+`google/gemini_code.py` and `pi/cli.py` — but every one of those calls sits
+behind `cli_include_summary`, declared `Field(default=False)`, so on the
+default path it does not run at all. What a leg cost is nonetheless recorded:
+usage, cost and turn counts travel in the response metadata and are summed per
+branch by a path independent of this field. What is missing is the record of
+what a leg *did* — its tool counts and file operations — which is both unread
+and, on the default path, never written. That is also the half a person asks
+about first. The cost figures motivating this ADR were obtained by counting
+output directories by hand. Policy set on anecdote is policy that cannot be
+evaluated afterwards.
 
 ## Alternatives considered
 
