@@ -53,6 +53,24 @@ async def test_list_filters_by_target_id(db: StateDB):
     assert {r["target_id"] for r in only_s1} == {"s1"}
 
 
+async def test_list_filters_by_target_id_finds_batch_actions_with_no_target_column(
+    db: StateDB,
+):
+    """A batch action (transition/prune) writes one event with target_id=NULL
+    and the affected session ids only inside `details` — filtering by one of
+    those ids must still surface the event, not silently return nothing."""
+    await db.insert_admin_event(
+        action="transition",
+        target_id=None,
+        details={"transitioned": ["sess-batch-1", "sess-batch-2"], "skipped": []},
+    )
+    await db.insert_admin_event(action="checkpoint", target_id=None, details={})
+
+    matches = await db.list_admin_events(target_id="sess-batch-1")
+    assert len(matches) == 1
+    assert matches[0]["action"] == "transition"
+
+
 async def test_events_returned_newest_first(db: StateDB):
     import asyncio
 
