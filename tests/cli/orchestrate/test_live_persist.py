@@ -1576,6 +1576,70 @@ async def test_stop_no_artifact_no_commits_flips_to_completed_empty(
     assert v is None
 
 
+async def test_stop_failed_operation_evidence_wins_over_completed_empty_demotion(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A run whose nodes all failed typically produces no commits, no dirty
+    tree, and no artifacts either -- the same shape as a legitimate no-op
+    leg. The node-failure backstop must see the failure evidence before the
+    completion-trust gate gets a chance to demote the run to
+    'completed_empty' and bury it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    env._failed_operation_evidence = [
+        {"kind": "failed_operation", "id": "last", "label": "reviewer"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed", "failure evidence must outrank the no-evidence demotion"
+    assert s["status_reason_code"] == "run.failed.exception"
+    assert "last" in (s["status_reason_summary"] or "")
+
+
+async def test_stop_escalated_evidence_wins_over_completed_empty_demotion(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Same masking hazard as the node-failure backstop above, but for a leg
+    that gave up via EscalationRequest: no commits, no dirty tree, no
+    artifacts -- the escalation backstop must see the evidence before the
+    completion-trust gate demotes the run to 'completed_empty'."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    env._escalated_evidence = [
+        {"kind": "escalated_operation", "id": "worker", "label": "cannot proceed"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed", "escalation evidence must outrank the no-evidence demotion"
+    assert s["status_reason_code"] == "run.failed.escalated"
+
+
 async def test_stop_commits_ahead_of_base_stays_completed(
     temp_db_path: Path,
     tmp_path: Path,

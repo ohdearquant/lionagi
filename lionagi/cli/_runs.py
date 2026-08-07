@@ -623,6 +623,45 @@ async def _teardown_common(
                 str(entry.get("id", "")) for entry in missing
             ]
 
+    # Node-failure backstop: a DAG operation's invoke() raised
+    # and the executor recorded EventStatus.FAILED for it, but that per-node
+    # failure was folded into completed_operations right alongside genuine
+    # completions and never rolled up into the run's own status -- a run
+    # whose terminal (or any other) node died could still read as an
+    # ordinary clean completion. See lionagi/operations/flow.py's
+    # failed_operations tracking and _execute_dag's evidence collection.
+    # Runs before the completion-trust gate below: a run whose nodes all
+    # failed typically produces no artifacts or commits either, so the gate
+    # would otherwise demote it to "completed_empty" first and this failure
+    # evidence would never see a status that reflects it.
+    if failed_operation_evidence and final_status == "completed":
+        from lionagi.state.reasons import RunReasons
+
+        final_status = "failed"
+        final_reason_code = RunReasons.FAILED_EXCEPTION
+        ids = [str(e.get("id", "")) for e in failed_operation_evidence]
+        final_reason_summary = (
+            f"{len(failed_operation_evidence)} operation(s) failed: {', '.join(ids)}."
+        )
+        final_evidence_refs = failed_operation_evidence
+
+    # Escalation backstop: a leg that gave up mid-run via EscalationRequest without
+    # an artifact contract must not read as a clean completion. Also runs ahead of
+    # the completion-trust gate for the same reason as the node-failure backstop
+    # above -- an escalated run with no evidence must not be demoted to
+    # "completed_empty" before this check has a chance to run.
+    if escalated_evidence and final_status == "completed":
+        from lionagi.state.reasons import RunReasons
+
+        final_status = "failed"
+        final_reason_code = RunReasons.FAILED_ESCALATED
+        ids = [str(e.get("id", "")) for e in escalated_evidence]
+        final_reason_summary = (
+            f"{len(escalated_evidence)} operation(s) escalated without producing "
+            f"required output: {', '.join(ids)}."
+        )
+        final_evidence_refs = escalated_evidence
+
     # Completion-trust gate: don't accept "completed" on faith. Require a git trace
     # (commits ahead/dirty tree) or a durable assistant response as real evidence.
     if final_status == "completed" and not (verification and verification.get("produced")):
@@ -657,38 +696,6 @@ async def _teardown_common(
                         ),
                     }
                 ]
-
-    # Node-failure backstop: a DAG operation's invoke() raised
-    # and the executor recorded EventStatus.FAILED for it, but that per-node
-    # failure was folded into completed_operations right alongside genuine
-    # completions and never rolled up into the run's own status -- a run
-    # whose terminal (or any other) node died could still read as an
-    # ordinary clean completion. See lionagi/operations/flow.py's
-    # failed_operations tracking and _execute_dag's evidence collection.
-    if failed_operation_evidence and final_status == "completed":
-        from lionagi.state.reasons import RunReasons
-
-        final_status = "failed"
-        final_reason_code = RunReasons.FAILED_EXCEPTION
-        ids = [str(e.get("id", "")) for e in failed_operation_evidence]
-        final_reason_summary = (
-            f"{len(failed_operation_evidence)} operation(s) failed: {', '.join(ids)}."
-        )
-        final_evidence_refs = failed_operation_evidence
-
-    # Escalation backstop: a leg that gave up mid-run via EscalationRequest without
-    # an artifact contract must not read as a clean completion.
-    if escalated_evidence and final_status == "completed":
-        from lionagi.state.reasons import RunReasons
-
-        final_status = "failed"
-        final_reason_code = RunReasons.FAILED_ESCALATED
-        ids = [str(e.get("id", "")) for e in escalated_evidence]
-        final_reason_summary = (
-            f"{len(escalated_evidence)} operation(s) escalated without producing "
-            f"required output: {', '.join(ids)}."
-        )
-        final_evidence_refs = escalated_evidence
 
     # A gate node rejected mid-DAG (issue #2860) and the executor
     # short-circuited its dependent subtree to skipped instead of running
