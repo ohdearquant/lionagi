@@ -18,6 +18,7 @@ import Duration from "@/components/ui/Duration";
 import Skeleton from "@/components/ui/Skeleton";
 import { formatElapsed } from "@/lib/elapsed";
 import { deriveDisplayStatus } from "@/lib/runStatus";
+import { formatCostUsd } from "@/lib/usageFormat";
 import { resolveRunLabel } from "@/lib/runLabel";
 import type { RunSummary } from "@/lib/types";
 import { groupConsecutiveRecentRuns, groupSpanSec } from "./recentGroups";
@@ -167,6 +168,11 @@ function RunRow({
       <StatusVerdictChips run={run} statusLabel={statusLabel(deriveDisplayStatus(run))} />
       <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-secondary">
         {name}
+      </span>
+      {/* Bare formatted value, no label — keeps this compact strip free of a
+          new locale key (same call the run-detail branch-row header made). */}
+      <span className="shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
+        {formatCostUsd(run.total_cost_usd)}
       </span>
       <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
         <Duration value={dur} />

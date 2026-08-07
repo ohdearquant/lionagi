@@ -785,6 +785,8 @@
     },
     "history": {
       "label": "Historique de session",
+      "sortRecent": "Récent",
+      "sortCost": "Coût le plus élevé",
       "all": "Tout",
       "completed": "Terminées",
       "failed": "Échouées",
@@ -862,6 +864,15 @@
       "completionRate": "{rate} % terminé",
       "noTerminalRuns": "Aucune exécution terminée dans la fenêtre",
       "total": "{count, plural, one {# au total} other {# au total}}",
+      "staleHint": "dernier état connu affiché · échec de l’actualisation"
+    },
+    "spend": {
+      "title": "Dépenses déclarées",
+      "loading": "Chargement des dépenses…",
+      "error": "Dépenses indisponibles · {message}",
+      "unreachable": "API inaccessible",
+      "empty": "Aucune exécution dans la fenêtre",
+      "coverage": "{reported} sur {total} déclarées",
       "staleHint": "dernier état connu affiché · échec de l’actualisation"
     },
     "stale": {

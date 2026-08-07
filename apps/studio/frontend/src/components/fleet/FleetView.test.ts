@@ -253,6 +253,29 @@ describe("fleet history filter — normalized status", () => {
   });
 });
 
+// ─── Cost-sorted history must page truthfully, not read as complete ──────────
+// A cost-sorted fetch of one server page, filtered client-side by status, used
+// to hardcode histHasMore=false — so a status filter matching rows beyond that
+// first page silently dropped them while the list still read as complete.
+
+describe("cost-sorted history — hasMore is never hardcoded false", () => {
+  const src = fs.readFileSync(path.join(FLEET_DIR, "FleetView.tsx"), "utf-8");
+
+  it("histHasMore for cost mode is driven by real server pagination state, not a literal false", () => {
+    expect(src).not.toMatch(/histSort === "cost" \? false/);
+    expect(src).toMatch(/histHasMore = histSort === "cost" \? costHasMore/);
+  });
+
+  it("cost mode's load-more handler fetches another cost-ranked page instead of no-oping", () => {
+    const fnMatch = src.match(/const handleLoadMore = useCallback\(\(\) => \{[\s\S]*?\n {2}\}, \[/);
+    expect(fnMatch).not.toBeNull();
+    const body = fnMatch?.[0] ?? "";
+    const costBranch = body.slice(0, body.indexOf("if (histVisible < historyRows.length)"));
+    expect(costBranch).toMatch(/costPager/);
+    expect(costBranch).toMatch(/loadNext\(\)/);
+  });
+});
+
 // ─── Selection validity: URL id validated against live agent set ──────────────
 
 describe("selectedRunId validation", () => {

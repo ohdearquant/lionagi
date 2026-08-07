@@ -785,6 +785,8 @@
     },
     "history": {
       "label": "سجل الجلسات",
+      "sortRecent": "الأحدث",
+      "sortCost": "الأعلى تكلفة",
       "all": "الكل",
       "completed": "مكتملة",
       "failed": "فاشلة",
@@ -862,6 +864,15 @@
       "completionRate": "اكتمال {rate}%",
       "noTerminalRuns": "لا توجد تشغيلات منتهية في النافذة",
       "total": "{count, plural, zero {لا إجمالي} one {إجمالي واحد} two {إجماليان} few {# إجماليات} many {# إجماليًا} other {# إجمالي}}",
+      "staleHint": "عرض آخر حالة معروفة · فشل التحديث"
+    },
+    "spend": {
+      "title": "الإنفاق المُبلَّغ عنه",
+      "loading": "جارٍ تحميل الإنفاق…",
+      "error": "الإنفاق غير متاح · {message}",
+      "unreachable": "تعذّر الوصول إلى API",
+      "empty": "لا توجد عمليات تشغيل ضمن هذه النافذة",
+      "coverage": "تم الإبلاغ عن {reported} من {total}",
       "staleHint": "عرض آخر حالة معروفة · فشل التحديث"
     },
     "stale": {

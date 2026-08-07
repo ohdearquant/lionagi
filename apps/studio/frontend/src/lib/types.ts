@@ -107,6 +107,12 @@ export interface RunSummary {
   // ADR-0029: artifact contract and verification result.
   artifact_contract_json?: ArtifactContract | null;
   artifact_verification_json?: ArtifactVerification | null;
+  // Cost-visibility contract: `null` means the provider never reported a
+  // cost for this run (unknown); a genuine `0` is a distinct, real value.
+  // Never coerce one into the other — format with usageFormat.ts.
+  total_cost_usd?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
 }
 
 export interface RunMessage {

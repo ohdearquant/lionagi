@@ -785,6 +785,8 @@
     },
     "history": {
       "label": "سیشن ہسٹری",
+      "sortRecent": "حالیہ",
+      "sortCost": "سب سے زیادہ لاگت",
       "all": "سب",
       "completed": "مکمل",
       "failed": "ناکام",
@@ -862,6 +864,15 @@
       "completionRate": "⁨{rate}⁩% تکمیل",
       "noTerminalRuns": "ونڈو میں کوئی مکمل رنز نہیں",
       "total": "{count, plural, one {کل #} other {کل #}}",
+      "staleHint": "آخری معلوم دکھایا جا رہا ہے · ریفریش ناکام"
+    },
+    "spend": {
+      "title": "رپورٹ شدہ خرچ",
+      "loading": "خرچ لوڈ ہو رہا ہے…",
+      "error": "خرچ دستیاب نہیں · {message}",
+      "unreachable": "API تک رسائی نہیں",
+      "empty": "اس ونڈو میں کوئی رن نہیں",
+      "coverage": "{total} میں سے {reported} رپورٹ ہوئیں",
       "staleHint": "آخری معلوم دکھایا جا رہا ہے · ریفریش ناکام"
     },
     "stale": {

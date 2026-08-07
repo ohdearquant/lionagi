@@ -198,14 +198,24 @@ async def count_sessions(where: SessionFilter | None = None) -> int:
     return int(row["n"]) if row else 0
 
 
+# "cost" sorts unreported (NULL total_cost_usd) after every reported value,
+# including a genuine $0.00 — `total_cost_usd IS NULL` evaluates to 0/1 and
+# sorts ascending first, so reported rows (0) always precede unreported (1).
+_SESSION_SORTS: dict[str, str] = {
+    "recent": "s.updated_at DESC",
+    "cost": "s.total_cost_usd IS NULL, s.total_cost_usd DESC, s.updated_at DESC",
+}
+
+
 async def list_sessions(
     *,
     limit: int = MAX_SESSION_PAGE,
     offset: int = 0,
     where: SessionFilter | None = None,
+    sort: str = "recent",
 ) -> list[dict[str, Any]]:
-    """One page of sessions, newest first. Cost is proportional to `limit`, not
-    to the size of the store."""
+    """One page of sessions, newest first (or highest-cost first). Cost is
+    proportional to `limit`, not to the size of the store."""
     require_file_store()
     if not store_exists():
         return []
@@ -213,6 +223,7 @@ async def list_sessions(
     limit = max(1, min(int(limit), MAX_SESSION_PAGE))
     offset = max(0, int(offset))
     clause, params = (where or SessionFilter()).where()
+    order_by = _SESSION_SORTS.get(sort, _SESSION_SORTS["recent"])
 
     async with _open_db(store_path()) as db:
         # run_tags is created lazily on first tag write, so a tag filter would
@@ -227,7 +238,7 @@ async def list_sessions(
                 SELECT s.id AS page_id
                 FROM sessions s
                 {clause}
-                ORDER BY s.updated_at DESC
+                ORDER BY {order_by}
                 LIMIT ? OFFSET ?
             )
             SELECT
@@ -258,6 +269,9 @@ async def list_sessions(
                 s.status_reason_code,
                 s.status_reason_summary,
                 s.node_metadata,
+                s.total_cost_usd,
+                s.input_tokens,
+                s.output_tokens,
                 COUNT(DISTINCT b.id) AS branch_count,
                 COALESCE(SUM(
                     json_array_length(p.collection)
@@ -267,7 +281,7 @@ async def list_sessions(
             LEFT JOIN branches b ON b.session_id = s.id
             LEFT JOIN progressions p ON p.id = b.progression_id
             GROUP BY s.id
-            ORDER BY s.updated_at DESC
+            ORDER BY {order_by}
             """,  # noqa: S608
             [*params, limit, offset],
         )
@@ -332,6 +346,11 @@ async def list_sessions(
             # ADR-0057: denormalized status reason for the hot read path.
             "status_reason_code": row["status_reason_code"],
             "status_reason_summary": row["status_reason_summary"],
+            # Cost-visibility contract: NULL means the provider never reported
+            # a cost for this session (unknown), never coerced to 0.0 (free).
+            "total_cost_usd": row["total_cost_usd"],
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
         }
         for row in rows
     ]
@@ -656,7 +675,8 @@ async def get_session(
                       source_kind, status, started_at, ended_at, last_message_at,
                       model, provider, effort, agent_hash, invocation_id,
                       node_metadata, project, project_source,
-                      status_reason_code, status_reason_summary, status_evidence_refs
+                      status_reason_code, status_reason_summary, status_evidence_refs,
+                      total_cost_usd, input_tokens, output_tokens
                FROM sessions WHERE id = ?""",
             (session_id,),
         )
@@ -837,6 +857,10 @@ async def get_session(
         "status_reason_code": session_row["status_reason_code"],
         "status_reason_summary": session_row["status_reason_summary"],
         "status_evidence_refs": _parse_json_col(session_row["status_evidence_refs"]),
+        # Cost-visibility contract: NULL means unreported, never coerced to 0.0.
+        "total_cost_usd": session_row["total_cost_usd"],
+        "input_tokens": session_row["input_tokens"],
+        "output_tokens": session_row["output_tokens"],
         "graph": _graph_from_metadata(session_row["node_metadata"]),
         "segments": (_parse_metadata(session_row["node_metadata"]) or {}).get("segments"),
         # Raw node_metadata (carries pid/pid_create_time) so callers like
@@ -951,10 +975,16 @@ async def list_sessions_route(
         description=f"Rows to return, newest first (max {MAX_SESSION_PAGE})",
     ),
     offset: int = Query(default=0, ge=0, description="Rows to skip, newest first"),
+    sort: str = Query(
+        default="recent",
+        description="Sort order: 'recent' (default) or 'cost' (highest reported spend first)",
+    ),
 ) -> dict[str, Any]:
     """One page of sessions. The response always reports `total` and
     `truncated` so a bounded answer can never be mistaken for a complete one."""
-    sessions = await list_sessions(limit=limit, offset=offset)
+    if sort not in _SESSION_SORTS:
+        raise HTTPException(status_code=422, detail="sort must be one of: recent, cost")
+    sessions = await list_sessions(limit=limit, offset=offset, sort=sort)
     total = await count_sessions()
     return {
         "sessions": sessions,
