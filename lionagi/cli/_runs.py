@@ -662,9 +662,46 @@ async def _teardown_common(
         )
         final_evidence_refs = escalated_evidence
 
+    # Gate-rejection backstop: a gate node rejected mid-DAG (issue #2860) and the
+    # executor short-circuited its dependent subtree to skipped instead of running
+    # those nodes against the rejected baseline. That is a correct, deliberate
+    # stop, not a failure -- status stays "completed" -- but the reason code must
+    # say so explicitly rather than reading identically to a clean pass. Runs
+    # before the completion-trust gate below, alongside the node-failure and
+    # escalation backstops: a gate-rejected run typically produces no artifacts
+    # or commits either (the rejected subtree never ran), and unlike those two
+    # backstops this one deliberately leaves final_status at "completed" instead
+    # of flipping to "failed" -- so it cannot rely on the trust gate's own
+    # `final_status == "completed"` guard to skip it and must run first so its
+    # evidence is in place before that gate's no-evidence check runs.
+    if gate_rejected_evidence and final_status == "completed":
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["gate_rejections"] = gate_rejected_evidence
+        final_reason_code = RunReasons.COMPLETED_GATE_REJECTED
+        gate_names = ", ".join(
+            str(e.get("label") or e.get("id") or "") for e in gate_rejected_evidence
+        )
+        final_reason_summary = (
+            f"DAG completed successfully; {len(gate_rejected_evidence)} gate(s) rejected "
+            f"({gate_names}) and their dependent subtree was short-circuited instead of "
+            "running against the rejected baseline."
+        )
+        final_evidence_refs = gate_rejected_evidence
+
     # Completion-trust gate: don't accept "completed" on faith. Require a git trace
     # (commits ahead/dirty tree) or a durable assistant response as real evidence.
-    if final_status == "completed" and not (verification and verification.get("produced")):
+    # Skipped when gate_rejected_evidence fired above: a gate rejection is itself
+    # real evidence of a deliberate stop, and (unlike the node-failure/escalation
+    # backstops) it leaves final_status at "completed" rather than "failed", so
+    # without this guard the demotion below would still run and overwrite the
+    # gate-rejection reason/evidence with a plain no-evidence verdict.
+    if (
+        final_status == "completed"
+        and not gate_rejected_evidence
+        and not (verification and verification.get("produced"))
+    ):
         from lionagi.state.completion_evidence import (
             check_completion_evidence,
             has_completion_evidence,
@@ -696,27 +733,6 @@ async def _teardown_common(
                         ),
                     }
                 ]
-
-    # A gate node rejected mid-DAG (issue #2860) and the executor
-    # short-circuited its dependent subtree to skipped instead of running
-    # those nodes against the rejected baseline. That is a correct, deliberate
-    # stop, not a failure -- status stays "completed" -- but the reason code
-    # must say so explicitly rather than reading identically to a clean pass.
-    if gate_rejected_evidence and final_status == "completed":
-        from lionagi.state.reasons import RunReasons
-
-        metadata = dict(metadata or {})
-        metadata["gate_rejections"] = gate_rejected_evidence
-        final_reason_code = RunReasons.COMPLETED_GATE_REJECTED
-        gate_names = ", ".join(
-            str(e.get("label") or e.get("id") or "") for e in gate_rejected_evidence
-        )
-        final_reason_summary = (
-            f"DAG completed successfully; {len(gate_rejected_evidence)} gate(s) rejected "
-            f"({gate_names}) and their dependent subtree was short-circuited instead of "
-            "running against the rejected baseline."
-        )
-        final_evidence_refs = gate_rejected_evidence
 
     # The synthesis artifact IS the run's output. A DAG that completed but
     # whose output write raised has not delivered anything -- that is a real

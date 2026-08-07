@@ -1640,6 +1640,45 @@ async def test_stop_escalated_evidence_wins_over_completed_empty_demotion(
     assert s["status_reason_code"] == "run.failed.escalated"
 
 
+async def test_stop_gate_rejected_evidence_wins_over_completed_empty_demotion(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Same masking hazard as the node-failure and escalation backstops above,
+    but for a gate that rejected mid-DAG: the rejected subtree is
+    short-circuited and typically produces no commits, no dirty tree, no
+    artifacts. Unlike those two backstops, a gate rejection is a deliberate,
+    correct stop -- final status must stay 'completed' -- but its evidence
+    must survive; the completion-trust gate must not overwrite it with a
+    plain no-evidence 'completed_empty' verdict."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    env._gate_rejected_evidence = [
+        {"kind": "gate_rejected", "id": "reviewer", "label": "reviewer-gate"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed", "gate rejection is a deliberate stop, not a failure"
+    assert s["status_reason_code"] == "run.completed.gate_rejected"
+    assert "reviewer-gate" in (s["status_reason_summary"] or "")
+    refs = s["status_evidence_refs"] or []
+    assert any(r.get("id") == "reviewer" for r in refs), (
+        "gate-rejection evidence must survive the no-evidence demotion"
+    )
+
+
 async def test_stop_commits_ahead_of_base_stays_completed(
     temp_db_path: Path,
     tmp_path: Path,
