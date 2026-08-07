@@ -221,6 +221,69 @@ def test_reap_stale_invocations_zero_session_within_grace(tmp_path, monkeypatch)
     assert inv["status"] == "running"
 
 
+def test_reap_stale_invocations_deadline_lost_cas_does_not_stamp_ended_at(tmp_path, monkeypatch):
+    """A lost CAS race on the deadline path must not leave ended_at stamped
+    while status is still "running" — the same "status and ended_at
+    disagree" defect as issue #2844, on the invocation deadline path.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    old_started = time.time() - 8000  # well past default 7200s deadline
+    iid = run_async(_seed_invocation(db_path, started_at=old_started, session_count=1))
+
+    async def _lost_race(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(StateDB, "update_status", _lost_race)
+
+    from lionagi.studio.services.lifecycle import reap_stale_invocations
+
+    count = run_async(reap_stale_invocations(deadline_seconds=7200))
+    assert count == 0
+
+    inv = run_async(_get_invocation(db_path, iid))
+    assert inv is not None
+    assert inv["status"] == "running"
+    assert inv["ended_at"] is None
+
+
+def test_reap_stale_invocations_zero_session_lost_cas_does_not_stamp_ended_at(
+    tmp_path, monkeypatch
+):
+    """A lost CAS race on the zero-session path must not leave ended_at
+    stamped while status is still "running" — the same "status and ended_at
+    disagree" defect as issue #2844, on the invocation zero-session path.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    stale_updated = time.time() - 600  # 10 min ago, past 5 min grace
+    iid = run_async(
+        _seed_invocation(
+            db_path,
+            started_at=time.time() - 120,
+            updated_at=stale_updated,
+            session_count=0,
+        )
+    )
+
+    async def _lost_race(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(StateDB, "update_status", _lost_race)
+
+    from lionagi.studio.services.lifecycle import reap_stale_invocations
+
+    count = run_async(reap_stale_invocations(deadline_seconds=7200, zero_session_grace_seconds=300))
+    assert count == 0
+
+    inv = run_async(_get_invocation(db_path, iid))
+    assert inv is not None
+    assert inv["status"] == "running"
+    assert inv["ended_at"] is None
+
+
 # ── per-action-kind deadline override ────────────────────────────────────────
 
 

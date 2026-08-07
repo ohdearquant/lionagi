@@ -113,7 +113,6 @@ async def reap_stale_invocations(
                         started_at,
                         effective_deadline,
                     )
-                    await db.update_invocation(inv_id, ended_at=now)
                     transitioned = await db.update_status(
                         "invocation",
                         inv_id,
@@ -131,6 +130,11 @@ async def reap_stale_invocations(
                         expected_statuses={"running"},
                     )
                     if transitioned:
+                        # Stamp ended_at only after the guarded transition wins,
+                        # so a lost CAS never leaves ended_at set on a row whose
+                        # status did not actually move (issue #2844).
+                        if inv.get("ended_at") is None:
+                            await db.update_invocation(inv_id, ended_at=now)
                         reaped += 1
                     else:
                         _log.debug("Invocation %s skipped (status changed before CAS lock)", inv_id)
@@ -152,7 +156,6 @@ async def reap_stale_invocations(
                         inv_id,
                         zero_session_grace_seconds,
                     )
-                    await db.update_invocation(inv_id, ended_at=now)
                     transitioned = await db.update_status(
                         "invocation",
                         inv_id,
@@ -169,6 +172,11 @@ async def reap_stale_invocations(
                         expected_statuses={"running"},
                     )
                     if transitioned:
+                        # Stamp ended_at only after the guarded transition wins,
+                        # so a lost CAS never leaves ended_at set on a row whose
+                        # status did not actually move (issue #2844).
+                        if inv.get("ended_at") is None:
+                            await db.update_invocation(inv_id, ended_at=now)
                         reaped += 1
                     else:
                         _log.debug("Invocation %s skipped (status changed before CAS lock)", inv_id)
