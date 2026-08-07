@@ -269,3 +269,50 @@ async def test_list_invocations_filters_by_status(db: StateDB):
 
     done_only = await db.list_invocations(status="completed")
     assert {r["id"] for r in done_only} == {a["id"]}
+
+
+async def test_list_invocations_filters_by_plugin(db: StateDB):
+    await _make_invocation(db, plugin="review-toolkit")
+    await _make_invocation(db, plugin="other-plugin")
+    await _make_invocation(db)  # no plugin — standalone skill invocation
+
+    only_review_toolkit = await db.list_invocations(plugin="review-toolkit")
+    assert len(only_review_toolkit) == 1
+    assert only_review_toolkit[0]["plugin"] == "review-toolkit"
+
+
+# ── Count (real total, not a page count) ───────────────────────────────────────
+
+
+async def test_count_invocations_matches_row_count_below_the_page_limit(db: StateDB):
+    for _ in range(3):
+        await _make_invocation(db, skill="show")
+    await _make_invocation(db, skill="other")
+
+    assert await db.count_invocations(skill="show") == 3
+    assert await db.count_invocations() == 4
+
+
+async def test_count_invocations_exceeds_a_page_limit_smaller_than_the_real_total(db: StateDB):
+    """The count must not silently plateau at a page size the way counting
+    len(list_invocations(...)) does once more rows exist than `limit`."""
+    for _ in range(5):
+        await _make_invocation(db, skill="show")
+
+    page = await db.list_invocations(skill="show", limit=2)
+    assert len(page) == 2
+
+    total = await db.count_invocations(skill="show")
+    assert total == 5
+    assert total != len(page)
+
+
+async def test_count_invocations_filters_by_plugin_and_status(db: StateDB):
+    a = await _make_invocation(db, plugin="review-toolkit")
+    await _make_invocation(db, plugin="review-toolkit")
+    await _make_invocation(db, plugin="other-plugin")
+    await db.update_invocation(a["id"], status="completed", ended_at=time.time())
+
+    assert await db.count_invocations(plugin="review-toolkit") == 2
+    assert await db.count_invocations(plugin="review-toolkit", status="completed") == 1
+    assert await db.count_invocations(plugin="does-not-exist") == 0

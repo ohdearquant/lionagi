@@ -1541,10 +1541,11 @@ async def test_list_definition_versions(db: StateDB):
 
 
 async def test_save_definition_rejects_non_editable_kind(db: StateDB):
-    """ADR-0077: skills + arbitrary kinds are read-only and must be rejected."""
+    """ADR-0077: arbitrary kinds outside the editable set (agent, playbook,
+    skill) are read-only and must be rejected."""
     import pytest
 
-    for bad_kind in ("skill", "plugin", "something_else"):
+    for bad_kind in ("plugin", "something_else"):
         with pytest.raises(ValueError, match="Invalid definition kind"):
             await db.save_definition(
                 kind=bad_kind,
@@ -1552,6 +1553,17 @@ async def test_save_definition_rejects_non_editable_kind(db: StateDB):
                 path=".lionagi/x",
                 content="content",
             )
+
+
+async def test_save_definition_accepts_skill_kind(db: StateDB):
+    """Skills joined the editable set alongside agent/playbook (skill editor)."""
+    version = await db.save_definition(
+        kind="skill",
+        name="x",
+        path=".lionagi/skills/x/SKILL.md",
+        content="content",
+    )
+    assert version == 1
 
 
 async def test_get_definition_missing(db: StateDB):

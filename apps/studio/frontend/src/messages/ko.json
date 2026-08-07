@@ -235,7 +235,11 @@
       "filteredHint": "다른 종류를 시도하거나 검색을 지우세요.",
       "createFirst": "첫 항목 만들기",
       "createWorkflow": "새 워크플로",
-      "createAgent": "새 에이전트"
+      "createAgent": "새 에이전트",
+      "allSkill": "스킬을 찾을 수 없습니다.",
+      "allSkillHint": "여기에 표시하려면 ~/.lionagi/skills/<name>/ 아래에 SKILL.md를 추가하세요.",
+      "allPlugin": "플러그인을 찾을 수 없습니다.",
+      "allPluginHint": "여기에 표시하려면 ~/.claude/plugins/ 아래에 플러그인을 설치하세요."
     },
     "table": {
       "kind": "종류",
@@ -296,7 +300,19 @@
       "lastUsed": "마지막 사용",
       "never": "사용 이력 없음",
       "recentInvocations": "최근 호출",
-      "noInvocations": "아직 기록된 호출이 없습니다."
+      "noInvocations": "아직 기록된 호출이 없습니다.",
+      "skillValidationFailed": "검증에 실패했습니다. 저장하기 전에 아래 오류를 수정하세요.",
+      "pluginOwnedSkillHint": "플러그인에 포함되어 있습니다 — 변경하려면 플러그인 파일을 직접 편집하세요.",
+      "readOnly": "읽기 전용",
+      "skillTools": "허용된 도구",
+      "skillInstructions": "지침",
+      "pluginHooks": "훅",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP 서버",
+      "pluginHooksSection": "훅 설정",
+      "pluginReadmeSection": "README",
+      "yes": "예",
+      "no": "아니오"
     },
     "template": {
       "badge": "내장",
@@ -462,7 +478,17 @@
       "graphNodeStatusPaused": "일시중지",
       "graphNodeStatusDone": "완료",
       "graphNodeStatusFailed": "실패",
-      "graphNodeStatusEscalated": "에스컬레이션"
+      "graphNodeStatusEscalated": "에스컬레이션",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "기록 목록",
     "detailAria": "항목 세부 정보"
