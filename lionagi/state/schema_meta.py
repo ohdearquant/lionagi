@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""SQLAlchemy MetaData for all 28 StateDB tables — single source of truth for schema DDL."""
+"""SQLAlchemy MetaData for every StateDB table — single source of truth for schema DDL."""
 
 from __future__ import annotations
 
