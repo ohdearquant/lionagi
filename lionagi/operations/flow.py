@@ -45,6 +45,20 @@ logger = logging.getLogger(__name__)
 
 UNLIMITED_CONCURRENCY = int(os.environ.get("LIONAGI_MAX_CONCURRENCY", "10000"))
 
+# Gate-reject contract (issue #2860). A playbook-authored node opts into gate
+# semantics by setting ``operation.metadata["is_gate"] = True`` (e.g. via
+# ``OperationGraphBuilder.add_operation(..., is_gate=True)``). Once that node
+# completes, its result is inspected for a top-level ``"gate_verdict"`` key;
+# if the value is the string "reject" (case-insensitive), every direct and
+# transitive dependent of the gate is short-circuited to SKIPPED instead of
+# running against the baseline the gate just rejected. A node that isn't
+# marked ``is_gate``, or a gate whose result has no ``gate_verdict`` key (or
+# any value other than "reject"), changes nothing -- this keeps flows with no
+# gate nodes byte-identical to before.
+GATE_VERDICT_KEY = "gate_verdict"
+GATE_VERDICT_REJECT = "reject"
+SKIP_REASON_UPSTREAM_GATE_REJECT = "upstream_gate_reject"
+
 # Tracks which Operation a reactive task is running (per-task contextvar).
 _CURRENT_OP: contextvars.ContextVar = contextvars.ContextVar("reactive_current_op", default=None)
 
@@ -145,6 +159,15 @@ class DependencyAwareExecutor:
         # caller can tell a dead node from a genuine completion without
         # inspecting every result value by hand.
         self.failed_operations = set()
+        # Gate-reject bookkeeping (see the module-level contract comment).
+        # ``_gate_rejections``: op_id of a completed ``is_gate`` node -> the
+        # reason payload to attribute to anything downstream of it.
+        # ``_skip_reasons``: op_id of any node this executor decided to skip
+        # because of a (possibly transitive) upstream gate reject -> the same
+        # payload, so a grandchild inherits the original gate's identity
+        # rather than just "my parent was skipped".
+        self._gate_rejections: dict[Any, dict[str, Any]] = {}
+        self._skip_reasons: dict[Any, dict[str, Any]] = {}
         self._op_start_times = {}
         self._pause_event: ConcurrencyEvent | None = None
         # Fire-and-forget flow signal tasks, retained until each finishes so a
@@ -200,11 +223,26 @@ class DependencyAwareExecutor:
             "final_context": self.context.content,
             "skipped_operations": list(self.skipped_operations),
             "failed_operations": list(self.failed_operations),
+            **self._gate_result_fields(),
         }
 
         self._validate_execution_results(result)
 
         return result
+
+    def _gate_result_fields(self) -> dict[str, Any]:
+        """``gate_rejected_operations``: ``is_gate`` nodes whose result carried
+        a REJECT verdict. ``gate_short_circuited_operations``: nodes skipped
+        (directly or transitively) as a consequence -- a subset of
+        ``skipped_operations``. Both empty when no gate ever rejected, so a
+        caller checking ``bool(result["gate_rejected_operations"])`` sees no
+        change for flows with no gate nodes."""
+        return {
+            "gate_rejected_operations": [str(op_id) for op_id in self._gate_rejections],
+            "gate_short_circuited_operations": [
+                str(op_id) for op_id in self._skip_reasons if op_id in self.skipped_operations
+            ],
+        }
 
     async def _preallocate_all_branches(self):
         """Pre-allocate branches to eliminate runtime locking."""
@@ -355,6 +393,22 @@ class DependencyAwareExecutor:
                 operation.execution.status = EventStatus.SKIPPED
                 self.skipped_operations.add(operation.id)
 
+                gate_reason = self._skip_reasons.get(operation.id)
+                if gate_reason is not None:
+                    # Visible, not silently absent: the metadata is there for
+                    # any caller walking `graph.internal_nodes`, and the same
+                    # payload lands in operation_results so it shows up
+                    # wherever a completed operation's result would.
+                    operation.metadata["skip_reason_code"] = gate_reason["reason_code"]
+                    operation.metadata["skip_reason_gate_id"] = gate_reason["gate_id"]
+                    operation.metadata["skip_reason_gate_name"] = gate_reason["gate_name"]
+                    self.results[operation.id] = {
+                        "skipped": True,
+                        "reason_code": gate_reason["reason_code"],
+                        "gate_id": gate_reason["gate_id"],
+                        "gate_name": gate_reason["gate_name"],
+                    }
+
                 if self.verbose:
                     logger.debug(
                         "Skipping operation due to edge conditions: %s",
@@ -440,6 +494,9 @@ class DependencyAwareExecutor:
                     if self.verbose:
                         logger.debug("Completed operation: %s (%.1fs)", ref_id, elapsed)
 
+                    if operation.metadata.get("is_gate"):
+                        self._record_gate_verdict(operation)
+
                 elif operation.execution.status == EventStatus.FAILED:
                     self.results[operation.id] = {"error": str(operation.execution.error)}
                     self.failed_operations.add(operation.id)
@@ -469,8 +526,43 @@ class DependencyAwareExecutor:
         finally:
             self.completion_events[operation.id].set()
 
+    def _record_gate_verdict(self, operation: Operation) -> None:
+        """Called on a completed ``is_gate`` operation; records a REJECT
+        verdict (see the module-level gate-reject contract) so
+        ``_check_edge_conditions`` can veto this gate's dependents. A result
+        with no ``gate_verdict`` key, or any value other than "reject",
+        leaves ``_gate_rejections`` untouched -- the gate completed normally
+        and nothing downstream is affected."""
+        result = operation.response
+        if result is not None and not isinstance(result, str | int | float | bool):
+            result = to_dict(result, recursive=True)
+        if not isinstance(result, Mapping):
+            return
+
+        verdict = result.get(GATE_VERDICT_KEY)
+        if not isinstance(verdict, str) or verdict.strip().lower() != GATE_VERDICT_REJECT:
+            return
+
+        ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
+        self._gate_rejections[operation.id] = {
+            "reason_code": SKIP_REASON_UPSTREAM_GATE_REJECT,
+            "gate_id": str(operation.id),
+            "gate_name": ref_id,
+        }
+
     async def _check_edge_conditions(self, operation: Operation) -> bool:
-        """Return True if at least one valid incoming path exists or no edges; False if all incoming edges failed."""
+        """Return True if at least one valid incoming path exists or no edges; False if all incoming edges failed.
+
+        A gate reject is an absolute veto layered on top of that: if any
+        incoming edge traces back (directly or transitively) to a rejecting
+        gate, this operation is skipped regardless of any other otherwise
+        valid incoming path -- a node must never run against a baseline one
+        of its ancestors just rejected. The veto is recorded in
+        ``self._skip_reasons`` so a caller skipped for this reason (and, in
+        turn, that caller's own dependents) can be tagged and so this
+        propagates transitively via the existing `skipped_operations` check
+        below without extra bookkeeping.
+        """
         # Snapshot before awaiting: iterating the live adjacency dict across
         # an await would raise RuntimeError if reactive injection attaches an
         # edge mid-wait. A dependency added after the snapshot is deferred
@@ -480,13 +572,32 @@ class DependencyAwareExecutor:
             return True
 
         has_valid_path = False
+        gate_reason: dict[str, Any] | None = None
 
+        # Every incoming edge must be inspected before honoring a valid path:
+        # the veto is "any incoming path through a rejected gate", not "the
+        # first-listed valid edge wins" -- a node with a valid non-gate edge
+        # listed before its rejected-gate edge must still be vetoed, so this
+        # never exits early on `has_valid_path=True`.
         for edge_id in incoming_edge_ids:
             edge = self.graph.internal_edges[edge_id]
             if edge.head in self.completion_events:
                 await self.completion_events[edge.head].wait()
 
+            upstream_reason = self._skip_reasons.get(edge.head) or self._gate_rejections.get(
+                edge.head
+            )
+            if upstream_reason is not None:
+                gate_reason = gate_reason or upstream_reason
+                continue
+
             if edge.head in self.skipped_operations:
+                continue
+
+            if has_valid_path:
+                # Already know this node has a valid path; still scanning
+                # remaining edges for a possible gate veto, so skip the
+                # redundant condition evaluation.
                 continue
 
             result_value = self.results.get(edge.head)
@@ -498,7 +609,10 @@ class DependencyAwareExecutor:
 
             if await edge.check_condition(ctx):
                 has_valid_path = True
-                break
+
+        if gate_reason is not None:
+            self._skip_reasons[operation.id] = gate_reason
+            return False
 
         return has_valid_path
 
@@ -798,6 +912,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             "spawned_ids": list(self._spawned_ids),
             "escalated_operations": list(self._escalated_ids),
             "dropped_spawns": self._dropped_spawns,
+            **self._gate_result_fields(),
         }
         self._validate_execution_results(result)
         return result
@@ -954,6 +1069,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
             }
             child = create_operation(emitter.operation, parameters=child_params)
             child.metadata["escalated_from"] = op_id
+            # Readable label for anything attributing this child's work back to the
+            # node it retries (e.g. mirroring a CLI engine's transcript) — cheaper to
+            # carry now than to re-derive `name` from a stale emitter reference later.
+            child.metadata["escalated_from_name"] = name
             if self._accept_node(child, emitter_id=emitter_id, independent=True):
                 self._escalated_ids.add(emitter_id)
         elif route == "notify":

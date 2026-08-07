@@ -429,6 +429,10 @@
       "noMessages": "Nenhuma mensagem registrada",
       "waitingEvents": "Aguardando eventos de ciclo de vida…",
       "noEvents": "Nenhum evento de ciclo de vida registrado",
+      "showOlderEvents": "Mostrar {count, number} eventos mais antigos",
+      "expandEventDetails": "Mostrar detalhes do evento",
+      "gateOutcome": "Gate: {verdict} · {major} maior(es), {minor} menor(es)",
+      "gateOutcomeSimple": "Gate: {verdict}",
       "live": "ao vivo",
       "noBranchErrors": "Nenhum erro detectado em todos os branches.",
       "noFiles": "Nenhuma operação de arquivo detectada.",
@@ -540,6 +544,7 @@
       "triggering": "Acionando…",
       "runStarted": "Execução iniciada: {id}",
       "triggerFailed": "Falha ao acionar",
+      "toggleFailed": "Falha ao alternar",
       "every": "a cada {interval}",
       "in": "em {delta}",
       "overdue": "atrasado {delta}",
@@ -784,6 +789,8 @@
     },
     "history": {
       "label": "Histórico da sessão",
+      "sortRecent": "Recente",
+      "sortCost": "Maior custo",
       "all": "Todos",
       "completed": "Concluídas",
       "failed": "Com falha",
@@ -861,6 +868,15 @@
       "completionRate": "{rate}% de conclusão",
       "noTerminalRuns": "Nenhuma execução finalizada no período",
       "total": "{count, plural, one {# no total} other {# no total}}",
+      "staleHint": "mostrando último conhecido · atualização falhou"
+    },
+    "spend": {
+      "title": "Gasto reportado",
+      "loading": "Carregando gasto…",
+      "error": "Gasto indisponível · {message}",
+      "unreachable": "API inacessível",
+      "empty": "Nenhuma execução na janela",
+      "coverage": "{reported} de {total} reportadas",
       "staleHint": "mostrando último conhecido · atualização falhou"
     },
     "stale": {
@@ -958,6 +974,8 @@
     "roleUser": "usuário",
     "roleThinking": "pensando",
     "roleResponse": "resposta",
+    "planAssignments": "{count, plural, one {# atribuição} other {# atribuições}}",
+    "planDependsOn": "depende de:",
     "tabAria": "aba {label} {position} de {total}"
   },
   "workflow": {

@@ -29,6 +29,7 @@ import SectionLabel from "@/components/ui/SectionLabel";
 import Button from "@/components/ui/Button";
 import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import { deriveDisplayStatus } from "@/lib/runStatus";
+import { resolveRunLabel } from "@/lib/runLabel";
 import Duration from "@/components/ui/Duration";
 import { useToast } from "@/components/ui/Toast";
 
@@ -307,6 +308,13 @@ export function PlaybookTemplateDetail({
                       statusLabel={statusLabel(deriveDisplayStatus(run))}
                     />
                     <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-secondary">
+                      {resolveRunLabel(run)}
+                    </span>
+                    {/* Every playbook run in this list shares the same playbook_name
+                        tier, so resolveRunLabel alone often collapses several rows to
+                        one identical label -- the short id stays visible as a muted
+                        secondary so rows remain distinguishable. */}
+                    <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
                       {run.run_id.slice(-12)}
                     </span>
                     <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">

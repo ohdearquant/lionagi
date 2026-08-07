@@ -429,6 +429,10 @@
       "noMessages": "Сообщения не записаны",
       "waitingEvents": "Ожидание событий жизненного цикла…",
       "noEvents": "События жизненного цикла не записаны",
+      "showOlderEvents": "Показать {count, number} более ранних событий",
+      "expandEventDetails": "Показать детали события",
+      "gateOutcome": "Гейт: {verdict} · {major} крит., {minor} незнач.",
+      "gateOutcomeSimple": "Гейт: {verdict}",
       "live": "активно",
       "noBranchErrors": "Ошибки не обнаружены ни в одной ветке.",
       "noFiles": "Операции с файлами не обнаружены.",
@@ -540,6 +544,7 @@
       "triggering": "Запуск…",
       "runStarted": "Запуск начат: {id}",
       "triggerFailed": "Не удалось запустить",
+      "toggleFailed": "Не удалось переключить",
       "every": "каждые {interval}",
       "in": "через {delta}",
       "overdue": "просрочено на {delta}",
@@ -784,6 +789,8 @@
     },
     "history": {
       "label": "История сессий",
+      "sortRecent": "Недавние",
+      "sortCost": "Самые дорогие",
       "all": "Все",
       "completed": "Завершенные",
       "failed": "С ошибкой",
@@ -861,6 +868,15 @@
       "completionRate": "{rate}% завершения",
       "noTerminalRuns": "Нет терминальных запусков в окне",
       "total": "{count, plural, one {# всего} few {# всего} many {# всего} other {# всего}}",
+      "staleHint": "показано последнее известное · обновить не удалось"
+    },
+    "spend": {
+      "title": "Заявленные расходы",
+      "loading": "Загрузка расходов…",
+      "error": "Расходы недоступны · {message}",
+      "unreachable": "API недоступен",
+      "empty": "Нет запусков в этом окне",
+      "coverage": "{reported} из {total} с указанной стоимостью",
       "staleHint": "показано последнее известное · обновить не удалось"
     },
     "stale": {
@@ -958,6 +974,8 @@
     "roleUser": "пользователь",
     "roleThinking": "размышление",
     "roleResponse": "ответ",
+    "planAssignments": "{count, plural, one {# назначение} few {# назначения} many {# назначений} other {# назначения}}",
+    "planDependsOn": "зависит от:",
     "tabAria": "вкладка {label}, {position} из {total}"
   },
   "workflow": {

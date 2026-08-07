@@ -6,7 +6,7 @@
  * - It does not import Drawer (master-detail doctrine)
  */
 
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeAll, describe, it, expect, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as React from "react";
@@ -675,6 +675,309 @@ describe("history/RunDetail.tsx — badgeForEvent (NodeEscalated route=notify)",
       payload: {},
     });
     expect(badge.label).toBe("escalated");
+  });
+});
+
+// ─── visibleEventPayloadEntries / summarizeHookEvent — #2862 ─────────────────
+// Element/Signal attach created_at/metadata/schema_version to every signal
+// row; the events panel must not dump them into the one-line summary, and a
+// HookSignal row must read as a human summary, not a struct.
+
+function sig(overrides: Partial<import("@/lib/api").SignalEvent> = {}) {
+  return {
+    id: "e1",
+    session_id: "s1",
+    seq: 1,
+    kind: "HookSignal",
+    op_id: "op-a",
+    ts: 1000,
+    payload: {},
+    ...overrides,
+  } as import("@/lib/api").SignalEvent;
+}
+
+describe("history/RunDetail.tsx — visibleEventPayloadEntries", () => {
+  it("drops op_id, schema_version, and created_at from the visible entries", async () => {
+    const { visibleEventPayloadEntries } = await import("./RunDetail");
+    const entries = visibleEventPayloadEntries({
+      op_id: "op-a",
+      schema_version: 1,
+      created_at: 1786034040.25,
+      name: "step1",
+    });
+    expect(entries).toEqual([["name", "step1"]]);
+  });
+
+  it("drops empty metadata but keeps non-empty metadata", async () => {
+    const { visibleEventPayloadEntries } = await import("./RunDetail");
+    expect(visibleEventPayloadEntries({ metadata: {} })).toEqual([]);
+    expect(visibleEventPayloadEntries({ metadata: { k: "v" } })).toEqual([
+      ["metadata", { k: "v" }],
+    ]);
+  });
+
+  it("returns [] for an undefined payload", async () => {
+    const { visibleEventPayloadEntries } = await import("./RunDetail");
+    expect(visibleEventPayloadEntries(undefined)).toEqual([]);
+  });
+});
+
+describe("history/RunDetail.tsx — summarizeHookEvent", () => {
+  it("summarizes a tool.pre hook as 'point · tool_name'", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    const summary = summarizeHookEvent(
+      sig({
+        kind: "HookSignal",
+        payload: { point: "tool.pre", kwargs: { tool_name: "read_file", call_id: "c1" } },
+      }),
+    );
+    expect(summary).toBe("tool.pre · read_file");
+  });
+
+  it("falls back to the bare point when kwargs has no recognized field", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    const summary = summarizeHookEvent(
+      sig({ kind: "HookSignal", payload: { point: "session.start", kwargs: {} } }),
+    );
+    expect(summary).toBe("session.start");
+  });
+
+  it("returns null for a non-hook signal", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    expect(summarizeHookEvent(sig({ kind: "NodeStarted", payload: { name: "step1" } }))).toBeNull();
+  });
+
+  it("returns null when a HookSignal payload has no point", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    expect(summarizeHookEvent(sig({ kind: "HookSignal", payload: {} }))).toBeNull();
+  });
+});
+
+// ─── deriveGateOutcome — #2863 ────────────────────────────────────────────────
+// A gate/review step's structured verdict is a different population from
+// runtime tool errors; deriveGateOutcome scans the signal stream for it so
+// the page can surface "Gate: approve-with-fixes · 1 major, 5 minor" beside
+// the (possibly zero) runtime-error count instead of letting the green
+// "no errors" text read as the run's overall verdict.
+
+describe("history/RunDetail.tsx — deriveGateOutcome", () => {
+  it("returns null when no StructuredOutput signal carries a verdict shape", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    expect(
+      deriveGateOutcome([sig({ kind: "NodeStarted", payload: { name: "step1" } })]),
+    ).toBeNull();
+  });
+
+  it("extracts verdict and major/minor counts from a review-shaped StructuredOutput", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            gate_verdict: "approve-with-fixes",
+            findings: [
+              { severity: "high", description: "a" },
+              { severity: "medium", description: "b" },
+              { severity: "low", description: "c" },
+            ],
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toEqual({
+      verdict: "approve-with-fixes",
+      major: 1,
+      minor: 2,
+      hasFindings: true,
+    });
+  });
+
+  it("extracts a boolean gate_passed shape with no findings breakdown", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({ kind: "StructuredOutput", payload: { data: { gate_passed: false } } }),
+    ]);
+    expect(outcome).toEqual({ verdict: "reject", major: 0, minor: 0, hasFindings: false });
+  });
+
+  it("uses the most recent verdict when multiple StructuredOutput signals carry one", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({ id: "e1", kind: "StructuredOutput", payload: { data: { gate_verdict: "reject" } } }),
+      sig({ id: "e2", kind: "StructuredOutput", payload: { data: { gate_verdict: "approve" } } }),
+    ]);
+    expect(outcome?.verdict).toBe("approve");
+  });
+
+  it("ignores a StructuredOutput signal whose data has neither shape", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({ kind: "StructuredOutput", payload: { data: { assignments: [] } } }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  it("does not badge a coding-engine result shape (bare `passed`, no gate key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            passed: true,
+            measurements: { rounds: 2 },
+            caveats: [],
+            experiment_ref: "",
+            verdict_ref: "V1",
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  it("does not badge a hypothesis-engine result shape (bare `passed`, no gate key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            passed: false,
+            measurements: "0/3 assertions held",
+            caveats: ["budget exhausted"],
+            experiment_ref: "E1",
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  it("does not badge a generic Verdict/ComplianceVerdict shape (bare `verdict`, no gate_verdict key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: { verdict: "REJECT", rationale: "unmet acceptance criteria", unmet: ["a"] },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  it("does not badge a hypothesis-engine ConclusionDrawn shape (bare `verdict`, no gate_verdict key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            verdict: "confirmed",
+            rationale: "3/3 assertions held",
+            question_ref: "Q1",
+            result_ref: "R1",
+            basis: "empirical",
+            confidence: 0.8,
+            limitations: [],
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  // A flow-layer DAG gate (lionagi/operations/flow.py's is_gate contract) never
+  // emits a StructuredOutput signal — its rejection surfaces only as this
+  // session-level terminal reason code (lionagi/cli/_runs.py, RunReasons.
+  // COMPLETED_GATE_REJECTED). deriveGateOutcome must read that shape too, or a
+  // DAG gate can reject with no badge ever appearing.
+  it("badges a reject from the session's gate-rejected reason code when no StructuredOutput verdict exists", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome(
+      [sig({ kind: "NodeCompleted", payload: { name: "step1" } })],
+      { status_reason_code: "run.completed.gate_rejected" },
+    );
+    expect(outcome).toEqual({ verdict: "reject", major: 0, minor: 0, hasFindings: false });
+  });
+
+  it("does not badge on an unrelated terminal reason code", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome(
+      [sig({ kind: "NodeCompleted", payload: { name: "step1" } })],
+      { status_reason_code: "run.completed.ok" },
+    );
+    expect(outcome).toBeNull();
+  });
+
+  it("prefers a StructuredOutput verdict over the gate-rejected reason code", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome(
+      [sig({ kind: "StructuredOutput", payload: { data: { gate_verdict: "approve" } } })],
+      { status_reason_code: "run.completed.gate_rejected" },
+    );
+    expect(outcome?.verdict).toBe("approve");
+  });
+});
+
+// ─── EventsSection — "show older" paging ─────────────────────────────────────
+// The events list renders only the newest `renderStep` rows and pages older
+// rows in on click; a bug here would either drop rows or scramble the
+// chronological order readers rely on when scanning a run's history.
+
+describe("history/RunDetail.tsx — EventsSection show-older paging", () => {
+  function hookEvents(count: number) {
+    return Array.from({ length: count }, (_, i) =>
+      sig({ id: `e${i}`, kind: "HookSignal", payload: { point: `p${i}` } }),
+    );
+  }
+
+  function renderEvents(events: ReturnType<typeof hookEvents>, renderStep: number) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    mountedCards.push({ container, root });
+    act(() => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <EventsSectionForTest events={events} live={false} renderStep={renderStep} />
+        </IntlProvider>,
+      );
+    });
+    return container;
+  }
+
+  function visiblePoints(container: HTMLDivElement) {
+    return Array.from(container.querySelectorAll("#run-events .divide-y > div")).map((row) => {
+      const match = row.textContent?.match(/p(\d+)/);
+      return match ? `p${match[1]}` : null;
+    });
+  }
+
+  let EventsSectionForTest: (typeof import("./RunDetail"))["EventsSection"];
+
+  beforeAll(async () => {
+    ({ EventsSection: EventsSectionForTest } = await import("./RunDetail"));
+  });
+
+  it("clicking 'show older' pages back further while preserving chronological order", () => {
+    const events = hookEvents(7); // p0..p6
+    const container = renderEvents(events, 3);
+
+    // Only the newest 3 rows render initially, oldest-to-newest within the window.
+    expect(visiblePoints(container)).toEqual(["p4", "p5", "p6"]);
+
+    const button = container.querySelector("button");
+    expect(button).not.toBeNull();
+    act(() => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Paging back reveals the next-older 3 rows, prepended in order — the
+    // previously-visible rows keep their relative order, nothing is reshuffled.
+    expect(visiblePoints(container)).toEqual(["p1", "p2", "p3", "p4", "p5", "p6"]);
   });
 });
 

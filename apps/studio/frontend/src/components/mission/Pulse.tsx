@@ -3,10 +3,12 @@
  *
  * Stacked-bar sparkline over dense server buckets (24 hourly / 7 daily),
  * plus completion rate and total. Inline SVG, no chart dependency.
- * Cost/token cells stay hidden until the daemon exposes those fields.
+ *
+ * Owns the window selector that SpendPanel (beside it on Mission Control)
+ * also follows — one control, one window, so the two cards never describe
+ * a different population for the same stated period.
  */
 
-import { useState } from "react";
 import { useTranslations } from "use-intl";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Skeleton from "@/components/ui/Skeleton";
@@ -65,9 +67,13 @@ export function PulseSkeleton() {
   );
 }
 
-export default function Pulse() {
+interface Props {
+  window: ActivityWindow;
+  onWindowChange: (window: ActivityWindow) => void;
+}
+
+export default function Pulse({ window: window_, onWindowChange }: Props) {
   const t = useTranslations("mission");
-  const [window_, setWindow] = useState<ActivityWindow>("24h");
   const { data, error, loading } = usePulse(window_);
 
   // Recomputed from the dense per-bucket counts, not data.completion_rate —
@@ -91,7 +97,7 @@ export default function Pulse() {
                 <button
                   key={w}
                   type="button"
-                  onClick={() => setWindow(w)}
+                  onClick={() => onWindowChange(w)}
                   aria-pressed={window_ === w}
                   className={`rounded px-1.5 py-0.5 font-data text-[length:var(--t-xs)] transition-colors duration-100 ${
                     window_ === w

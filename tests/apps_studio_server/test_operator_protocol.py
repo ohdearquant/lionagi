@@ -39,6 +39,15 @@ class ScriptedEngine:
         return self._stream(turn)
 
 
+class FailingEngine:
+    async def _stream(self, _turn):
+        raise RuntimeError("engine exploded mid-turn")
+        yield  # pragma: no cover
+
+    def stream(self, turn):
+        return self._stream(turn)
+
+
 class BlockingEngine:
     async def _stream(self, _turn):
         await asyncio.Event().wait()
@@ -754,6 +763,266 @@ async def test_missing_claude_cli_finishes_with_public_provider_fix(tmp_path, mo
     }
     assert frames[-1]["payload"]["outcome"] == "failed"
     await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_model_failure_points_at_the_run_it_created(tmp_path, monkeypatch):
+    """An engine failure that happens after the canonical run exists must name it."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=FailingEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="do something that will fail",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    frames = await _wait_done(coordinator.store, cid)
+    error = next(frame for frame in frames if frame["type"] == "error")["payload"]["error"]
+    assert error["code"] == "model_failure"
+    run_id = error["details"]["runId"]
+    assert run_id
+    assert f"/runs/{run_id}" in error["message"]
+    assert error["details"]["href"] == f"/runs/{run_id}"
+    assert "daemon logs" not in error["message"]
+
+    # The pointer resolves: a real, durable run exists under that id.
+    from lionagi.state.db import StateDB
+
+    async with StateDB(readonly=True) as db:
+        session = await db.get_session(run_id)
+    assert session is not None
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_model_failure_states_absence_when_no_run_was_created(tmp_path, monkeypatch):
+    """A failure before the canonical run exists must say so, not fabricate a pointer."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    from lionagi.studio.operator import coordinator as coordinator_mod
+
+    def broken_history(*_args, **_kwargs):
+        raise RuntimeError("history compilation exploded")
+
+    monkeypatch.setattr(coordinator_mod, "compile_operator_history", broken_history)
+
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="this never reaches a run",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    frames = await _wait_done(coordinator.store, cid)
+    error = next(frame for frame in frames if frame["type"] == "error")["payload"]["error"]
+    assert error["code"] == "model_failure"
+    assert error["details"]["runId"] is None
+    assert "no run was recorded" in error["message"]
+    assert "/runs/" not in error["message"]
+    assert "daemon logs" not in error["message"]
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_model_failure_after_session_commit_points_at_the_orphaned_run(tmp_path, monkeypatch):
+    """Setup can commit the session row and then fail on a later step (here,
+    the branch insert): the failure message must not claim nothing was
+    recorded, and the row must not be left "running" forever."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+
+    async def broken_create_branch(self, *_args, **_kwargs):
+        raise RuntimeError("branch insert exploded")
+
+    monkeypatch.setattr(StateDB, "create_branch", broken_create_branch)
+
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="setup will fail after the session row commits",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    frames = await _wait_done(coordinator.store, cid)
+    error = next(frame for frame in frames if frame["type"] == "error")["payload"]["error"]
+    assert error["code"] == "model_failure"
+    run_id = error["details"]["runId"]
+    assert run_id
+    assert f"/runs/{run_id}" in error["message"]
+    assert error["details"]["href"] == f"/runs/{run_id}"
+    assert "no run was recorded" not in error["message"]
+
+    # The pointer resolves to a real, durable, no-longer-orphaned row: the
+    # commit survived setup's failure, but it is not left "running" forever.
+    async with StateDB(readonly=True) as db:
+        session = await db.get_session(run_id)
+    assert session is not None
+    assert session["status"] in SESSION_TERMINAL_STATUSES
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_application_command_failure_points_at_its_invocation(tmp_path, monkeypatch):
+    """A command failure after its invocation was recorded must name that invocation."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.coordinator import ApplicationCommandError
+
+    async with StateDB() as db:
+        await db.create_invocation(
+            {
+                "id": "inv-real",
+                "skill": "launch:play",
+                "plugin": "studio_launch",
+                "prompt": None,
+                "started_at": time.time(),
+                "status": "running",
+            }
+        )
+
+    async def execute(_command_type, _command):
+        raise ApplicationCommandError("spawn died mid-flight", invocation_id="inv-real")
+
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(path),
+        engine_factory=lambda: PermissionEngine("launch"),
+        command_executor=execute,
+    )
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await coordinator.submit(
+        cid,
+        instruction="launch it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    proposal = await _wait_proposal(coordinator.store, accepted["requestId"])
+    await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+    )
+    frames = await coordinator.store.list_frames(cid)
+    tool_result = next(
+        frame
+        for frame in frames
+        if frame["type"] == "tool_result" and frame["payload"].get("callId") == proposal["id"]
+    )
+    error = tool_result["payload"]["error"]
+    assert error["code"] == "service_failure"
+    assert "/invocations/inv-real" in error["message"]
+    assert error["details"]["invocationId"] == "inv-real"
+    assert "daemon logs" not in error["message"]
+
+    async with StateDB(readonly=True) as db:
+        invocation = await db.get_invocation("inv-real")
+    assert invocation is not None
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_application_command_failure_states_absence_when_no_invocation_was_recorded(
+    tmp_path, monkeypatch
+):
+    """A command failure before any invocation exists must say so, not fabricate a pointer."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+
+    async def execute(_command_type, _command):
+        raise ValueError("li executable could not be resolved")
+
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(path),
+        engine_factory=lambda: PermissionEngine("launch"),
+        command_executor=execute,
+    )
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await coordinator.submit(
+        cid,
+        instruction="launch it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    proposal = await _wait_proposal(coordinator.store, accepted["requestId"])
+    await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+    )
+    frames = await coordinator.store.list_frames(cid)
+    tool_result = next(
+        frame
+        for frame in frames
+        if frame["type"] == "tool_result" and frame["payload"].get("callId") == proposal["id"]
+    )
+    error = tool_result["payload"]["error"]
+    assert error["code"] == "service_failure"
+    assert error["details"]["invocationId"] is None
+    assert "no invocation was recorded" in error["message"]
+    assert "/invocations/" not in error["message"]
+    assert "daemon logs" not in error["message"]
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_execute_application_command_failure_has_no_invocation_before_launch_returns(
+    monkeypatch,
+):
+    """launch() raising before it returns leaves no invocation id to carry forward."""
+    import lionagi.studio.services.launches as launches_mod
+    from lionagi.studio.operator.coordinator import (
+        ApplicationCommandError,
+        _execute_application_command,
+    )
+
+    async def broken_launch(_data):
+        raise ValueError("validation failed")
+
+    monkeypatch.setattr(launches_mod, "launch", broken_launch)
+
+    with pytest.raises(ApplicationCommandError) as excinfo:
+        await _execute_application_command("launch", {"action_kind": "play"})
+    assert excinfo.value.invocation_id is None
+
+
+@pytest.mark.asyncio
+async def test_execute_application_command_failure_carries_invocation_id_once_recorded(
+    monkeypatch,
+):
+    """A poll failure after launch() succeeds must still carry the recorded invocation id."""
+    import lionagi.studio.services.invocations as invocations_mod
+    import lionagi.studio.services.launches as launches_mod
+    from lionagi.studio.operator.coordinator import (
+        ApplicationCommandError,
+        _execute_application_command,
+    )
+
+    async def fake_launch(_data):
+        return {"invocation_id": "inv-42", "action_kind": "play"}
+
+    async def broken_get_invocation(_invocation_id):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(launches_mod, "launch", fake_launch)
+    monkeypatch.setattr(invocations_mod, "get_invocation", broken_get_invocation)
+
+    with pytest.raises(ApplicationCommandError) as excinfo:
+        await _execute_application_command("launch", {"action_kind": "play"})
+    assert excinfo.value.invocation_id == "inv-42"
 
 
 @pytest.mark.asyncio

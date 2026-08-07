@@ -429,6 +429,10 @@
       "noMessages": "メッセージは記録されていません",
       "waitingEvents": "ライフサイクルイベントを待機中…",
       "noEvents": "ライフサイクルイベントは記録されていません",
+      "showOlderEvents": "{count, number} 件の古いイベントを表示",
+      "expandEventDetails": "イベントの詳細を表示",
+      "gateOutcome": "ゲート: {verdict} · 重大 {major} 件、軽微 {minor} 件",
+      "gateOutcomeSimple": "ゲート: {verdict}",
       "live": "ライブ",
       "noBranchErrors": "すべてのブランチでエラーは検出されていません。",
       "noFiles": "ファイル操作は検出されていません。",
@@ -540,6 +544,7 @@
       "triggering": "トリガー中…",
       "runStarted": "実行を開始しました: {id}",
       "triggerFailed": "トリガーに失敗しました",
+      "toggleFailed": "切り替えに失敗しました",
       "every": "{interval}ごと",
       "in": "{delta}後",
       "overdue": "{delta}遅延",
@@ -784,6 +789,8 @@
     },
     "history": {
       "label": "セッション履歴",
+      "sortRecent": "最近",
+      "sortCost": "コストが高い順",
       "all": "すべて",
       "completed": "完了",
       "failed": "失敗",
@@ -861,6 +868,15 @@
       "completionRate": "完了率 {rate}%",
       "noTerminalRuns": "ウィンドウ内に終端実行はありません",
       "total": "{count, plural, other {合計 # 件}}",
+      "staleHint": "最後に判明した状態を表示 · 更新に失敗"
+    },
+    "spend": {
+      "title": "報告済みの費用",
+      "loading": "費用を読み込み中…",
+      "error": "費用は利用できません · {message}",
+      "unreachable": "APIに接続できません",
+      "empty": "この期間に実行はありません",
+      "coverage": "{total}件中{reported}件が報告済み",
       "staleHint": "最後に判明した状態を表示 · 更新に失敗"
     },
     "stale": {
@@ -958,6 +974,8 @@
     "roleUser": "ユーザー",
     "roleThinking": "思考",
     "roleResponse": "応答",
+    "planAssignments": "{count, plural, other {# 件の割り当て}}",
+    "planDependsOn": "依存先:",
     "tabAria": "{label}タブ {position}/{total}"
   },
   "workflow": {

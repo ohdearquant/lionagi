@@ -429,6 +429,10 @@
       "noMessages": "کوئی پیغام ریکارڈ نہیں ہوا",
       "waitingEvents": "لائف سائیکل ایونٹس کا انتظار…",
       "noEvents": "کوئی لائف سائیکل ایونٹ ریکارڈ نہیں ہوا",
+      "showOlderEvents": "{count, number} پرانے واقعات دکھائیں",
+      "expandEventDetails": "ایونٹ کی تفصیلات دکھائیں",
+      "gateOutcome": "گیٹ: {verdict} · {major} بڑے، {minor} چھوٹے",
+      "gateOutcomeSimple": "گیٹ: {verdict}",
       "live": "لائیو",
       "noBranchErrors": "تمام برانچز میں کوئی خرابی نہیں ملی۔",
       "noFiles": "کوئی فائل آپریشن نہیں ملا۔",
@@ -540,6 +544,7 @@
       "triggering": "ٹرگر ہو رہا ہے…",
       "runStarted": "رن شروع ہوا: ⁨{id}⁩",
       "triggerFailed": "ٹرگر ناکام",
+      "toggleFailed": "ٹوگل ناکام",
       "every": "ہر ⁨{interval}⁩",
       "in": "⁨{delta}⁩ میں",
       "overdue": "⁨{delta}⁩ تاخیر سے",
@@ -784,6 +789,8 @@
     },
     "history": {
       "label": "سیشن ہسٹری",
+      "sortRecent": "حالیہ",
+      "sortCost": "سب سے زیادہ لاگت",
       "all": "سب",
       "completed": "مکمل",
       "failed": "ناکام",
@@ -861,6 +868,15 @@
       "completionRate": "⁨{rate}⁩% تکمیل",
       "noTerminalRuns": "ونڈو میں کوئی مکمل رنز نہیں",
       "total": "{count, plural, one {کل #} other {کل #}}",
+      "staleHint": "آخری معلوم دکھایا جا رہا ہے · ریفریش ناکام"
+    },
+    "spend": {
+      "title": "رپورٹ شدہ خرچ",
+      "loading": "خرچ لوڈ ہو رہا ہے…",
+      "error": "خرچ دستیاب نہیں · {message}",
+      "unreachable": "API تک رسائی نہیں",
+      "empty": "اس ونڈو میں کوئی رن نہیں",
+      "coverage": "{total} میں سے {reported} رپورٹ ہوئیں",
       "staleHint": "آخری معلوم دکھایا جا رہا ہے · ریفریش ناکام"
     },
     "stale": {
@@ -958,6 +974,8 @@
     "roleUser": "یوزر",
     "roleThinking": "سوچ رہا ہے",
     "roleResponse": "جواب",
+    "planAssignments": "{count, plural, one {# تفویض} other {# تفویضات}}",
+    "planDependsOn": "انحصار:",
     "tabAria": "⁨{label}⁩ ٹیب ⁨{position}⁩ از ⁨{total}⁩"
   },
   "workflow": {

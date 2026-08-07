@@ -15,6 +15,7 @@
  */
 
 import type { RunSummary } from "@/lib/types";
+import { resolveRunLabel } from "@/lib/runLabel";
 import { deriveDisplayStatus, type DisplayStatus } from "@/lib/runStatus";
 
 export interface RecentGroup {
@@ -25,10 +26,6 @@ export interface RecentGroup {
   name: string;
   /** Shared §0 display status for every run in the group. */
   displayStatus: DisplayStatus;
-}
-
-function runName(run: RunSummary): string {
-  return run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
 }
 
 /**
@@ -42,7 +39,7 @@ export function groupConsecutiveRecentRuns(runs: RunSummary[]): RecentGroup[] {
   const groups: RecentGroup[] = [];
 
   for (const run of runs) {
-    const name = runName(run);
+    const name = resolveRunLabel(run);
     const displayStatus = deriveDisplayStatus(run);
     const last = groups[groups.length - 1];
 

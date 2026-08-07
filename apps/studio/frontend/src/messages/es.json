@@ -429,6 +429,10 @@
       "noMessages": "No hay mensajes registrados",
       "waitingEvents": "Esperando eventos de ciclo de vida…",
       "noEvents": "No hay eventos de ciclo de vida registrados",
+      "showOlderEvents": "Mostrar {count, number} eventos anteriores",
+      "expandEventDetails": "Mostrar detalles del evento",
+      "gateOutcome": "Puerta: {verdict} · {major} mayores, {minor} menores",
+      "gateOutcomeSimple": "Puerta: {verdict}",
       "live": "en vivo",
       "noBranchErrors": "No se detectaron errores en ninguna rama.",
       "noFiles": "No se detectaron operaciones de archivo.",
@@ -540,6 +544,7 @@
       "triggering": "Activando...",
       "runStarted": "Ejecución iniciada: {id}",
       "triggerFailed": "No se pudo disparar",
+      "toggleFailed": "No se pudo cambiar",
       "every": "cada {interval}",
       "in": "en {delta}",
       "overdue": "retrasada hace {delta}",
@@ -784,6 +789,8 @@
     },
     "history": {
       "label": "Historial de sesiones",
+      "sortRecent": "Reciente",
+      "sortCost": "Mayor costo",
       "all": "Todo",
       "completed": "Completadas",
       "failed": "Fallidas",
@@ -861,6 +868,15 @@
       "completionRate": "{rate}% completado",
       "noTerminalRuns": "No hay ejecuciones terminales en la ventana",
       "total": "{count, plural, one {# en total} other {# en total}}",
+      "staleHint": "mostrando último estado conocido · falló la actualización"
+    },
+    "spend": {
+      "title": "Gasto reportado",
+      "loading": "Cargando gasto…",
+      "error": "Gasto no disponible · {message}",
+      "unreachable": "API inaccesible",
+      "empty": "No hay ejecuciones en la ventana",
+      "coverage": "{reported} de {total} reportadas",
       "staleHint": "mostrando último estado conocido · falló la actualización"
     },
     "stale": {
@@ -958,6 +974,8 @@
     "roleUser": "usuario",
     "roleThinking": "pensando",
     "roleResponse": "respuesta",
+    "planAssignments": "{count, plural, one {# asignación} other {# asignaciones}}",
+    "planDependsOn": "depende de:",
     "tabAria": "pestaña {label} {position} de {total}"
   },
   "workflow": {

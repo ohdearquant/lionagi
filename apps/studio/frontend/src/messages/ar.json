@@ -429,6 +429,10 @@
       "noMessages": "لم تُسجّل أي رسائل",
       "waitingEvents": "بانتظار أحداث دورة الحياة…",
       "noEvents": "لم تُسجّل أي أحداث لدورة الحياة",
+      "showOlderEvents": "إظهار {count, number} حدثًا أقدم",
+      "expandEventDetails": "إظهار تفاصيل الحدث",
+      "gateOutcome": "البوابة: {verdict} · {major} كبيرة، {minor} صغيرة",
+      "gateOutcomeSimple": "البوابة: {verdict}",
       "live": "مباشر",
       "noBranchErrors": "لم تُكتشف أخطاء عبر كل الفروع.",
       "noFiles": "لم تُكتشف عمليات على الملفات.",
@@ -540,6 +544,7 @@
       "triggering": "جارٍ التشغيل…",
       "runStarted": "بدأ التشغيل: {id}",
       "triggerFailed": "فشل التشغيل",
+      "toggleFailed": "فشل التبديل",
       "every": "كل {interval}",
       "in": "بعد {delta}",
       "overdue": "متأخر {delta}",
@@ -784,6 +789,8 @@
     },
     "history": {
       "label": "سجل الجلسات",
+      "sortRecent": "الأحدث",
+      "sortCost": "الأعلى تكلفة",
       "all": "الكل",
       "completed": "مكتملة",
       "failed": "فاشلة",
@@ -861,6 +868,15 @@
       "completionRate": "اكتمال {rate}%",
       "noTerminalRuns": "لا توجد تشغيلات منتهية في النافذة",
       "total": "{count, plural, zero {لا إجمالي} one {إجمالي واحد} two {إجماليان} few {# إجماليات} many {# إجماليًا} other {# إجمالي}}",
+      "staleHint": "عرض آخر حالة معروفة · فشل التحديث"
+    },
+    "spend": {
+      "title": "الإنفاق المُبلَّغ عنه",
+      "loading": "جارٍ تحميل الإنفاق…",
+      "error": "الإنفاق غير متاح · {message}",
+      "unreachable": "تعذّر الوصول إلى API",
+      "empty": "لا توجد عمليات تشغيل ضمن هذه النافذة",
+      "coverage": "تم الإبلاغ عن {reported} من {total}",
       "staleHint": "عرض آخر حالة معروفة · فشل التحديث"
     },
     "stale": {
@@ -958,6 +974,8 @@
     "roleUser": "المستخدم",
     "roleThinking": "يفكّر",
     "roleResponse": "رد",
+    "planAssignments": "{count, plural, zero {لا تكليفات} one {تكليف واحد} two {تكليفان} few {# تكليفات} many {# تكليفًا} other {# تكليف}}",
+    "planDependsOn": "يعتمد على:",
     "tabAria": "تبويب {label}، {position} من {total}"
   },
   "workflow": {
