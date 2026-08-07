@@ -56,6 +56,15 @@ def test_validate_shape_rejects_bad_env_values():
     assert any("'env'" in e for e in errors)
 
 
+def test_merge_config_rejects_non_dict_env_without_crashing():
+    """A malformed env patch (a string, not a mapping) must reach
+    `_validate_shape`'s ordinary type check as a normal shape error, not
+    crash `_merge_config`'s per-key iteration with an AttributeError."""
+    merged = mcp_mod._merge_config({"command": "python3"}, {"env": "not-a-dict"})
+    errors = mcp_mod._validate_shape("myserver", merged)
+    assert any("'env'" in e for e in errors)
+
+
 def test_validate_shape_rejects_bad_url():
     errors = mcp_mod._validate_shape("myserver", {"url": "not-a-url"})
     assert any("'url'" in e for e in errors)
@@ -138,6 +147,19 @@ def test_register_malformed_config_raises(tmp_path, monkeypatch):
 
     with pytest.raises(mcp_mod.McpServerError):
         mcp_mod.register_server("bad", {"command": "python3", "url": "https://x"})
+
+
+def test_register_create_time_null_env_against_empty_base_is_key_absent(tmp_path, monkeypatch):
+    """Register (save) must apply the same null-env-as-deletion normalization
+    `validate_config` already applies at create time -- merging the incoming
+    config onto an empty base -- so a null env value on a brand-new server
+    means "key absent" everywhere, instead of the raw-config shape check
+    rejecting what validate already approved."""
+    _point_registry_at(tmp_path, monkeypatch)
+
+    created = mcp_mod.register_server("brand-new", {"command": "python3", "env": {"API_KEY": None}})
+
+    assert created["env_keys"] == []
 
 
 def test_update_nonexistent_returns_none(tmp_path, monkeypatch):
@@ -655,6 +677,9 @@ _PARITY_PATCH_CORPUS = [
     ("full_config", {"command": "python3", "args": ["-m", "srv"], "env": {"OTHER": "v"}}),
     ("invalid_nested_types", {"env": {"KEY": 5}}),
     ("unknown_field", {"totally_unknown_field": "whatever", "args": ["-m", "srv"]}),
+    ("env_not_a_dict", {"env": "not-a-dict"}),
+    ("env_int", {"env": 5}),
+    ("env_list", {"env": []}),
 ]
 
 
@@ -662,21 +687,56 @@ _PARITY_PATCH_CORPUS = [
 def test_route_validate_and_save_agree_on_the_same_patch(mcp_client, case_name, patch):
     """The same patch corpus driven through both endpoints must agree on
     accept vs reject, so a merge-semantics field handled by one and not the
-    other fails this test instead of shipping as a live divergence."""
+    other fails this test instead of shipping as a live divergence. Every
+    entry is also checked for a 5xx -- a validator that crashes on the input
+    it exists to judge is a standing property this corpus enforces, not a
+    one-off assertion for the malformed-env cases alone."""
     mcp_client.post("/api/mcp/servers/", json={"name": "myserver", **STDIO_CONFIG})
 
     validate_resp = mcp_client.post(
         "/api/mcp/servers/myserver/validate", json={"name": "myserver", **patch}
     )
-    assert validate_resp.status_code == 200
+    assert validate_resp.status_code < 500, (
+        f"{case_name}: validate returned {validate_resp.status_code} ({validate_resp.text})"
+    )
     validate_body = validate_resp.json()
 
     save_resp = mcp_client.put("/api/mcp/servers/myserver", json=patch)
+    assert save_resp.status_code < 500, (
+        f"{case_name}: save returned {save_resp.status_code} ({save_resp.text})"
+    )
 
     assert validate_body["ok"] == (save_resp.status_code == 200), (
         f"{case_name}: validate ok={validate_body['ok']!r} "
         f"(errors={validate_body.get('errors')!r}) but save status="
         f"{save_resp.status_code} ({save_resp.text})"
+    )
+
+
+@pytest.mark.parametrize("case_name,patch", _PARITY_PATCH_CORPUS)
+def test_route_validate_and_register_agree_at_create_time(mcp_client, case_name, patch):
+    """The same corpus again, but merged onto an empty base (a name that does
+    not exist yet) instead of onto an already-stored config -- validate and
+    register must still agree, and neither may 500 on a malformed patch."""
+    name = f"fresh-{case_name}"
+
+    validate_resp = mcp_client.post(
+        "/api/mcp/servers/" + name + "/validate", json={"name": name, **patch}
+    )
+    assert validate_resp.status_code < 500, (
+        f"{case_name}: validate returned {validate_resp.status_code} ({validate_resp.text})"
+    )
+    validate_body = validate_resp.json()
+
+    register_resp = mcp_client.post("/api/mcp/servers/", json={"name": name, **patch})
+    assert register_resp.status_code < 500, (
+        f"{case_name}: register returned {register_resp.status_code} ({register_resp.text})"
+    )
+
+    assert validate_body["ok"] == (register_resp.status_code == 201), (
+        f"{case_name}: validate ok={validate_body['ok']!r} "
+        f"(errors={validate_body.get('errors')!r}) but register status="
+        f"{register_resp.status_code} ({register_resp.text})"
     )
 
 

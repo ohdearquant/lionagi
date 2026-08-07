@@ -311,7 +311,12 @@ def get_server(name: str) -> dict[str, Any] | None:
 
 
 def register_server(name: str, config: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
-    errors = _validate_shape(name, config)
+    # Registering is `update_server`'s merge onto an empty base rather than a
+    # second, separately-invented rule: a `None` env value means "key absent"
+    # here exactly as it does for an existing server, and `validate_config`
+    # already validates new names the same way (see its docstring).
+    merged = _merge_config({}, config)
+    errors = _validate_shape(name, merged)
     if errors:
         raise McpServerError("; ".join(errors))
 
@@ -322,7 +327,7 @@ def register_server(name: str, config: dict[str, Any], *, enabled: bool = True) 
 
         now = time.time()
         servers[name] = {
-            "config": config,
+            "config": merged,
             "enabled": enabled,
             "created_at": now,
             "updated_at": now,
@@ -361,13 +366,20 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
 
     if "env" in patch:
         incoming_env = patch["env"] or {}
-        merged_env = dict(existing.get("env") or {})
-        for env_key, env_value in incoming_env.items():
-            if env_value is None:
-                merged_env.pop(env_key, None)
-            else:
-                merged_env[env_key] = env_value
-        merged["env"] = merged_env
+        if isinstance(incoming_env, dict):
+            merged_env = dict(existing.get("env") or {})
+            for env_key, env_value in incoming_env.items():
+                if env_value is None:
+                    merged_env.pop(env_key, None)
+                else:
+                    merged_env[env_key] = env_value
+            merged["env"] = merged_env
+        else:
+            # Not a mapping at all (e.g. a string or a number) -- pass it
+            # through untouched so `_validate_shape`'s own env type check
+            # reports it as an ordinary shape error, instead of this merge
+            # crashing on `.items()` before validation ever runs.
+            merged["env"] = incoming_env
 
     if patch.get("url"):
         for key in _STDIO_ONLY_FIELDS:
