@@ -235,7 +235,11 @@
       "filteredHint": "कोई और प्रकार आज़माएँ या खोज साफ़ करें।",
       "createFirst": "अपना पहला बनाएँ",
       "createWorkflow": "नया वर्कफ़्लो",
-      "createAgent": "नया एजेंट"
+      "createAgent": "नया एजेंट",
+      "allSkill": "कोई स्किल नहीं मिली।",
+      "allSkillHint": "यहाँ देखने के लिए ~/.lionagi/skills/<name>/ के अंतर्गत एक SKILL.md जोड़ें।",
+      "allPlugin": "कोई प्लगइन नहीं मिला।",
+      "allPluginHint": "यहाँ देखने के लिए ~/.claude/plugins/ के अंतर्गत एक प्लगइन इंस्टॉल करें।"
     },
     "table": {
       "kind": "प्रकार",
@@ -296,7 +300,19 @@
       "lastUsed": "आखिरी उपयोग",
       "never": "कभी नहीं",
       "recentInvocations": "हाल के इनवोकेशन",
-      "noInvocations": "अभी तक कोई इनवोकेशन रिकॉर्ड नहीं है।"
+      "noInvocations": "अभी तक कोई इनवोकेशन रिकॉर्ड नहीं है।",
+      "skillValidationFailed": "सत्यापन विफल रहा। सहेजने से पहले नीचे दी गई त्रुटियाँ ठीक करें।",
+      "pluginOwnedSkillHint": "यह एक प्लगइन के साथ बंडल है — बदलने के लिए प्लगइन की फ़ाइलें सीधे संपादित करें।",
+      "readOnly": "केवल पढ़ने योग्य",
+      "skillTools": "अनुमत टूल",
+      "skillInstructions": "निर्देश",
+      "pluginHooks": "हुक्स",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP सर्वर",
+      "pluginHooksSection": "हुक कॉन्फ़िगरेशन",
+      "pluginReadmeSection": "README",
+      "yes": "हाँ",
+      "no": "नहीं"
     },
     "template": {
       "badge": "बिल्ट-इन",

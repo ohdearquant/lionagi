@@ -1345,6 +1345,7 @@ export interface InvocationSummary {
   created_at: number;
   updated_at: number;
   node_metadata: Record<string, unknown> | null;
+  status_reason_summary?: string | null;
   // ADR-0026: project provenance from the most-recently updated child session.
   project?: string | null;
   project_source?: string | null;
@@ -1400,10 +1401,17 @@ export interface InvocationListResponse {
   limit: number;
   offset: number;
   has_next: boolean;
+  /** Real total matching the filters, not just this page's row count —
+   * `limit` caps at 200, so counting `invocations` instead plateaus there. */
+  total: number;
+  /** Total matching the filters with status == "completed" specifically,
+   * ignoring `params.status` — always a meaningful success-rate numerator. */
+  completed_total: number;
 }
 
 export interface InvocationListParams {
   skill?: string;
+  plugin?: string;
   status?: string;
   limit?: number;
   offset?: number;
@@ -1414,6 +1422,7 @@ export async function listInvocations(
 ): Promise<InvocationListResponse> {
   const query = new URLSearchParams();
   if (params?.skill) query.set("skill", params.skill);
+  if (params?.plugin) query.set("plugin", params.plugin);
   if (params?.status) query.set("status", params.status);
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset !== undefined) query.set("offset", String(params.offset));
@@ -1553,6 +1562,19 @@ export async function listSkills(): Promise<{ skills: SkillSummary[] }> {
 
 export async function getSkill(name: string): Promise<SkillDetail> {
   return fetchJson<SkillDetail>(`/api/skills/${encodeURIComponent(name)}`);
+}
+
+export interface SkillValidationResult {
+  ok: boolean;
+  errors: string[] | null;
+}
+
+export async function validateSkill(name: string, content: string): Promise<SkillValidationResult> {
+  return fetchJson<SkillValidationResult>(`/api/skills/${encodeURIComponent(name)}/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
 }
 
 // ─── Plugins ──────────────────────────────────────────────────────────────────
@@ -1739,6 +1761,22 @@ export async function getPluginSkill(
 ): Promise<PluginSkillDetail> {
   return fetchJson<PluginSkillDetail>(
     `/api/plugins/${encodeURIComponent(pluginName)}/skills/${encodeURIComponent(skillName)}`,
+  );
+}
+
+export interface PluginAgentDetail {
+  name: string;
+  description: string;
+  path: string;
+  content: string;
+}
+
+export async function getPluginAgent(
+  pluginName: string,
+  agentName: string,
+): Promise<PluginAgentDetail> {
+  return fetchJson<PluginAgentDetail>(
+    `/api/plugins/${encodeURIComponent(pluginName)}/agents/${encodeURIComponent(agentName)}`,
   );
 }
 

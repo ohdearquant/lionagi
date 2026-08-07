@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { AgentDetail } from "@/components/library/AgentDetail";
@@ -6,14 +6,14 @@ import { CreateAgentPanel } from "@/components/library/CreateAgentPanel";
 import { WorkflowDetail, CreateWorkflowPanel } from "@/components/library/WorkflowDetail";
 import { PlaybookTemplateDetail } from "@/components/library/PlaybookTemplateDetail";
 import { McpServerDetail, CreateMcpServerPanel } from "@/components/library/McpServerDetail";
+import { SkillDetail } from "@/components/library/SkillDetail";
+import { PluginDetail } from "@/components/library/PluginDetail";
 import { KindBadge } from "@/components/library/KindBadge";
 import SplitPane from "@/components/ui/SplitPane";
 import TabBar from "@/components/shell/TabBar";
-import { IconCheck, IconClose, IconDotFilled } from "@/components/ui/icons";
-import SectionLabel from "@/components/ui/SectionLabel";
-import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
 import Skeleton from "@/components/ui/Skeleton";
+import Button from "@/components/ui/Button";
 import DrawerBackButton from "@/components/ui/DrawerBackButton";
 import DrawerHeader from "@/components/ui/DrawerHeader";
 import type { LibraryKind } from "@/components/library/KindBadge";
@@ -23,14 +23,18 @@ import {
   listSkills,
   listPlugins,
   listEngineDefs,
-  listInvocations,
   listBuiltinPlaybooks,
   listPlaybooks,
   listMcpServers,
 } from "@/lib/api";
-import type { InvocationSummary } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
 import type { EngineDef } from "@/lib/api";
+
+// Kinds with no creation flow at all — the toolbar's "+ New" button and the
+// empty-state's create CTA are both meaningless here (skills come from
+// ~/.lionagi/skills/, plugins from the marketplace/installed-plugin cache;
+// neither is created from this page).
+const NO_CREATE_KINDS = new Set<LibraryKind>(["skill", "plugin"]);
 
 const LIBRARY_TABS = [
   "all",
@@ -455,6 +459,11 @@ function LibraryPage() {
 
   const isEmpty = !loading && filtered.length === 0;
   const isFiltered = kindFilter !== "all" || search.trim().length > 0;
+  // A skill/plugin tab with nothing on it and no active text search is
+  // "nothing installed here", not "a search matched nothing" — it earns its
+  // own empty-state copy pointing at where these are discovered from.
+  const isEmptyLibraryTab =
+    NO_CREATE_KINDS.has(kindFilter as LibraryKind) && search.trim().length === 0;
 
   const detailPaneActive = detailActive || showCreate || !!parsed;
 
@@ -471,29 +480,31 @@ function LibraryPage() {
           placeholder={t("searchPlaceholder")}
           className="min-w-0 flex-1 rounded border border-edge bg-surface-overlay px-2 py-1 font-ui text-[length:var(--t-sm)] text-content-primary focus:outline-none"
         />
-        <Button
-          size="sm"
-          variant="primary"
-          onClick={() => {
-            setShowCreate(true);
-            setDetailActive(true);
-            void navigate({
-              search: (prev) => {
-                const next = { ...prev };
-                delete next.sel;
-                return next;
-              },
-              replace: false,
-            });
-          }}
-        >
-          +{" "}
-          {kindFilter === "mcp"
-            ? t("newMcpServer")
-            : kindFilter === "agent"
-              ? t("newAgent")
-              : t("newWorkflow")}
-        </Button>
+        {!NO_CREATE_KINDS.has(kindFilter as LibraryKind) && (
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={() => {
+              setShowCreate(true);
+              setDetailActive(true);
+              void navigate({
+                search: (prev) => {
+                  const next = { ...prev };
+                  delete next.sel;
+                  return next;
+                },
+                replace: false,
+              });
+            }}
+          >
+            +{" "}
+            {kindFilter === "mcp"
+              ? t("newMcpServer")
+              : kindFilter === "agent"
+                ? t("newAgent")
+                : t("newWorkflow")}
+          </Button>
+        )}
       </div>
 
       {/* Error banner */}
@@ -516,8 +527,28 @@ function LibraryPage() {
         ) : isEmpty ? (
           <EmptyState
             glyph="▤"
-            title={isFiltered ? t("empty.filtered") : t("empty.all")}
-            body={isFiltered ? t("empty.filteredHint") : t("empty.allHint")}
+            title={
+              // An empty skill/plugin tab with no active text search is a
+              // "nothing installed here" state, distinct from "a search
+              // matched nothing" — it gets its own copy pointing at where
+              // these are discovered from, not the generic filtered message.
+              isEmptyLibraryTab
+                ? kindFilter === "skill"
+                  ? t("empty.allSkill")
+                  : t("empty.allPlugin")
+                : isFiltered
+                  ? t("empty.filtered")
+                  : t("empty.all")
+            }
+            body={
+              isEmptyLibraryTab
+                ? kindFilter === "skill"
+                  ? t("empty.allSkillHint")
+                  : t("empty.allPluginHint")
+                : isFiltered
+                  ? t("empty.filteredHint")
+                  : t("empty.allHint")
+            }
             action={
               !isFiltered ? (
                 <Button
@@ -725,16 +756,10 @@ function LibraryPage() {
         }}
       />
     );
-  } else if (parsed?.kind === "skill" || parsed?.kind === "plugin") {
-    const item = filtered.find((i) => i.kind === parsed.kind && i.name === parsed.name);
-    detailPane = (
-      <SimpleDetail
-        kind={parsed.kind}
-        name={parsed.name}
-        description={item?.description}
-        onBack={handleBack}
-      />
-    );
+  } else if (parsed?.kind === "skill") {
+    detailPane = <SkillDetail name={parsed.name} onBack={handleBack} />;
+  } else if (parsed?.kind === "plugin") {
+    detailPane = <PluginDetail name={parsed.name} onBack={handleBack} />;
   } else if (parsed?.kind === "engine") {
     detailPane = (
       <EngineDetail name={parsed.name} def={selectedEngine ?? null} onBack={handleBack} />
@@ -779,194 +804,6 @@ function LibraryPage() {
           ariaLabelMaster={t("masterAria")}
           ariaLabelDetail={t("detailAria")}
         />
-      </div>
-    </div>
-  );
-}
-
-// ── Simple detail (skill / plugin) ─────────────────────────────────────────
-
-interface InvocationStats {
-  total: number;
-  successRate: number | null;
-  lastUsedSec: number | null;
-  recent: InvocationSummary[];
-}
-
-/**
- * Fetch invocations for a skill or plugin and compute stats client-side.
- * The backend filters by skill but not by plugin, so plugin stats scan the
- * most recent 200 invocations and filter locally.
- */
-function useInvocationStats(
-  kind: "skill" | "plugin",
-  name: string,
-): {
-  stats: InvocationStats | null;
-  loading: boolean;
-} {
-  const [stats, setStats] = useState<InvocationStats | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let alive = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState fires synchronously in effect body only, callbacks are guarded by alive flag
-    setStats(null);
-    setLoading(true);
-
-    const fetchParams =
-      kind === "skill"
-        ? listInvocations({ skill: name, limit: 200 })
-        : // No plugin filter on the server — fetch all and filter client-side
-          listInvocations({ limit: 200 });
-
-    fetchParams
-      .then((res) => {
-        if (!alive) return;
-        const rows =
-          kind === "plugin"
-            ? res.invocations.filter((inv) => inv.plugin === name)
-            : res.invocations;
-
-        const total = rows.length;
-        const success = rows.filter((inv) => inv.status === "completed").length;
-        const successRate = total > 0 ? Math.round((success / total) * 100) : null;
-        const lastUsedSec =
-          rows.length > 0 ? Math.max(...rows.map((inv) => inv.ended_at ?? inv.started_at)) : null;
-        const recent = rows.slice(0, 5);
-        setStats({ total, successRate, lastUsedSec, recent });
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!alive) return;
-        setStats(null);
-        setLoading(false);
-      });
-
-    return () => {
-      alive = false;
-    };
-  }, [kind, name]);
-
-  return { stats, loading };
-}
-
-function formatAge(epochSec: number): string {
-  const diffSec = Math.max(0, Math.floor(Date.now() / 1000) - epochSec);
-  if (diffSec < 60) return `${diffSec}s`;
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m`;
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h`;
-  return `${Math.floor(diffSec / 86400)}d`;
-}
-
-interface SimpleDetailProps {
-  kind: LibraryKind;
-  name: string;
-  description?: string;
-  onBack?: () => void;
-}
-
-function SimpleDetail({ kind, name, description, onBack }: SimpleDetailProps) {
-  const t = useTranslations("library.drawer");
-  const isStatKind = kind === "skill" || kind === "plugin";
-  const { stats, loading: statsLoading } = useInvocationStats(isStatKind ? kind : "skill", name);
-
-  return (
-    <div className="flex h-full flex-col overflow-hidden">
-      {onBack && <DrawerBackButton onClick={onBack}>{t("back")}</DrawerBackButton>}
-      <DrawerHeader name={name} badge={kind} />
-      <div className="flex-1 overflow-auto p-4">
-        <p className="text-[length:var(--t-sm)] text-content-secondary">
-          {description ?? <span className="italic text-content-muted">{t("noDescription")}</span>}
-        </p>
-
-        {/* Invocation stats — skill and plugin only */}
-        {isStatKind && (
-          <div className="mt-4 flex flex-col gap-3">
-            {/* Stats strip */}
-            <div className="grid grid-cols-3 gap-px overflow-hidden rounded border border-edge bg-edge">
-              {[
-                {
-                  label: t("invocations"),
-                  value: statsLoading ? "—" : String(stats?.total ?? 0),
-                },
-                {
-                  label: t("successRate"),
-                  value: statsLoading
-                    ? "—"
-                    : stats?.successRate != null
-                      ? `${stats.successRate}%`
-                      : "—",
-                },
-                {
-                  label: t("lastUsed"),
-                  value: statsLoading
-                    ? "—"
-                    : stats?.lastUsedSec != null
-                      ? formatAge(stats.lastUsedSec)
-                      : t("never"),
-                },
-              ].map(({ label, value }) => (
-                <div key={label} className="flex flex-col gap-0.5 bg-surface-raised px-3 py-2">
-                  <SectionLabel>{label}</SectionLabel>
-                  <span className="font-data tabular-nums text-[length:var(--t-base)] text-content-primary">
-                    {value}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            {/* Recent invocations */}
-            <div>
-              <SectionLabel className="mb-1.5">{t("recentInvocations")}</SectionLabel>
-              {statsLoading ? (
-                <p className="text-[length:var(--t-sm)] text-content-muted">{t("loading")}</p>
-              ) : !stats || stats.recent.length === 0 ? (
-                <p className="text-[length:var(--t-sm)] text-content-muted">{t("noInvocations")}</p>
-              ) : (
-                <div
-                  className="flex flex-col rounded border border-edge"
-                  style={{ borderRadius: 4 }}
-                >
-                  {stats.recent.map((inv, i) => (
-                    <Link
-                      key={inv.id}
-                      to="/fleet"
-                      className="flex items-center gap-2 px-2.5 py-2 font-data text-[length:var(--t-sm)] text-content-primary hover:underline"
-                      style={{
-                        borderTop: i > 0 ? "1px solid var(--edge-hairline)" : undefined,
-                      }}
-                    >
-                      <span
-                        className="flex shrink-0 items-center"
-                        style={{
-                          color:
-                            inv.status === "completed"
-                              ? "var(--status-success)"
-                              : inv.status === "failed"
-                                ? "var(--status-failure)"
-                                : "var(--content-muted)",
-                        }}
-                      >
-                        {inv.status === "completed" ? (
-                          <IconCheck size={10} strokeWidth={2.5} />
-                        ) : inv.status === "failed" ? (
-                          <IconClose size={10} strokeWidth={2.5} />
-                        ) : (
-                          <IconDotFilled size={5} />
-                        )}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate">{inv.skill}</span>
-                      <span className="shrink-0 tabular-nums text-[length:var(--t-xs)] text-content-muted">
-                        {formatAge(inv.ended_at ?? inv.started_at)}
-                      </span>
-                    </Link>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
