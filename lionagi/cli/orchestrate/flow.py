@@ -358,6 +358,31 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
+                # A "completed" child may still carry COMPLETED_GATE_REJECTED
+                # (a gate rejected mid-DAG and short-circuited its dependent
+                # subtree) — surface that at the invocation level too, or it
+                # flattens back to a plain clean-pass COMPLETED_OK and the
+                # distinction this reason code exists for is lost.
+                gate_rejected = [
+                    s
+                    for s in sessions
+                    if str(s.get("status_reason_code") or "") == RunReasons.COMPLETED_GATE_REJECTED
+                ]
+                if gate_rejected:
+                    gate_metadata = dict(metadata)
+                    gate_metadata["gate_rejected_session_ids"] = [
+                        s["id"] for s in gate_rejected if s.get("id")
+                    ]
+                    return (
+                        "completed",
+                        RunReasons.COMPLETED_GATE_REJECTED,
+                        "Flow completed successfully, but a gate rejected "
+                        "mid-DAG in at least one child session and its "
+                        "dependent subtree was short-circuited instead of "
+                        "running against the rejected baseline.",
+                        [{"kind": "session", "id": s["id"]} for s in gate_rejected if s.get("id")],
+                        gate_metadata,
+                    )
                 # A "completed" child may still carry COMPLETED_FINALIZE_ERROR
                 # (a guarded best-effort teardown step failed) — surface that
                 # degraded reason at the invocation level rather than hiding it.
@@ -1557,9 +1582,13 @@ async def _execute_dag(
     escalated_evidence = [
         {"kind": "escalated_operation", "id": agent_ids[i], "label": assignments[i].assignee}
         for i in range(len(assignments))
-        if node_ids[i] in escalated_op_ids
+        # node_ids holds Operation UUIDs, not strings, despite the `list[str]`
+        # annotation -- compare on the string form so a planned (non-spawned)
+        # escalated op is recognized here instead of falling through to the
+        # spawned branch below and losing its assignee label.
+        if str(node_ids[i]) in escalated_op_ids
     ]
-    for spawned_nid in sorted(escalated_op_ids - known_nodes):
+    for spawned_nid in sorted(escalated_op_ids - known_node_strs):
         # Surface the stamped spawn_id (e.g. "spawn-3") instead of the
         # internal UUID, matching the artifact dirs/contract entries produced.
         graph_node = graph_nodes.get(spawned_nid)
@@ -1574,6 +1603,34 @@ async def _execute_dag(
         # already have appended entries to env._escalated_evidence mid-run.
         prior_evidence = getattr(env, "_escalated_evidence", None) or []
         env._escalated_evidence = [*prior_evidence, *escalated_evidence]
+
+    # Gate-reject evidence (issue #2860): a mid-DAG gate node returned a
+    # REJECT verdict and the executor short-circuited its dependent subtree
+    # to skipped rather than let it run against the rejected baseline. This
+    # names the rejecting gate(s), not the (possibly many) skipped
+    # dependents, so `stop_live_persist` can record a "completed but gate
+    # rejected" reason instead of a plain clean-pass one.
+    gate_rejected_op_ids = {str(x) for x in dag_result.get("gate_rejected_operations", [])}
+    gate_rejected_evidence = [
+        {"kind": "gate_rejected_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+        for i in range(len(assignments))
+        # node_ids holds Operation UUIDs, not strings, despite the `list[str]`
+        # annotation -- compare on the string form so a planned (non-spawned)
+        # gate is recognized here instead of falling through to the spawned
+        # branch below and losing its assignee label.
+        if str(node_ids[i]) in gate_rejected_op_ids
+    ]
+    known_node_strs_for_gates = {str(n) for n in known_nodes}
+    for spawned_nid in sorted(gate_rejected_op_ids - known_node_strs_for_gates):
+        graph_node = graph_nodes.get(spawned_nid)
+        spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        evidence_id = spawn_id or spawned_nid
+        gate_rejected_evidence.append(
+            {"kind": "gate_rejected_operation", "id": evidence_id, "label": evidence_id}
+        )
+    if gate_rejected_evidence:
+        prior_gate_evidence = getattr(env, "_gate_rejected_evidence", None) or []
+        env._gate_rejected_evidence = [*prior_gate_evidence, *gate_rejected_evidence]
 
     agent_results: list[dict] = []
 
