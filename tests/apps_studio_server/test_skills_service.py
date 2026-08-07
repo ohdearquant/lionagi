@@ -80,6 +80,24 @@ def test_validate_skill_content_accepts_bare_identifier_name():
     assert errors == []
 
 
+def test_validate_skill_content_rejects_missing_closing_delimiter():
+    """An opening --- with no closing --- must not be accepted as "no
+    frontmatter" -- it's malformed content, not absent content."""
+    content = "---\nname: valid\nBody without closing delimiter"
+    errors = validate_skill_content(content, "my-skill")
+    assert errors
+    assert any("YAML" in e for e in errors)
+
+
+def test_validate_skill_content_rejects_null_frontmatter():
+    """An explicit YAML null document must not be coerced into valid, empty
+    metadata."""
+    content = "---\nnull\n---\nBody.\n"
+    errors = validate_skill_content(content, "my-skill")
+    assert errors
+    assert any("YAML" in e or "mapping" in e for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # definitions.py — skill kind save / get / rollback
 # ---------------------------------------------------------------------------
@@ -182,6 +200,58 @@ async def test_save_skill_definition_rejects_broken_frontmatter(tmp_path, monkey
         await defs_mod.save_definition("skill", "bad-skill", broken)
 
     assert not (skills_dir / "bad-skill").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_save_skill_definition_rejects_missing_closing_delimiter(tmp_path, monkeypatch):
+    """The save endpoint must reject an opening --- with no closing --- as
+    malformed content, not silently store it as a skill with no metadata."""
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    skills_dir = fake_home / "skills"
+    skills_dir.mkdir()
+    fake_db = tmp_path / "state.db"
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "SKILLS_DIR", skills_dir)
+
+    unterminated = "---\nname: valid\nBody without closing delimiter"
+    with pytest.raises(ValueError, match="YAML"):
+        await defs_mod.save_definition("skill", "bad-skill-2", unterminated)
+
+    assert not (skills_dir / "bad-skill-2").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_save_skill_definition_rejects_null_frontmatter(tmp_path, monkeypatch):
+    """The save endpoint must reject an explicit YAML null frontmatter
+    document instead of coercing it into valid, empty metadata."""
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    skills_dir = fake_home / "skills"
+    skills_dir.mkdir()
+    fake_db = tmp_path / "state.db"
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(defs_mod, "SKILLS_DIR", skills_dir)
+
+    null_fm = "---\nnull\n---\nBody.\n"
+    with pytest.raises(ValueError):
+        await defs_mod.save_definition("skill", "bad-skill-3", null_fm)
+
+    assert not (skills_dir / "bad-skill-3").exists()
 
 
 @pytest.mark.integration
