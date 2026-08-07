@@ -60,6 +60,7 @@ _DOCS_PATHS = frozenset({"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redir
 # mounting rule).
 _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/api/agents/{name}"),
+    ("DELETE", "/api/attention/dispositions/{item_id}"),
     ("DELETE", "/api/engine-defs/{def_id}"),
     ("DELETE", "/api/mcp/servers/{name}"),
     ("DELETE", "/api/operator/conversations/{conversation_id}"),
@@ -78,6 +79,8 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/approvals/{approval_id}"),
     ("GET", "/api/artifacts/by-session/{session_id}"),
     ("GET", "/api/artifacts/{artifact_id}"),
+    ("GET", "/api/attention/dispositions/"),
+    ("GET", "/api/attention/dispositions/{item_id}/history"),
     ("GET", "/api/casts/"),
     ("GET", "/api/definitions/"),
     ("GET", "/api/definitions/{kind}/{name}"),
@@ -108,6 +111,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/runs/projects"),
     ("GET", "/api/runs/{run_id}"),
     ("GET", "/api/runs/{run_id}/file"),
+    ("GET", "/api/runs/{run_id}/resume"),
     ("GET", "/api/schedules/"),
     ("GET", "/api/schedules/limits"),
     ("GET", "/api/schedules/runs/{run_id}"),
@@ -125,6 +129,8 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/skills/{name}"),
     ("GET", "/api/stats"),
     ("GET", "/api/stats/activity"),
+    ("GET", "/api/stats/spend"),
+    ("GET", "/api/stats/spend/rollup"),
     ("GET", "/api/teams/"),
     ("GET", "/api/teams/{team_id}"),
     ("GET", "/api/workflow-defs/"),
@@ -185,6 +191,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/workflow-defs/"),
     ("POST", "/api/workflow-defs/{def_id}/run"),
     ("PUT", "/api/agents/{name}"),
+    ("PUT", "/api/attention/dispositions/{item_id}"),
     ("PUT", "/api/engine-defs/{def_id}"),
     ("PUT", "/api/mcp/servers/{name}"),
     ("PUT", "/api/playbooks/{name}"),
@@ -268,7 +275,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 122
+    assert len(_GOLDEN_ROUTES) == 129
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -574,6 +581,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "ended_at",
         "graph",
         "id",
+        "input_tokens",
         "invocation_id",
         "invocation_kind",
         "last_message_at",
@@ -584,6 +592,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "model",
         "name",
         "node_metadata",
+        "output_tokens",
         "playbook_name",
         "project",
         "project_source",
@@ -598,6 +607,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "status_evidence_refs",
         "status_reason_code",
         "status_reason_summary",
+        "total_cost_usd",
         "updated_at",
     ]
 )
@@ -682,6 +692,10 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "github_cursor",
         "github_filter",
         "github_repo",
+        "health_last_outcome",
+        "health_last_outcome_at",
+        "health_since",
+        "health_state",
         "id",
         "interval_sec",
         "last_alert_at",
@@ -807,6 +821,52 @@ def test_schedules_detail_response_shape(tmp_path, monkeypatch):
     r = client.get(f"/api/schedules/{schedule_id}")
     assert r.status_code == 200
     assert sorted(r.json().keys()) == _SCHEDULE_DETAIL_KEYS
+
+
+def test_schedules_detail_response_shape_with_budget_configured(tmp_path, monkeypatch):
+    """A schedule with budget_usd/budget_tokens configured additionally surfaces
+    the spend rollup (spend_usd, spend_tokens, unreported_sessions,
+    spend_is_partial). These keys are gated on a configured budget -- the
+    base _SCHEDULE_DETAIL_KEYS gate above uses a schedule with no budget
+    configured, so it's unaffected by this addition. Blessed deliberately
+    here rather than left to silently drift into the pinned shape."""
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    async def _create() -> str:
+        import lionagi.studio.services.schedules as schedules_mod
+
+        created = await schedules_mod.create_schedule(
+            {
+                "name": f"gate-budget-{uuid.uuid4().hex[:8]}",
+                "trigger_type": "cron",
+                "cron_expr": "0 18 * * *",
+                "action_kind": "agent",
+                "action_prompt": "ping",
+                "budget_usd": 5.0,
+            }
+        )
+        return created["id"]
+
+    schedule_id = run_async(_create())
+    client = _make_client()
+
+    r = client.get(f"/api/schedules/{schedule_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert sorted(body.keys()) == sorted(
+        [
+            *_SCHEDULE_DETAIL_KEYS,
+            "spend_usd",
+            "spend_tokens",
+            "unreported_sessions",
+            "spend_is_partial",
+        ]
+    )
+    assert body["spend_usd"] == 0.0
+    assert body["spend_tokens"] == 0
+    assert body["unreported_sessions"] == 0
+    assert body["spend_is_partial"] is False
 
 
 def test_schedules_detail_404_shape(tmp_path, monkeypatch):

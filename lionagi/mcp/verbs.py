@@ -238,7 +238,33 @@ def _own(properties: dict[str, Any], required: list[str] | None = None) -> dict[
     return schema
 
 
-_JOB_STATUS_SCHEMA = _own({"run_id": _RUN_ID}, ["run_id"])
+_JOB_STATUS_SCHEMA = _own(
+    {
+        "run_id": _RUN_ID,
+        "detail": {
+            "type": "boolean",
+            "default": False,
+            "description": (
+                "When true, adds a 'detail' object carrying the planned "
+                "execution graph (nodes, each with role/status/started_at/"
+                "duration_s/spawned_by), artifact_contract (declared "
+                "artifacts vs satisfied), and stalls (seconds_idle/"
+                "last_activity/idle_source per still-running node — "
+                "idle_source names where the timestamp came from, and is "
+                "'none' with seconds_idle/last_activity absent when no "
+                "activity timestamp has been recorded yet, rather than "
+                "guessing from the node's start time) — the same state the "
+                "Studio Fleet view renders, so a caller can tell which node a "
+                "run is stuck on without tailing its console. Costs a StateDB "
+                "read; the base payload (default) is unchanged and stays "
+                "cheap. A run whose session/graph rows are missing (or the "
+                "'studio' extra is not installed) answers with "
+                "detail={'detail_unavailable': <reason>} rather than failing."
+            ),
+        },
+    },
+    ["run_id"],
+)
 
 _JOB_OUTPUT_SCHEMA = _own(
     {

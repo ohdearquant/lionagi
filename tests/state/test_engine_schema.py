@@ -219,6 +219,9 @@ ALL_TABLES = {
     "approvals",
     "approval_evidence",
     "workers",
+    "attention_dispositions",
+    "attention_disposition_history",
+    "attention_disposition_revisions",
 }
 
 
@@ -324,7 +327,7 @@ async def test_metadata_check_constraint_parity_vs_schema_sql(tmp_path, sqlite_m
         meta_checks = _checks(await conn.run_sync(_meta_rows))
 
     # Guard against the regex silently extracting nothing (would make equality trivial).
-    assert len(raw_checks) == 19, f"expected 19 enum CHECK columns, got {len(raw_checks)}"
+    assert len(raw_checks) == 20, f"expected 20 enum CHECK columns, got {len(raw_checks)}"
     drift = {
         k: {
             "schema_sql": sorted(raw_checks.get(k) or []),

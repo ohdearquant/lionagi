@@ -405,6 +405,100 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     return None
 
 
+# Health severity is computed from cadence + observed schedule_runs rows,
+# never from next_fire_at -- next_fire_at is a promise the scheduler made,
+# not evidence that anything happened. A missed-fire/overlap/capacity skip
+# advances the cursor while recording no execution, so silence hidden behind
+# a pile of skips must still read as overdue, not healthy.
+_HEALTH_OVERDUE_MULTIPLIER = 3
+_HEALTH_OVERDUE_GRACE_FLOOR_SEC = 300  # 5 minutes
+
+# Failing contract: the single latest executed run's outcome is enough to
+# call a schedule failing -- N=1, deliberately. This is a demo-facing badge;
+# one failed run is worth a glance, not something to smooth over by waiting
+# for a streak to build. A newer execution that isn't failed/timed_out resets
+# straight back to healthy, since only the latest execution is evaluated.
+_HEALTH_FAILING_THRESHOLD = 1
+_HEALTH_FAILING_OUTCOMES = ("failed", "timed_out")
+
+
+def _schedule_cadence_seconds(row: dict[str, Any]) -> float | None:
+    # Shares the scheduler's own cadence resolution rather than retyping its
+    # fallback chain -- cron/at have no fixed period and resolve to None,
+    # which skips overdue detection for them rather than guessing from
+    # next_fire_at.
+    from ..scheduler.engine import resolve_schedule_cadence_seconds
+
+    return resolve_schedule_cadence_seconds(row)
+
+
+def compute_schedule_health(
+    row: dict[str, Any], evidence: dict[str, Any], *, now: float
+) -> dict[str, Any]:
+    """Derive a read-only health verdict for one schedule.
+
+    States: disabled (not enabled), never-fired (enabled, zero schedule_runs
+    rows recorded at all AND no retained last_fired_at watermark -- the
+    closest thing to a confident "never ran" this table can support),
+    no-evidence (enabled, and either recorded rows exist with none of them
+    execution evidence -- e.g. a skip/queue-only history -- or zero rows are
+    recorded but schedules.last_fired_at shows the schedule executed before
+    its schedule_runs history was pruned by retention; this table cannot
+    distinguish those shapes from each other, so it reports "cannot tell"
+    rather than guessing either way), overdue (enabled, cadence known, and
+    no execution evidence within grace of the expected cadence), failing
+    (the single latest executed run's outcome was failed/timed_out -- see
+    _HEALTH_FAILING_THRESHOLD), healthy (otherwise).
+
+    ``schedules.last_fired_at`` is a retained per-schedule column written by
+    the normal occurrence paths -- it survives schedule_runs retention
+    pruning even after every run row for a schedule is gone. never-fired is
+    the strongest claim this table can make ("nothing ever happened"), so it
+    must require BOTH signals to agree that nothing was recorded: zero rows
+    (last_recorded_run_at is None) AND no surviving watermark (last_fired_at
+    is None). Either one being non-null means the schedule executed at some
+    point and the honest verdict is "cannot tell" (no-evidence), not
+    "never-fired".
+    """
+    last_executed_at = evidence.get("last_executed_run_at")
+    last_executed_status = evidence.get("last_executed_status")
+    last_recorded_at = evidence.get("last_recorded_run_at")
+    last_fired_at = row.get("last_fired_at")
+
+    if not row.get("enabled"):
+        state = "disabled"
+    elif last_executed_at is None:
+        state = (
+            "never-fired" if last_recorded_at is None and last_fired_at is None else "no-evidence"
+        )
+    else:
+        cadence_seconds = _schedule_cadence_seconds(row)
+        overdue = (
+            cadence_seconds is not None
+            and cadence_seconds > 0
+            and (
+                now - last_executed_at
+                > max(
+                    cadence_seconds * _HEALTH_OVERDUE_MULTIPLIER,
+                    cadence_seconds + _HEALTH_OVERDUE_GRACE_FLOOR_SEC,
+                )
+            )
+        )
+        if overdue:
+            state = "overdue"
+        elif last_executed_status in _HEALTH_FAILING_OUTCOMES:
+            state = "failing"
+        else:
+            state = "healthy"
+
+    return {
+        "health_state": state,
+        "health_last_outcome": last_executed_status,
+        "health_last_outcome_at": last_executed_at,
+        "health_since": row.get("created_at"),
+    }
+
+
 async def list_schedules(
     *,
     enabled: bool | None = None,
@@ -418,13 +512,33 @@ async def list_schedules(
         ids = [row["id"] for row in rows]
         used_by_id = await db.count_schedule_runs_batch(ids, chain_depth=0)
         streaks_by_id = await db.schedule_run_streaks(ids)
+        health_evidence_by_id = await db.schedule_health_evidence(ids)
+        now = time.time()
         for row in rows:
             if row.get("max_runs"):
                 row["remaining_runs"] = max(row["max_runs"] - used_by_id[row["id"]], 0)
+            if row.get("budget_usd") or row.get("budget_tokens"):
+                await _attach_spend(db, row)
             streak, last_status = streaks_by_id[row["id"]]
             row["consecutive_failures"] = streak
             row["last_status"] = last_status
+            row.update(compute_schedule_health(row, health_evidence_by_id[row["id"]], now=now))
     return rows
+
+
+async def _attach_spend(db: StateDB, row: dict[str, Any]) -> None:
+    """Attach the spend rollup to *row* in place, for schedules with a configured budget.
+
+    ``spend_is_partial`` (derived from ``unreported_sessions``) is what a caller/UI
+    should branch on to render "unknown/partial" instead of trusting ``spend_usd``
+    as a complete total -- see sum_schedule_spend's docstring for why an unreported
+    session's cost is not the same as a $0 one.
+    """
+    spend = await db.sum_schedule_spend(row["id"])
+    row["spend_usd"] = spend["cost_usd"]
+    row["spend_tokens"] = spend["tokens"]
+    row["unreported_sessions"] = spend["unreported_sessions"]
+    row["spend_is_partial"] = spend["unreported_sessions"] > 0
 
 
 async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
@@ -438,9 +552,13 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         if row.get("max_runs"):
             used = await db.count_schedule_runs(schedule_id, chain_depth=0)
             row["remaining_runs"] = max(row["max_runs"] - used, 0)
+        if row.get("budget_usd") or row.get("budget_tokens"):
+            await _attach_spend(db, row)
         streak, last_status = await db.schedule_run_streak(schedule_id)
         row["consecutive_failures"] = streak
         row["last_status"] = last_status
+        evidence = (await db.schedule_health_evidence([schedule_id]))[schedule_id]
+        row.update(compute_schedule_health(row, evidence, now=time.time()))
     row["recent_runs"] = runs
     return row
 

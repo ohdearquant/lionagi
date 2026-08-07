@@ -103,5 +103,9 @@ export default defineConfig({
     // e2e/ holds Playwright specs (see playwright.config.ts) -- a different
     // test runner with its own test()/expect(), never vitest's.
     exclude: ["e2e/**", "node_modules/**"],
+    // Pins the process timezone so any test asserting a rendered clock value
+    // (e.g. runLabel's local-time disambiguator) gets the same digits on
+    // every machine and in CI, instead of only passing in the author's TZ.
+    env: { TZ: "UTC" },
   },
 });

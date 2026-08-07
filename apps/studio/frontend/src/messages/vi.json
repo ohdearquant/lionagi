@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Đang kiểm tra xem lượt chạy này có thể tiếp tục hay không…",
+    "availabilityFailed": "Không thể xác định liệu lượt chạy này có thể tiếp tục hay không.",
+    "notResumable": "Không thể tiếp tục lượt chạy này.",
+    "continueDescription": "Phát lại kế hoạch đã lưu từ nơi nó dừng lại — không có hướng dẫn mới, không có nhánh để chọn.",
+    "continueSubmit": "Tiếp tục",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -429,6 +434,10 @@
       "noMessages": "chưa ghi nhận tin nhắn",
       "waitingEvents": "đang chờ sự kiện vòng đời…",
       "noEvents": "chưa ghi nhận sự kiện vòng đời",
+      "showOlderEvents": "Hiển thị {count, number} sự kiện cũ hơn",
+      "expandEventDetails": "Hiển thị chi tiết sự kiện",
+      "gateOutcome": "Cổng: {verdict} · {major} lớn, {minor} nhỏ",
+      "gateOutcomeSimple": "Cổng: {verdict}",
       "live": "trực tiếp",
       "noBranchErrors": "không phát hiện lỗi trên bất kỳ nhánh nào.",
       "noFiles": "không phát hiện thao tác tệp.",
@@ -540,6 +549,7 @@
       "triggering": "đang kích hoạt…",
       "runStarted": "đã bắt đầu lần chạy: {id}",
       "triggerFailed": "kích hoạt thất bại",
+      "toggleFailed": "chuyển đổi thất bại",
       "every": "mỗi {interval}",
       "in": "trong {delta}",
       "overdue": "trễ {delta}",
@@ -547,7 +557,17 @@
       "last": "gần nhất",
       "never": "chưa từng chạy",
       "paused": "Đã tạm dừng",
-      "notScheduled": "Chưa lên lịch"
+      "notScheduled": "Chưa lên lịch",
+      "health": {
+        "healthy": "Khỏe mạnh",
+        "failing": "Thất bại",
+        "overdue": "Quá hạn",
+        "neverFired": "Chưa từng chạy",
+        "noEvidence": "Không có bằng chứng",
+        "lastOutcome": "lần cuối {outcome} {delta} trước",
+        "neverFiredSince": "chưa từng chạy kể từ {date}",
+        "noEvidenceHint": "không có lần chạy nào được ghi nhận"
+      }
     },
     "run": {
       "elapsed": "đã qua {delta}",
@@ -784,6 +804,8 @@
     },
     "history": {
       "label": "lịch sử phiên",
+      "sortRecent": "Gần đây",
+      "sortCost": "Chi phí cao nhất",
       "all": "tất cả",
       "completed": "hoàn tất",
       "failed": "thất bại",
@@ -797,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -820,7 +850,34 @@
       },
       "more": "{count, plural, other {+# nữa — xem tất cả trong lịch sử →}}",
       "digestLatest": "mới nhất: {name} · {age} trước",
-      "streakCount": "{count, plural, other {#× thất bại}}"
+      "streakCount": "{count, plural, other {#× thất bại}}",
+      "disposition": {
+        "acknowledged": "đã xác nhận",
+        "resolved": "đã giải quyết",
+        "expected": "dự kiến",
+        "snoozed": "đã hoãn"
+      },
+      "action": {
+        "acknowledge": "Xác nhận",
+        "acknowledgeAria": "Xác nhận {name}",
+        "resolve": "Giải quyết",
+        "resolveAria": "Giải quyết {name}",
+        "snooze": "Hoãn {duration}",
+        "snoozeAria": "Hoãn {name} trong {duration}",
+        "expected": "Đánh dấu là dự kiến",
+        "expectedAria": "Đánh dấu {name} là dự kiến",
+        "undo": "Hoàn tác",
+        "undoAria": "Hoàn tác xử lý {name}",
+        "confirm": "Xác nhận",
+        "cancel": "Hủy",
+        "notePlaceholder": "Tại sao điều này được dự kiến?",
+        "noteRequired": "Cần có ghi chú",
+        "saveFailed": "Chưa lưu · {message}",
+        "expiryLabel": "Hết hạn sau"
+      },
+      "showDischarged": "Hiện mục đã xử lý",
+      "hideDischarged": "Ẩn mục đã xử lý",
+      "dischargedEmpty": "Không có mục nào đã xử lý"
     },
     "liveBoard": {
       "title": "đang chạy",
@@ -861,6 +918,15 @@
       "completionRate": "hoàn tất {rate}%",
       "noTerminalRuns": "không có lần chạy đã kết thúc nào trong khoảng thời gian này",
       "total": "{count, plural, other {tổng #}}",
+      "staleHint": "đang hiển thị dữ liệu cuối cùng · làm mới thất bại"
+    },
+    "spend": {
+      "title": "Chi phí đã báo cáo",
+      "loading": "Đang tải chi phí…",
+      "error": "Chi phí không khả dụng · {message}",
+      "unreachable": "không kết nối được API",
+      "empty": "Không có lượt chạy trong khoảng này",
+      "coverage": "{reported}/{total} đã báo cáo",
       "staleHint": "đang hiển thị dữ liệu cuối cùng · làm mới thất bại"
     },
     "stale": {
@@ -958,6 +1024,8 @@
     "roleUser": "người dùng",
     "roleThinking": "đang nghĩ",
     "roleResponse": "phản hồi",
+    "planAssignments": "{count, plural, other {# phân công}}",
+    "planDependsOn": "phụ thuộc vào:",
     "tabAria": "thẻ {label} {position}/{total}"
   },
   "workflow": {

@@ -57,6 +57,11 @@
     "submitting": "正在恢复…",
     "submit": "继续运行",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "正在检查此运行是否可以恢复…",
+    "availabilityFailed": "无法确定此运行是否可以恢复。",
+    "notResumable": "此运行无法恢复。",
+    "continueDescription": "从中断处重放已保存的计划——无需新指令，也无需选择分支。",
+    "continueSubmit": "继续",
     "cli": {
       "title": "CLI 备用方式",
       "copy": "复制",
@@ -429,6 +434,10 @@
       "noMessages": "暂无消息记录",
       "waitingEvents": "等待生命周期事件…",
       "noEvents": "暂无生命周期事件",
+      "showOlderEvents": "显示 {count, number} 条更早的事件",
+      "expandEventDetails": "显示事件详情",
+      "gateOutcome": "关卡：{verdict} · {major} 个重大，{minor} 个次要",
+      "gateOutcomeSimple": "关卡：{verdict}",
       "live": "实时",
       "noBranchErrors": "所有分支均未检测到错误。",
       "noFiles": "未检测到文件操作。",
@@ -540,6 +549,7 @@
       "triggering": "触发中…",
       "runStarted": "已触发：{id}",
       "triggerFailed": "触发失败",
+      "toggleFailed": "切换失败",
       "every": "每 {interval}",
       "in": "{delta}后",
       "overdue": "已逾期 {delta}",
@@ -547,7 +557,17 @@
       "last": "上次",
       "never": "从未运行",
       "paused": "已暂停",
-      "notScheduled": "未排期"
+      "notScheduled": "未排期",
+      "health": {
+        "healthy": "健康",
+        "failing": "失败",
+        "overdue": "逾期",
+        "neverFired": "从未运行",
+        "noEvidence": "无证据",
+        "lastOutcome": "{delta}前{outcome}",
+        "neverFiredSince": "自 {date} 起从未运行",
+        "noEvidenceHint": "未记录任何执行"
+      }
     },
     "run": {
       "elapsed": "已运行 {delta}",
@@ -784,6 +804,8 @@
     },
     "history": {
       "label": "会话历史",
+      "sortRecent": "最近",
+      "sortCost": "费用最高",
       "all": "全部",
       "completed": "已完成",
       "failed": "失败",
@@ -797,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -820,7 +850,34 @@
       },
       "more": "还有 {count} 项，去历史中查看 →",
       "digestLatest": "最近：{name} · {age}前",
-      "streakCount": "连续失败 {count} 次"
+      "streakCount": "连续失败 {count} 次",
+      "disposition": {
+        "acknowledged": "已确认",
+        "resolved": "已解决",
+        "expected": "预期内",
+        "snoozed": "已延后"
+      },
+      "action": {
+        "acknowledge": "确认",
+        "acknowledgeAria": "确认 {name}",
+        "resolve": "解决",
+        "resolveAria": "解决 {name}",
+        "snooze": "延后 {duration}",
+        "snoozeAria": "将 {name} 延后 {duration}",
+        "expected": "标记为预期",
+        "expectedAria": "将 {name} 标记为预期",
+        "undo": "撤销",
+        "undoAria": "撤销 {name} 的处理",
+        "confirm": "确认",
+        "cancel": "取消",
+        "notePlaceholder": "为什么这是预期内的？",
+        "noteRequired": "需要填写说明",
+        "saveFailed": "未保存 · {message}",
+        "expiryLabel": "到期时间"
+      },
+      "showDischarged": "显示已处理项",
+      "hideDischarged": "隐藏已处理项",
+      "dischargedEmpty": "没有已处理的项目"
     },
     "liveBoard": {
       "title": "正在运行",
@@ -861,6 +918,15 @@
       "completionRate": "完成率 {rate}%",
       "noTerminalRuns": "窗口内暂无已结束的运行",
       "total": "共 {count} 次",
+      "staleHint": "显示上次数据 · 刷新失败"
+    },
+    "spend": {
+      "title": "已报告支出",
+      "loading": "正在加载支出…",
+      "error": "支出不可用 · {message}",
+      "unreachable": "无法连接 API",
+      "empty": "窗口内无运行记录",
+      "coverage": "{total} 个中已报告 {reported} 个",
       "staleHint": "显示上次数据 · 刷新失败"
     },
     "stale": {
@@ -958,6 +1024,8 @@
     "roleUser": "用户",
     "roleThinking": "思考",
     "roleResponse": "回复",
+    "planAssignments": "{count} 个任务分配",
+    "planDependsOn": "依赖于：",
     "tabAria": "{label} 标签页,第 {position} 个,共 {total} 个"
   },
   "workflow": {
