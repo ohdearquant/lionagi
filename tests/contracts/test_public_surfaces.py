@@ -195,7 +195,11 @@ def test_cli_surface_matches_baseline():
 
 
 def test_cli_specialized_paths_match_baseline():
-    expected = {tuple(c["argv"]): c for c in _load("specialized")}
+    """Committable cases capture argparse's own rendered text verbatim, which
+    CPython's HelpFormatter changed across this project's CI-tested Python
+    versions (see _capture.specialized_baseline_name); the baseline loaded
+    here is pinned to the running interpreter rather than a single file."""
+    expected = {tuple(c["argv"]): c for c in _load(_capture.specialized_baseline_name())}
     live = {tuple(c["argv"]): c for c in _capture.capture_specialized()}
     # Every frozen case must still be present and, modulo known volatility
     # (W-02, below), unchanged.
@@ -472,11 +476,15 @@ def test_fixtures_carry_no_host_specific_state():
 _REDACTION_MARKER_RE = re.compile(r"^\[redacted: .+\]$", re.DOTALL)
 
 
-def _unredacted_fields(file_name: str, cases: list) -> list[str]:
+def _unredacted_fields(file_name: str, cases: list, *, label: str | None = None) -> list[str]:
     """(file, argv, field) labels for every case classified volatile for
     *file_name* whose captured stream is neither empty nor the redaction
-    marker -- i.e. still carries literal captured output."""
+    marker -- i.e. still carries literal captured output. *file_name* selects
+    the volatile-case population (SPECIALIZED_CASES / MACHINE_CASES); *label*
+    overrides the fixture name in the offender message when *cases* came from
+    a differently-named file (e.g. a per-Python-version pinned baseline)."""
     volatile = _volatile_argv_for(file_name)
+    label = label or file_name
     offenders = []
     for case in cases:
         argv = tuple(case["argv"])
@@ -485,14 +493,15 @@ def _unredacted_fields(file_name: str, cases: list) -> list[str]:
         for field in ("stdout", "stderr"):
             value = case.get(field, "")
             if value and not _REDACTION_MARKER_RE.match(value):
-                offenders.append(f"{file_name}.json {argv} {field}")
+                offenders.append(f"{label}.json {argv} {field}")
     return offenders
 
 
 def test_volatile_fixture_cases_are_fully_redacted():
     offenders = []
-    for file_name in ("specialized", "machine"):
-        offenders += _unredacted_fields(file_name, _load(file_name))
+    for name in _capture._SPECIALIZED_BASELINE_BY_PYVER.values():
+        offenders += _unredacted_fields("specialized", _load(name), label=name)
+    offenders += _unredacted_fields("machine", _load("machine"))
     assert not offenders, (
         "volatile fixture cases still carry literal captured output instead of the "
         "redaction marker: " + "; ".join(offenders)

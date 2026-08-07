@@ -415,6 +415,41 @@ def capture_specialized() -> list[dict[str, Any]]:
     return [_run_cli(list(argv)) for argv in SPECIALIZED_CASES]
 
 
+# A handful of the committable specialized-CLI cases capture argparse's own
+# rendered usage/help/error text verbatim (see _COMMITTABLE_SPECIALIZED_ARGV
+# in test_public_surfaces.py). That text depends on the interpreter's
+# HelpFormatter, which CPython changed twice across this project's CI matrix:
+# invalid-choice error text dropped quoting around each choice in 3.12
+# (e.g. "choose from 'a', 'b'" -> "choose from a, b"), and 3.13 collapsed a
+# repeated-per-option-string metavar into one shared metavar
+# (e.g. "-f PATH, --file PATH" -> "-f, --file PATH"), which also reflows the
+# surrounding wrapped usage lines. This is a real, declared difference in the
+# interpreter -- not an accident of import order or machine state, and not
+# something regex normalization should paper over, since that risks masking
+# an actual change in this CLI's own text. Each CI-tested minor version gets
+# its own pinned literal baseline instead.
+_SPECIALIZED_BASELINE_BY_PYVER: dict[tuple[int, int], str] = {
+    (3, 10): "specialized",
+    (3, 14): "specialized_py314",
+}
+
+
+def specialized_baseline_name() -> str:
+    """Name (without ``.json``) of the ``tests/contracts/data/`` fixture
+    holding the specialized-CLI baseline for the running interpreter."""
+    key = sys.version_info[:2]
+    try:
+        return _SPECIALIZED_BASELINE_BY_PYVER[key]
+    except KeyError:
+        raise RuntimeError(
+            f"no pinned specialized-CLI baseline for Python {key[0]}.{key[1]} -- "
+            "this interpreter isn't in the CI matrix "
+            f"({sorted(_SPECIALIZED_BASELINE_BY_PYVER)}); capture a new "
+            "tests/contracts/data/specialized_pyXY.json baseline (see "
+            "capture_specialized()) and add it to _SPECIALIZED_BASELINE_BY_PYVER"
+        ) from None
+
+
 # ── MCP available paths / catalog / projections / errors ────────────────────
 
 # Negative cases spanning every distinct SchemaProjectionError class this
