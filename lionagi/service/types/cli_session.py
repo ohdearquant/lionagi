@@ -27,6 +27,7 @@ class CLISession:
     # final summary
     result: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
+    model_usage: dict[str, Any] = field(default_factory=dict)
     total_cost_usd: float | None = None
     num_turns: int | None = None
     duration_ms: int | None = None

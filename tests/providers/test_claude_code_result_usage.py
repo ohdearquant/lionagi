@@ -70,6 +70,46 @@ async def test_result_event_yields_result_chunk_with_usage_and_cost():
 
 
 @pytest.mark.asyncio
+async def test_result_event_with_model_usage_surfaces_it_on_result_chunk():
+    """The CLI's "result" event carries a whole-agent-tree per-model
+    ``modelUsage`` breakdown (includes Task-tool subagent spend) alongside
+    the top-level-loop-only ``usage`` field. It must be forwarded verbatim
+    on the result chunk so _collect_branch_usage can prefer it (#2379)."""
+    chunks = await _chunks_from_events(
+        [
+            _result_event(
+                usage={"input_tokens": 100, "output_tokens": 40},
+                modelUsage={
+                    "claude-sonnet-5": {
+                        "inputTokens": 100,
+                        "outputTokens": 40,
+                        "cacheReadInputTokens": 0,
+                        "cacheCreationInputTokens": 0,
+                    },
+                    "claude-haiku-4-5": {
+                        "inputTokens": 300,
+                        "outputTokens": 150,
+                        "cacheReadInputTokens": 0,
+                        "cacheCreationInputTokens": 0,
+                    },
+                },
+            )
+        ]
+    )
+    result_chunks = [c for c in chunks if c.type == "result"]
+    assert len(result_chunks) == 1
+    meta = result_chunks[0].metadata
+    assert meta["model_usage"]["claude-haiku-4-5"]["inputTokens"] == 300
+
+
+@pytest.mark.asyncio
+async def test_result_event_without_model_usage_omits_it_from_result_chunk():
+    chunks = await _chunks_from_events([_result_event()])
+    result_chunks = [c for c in chunks if c.type == "result"]
+    assert "model_usage" not in result_chunks[0].metadata
+
+
+@pytest.mark.asyncio
 async def test_result_event_without_usage_yields_no_result_chunk():
     """A result event carrying no usage/cost/turns/duration must not fabricate
     one -- no StreamChunk(type="result") at all, rather than one with zeros."""

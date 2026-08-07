@@ -753,6 +753,25 @@ async def test_persist_cancel_sets_status_cancelled(temp_db_path: Path):
         assert row["status"] == "cancelled"
 
 
+async def test_persist_cancel_populates_duration_ms(temp_db_path: Path):
+    async with StateDB() as db:
+        started_at = time.time() - 5.0
+        sid = await _seed_session(db, status="running", started_at=started_at)
+
+        await _persist_cancel(
+            db,
+            "session",
+            sid,
+            reason_code=RunReasons.CANCELLED_MANUAL_KILL,
+            reason_summary="test cancel",
+            evidence={"signal": "sigterm", "pid": 42},
+        )
+
+        row = await db.get_session(sid)
+        assert row["ended_at"] is not None
+        assert row["duration_ms"] == pytest.approx((row["ended_at"] - started_at) * 1000)
+
+
 async def test_persist_cancel_inserts_status_transition(temp_db_path: Path):
     async with StateDB() as db:
         sid = await _seed_session(db, status="running")

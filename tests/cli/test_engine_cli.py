@@ -958,3 +958,53 @@ async def test_engine_run_skips_signal_binding_on_session_id_collision(
         # The engine_runs record itself still persisted.
         runs = await db.get_engine_run(run_id)
         assert runs is not None
+
+
+async def test_maybe_update_db_mirrors_engines_ended_at_onto_the_session(tmp_path):
+    """_maybe_update_db's engine_runs write and its mirrored session
+    update_status() call must agree on ended_at -- the caller-supplied
+    timestamp, not whatever time.time() the centralizer stamps on its own."""
+    pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
+
+    from lionagi.cli.engine import _maybe_update_db
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    run_id = "engine-ended-at-test-001"
+
+    async with StateDB(db_path) as db:
+        prog_id = f"{run_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "engine:research",
+                "status": "running",
+                "started_at": 100.0,
+                "invocation_kind": None,
+            }
+        )
+        await db.insert_engine_run(
+            run_id=run_id,
+            kind="research",
+            spec_json={"spec": "GQA"},
+            started_at=100.0,
+            session_id=run_id,
+        )
+
+        await _maybe_update_db(
+            db,
+            run_id,
+            "completed",
+            ended_at=130.0,
+            signal_session_id=run_id,
+        )
+
+        session_row = await db.get_session(run_id)
+        engine_row = await db.get_engine_run(run_id)
+
+    assert engine_row["ended_at"] == 130.0
+    assert session_row["ended_at"] == 130.0
+    assert session_row["duration_ms"] == pytest.approx(30000.0)
