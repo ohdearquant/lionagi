@@ -132,6 +132,15 @@ function FileRef({
   return <>{fallback}</>;
 }
 
+// issue #2848: get_run_file 404s for two different reasons -- the run never
+// recorded an artifact root, or a file inside a recorded root is genuinely
+// gone -- and the detail string is the only thing that tells them apart.
+// Matches both `get_run_file` 404 details ("has no artifact root" and
+// "artifact root no longer exists") without hardcoding the run id.
+export function isNoArtifactRootDetail(detail: string | undefined): boolean {
+  return detail != null && detail.toLowerCase().includes("artifact root");
+}
+
 function FileViewerModal({
   runId,
   path,
@@ -145,6 +154,7 @@ function FileViewerModal({
     | { status: "loading" }
     | { status: "ready"; content: string; truncated: boolean }
     | { status: "missing" }
+    | { status: "no_artifact_root" }
     | { status: "error"; detail?: string }
   >({ status: "loading" });
 
@@ -154,8 +164,15 @@ function FileViewerModal({
       .then((result) => {
         if (cancelled) return;
         if (!result.ok) {
-          if (result.status === 404) setState({ status: "missing" });
-          else setState({ status: "error", detail: result.detail });
+          if (result.status === 404) {
+            setState(
+              isNoArtifactRootDetail(result.detail)
+                ? { status: "no_artifact_root" }
+                : { status: "missing" },
+            );
+          } else {
+            setState({ status: "error", detail: result.detail });
+          }
           return;
         }
         setState({
@@ -194,6 +211,12 @@ function FileViewerModal({
           <p className="flex items-center gap-1.5 text-body text-content-muted">
             <IconWarning size={12} strokeWidth={2} />
             File not found — it may have been moved or deleted since this message was written.
+          </p>
+        )}
+        {state.status === "no_artifact_root" && (
+          <p className="flex items-center gap-1.5 text-body text-content-muted">
+            <IconWarning size={12} strokeWidth={2} />
+            This run has no recorded artifact root, so its files were never linked here.
           </p>
         )}
         {state.status === "error" && (

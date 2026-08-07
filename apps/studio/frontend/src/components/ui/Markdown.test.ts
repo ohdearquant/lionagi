@@ -12,7 +12,8 @@ import * as path from "node:path";
 import { createElement } from "react";
 import type { ComponentType, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import Markdown, * as MarkdownModule from "./Markdown";
+import Markdown, { isNoArtifactRootDetail } from "./Markdown";
+import * as MarkdownModule from "./Markdown";
 
 const SRC = fs.readFileSync(path.resolve(__dirname, "Markdown.tsx"), "utf-8");
 
@@ -74,6 +75,25 @@ describe("Markdown.tsx — file-link resolution wiring", () => {
 
   it("never fabricates a target from text alone — file surface comes only from fileContext.knownFiles", () => {
     expect(SRC).toMatch(/knownFiles: fileContext\.knownFiles/);
+  });
+
+  it("renders a distinct no-artifact-root state, not the generic missing-file message (issue #2848)", () => {
+    expect(SRC).toMatch(/status === "no_artifact_root"/);
+    expect(SRC).toMatch(/isNoArtifactRootDetail\(result\.detail\)/);
+  });
+});
+
+// ─── isNoArtifactRootDetail — the get_run_file 404 detail classifier ─────────
+
+describe("isNoArtifactRootDetail", () => {
+  it("is true for both no-artifact-root 404 details get_run_file sends", () => {
+    expect(isNoArtifactRootDetail("Run 'abc123' has no artifact root")).toBe(true);
+    expect(isNoArtifactRootDetail("Run artifact root no longer exists")).toBe(true);
+  });
+
+  it("is false for a genuinely missing file and for no detail at all", () => {
+    expect(isNoArtifactRootDetail("File 'notes.md' not found")).toBe(false);
+    expect(isNoArtifactRootDetail(undefined)).toBe(false);
   });
 });
 

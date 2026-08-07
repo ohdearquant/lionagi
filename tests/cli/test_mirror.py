@@ -1045,6 +1045,18 @@ def test_derive_metadata_others_when_cwd_gone() -> None:
     assert state.project_source == "cwd_missing"
 
 
+def test_derive_metadata_captures_raw_cwd_as_artifact_root(tmp_path: Path) -> None:
+    # issue #2848: the raw cwd (not the bucketed project name) is the session's
+    # artifact root -- every file the CLI touched lives under it.
+    work = tmp_path / "my-workspace"
+    work.mkdir()
+    state = _FileState(session_uid=SID)
+    _derive_metadata(
+        state, [_user_text("u1", "hi", ts="2026-06-20T00:00:00.000Z") | {"cwd": str(work)}]
+    )
+    assert state.cwd == str(work)
+
+
 @pytest.mark.asyncio
 async def test_mirror_session_backfills_missing_project(temp_db_path: Path) -> None:
     # A session first mirrored with no project must be backfilled on a later pass
@@ -1068,6 +1080,37 @@ async def test_mirror_session_backfills_missing_project(temp_db_path: Path) -> N
     assert after["project_source"] == "cwd_dir"
     # Provenance backfill is not activity: the liveness clock must not move.
     assert after["updated_at"] == before["updated_at"]
+
+
+@pytest.mark.asyncio
+async def test_mirror_session_writes_artifacts_path_from_cwd(temp_db_path: Path) -> None:
+    # issue #2848: a mirrored CLI session's cwd is its artifact root -- the run
+    # file viewer is otherwise structurally dead for every mirrored session.
+    events = _conversation()
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=SID, events=events, tool_names={}, cwd="/work/acme-widget"
+        )
+        row = await db.get_session(session_db_id(SID))
+    assert row["artifacts_path"] == "/work/acme-widget"
+
+
+@pytest.mark.asyncio
+async def test_mirror_session_does_not_clobber_an_existing_artifacts_path(
+    temp_db_path: Path,
+) -> None:
+    # A launcher-set artifact root is more precise than the mirror's cwd guess
+    # and must never be overwritten by a later mirror pass.
+    events = _conversation()
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=SID, events=events, tool_names={}, cwd="/work/first-guess"
+        )
+        await mirror_session(
+            db, session_uid=SID, events=events, tool_names={}, cwd="/work/second-guess"
+        )
+        row = await db.get_session(session_db_id(SID))
+    assert row["artifacts_path"] == "/work/first-guess"
 
 
 # ── conversation-lineage detector ────────────────────────────────────────────
@@ -1202,6 +1245,39 @@ async def test_idle_session_backfilled_with_project(temp_db_path: Path, tmp_path
         row = await db.get_session(session_db_id(uid))
     assert row["project"] == "ghost-proj"
     assert row["project_source"] == "cwd_dir"
+
+
+@pytest.mark.asyncio
+async def test_idle_session_backfilled_with_artifacts_path_even_when_project_already_set(
+    temp_db_path: Path, tmp_path: Path
+) -> None:
+    # issue #2848: the dominant NULL-artifacts_path population is sessions the
+    # mirror already attributed a project to (in an earlier process) before this
+    # fix existed -- artifacts_path must backfill on its own, not only when
+    # project is also missing.
+    work = tmp_path / "ghost-proj-2"
+    work.mkdir()
+    uid = "ffffffff-0000-0000-0000-000000000006"
+    root = tmp_path / "projects"
+    path = root / "-w-proj" / f"{uid}.jsonl"
+    events = [
+        _lineage_event(uid, "f-1", None, "user", "hi") | {"cwd": str(work)},
+        _lineage_event(uid, "f-2", "f-1", "assistant", "ok"),
+    ]
+    _write_lineage_file(path, events)
+    async with StateDB() as db:
+        # Simulate a pre-fix row: project already attributed, artifacts_path never was.
+        await mirror_session(
+            db, session_uid=uid, events=events, tool_names={}, project="ghost-proj-2"
+        )
+        before = await db.get_session(session_db_id(uid))
+        assert before["project"] == "ghost-proj-2"
+        assert before["artifacts_path"] is None
+        offsets = {str(path): path.stat().st_size}
+        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        row = await db.get_session(session_db_id(uid))
+    assert row["artifacts_path"] == str(work)
+    assert row["project"] == "ghost-proj-2"
 
 
 @pytest.mark.asyncio
@@ -1441,6 +1517,46 @@ async def test_interactive_rollout_still_mirrors(tmp_path):
         row = await db.get_session(codex_sid(uid))
         assert row is not None
         assert row["source_kind"] == CODEX_SOURCE_KIND
+
+
+async def test_interactive_rollout_records_artifacts_path_from_header_cwd(tmp_path):
+    # issue #2848: the session_meta header's cwd is the rollout's artifact root,
+    # the same gap claude_mirror had.
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000005"
+    path = tmp_path / "rollout-artifacts.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "Codex Desktop"))
+    state = _FileState(session_uid="")
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await _mirror_one_codex(db, path, state, {})
+        row = await db.get_session(codex_sid(uid))
+    assert row["artifacts_path"] == "/x"
+
+
+async def test_codex_mirror_session_does_not_clobber_an_existing_artifacts_path(tmp_path):
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000006"
+    records = [
+        {
+            "type": "response_item",
+            "timestamp": "2026-07-31T09:00:01Z",
+            "payload": {"type": "message", "role": "user", "id": "m1", "content": [{"text": "q"}]},
+        }
+    ]
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(
+            db, rollout_uid=uid, records=records, tool_names={}, cwd="/work/first-guess"
+        )
+        await codex_mirror_session(
+            db, rollout_uid=uid, records=records, tool_names={}, cwd="/work/second-guess"
+        )
+        row = await db.get_session(codex_sid(uid))
+    assert row["artifacts_path"] == "/work/first-guess"
 
 
 async def test_partial_header_defers_classification_instead_of_bypassing_it(tmp_path):

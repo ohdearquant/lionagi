@@ -104,6 +104,9 @@ class _FileState:
     tool_names: dict[str, str] = field(default_factory=dict)
     project: str | None = None
     project_source: str | None = None
+    # Raw transcript cwd, the session's artifact root (issue #2848) -- unlike
+    # `project`, never bucketed/fallen-back, just the directory as reported.
+    cwd: str | None = None
     model: str | None = None
     name: str | None = None
     created: bool = False
@@ -341,6 +344,7 @@ def _derive_metadata(state: _FileState, events: list[dict[str, Any]]) -> None:
         cwd = next((e.get("cwd") for e in events if e.get("cwd")), None)
         if cwd:
             state.project, state.project_source = _resolve_project_for_mirror(cwd)
+            state.cwd = cwd
             if state.name is None:
                 state.name = f"Claude · {state.project.split('/')[-1]}"
     if state.model is None:
@@ -394,18 +398,27 @@ def _peek_head(path: Path) -> tuple[str, str | None]:
 async def _attribute_idle(db, state: _FileState, cwd: str) -> None:
     """Attribute an idle/already-read transcript and backfill its session row.
 
-    Covers sessions mirrored before project attribution existed, which have no new
-    events to trigger the normal (streamed-event) attribution path.
+    Covers sessions mirrored before project/artifact-root attribution existed,
+    which have no new events to trigger the normal (streamed-event) attribution
+    path. The two backfills are independent: a row can already carry a project
+    from an earlier mirror pass while still missing artifacts_path (issue #2848's
+    dominant case), so each is only (re)written when actually missing.
     """
     from lionagi.state.claude_mirror import session_db_id
 
     state.project, state.project_source = _resolve_project_for_mirror(cwd)
+    state.cwd = cwd
     row = await db.get_session(session_db_id(state.session_uid))
-    if row is not None and not row.get("project"):
+    if row is None:
+        return
+    missing_project = not row.get("project")
+    missing_artifacts_path = not row.get("artifacts_path")
+    if missing_project or missing_artifacts_path:
         await db.set_session_provenance(
             session_db_id(state.session_uid),
-            project=state.project,
-            project_source=state.project_source,
+            project=state.project if missing_project else None,
+            project_source=state.project_source if missing_project else None,
+            artifacts_path=cwd if missing_artifacts_path else None,
         )
 
 
@@ -458,6 +471,7 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
         model=state.model,
         name=state.name,
         status="running",
+        cwd=state.cwd,
         source_path=str(path),
         event_sources=sources,
         max_preview_chars=MIRROR_PREVIEW_CHARS,
@@ -630,6 +644,7 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
             state.session_uid = meta["rollout_uid"] or path.stem
             if meta.get("cwd"):
                 state.project, state.project_source = _resolve_project_for_mirror(meta["cwd"])
+                state.cwd = meta["cwd"]
     if not state.session_uid:
         state.session_uid = path.stem
 
@@ -658,6 +673,7 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         model=state.model,
         name=state.name,
         status="running",
+        cwd=state.cwd,
         node_metadata=node_metadata,
         source_path=str(path),
         turn=state.turn,
