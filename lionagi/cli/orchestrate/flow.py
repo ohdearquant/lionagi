@@ -970,6 +970,8 @@ async def _execute_dag(
     _checkpoint_tasks: list = []
     _branch_status_tasks: list = []
     _escalation_link_tasks: list = []
+    _segment_tasks: list = []
+    _control_log_tasks: list = []
 
     _checkpoint_writer: CheckpointWriter | None = None
     if checkpoint_config is not None:
@@ -1026,14 +1028,20 @@ async def _execute_dag(
         env._finalize_extras = extras
 
         async def _do():
-            with contextlib.suppress(Exception):
+            try:
                 # Merge kill-identity markers last so segment writes keep the PID.
                 _markers = ctx.get("identity_markers") or {}
                 await ctx["db"].update_session(
                     ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
                 )
+            except Exception:
+                logger.warning(
+                    "segment metadata write failed for session %s",
+                    ctx["session_id"],
+                    exc_info=True,
+                )
 
-        _asyncio.ensure_future(_do())
+        _segment_tasks.append(_asyncio.ensure_future(_do()))
 
     def _update_branch_status(branch_name: str, new_status: str):
         ctx = getattr(env, "_live_persist", None)
@@ -1193,13 +1201,19 @@ async def _execute_dag(
         env._finalize_extras = extras
 
         async def _do():
-            with contextlib.suppress(Exception):
+            try:
                 _markers = ctx.get("identity_markers") or {}
                 await ctx["db"].update_session(
                     ctx["session_id"], node_metadata=json.dumps({**extras, **_markers})
                 )
+            except Exception:
+                logger.warning(
+                    "control-log metadata write failed for session %s",
+                    ctx["session_id"],
+                    exc_info=True,
+                )
 
-        _asyncio.ensure_future(_do())
+        _control_log_tasks.append(_asyncio.ensure_future(_do()))
 
     # Only wired when team messaging + reactive mode are on and at least
     # one worker got a branch built (nothing to inject otherwise).
@@ -1508,6 +1522,39 @@ async def _execute_dag(
                         "still alive after cancellation grace period"
                     )
 
+        async def _drain_metadata_tasks_bounded(tasks: list, label: str) -> None:
+            # Same bounded grace/cancellation shape as
+            # _drain_escalation_links_bounded: a hung metadata write (stuck
+            # DB call) must not block teardown forever. Give in-flight
+            # writes a short grace period, then cancel whatever is left and
+            # wait for it to actually unwind before returning.
+            with contextlib.suppress(Exception), move_on_after(2):
+                await _asyncio.gather(*tasks, return_exceptions=True)
+            _survivors = [t for t in tasks if not t.done()]
+            for _t in _survivors:
+                _t.cancel()
+            if _survivors:
+                with contextlib.suppress(Exception), move_on_after(2):
+                    await _asyncio.gather(*_survivors, return_exceptions=True)
+                _abandoned = [t for t in _survivors if not t.done()]
+                if _abandoned:
+                    _warn(
+                        f"abandoned {len(_abandoned)} {label} task(s) "
+                        "still alive after cancellation grace period"
+                    )
+            # A task can finish cancelled either here or already during the
+            # first move_on_after(2) above (its timeout cancels the host
+            # task's gather() await, which cascades cancel() onto every
+            # not-yet-done child). Either way it's a lost write, not a
+            # success: the write body's own `except Exception` never sees
+            # CancelledError (a BaseException), so without this check the
+            # caller gets no record at all that the metadata never landed.
+            _cancelled = [t for t in tasks if t.cancelled()]
+            if _cancelled:
+                _warn(
+                    f"cancelled {len(_cancelled)} {label} task(s) after timeout; write not durable"
+                )
+
         # Completion observers schedule persistence writes synchronously but the
         # writes themselves are async. Drain them while the live DB is still open.
         with CancelScope(shield=True):
@@ -1517,6 +1564,10 @@ async def _execute_dag(
             if _checkpoint_tasks:
                 with contextlib.suppress(Exception):
                     await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
+            if _segment_tasks:
+                await _drain_metadata_tasks_bounded(_segment_tasks, "segment-metadata")
+            if _control_log_tasks:
+                await _drain_metadata_tasks_bounded(_control_log_tasks, "control-log-metadata")
             if _escalation_link_tasks:
                 if _dag_cancelled:
                     # Cancellation already landed while run_dag() was running,

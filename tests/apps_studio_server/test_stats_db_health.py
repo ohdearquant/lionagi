@@ -14,6 +14,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import lionagi.state.db as state_db_mod
+import lionagi.state.engine as state_engine_mod
 from lionagi.state.db import StateDB  # noqa: E402
 
 
@@ -65,9 +66,28 @@ def test_stats_db_health_with_existing_db(tmp_path, monkeypatch):
     assert db["tables"]["sessions"] == 2
     assert db["sessions_by_status"].get("running", 0) == 1
     assert db["sessions_by_status"].get("completed", 0) == 1
-    assert db["pragmas"]["busy_timeout"] == 5000
+    # The pragma must reflect this process's configured busy_timeout, not a
+    # hardcoded default -- LIONAGI_SQLITE_BUSY_TIMEOUT_MS lets a deployment
+    # raise it, and this process (and the test suite) may already be running
+    # under such a deployment's environment.
+    assert db["pragmas"]["busy_timeout"] == state_engine_mod.SQLITE_BUSY_TIMEOUT_MS
     assert isinstance(db["connections_active"], int)
     assert db["last_checkpoint_at"] is None
+
+
+def test_stats_db_health_busy_timeout_reflects_deployment_knob_not_default(tmp_path, monkeypatch):
+    """A deployment that raises the busy_timeout above the 5000ms default
+    must see its own value reported back, not the suite's default."""
+    monkeypatch.setattr(state_engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 30000)
+    db_path = tmp_path / "state.db"
+    _run(_seed_two_sessions(db_path))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/stats")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["db"]["pragmas"]["busy_timeout"] == 30000
+    assert data["db"]["pragmas"]["busy_timeout"] != 5000
 
 
 def test_stats_db_health_missing_db_returns_zeroes(tmp_path, monkeypatch):

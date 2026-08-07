@@ -992,7 +992,24 @@ async def teardown_persist(
         return final_status
     except Exception as exc:
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
-        return status
+        # A failure anywhere in the block above (any of _teardown_common's
+        # separate write transactions, or the bookkeeping around them) must
+        # not make this return the *requested* terminal status as if it had
+        # landed -- that status may never have reached the database. Read
+        # back what is actually durable instead; only fall back to the
+        # caller's request if even that read fails.
+        try:
+            persisted = await db.get_session(ctx["session_id"])
+        except Exception:  # noqa: BLE001 -- best-effort; the DB itself may be unreachable
+            persisted = None
+        if persisted is not None and persisted.get("status"):
+            return persisted["status"]
+        # The readback itself failed (or found nothing) -- there is no
+        # evidence the requested terminal status ever reached the database.
+        # Reporting `status` here would be the same false-terminal-status
+        # class this teardown path exists to prevent, so surface an
+        # explicit unknown outcome instead of a guess.
+        return "unknown"
     finally:
         # Release branch ownership even when the bookkeeping above failed -- a
         # stranded owner marker would make the long-lived branch unresumable.

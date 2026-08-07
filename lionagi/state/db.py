@@ -564,6 +564,13 @@ def _install_begin_immediate(sync_engine) -> None:
 
     @event.listens_for(sync_engine, "begin")
     def _on_begin(conn):
+        # AUTOCOMMIT reads (see _read()) reach this listener too -- the DBAPI
+        # driver already runs in autocommit, but Core still autobegins a
+        # logical transaction and dispatches "begin" for it. Only a real
+        # (non-AUTOCOMMIT) transaction should reserve the writer slot; an
+        # ordinary read must not contend for it.
+        if conn.get_execution_options().get("isolation_level") == "AUTOCOMMIT":
+            return
         conn.exec_driver_sql("BEGIN IMMEDIATE")
 
 
