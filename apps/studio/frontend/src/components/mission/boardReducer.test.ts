@@ -717,6 +717,36 @@ describe("boardReducer — disposition join and active/discharged split", () => 
     expect(s.unacknowledgedAttentionCount).toBe(0);
   });
 
+  it("a gated run carrying a stale resolved/expected/snoozed disposition from before gate-awareness stays active, never permanently discharged", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [makeRun({ run_id: "r1", status: "needs_review" })],
+      [],
+      nowSec,
+      null,
+      { "run:r1": makeDisposition({ item_id: "run:r1", state: "resolved" }) },
+    );
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].reason).toBe("gated");
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+  });
+
+  it("a gate is discharged by acknowledged, never by resolved/expected/snoozed", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [makeRun({ run_id: "r1", status: "needs_review" })],
+      [],
+      nowSec,
+      null,
+      { "run:r1": makeDisposition({ item_id: "run:r1", state: "acknowledged" }) },
+    );
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].disposition?.state).toBe("acknowledged");
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+  });
+
   it("resolved leaves the active list for dischargedAttentionItems", () => {
     const nowSec = 1_000_000;
     const s = dispatchOk(

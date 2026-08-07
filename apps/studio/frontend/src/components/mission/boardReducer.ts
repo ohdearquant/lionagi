@@ -292,12 +292,19 @@ function buildAttentionItems(
   // leave it but remain queryable via dischargedAttentionItems. A lapsed
   // snoozed/expected disposition is never present here at all: the server
   // read already drops it, so the item is simply "open" again.
+  //
+  // A gated item is the one exception: resolved/expected/snoozed are UI
+  // states the old (pre-gate-aware) discharge controls could write, and the
+  // item id is stable (`run:<id>`/`inv:<id>`/`play:<topic>:<name>`), so that
+  // stale disposition is reachable forever — a genuine gate would silently
+  // vanish from the default queue with no path back except editing the
+  // store directly. A gated item only ever discharges via "acknowledged".
   const active: AttentionItem[] = [];
   const discharged: AttentionItem[] = [];
   for (const item of deduped) {
     const disposition = dispositions[item.id];
     const joined = disposition ? { ...item, disposition } : item;
-    if (disposition && DISCHARGED_STATES.has(disposition.state)) {
+    if (disposition && DISCHARGED_STATES.has(disposition.state) && item.reason !== "gated") {
       discharged.push(joined);
     } else {
       active.push(joined);
