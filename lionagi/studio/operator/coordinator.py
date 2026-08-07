@@ -80,6 +80,14 @@ async def _verify_application_target(proposal: dict[str, Any]) -> None:
 async def _execute_application_command(
     command_type: str, command: dict[str, Any]
 ) -> dict[str, Any]:
+    if command_type == "cancel":
+        from .cancel_run import execute_cancel_command
+
+        return await execute_cancel_command(command)
+    if command_type == "resume":
+        from .resume_run import execute_resume_command
+
+        return await execute_resume_command(command)
     if command_type != "launch":
         raise ValueError(f"Unsupported Operator application command: {command_type!r}")
     from lionagi.studio.services.launches import launch

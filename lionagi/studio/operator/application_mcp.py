@@ -22,6 +22,11 @@ from typing import Any, Literal
 import anyio
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
+from .redact import scrub_text
+from .resume_run import RESUME_RUN_DESCRIPTION, ResumeRunInput, resume_run
+from .run_findings import RunFindingsInput, run_findings
+from .run_progress import RunProgressInput, run_progress
 from .store import OperatorStore
 
 OperatorSpace = Literal[
@@ -113,7 +118,7 @@ class _PrefillEffect(BaseModel):
     values: dict[str, str]
 
 
-_TOOL_MODELS: dict[str, type[_StrictInput]] = {
+_TOOL_MODELS: dict[str, type[BaseModel]] = {
     "list_recent_runs": RecentRunsInput,
     "run_stats": RunStatsInput,
     "get_current_view": CurrentViewInput,
@@ -123,6 +128,10 @@ _TOOL_MODELS: dict[str, type[_StrictInput]] = {
     "navigate": NavigateInput,
     "prefill_schedule": PrefillScheduleInput,
     "launch_playbook": LaunchPlaybookInput,
+    "run_progress": RunProgressInput,
+    "run_findings": RunFindingsInput,
+    "cancel_run": CancelRunInput,
+    "resume_run": ResumeRunInput,
 }
 
 _TOOL_DESCRIPTIONS = {
@@ -161,6 +170,32 @@ _TOOL_DESCRIPTIONS = {
         "Propose launching one named Studio playbook. This blocks until the "
         "human explicitly allows or denies the exact durable proposal."
     ),
+    "run_progress": (
+        "Report how one run is going: status, op totals split into "
+        "completed/running/failed/pending (they always sum to the total), "
+        "which ops are running right now, elapsed time, and whether it has a "
+        "graph. Accepts a run id, an id prefix, a name or playbook substring "
+        "(minimum 3 characters), or 'current' for the run the human is "
+        "looking at. An ambiguous reference returns candidates instead of "
+        "guessing. Every number is a direct database read taken when this "
+        "tool is called, not a live process feed -- the returned "
+        "'freshness' field says so, the same honesty get_current_view uses "
+        "for its own 'source' field."
+    ),
+    "run_findings": (
+        "Report what one run produced: message tails, tool calls with their "
+        "inferred outcomes, errors, and declared artifacts, bounded and "
+        "redacted the same way the other read tools are. Filter by "
+        "agent/branch name substring or a single 'kind' (messages, "
+        "tool_calls, errors, artifacts) to narrow the response. Same "
+        "reference vocabulary and ambiguity handling as run_progress. "
+        "Tool-call outcomes are inferred from response content, not read "
+        "from a structured status field the run itself stores, so treat "
+        "them as a best-effort read; any section too large to return in "
+        "full is capped and says so via its own 'truncated' flag."
+    ),
+    "cancel_run": CANCEL_RUN_DESCRIPTION,
+    "resume_run": RESUME_RUN_DESCRIPTION,
 }
 
 _TOOL_SCHEMAS = [
@@ -467,6 +502,10 @@ _TOOL_HANDLERS = {
     "navigate": navigate,
     "prefill_schedule": prefill_schedule,
     "launch_playbook": launch_playbook,
+    "run_progress": run_progress,
+    "run_findings": run_findings,
+    "cancel_run": cancel_run,
+    "resume_run": resume_run,
 }
 
 
@@ -517,7 +556,7 @@ async def _dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
                 error=True,
             )
         except ValueError as exc:
-            return _tool_response(message_id, {"error": str(exc)}, error=True)
+            return _tool_response(message_id, {"error": scrub_text(str(exc))}, error=True)
         except Exception:  # noqa: BLE001
             return _tool_response(
                 message_id,

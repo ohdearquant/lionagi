@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .redact import redact_arguments
 from .types import OperatorEngineEvent, OperatorEngineTurn
 
 _SYSTEM_PROMPT = """\
@@ -31,7 +32,17 @@ Pick the right read tool. list_recent_runs returns only the newest 20, so it
 can never answer "how many" — use run_stats for any count or rate over a
 window. Use list_schedules, list_agents and list_playbooks to answer what
 exists; call list_playbooks before proposing a launch, because launch_playbook
-needs an exact existing name.
+needs an exact existing name. For one named run, use run_progress for "how is
+it going" (status, op counts, elapsed time) and run_findings for "what did it
+find" (messages, tool calls, errors, artifacts); neither is a live feed, both
+say how fresh their answer is. cancel_run stops a running run through the same
+human-confirmed durable proposal launch_playbook uses — it is never automatic,
+and a denial leaves the run untouched. resume_run continues a run through the
+same human-confirmed proposal flow: an agent run takes a new instruction, a
+play/flow/show-play run instead replays its persisted checkpoint and accepts
+no instruction. Either way it launches a new invocation rather than
+reopening the old run's status, and works on a run in any status, including
+a cancelled one.
 
 Every turn tells you which Studio view the human is on, including the route
 and any selection or filters, and get_current_view re-reads it on demand. Use
@@ -60,6 +71,10 @@ _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__navigate",
     "mcp__studio_operator__prefill_schedule",
     "mcp__studio_operator__launch_playbook",
+    "mcp__studio_operator__run_progress",
+    "mcp__studio_operator__run_findings",
+    "mcp__studio_operator__cancel_run",
+    "mcp__studio_operator__resume_run",
 ]
 _MODEL_CONTEXT_FRAME_LIMIT = 64
 _MODEL_CONTEXT_BYTE_LIMIT = 128 * 1024
@@ -421,7 +436,11 @@ class BranchOperatorEngine:
                         {
                             "callId": getattr(chunk, "tool_id", None) or "",
                             "tool": tool_name,
-                            "arguments": getattr(chunk, "tool_input", None) or {},
+                            # A native tool call's own arguments are the
+                            # model's choice, not something this bridge
+                            # validated -- they can carry the same secrets or
+                            # host paths a tool's output can.
+                            "arguments": redact_arguments(getattr(chunk, "tool_input", None) or {}),
                             "mode": mode,
                         },
                     )

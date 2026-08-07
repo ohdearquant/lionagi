@@ -99,6 +99,39 @@ export class ApiError extends Error {
   }
 }
 
+// How many field errors to name before switching to a count. A request that
+// fails validation on a dozen fields is still one mistake to the person reading
+// it, and a dozen clauses is harder to act on than three plus a number.
+const MAX_VALIDATION_ERRORS_SHOWN = 3;
+
+/**
+ * Render a FastAPI/Pydantic validation body into one readable sentence.
+ *
+ * A 422 arrives with `detail` as an array of `{loc, msg}` entries. That is the
+ * one shape the object branch cannot read, so without this the reader gets
+ * "Request failed: 422" and no way to learn which field was rejected.
+ *
+ * Returns undefined when the array carries nothing readable, so the caller
+ * falls back to the status code instead of showing a confidently empty message.
+ */
+function formatValidationErrors(detail: unknown[]): string | undefined {
+  const parts: string[] = [];
+  for (const entry of detail) {
+    if (entry == null || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.msg !== "string" || !record.msg) continue;
+    // Drop the leading request-part segment ("body", "query", ...): it repeats
+    // what the caller already knows and pushes the useful field name rightward.
+    const loc = Array.isArray(record.loc) ? record.loc.slice(1) : [];
+    const path = loc.filter((seg) => typeof seg === "string" || typeof seg === "number").join(".");
+    parts.push(path ? `${path}: ${record.msg}` : record.msg);
+  }
+  if (parts.length === 0) return undefined;
+  const shown = parts.slice(0, MAX_VALIDATION_ERRORS_SHOWN);
+  const hidden = parts.length - shown.length;
+  return hidden > 0 ? `${shown.join("; ")} (+${hidden} more)` : shown.join("; ");
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
 
@@ -130,14 +163,18 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // not JSON — ignore
     }
-    const message =
-      typeof detail === "string"
-        ? detail
-        : detail != null && typeof detail === "object" && !Array.isArray(detail)
-          ? typeof (detail as Record<string, unknown>).message === "string"
-            ? String((detail as Record<string, unknown>).message)
-            : `Request failed: ${response.status}`
-          : `Request failed: ${response.status}`;
+    const fallback = `Request failed: ${response.status}`;
+    let message: string;
+    if (typeof detail === "string") {
+      message = detail;
+    } else if (Array.isArray(detail)) {
+      message = formatValidationErrors(detail) ?? fallback;
+    } else if (detail != null && typeof detail === "object") {
+      const record = detail as Record<string, unknown>;
+      message = typeof record.message === "string" ? record.message : fallback;
+    } else {
+      message = fallback;
+    }
     throw new ApiError(response.status, message, detail);
   }
   // 204/empty-body responses have nothing to parse — return as-is (matches
