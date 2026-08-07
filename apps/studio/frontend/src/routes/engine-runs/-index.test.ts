@@ -17,6 +17,16 @@ describe("validateEngineRunsSearch", () => {
     expect(validateEngineRunsSearch({ kind: "", status: 3, session_id: undefined })).toEqual({});
   });
 
+  it("keeps every backend-recognized status", () => {
+    for (const status of ["running", "completed", "failed", "cancelled"]) {
+      expect(validateEngineRunsSearch({ status })).toEqual({ status });
+    }
+  });
+
+  it("rejects a status the backend never emits, rather than passing it through as an unfiltered request", () => {
+    expect(validateEngineRunsSearch({ status: "never-emitted" })).toEqual({});
+  });
+
   it("returns an empty object for no search", () => {
     expect(validateEngineRunsSearch({})).toEqual({});
   });

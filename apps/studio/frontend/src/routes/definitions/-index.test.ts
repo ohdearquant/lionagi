@@ -25,6 +25,15 @@ describe("validateDefinitionsSearch", () => {
     expect(validateDefinitionsSearch({ kind: 1 })).toEqual({});
     expect(validateDefinitionsSearch({})).toEqual({});
   });
+
+  it("keeps every backend-recognized kind", () => {
+    expect(validateDefinitionsSearch({ kind: "agent" })).toEqual({ kind: "agent" });
+    expect(validateDefinitionsSearch({ kind: "playbook" })).toEqual({ kind: "playbook" });
+  });
+
+  it("rejects a kind the backend never emits, rather than passing it through as an unfiltered request", () => {
+    expect(validateDefinitionsSearch({ kind: "widget" })).toEqual({});
+  });
 });
 
 describe("libraryHref — routes a definition to its existing Library editor", () => {

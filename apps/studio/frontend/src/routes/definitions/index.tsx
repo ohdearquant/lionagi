@@ -18,16 +18,21 @@ export interface DefinitionsRouteSearch {
   kind?: string;
 }
 
+// Backend enum (lionagi/studio/services/definitions.py KIND_DIRS) — a value
+// outside this set is never emitted, so accepting it here means the filter
+// silently matches nothing while looking like a legitimate empty result.
+const KINDS = ["agent", "playbook"] as const;
+
 export function validateDefinitionsSearch(search: Record<string, unknown>): DefinitionsRouteSearch {
-  return typeof search.kind === "string" && search.kind ? { kind: search.kind } : {};
+  return typeof search.kind === "string" && (KINDS as readonly string[]).includes(search.kind)
+    ? { kind: search.kind as DefinitionsRouteSearch["kind"] }
+    : {};
 }
 
 export const Route = createFileRoute("/definitions/")({
   validateSearch: validateDefinitionsSearch,
   component: DefinitionsSpace,
 });
-
-const KINDS = ["agent", "playbook"] as const;
 
 /** Where a definition's existing per-item editor already lives — Library. */
 export function libraryHref(def: DefinitionSummary): { tab: "agent" | "playbook"; sel: string } {

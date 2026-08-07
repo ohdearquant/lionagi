@@ -25,10 +25,22 @@ function str(v: unknown): string | undefined {
   return typeof v === "string" && v ? v : undefined;
 }
 
+// Backend enum (lionagi/state/schema_meta.py) — a value outside this set is
+// never emitted, so accepting it here means the filter silently matches
+// nothing while looking like a legitimate empty result.
+const STATUSES = ["running", "completed", "failed", "cancelled"] as const;
+
+function engineStatus(v: unknown): (typeof STATUSES)[number] | undefined {
+  const s = str(v);
+  return s !== undefined && (STATUSES as readonly string[]).includes(s)
+    ? (s as (typeof STATUSES)[number])
+    : undefined;
+}
+
 export function validateEngineRunsSearch(search: Record<string, unknown>): EngineRunsRouteSearch {
   return {
     ...(str(search.kind) ? { kind: str(search.kind) } : {}),
-    ...(str(search.status) ? { status: str(search.status) } : {}),
+    ...(engineStatus(search.status) ? { status: engineStatus(search.status) } : {}),
     ...(str(search.session_id) ? { session_id: str(search.session_id) } : {}),
     ...(str(search.s) ? { s: str(search.s) } : {}),
   };
@@ -38,8 +50,6 @@ export const Route = createFileRoute("/engine-runs/")({
   validateSearch: validateEngineRunsSearch,
   component: EngineRunsSpace,
 });
-
-const STATUSES = ["running", "completed", "failed", "cancelled"] as const;
 const PAGE_SIZE = 100;
 
 function useEngineRunsData(kind: string, status: string, sessionId: string) {
