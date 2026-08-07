@@ -545,6 +545,7 @@
       "triggering": "Activando...",
       "runStarted": "Ejecución iniciada: {id}",
       "triggerFailed": "No se pudo disparar",
+      "toggleFailed": "No se pudo cambiar",
       "every": "cada {interval}",
       "in": "en {delta}",
       "overdue": "retrasada hace {delta}",

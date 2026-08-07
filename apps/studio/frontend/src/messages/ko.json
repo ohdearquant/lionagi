@@ -545,6 +545,7 @@
       "triggering": "트리거 중…",
       "runStarted": "실행 시작됨: {id}",
       "triggerFailed": "트리거 실패",
+      "toggleFailed": "전환 실패",
       "every": "{interval}마다",
       "in": "{delta} 후",
       "overdue": "{delta} 지연",

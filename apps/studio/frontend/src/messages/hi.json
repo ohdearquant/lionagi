@@ -545,6 +545,7 @@
       "triggering": "ट्रिगर हो रहा है…",
       "runStarted": "रन शुरू हुआ: {id}",
       "triggerFailed": "ट्रिगर विफल",
+      "toggleFailed": "टॉगल विफल",
       "every": "हर {interval}",
       "in": "{delta} में",
       "overdue": "{delta} से ओवरड्यू",

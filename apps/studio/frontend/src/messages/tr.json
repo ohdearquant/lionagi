@@ -545,6 +545,7 @@
       "triggering": "tetikleniyor…",
       "runStarted": "çalıştırma başladı: {id}",
       "triggerFailed": "tetikleme başarısız",
+      "toggleFailed": "geçiş başarısız",
       "every": "her {interval}",
       "in": "{delta} içinde",
       "overdue": "{delta} gecikti",
