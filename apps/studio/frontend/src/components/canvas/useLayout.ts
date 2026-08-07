@@ -123,12 +123,37 @@ const FOLD_MAX_ROW_WIDTH = 1500;
 const FOLD_MAX_FLAT_HEIGHT = 2 * NODE_HEIGHT + NODE_SEP;
 const FOLD_ROW_GAP = 56;
 
+// A row may only break between two adjacent columns when exactly one edge
+// crosses that boundary and it is a plain 1-predecessor/1-successor link —
+// the same "maximal chain segment" a purely sequential run is made of. A
+// branch (a node with more than one successor) or a join (a node with more
+// than one predecessor) anchors a segment boundary instead: breaking a row
+// there would put a real dependency behind the fold's continuation styling,
+// the exact thing the fold must never do. Degree is computed over the WHOLE
+// edge set (not just edges between adjacent columns), so a long-range edge
+// that skips columns also correctly blocks a break at either of its ends.
+function computeDegrees(
+  nodes: Node[],
+  edges: Edge[],
+): { outDeg: Map<string, string[]>; inDeg: Map<string, string[]> } {
+  const known = new Set(nodes.map((n) => n.id));
+  const outDeg = new Map<string, string[]>();
+  const inDeg = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!known.has(e.source) || !known.has(e.target)) continue;
+    (outDeg.get(e.source) ?? outDeg.set(e.source, []).get(e.source)!).push(e.target);
+    (inDeg.get(e.target) ?? inDeg.set(e.target, []).get(e.target)!).push(e.source);
+  }
+  return { outDeg, inDeg };
+}
+
 // Fold a wide, flat graph into stacked rows, each row still reading
 // left-to-right. Within a row the geometry is dagre's own, translated as a
 // block, so rank spacing and sibling order survive untouched. The cost is the
 // edge that leaves the end of one row and re-enters at the start of the next:
-// it sweeps back across the canvas the way a wrapped line of text does.
-export function foldWideGraph(nodes: Node[]): Node[] {
+// it sweeps back across the canvas the way a wrapped line of text does — but
+// only at a safe (single predecessor/successor) boundary; see computeDegrees.
+export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
   if (nodes.length === 0) return nodes;
 
   const left = Math.min(...nodes.map((n) => n.position.x));
@@ -152,22 +177,41 @@ export function foldWideGraph(nodes: Node[]): Node[] {
   }
   const xs = [...byX.keys()].sort((a, b) => a - b);
 
+  // No edges given means no dependency to misrepresent — every column
+  // boundary is safe, matching the pre-edge-aware behavior exactly.
+  const edgeAware = edges.length > 0;
+  const { outDeg, inDeg } = computeDegrees(nodes, edges);
+  const isSafeBreak = (beforeX: number, afterX: number): boolean => {
+    const beforeNodes = byX.get(beforeX) ?? [];
+    const afterNodes = byX.get(afterX) ?? [];
+    if (beforeNodes.length !== 1 || afterNodes.length !== 1) return false;
+    const a = beforeNodes[0]!;
+    const b = afterNodes[0]!;
+    const aOut = outDeg.get(a.id) ?? [];
+    const bIn = inDeg.get(b.id) ?? [];
+    return aOut.length === 1 && aOut[0] === b.id && bIn.length === 1 && bIn[0] === a.id;
+  };
+
   const rows: number[][] = [];
   let current: number[] = [];
   let rowStartX = 0;
+  let prevX: number | null = null;
   for (const x of xs) {
     if (current.length === 0) {
       current = [x];
       rowStartX = x;
+      prevX = x;
       continue;
     }
-    if (x - rowStartX + NODE_WIDTH > FOLD_MAX_ROW_WIDTH) {
+    const overWidth = x - rowStartX + NODE_WIDTH > FOLD_MAX_ROW_WIDTH;
+    if (overWidth && (!edgeAware || isSafeBreak(prevX!, x))) {
       rows.push(current);
       current = [x];
       rowStartX = x;
     } else {
       current.push(x);
     }
+    prevX = x;
   }
   if (current.length > 0) rows.push(current);
   if (rows.length <= 1) return nodes;
@@ -375,7 +419,7 @@ export function getLayoutedElements(
   const wrappedNodes = direction === "LR" ? wrapWideRanks(layoutedNodes) : layoutedNodes;
   // Fold after wrapping, so a wrapped fan-out moves as one block rather than
   // having its grid columns split across two rows.
-  const foldedNodes = direction === "LR" ? foldWideGraph(wrappedNodes) : wrappedNodes;
+  const foldedNodes = direction === "LR" ? foldWideGraph(wrappedNodes, edges) : wrappedNodes;
   const finalNodes = enforceMinRankGap(foldedNodes);
 
   // Bounding-box height of the laid-out graph (post-wrap, post-gap), so

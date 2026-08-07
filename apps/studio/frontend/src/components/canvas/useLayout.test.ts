@@ -1114,3 +1114,98 @@ describe("getLayoutedElements — a folded chain marks exactly its row boundarie
     expect(edges.filter((e) => e.data?.continuation)).toHaveLength(0);
   });
 });
+
+describe("getLayoutedElements — folding a mid-run branch+join stays edge-aware", () => {
+  const chain = (n: number) => {
+    const ids = Array.from({ length: n }, (_, i) => `s${i}`);
+    const edges: Edge[] = ids
+      .slice(0, -1)
+      .map((id, i) => ({ id: `${id}-${ids[i + 1]}`, source: id, target: ids[i + 1] }));
+    return { nodes: () => ids.map(full), edges };
+  };
+
+  // The shape a purely geometric fold gets wrong: a long LR chain with a
+  // branch (one node, two successors) and a join (one node, two
+  // predecessors) partway through. s0..s4 sequential, s4 branches to
+  // sBa/sBb, both join at sJ, then a0..a9 continue sequentially. Wide and
+  // flat enough that the pre-fix fold splits a row right at the join, which
+  // marked the real sBa-sJ/sBb-sJ dependencies as continuation.
+  const before = Array.from({ length: 5 }, (_, i) => `s${i}`);
+  const after = Array.from({ length: 10 }, (_, i) => `a${i}`);
+  const branchJoinIds = [...before, "sBa", "sBb", "sJ", ...after];
+  const branchJoinEdges: Edge[] = [
+    ...before
+      .slice(0, -1)
+      .map((id, i) => ({ id: `${id}-${before[i + 1]}`, source: id, target: before[i + 1] })),
+    { id: "s4-sBa", source: "s4", target: "sBa" },
+    { id: "s4-sBb", source: "s4", target: "sBb" },
+    { id: "sBa-sJ", source: "sBa", target: "sJ" },
+    { id: "sBb-sJ", source: "sBb", target: "sJ" },
+    { id: "sJ-a0", source: "sJ", target: "a0" },
+    ...after
+      .slice(0, -1)
+      .map((id, i) => ({ id: `${id}-${after[i + 1]}`, source: id, target: after[i + 1] })),
+  ];
+  const branchJoinAuthoredIds = new Set([
+    "s4-sBa",
+    "s4-sBb",
+    "sBa-sJ",
+    "sBb-sJ",
+    "sJ-a0",
+    ...before.slice(0, -1).map((id, i) => `${id}-${before[i + 1]}`),
+    ...after.slice(0, -1).map((id, i) => `${id}-${after[i + 1]}`),
+  ]);
+
+  it("never marks a branch or join dependency as a continuation", () => {
+    const { nodes, edges } = getLayoutedElements(branchJoinIds.map(full), branchJoinEdges, "LR");
+    // Sanity: this fixture actually folds into more than one row.
+    const rowCount = new Set(nodes.map((n) => Math.round(n.position.y / 50))).size;
+    expect(rowCount).toBeGreaterThan(1);
+
+    const wronglyMarked = edges.filter(
+      (e) => ["s4-sBa", "s4-sBb", "sBa-sJ", "sBb-sJ"].includes(e.id) && e.data?.continuation,
+    );
+    expect(wronglyMarked.map((e) => e.id)).toEqual([]);
+  });
+
+  it("marks continuation on nothing but authored edges (no synthetic edge sneaks in)", () => {
+    const { edges } = getLayoutedElements(branchJoinIds.map(full), branchJoinEdges, "LR");
+    for (const e of edges.filter((x) => x.data?.continuation)) {
+      expect(branchJoinAuthoredIds.has(e.id)).toBe(true);
+    }
+  });
+
+  it("keeps every node and never overlaps two of them", () => {
+    const { nodes } = getLayoutedElements(branchJoinIds.map(full), branchJoinEdges, "LR");
+    expect(nodes.map((n) => n.id).sort()).toEqual([...branchJoinIds].sort());
+    assertNoOverlap(nodes);
+  });
+
+  it("the truly-sequential 30-node chain still folds into the previously-measured band", () => {
+    // Pins the readability win survives the edge-aware rewrite: every
+    // boundary in a pure chain is a safe (1-predecessor/1-successor) break,
+    // so this must fold exactly as before. Measured pre-fix band: ~1528x504,
+    // raw fit ~0.644 at a 1280x560 panel — small drift is fine, a strip
+    // (unfolded ~7692-wide) is the regression this guards against.
+    const c = chain(30);
+    const { nodes } = getLayoutedElements(c.nodes(), c.edges, "LR");
+    const left = Math.min(...nodes.map((n) => n.position.x));
+    const right = Math.max(...nodes.map((n) => n.position.x + 210));
+    const top = Math.min(...nodes.map((n) => n.position.y));
+    const bottom = Math.max(...nodes.map((n) => n.position.y + estimateNodeHeight(n)));
+    const width = right - left;
+    const height = bottom - top;
+    const padding = 0.15;
+    const rawFit = Math.min(
+      1280 / (width * (1 + 2 * padding)),
+      560 / (height * (1 + 2 * padding)),
+      1,
+    );
+
+    expect(width).toBeGreaterThan(1300);
+    expect(width).toBeLessThan(1700);
+    expect(height).toBeCloseTo(504, -1);
+    expect(rawFit).toBeGreaterThan(0.55);
+    expect(rawFit).toBeLessThan(0.75);
+  });
+});
