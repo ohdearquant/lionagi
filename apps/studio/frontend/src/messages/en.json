@@ -784,6 +784,8 @@
     },
     "history": {
       "label": "Session history",
+      "sortRecent": "Recent",
+      "sortCost": "Highest cost",
       "all": "All",
       "completed": "Completed",
       "failed": "Failed",
@@ -861,6 +863,15 @@
       "completionRate": "{rate}% completion",
       "noTerminalRuns": "No terminal runs in window",
       "total": "{count} total",
+      "staleHint": "showing last known · refresh failed"
+    },
+    "spend": {
+      "title": "Reported spend",
+      "loading": "Loading spend…",
+      "error": "Spend unavailable · {message}",
+      "unreachable": "API unreachable",
+      "empty": "No runs in window",
+      "coverage": "{reported} of {total} reported",
       "staleHint": "showing last known · refresh failed"
     },
     "stale": {

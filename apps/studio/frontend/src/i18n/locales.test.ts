@@ -111,6 +111,7 @@ const SAMPLE_VALUES = {
   plural: "s",
   position: 1,
   rate: "1.2",
+  reported: 3,
   role: "engine",
   running: 2,
   runs: 4,
@@ -195,8 +196,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 858 leaves", () => {
-    expect(EN_LEAVES.size).toBe(858);
+  it("en.json has 867 leaves", () => {
+    expect(EN_LEAVES.size).toBe(867);
   });
 
   it.each(LOCALES.map((l) => l.code))(

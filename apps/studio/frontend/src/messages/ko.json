@@ -784,6 +784,8 @@
     },
     "history": {
       "label": "세션 기록",
+      "sortRecent": "최근",
+      "sortCost": "비용 높은 순",
       "all": "전체",
       "completed": "완료됨",
       "failed": "실패",
@@ -861,6 +863,15 @@
       "completionRate": "완료율 {rate}%",
       "noTerminalRuns": "기간 내 종료된 실행 없음",
       "total": "{count, plural, other {총 #개}}",
+      "staleHint": "마지막으로 알려진 값 표시 중 · 새로고침 실패"
+    },
+    "spend": {
+      "title": "보고된 지출",
+      "loading": "지출 불러오는 중…",
+      "error": "지출 사용 불가 · {message}",
+      "unreachable": "API에 연결할 수 없음",
+      "empty": "이 기간에 실행 없음",
+      "coverage": "{total}개 중 {reported}개 보고됨",
       "staleHint": "마지막으로 알려진 값 표시 중 · 새로고침 실패"
     },
     "stale": {
