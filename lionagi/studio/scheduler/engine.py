@@ -17,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.ln.concurrency import ExceptionGroup
-from lionagi.state.db import TERMINAL_RUN_STATUSES
+from lionagi.state.db import SESSION_TERMINAL_STATUSES, TERMINAL_RUN_STATUSES
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS, RunTerminalEnvelope
 from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
 from lionagi.state.reasons import RunReasons, ScheduleReasons
@@ -50,6 +50,21 @@ _DEFERRED_RECORD_EVERY = 10
 # it's recorded terminal and the cursor moves past it, so one poison event
 # can't block the queue forever.
 _MAX_PREDISPATCH_REFUSALS = 3
+
+# schedule_runs has no 'completed_empty' or 'aborted' status (see
+# lionagi.state.lifecycle.policy's schedule_run_statuses) -- only
+# invocations/sessions distinguish those. _reconcile_dispatched_orphans()
+# maps resolve_invocation_terminal()'s invocation-vocabulary result onto the
+# nearest schedule_run status; the finer distinction still survives in the
+# written reason_code (COMPLETED_EMPTY_NO_EVIDENCE, ABORTED_USER, etc).
+_SCHEDULE_RUN_STATUS_FROM_INVOCATION: dict[str, str] = {
+    "completed": "completed",
+    "completed_empty": "completed",
+    "failed": "failed",
+    "timed_out": "timed_out",
+    "cancelled": "cancelled",
+    "aborted": "cancelled",
+}
 
 
 def _register_schedule_notify(
@@ -748,6 +763,7 @@ class SchedulerEngine:
 
     async def _tick_loop(self) -> None:
         await self._recover_undispatched_fires()
+        await self._reconcile_dispatched_orphans()
         await self._check_missed_fires()
         while not self._stopping:
             try:
@@ -836,6 +852,93 @@ class SchedulerEngine:
             # Raced with something else finalizing this row (e.g. the
             # stale-run reaper) between the scan and here; already resolved.
             pass
+
+    async def _reconcile_dispatched_orphans(self) -> None:
+        """Startup-only reconciliation for schedule_runs rows that were
+        confirmed dispatched (an external process was launched) but never
+        reached a terminal status (see #2755).
+
+        Unlike ``_recover_undispatched_fires()`` (``dispatched_at IS NULL``,
+        safe to re-fire because nothing was ever launched), a row here may
+        have a genuinely live child still working -- re-firing would
+        double-execute it, and blindly terminalizing it would falsely mark
+        live work dead. Neither is safe from wall-clock alone.
+
+        This only acts where positive completion evidence already exists in
+        the DB without needing new process-identity capture: an action that
+        spawned its own session(s) (e.g. ``agent``/``play``) writes each
+        session's own terminal status from *inside* that child process, via
+        its own teardown -- entirely independent of whether the scheduler
+        that dispatched it survived to see the exit code. When every linked
+        session has independently reached a terminal status, the
+        schedule_run is finalized from that evidence via
+        ``resolve_invocation_terminal()`` (the same resolution the live
+        ``_fire()`` path uses for the invocation row). A row with no
+        sessions yet, or with any session still non-terminal, is left
+        untouched -- unknown liveness is never treated as death; it falls
+        through to the existing wall-clock stale reaper
+        (``reap_stale_schedule_runs``) unchanged.
+        """
+        try:
+            rows = await self._svc.list_dispatched_running_schedule_runs()
+        except Exception:
+            _log.exception("Failed to scan for dispatched-but-unterminated schedule_runs")
+            return
+
+        for row in rows:
+            run_id = row["id"]
+            inv_id = row.get("invocation_id")
+            if not inv_id:
+                continue
+            try:
+                sessions = await self._svc.list_sessions_for_invocation(inv_id)
+            except Exception:
+                _log.exception(
+                    "Failed to list sessions for invocation %s (schedule_run %s)", inv_id, run_id
+                )
+                continue
+            if not sessions:
+                continue
+            child_statuses = [str(s.get("status") or "") for s in sessions]
+            if any(s not in SESSION_TERMINAL_STATUSES for s in child_statuses):
+                continue  # at least one child still genuinely non-terminal
+
+            inv_status, inv_rc, inv_rs, inv_ev, _inv_meta = await resolve_invocation_terminal(
+                self._svc, inv_id, fallback_status="completed"
+            )
+            run_status = _SCHEDULE_RUN_STATUS_FROM_INVOCATION.get(inv_status)
+            if run_status is None:
+                _log.warning(
+                    "Unmapped invocation status %r reconciling schedule_run %s; leaving as-is",
+                    inv_status,
+                    run_id,
+                )
+                continue
+
+            written = await self._guarded_terminal_status(
+                "schedule_run",
+                run_id,
+                new_status=run_status,
+                reason_code=inv_rc,
+                reason_summary=(
+                    f"{inv_rs} (reconciled at scheduler startup from child session "
+                    "evidence; the scheduler that dispatched this run did not "
+                    "record its outcome)."
+                ),
+                evidence_refs=inv_ev,
+                source="system",
+                actor="scheduler_startup_reconciliation",
+                metadata={"invocation_id": inv_id, "invocation_status": inv_status},
+                extra_fields={"ended_at": time.time()},
+            )
+            if written:
+                _log.info(
+                    "Reconciled dispatched-orphan schedule_run %s as %s from child "
+                    "session evidence (invocation %s)",
+                    run_id,
+                    run_status,
+                    inv_id,
+                )
 
     async def _check_missed_fires(self) -> None:
         try:

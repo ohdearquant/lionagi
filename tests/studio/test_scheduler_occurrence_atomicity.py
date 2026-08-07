@@ -815,3 +815,130 @@ async def test_recovery_refire_is_noop_when_dispatch_confirmed_mid_race(tmp_path
     # Only the doomed recovery attempt's invocation was cancelled.
     assert recovery_invocation["status"] == "cancelled"
     assert recovery_invocation["status_reason_code"] == RunReasons.CANCELLED_STALE_AUTO
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_dispatched_orphans -- confirmed-dispatch rows the scheduler
+# never recorded an outcome for (#2755)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_dispatched_run_with_session(
+    db: StateDB,
+    *,
+    sid: str,
+    run_id: str,
+    inv_id: str,
+    sess_id: str,
+    session_status: str,
+) -> None:
+    await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
+    await db.create_invocation(
+        {"id": inv_id, "skill": "agent", "started_at": 1000.0, "status": "running"}
+    )
+    prog_id = f"{sess_id}-prog"
+    await db.create_progression(prog_id)
+    await db.create_session(
+        {
+            "id": sess_id,
+            "progression_id": prog_id,
+            "invocation_id": inv_id,
+            "status": session_status,
+        }
+    )
+    await db.create_schedule_run_and_advance(
+        _run_row(run_id, sid, fired_at=1000.0, invocation_id=inv_id),
+        schedule_id=sid,
+        schedule_fields={"next_fire_at": 2000.0, "last_fired_at": 1000.0},
+    )
+    # Launch confirmed, mirroring spawn_and_wait's on_launched callback --
+    # the scheduler then crashes before recording the run's own outcome.
+    await db.update_schedule_run(run_id, dispatched_at=1000.5)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_finalizes_dispatched_orphan_from_terminal_session_evidence(
+    tmp_path, monkeypatch
+):
+    """A schedule_run confirmed-dispatched but never finalized (the
+    scheduler crashed between the two) must be reconciled from its child
+    session's OWN terminal status, written independently by that session's
+    own teardown -- not from any liveness guess about the dead scheduler."""
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    sid, run_id, inv_id, sess_id = "sched-h", "run-orphan-h", "inv-h", "sess-h"
+    async with StateDB(db_path) as db:
+        await _seed_dispatched_run_with_session(
+            db, sid=sid, run_id=run_id, inv_id=inv_id, sess_id=sess_id, session_status="completed"
+        )
+
+    svc = _DBSchedulerStateService()
+    engine = SchedulerEngine(svc=svc)
+    await engine._reconcile_dispatched_orphans()
+
+    async with StateDB(db_path) as db:
+        run = await db.get_schedule_run(run_id)
+    assert run["status"] == "completed"
+    assert run["ended_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_leaves_row_running_when_session_still_nonterminal(tmp_path, monkeypatch):
+    """Positive control for the above: when the linked session has NOT
+    reached a terminal status, the row must be left exactly as-is -- unknown
+    liveness is never treated as death. Falls through to the existing
+    wall-clock stale reaper unchanged."""
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    sid, run_id, inv_id, sess_id = "sched-i", "run-orphan-i", "inv-i", "sess-i"
+    async with StateDB(db_path) as db:
+        await _seed_dispatched_run_with_session(
+            db, sid=sid, run_id=run_id, inv_id=inv_id, sess_id=sess_id, session_status="running"
+        )
+
+    svc = _DBSchedulerStateService()
+    engine = SchedulerEngine(svc=svc)
+    await engine._reconcile_dispatched_orphans()
+
+    async with StateDB(db_path) as db:
+        run = await db.get_schedule_run(run_id)
+    assert run["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_leaves_row_running_when_no_sessions_recorded(tmp_path, monkeypatch):
+    """A dispatched row with no sessions at all (e.g. a bare 'command'
+    action, or an agent session row not yet inserted) carries no positive
+    completion evidence -- left running for the wall-clock stale reaper,
+    never guessed at."""
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    sid, run_id, inv_id = "sched-j", "run-orphan-j", "inv-j"
+    async with StateDB(db_path) as db:
+        await db.create_schedule(_schedule_row(sid, next_fire_at=2000.0))
+        await db.create_invocation(
+            {"id": inv_id, "skill": "command", "started_at": 1000.0, "status": "running"}
+        )
+        await db.create_schedule_run_and_advance(
+            _run_row(run_id, sid, fired_at=1000.0, invocation_id=inv_id, action_kind="command"),
+            schedule_id=sid,
+            schedule_fields={"next_fire_at": 2000.0, "last_fired_at": 1000.0},
+        )
+        await db.update_schedule_run(run_id, dispatched_at=1000.5)
+
+    svc = _DBSchedulerStateService()
+    engine = SchedulerEngine(svc=svc)
+    await engine._reconcile_dispatched_orphans()
+
+    async with StateDB(db_path) as db:
+        run = await db.get_schedule_run(run_id)
+    assert run["status"] == "running"

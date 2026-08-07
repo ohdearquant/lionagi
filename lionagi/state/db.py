@@ -4514,6 +4514,34 @@ class StateDB:
             )
         return [self._row_to_dict(r) for r in rows]
 
+    async def list_dispatched_running_schedule_runs(self) -> list[dict[str, Any]]:
+        """Scheduler-fired occurrence rows confirmed dispatched (an external
+        process was launched) but never reached a terminal status --
+        distinct from ``list_undispatched_schedule_runs()``'s "never
+        launched" case. The scheduler process that dispatched one of these
+        may have crashed before recording its outcome, or the process it
+        launched may still be genuinely alive and working; this method only
+        surfaces candidates for reconciliation, it does not itself decide
+        liveness (see ``SchedulerEngine._reconcile_dispatched_orphans``).
+        Scoped to rows with a linked invocation, the only case that carries
+        independently-observable completion evidence today.
+        """
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT * FROM schedule_runs WHERE status = 'running' "
+                            "AND dispatched_at IS NOT NULL AND schedule_id IS NOT NULL "
+                            "AND invocation_id IS NOT NULL"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [self._row_to_dict(r) for r in rows]
+
     async def get_schedule_run(self, run_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
             row = (
