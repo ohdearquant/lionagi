@@ -4520,43 +4520,6 @@ class StateDB:
 
     # ── Artifacts (ADR-0077) ─────────────────────────────────────────────
 
-    async def _find_artifact_id(
-        self,
-        *,
-        kind: str,
-        name: str,
-        invocation_id: str | None,
-        session_id: str | None,
-    ) -> str | None:
-        """Return the artifact id matching the natural key, or None."""
-        if invocation_id is not None and session_id is not None:
-            sql = (
-                "SELECT id FROM artifacts "
-                "WHERE invocation_id = :inv_id AND session_id = :ses_id AND kind = :kind AND name = :name"
-            )
-            params = {"inv_id": invocation_id, "ses_id": session_id, "kind": kind, "name": name}
-        elif invocation_id is not None:
-            sql = (
-                "SELECT id FROM artifacts "
-                "WHERE invocation_id = :inv_id AND session_id IS NULL AND kind = :kind AND name = :name"
-            )
-            params = {"inv_id": invocation_id, "kind": kind, "name": name}
-        elif session_id is not None:
-            sql = (
-                "SELECT id FROM artifacts "
-                "WHERE session_id = :ses_id AND invocation_id IS NULL AND kind = :kind AND name = :name"
-            )
-            params = {"ses_id": session_id, "kind": kind, "name": name}
-        else:
-            sql = (
-                "SELECT id FROM artifacts "
-                "WHERE invocation_id IS NULL AND session_id IS NULL AND kind = :kind AND name = :name"
-            )
-            params = {"kind": kind, "name": name}
-        async with self._read() as conn:
-            row = (await conn.execute(text(sql), params)).mappings().first()
-        return row["id"] if row else None
-
     async def insert_artifact(
         self,
         *,
@@ -4567,7 +4530,18 @@ class StateDB:
         session_id: str | None = None,
         file_path: str | None = None,
     ) -> str:
-        """Upsert one structured artifact; return its stable id."""
+        """Upsert one structured artifact; return its stable id.
+
+        The natural-key lookup and the write happen in one statement — a
+        separate SELECT-then-INSERT let two concurrent callers both observe
+        no existing row and both attempt an INSERT, and the loser hit one of
+        the four partial unique indexes below as an IntegrityError instead
+        of the documented upsert. ``ON CONFLICT`` target and its WHERE
+        clause must match one of ``idx_artifacts_natural_key_*`` in
+        schema.sql exactly (both SQLite and Postgres require the conflict
+        target to name the specific partial index); which one applies is
+        already known from which of invocation_id/session_id are set.
+        """
         if not kind:
             raise ValueError("artifact kind is required")
         if not name:
@@ -4579,39 +4553,52 @@ class StateDB:
             # rather than trusting whatever recorded the reference.
             _check_path_safe(file_path, "file_path")
         now = time.time()
-        existing_id = await self._find_artifact_id(
-            kind=kind, name=name, invocation_id=invocation_id, session_id=session_id
-        )
-        if existing_id:
-            async with self._tx() as conn:
-                await conn.execute(
-                    text(
-                        "UPDATE artifacts SET content = :content, file_path = :fp, updated_at = :now WHERE id = :id"
-                    ).bindparams(bindparam("content", type_=JSON)),
-                    {"content": content, "fp": file_path, "now": now, "id": existing_id},
-                )
-            return existing_id
         art_id = uuid.uuid4().hex[:12]
-        async with self._tx() as conn:
-            await conn.execute(
-                text(
-                    "INSERT INTO artifacts "
-                    "(id, invocation_id, session_id, created_at, updated_at, kind, name, content, file_path) "
-                    "VALUES (:id, :inv_id, :ses_id, :now, :now2, :kind, :name, :content, :fp)"
-                ).bindparams(bindparam("content", type_=JSON)),
-                {
-                    "id": art_id,
-                    "inv_id": invocation_id,
-                    "ses_id": session_id,
-                    "now": now,
-                    "now2": now,
-                    "kind": kind,
-                    "name": name,
-                    "content": content,
-                    "fp": file_path,
-                },
+        if invocation_id is not None and session_id is not None:
+            conflict = (
+                "(invocation_id, session_id, kind, name) "
+                "WHERE invocation_id IS NOT NULL AND session_id IS NOT NULL"
             )
-        return art_id
+        elif invocation_id is not None:
+            conflict = (
+                "(invocation_id, kind, name) WHERE invocation_id IS NOT NULL AND session_id IS NULL"
+            )
+        elif session_id is not None:
+            conflict = (
+                "(session_id, kind, name) WHERE session_id IS NOT NULL AND invocation_id IS NULL"
+            )
+        else:
+            conflict = "(kind, name) WHERE invocation_id IS NULL AND session_id IS NULL"
+        async with self._tx() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "INSERT INTO artifacts "  # noqa: S608
+                            "(id, invocation_id, session_id, created_at, updated_at, kind, name, content, file_path) "
+                            "VALUES (:id, :inv_id, :ses_id, :now, :now2, :kind, :name, :content, :fp) "
+                            f"ON CONFLICT {conflict} DO UPDATE SET "
+                            "content = excluded.content, file_path = excluded.file_path, "
+                            "updated_at = excluded.updated_at "
+                            "RETURNING id"
+                        ).bindparams(bindparam("content", type_=JSON)),
+                        {
+                            "id": art_id,
+                            "inv_id": invocation_id,
+                            "ses_id": session_id,
+                            "now": now,
+                            "now2": now,
+                            "kind": kind,
+                            "name": name,
+                            "content": content,
+                            "fp": file_path,
+                        },
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return row["id"]
 
     async def list_artifacts_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:
         async with self._read() as conn:
