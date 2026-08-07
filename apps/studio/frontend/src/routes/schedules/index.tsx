@@ -7,6 +7,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
+import EmptyState from "@/components/ui/EmptyState";
 import CreateScheduleModal from "@/components/schedules/CreateScheduleModal";
 import ScheduleCards from "@/components/schedules/ScheduleCards";
 import SchedulesTable from "@/components/schedules/SchedulesTable";
@@ -73,21 +74,20 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => voi
   );
 }
 
-function EmptyState({ onNew }: { onNew: () => void }) {
+function SchedulesEmptyState({ onNew }: { onNew: () => void }) {
   const t = useTranslations("schedules");
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 pb-16 text-center">
-      <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-full border border-edge bg-surface-raised text-xl text-content-muted">
-        ◷
-      </div>
-      <p className="text-body font-medium text-content-secondary">{t("emptyTitle")}</p>
-      <p className="max-w-sm text-meta text-content-muted">{t("emptyBody")}</p>
-      <div className="mt-2">
+    <EmptyState
+      glyph="◷"
+      title={t("emptyTitle")}
+      body={t("emptyBody")}
+      className="pb-16"
+      action={
         <Button variant="primary" size="sm" onClick={onNew}>
           + {t("emptyCta")}
         </Button>
-      </div>
-    </div>
+      }
+    />
   );
 }
 
@@ -185,7 +185,7 @@ function SchedulesSpace() {
       {loading ? (
         <TableSkeleton />
       ) : schedules.length === 0 ? (
-        <EmptyState onNew={() => setShowModal(true)} />
+        <SchedulesEmptyState onNew={() => setShowModal(true)} />
       ) : view === "cards" ? (
         <ScheduleCards
           schedules={schedules}

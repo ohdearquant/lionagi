@@ -540,6 +540,7 @@
       "triggering": "ট্রিগার হচ্ছে…",
       "runStarted": "রান শুরু হয়েছে: {id}",
       "triggerFailed": "ট্রিগার করতে ব্যর্থ",
+      "toggleFailed": "টগল করতে ব্যর্থ",
       "every": "প্রতি {interval}",
       "in": "{delta} পরে",
       "overdue": "{delta} ওভারডিউ",

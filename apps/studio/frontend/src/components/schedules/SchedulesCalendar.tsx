@@ -684,7 +684,7 @@ export default function SchedulesCalendar({
                     className={[
                       "mb-0.5 self-start font-data text-meta tabular-nums",
                       isToday
-                        ? "flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent)] font-semibold text-black"
+                        ? "flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent)] font-semibold text-accent-contrast"
                         : "text-content-muted",
                     ].join(" ")}
                   >
@@ -737,7 +737,7 @@ export default function SchedulesCalendar({
                     className={[
                       "font-data text-meta tabular-nums",
                       isToday
-                        ? "flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent)] font-semibold text-black"
+                        ? "flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent)] font-semibold text-accent-contrast"
                         : "text-content-secondary",
                     ].join(" ")}
                   >
@@ -838,7 +838,7 @@ export default function SchedulesCalendar({
                     className={[
                       "font-data text-meta tabular-nums",
                       isToday
-                        ? "flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent)] font-semibold text-black"
+                        ? "flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent)] font-semibold text-accent-contrast"
                         : "text-content-secondary",
                     ].join(" ")}
                   >

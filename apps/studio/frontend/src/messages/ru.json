@@ -540,6 +540,7 @@
       "triggering": "Запуск…",
       "runStarted": "Запуск начат: {id}",
       "triggerFailed": "Не удалось запустить",
+      "toggleFailed": "Не удалось переключить",
       "every": "каждые {interval}",
       "in": "через {delta}",
       "overdue": "просрочено на {delta}",

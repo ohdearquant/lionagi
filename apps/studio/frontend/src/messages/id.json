@@ -540,6 +540,7 @@
       "triggering": "Memicu…",
       "runStarted": "Eksekusi dimulai: {id}",
       "triggerFailed": "Gagal memicu",
+      "toggleFailed": "Gagal mengalihkan",
       "every": "setiap {interval}",
       "in": "dalam {delta}",
       "overdue": "terlambat {delta}",
