@@ -6,6 +6,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { IntlProvider } from "use-intl";
+import enMessages from "@/messages/en.json";
 import StepNode from "./StepNode";
 import type { StepNodeData, NodeExecStatus } from "./StepNode";
 
@@ -51,7 +53,11 @@ function renderNode(data: Partial<StepNodeData>) {
   };
   act(() => {
     // NodeProps carries more than the card reads; the rest is ReactFlow's.
-    root.render(React.createElement(StepNode, { data: full, selected: false } as never));
+    root.render(
+      <IntlProvider locale="en" messages={enMessages}>
+        {React.createElement(StepNode, { data: full, selected: false } as never)}
+      </IntlProvider>,
+    );
   });
 }
 

@@ -3,19 +3,21 @@
 import { memo, useEffect, useState } from "react";
 import { Handle, Position } from "reactflow";
 import type { NodeProps } from "reactflow";
+import { useTranslations } from "use-intl";
 import { IconCheck, IconClose, IconPause, IconWarning } from "@/components/ui/icons";
 import { NODE_HEIGHT, NODE_WIDTH } from "./useLayout";
 
 // What the bottom-right corner says before there is a duration to put there.
-const STATUS_WORD: Record<NodeExecStatus, string> = {
-  pending: "—",
-  queued: "queued",
-  running: "running",
-  awaiting_approval: "approval",
-  paused: "paused",
-  completed: "done",
-  failed: "failed",
-  escalated: "escalated",
+// "pending" has no lifecycle signal to report yet, so its placeholder is a
+// language-neutral dash rather than a translated word.
+const STATUS_WORD_KEY: Record<Exclude<NodeExecStatus, "pending">, string> = {
+  queued: "graphNodeStatusQueued",
+  running: "graphNodeStatusRunning",
+  awaiting_approval: "graphNodeStatusApproval",
+  paused: "graphNodeStatusPaused",
+  completed: "graphNodeStatusDone",
+  failed: "graphNodeStatusFailed",
+  escalated: "graphNodeStatusEscalated",
 };
 
 function usePrefersReducedMotion(): boolean {
@@ -72,6 +74,7 @@ export interface StepNodeData {
 }
 
 function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
+  const t = useTranslations("history.detail");
   // roleColor arrives as a data-driven CSS var string — keep inline
   const roleColor = ROLE_VAR[data.role] || "var(--content-muted)";
   const status = data.execStatus ?? "pending";
@@ -123,7 +126,9 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
   const magnitude =
     data.durationSeconds != null && data.durationSeconds >= 0
       ? formatStepDuration(data.durationSeconds)
-      : STATUS_WORD[status];
+      : status === "pending"
+        ? "—"
+        : t(STATUS_WORD_KEY[status]);
 
   return (
     <div

@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count} sisi",
       "graphImpliedHidden": "· {count} implisit disembunyikan",
       "graphHideImplied": "sembunyikan implisit",
-      "graphShowImplied": "tampilkan sisi implisit"
+      "graphShowImplied": "tampilkan sisi implisit",
+      "graphNodeStatusQueued": "antre",
+      "graphNodeStatusRunning": "berjalan",
+      "graphNodeStatusApproval": "persetujuan",
+      "graphNodeStatusPaused": "dijeda",
+      "graphNodeStatusDone": "selesai",
+      "graphNodeStatusFailed": "gagal",
+      "graphNodeStatusEscalated": "dieskalasi"
     },
     "masterAria": "Daftar riwayat",
     "detailAria": "Detail item"

@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count} arêtes",
       "graphImpliedHidden": "· {count} implicites masquées",
       "graphHideImplied": "masquer les implicites",
-      "graphShowImplied": "afficher les arêtes implicites"
+      "graphShowImplied": "afficher les arêtes implicites",
+      "graphNodeStatusQueued": "en attente",
+      "graphNodeStatusRunning": "en cours",
+      "graphNodeStatusApproval": "approbation",
+      "graphNodeStatusPaused": "en pause",
+      "graphNodeStatusDone": "terminé",
+      "graphNodeStatusFailed": "échoué",
+      "graphNodeStatusEscalated": "escaladé"
     },
     "masterAria": "Liste d’historique",
     "detailAria": "Détail de l’élément"

@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count} cạnh",
       "graphImpliedHidden": "· ẩn {count} cạnh ngầm định",
       "graphHideImplied": "ẩn cạnh ngầm định",
-      "graphShowImplied": "hiện cạnh ngầm định"
+      "graphShowImplied": "hiện cạnh ngầm định",
+      "graphNodeStatusQueued": "đang chờ",
+      "graphNodeStatusRunning": "đang chạy",
+      "graphNodeStatusApproval": "phê duyệt",
+      "graphNodeStatusPaused": "tạm dừng",
+      "graphNodeStatusDone": "xong",
+      "graphNodeStatusFailed": "thất bại",
+      "graphNodeStatusEscalated": "đã leo thang"
     },
     "masterAria": "danh sách lịch sử",
     "detailAria": "chi tiết mục"

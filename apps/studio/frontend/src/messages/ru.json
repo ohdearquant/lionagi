@@ -446,7 +446,14 @@
       "graphEdgeCount": "рёбер: {count}",
       "graphImpliedHidden": "· скрыто неявных: {count}",
       "graphHideImplied": "скрыть неявные",
-      "graphShowImplied": "показать неявные рёбра"
+      "graphShowImplied": "показать неявные рёбра",
+      "graphNodeStatusQueued": "в очереди",
+      "graphNodeStatusRunning": "выполняется",
+      "graphNodeStatusApproval": "одобрение",
+      "graphNodeStatusPaused": "приостановлено",
+      "graphNodeStatusDone": "готово",
+      "graphNodeStatusFailed": "ошибка",
+      "graphNodeStatusEscalated": "эскалировано"
     },
     "masterAria": "Список истории",
     "detailAria": "Сведения об элементе"

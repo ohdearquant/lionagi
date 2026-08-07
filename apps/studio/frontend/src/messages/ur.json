@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count} کنارے",
       "graphImpliedHidden": "· {count} ضمنی چھپے ہوئے",
       "graphHideImplied": "ضمنی چھپائیں",
-      "graphShowImplied": "ضمنی کنارے دکھائیں"
+      "graphShowImplied": "ضمنی کنارے دکھائیں",
+      "graphNodeStatusQueued": "قطار میں",
+      "graphNodeStatusRunning": "جاری",
+      "graphNodeStatusApproval": "منظوری",
+      "graphNodeStatusPaused": "موقوف",
+      "graphNodeStatusDone": "مکمل",
+      "graphNodeStatusFailed": "ناکام",
+      "graphNodeStatusEscalated": "بڑھایا گیا"
     },
     "masterAria": "ہسٹری فہرست",
     "detailAria": "آئٹم تفصیل"

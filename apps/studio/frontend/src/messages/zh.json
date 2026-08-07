@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count} 条边",
       "graphImpliedHidden": "· {count} 条隐含边已隐藏",
       "graphHideImplied": "隐藏隐含边",
-      "graphShowImplied": "显示隐含边"
+      "graphShowImplied": "显示隐含边",
+      "graphNodeStatusQueued": "排队中",
+      "graphNodeStatusRunning": "运行中",
+      "graphNodeStatusApproval": "审批",
+      "graphNodeStatusPaused": "已暂停",
+      "graphNodeStatusDone": "完成",
+      "graphNodeStatusFailed": "失败",
+      "graphNodeStatusEscalated": "已升级"
     },
     "masterAria": "历史列表",
     "detailAria": "条目详情"

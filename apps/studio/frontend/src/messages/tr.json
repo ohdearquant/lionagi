@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count} kenar",
       "graphImpliedHidden": "· {count} örtük gizli",
       "graphHideImplied": "örtükleri gizle",
-      "graphShowImplied": "örtük kenarları göster"
+      "graphShowImplied": "örtük kenarları göster",
+      "graphNodeStatusQueued": "sırada",
+      "graphNodeStatusRunning": "çalışıyor",
+      "graphNodeStatusApproval": "onay",
+      "graphNodeStatusPaused": "duraklatıldı",
+      "graphNodeStatusDone": "tamamlandı",
+      "graphNodeStatusFailed": "başarısız",
+      "graphNodeStatusEscalated": "yükseltildi"
     },
     "masterAria": "geçmiş listesi",
     "detailAria": "öğe ayrıntısı"

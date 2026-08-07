@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count}টি প্রান্ত",
       "graphImpliedHidden": "· {count}টি অন্তর্নিহিত লুকানো",
       "graphHideImplied": "অন্তর্নিহিত লুকান",
-      "graphShowImplied": "অন্তর্নিহিত প্রান্ত দেখান"
+      "graphShowImplied": "অন্তর্নিহিত প্রান্ত দেখান",
+      "graphNodeStatusQueued": "সারিতে",
+      "graphNodeStatusRunning": "চলমান",
+      "graphNodeStatusApproval": "অনুমোদন",
+      "graphNodeStatusPaused": "স্থগিত",
+      "graphNodeStatusDone": "সম্পন্ন",
+      "graphNodeStatusFailed": "ব্যর্থ",
+      "graphNodeStatusEscalated": "এস্কেলেটেড"
     },
     "masterAria": "হিস্ট্রি তালিকা",
     "detailAria": "আইটেমের বিস্তারিত"

@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count} arestas",
       "graphImpliedHidden": "· {count} implícitas ocultas",
       "graphHideImplied": "ocultar implícitas",
-      "graphShowImplied": "mostrar arestas implícitas"
+      "graphShowImplied": "mostrar arestas implícitas",
+      "graphNodeStatusQueued": "na fila",
+      "graphNodeStatusRunning": "em execução",
+      "graphNodeStatusApproval": "aprovação",
+      "graphNodeStatusPaused": "pausado",
+      "graphNodeStatusDone": "concluído",
+      "graphNodeStatusFailed": "falhou",
+      "graphNodeStatusEscalated": "escalado"
     },
     "masterAria": "Lista do histórico",
     "detailAria": "Detalhes do item"

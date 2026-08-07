@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count} 本のエッジ",
       "graphImpliedHidden": "· 暗黙のエッジ {count} 本を非表示",
       "graphHideImplied": "暗黙のエッジを隠す",
-      "graphShowImplied": "暗黙のエッジを表示"
+      "graphShowImplied": "暗黙のエッジを表示",
+      "graphNodeStatusQueued": "待機中",
+      "graphNodeStatusRunning": "実行中",
+      "graphNodeStatusApproval": "承認",
+      "graphNodeStatusPaused": "一時停止",
+      "graphNodeStatusDone": "完了",
+      "graphNodeStatusFailed": "失敗",
+      "graphNodeStatusEscalated": "エスカレーション"
     },
     "masterAria": "履歴一覧",
     "detailAria": "項目の詳細"

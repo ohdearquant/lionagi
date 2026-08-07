@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count} حافة",
       "graphImpliedHidden": "· {count} ضمنية مخفية",
       "graphHideImplied": "إخفاء الضمنية",
-      "graphShowImplied": "إظهار الحواف الضمنية"
+      "graphShowImplied": "إظهار الحواف الضمنية",
+      "graphNodeStatusQueued": "قيد الانتظار",
+      "graphNodeStatusRunning": "قيد التشغيل",
+      "graphNodeStatusApproval": "الموافقة",
+      "graphNodeStatusPaused": "متوقف مؤقتًا",
+      "graphNodeStatusDone": "تم",
+      "graphNodeStatusFailed": "فشل",
+      "graphNodeStatusEscalated": "تم التصعيد"
     },
     "masterAria": "قائمة السجل",
     "detailAria": "تفاصيل العنصر"

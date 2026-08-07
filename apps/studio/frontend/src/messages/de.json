@@ -446,7 +446,14 @@
       "graphEdgeCount": "{count} Kanten",
       "graphImpliedHidden": "· {count} implizite ausgeblendet",
       "graphHideImplied": "implizite ausblenden",
-      "graphShowImplied": "implizite Kanten anzeigen"
+      "graphShowImplied": "implizite Kanten anzeigen",
+      "graphNodeStatusQueued": "wartend",
+      "graphNodeStatusRunning": "läuft",
+      "graphNodeStatusApproval": "Freigabe",
+      "graphNodeStatusPaused": "pausiert",
+      "graphNodeStatusDone": "fertig",
+      "graphNodeStatusFailed": "fehlgeschlagen",
+      "graphNodeStatusEscalated": "eskaliert"
     },
     "masterAria": "Verlaufsliste",
     "detailAria": "Elementdetails"
