@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Checking whether this run can be resumed…",
+    "availabilityFailed": "Could not determine whether this run can be resumed.",
+    "notResumable": "This run cannot be resumed.",
+    "continueDescription": "Replays the saved plan from where it stopped — no new instruction, no branch to pick.",
+    "continueSubmit": "Continue",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

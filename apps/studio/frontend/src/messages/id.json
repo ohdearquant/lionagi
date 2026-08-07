@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Memeriksa apakah proses ini dapat dilanjutkan…",
+    "availabilityFailed": "Tidak dapat menentukan apakah proses ini dapat dilanjutkan.",
+    "notResumable": "Proses ini tidak dapat dilanjutkan.",
+    "continueDescription": "Memutar ulang rencana yang tersimpan dari titik terakhir — tanpa instruksi baru, tanpa cabang untuk dipilih.",
+    "continueSubmit": "Lanjutkan",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

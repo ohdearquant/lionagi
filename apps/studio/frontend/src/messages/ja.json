@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "この実行を再開できるか確認しています…",
+    "availabilityFailed": "この実行を再開できるかどうかを判断できませんでした。",
+    "notResumable": "この実行は再開できません。",
+    "continueDescription": "停止した箇所から保存済みのプランを再生します — 新しい指示もブランチの選択も不要です。",
+    "continueSubmit": "続行",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

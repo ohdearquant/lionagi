@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "এই রানটি পুনরায় শুরু করা যায় কিনা তা যাচাই করা হচ্ছে…",
+    "availabilityFailed": "এই রানটি পুনরায় শুরু করা যায় কিনা তা নির্ধারণ করা যায়নি।",
+    "notResumable": "এই রানটি পুনরায় শুরু করা যায় না।",
+    "continueDescription": "যেখানে থেমেছিল সেখান থেকে সংরক্ষিত পরিকল্পনা পুনরায় চালায় — নতুন নির্দেশ নেই, বেছে নেওয়ার জন্য শাখা নেই।",
+    "continueSubmit": "চালিয়ে যান",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
