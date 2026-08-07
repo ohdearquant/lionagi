@@ -103,6 +103,78 @@ async def test_queued_and_started_share_the_same_name_when_reference_id_set():
 
 
 @pytest.mark.asyncio
+async def test_reactive_spawn_shares_one_name_across_queued_started_terminal():
+    """The static case above threads node_id through the CLI builder; a
+    REACTIVE spawn takes a different path — role_node_builder stamps
+    spawn_id/reference_id on the child node (orchestration/patterns.py), but
+    flow_signals._on_spawned's NodeSpawned handler used to overwrite that
+    child's node_edge_meta entry with only parent_id/depends_on, dropping the
+    name. queued (which reads reference_id straight off the node) and
+    started (which falls back to the cloned branch's own name) then resolved
+    to two different names for the same op_id — buildNodeStatusesByName
+    (operationGraph.ts) split the same reactive child into a phantom
+    queued-forever node plus a separately-named started node."""
+    import json
+
+    from lionagi.operations.node import create_operation
+    from lionagi.orchestration.patterns import grant_spawn, role_node_builder
+    from lionagi.protocols.graph.graph import Graph
+    from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
+    from lionagi.testing import TestBranch
+
+    def _capability_chunk(**spawn_fields) -> dict:
+        payload = json.dumps({"spawn_request": spawn_fields})
+        return {"type": "stream", "chunks": [{"type": "text", "content": payload}]}
+
+    spawner = TestBranch.from_responses(
+        [_capability_chunk(instruction="do the follow-up", assignee="follower", independent=True)],
+        name="spawner",
+    )
+    follower = TestBranch.from_text("follow-up complete", name="follower")
+
+    session = _session_with_ops()
+    session.include_branches(spawner)
+    session.include_branches(follower)
+    session.default_branch = spawner
+    grant_spawn(spawner, prompt=False)
+
+    signal_log: list[tuple[str, str, str]] = []
+    for sig_cls, kind in (
+        (NodeQueued, "queued"),
+        (NodeStarted, "started"),
+        (NodeCompleted, "completed"),
+        (NodeFailed, "failed"),
+    ):
+        session.observe(
+            sig_cls,
+            handler=lambda s, _, kind=kind: signal_log.append((kind, s.op_id, s.name)),
+        )
+
+    graph = Graph()
+    root = create_operation("operate", parameters={"instruction": "start"})
+    root.branch_id = spawner.id
+    graph.add_node(root)
+
+    from lionagi.engines import Engine
+
+    run = Engine().new_run(session=session)
+    result = await run.run_dag(
+        graph,
+        reactive=True,
+        node_builder=role_node_builder({"follower": follower}),
+    )
+
+    assert result["spawned_operations"] == 1
+    spawned_op_id = next(oid for oid in result["completed_operations"] if str(oid) != str(root.id))
+    names = {kind: name for kind, oid, name in signal_log if oid == str(spawned_op_id)}
+    assert "started" in names, f"no started signal recorded for spawned child, got {signal_log}"
+    terminal_name = names.get("completed") or names.get("failed")
+    assert names["queued"] == names["started"] == terminal_name == "spawn-1", (
+        f"reactive spawn must keep ONE name across queued/started/terminal, got {signal_log}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_executor_raw_callback_diverges_without_reference_id_pre_fix_symptom():
     """Pins the pre-fix symptom at its source, one layer below the signal bus:
     the raw ``DependencyAwareExecutor.on_progress`` callback itself falls back
