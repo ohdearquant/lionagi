@@ -3091,7 +3091,7 @@ def test_discarding_a_reservation_removes_what_the_submission_wrote(sandbox):
     (d / "prompt.txt").write_text("x")
     (d / "mcp-servers.json").write_text("{}")
 
-    jobs._discard_reservation(d)
+    assert jobs._discard_reservation(d) is True
 
     assert not d.exists()
 
@@ -3132,9 +3132,42 @@ def test_discarding_a_reservation_refuses_a_directory_holding_anything_else(sand
     (d / "prompt.txt").write_text("x")
     (d / "console.log").write_bytes(b"a run wrote this\n")
 
-    jobs._discard_reservation(d)
+    assert jobs._discard_reservation(d) is False
 
     assert (d / "console.log").read_bytes() == b"a run wrote this\n"
+
+
+def test_a_rollback_that_could_not_run_marks_the_directory_it_left_behind(sandbox):
+    """A stranded reservation is not indistinguishable from one cleanly given back.
+
+    Both cases previously left nothing behind to tell them apart: a directory
+    under the jobs root either vanished or, if the giveback failed, sat there
+    exactly as anonymous as a job in progress. The marker this leaves is the
+    signal an operator greping for stranded runs has something to correlate
+    against.
+    """
+    d = config.JOBS_DIR / "20260101T000000-444444"
+    d.mkdir(parents=True)
+    (d / "prompt.txt").write_text("x")
+    (d / "console.log").write_bytes(b"a run wrote this\n")
+
+    assert jobs._discard_reservation(d) is False
+
+    marker = d / jobs._RESERVATION_STRANDED_MARKER
+    assert marker.exists()
+    assert "giveback" in marker.read_text()
+
+
+def test_a_clean_rollback_leaves_no_stranded_marker(sandbox):
+    """The marker names a failure; a successful giveback has nothing to mark —
+    and nowhere left to mark it, since the directory is gone."""
+    d = config.JOBS_DIR / "20260101T000000-555555"
+    d.mkdir(parents=True)
+    (d / "prompt.txt").write_text("x")
+
+    assert jobs._discard_reservation(d) is True
+
+    assert not d.exists()
 
 
 def test_a_lock_that_cannot_be_taken_says_so_even_when_the_descriptor_will_not_close(
