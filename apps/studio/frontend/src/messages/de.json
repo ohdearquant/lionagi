@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Es wird geprüft, ob dieser Lauf fortgesetzt werden kann…",
+    "availabilityFailed": "Es konnte nicht ermittelt werden, ob dieser Lauf fortgesetzt werden kann.",
+    "notResumable": "Dieser Lauf kann nicht fortgesetzt werden.",
+    "continueDescription": "Spielt den gespeicherten Plan ab dort ab, wo er gestoppt wurde — keine neue Anweisung, kein Branch zur Auswahl.",
+    "continueSubmit": "Fortsetzen",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "Zuletzt:",
       "never": "nie ausgeführt",
       "paused": "Pausiert",
-      "notScheduled": "Nicht geplant"
+      "notScheduled": "Nicht geplant",
+      "health": {
+        "healthy": "Gesund",
+        "failing": "Fehlgeschlagen",
+        "overdue": "Überfällig",
+        "neverFired": "Nie ausgeführt",
+        "noEvidence": "Kein Nachweis",
+        "lastOutcome": "zuletzt {outcome} vor {delta}",
+        "neverFiredSince": "seit {date} nie ausgeführt",
+        "noEvidenceHint": "keine Ausführung aufgezeichnet"
+      }
     },
     "run": {
       "elapsed": "{delta} verstrichen",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "+{count, plural, one {# mehr} other {# mehr}} — alle im Verlauf anzeigen →",
       "digestLatest": "neueste: {name} · vor {age}",
-      "streakCount": "{count, plural, one {#× fehlgeschlagen} other {#× fehlgeschlagen}}"
+      "streakCount": "{count, plural, one {#× fehlgeschlagen} other {#× fehlgeschlagen}}",
+      "disposition": {
+        "acknowledged": "bestätigt",
+        "resolved": "gelöst",
+        "expected": "erwartet",
+        "snoozed": "verschoben"
+      },
+      "action": {
+        "acknowledge": "Bestätigen",
+        "acknowledgeAria": "{name} bestätigen",
+        "resolve": "Lösen",
+        "resolveAria": "{name} lösen",
+        "snooze": "{duration} verschieben",
+        "snoozeAria": "{name} um {duration} verschieben",
+        "expected": "Erwartet",
+        "expectedAria": "{name} als erwartet markieren",
+        "undo": "Rückgängig",
+        "undoAria": "Erledigung von {name} rückgängig machen",
+        "confirm": "Bestätigen",
+        "cancel": "Abbrechen",
+        "notePlaceholder": "Warum ist das erwartet?",
+        "noteRequired": "Eine Notiz ist erforderlich",
+        "saveFailed": "Nicht gespeichert · {message}",
+        "expiryLabel": "Läuft ab in"
+      },
+      "showDischarged": "Erledigte anzeigen",
+      "hideDischarged": "Erledigte ausblenden",
+      "dischargedEmpty": "Keine erledigten Einträge"
     },
     "liveBoard": {
       "title": "Läuft jetzt",

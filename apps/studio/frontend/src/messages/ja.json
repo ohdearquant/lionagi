@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "この実行を再開できるか確認しています…",
+    "availabilityFailed": "この実行を再開できるかどうかを判断できませんでした。",
+    "notResumable": "この実行は再開できません。",
+    "continueDescription": "停止した箇所から保存済みのプランを再生します — 新しい指示もブランチの選択も不要です。",
+    "continueSubmit": "続行",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "前回",
       "never": "未実行",
       "paused": "一時停止中",
-      "notScheduled": "未スケジュール"
+      "notScheduled": "未スケジュール",
+      "health": {
+        "healthy": "正常",
+        "failing": "失敗",
+        "overdue": "遅延",
+        "neverFired": "一度も実行されていません",
+        "noEvidence": "証拠なし",
+        "lastOutcome": "{delta}前に{outcome}",
+        "neverFiredSince": "{date}以降一度も実行されていません",
+        "noEvidenceHint": "実行記録なし"
+      }
     },
     "run": {
       "elapsed": "{delta}経過",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "+{count, plural, other {# 件 — 履歴ですべて表示 →}}",
       "digestLatest": "最新: {name} · {age}前",
-      "streakCount": "{count, plural, other {#回失敗}}"
+      "streakCount": "{count, plural, other {#回失敗}}",
+      "disposition": {
+        "acknowledged": "確認済み",
+        "resolved": "解決済み",
+        "expected": "想定内",
+        "snoozed": "延期"
+      },
+      "action": {
+        "acknowledge": "確認",
+        "acknowledgeAria": "{name} を確認",
+        "resolve": "解決",
+        "resolveAria": "{name} を解決",
+        "snooze": "{duration} 延期",
+        "snoozeAria": "{name} を {duration} 延期",
+        "expected": "想定内としてマーク",
+        "expectedAria": "{name} を想定内としてマーク",
+        "undo": "元に戻す",
+        "undoAria": "{name} の処理を元に戻す",
+        "confirm": "確定",
+        "cancel": "キャンセル",
+        "notePlaceholder": "なぜ想定内ですか？",
+        "noteRequired": "メモが必要です",
+        "saveFailed": "保存されませんでした · {message}",
+        "expiryLabel": "有効期限"
+      },
+      "showDischarged": "処理済みを表示",
+      "hideDischarged": "処理済みを隠す",
+      "dischargedEmpty": "処理済みの項目はありません"
     },
     "liveBoard": {
       "title": "現在実行中",

@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "یہ جانچا جا رہا ہے کہ آیا یہ رن دوبارہ شروع کیا جا سکتا ہے…",
+    "availabilityFailed": "یہ طے نہیں کیا جا سکا کہ آیا یہ رن دوبارہ شروع کیا جا سکتا ہے۔",
+    "notResumable": "یہ رن دوبارہ شروع نہیں کیا جا سکتا۔",
+    "continueDescription": "محفوظ شدہ منصوبے کو وہیں سے دوبارہ چلاتا ہے جہاں یہ رکا تھا — کوئی نئی ہدایت نہیں، منتخب کرنے کے لیے کوئی برانچ نہیں۔",
+    "continueSubmit": "جاری رکھیں",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "آخری",
       "never": "کبھی نہیں چلا",
       "paused": "موقوف",
-      "notScheduled": "شیڈول نہیں"
+      "notScheduled": "شیڈول نہیں",
+      "health": {
+        "healthy": "صحت مند",
+        "failing": "ناکام",
+        "overdue": "تاخیر شدہ",
+        "neverFired": "کبھی نہیں چلی",
+        "noEvidence": "کوئی ثبوت نہیں",
+        "lastOutcome": "آخری بار {outcome} {delta} پہلے",
+        "neverFiredSince": "{date} سے کبھی نہیں چلی",
+        "noEvidenceHint": "کوئی عملدرآمد ریکارڈ نہیں"
+      }
     },
     "run": {
       "elapsed": "⁨{delta}⁩ گزر چکا",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "{count, plural, one {+# مزید — History میں سب دیکھیں →} other {+# مزید — History میں سب دیکھیں →}}",
       "digestLatest": "تازہ ترین: ⁨{name}⁩ · ⁨{age}⁩ پہلے",
-      "streakCount": "{count, plural, one {#× ناکام} other {#× ناکام}}"
+      "streakCount": "{count, plural, one {#× ناکام} other {#× ناکام}}",
+      "disposition": {
+        "acknowledged": "تسلیم شدہ",
+        "resolved": "حل شدہ",
+        "expected": "متوقع",
+        "snoozed": "ملتوی"
+      },
+      "action": {
+        "acknowledge": "تسلیم کریں",
+        "acknowledgeAria": "{name} تسلیم کریں",
+        "resolve": "حل کریں",
+        "resolveAria": "{name} حل کریں",
+        "snooze": "{duration} کے لیے ملتوی کریں",
+        "snoozeAria": "{name} کو {duration} کے لیے ملتوی کریں",
+        "expected": "متوقع کے طور پر نشان زد کریں",
+        "expectedAria": "{name} کو متوقع کے طور پر نشان زد کریں",
+        "undo": "کالعدم کریں",
+        "undoAria": "{name} کی نمٹائی کو کالعدم کریں",
+        "confirm": "تصدیق کریں",
+        "cancel": "منسوخ کریں",
+        "notePlaceholder": "یہ متوقع کیوں ہے؟",
+        "noteRequired": "ایک نوٹ درکار ہے",
+        "saveFailed": "محفوظ نہیں ہوا · {message}",
+        "expiryLabel": "میعاد ختم"
+      },
+      "showDischarged": "نمٹائے گئے دکھائیں",
+      "hideDischarged": "نمٹائے گئے چھپائیں",
+      "dischargedEmpty": "کوئی نمٹایا گیا آئٹم نہیں"
     },
     "liveBoard": {
       "title": "ابھی چل رہا ہے",

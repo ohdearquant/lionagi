@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Проверяется, можно ли возобновить этот запуск…",
+    "availabilityFailed": "Не удалось определить, можно ли возобновить этот запуск.",
+    "notResumable": "Этот запуск нельзя возобновить.",
+    "continueDescription": "Повторяет сохранённый план с места остановки — без новой инструкции, без выбора ветки.",
+    "continueSubmit": "Продолжить",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "последний",
       "never": "никогда не запускалось",
       "paused": "Приостановлено",
-      "notScheduled": "Не запланировано"
+      "notScheduled": "Не запланировано",
+      "health": {
+        "healthy": "Исправно",
+        "failing": "Сбой",
+        "overdue": "Просрочено",
+        "neverFired": "Никогда не запускался",
+        "noEvidence": "Нет данных",
+        "lastOutcome": "последний раз {outcome} {delta} назад",
+        "neverFiredSince": "никогда не запускался с {date}",
+        "noEvidenceHint": "выполнение не зафиксировано"
+      }
     },
     "run": {
       "elapsed": "прошло {delta}",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "+{count, plural, one {# еще — показать все в истории →} few {# еще — показать все в истории →} many {# еще — показать все в истории →} other {# еще — показать все в истории →}}",
       "digestLatest": "последнее: {name} · {age} назад",
-      "streakCount": "{count, plural, one {# сбой} few {# сбоя} many {# сбоев} other {# сбоя}} подряд"
+      "streakCount": "{count, plural, one {# сбой} few {# сбоя} many {# сбоев} other {# сбоя}} подряд",
+      "disposition": {
+        "acknowledged": "подтверждено",
+        "resolved": "решено",
+        "expected": "ожидаемо",
+        "snoozed": "отложено"
+      },
+      "action": {
+        "acknowledge": "Подтвердить",
+        "acknowledgeAria": "Подтвердить {name}",
+        "resolve": "Решить",
+        "resolveAria": "Решить {name}",
+        "snooze": "Отложить на {duration}",
+        "snoozeAria": "Отложить {name} на {duration}",
+        "expected": "Отметить как ожидаемое",
+        "expectedAria": "Отметить {name} как ожидаемое",
+        "undo": "Отменить",
+        "undoAria": "Отменить закрытие {name}",
+        "confirm": "Подтвердить",
+        "cancel": "Отмена",
+        "notePlaceholder": "Почему это ожидаемо?",
+        "noteRequired": "Требуется заметка",
+        "saveFailed": "Не сохранено · {message}",
+        "expiryLabel": "Истекает через"
+      },
+      "showDischarged": "Показать закрытые",
+      "hideDischarged": "Скрыть закрытые",
+      "dischargedEmpty": "Нет закрытых элементов"
     },
     "liveBoard": {
       "title": "Выполняется сейчас",

@@ -20,6 +20,13 @@ from lionagi.state.engine import mask_credentials
 from ..registry import studio_route
 from ._path_safety import validate_name_component
 from .agents import _is_protected_system
+from .redaction import (
+    RedactedPayloadError,
+    abbreviate_path,
+    demo_mode_enabled,
+    redact_agent_markdown,
+    reject_if_redacted_payload,
+)
 
 _log = logging.getLogger("lionagi.studio")
 
@@ -165,6 +172,16 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
 
     result = await anyio.to_thread.run_sync(partial(_scan_disk, kind))
 
+    # Same policy get_definition() applies to a single record: while demo mode
+    # is on, an agent's on-disk location is abbreviated to a bare filename in
+    # every response, not just the one reached by fetching it individually.
+    if demo_mode_enabled():
+        for entry in result:
+            if entry["kind"] != "agent":
+                continue
+            entry["path"] = abbreviate_path(entry["path"])
+            entry["disk_path"] = abbreviate_path(entry["disk_path"])
+
     if result:
         from lionagi.state.db import StateDB
 
@@ -211,6 +228,12 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
         return None
 
     content = await anyio.to_thread.run_sync(disk_file.read_text)
+    path = _relative_path(disk_file)
+
+    redact = kind == "agent" and demo_mode_enabled()
+    if redact:
+        content = redact_agent_markdown(content, redact=True)
+        path = abbreviate_path(path)
 
     # The disk half is current and correct whatever the store is, so it is
     # answered either way. The history half is null rather than empty when the
@@ -222,7 +245,7 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
         return {
             "kind": kind,
             "name": name,
-            "path": _relative_path(disk_file),
+            "path": path,
             "content": content,
             "version": None,
             "versions": None,
@@ -232,12 +255,36 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
     return {
         "kind": kind,
         "name": name,
-        "path": _relative_path(disk_file),
+        "path": path,
         "content": content,
         "version": versions[0]["version"] if versions else 0,
         "versions": versions,
         "history_available": True,
     }
+
+
+async def _read_version_row(kind: str, name: str, version: int) -> dict[str, Any] | None:
+    """Raw historical version row from the store, with no redaction applied.
+
+    Internal use only: :func:`get_version` (the external, response-facing
+    read) redacts what this returns before handing it to a caller.
+    :func:`rollback_definition` reads through this directly instead, because
+    a rollback has to write the real content back -- consuming already-
+    redacted content would persist the placeholder text as the new version.
+    """
+    from lionagi.state.db import StateDB
+
+    try:
+        async with StateDB() as db:
+            return await db.get_definition(kind, name, version=version)
+    except Exception as exc:  # noqa: BLE001 — any unreadable store is the same answer
+        _log.warning(
+            "definition version is unreadable for %s/%s: %s",
+            kind,
+            name,
+            mask_credentials(repr(exc)),
+        )
+        raise HistoryUnavailableError(mask_credentials(str(exc))) from exc
 
 
 async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | None:
@@ -253,28 +300,19 @@ async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | No
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
 
-    from lionagi.state.db import StateDB
-
-    try:
-        async with StateDB() as db:
-            row = await db.get_definition(kind, name, version=version)
-    except Exception as exc:  # noqa: BLE001 — any unreadable store is the same answer
-        _log.warning(
-            "definition version is unreadable for %s/%s: %s",
-            kind,
-            name,
-            mask_credentials(repr(exc)),
-        )
-        raise HistoryUnavailableError(mask_credentials(str(exc))) from exc
-
+    row = await _read_version_row(kind, name, version)
     if not row:
         return None
+
+    content = row["content"]
+    if kind == "agent" and demo_mode_enabled():
+        content = redact_agent_markdown(content, redact=True)
 
     return {
         "kind": kind,
         "name": name,
         "version": row["version"],
-        "content": row["content"],
+        "content": content,
         "created_at": row["created_at"],
         "message": row["message"],
     }
@@ -295,6 +333,16 @@ async def save_definition(
     base = KIND_DIRS.get(kind)
     if not base:
         raise ValueError(f"Unknown kind: {kind}")
+
+    # The other write path onto agent files (PUT /agents/{name}) carries the
+    # same guard -- see agents.py's update_agent(). Refusing here too closes
+    # the bypass: this route upserts blindly (ADR-0077), so without this check
+    # a redacted payload round-tripped through this route would overwrite the
+    # real file even though the PUT route refuses the identical content.
+    if kind == "agent" and demo_mode_enabled() and not content.strip():
+        raise RedactedPayloadError("Refusing to save: content is missing while demo mode is active")
+    if kind == "agent":
+        reject_if_redacted_payload(content)
 
     from lionagi.state.db import StateDB
 
@@ -345,11 +393,19 @@ async def save_definition(
 
 
 async def rollback_definition(kind: str, name: str, target_version: int) -> dict[str, Any] | None:
-    """Restore a previous version by reading it from DB and saving it as a new version."""
+    """Restore a previous version by reading it from DB and saving it as a new version.
+
+    Reads the target version through :func:`_read_version_row`, not
+    :func:`get_version` -- the latter redacts agent content while demo mode is
+    on, and a rollback that saved that redacted text would persist the
+    placeholder as the new version instead of restoring the real one.
+    Redaction applies to what a response shows a caller, never to what a
+    write operation submits internally.
+    """
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
 
-    old = await get_version(kind, name, target_version)
+    old = await _read_version_row(kind, name, target_version)
     if not old:
         return None
 
@@ -403,7 +459,11 @@ async def snapshot_current(kind: str | None = None) -> int:
         content = await anyio.to_thread.run_sync(disk_path.read_text)
 
         if d["has_versions"]:
-            latest = await get_version(d["kind"], d["name"], d["version"])
+            # Compare against the raw stored version, not get_version()'s
+            # response-facing (possibly redacted) content -- otherwise an
+            # unchanged agent file in demo mode never matches its own
+            # redacted-placeholder comparison and gets re-snapshotted every call.
+            latest = await _read_version_row(d["kind"], d["name"], d["version"])
             if latest and latest["content"] == content:
                 continue
 
@@ -513,7 +573,7 @@ async def save_definition_route(kind: str, name: str, body: SaveBody) -> dict[st
     # service layer; catch it and return 422 instead of propagating a 500.
     try:
         return await save_definition(kind, name, body.content, body.message)
-    except PermissionError as e:
+    except (PermissionError, RedactedPayloadError) as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e

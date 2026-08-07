@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "এই রানটি পুনরায় শুরু করা যায় কিনা তা যাচাই করা হচ্ছে…",
+    "availabilityFailed": "এই রানটি পুনরায় শুরু করা যায় কিনা তা নির্ধারণ করা যায়নি।",
+    "notResumable": "এই রানটি পুনরায় শুরু করা যায় না।",
+    "continueDescription": "যেখানে থেমেছিল সেখান থেকে সংরক্ষিত পরিকল্পনা পুনরায় চালায় — নতুন নির্দেশ নেই, বেছে নেওয়ার জন্য শাখা নেই।",
+    "continueSubmit": "চালিয়ে যান",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "শেষ",
       "never": "কখনও রান হয়নি",
       "paused": "বিরতিতে",
-      "notScheduled": "নির্ধারিত নয়"
+      "notScheduled": "নির্ধারিত নয়",
+      "health": {
+        "healthy": "সুস্থ",
+        "failing": "ব্যর্থ",
+        "overdue": "বিলম্বিত",
+        "neverFired": "কখনো চলেনি",
+        "noEvidence": "কোনো প্রমাণ নেই",
+        "lastOutcome": "সর্বশেষ {outcome} {delta} আগে",
+        "neverFiredSince": "{date} থেকে কখনো চলেনি",
+        "noEvidenceHint": "কোনো এক্সিকিউশন রেকর্ড করা হয়নি"
+      }
     },
     "run": {
       "elapsed": "{delta} কেটেছে",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "{count, plural, one {+আরও #টি — হিস্ট্রিতে সব দেখুন →} other {+আরও #টি — হিস্ট্রিতে সব দেখুন →}}",
       "digestLatest": "সর্বশেষ: {name} · {age} আগে",
-      "streakCount": "{count, plural, one {#× ব্যর্থ} other {#× ব্যর্থ}}"
+      "streakCount": "{count, plural, one {#× ব্যর্থ} other {#× ব্যর্থ}}",
+      "disposition": {
+        "acknowledged": "স্বীকৃত",
+        "resolved": "সমাধান হয়েছে",
+        "expected": "প্রত্যাশিত",
+        "snoozed": "স্থগিত"
+      },
+      "action": {
+        "acknowledge": "স্বীকার করুন",
+        "acknowledgeAria": "{name} স্বীকার করুন",
+        "resolve": "সমাধান করুন",
+        "resolveAria": "{name} সমাধান করুন",
+        "snooze": "{duration} স্থগিত করুন",
+        "snoozeAria": "{name} কে {duration} এর জন্য স্থগিত করুন",
+        "expected": "প্রত্যাশিত",
+        "expectedAria": "{name} কে প্রত্যাশিত হিসেবে চিহ্নিত করুন",
+        "undo": "পূর্বাবস্থায় ফেরান",
+        "undoAria": "{name} এর নিষ্পত্তি পূর্বাবস্থায় ফেরান",
+        "confirm": "নিশ্চিত করুন",
+        "cancel": "বাতিল করুন",
+        "notePlaceholder": "এটি কেন প্রত্যাশিত?",
+        "noteRequired": "একটি নোট প্রয়োজন",
+        "saveFailed": "সংরক্ষিত হয়নি · {message}",
+        "expiryLabel": "মেয়াদ শেষ"
+      },
+      "showDischarged": "নিষ্পত্তি হওয়া দেখান",
+      "hideDischarged": "নিষ্পত্তি হওয়া লুকান",
+      "dischargedEmpty": "কোনো নিষ্পত্তি হওয়া আইটেম নেই"
     },
     "liveBoard": {
       "title": "এখন রানিং",

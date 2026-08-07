@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Bu çalıştırmanın devam ettirilip ettirilemeyeceği kontrol ediliyor…",
+    "availabilityFailed": "Bu çalıştırmanın devam ettirilip ettirilemeyeceği belirlenemedi.",
+    "notResumable": "Bu çalıştırma devam ettirilemez.",
+    "continueDescription": "Kaydedilmiş planı kaldığı yerden yeniden oynatır — yeni talimat yok, seçilecek dal yok.",
+    "continueSubmit": "Devam et",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "son",
       "never": "hiç çalışmadı",
       "paused": "Duraklatıldı",
-      "notScheduled": "Zamanlanmadı"
+      "notScheduled": "Zamanlanmadı",
+      "health": {
+        "healthy": "Sağlıklı",
+        "failing": "Başarısız",
+        "overdue": "Gecikmiş",
+        "neverFired": "Hiç çalışmadı",
+        "noEvidence": "Kanıt yok",
+        "lastOutcome": "son {outcome} {delta} önce",
+        "neverFiredSince": "{date} tarihinden beri hiç çalışmadı",
+        "noEvidenceHint": "kaydedilmiş çalıştırma yok"
+      }
     },
     "run": {
       "elapsed": "{delta} geçti",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "{count, plural, one {+# daha — tümünü geçmişte gör →} other {+# daha — tümünü geçmişte gör →}}",
       "digestLatest": "en son: {name} · {age} önce",
-      "streakCount": "{count, plural, one {#× başarısız} other {#× başarısız}}"
+      "streakCount": "{count, plural, one {#× başarısız} other {#× başarısız}}",
+      "disposition": {
+        "acknowledged": "onaylandı",
+        "resolved": "çözüldü",
+        "expected": "beklenen",
+        "snoozed": "ertelendi"
+      },
+      "action": {
+        "acknowledge": "Onayla",
+        "acknowledgeAria": "{name} öğesini onayla",
+        "resolve": "Çöz",
+        "resolveAria": "{name} öğesini çöz",
+        "snooze": "{duration} ertele",
+        "snoozeAria": "{name} öğesini {duration} ertele",
+        "expected": "Beklenen olarak işaretle",
+        "expectedAria": "{name} öğesini beklenen olarak işaretle",
+        "undo": "Geri al",
+        "undoAria": "{name} öğesinin kapatılmasını geri al",
+        "confirm": "Onayla",
+        "cancel": "İptal",
+        "notePlaceholder": "Bu neden bekleniyor?",
+        "noteRequired": "Not gerekli",
+        "saveFailed": "Kaydedilmedi · {message}",
+        "expiryLabel": "Şu sürede sona erer"
+      },
+      "showDischarged": "Kapatılanları göster",
+      "hideDischarged": "Kapatılanları gizle",
+      "dischargedEmpty": "Kapatılmış öğe yok"
     },
     "liveBoard": {
       "title": "şu anda çalışıyor",

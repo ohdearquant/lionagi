@@ -1673,6 +1673,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       <ResumeRun
         key={session.id}
         runId={session.id}
+        invocationKind={session.invocation_kind ?? null}
         branches={session.branches}
         onResumed={handleResumed}
       />

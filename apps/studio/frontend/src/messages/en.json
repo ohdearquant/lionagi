@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Checking whether this run can be resumed…",
+    "availabilityFailed": "Could not determine whether this run can be resumed.",
+    "notResumable": "This run cannot be resumed.",
+    "continueDescription": "Replays the saved plan from where it stopped — no new instruction, no branch to pick.",
+    "continueSubmit": "Continue",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "last",
       "never": "never run",
       "paused": "Paused",
-      "notScheduled": "Not scheduled"
+      "notScheduled": "Not scheduled",
+      "health": {
+        "healthy": "Healthy",
+        "failing": "Failing",
+        "overdue": "Overdue",
+        "neverFired": "Never fired",
+        "noEvidence": "No evidence",
+        "lastOutcome": "last {outcome} {delta} ago",
+        "neverFiredSince": "never fired since {date}",
+        "noEvidenceHint": "no execution recorded"
+      }
     },
     "run": {
       "elapsed": "{delta} elapsed",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "+{count} more — view all in History →",
       "digestLatest": "latest: {name} · {age} ago",
-      "streakCount": "{count}× failed"
+      "streakCount": "{count}× failed",
+      "disposition": {
+        "acknowledged": "acknowledged",
+        "resolved": "resolved",
+        "expected": "expected",
+        "snoozed": "snoozed"
+      },
+      "action": {
+        "acknowledge": "Acknowledge",
+        "acknowledgeAria": "Acknowledge {name}",
+        "resolve": "Resolve",
+        "resolveAria": "Resolve {name}",
+        "snooze": "Snooze {duration}",
+        "snoozeAria": "Snooze {name} for {duration}",
+        "expected": "Expected",
+        "expectedAria": "Mark {name} as expected",
+        "undo": "Undo",
+        "undoAria": "Undo discharge of {name}",
+        "confirm": "Confirm",
+        "cancel": "Cancel",
+        "notePlaceholder": "Why is this expected?",
+        "noteRequired": "A note is required",
+        "saveFailed": "Not saved · {message}",
+        "expiryLabel": "Expires in"
+      },
+      "showDischarged": "Show discharged",
+      "hideDischarged": "Hide discharged",
+      "dischargedEmpty": "No discharged items"
     },
     "liveBoard": {
       "title": "Running now",

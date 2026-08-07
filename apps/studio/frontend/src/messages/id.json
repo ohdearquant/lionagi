@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Memeriksa apakah proses ini dapat dilanjutkan…",
+    "availabilityFailed": "Tidak dapat menentukan apakah proses ini dapat dilanjutkan.",
+    "notResumable": "Proses ini tidak dapat dilanjutkan.",
+    "continueDescription": "Memutar ulang rencana yang tersimpan dari titik terakhir — tanpa instruksi baru, tanpa cabang untuk dipilih.",
+    "continueSubmit": "Lanjutkan",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "terakhir",
       "never": "tidak pernah dijalankan",
       "paused": "Dijeda",
-      "notScheduled": "Tidak dijadwalkan"
+      "notScheduled": "Tidak dijadwalkan",
+      "health": {
+        "healthy": "Sehat",
+        "failing": "Gagal",
+        "overdue": "Terlambat",
+        "neverFired": "Belum pernah berjalan",
+        "noEvidence": "Tidak ada bukti",
+        "lastOutcome": "terakhir {outcome} {delta} lalu",
+        "neverFiredSince": "belum pernah berjalan sejak {date}",
+        "noEvidenceHint": "tidak ada eksekusi tercatat"
+      }
     },
     "run": {
       "elapsed": "{delta} berlalu",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "+{count, plural, other {# lagi}} — lihat semua di Riwayat →",
       "digestLatest": "terbaru: {name} · {age} lalu",
-      "streakCount": "{count, plural, other {#× gagal}}"
+      "streakCount": "{count, plural, other {#× gagal}}",
+      "disposition": {
+        "acknowledged": "diketahui",
+        "resolved": "terselesaikan",
+        "expected": "diharapkan",
+        "snoozed": "ditunda"
+      },
+      "action": {
+        "acknowledge": "Ketahui",
+        "acknowledgeAria": "Ketahui {name}",
+        "resolve": "Selesaikan",
+        "resolveAria": "Selesaikan {name}",
+        "snooze": "Tunda {duration}",
+        "snoozeAria": "Tunda {name} selama {duration}",
+        "expected": "Diharapkan",
+        "expectedAria": "Tandai {name} sebagai diharapkan",
+        "undo": "Urungkan",
+        "undoAria": "Urungkan penyelesaian {name}",
+        "confirm": "Konfirmasi",
+        "cancel": "Batal",
+        "notePlaceholder": "Mengapa ini diharapkan?",
+        "noteRequired": "Catatan wajib diisi",
+        "saveFailed": "Tidak tersimpan · {message}",
+        "expiryLabel": "Kedaluwarsa dalam"
+      },
+      "showDischarged": "Tampilkan yang terselesaikan",
+      "hideDischarged": "Sembunyikan yang terselesaikan",
+      "dischargedEmpty": "Tidak ada item yang terselesaikan"
     },
     "liveBoard": {
       "title": "Sedang berjalan",

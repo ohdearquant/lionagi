@@ -126,9 +126,10 @@ DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 # whenever a migration changes the shape a reader would see -- a new table, a
 # rebuilt CHECK constraint, a column whose meaning changed. Version "1" is the
 # original shape, before the migrations now applied on open existed.
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 _DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
+_ATTENTION_DISPOSITIONS_BACKFILL_KEY = "migration.attention_dispositions_backfill"
 
 
 class SchemaTooNewError(RuntimeError):
@@ -220,6 +221,13 @@ def state_db_known_absent() -> bool:
 # resolved) do not; admission paths that need in-flight rows opt in
 # explicitly with ("running", *TERMINAL_RUN_STATUSES).
 TERMINAL_RUN_STATUSES: tuple[str, ...] = ("completed", "failed", "cancelled", "timed_out")
+
+# Lifecycle states that count as "a run actually executed", for health/evidence
+# reads that must not mistake a pending row for proof anything happened.
+# 'running' is included even though it isn't terminal -- it has started.
+# 'queued', 'waiting_dependency' and 'retry_wait' (ADR-0071's durable queue)
+# are pending, not evidence, exactly like 'skipped' already was.
+EXECUTED_RUN_STATUSES: tuple[str, ...] = ("running", *TERMINAL_RUN_STATUSES)
 
 _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin", "system"})
 
@@ -966,6 +974,12 @@ class StateDB:
         async with self._engine.begin() as conn:
             await self._refuse_newer_schema(conn)
             await conn.run_sync(metadata.create_all)
+            # Before _reconcile_indexes: it (re)creates the unique index on
+            # attention_disposition_history.sequence, which would fail
+            # against the ALTER TABLE ... DEFAULT 0 placeholder every
+            # pre-existing row shares until this backfill gives each one a
+            # real, distinct value.
+            await self._backfill_attention_dispositions_once(conn)
             await self._reconcile_indexes(conn)
             await self._backfill_dispatched_at_once(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
@@ -1094,6 +1108,110 @@ class StateDB:
                 "AND schedule_id IS NOT NULL"
             )
         )
+
+    async def _backfill_attention_dispositions_once(self, conn) -> None:
+        """Backfill rows written before ``attention_dispositions.revision``
+        and ``attention_disposition_history.sequence`` existed, exactly once."""
+        claimed = await conn.execute(
+            text(
+                "INSERT INTO schema_meta (key, value) VALUES (:key, '1') "
+                "ON CONFLICT (key) DO NOTHING"
+            ),
+            {"key": _ATTENTION_DISPOSITIONS_BACKFILL_KEY},
+        )
+        if claimed.rowcount:
+            await self._backfill_attention_dispositions(conn)
+
+    async def _backfill_attention_dispositions(self, conn) -> None:
+        """Give every pre-existing attention-disposition row the shape the
+        fencing/ordering added after it now assumes.
+
+        ``attention_dispositions`` and ``attention_disposition_history``
+        shipped in an earlier release that never bumped ``SCHEMA_VERSION``;
+        a later release added ``revision``, ``sequence``, and the
+        ``attention_disposition_revisions`` ledger on top without a
+        migration. ``metadata.create_all()`` only creates *missing* tables,
+        so a store that already had the first two tables gained the new
+        columns' ``ALTER TABLE ... DEFAULT`` placeholder (1 and 0) but never
+        their real values -- this runs once (via the ``schema_meta`` claim
+        in ``_backfill_attention_dispositions_once``) to fill them in:
+
+        1. ``sequence`` is assigned in ``(created_at, id)`` order -- the same
+           tie-break ``_next_history_sequence`` would have used had the
+           column existed when each row was written -- so history reads
+           that already depend on ``ORDER BY sequence`` see rows in their
+           original append order instead of raising on the missing column.
+        2. ``attention_dispositions.revision`` is raised from the placeholder
+           1 to the item_id's true operation count (its row count in
+           ``attention_disposition_history``), so a client that already
+           echoed back a revision from before this migration ran is not
+           handed a lower one that reads as a rollback.
+        3. ``attention_disposition_revisions`` is seeded for every
+           currently-active item_id at that same count, so the next PUT/
+           DELETE continues the ledger from there instead of restarting it
+           at 0 and silently disagreeing with the row's own (just-backfilled)
+           revision.
+        4. ``attention_disposition_revisions`` is also seeded for item_ids
+           that exist only in history -- acknowledged (or otherwise set)
+           and then undone (DELETE) before this migration ran -- whose
+           latest recorded transition is delete-shaped (``new_state ==
+           'open'``). Without this, the fence has no row to check: a PUT
+           that predates the pre-migration DELETE and is replayed after the
+           upgrade would recreate the disposition instead of being rejected.
+        """
+        hist_rows = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT id, item_id, new_state FROM attention_disposition_history "
+                        "ORDER BY created_at ASC, id ASC"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        counts: dict[str, int] = {}
+        latest_state: dict[str, str] = {}
+        for offset, row in enumerate(hist_rows, start=1):
+            counts[row["item_id"]] = counts.get(row["item_id"], 0) + 1
+            latest_state[row["item_id"]] = row["new_state"]
+            await conn.execute(
+                text("UPDATE attention_disposition_history SET sequence = :seq WHERE id = :id"),
+                {"seq": offset, "id": row["id"]},
+            )
+
+        active_rows = (
+            (await conn.execute(text("SELECT item_id FROM attention_dispositions")))
+            .mappings()
+            .all()
+        )
+        for row in active_rows:
+            item_id = row["item_id"]
+            revision = counts.get(item_id) or 1
+            await conn.execute(
+                text("UPDATE attention_dispositions SET revision = :rev WHERE item_id = :id"),
+                {"rev": revision, "id": item_id},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO attention_disposition_revisions (item_id, revision) "
+                    "VALUES (:id, :rev) ON CONFLICT (item_id) DO NOTHING"
+                ),
+                {"id": item_id, "rev": revision},
+            )
+
+        active_ids = {row["item_id"] for row in active_rows}
+        for item_id, state in latest_state.items():
+            if item_id in active_ids or state != "open":
+                continue
+            await conn.execute(
+                text(
+                    "INSERT INTO attention_disposition_revisions (item_id, revision) "
+                    "VALUES (:id, :rev) ON CONFLICT (item_id) DO NOTHING"
+                ),
+                {"id": item_id, "rev": counts[item_id]},
+            )
 
     async def _rebuild_check_constraint(self, table: str, already_rebuilt, rebuild) -> None:
         """Run a legacy CHECK-constraint table rebuild, tolerant of a concurrent winner.
@@ -4026,6 +4144,65 @@ class StateDB:
                 if status == "failed":
                     streak += 1
             result[sid] = (streak, last_status)
+        return result
+
+    async def schedule_health_evidence(self, schedule_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Batched read of the run evidence a health verdict needs.
+
+        Two independent top-1-per-schedule reads, each filtering to the rows
+        that qualify *before* ranking them -- ranking an unfiltered window
+        and then filtering inside it (the previous shape) can push a real
+        execution out of the window entirely once enough non-qualifying rows
+        pile up in front of it, which silently manufactures "never
+        happened" out of "didn't fit in the slice".
+
+        A 'recorded' row is any top-level (chain_depth=0) schedule_runs row,
+        in any status -- proof the schedule's cursor has moved at least
+        once, whether or not anything actually ran. An 'executed' row is
+        further restricted to :data:`EXECUTED_RUN_STATUSES` (started or
+        terminal) -- 'skipped', 'queued', 'waiting_dependency' and
+        'retry_wait' move the cursor, or sit waiting to, without a run
+        happening, so none of them may stand in for real evidence.
+        """
+        if not schedule_ids:
+            return {}
+        id_placeholders = ", ".join(f":id{i}" for i in range(len(schedule_ids)))
+        params: dict[str, Any] = {f"id{i}": sid for i, sid in enumerate(schedule_ids)}
+
+        def _latest_per_schedule(extra_where: str) -> str:
+            return (
+                "SELECT schedule_id, status, fired_at FROM ("  # noqa: S608
+                "  SELECT schedule_id, status, fired_at,"
+                "         ROW_NUMBER() OVER ("
+                "           PARTITION BY schedule_id ORDER BY fired_at DESC, id DESC"
+                "         ) AS rn"
+                f"  FROM schedule_runs WHERE schedule_id IN ({id_placeholders})"
+                f"    AND chain_depth = 0{extra_where}"
+                ") ranked WHERE rn = 1"
+            )
+
+        executed_placeholders = ", ".join(f":exec{i}" for i in range(len(EXECUTED_RUN_STATUSES)))
+        executed_params = dict(params)
+        executed_params.update({f"exec{i}": s for i, s in enumerate(EXECUTED_RUN_STATUSES)})
+
+        recorded_query = _latest_per_schedule("")
+        executed_query = _latest_per_schedule(f" AND status IN ({executed_placeholders})")
+
+        async with self._read() as conn:
+            recorded_rows = (await conn.execute(text(recorded_query), params)).mappings().all()
+            executed_rows = (
+                (await conn.execute(text(executed_query), executed_params)).mappings().all()
+            )
+        last_recorded = {r["schedule_id"]: r["fired_at"] for r in recorded_rows}
+        last_executed = {r["schedule_id"]: r for r in executed_rows}
+        result: dict[str, dict[str, Any]] = {}
+        for sid in schedule_ids:
+            executed = last_executed.get(sid)
+            result[sid] = {
+                "last_recorded_run_at": last_recorded.get(sid),
+                "last_executed_status": executed["status"] if executed else None,
+                "last_executed_run_at": executed["fired_at"] if executed else None,
+            }
         return result
 
     async def sum_schedule_spend(self, schedule_id: str) -> dict[str, Any]:

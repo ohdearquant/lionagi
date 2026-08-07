@@ -91,6 +91,7 @@ const SAMPLE_VALUES = {
   checkpointed: 3,
   color: "amber",
   count: 2,
+  date: "Aug 6, 2026",
   day: "Monday",
   delta: "3m",
   detail: "boom",
@@ -110,6 +111,7 @@ const SAMPLE_VALUES = {
   minute: "05",
   n: 5,
   name: "worker",
+  outcome: "completed",
   plural: "s",
   position: 1,
   rate: "1.2",
@@ -199,8 +201,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 874 leaves", () => {
-    expect(EN_LEAVES.size).toBe(874);
+  it("en.json has 918 leaves", () => {
+    expect(EN_LEAVES.size).toBe(918);
   });
 
   it.each(LOCALES.map((l) => l.code))(

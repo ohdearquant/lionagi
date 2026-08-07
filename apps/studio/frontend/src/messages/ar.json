@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "جارٍ التحقق مما إذا كان يمكن استئناف هذا التشغيل…",
+    "availabilityFailed": "تعذر تحديد ما إذا كان يمكن استئناف هذا التشغيل.",
+    "notResumable": "لا يمكن استئناف هذا التشغيل.",
+    "continueDescription": "يعيد تشغيل الخطة المحفوظة من حيث توقفت — بلا تعليمات جديدة وبلا فرع للاختيار.",
+    "continueSubmit": "متابعة",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "الأخير",
       "never": "لم يُشغّل قط",
       "paused": "متوقف مؤقتًا",
-      "notScheduled": "غير مجدول"
+      "notScheduled": "غير مجدول",
+      "health": {
+        "healthy": "سليم",
+        "failing": "فاشل",
+        "overdue": "متأخر",
+        "neverFired": "لم يعمل مطلقًا",
+        "noEvidence": "لا يوجد دليل",
+        "lastOutcome": "آخر {outcome} منذ {delta}",
+        "neverFiredSince": "لم يعمل مطلقًا منذ {date}",
+        "noEvidenceHint": "لا يوجد تنفيذ مسجل"
+      }
     },
     "run": {
       "elapsed": "انقضى {delta}",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "+{count, plural, zero {لا مزيد — عرض الكل في السجل ←} one {# آخر — عرض الكل في السجل ←} two {# آخران — عرض الكل في السجل ←} few {# أخرى — عرض الكل في السجل ←} many {# آخر — عرض الكل في السجل ←} other {# آخر — عرض الكل في السجل ←}}",
       "digestLatest": "الأحدث: {name} · منذ {age}",
-      "streakCount": "{count, plural, zero {لا إخفاقات} one {فشل مرة واحدة} two {فشل مرتين} few {فشل # مرات} many {فشل # مرة} other {فشل # مرة}}"
+      "streakCount": "{count, plural, zero {لا إخفاقات} one {فشل مرة واحدة} two {فشل مرتين} few {فشل # مرات} many {فشل # مرة} other {فشل # مرة}}",
+      "disposition": {
+        "acknowledged": "تم الإقرار",
+        "resolved": "تم الحل",
+        "expected": "متوقع",
+        "snoozed": "مؤجل"
+      },
+      "action": {
+        "acknowledge": "إقرار",
+        "acknowledgeAria": "إقرار {name}",
+        "resolve": "حل",
+        "resolveAria": "حل {name}",
+        "snooze": "تأجيل {duration}",
+        "snoozeAria": "تأجيل {name} لمدة {duration}",
+        "expected": "وضع علامة كمتوقع",
+        "expectedAria": "وضع علامة على {name} كمتوقع",
+        "undo": "تراجع",
+        "undoAria": "التراجع عن معالجة {name}",
+        "confirm": "تأكيد",
+        "cancel": "إلغاء",
+        "notePlaceholder": "لماذا هذا متوقع؟",
+        "noteRequired": "الملاحظة مطلوبة",
+        "saveFailed": "لم يتم الحفظ · {message}",
+        "expiryLabel": "تنتهي خلال"
+      },
+      "showDischarged": "إظهار العناصر المعالجة",
+      "hideDischarged": "إخفاء العناصر المعالجة",
+      "dischargedEmpty": "لا توجد عناصر معالجة"
     },
     "liveBoard": {
       "title": "قيد التشغيل الآن",

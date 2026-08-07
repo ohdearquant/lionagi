@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Vérification de la possibilité de reprendre cette exécution…",
+    "availabilityFailed": "Impossible de déterminer si cette exécution peut être reprise.",
+    "notResumable": "Cette exécution ne peut pas être reprise.",
+    "continueDescription": "Rejoue le plan enregistré là où il s'est arrêté — aucune nouvelle instruction, aucune branche à choisir.",
+    "continueSubmit": "Continuer",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "dernier",
       "never": "jamais exécuté",
       "paused": "En pause",
-      "notScheduled": "Non planifié"
+      "notScheduled": "Non planifié",
+      "health": {
+        "healthy": "En bonne santé",
+        "failing": "En échec",
+        "overdue": "En retard",
+        "neverFired": "Jamais exécutée",
+        "noEvidence": "Aucune preuve",
+        "lastOutcome": "dernière fois {outcome} il y a {delta}",
+        "neverFiredSince": "jamais exécutée depuis {date}",
+        "noEvidenceHint": "aucune exécution enregistrée"
+      }
     },
     "run": {
       "elapsed": "{delta} écoulé",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "+{count, plural, one {# autre} other {# autres}} — tout voir dans l’Historique →",
       "digestLatest": "dernier : {name} · il y a {age}",
-      "streakCount": "{count}× en échec"
+      "streakCount": "{count}× en échec",
+      "disposition": {
+        "acknowledged": "pris en compte",
+        "resolved": "résolu",
+        "expected": "attendu",
+        "snoozed": "reporté"
+      },
+      "action": {
+        "acknowledge": "Prendre en compte",
+        "acknowledgeAria": "Prendre en compte {name}",
+        "resolve": "Résoudre",
+        "resolveAria": "Résoudre {name}",
+        "snooze": "Reporter {duration}",
+        "snoozeAria": "Reporter {name} de {duration}",
+        "expected": "Attendu",
+        "expectedAria": "Marquer {name} comme attendu",
+        "undo": "Annuler",
+        "undoAria": "Annuler la clôture de {name}",
+        "confirm": "Confirmer",
+        "cancel": "Annuler",
+        "notePlaceholder": "Pourquoi est-ce attendu ?",
+        "noteRequired": "Une note est requise",
+        "saveFailed": "Non enregistré · {message}",
+        "expiryLabel": "Expire dans"
+      },
+      "showDischarged": "Afficher les éléments clôturés",
+      "hideDischarged": "Masquer les éléments clôturés",
+      "dischargedEmpty": "Aucun élément clôturé"
     },
     "liveBoard": {
       "title": "En cours maintenant",

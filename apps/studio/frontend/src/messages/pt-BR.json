@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Verificando se esta execução pode ser retomada…",
+    "availabilityFailed": "Não foi possível determinar se esta execução pode ser retomada.",
+    "notResumable": "Esta execução não pode ser retomada.",
+    "continueDescription": "Reproduz o plano salvo de onde parou — sem nova instrução, sem branch para escolher.",
+    "continueSubmit": "Continuar",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -552,7 +557,17 @@
       "last": "último",
       "never": "nunca executado",
       "paused": "Pausado",
-      "notScheduled": "Não agendado"
+      "notScheduled": "Não agendado",
+      "health": {
+        "healthy": "Saudável",
+        "failing": "Falhando",
+        "overdue": "Atrasada",
+        "neverFired": "Nunca executada",
+        "noEvidence": "Sem evidência",
+        "lastOutcome": "última vez {outcome} há {delta}",
+        "neverFiredSince": "nunca executada desde {date}",
+        "noEvidenceHint": "nenhuma execução registrada"
+      }
     },
     "run": {
       "elapsed": "{delta} decorridos",
@@ -804,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -827,7 +850,34 @@
       },
       "more": "+{count, plural, one {# a mais} other {# a mais}} — ver tudo em Histórico →",
       "digestLatest": "mais recente: {name} · há {age}",
-      "streakCount": "{count, plural, one {#× falhou} other {#× falharam}}"
+      "streakCount": "{count, plural, one {#× falhou} other {#× falharam}}",
+      "disposition": {
+        "acknowledged": "reconhecido",
+        "resolved": "resolvido",
+        "expected": "esperado",
+        "snoozed": "adiado"
+      },
+      "action": {
+        "acknowledge": "Reconhecer",
+        "acknowledgeAria": "Reconhecer {name}",
+        "resolve": "Resolver",
+        "resolveAria": "Resolver {name}",
+        "snooze": "Adiar {duration}",
+        "snoozeAria": "Adiar {name} por {duration}",
+        "expected": "Esperado",
+        "expectedAria": "Marcar {name} como esperado",
+        "undo": "Desfazer",
+        "undoAria": "Desfazer a baixa de {name}",
+        "confirm": "Confirmar",
+        "cancel": "Cancelar",
+        "notePlaceholder": "Por que isso é esperado?",
+        "noteRequired": "Uma nota é obrigatória",
+        "saveFailed": "Não salvo · {message}",
+        "expiryLabel": "Expira em"
+      },
+      "showDischarged": "Mostrar baixados",
+      "hideDischarged": "Ocultar baixados",
+      "dischargedEmpty": "Nenhum item baixado"
     },
     "liveBoard": {
       "title": "Em execução agora",

@@ -139,11 +139,13 @@ def _sync_mcp_json(servers: dict[str, dict[str, Any]]) -> None:
 # ---------------------------------------------------------------------------
 
 
-# Which fields belong to which transport. The shape check below reads a
-# config's stdio fields only when it has a command and its http fields only
-# when it has a url, so these are the sets a transport switch has to clear --
-# keep them in step with the two branches of _validate_shape. `timeout` and
-# `alwaysAllow` are deliberately in neither: they apply to both transports.
+# Which fields belong to which transport. `_merge_config` clears these -- the
+# ones the patch itself did not supply -- when a save declares the other
+# transport, so a stale command/args/env or url does not survive a switch.
+# `_validate_shape` checks `command`/`url` only for the transport that names
+# them, but `args`/`env` shape-check unconditionally regardless of transport.
+# `timeout` and `alwaysAllow` are deliberately in neither set: they apply to
+# both transports.
 _STDIO_ONLY_FIELDS = ("command", "args", "env")
 _HTTP_ONLY_FIELDS = ("url",)
 
@@ -170,17 +172,21 @@ def _validate_shape(name: str, config: dict[str, Any]) -> list[str]:
             "config must specify either 'command' (stdio transport) or 'url' (http transport)"
         )
 
-    if has_command:
-        if not isinstance(config.get("command"), str):
-            errors.append("'command' must be a string")
-        args = config.get("args", [])
-        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-            errors.append("'args' must be a list of strings")
-        env = config.get("env", {})
-        if not isinstance(env, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) for k, v in env.items()
-        ):
-            errors.append("'env' must be an object mapping string names to string values")
+    if has_command and not isinstance(config.get("command"), str):
+        errors.append("'command' must be a string")
+
+    # `args`/`env` are checked whenever either key is present in the config,
+    # not only for a stdio transport: a malformed value is malformed whether
+    # or not the selected transport happens to read it, and this validator
+    # is the only place that sees the config before it reaches disk.
+    args = config.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        errors.append("'args' must be a list of strings")
+    env = config.get("env", {})
+    if not isinstance(env, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+    ):
+        errors.append("'env' must be an object mapping string names to string values")
 
     if has_url:
         url = config.get("url")
@@ -311,7 +317,12 @@ def get_server(name: str) -> dict[str, Any] | None:
 
 
 def register_server(name: str, config: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
-    errors = _validate_shape(name, config)
+    # Registering is `update_server`'s merge onto an empty base rather than a
+    # second, separately-invented rule: a `None` env value means "key absent"
+    # here exactly as it does for an existing server, and `validate_config`
+    # already validates new names the same way (see its docstring).
+    merged = _merge_config({}, config)
+    errors = _validate_shape(name, merged)
     if errors:
         raise McpServerError("; ".join(errors))
 
@@ -322,7 +333,7 @@ def register_server(name: str, config: dict[str, Any], *, enabled: bool = True) 
 
         now = time.time()
         servers[name] = {
-            "config": config,
+            "config": merged,
             "enabled": enabled,
             "created_at": now,
             "updated_at": now,
@@ -340,41 +351,70 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
     not wipe the env block it never saw. ``env`` merges key-by-key; a `None`
     value for a key removes it (the client's explicit way to drop a secret
     without knowing its value). Any other field replaces wholesale when
-    present, and a `None`/empty value removes it.
+    present, and only an explicit `None` removes it -- a wrong-typed falsy
+    value (``""``, ``[]``) is *not* treated as "key absent": it is written
+    into the merged config as-is and left for ``_validate_shape`` to reject,
+    the same way a raw, unmerged config would. Laundering a malformed value
+    into "absent" here would make it validate by accident.
 
-    A transport switch drops every field belonging to the transport being
-    left, not just the one that names it. The shape check only requires
-    exactly one of ``command``/``url``, so an http entry that kept the old
-    ``args`` and ``env`` would still validate -- and the derived ``.mcp.json``
-    would then hand every reader a set of stdio arguments and secrets that
-    the chosen transport never uses.
+    ``args`` is the one exception to "`None` removes it": unlike ``timeout``
+    (where `None` means "no timeout", a value ``_validate_shape`` accepts),
+    the shape check has no such reading for ``args`` -- it must always be a
+    list, empty or not. Treating ``args: null`` as "key absent" would delete
+    a malformed value into a *valid* one (the default ``[]``) instead of
+    leaving it for the shape check to reject, so it is written through like
+    any other wrong-typed value; the typed empty list is the actual way to
+    clear it.
+
+    A transport switch drops every *leftover* field belonging to the
+    transport being left, not just the one that names it. The shape check
+    only requires exactly one of ``command``/``url``, so an http entry that
+    kept the old ``args`` and ``env`` would still validate -- and the derived
+    ``.mcp.json`` would then hand every reader a set of stdio arguments and
+    secrets that the chosen transport never uses. This only clears fields the
+    patch itself did not touch: a field the caller explicitly supplied in the
+    same patch (well-formed or not) is left for `_validate_shape` to judge on
+    its own merits instead of being silently discarded before validation
+    ever sees it -- otherwise a malformed ``env`` sent alongside a fresh
+    ``url`` would vanish rather than being rejected.
     """
     merged = dict(existing)
     for key in ("command", "args", "url", "timeout", "alwaysAllow"):
         if key not in patch:
             continue
         value = patch[key]
-        if value in (None, ""):
+        if value is None and key != "args":
             merged.pop(key, None)
         else:
             merged[key] = value
 
     if "env" in patch:
-        incoming_env = patch["env"] or {}
-        merged_env = dict(existing.get("env") or {})
-        for env_key, env_value in incoming_env.items():
-            if env_value is None:
-                merged_env.pop(env_key, None)
-            else:
-                merged_env[env_key] = env_value
-        merged["env"] = merged_env
+        incoming_env = patch["env"]
+        if incoming_env is None:
+            incoming_env = {}
+        if isinstance(incoming_env, dict):
+            merged_env = dict(existing.get("env") or {})
+            for env_key, env_value in incoming_env.items():
+                if env_value is None:
+                    merged_env.pop(env_key, None)
+                else:
+                    merged_env[env_key] = env_value
+            merged["env"] = merged_env
+        else:
+            # Not a mapping at all (e.g. a string, a list, or a number) --
+            # pass it through untouched so `_validate_shape`'s own env type
+            # check reports it as an ordinary shape error, instead of this
+            # merge crashing on `.items()` before validation ever runs.
+            merged["env"] = incoming_env
 
     if patch.get("url"):
         for key in _STDIO_ONLY_FIELDS:
-            merged.pop(key, None)
+            if key not in patch:
+                merged.pop(key, None)
     if patch.get("command"):
         for key in _HTTP_ONLY_FIELDS:
-            merged.pop(key, None)
+            if key not in patch:
+                merged.pop(key, None)
 
     return merged
 
@@ -478,11 +518,22 @@ async def check_server_connection(name: str) -> dict[str, Any] | None:
 async def validate_config(
     name: str, config: dict[str, Any], *, check_connection: bool = False
 ) -> dict[str, Any]:
-    """Validate a config before it is saved. Shape is always checked;
-    connection is only attempted when the caller opts in, and the response
-    says explicitly whether it was -- a shape check that silently claimed to
-    prove a server works would be worse than no check at all."""
-    errors = _validate_shape(name, config)
+    """Validate a config before it is saved. ``config`` is a patch, not
+    necessarily a complete config -- an edit can carry a `None` env value
+    that means "delete this key", which never stands alone as a usable
+    shape. ``update_server`` merges a patch onto the stored config before
+    validating it; this runs the same merge so validation checks what would
+    actually be persisted, not the raw patch. A server that does not exist
+    yet merges onto an empty config, which is exactly the shape a save
+    would produce for a first-time registration.
+
+    Shape is always checked; connection is only attempted when the caller
+    opts in, and the response says explicitly whether it was -- a shape
+    check that silently claimed to prove a server works would be worse than
+    no check at all."""
+    existing = (_load_registry().get(name) or {}).get("config") or {}
+    merged = _merge_config(existing, config)
+    errors = _validate_shape(name, merged)
     result: dict[str, Any] = {
         "ok": not errors,
         "errors": errors or None,
@@ -491,7 +542,7 @@ async def validate_config(
         "connection_error": None,
     }
     if not errors and check_connection:
-        outcome = await _attempt_connection(config)
+        outcome = await _attempt_connection(merged)
         result["connection_checked"] = True
         result["connection_ok"] = outcome["ok"]
         result["connection_error"] = outcome["error"]
