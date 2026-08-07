@@ -1095,8 +1095,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 )
                 return False
 
-            self._spawn_count += 1
-            self._spawned_ids.add(child.id)
+            if newly_added:
+                self._spawn_count += 1
+                self._spawned_ids.add(child.id)
 
         if newly_added:
             # Store edge info in metadata so on_progress callbacks can attach it

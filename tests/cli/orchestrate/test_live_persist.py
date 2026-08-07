@@ -3032,6 +3032,103 @@ async def test_execute_dag_cancelled_spawn_records_lost_operation_evidence(
     assert s["status_reason_code"] == "run.failed.exception"
 
 
+async def test_execute_dag_reinjected_initial_node_yields_one_lost_operation_entry(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """One level up from the executor-level regression: an on_op_complete
+    hook that re-injects the SAME already-cancelled initial node through the
+    public inject() API used to pollute spawned_ids with that node's own id
+    (_accept_node bumped the roster/counter even though the node was already
+    in the graph, not newly added). With that pollution, the lost node was
+    named twice -- once by the fixed-size planned-node check
+    (dag_state.node_ids, by plan index) and once by the spawned_ids check (by
+    id) -- since neither check excludes ids the other has already claimed.
+    Fixed at the source (_accept_node no longer counts a re-injected existing
+    node as a spawn), so only the planned-node check fires."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.operations.flow import flow as _real_flow
+    from lionagi.protocols.generic.event import EventStatus
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    async def spawner(**kw):
+        return "should not run"
+
+    env.session.register_operation("spawner", spawner)
+
+    builder = OperationGraphBuilder()
+    spawner_id = builder.add_operation("spawner", depends_on=[])
+    graph = builder.get_graph()
+    env.builder = builder
+    initial_op = next(iter(graph.internal_nodes.values()))
+    initial_op.execution.status = EventStatus.CANCELLED
+
+    assignments = [TaskAssignment(task="do it", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[spawner_id],
+        known_nodes={spawner_id},
+        deps_by_node={spawner_id: []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    executor_ref: dict = {}
+    injected_once = {"done": False}
+
+    def on_op_complete(node):
+        if injected_once["done"]:
+            return
+        injected_once["done"] = True
+        # Re-inject the SAME already-in-graph, already-cancelled initial
+        # node through the public inject() API.
+        executor_ref["executor"].inject(node, independent=True)
+
+    async def _run_dag_result():
+        # The real executor, not a hand-built dict -- proves the rollup
+        # against genuine ReactiveExecutor state, not just the reconciliation
+        # plumbing around it.
+        return await _real_flow(
+            env.session,
+            graph,
+            reactive=True,
+            executor_ref=executor_ref,
+            on_op_complete=on_op_complete,
+        )
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    lost_entries = [
+        e for e in (env._failed_operation_evidence or []) if e["kind"] == "lost_operation"
+    ]
+    assert len(lost_entries) == 1
+
+    await stop_live_persist(env, status="completed")
+
+
 async def test_execute_dag_run_level_cancellation_skips_reconciliation_entirely(
     temp_db_path: Path,
     tmp_path: Path,

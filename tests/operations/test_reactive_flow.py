@@ -399,6 +399,40 @@ def test_cycle_injection_rejected():
     assert set(dropped[0]) == {"reason", "assignee", "emitter_id", "op_id"}
 
 
+def test_reinjecting_existing_node_does_not_pollute_spawned_ids():
+    """Re-injecting a node that is already in the graph (e.g. a caller
+    re-submitting a cancelled initial op via the public inject() API) must
+    not read as a new spawn. ``_accept_node`` only adds the node to the
+    graph when it is not already present (``newly_added``), but used to bump
+    the spawn counter and add the node's id to ``_spawned_ids``
+    unconditionally -- landing an initial plan node's own id in the
+    spawned-node roster with no result/failed/skipped/escalated outcome to
+    show for it."""
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.protocols.graph.graph import Graph
+
+    session = _session_with_ops()
+    graph = Graph()
+    initial = create_operation("op", parameters={})
+    graph.add_node(initial)
+
+    executor = ReactiveExecutor(session, graph)
+    executor._running = True
+
+    class _DummyTG:
+        def start_soon(self, *a, **k):
+            pass
+
+    executor._tg = _DummyTG()
+
+    # `initial` is already a node in the graph -- inject() re-accepts it
+    # (returns True, same as a genuinely new spawn) but must not count or
+    # roster it as one.
+    assert executor.inject(initial, independent=True) is True
+    assert executor._spawn_count == 0
+    assert initial.id not in executor._spawned_ids
+
+
 def test_builder_error_recorded_as_dropped_spawn():
     """A node_builder exception is recorded with reason + error, not just logged."""
     from lionagi.operations.flow import ReactiveExecutor
