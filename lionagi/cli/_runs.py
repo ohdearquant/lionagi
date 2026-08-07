@@ -517,14 +517,26 @@ async def _teardown_common(
 
     all_msgs = await db.get_progression(session_prog_id)
     completion_evidence_msgs = list(all_msgs)
-    update_kwargs: dict[str, Any] = {"ended_at": time.time()}
+
+    # Fetched before this call's own write so started_at reflects session
+    # creation, not a value this same update is about to touch.
+    session_before_teardown = await db.get_session(session_id) or {}
+    ended_at = time.time()
+    update_kwargs: dict[str, Any] = {"ended_at": ended_at}
+    started_at = session_before_teardown.get("started_at")
+    if isinstance(started_at, int | float):
+        # The prerequisite for telling "never started" / "hung before first
+        # request" / "request sent, no response" apart on a terminal row --
+        # duration_ms was previously left NULL on every session regardless of
+        # outcome, which is loudest on a zero-turn timeout: the record could
+        # not even say how long nothing happened for.
+        update_kwargs["duration_ms"] = max(0.0, (ended_at - started_at) * 1000)
     if all_msgs:
         update_kwargs["first_msg_id"] = all_msgs[0]
         update_kwargs["last_msg_id"] = all_msgs[-1]
 
     if extras:
-        session = await db.get_session(session_id) or {}
-        existing_metadata = session.get("node_metadata") or {}
+        existing_metadata = session_before_teardown.get("node_metadata") or {}
         if isinstance(existing_metadata, str):
             try:
                 existing_metadata = json.loads(existing_metadata)
