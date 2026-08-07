@@ -2302,6 +2302,19 @@ class StateDB:
             adr="ADR-0012",
         )
         now = time.time()
+        # A row can be born terminal (e.g. `li state import` of a completed
+        # run) without ever passing through _transition() or the admin CAS —
+        # both of which derive duration_ms from started_at/ended_at. Derive
+        # it here too so a terminal insert is never the one path that skips
+        # ADR-0035's duration centralization.
+        duration_ms = session.get("duration_ms")
+        if (
+            duration_ms is None
+            and session.get("status") in SESSION_TERMINAL_STATUSES
+            and isinstance(session.get("started_at"), int | float)
+            and isinstance(session.get("ended_at"), int | float)
+        ):
+            duration_ms = max(0.0, (session["ended_at"] - session["started_at"]) * 1000)
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
@@ -2312,7 +2325,7 @@ class StateDB:
                        artifact_verification_json, source_kind,
                        status, started_at, ended_at, last_message_at, invocation_id,
                        model, provider, effort, agent_hash,
-                       project, project_source)
+                       project, project_source, duration_ms)
                        VALUES (:id, :cc_session_id, :run_id, :created_at, :node_metadata, :name, :user,
                                :progression_id, :first_msg_id, :last_msg_id, :updated_at,
                                :playbook_name, :agent_name, :invocation_kind, :show_topic,
@@ -2320,7 +2333,7 @@ class StateDB:
                                :artifact_verification_json, :source_kind,
                                :status, :started_at, :ended_at, :last_message_at, :invocation_id,
                                :model, :provider, :effort, :agent_hash,
-                               :project, :project_source)
+                               :project, :project_source, :duration_ms)
                        ON CONFLICT (id) DO NOTHING"""
                 ).bindparams(
                     bindparam("node_metadata", type_=JSON),
@@ -2361,6 +2374,7 @@ class StateDB:
                     "agent_hash": session.get("agent_hash"),
                     "project": session.get("project"),
                     "project_source": session.get("project_source"),
+                    "duration_ms": duration_ms,
                 },
             )
             # Only increment session_count when INSERT actually created a row.

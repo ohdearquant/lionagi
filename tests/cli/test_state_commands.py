@@ -852,3 +852,50 @@ async def test_doctor_with_failed_new_status(temp_db_path: Path):
     async with StateDB() as db:
         s = await db.get_session(sid)
     assert s["status"] == "failed"
+
+
+# ── _import_one_run: a row born terminal must carry a real duration_ms ────────
+
+
+async def test_import_of_a_completed_run_derives_duration_ms(temp_db_path: Path, tmp_path: Path):
+    """`li state import` inserts terminal rows directly via create_session(), a
+    path that never reaches _transition() or the admin CAS. It must derive
+    duration_ms itself rather than leaving the column null."""
+    from lionagi.cli.state import _import_one_run
+
+    run_dir = tmp_path / "runs" / "run-duration"
+    run_dir.mkdir(parents=True)
+
+    async with StateDB() as db:
+        await _import_one_run(
+            db,
+            "run-duration",
+            run_dir,
+            {"kind": "agent", "status": "completed", "started_at": 100.0, "ended_at": 130.0},
+        )
+        session = await db.get_session("run-duration")
+
+    assert session["status"] == "completed"
+    assert session["started_at"] == 100.0
+    assert session["ended_at"] == 130.0
+    assert session["duration_ms"] == 30000.0
+
+
+async def test_import_of_a_running_run_leaves_duration_ms_null(temp_db_path: Path, tmp_path: Path):
+    """A non-terminal import must not have a duration computed for it."""
+    from lionagi.cli.state import _import_one_run
+
+    run_dir = tmp_path / "runs" / "run-open"
+    run_dir.mkdir(parents=True)
+
+    async with StateDB() as db:
+        await _import_one_run(
+            db,
+            "run-open",
+            run_dir,
+            {"kind": "agent", "status": "running", "started_at": 100.0},
+        )
+        session = await db.get_session("run-open")
+
+    assert session["status"] == "running"
+    assert session["duration_ms"] is None

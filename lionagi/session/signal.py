@@ -57,7 +57,7 @@ class RunStart(Signal):
 
 
 class RunEnd(Signal):
-    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt tokens in both provider conventions; cached_tokens/cache_write_tokens carry the billing dimensions that convention otherwise drops or folds in."""
+    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt tokens in both provider conventions; cached_tokens/cache_write_tokens carry the billing dimensions that convention otherwise drops or folds in. usage_valid is False when a provider usage report violated a token-count invariant (e.g. cached_tokens > prompt_tokens) — the numeric fields are still a safe clamped shape, but a billing consumer needing to distinguish a real full-cache hit from a provider bug must check this flag."""
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -66,6 +66,7 @@ class RunEnd(Signal):
     total_cost_usd: float | None = None
     num_turns: int = 0
     duration_ms: float = 0.0
+    usage_valid: bool = True
 
 
 class RunFailed(Signal):
@@ -227,8 +228,8 @@ def lane_for(signals: Iterable[Signal | Any]) -> NodeLifecycleState:
     return state
 
 
-def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int]:
-    """Split a raw provider usage dict into (input, output, cached, cache_write) tokens.
+def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int, bool]:
+    """Split a raw provider usage dict into (input, output, cached, cache_write, is_valid) tokens.
 
     Anthropic-style: ``input_tokens`` already excludes cache activity; cache
     reads/writes arrive separately as ``cache_read_input_tokens`` /
@@ -236,28 +237,52 @@ def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int]:
     cached reads, split out under ``prompt_tokens_details.cached_tokens`` --
     subtracted here so the returned "input" figure means "uncached prompt
     tokens" under both conventions.
+
+    ``is_valid`` is False when the OpenAI-style provider report violates the
+    token-count invariants (a negative prompt total, or cached_tokens greater
+    than prompt_tokens). The returned numbers are still clamped into a safe,
+    non-negative shape so a caller that ignores validity still gets a sane
+    aggregate -- but a billing consumer that checks ``is_valid`` can tell a
+    genuine full-cache hit from a provider sending garbage, which the clamp
+    alone makes indistinguishable.
     """
     output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
     if "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage:
         cached = int(usage.get("cache_read_input_tokens", 0) or 0)
         cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
         input_tokens = int(usage.get("input_tokens", 0) or 0)
-        return input_tokens, output_tokens, cached, cache_write
+        return input_tokens, output_tokens, cached, cache_write, True
 
     prompt_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
     details = usage.get("prompt_tokens_details")
     cached = int(details.get("cached_tokens", 0) or 0) if isinstance(details, dict) else 0
-    # Provider invariant: cached_tokens must not exceed prompt_tokens. A
-    # violation would otherwise produce a negative "uncached input" figure
-    # that reaches billing aggregates -- clamp into [0, prompt_tokens]
-    # instead of propagating it.
+    # Provider invariants: prompt_tokens must be non-negative, and
+    # cached_tokens must not exceed it. A violation would otherwise produce a
+    # negative "uncached input" figure that reaches billing aggregates --
+    # clamp into a safe, non-negative shape instead of propagating it, but
+    # report the violation via is_valid rather than absorbing it silently.
+    is_valid = prompt_tokens >= 0 and 0 <= cached <= prompt_tokens
+    prompt_tokens = max(0, prompt_tokens)
     cached = max(0, min(cached, prompt_tokens))
-    return prompt_tokens - cached, output_tokens, cached, 0
+    return prompt_tokens - cached, output_tokens, cached, 0, is_valid
 
 
 _MODEL_USAGE_ENTRY_KEYS = frozenset(
     {"inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"}
 )
+
+
+def _as_nonneg_int(value: Any) -> int | None:
+    """A token count must be a real non-negative integer -- not a truncating
+    float, not None-as-zero, not a numeric-looking string. Returns the int,
+    or None if *value* cannot represent a token count at all."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float) and value.is_integer():
+        return int(value) if value >= 0 else None
+    return None
 
 
 def _sum_model_usage(model_usage: dict[str, Any]) -> tuple[int, int, int, int, bool]:
@@ -269,21 +294,29 @@ def _sum_model_usage(model_usage: dict[str, Any]) -> tuple[int, int, int, int, b
 
     Returns ``(input, output, cached, cache_write, has_valid_entry)``. An
     entry only counts as valid when it is a dict carrying all four expected
-    keys -- a genuinely zero-usage model still reports the full shape, so a
-    valid entry that happens to sum to zero is distinct from no valid entry
-    at all (missing/partial/non-dict), which the caller must fall back on.
+    keys with non-negative-integer values -- a genuinely zero-usage model
+    still reports the full shape, so a valid entry that happens to sum to
+    zero is distinct from no valid entry at all. If ANY entry in the map is
+    malformed (missing keys, non-dict, or a value that is not a real
+    non-negative integer), the whole map is untrustworthy and
+    ``has_valid_entry`` is False -- summing only the well-shaped entries
+    would silently undercount whatever the malformed entry actually spent.
     """
     input_tokens = output_tokens = cached = cache_write = 0
-    has_valid_entry = False
+    all_valid = bool(model_usage)
     for entry in model_usage.values():
         if not isinstance(entry, dict) or not _MODEL_USAGE_ENTRY_KEYS.issubset(entry):
+            all_valid = False
             continue
-        has_valid_entry = True
-        input_tokens += int(entry.get("inputTokens", 0) or 0)
-        output_tokens += int(entry.get("outputTokens", 0) or 0)
-        cached += int(entry.get("cacheReadInputTokens", 0) or 0)
-        cache_write += int(entry.get("cacheCreationInputTokens", 0) or 0)
-    return input_tokens, output_tokens, cached, cache_write, has_valid_entry
+        counts = {key: _as_nonneg_int(entry.get(key)) for key in _MODEL_USAGE_ENTRY_KEYS}
+        if any(count is None for count in counts.values()):
+            all_valid = False
+            continue
+        input_tokens += counts["inputTokens"]
+        output_tokens += counts["outputTokens"]
+        cached += counts["cacheReadInputTokens"]
+        cache_write += counts["cacheCreationInputTokens"]
+    return input_tokens, output_tokens, cached, cache_write, all_valid
 
 
 def _collect_branch_usage(branch: Any) -> dict[str, Any]:
@@ -294,6 +327,7 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
     cache_write_tokens = 0
     total_cost_usd: float | None = None
     num_turns = 0
+    usage_valid = True
 
     try:
         messages = list(branch.msgs.messages)
@@ -305,6 +339,7 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
             "cache_write_tokens": 0,
             "total_cost_usd": None,
             "num_turns": 0,
+            "usage_valid": True,
         }
 
     for msg in messages:
@@ -326,7 +361,8 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
             )
         if not has_valid_model_usage:
             usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
-            m_in, m_out, m_cached, m_cache_write = _extract_usage_dims(usage)
+            m_in, m_out, m_cached, m_cache_write, m_valid = _extract_usage_dims(usage)
+            usage_valid = usage_valid and m_valid
         input_tokens += m_in
         output_tokens += m_out
         cached_tokens += m_cached
@@ -350,6 +386,7 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
         "cache_write_tokens": cache_write_tokens,
         "total_cost_usd": total_cost_usd,
         "num_turns": num_turns,
+        "usage_valid": usage_valid,
     }
 
 
@@ -361,6 +398,7 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
     cache_write_tokens = 0
     total_cost_usd: float | None = None
     num_turns = 0
+    usage_valid = True
 
     for branch in branches:
         usage = _collect_branch_usage(branch)
@@ -371,6 +409,7 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
         if usage["total_cost_usd"] is not None:
             total_cost_usd = (total_cost_usd or 0.0) + usage["total_cost_usd"]
         num_turns += usage["num_turns"]
+        usage_valid = usage_valid and usage["usage_valid"]
 
     return {
         "input_tokens": input_tokens,
@@ -379,6 +418,7 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
         "cache_write_tokens": cache_write_tokens,
         "total_cost_usd": total_cost_usd,
         "num_turns": num_turns,
+        "usage_valid": usage_valid,
     }
 
 

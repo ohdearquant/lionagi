@@ -362,6 +362,107 @@ def test_collect_branch_usage_truncated_model_usage_entry_falls_back_to_flat():
     assert usage["output_tokens"] == 12
 
 
+def test_collect_branch_usage_one_valid_entry_beside_one_incomplete_entry_falls_back():
+    """A map with one well-shaped entry and one incomplete entry must not be
+    trusted just because one entry passed -- that silently undercounts
+    whatever the incomplete entry actually spent. The whole map falls back
+    to flat usage rather than reporting the partial sum."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 80, "output_tokens": 30},
+            "model_usage": {
+                "claude-sonnet-5": {
+                    "inputTokens": 10,
+                    "outputTokens": 5,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                },
+                "claude-haiku-4-5": {"inputTokens": 999, "outputTokens": 999},
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 80
+    assert usage["output_tokens"] == 30
+
+
+def test_collect_branch_usage_model_usage_non_integer_float_falls_back_to_flat():
+    """A float token count (e.g. 10.9) must not silently truncate into the
+    aggregate -- it is not a real token count, so the whole map is
+    untrustworthy and flat usage is used instead."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 80, "output_tokens": 30},
+            "model_usage": {
+                "claude-sonnet-5": {
+                    "inputTokens": 10.9,
+                    "outputTokens": 5,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                },
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 80
+    assert usage["output_tokens"] == 30
+
+
+def test_collect_branch_usage_model_usage_none_value_falls_back_to_flat():
+    """A None token count must not silently become zero -- it invalidates
+    the entry rather than being coerced."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 80, "output_tokens": 30},
+            "model_usage": {
+                "claude-sonnet-5": {
+                    "inputTokens": None,
+                    "outputTokens": 5,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                },
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 80
+    assert usage["output_tokens"] == 30
+
+
+def test_collect_branch_usage_model_usage_string_value_falls_back_without_raising():
+    """A non-numeric string token count must not raise out of the usage
+    collector -- it invalidates the entry and the collector falls back to
+    flat usage."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 80, "output_tokens": 30},
+            "model_usage": {
+                "claude-sonnet-5": {
+                    "inputTokens": "oops",
+                    "outputTokens": 5,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                },
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 80
+    assert usage["output_tokens"] == 30
+
+
 def test_collect_branch_usage_no_subagent_result_uses_flat_usage():
     """No model_usage key at all (no subagent spawn occurred) -- ordinary
     flat-usage path, unaffected by the validation added for model_usage."""
@@ -381,7 +482,9 @@ def test_collect_branch_usage_no_subagent_result_uses_flat_usage():
 def test_collect_branch_usage_openai_cached_tokens_exceeding_prompt_clamps_to_zero():
     """OpenAI cache metadata can report cached_tokens > prompt_tokens (a
     provider invariant violation); prompt_tokens - cached_tokens must clamp
-    at 0 rather than reach an aggregate as a negative billable dimension."""
+    at 0 rather than reach an aggregate as a negative billable dimension.
+    The clamped numbers alone look identical to a real full-cache hit, so
+    usage_valid must mark the report as untrustworthy."""
     msg = MagicMock()
     msg.metadata = {
         "model_response": {
@@ -397,6 +500,48 @@ def test_collect_branch_usage_openai_cached_tokens_exceeding_prompt_clamps_to_ze
     usage = _collect_branch_usage(branch)
     assert usage["input_tokens"] == 0
     assert usage["cached_tokens"] == 80
+    assert usage["usage_valid"] is False
+
+
+def test_collect_branch_usage_openai_valid_full_cache_hit_stays_valid():
+    """A genuine full-cache hit (cached_tokens == prompt_tokens) produces the
+    same clamped numbers as the invariant-violation case above, but must be
+    distinguishable via usage_valid=True."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {
+                "prompt_tokens": 80,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 80},
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 0
+    assert usage["cached_tokens"] == 80
+    assert usage["usage_valid"] is True
+
+
+def test_collect_branch_usage_openai_negative_prompt_tokens_clamps_and_marks_invalid():
+    """A malformed negative prompt total must not escape into the aggregate
+    as a negative input_tokens figure, and must be flagged invalid."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {
+                "prompt_tokens": -5,
+                "completion_tokens": 0,
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 0
+    assert usage["usage_valid"] is False
 
 
 def test_build_run_end_populates_from_branch():
