@@ -322,17 +322,19 @@ async def list_agents(arguments: dict[str, Any]) -> dict[str, Any]:
 
     rows = await anyio.to_thread.run_sync(_list_agents)
     redact = demo_mode_enabled()
-    projected = [
-        {
-            "name": row.get("name"),
-            "provider": row.get("provider") or None,
-            "model": row.get("model") or None,
-            "description": (project_agent_fields(row, redact=redact).get("description") or "")[:500]
-            or None,
-        }
-        for row in rows[: args.limit]
-        if isinstance(row.get("name"), str)
-    ]
+    projected = []
+    for row in rows[: args.limit]:
+        if not isinstance(row.get("name"), str):
+            continue
+        safe = project_agent_fields(row, redact=redact)
+        projected.append(
+            {
+                "name": row.get("name"),
+                "provider": safe.get("provider") or None,
+                "model": safe.get("model") or None,
+                "description": (safe.get("description") or "")[:500] or None,
+            }
+        )
     return {"agents": projected, "count": len(projected), "bounded": True}
 
 

@@ -365,11 +365,12 @@ async def create_agent_route(
     name: str, body: Annotated[dict[str, Any], Body(default_factory=dict)]
 ) -> dict[str, Any]:
     try:
-        return await anyio.to_thread.run_sync(partial(create_agent, name, body))
+        created = await anyio.to_thread.run_sync(partial(create_agent, name, body))
     except AgentExistsError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
+    return project_agent_fields(created, redact=demo_mode_enabled())
 
 
 @studio_route("/agents/{name}", method="PUT", area="agents", name="update_agent")
@@ -384,7 +385,7 @@ async def update_agent_route(
         raise HTTPException(status_code=422, detail=str(e)) from e
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
-    return updated
+    return project_agent_fields(updated, redact=demo_mode_enabled())
 
 
 @studio_route("/agents/{name}", method="DELETE", area="agents", name="delete_agent")

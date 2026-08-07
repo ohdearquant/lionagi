@@ -10,10 +10,12 @@ agent-profile content projects through the single classification table below
 screen-share or recorded demo of the Library never surfaces owner-authored
 prompts, guidance text, internal paths, or unrecognized frontmatter values.
 
-Classification is by field *name*, not by value shape or length: an unrecognized
-key is dropped even when its value is a harmless-looking bool or number, because
-what leaks is the key existing in the response at all, not any property of what
-it happens to hold this run.
+Classification starts from field *name*: an unrecognized key is dropped even
+when its value is a harmless-looking bool or number, because what leaks is the
+key existing in the response at all, not any property of what it happens to
+hold this run. A safe key's name is not enough on its own, though -- its value
+must also match the scalar shape the name implies, or a mapping/list nested
+under that key name would ride through the allowlist unexamined.
 """
 
 from __future__ import annotations
@@ -65,6 +67,13 @@ _PATH_KEYS = frozenset({"path", "disk_path", "symlink_target"})
 # reject_if_redacted_payload().
 REDACTION_PLACEHOLDER_MARKER = "<redacted,"
 
+# A safe key's value is vouched for by the classification table only when it
+# is one of these scalar types. A mapping or sequence smuggled in under a
+# safe key's name (e.g. ``role: {api_key: ...}``) is not a role -- it is
+# unrecognized content wearing a safe key's name, and gets dropped like any
+# other unrecognized value rather than passed through by the name match alone.
+_SAFE_SCALAR_TYPES = (str, int, float, bool, type(None))
+
 
 class RedactedPayloadError(Exception):
     """Raised when a write submits empty or placeholder content while demo mode is on."""
@@ -108,7 +117,11 @@ def project_agent_fields(entry: Mapping[str, Any], *, redact: bool) -> dict[str,
     out: dict[str, Any] = {}
     for key, value in entry.items():
         if key in _SAFE_KEYS:
-            out[key] = value
+            if isinstance(value, _SAFE_SCALAR_TYPES):
+                out[key] = value
+            # A mapping/sequence under a safe key is dropped, not passed
+            # through -- the allowlist vouches for the key's expected scalar
+            # shape, not for whatever an owner-authored profile nested there.
         elif key in _PATH_KEYS:
             if value not in (None, ""):
                 out[key] = abbreviate_path(value)

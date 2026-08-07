@@ -172,6 +172,16 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
 
     result = await anyio.to_thread.run_sync(partial(_scan_disk, kind))
 
+    # Same policy get_definition() applies to a single record: while demo mode
+    # is on, an agent's on-disk location is abbreviated to a bare filename in
+    # every response, not just the one reached by fetching it individually.
+    if demo_mode_enabled():
+        for entry in result:
+            if entry["kind"] != "agent":
+                continue
+            entry["path"] = abbreviate_path(entry["path"])
+            entry["disk_path"] = abbreviate_path(entry["disk_path"])
+
     if result:
         from lionagi.state.db import StateDB
 
@@ -253,6 +263,30 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
     }
 
 
+async def _read_version_row(kind: str, name: str, version: int) -> dict[str, Any] | None:
+    """Raw historical version row from the store, with no redaction applied.
+
+    Internal use only: :func:`get_version` (the external, response-facing
+    read) redacts what this returns before handing it to a caller.
+    :func:`rollback_definition` reads through this directly instead, because
+    a rollback has to write the real content back -- consuming already-
+    redacted content would persist the placeholder text as the new version.
+    """
+    from lionagi.state.db import StateDB
+
+    try:
+        async with StateDB() as db:
+            return await db.get_definition(kind, name, version=version)
+    except Exception as exc:  # noqa: BLE001 — any unreadable store is the same answer
+        _log.warning(
+            "definition version is unreadable for %s/%s: %s",
+            kind,
+            name,
+            mask_credentials(repr(exc)),
+        )
+        raise HistoryUnavailableError(mask_credentials(str(exc))) from exc
+
+
 async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | None:
     """Get a specific historical version's content.
 
@@ -266,20 +300,7 @@ async def get_version(kind: str, name: str, version: int) -> dict[str, Any] | No
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
 
-    from lionagi.state.db import StateDB
-
-    try:
-        async with StateDB() as db:
-            row = await db.get_definition(kind, name, version=version)
-    except Exception as exc:  # noqa: BLE001 — any unreadable store is the same answer
-        _log.warning(
-            "definition version is unreadable for %s/%s: %s",
-            kind,
-            name,
-            mask_credentials(repr(exc)),
-        )
-        raise HistoryUnavailableError(mask_credentials(str(exc))) from exc
-
+    row = await _read_version_row(kind, name, version)
     if not row:
         return None
 
@@ -372,11 +393,19 @@ async def save_definition(
 
 
 async def rollback_definition(kind: str, name: str, target_version: int) -> dict[str, Any] | None:
-    """Restore a previous version by reading it from DB and saving it as a new version."""
+    """Restore a previous version by reading it from DB and saving it as a new version.
+
+    Reads the target version through :func:`_read_version_row`, not
+    :func:`get_version` -- the latter redacts agent content while demo mode is
+    on, and a rollback that saved that redacted text would persist the
+    placeholder as the new version instead of restoring the real one.
+    Redaction applies to what a response shows a caller, never to what a
+    write operation submits internally.
+    """
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
 
-    old = await get_version(kind, name, target_version)
+    old = await _read_version_row(kind, name, target_version)
     if not old:
         return None
 

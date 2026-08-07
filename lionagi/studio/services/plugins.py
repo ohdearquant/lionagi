@@ -13,6 +13,7 @@ from lionagi.libs.path_safety import has_traversal
 from ..registry import studio_route
 from ._io import read_json_file as _read_json
 from ._path_safety import public_path, safe_path_join
+from .redaction import demo_mode_enabled, project_agent_fields
 
 _THIS = Path(__file__).resolve()
 _REPO_ROOT = _THIS.parents[3]  # lionagi/studio/services/plugins.py → parents[3] = repo root
@@ -355,4 +356,7 @@ async def get_plugin_agent_endpoint(plugin_name: str, agent_name: str) -> dict[s
             status_code=404,
             detail=f"Agent {agent_name} not found in plugin {plugin_name}",
         )
-    return agent
+    # A plugin agent's markdown body is the same kind of owner-authored
+    # content as a Library agent's system prompt -- it goes through the same
+    # classification table rather than a full-content mirror one route over.
+    return project_agent_fields(agent, redact=demo_mode_enabled())

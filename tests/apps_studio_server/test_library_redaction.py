@@ -23,6 +23,8 @@ PROMPT_SENTINEL = "PROMPT-SENTINEL-4f2c9d17"
 GUIDANCE_SENTINEL = "GUIDANCE-SENTINEL-9a1b62"
 DESCRIPTION_SENTINEL = "DESCRIPTION-SENTINEL-77eecb"
 SECRET_ENV_VALUE = "sk-ENV-SHAPED-SECRET-ab12cd34"
+NESTED_SECRET = "NESTED-SECRET-4e2a91"
+LIST_SECRET = "LIST-SECRET-7b3c05"
 
 FIXTURE_AGENT_MD = f"""\
 ---
@@ -38,6 +40,22 @@ lion_system: false
 ---
 
 {PROMPT_SENTINEL}
+"""
+
+
+FIXTURE_NESTED_SECRET_AGENT_MD = f"""\
+---
+provider: claude
+model: claude-sonnet-4-6
+role:
+  leaked: {NESTED_SECRET}
+effort:
+  - {LIST_SECRET}
+permission_mode: default
+lion_system: false
+---
+
+body text
 """
 
 
@@ -256,6 +274,230 @@ def test_save_definition_still_works_normally_while_demo_mode_off(tmp_path, monk
     r = client.post("/api/definitions/agent/demoagent", json={"content": "# updated content"})
     assert r.status_code == 200, r.text
     assert (agents_dir / "demoagent.md").read_text().strip() == "# updated content"
+
+
+# ---------------------------------------------------------------------------
+# A safe key's name is not a promise about its shape. A mapping or list
+# smuggled in under a safe key (role/effort/...) must be dropped, not passed
+# through by name match alone -- on every path that reads the allowlist.
+# ---------------------------------------------------------------------------
+
+
+def test_nested_value_under_safe_key_is_dropped_not_passed_through(tmp_path, monkeypatch):
+    client, agents_dir = _make_redaction_client(tmp_path, monkeypatch)
+    _write_agent_md(agents_dir / "nestedagent.md", FIXTURE_NESTED_SECRET_AGENT_MD)
+
+    # Must-MATCH arm: with the switch off, every route that surfaces the raw
+    # frontmatter still carries the nested content.
+    normal_detail = client.get("/api/agents/nestedagent")
+    normal_list = client.get("/api/agents/")
+    normal_definition = client.get("/api/definitions/agent/nestedagent")
+    assert normal_detail.status_code == 200, normal_detail.text
+    assert normal_list.status_code == 200, normal_list.text
+    assert normal_definition.status_code == 200, normal_definition.text
+    assert NESTED_SECRET in normal_detail.text
+    assert LIST_SECRET in normal_detail.text
+    assert NESTED_SECRET in normal_list.text
+    assert LIST_SECRET in normal_list.text
+    assert NESTED_SECRET in normal_definition.text
+    assert LIST_SECRET in normal_definition.text
+
+    # Must-NOT-match arm: with the switch on, a mapping under "role" and a
+    # list under "effort" are dropped rather than passed through because
+    # their key names happen to match the safe-key allowlist.
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    redacted_detail = client.get("/api/agents/nestedagent")
+    redacted_list = client.get("/api/agents/")
+    redacted_definition = client.get("/api/definitions/agent/nestedagent")
+    assert redacted_detail.status_code == 200, redacted_detail.text
+    assert redacted_list.status_code == 200, redacted_list.text
+    assert redacted_definition.status_code == 200, redacted_definition.text
+    for resp in (redacted_detail, redacted_list, redacted_definition):
+        assert NESTED_SECRET not in resp.text
+        assert LIST_SECRET not in resp.text
+
+
+def test_mcp_list_agents_drops_nested_secret_under_safe_key(tmp_path, monkeypatch):
+    """The Operator's MCP agent listing routes through the same allowlist as
+    the HTTP routes -- a row shaped with a nested value under a safe key
+    (whatever produced it) must not leak through this surface either."""
+    import lionagi.studio.services.agents as agents_service
+    from lionagi.studio.operator import application_mcp
+
+    from ._helpers import run_async
+
+    _make_redaction_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    monkeypatch.setattr(
+        agents_service,
+        "list_agents",
+        lambda: [
+            {
+                "name": "demoagent",
+                "provider": {"leaked": NESTED_SECRET},
+                "model": "claude-sonnet-4-6",
+                "description": "fine",
+            }
+        ],
+    )
+
+    result = run_async(application_mcp.list_agents({"limit": 10}))
+    assert result["agents"][0]["name"] == "demoagent"
+    assert result["agents"][0]["provider"] is None
+    assert result["agents"][0]["model"] == "claude-sonnet-4-6"
+    assert NESTED_SECRET not in str(result)
+
+
+# ---------------------------------------------------------------------------
+# POST /agents/{name} and PUT /agents/{name} must not return the raw service
+# result in demo mode -- a harmless metadata edit must not be a side door to
+# the full prompt/guidance the GET routes already redact.
+# ---------------------------------------------------------------------------
+
+
+def test_create_and_update_agent_responses_are_redacted_in_demo_mode(tmp_path, monkeypatch):
+    client, agents_dir = _make_redaction_client(tmp_path, monkeypatch)
+
+    # Must-MATCH arm: with the switch off, both responses still carry the
+    # real content.
+    create_resp = client.post(
+        "/api/agents/newagent",
+        json={
+            "provider": "claude",
+            "model": "claude-sonnet-4-6",
+            "system_prompt": PROMPT_SENTINEL,
+        },
+    )
+    assert create_resp.status_code == 200, create_resp.text
+    assert PROMPT_SENTINEL in create_resp.text
+
+    put_resp = client.put("/api/agents/newagent", json={"system_prompt": PROMPT_SENTINEL + "-v2"})
+    assert put_resp.status_code == 200, put_resp.text
+    assert (PROMPT_SENTINEL + "-v2") in put_resp.text
+
+    # Must-NOT-match arm: with the switch on, a metadata-only PUT (no
+    # system_prompt in the request body) must not echo back the existing
+    # prompt in full, and a POST creating a new agent with real content must
+    # not return that content either.
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    metadata_put = client.put(
+        "/api/agents/newagent", json={"description": "harmless metadata edit"}
+    )
+    assert metadata_put.status_code == 200, metadata_put.text
+    assert PROMPT_SENTINEL not in metadata_put.text
+    assert "<redacted," in metadata_put.text
+
+    create_resp2 = client.post(
+        "/api/agents/newagent2",
+        json={
+            "provider": "claude",
+            "model": "claude-sonnet-4-6",
+            "system_prompt": PROMPT_SENTINEL,
+        },
+    )
+    assert create_resp2.status_code == 200, create_resp2.text
+    assert PROMPT_SENTINEL not in create_resp2.text
+    assert "<redacted," in create_resp2.text
+
+    # Response-only redaction -- the real content is still on disk.
+    assert (PROMPT_SENTINEL + "-v2") in (agents_dir / "newagent.md").read_text()
+    assert PROMPT_SENTINEL in (agents_dir / "newagent2.md").read_text()
+
+
+# ---------------------------------------------------------------------------
+# The plugin-agent route is a full-content mirror of the same kind of
+# owner-authored markdown the Library agent routes protect -- it must not be
+# a silent bypass one path segment over.
+# ---------------------------------------------------------------------------
+
+
+def test_plugin_agent_route_is_redacted_in_demo_mode(tmp_path, monkeypatch):
+    import lionagi.studio.services.plugins as plugins_mod
+
+    client, _agents_dir = _make_redaction_client(tmp_path, monkeypatch)
+
+    plugin_dir = tmp_path / "fakeplugin"
+    plugin_agents_dir = plugin_dir / "agents"
+    plugin_agents_dir.mkdir(parents=True)
+    (plugin_agents_dir / "critic.md").write_text(
+        f"---\ndescription: plugin critic\n---\n\n{PROMPT_SENTINEL}\n"
+    )
+    monkeypatch.setattr(
+        plugins_mod,
+        "_find_plugin_dir_for",
+        lambda name: plugin_dir if name == "fakeplugin" else None,
+    )
+
+    normal = client.get("/api/plugins/fakeplugin/agents/critic")
+    assert normal.status_code == 200, normal.text
+    assert PROMPT_SENTINEL in normal.text
+
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    redacted = client.get("/api/plugins/fakeplugin/agents/critic")
+    assert redacted.status_code == 200, redacted.text
+    assert PROMPT_SENTINEL not in redacted.text
+    assert "<redacted," in redacted.text
+
+
+# ---------------------------------------------------------------------------
+# The definitions listing carries the same path/disk_path fields the single
+# get_definition() route already abbreviates -- the listing must match it
+# instead of shipping the unabridged on-disk location for every agent.
+# ---------------------------------------------------------------------------
+
+
+def test_definitions_listing_path_is_projected_in_demo_mode(tmp_path, monkeypatch):
+    client, agents_dir = _make_redaction_client(tmp_path, monkeypatch)
+    _write_agent_md(agents_dir / "demoagent.md", FIXTURE_AGENT_MD)
+
+    normal = client.get("/api/definitions/")
+    assert normal.status_code == 200, normal.text
+    entry = next(
+        d for d in normal.json()["definitions"] if d["kind"] == "agent" and d["name"] == "demoagent"
+    )
+    # Must-MATCH arm: the unabridged path, not just the bare filename.
+    assert entry["path"] != "demoagent.md"
+    assert entry["path"].endswith("demoagent.md")
+    assert entry["disk_path"] != "demoagent.md"
+    assert entry["disk_path"].endswith("demoagent.md")
+
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    redacted = client.get("/api/definitions/")
+    assert redacted.status_code == 200, redacted.text
+    r_entry = next(
+        d
+        for d in redacted.json()["definitions"]
+        if d["kind"] == "agent" and d["name"] == "demoagent"
+    )
+    assert r_entry["path"] == "demoagent.md"
+    assert r_entry["disk_path"] == "demoagent.md"
+
+
+# ---------------------------------------------------------------------------
+# rollback_definition() must write the real content back, not the redacted
+# placeholder that get_version() shows an external caller -- a rollback is a
+# write, and redaction applies to reads that leave the service.
+# ---------------------------------------------------------------------------
+
+
+def test_rollback_succeeds_with_real_content_in_demo_mode(tmp_path, monkeypatch):
+    client, agents_dir = _make_redaction_client(tmp_path, monkeypatch)
+
+    v1 = client.post("/api/definitions/agent/rollme", json={"content": FIXTURE_AGENT_MD})
+    assert v1.status_code == 200, v1.text
+    v1_version = v1.json()["version"]
+
+    updated_content = FIXTURE_AGENT_MD.replace(PROMPT_SENTINEL, PROMPT_SENTINEL + "-v2")
+    v2 = client.post("/api/definitions/agent/rollme", json={"content": updated_content})
+    assert v2.status_code == 200, v2.text
+
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    rollback = client.post("/api/definitions/agent/rollme/rollback", params={"version": v1_version})
+    assert rollback.status_code == 200, rollback.text
+
+    on_disk = (agents_dir / "rollme.md").read_text()
+    assert PROMPT_SENTINEL in on_disk
+    assert "<redacted," not in on_disk
 
 
 # ---------------------------------------------------------------------------
