@@ -240,6 +240,62 @@ class TestPileIterationMutationContract:
         assert remaining == [i.id for i in items[2:]]
         assert seen == [items[0].id, items[1].id]
 
+    def test_addition_after_iteration_start_is_not_observed(self):
+        """The id-order snapshot is taken on first `next()`, not per-step —
+        an item included after that point must not appear in the traversal
+        even though `len(pile)` already reflects it."""
+        items = [Item(value=i) for i in range(5)]
+        pile = Pile(items)
+
+        it = iter(pile)
+        first = next(it)
+        assert first.id == items[0].id
+
+        late_item = Item(value=99)
+        pile.include(late_item)  # added after the snapshot was captured
+
+        remaining = [x.id for x in it]
+        assert remaining == [i.id for i in items[1:]]
+        assert late_item.id not in remaining
+        assert late_item.id in pile  # the pile itself does see it
+
+    def test_direct_progression_mutation_bypassing_pile_methods_is_not_masked(self):
+        """`Pile.progression` is mutable public state, and at least one real
+        caller (`lionagi/protocols/generic/log.py:321-325`, `Log._dump`
+        clearing already-dumped ids) mutates it directly via
+        `pile.progression.exclude(...)` + `pile.collections.pop(...)` rather
+        than going through the atomic `Pile.pop`/`Pile.exclude`. The
+        snapshot-under-mutation contract must hold identically for that path:
+        `Pile.__iter__` re-reads `self.progression` fresh on every `iter()`
+        call (it does not cache a snapshot across calls keyed off Pile-level
+        mutation hooks, which this bypass path never touches), so a mutation
+        that never calls `Pile.pop`/`Pile.exclude` is exactly as
+        visible/invisible to a running iterator as one that does. This pins
+        that behavior so a future "cache the id snapshot across `__iter__`
+        calls, invalidate on Pile.include/exclude" change does not silently
+        regress this caller.
+        """
+        items = [Item(value=i) for i in range(5)]
+        pile = Pile(items)
+
+        it = iter(pile)
+        first = next(it)
+        assert first.id == items[0].id
+
+        # Mirrors log.py's two-step bypass: progression first, then
+        # collections — neither call is `Pile.pop`/`Pile.exclude`.
+        pile.progression.exclude(items[1].id)
+        pile.collections.pop(items[1].id, None)
+
+        with pytest.raises(KeyError):
+            next(it)  # reaches items[1] -> KeyError, same as a Pile.pop removal
+
+        # A fresh iterator started after the direct mutation reflects it
+        # immediately — no stale cache from the earlier iterator leaks in.
+        fresh_order = [x.id for x in pile]
+        assert items[1].id not in fresh_order
+        assert fresh_order == [items[0].id, *[i.id for i in items[2:]]]
+
 
 # ---------------------------------------------------------------------------
 # 2. Progression / Pile independence

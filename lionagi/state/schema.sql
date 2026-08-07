@@ -255,8 +255,8 @@ CREATE TABLE IF NOT EXISTS branches (
   ended_at        REAL
 );
 
-CREATE INDEX IF NOT EXISTS idx_branches_session
-  ON branches(session_id);
+CREATE INDEX IF NOT EXISTS idx_branches_session_created
+  ON branches(session_id, created_at);
 -- Child keys of messages(id) / progressions(id); see idx_sessions_first_msg_id.
 CREATE INDEX IF NOT EXISTS idx_branches_system_msg_id
   ON branches(system_msg_id);

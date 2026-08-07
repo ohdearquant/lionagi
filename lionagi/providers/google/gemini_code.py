@@ -12,7 +12,7 @@ import math
 import os
 import re
 from collections.abc import AsyncIterator, Callable
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
@@ -251,7 +251,12 @@ def _validate_print_timeout(value: str) -> str:
             part = _GO_DURATION_PART.match(unsigned, position)
             if part is None:
                 raise ValueError
-            nanoseconds += Decimal(part["number"]) * _GO_DURATION_UNIT_NANOSECONDS[part["unit"]]
+            part_nanoseconds = Decimal(part["number"]) * _GO_DURATION_UNIT_NANOSECONDS[part["unit"]]
+            # Go's time.ParseDuration truncates each component to whole
+            # nanoseconds before summing, so a sub-nanosecond fraction (e.g.
+            # the ".1" in "9223372036854775807.1ns") never survives to the
+            # bound check below.
+            nanoseconds += part_nanoseconds.to_integral_value(rounding=ROUND_DOWN)
             position = part.end()
     except (InvalidOperation, ValueError):
         raise ValueError("print_timeout must be a parseable Go duration of at least 1s") from None

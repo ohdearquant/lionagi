@@ -149,17 +149,41 @@ def test_register_malformed_config_raises(tmp_path, monkeypatch):
         mcp_mod.register_server("bad", {"command": "python3", "url": "https://x"})
 
 
-def test_register_create_time_null_env_against_empty_base_is_key_absent(tmp_path, monkeypatch):
-    """Register (save) must apply the same null-env-as-deletion normalization
-    `validate_config` already applies at create time -- merging the incoming
-    config onto an empty base -- so a null env value on a brand-new server
-    means "key absent" everywhere, instead of the raw-config shape check
-    rejecting what validate already approved."""
+def test_register_strips_none_env_values(tmp_path, monkeypatch):
+    """`register_server` merges the incoming config onto an empty base before
+    validating and storing it, so a `None` env value on create is dropped by
+    the same rule that removes it on update -- persisted nowhere, including
+    the derived ``.mcp.json`` a spawned CLI reads.
+    """
+    registry_path, synced_path = _point_registry_at(tmp_path, monkeypatch)
+
+    created = mcp_mod.register_server(
+        "myserver",
+        {"command": "python3", "env": {"KEY": None, "OTHER": "value"}},
+    )
+
+    assert created["env_keys"] == ["OTHER"]
+
+    on_disk = json.loads(registry_path.read_text())
+    stored_env = on_disk["servers"]["myserver"]["config"]["env"]
+    assert stored_env == {"OTHER": "value"}
+    assert "KEY" not in stored_env
+
+    synced_env = json.loads(synced_path.read_text())["mcpServers"]["myserver"]["env"]
+    assert synced_env == {"OTHER": "value"}
+
+
+def test_register_rejects_non_mapping_env(tmp_path, monkeypatch):
+    """A non-mapping `env` (e.g. a string) must be rejected by `_validate_shape`
+    as a normal 'env must be an object' error, not crash `_merge_config`'s
+    `None`-stripping loop with `AttributeError` when it calls `.items()` on a
+    non-dict value -- the create path merges before validating, so the merge
+    step itself must tolerate malformed input it hasn't validated yet.
+    """
     _point_registry_at(tmp_path, monkeypatch)
 
-    created = mcp_mod.register_server("brand-new", {"command": "python3", "env": {"API_KEY": None}})
-
-    assert created["env_keys"] == []
+    with pytest.raises(mcp_mod.McpServerError, match="'env'"):
+        mcp_mod.register_server("bad-env", {"command": "python3", "env": "not-a-map"})
 
 
 def test_update_nonexistent_returns_none(tmp_path, monkeypatch):
@@ -620,6 +644,14 @@ def test_route_register_duplicate_returns_409(mcp_client):
 def test_route_register_malformed_returns_400(mcp_client):
     resp = mcp_client.post("/api/mcp/servers/", json={"name": "bad"})
     assert resp.status_code == 400
+
+
+def test_route_register_non_mapping_env_returns_400(mcp_client):
+    resp = mcp_client.post(
+        "/api/mcp/servers/",
+        json={"name": "bad-env", "command": "python3", "env": "not-a-map"},
+    )
+    assert resp.status_code == 400, resp.text
 
 
 def test_route_remove_nonexistent_returns_404(mcp_client):
