@@ -390,6 +390,11 @@ class SchedulerEngine:
         self._svc = svc if svc is not None else default_scheduler_state
         self._signal_bus = signal_bus if signal_bus is not None else SchedulerSignalBus()
         self._task: asyncio.Task | None = None
+        # Single-flight tracked task for the ad-hoc task-worker pass (see
+        # _maybe_start_worker_pass): a hung/slow pass must not block schedule
+        # evaluation, and a new tick must never start a second overlapping
+        # pass while one is still in flight.
+        self._worker_task: asyncio.Task | None = None
         self._running: dict[str, str] = {}  # schedule_id -> run_id
         self._stopping = False
         self._fire_tasks: set[asyncio.Task] = set()
@@ -667,6 +672,11 @@ class SchedulerEngine:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if self._worker_task is not None:
+            self._worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._worker_task
+            self._worker_task = None
         if self._fire_tasks:
             for ft in list(self._fire_tasks):
                 ft.cancel()
@@ -1004,10 +1014,7 @@ class SchedulerEngine:
         except Exception:
             _log.exception("Dispatch outbox delivery scan error")
 
-        try:
-            await self._run_task_worker_tick(now)
-        except Exception:
-            _log.exception("Task worker tick error")
+        self._maybe_start_worker_pass(now)
 
         schedules = await self._svc.list_schedules(enabled=True)
 
@@ -1043,6 +1050,28 @@ class SchedulerEngine:
 
         async with StateDB() as db:
             await deliver_due_dispatches(db, now=now)
+
+    def _maybe_start_worker_pass(self, now: float) -> None:
+        """Kick off the ad-hoc task-worker pass as a tracked, single-flight
+        background task instead of awaiting it inline.
+
+        A worker pass claims rows sequentially and each row waits on its
+        child process with no deadline (see ``spawn_and_wait``), so awaiting
+        it here would block schedule evaluation for the whole pass. If a
+        pass from a prior tick is still running, this tick starts no new one
+        — never more than one worker pass in flight, so this does not
+        increase the row-claiming throughput, only schedule-evaluation
+        latency.
+        """
+        if self._worker_task is not None and not self._worker_task.done():
+            return
+        self._worker_task = asyncio.create_task(self._run_task_worker_tick_guarded(now))
+
+    async def _run_task_worker_tick_guarded(self, now: float) -> None:
+        try:
+            await self._run_task_worker_tick(now)
+        except Exception:
+            _log.exception("Task worker tick error")
 
     async def _run_task_worker_tick(self, now: float) -> None:
         """ADR-0071 D4: reap lapsed leases and claim/execute eligible host

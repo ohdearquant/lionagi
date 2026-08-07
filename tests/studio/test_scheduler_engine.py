@@ -2054,6 +2054,116 @@ async def test_check_missed_fires_excludes_github_poll(monkeypatch):
     assert "sched-interval" in skipped_run_schedule_ids
 
 
+@pytest.mark.asyncio
+async def test_tick_does_not_await_worker_pass_before_evaluating_schedules(monkeypatch, tmp_path):
+    """_tick() must not await the ad-hoc task-worker pass before loading and
+    evaluating due schedules -- a hung/slow worker pass would otherwise defer
+    every schedule's evaluation for the whole pass (see #2750). The worker
+    pass here never completes; _tick() must still return promptly and fire
+    the due schedule in the same cycle."""
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+
+    fixed_now = 1_000_000.0
+    monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
+
+    schedule = _minimal_schedule(
+        id="sched-due-mid-pass",
+        trigger_type="interval",
+        cron_expr=None,
+        interval_sec=60,
+        next_fire_at=fixed_now - 1,
+    )
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[schedule])
+    engine = SchedulerEngine(svc=svc)
+
+    worker_started = asyncio.Event()
+    worker_may_finish = asyncio.Event()
+
+    async def _hung_worker_tick(now):
+        worker_started.set()
+        await worker_may_finish.wait()
+
+    engine._run_task_worker_tick = _hung_worker_tick  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "lionagi.studio.services.lifecycle.run_periodic_reapers",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "lionagi.studio.services.db_maintenance.checkpoint_state_db",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(engine, "_maybe_fire", new=AsyncMock()) as mock_fire,
+    ):
+        # If _tick() still awaits the worker pass inline, this times out
+        # because worker_may_finish is never set before the deadline.
+        await asyncio.wait_for(engine._tick(), timeout=2.0)
+
+    assert worker_started.is_set(), "worker pass never started"
+    mock_fire.assert_awaited_once()
+
+    worker_may_finish.set()
+    if engine._worker_task is not None:
+        await asyncio.wait_for(engine._worker_task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_tick_worker_pass_is_single_flight(monkeypatch, tmp_path):
+    """A second _tick() must not start a second worker-pass task while the
+    first is still running -- single-flight, not an unguarded task per tick
+    (see #2750's fix-shape constraint)."""
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(engine_mod.time, "time", lambda: 2_000_000.0)
+
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[])
+    engine = SchedulerEngine(svc=svc)
+
+    start_count = 0
+    worker_may_finish = asyncio.Event()
+
+    async def _hung_worker_tick(now):
+        nonlocal start_count
+        start_count += 1
+        await worker_may_finish.wait()
+
+    engine._run_task_worker_tick = _hung_worker_tick  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "lionagi.studio.services.lifecycle.run_periodic_reapers",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "lionagi.studio.services.db_maintenance.checkpoint_state_db",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        await asyncio.wait_for(engine._tick(), timeout=2.0)
+        await asyncio.wait_for(engine._tick(), timeout=2.0)
+
+    assert start_count == 1, (
+        f"Expected exactly one worker-pass task started while the first is "
+        f"still in flight, got {start_count}"
+    )
+
+    worker_may_finish.set()
+    if engine._worker_task is not None:
+        await asyncio.wait_for(engine._worker_task, timeout=2.0)
+
+
 # ---------------------------------------------------------------------------
 # max_runs / one-shot semantics
 # ---------------------------------------------------------------------------
