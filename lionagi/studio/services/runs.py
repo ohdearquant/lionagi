@@ -552,6 +552,17 @@ async def list_runs(
     return out
 
 
+def _status_ended_at_mismatch(run: dict[str, Any]) -> bool:
+    """A row reporting ``status="running"`` alongside a non-null ``ended_at``
+    is the exact write-path defect from issue #2844: two fields describing
+    the same lifecycle event that disagree about it. Scoped to this one
+    direction (not the reverse, a terminal row with a null ``ended_at``)
+    because that population includes legitimate pre-existing rows -- rows
+    written before the ``ended_at`` column, or imported from elsewhere --
+    and flagging those would be a separate, undecided policy question."""
+    return run.get("status") == "running" and run.get("ended_at") is not None
+
+
 def paginate_runs(
     page_runs: list[dict[str, Any]],
     *,
@@ -571,6 +582,10 @@ def paginate_runs(
         "total_pages": total_pages,
         "has_next": page < total_pages,
         "has_prev": page > 1,
+        # Recomputed on every page fetch, not read from a stored flag, so a
+        # future divergence between status and ended_at is visible without
+        # anyone querying for it (issue #2844).
+        "status_ended_at_mismatches": sum(1 for r in page_runs if _status_ended_at_mismatch(r)),
     }
 
 

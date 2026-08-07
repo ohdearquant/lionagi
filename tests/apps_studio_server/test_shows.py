@@ -321,3 +321,65 @@ def test_get_show_returns_404_when_dir_absent_and_no_db_row(docker_patched_app):
     client, _topic = docker_patched_app
     r = client.get("/api/shows/nonexistent-topic-xyz")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# import_shows() must not write an undeclared plays.status value (issue #2619)
+# ---------------------------------------------------------------------------
+
+
+def test_import_shows_refuses_undeclared_play_status(tmp_path, monkeypatch):
+    """A play whose on-disk _meta.json carries a status outside the ADR-0011
+    vocabulary (e.g. "success", a near-miss of "completed"/"merged" that was
+    never declared) must not land in plays.status verbatim -- create_play()
+    already refuses this for every other writer; import_shows() wrote around
+    it via a raw INSERT. The bad play is skipped (loud log, not a crash);
+    every write that does land is a member of the declared vocabulary.
+    """
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as config_mod
+    import lionagi.studio.services.shows as shows_mod
+    from lionagi.state.db import VALID_STATUSES_BY_ENTITY_TYPE, StateDB
+
+    shows_root = tmp_path / "shows"
+    topic = "undeclared-status-show"
+    show_dir = shows_root / topic
+    play_dir = show_dir / "play-001"
+    play_dir.mkdir(parents=True)
+    (show_dir / "_show.md").write_text("# Show: undeclared-status-show\n")
+    (play_dir / "_meta.json").write_text(json.dumps({"status": "success"}))
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(config_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async def _run() -> tuple[dict, dict | None]:
+        result = await shows_mod.import_shows()
+        async with StateDB(db_path) as db:
+            row = await db.fetch_one(
+                "SELECT status FROM plays WHERE show_id IN (SELECT id FROM shows WHERE topic = ?)",
+                (topic,),
+            )
+        return result, row
+
+    loop = asyncio.new_event_loop()
+    try:
+        result, row = loop.run_until_complete(_run())
+    finally:
+        loop.close()
+
+    if row is not None:
+        assert row["status"] in VALID_STATUSES_BY_ENTITY_TYPE["play"], (
+            f"import_shows() wrote undeclared play status {row['status']!r} "
+            "directly from _meta.json"
+        )
+    else:
+        # The raw INSERT OR IGNORE silently drops a CHECK-violating row today
+        # -- no exception, no row. plays_imported must not claim a play that
+        # never actually landed; a caller trusting this count over-reports.
+        assert result["plays_imported"] == 0, (
+            f"import_shows() reported plays_imported={result['plays_imported']} "
+            "but the play with an undeclared status was silently dropped -- "
+            "the count is lying about what actually landed in the DB"
+        )

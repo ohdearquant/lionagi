@@ -5,15 +5,54 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from fastapi import Query
 
 from lionagi._errors import NotFoundError
 from lionagi.state.db import StateDB, state_db_known_absent
+from lionagi.state.health import SessionHealth, classify_session_health, worst_health
 
 from ..registry import studio_route
 from ._io import parse_json_col as _parse_json_col
+
+
+def _invocation_health(
+    sessions: list[dict[str, Any]],
+    *,
+    now: float,
+    ps_snapshot: str | None,
+) -> tuple[str, float | None]:
+    """Worst-of health verdict + latest activity timestamp across an
+    invocation's child sessions, reusing the session health classifier
+    (ADR-0057) rather than a second vocabulary (issue #2851). "unknown"
+    when the invocation has no child sessions yet — liveness genuinely
+    cannot be determined, never silently defaulted to "healthy"."""
+    if not sessions:
+        return "unknown", None
+
+    from .admin import _artifacts_path, process_liveness
+
+    healths: list[SessionHealth] = []
+    last_activity: float | None = None
+    for s in sessions:
+        artifacts = _artifacts_path(s)
+        process_alive = process_liveness(s, artifacts, ps_snapshot)
+        healths.append(
+            classify_session_health(
+                s,
+                now=now,
+                process_alive=process_alive,
+                has_artifacts=artifacts is not None,
+                has_stale_locks=False,
+            )
+        )
+        activity = s.get("last_message_at") or s.get("updated_at") or s.get("started_at")
+        if activity is not None and (last_activity is None or activity > last_activity):
+            last_activity = activity
+
+    return worst_health(healths).value, last_activity
 
 
 async def list_invocations(
@@ -30,40 +69,54 @@ async def list_invocations(
         rows = await db.list_invocations(
             skill=skill, plugin=plugin, status=status, limit=limit, offset=offset
         )
-    out: list[dict[str, Any]] = []
-    for r in rows:
-        node_meta = r.get("node_metadata")
-        if isinstance(node_meta, str):
-            try:
-                node_meta = json.loads(node_meta)
-            except json.JSONDecodeError:
-                node_meta = None
-        out.append(
-            {
-                "id": r["id"],
-                "skill": r["skill"],
-                "plugin": r.get("plugin"),
-                "prompt": r.get("prompt"),
-                "started_at": r["started_at"],
-                "ended_at": r.get("ended_at"),
-                "status": r["status"],
-                "status_reason_code": r.get("status_reason_code"),
-                "status_reason_summary": r.get("status_reason_summary"),
-                "status_evidence_refs": _parse_json_col(r.get("status_evidence_refs")),
-                "session_count": r.get("session_count", 0),
-                "created_at": r["created_at"],
-                "updated_at": r["updated_at"],
-                "node_metadata": node_meta,
-                # ADR-0063: project provenance from the most-recently updated
-                # child session.  NULL when the invocation has no sessions yet.
-                "project": r.get("project"),
-                "project_source": r.get("project_source"),
-                # From the schedule_run that fired this invocation (ADR-0070),
-                # when it was a scheduled run. NULL for interactive invocations.
-                "schedule_run_exit_code": r.get("schedule_run_exit_code"),
-                "schedule_run_error_detail": r.get("schedule_run_error_detail"),
-            }
-        )
+        now = time.time()
+        ps_snapshot: str | None = None
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            child_sessions = await db.list_sessions_for_invocation(r["id"])
+            if child_sessions and ps_snapshot is None:
+                from .admin import _ps_snapshot
+
+                ps_snapshot = _ps_snapshot()
+            health, last_activity_at = _invocation_health(
+                child_sessions, now=now, ps_snapshot=ps_snapshot
+            )
+            node_meta = r.get("node_metadata")
+            if isinstance(node_meta, str):
+                try:
+                    node_meta = json.loads(node_meta)
+                except json.JSONDecodeError:
+                    node_meta = None
+            out.append(
+                {
+                    "id": r["id"],
+                    "skill": r["skill"],
+                    "plugin": r.get("plugin"),
+                    "prompt": r.get("prompt"),
+                    "started_at": r["started_at"],
+                    "ended_at": r.get("ended_at"),
+                    "status": r["status"],
+                    "status_reason_code": r.get("status_reason_code"),
+                    "status_reason_summary": r.get("status_reason_summary"),
+                    "status_evidence_refs": _parse_json_col(r.get("status_evidence_refs")),
+                    "session_count": r.get("session_count", 0),
+                    "created_at": r["created_at"],
+                    "updated_at": r["updated_at"],
+                    "node_metadata": node_meta,
+                    # ADR-0063: project provenance from the most-recently updated
+                    # child session.  NULL when the invocation has no sessions yet.
+                    "project": r.get("project"),
+                    "project_source": r.get("project_source"),
+                    # From the schedule_run that fired this invocation (ADR-0070),
+                    # when it was a scheduled run. NULL for interactive invocations.
+                    "schedule_run_exit_code": r.get("schedule_run_exit_code"),
+                    "schedule_run_error_detail": r.get("schedule_run_error_detail"),
+                    # ADR-0057 health verdict + last-activity, derived from child
+                    # sessions (issue #2851) — same vocabulary runs already use.
+                    "health": health,
+                    "last_activity_at": last_activity_at,
+                }
+            )
     return out
 
 
@@ -98,6 +151,14 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
         # The schedule_run that fired this invocation, when scheduled, so the
         # detail page can show exit_code/error_detail without correlating IDs.
         schedule_run = await db.get_schedule_run_by_invocation(invocation_id)
+        ps_snapshot: str | None = None
+        if sessions:
+            from .admin import _ps_snapshot
+
+            ps_snapshot = _ps_snapshot()
+        health, last_activity_at = _invocation_health(
+            sessions, now=time.time(), ps_snapshot=ps_snapshot
+        )
     return {
         "id": row["id"],
         "skill": row["skill"],
@@ -115,6 +176,8 @@ async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
         "node_metadata": node_meta,
         "schedule_run_exit_code": schedule_run.get("exit_code") if schedule_run else None,
         "schedule_run_error_detail": schedule_run.get("error_detail") if schedule_run else None,
+        "health": health,
+        "last_activity_at": last_activity_at,
         "sessions": [
             {
                 "id": s["id"],

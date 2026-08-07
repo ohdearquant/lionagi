@@ -137,7 +137,14 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
 }
 
 _TOOL_DESCRIPTIONS = {
-    "list_recent_runs": ("List at most 20 recent Studio runs as a redacted read-only projection."),
+    "list_recent_runs": (
+        "List at most 20 recent Studio runs as a redacted read-only projection. "
+        "Each entry carries 'kind' (agent, play, flow, fanout, or show-play) and "
+        "'playbookName' when set -- a run may be a play root coordinating other "
+        "runs, and 'agentName' alone never establishes that a run is a single "
+        "agent. Read 'kind' before characterizing a run. For 'how is this play "
+        "going', use run_progress instead."
+    ),
     "run_stats": (
         "Count runs over a whole window (24h or 7d) with per-status totals and "
         "completion rate. Use this for 'how many runs did I have', which "
@@ -247,6 +254,8 @@ async def list_recent_runs(arguments: dict[str, Any]) -> dict[str, Any]:
             "startedAt": row.get("started_at"),
             "endedAt": row.get("ended_at"),
             "href": f"/runs/{row.get('id')}",
+            "kind": row.get("invocation_kind"),
+            "playbookName": row.get("playbook_name"),
         }
         for row in rows[: args.limit]
         if isinstance(row.get("id"), str)

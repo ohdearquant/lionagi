@@ -285,7 +285,10 @@ async def _spawn_detached(
         )
         try:
             async with StateDB() as db:
-                await db.update_invocation(inv_id, ended_at=time.time())
+                # ended_at rides in extra_fields so it lands in the same
+                # atomic transition as the status write -- a separate prior
+                # update_invocation() call could persist ended_at on a row
+                # this status write then fails or loses the race to update.
                 await db.update_status(
                     "invocation",
                     inv_id,
@@ -296,6 +299,7 @@ async def _spawn_detached(
                     source="executor",
                     actor=inv_id,
                     metadata={},
+                    extra_fields={"ended_at": time.time()},
                 )
         except Exception:
             _log.exception(
@@ -309,7 +313,6 @@ async def _spawn_detached(
 
     try:
         async with StateDB() as db:
-            await db.update_invocation(inv_id, ended_at=time.time())
             await db.update_status(
                 "invocation",
                 inv_id,
@@ -320,6 +323,7 @@ async def _spawn_detached(
                 source="executor",
                 actor=inv_id,
                 metadata={},
+                extra_fields={"ended_at": time.time()},
             )
     except Exception:
         _log.exception("Failed to update invocation %s after detached launch", inv_id)

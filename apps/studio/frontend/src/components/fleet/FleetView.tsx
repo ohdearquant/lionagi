@@ -33,6 +33,15 @@ export function formatCompactCount(n: number): string {
 
 // ─── Agent row ────────────────────────────────────────────────────────────────
 
+// invocation_kind values that mean "this row is the root of a multi-agent
+// execution, not a single agent" (issue #2842) — the closed vocabulary lives
+// in lionagi/state/db.py's sessions.invocation_kind CHECK constraint.
+const PLAY_ROOT_KINDS = new Set(["play", "flow", "fanout", "show-play"]);
+
+export function isPlayRoot(invocationKind: string | null | undefined): boolean {
+  return invocationKind != null && PLAY_ROOT_KINDS.has(invocationKind);
+}
+
 function AgentRowItem({
   agent,
   selected,
@@ -54,6 +63,14 @@ function AgentRowItem({
       aria-label={t("agentRow.ariaLabel", { name: agent.name })}
     >
       <StatusDot status={agent.status} />
+      {isPlayRoot(agent.invocationKind) && (
+        <span
+          className="shrink-0 rounded border border-edge px-1 py-0.5 font-data text-[length:var(--t-xs)] uppercase tracking-[0.04em] text-content-muted"
+          title={agent.invocationKind ?? undefined}
+        >
+          play
+        </span>
+      )}
       <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-primary">
         {agent.name}
       </span>

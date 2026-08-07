@@ -451,54 +451,48 @@ async def import_shows() -> dict[str, int]:
                 elif imported_play_status == "merged":
                     play_reason_code = PlayReasons.MERGED_OK
                     play_reason_summary = "Play was imported as merged."
-                elif imported_play_status not in {
-                    "pending",
-                    "running",
-                    "running_complete",
-                    "prepared",
-                    "gated",
-                    "redoing",
-                    "aborted_after_finish",
-                }:
+
+                # create_play() is the single validating writer for plays.status
+                # (ADR-0011 vocabulary, same enum update_play()/update_status()
+                # enforce) -- importing through a raw INSERT let an undeclared
+                # on-disk status either silently vanish (INSERT OR IGNORE drops
+                # a CHECK violation with no error) or, on a store predating the
+                # CHECK, land unconstrained. Catching the ValueError here keeps
+                # one bad _meta.json from aborting the rest of the show import.
+                try:
+                    await db.create_play(
+                        {
+                            "id": play_id,
+                            "show_id": show_id,
+                            "name": play_name,
+                            "playbook": None,
+                            "effort": meta.get("effort"),
+                            "status": imported_play_status,
+                            "attempt": play_attempt,
+                            "session_id": session_id,
+                            "started_at": started_at,
+                            "ended_at": ended_at,
+                            "exit_code": meta.get("exit_code"),
+                            "worktree": meta.get("worktree"),
+                            "branch": meta.get("branch"),
+                            "merge_sha": meta.get("merge_sha"),
+                            "merged_at": merged_at,
+                            "gate_passed": gate_passed,
+                            "gate_feedback": gate_feedback,
+                            "depends_on": [],
+                            "sort_order": idx,
+                            "created_at": play_created,
+                        }
+                    )
+                except ValueError:
                     _log.warning(
-                        "play %s/%s imported with status %s but no ADR-0028 reason code matched",
+                        "play %s/%s: refusing undeclared status %r (ADR-0011 "
+                        "vocabulary); skipping this play, show import continues",
                         topic,
                         play_name,
                         imported_play_status,
                     )
-
-                await db.execute(
-                    """INSERT OR IGNORE INTO plays
-                       (id, show_id, name, playbook, effort, status, attempt,
-                        session_id, started_at, ended_at, exit_code,
-                        worktree, branch, merge_sha, merged_at,
-                        gate_passed, gate_feedback, depends_on,
-                        sort_order, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        play_id,
-                        show_id,
-                        play_name,
-                        None,
-                        meta.get("effort"),
-                        imported_play_status,
-                        play_attempt,
-                        session_id,
-                        started_at,
-                        ended_at,
-                        meta.get("exit_code"),
-                        meta.get("worktree"),
-                        meta.get("branch"),
-                        meta.get("merge_sha"),
-                        merged_at,
-                        gate_passed,
-                        gate_feedback,
-                        json.dumps([]),
-                        idx,
-                        play_created,
-                        play_created,
-                    ),
-                )
+                    continue
                 plays_count += 1
 
                 if play_reason_code is not None:

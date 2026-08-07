@@ -436,6 +436,7 @@ EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": frozenset({"ended_at", "node_metadata"}),
     "invocation": frozenset({"ended_at"}),
     "schedule_run": frozenset({"ended_at", "error_detail", "exit_code"}),
+    "play": frozenset({"ended_at"}),
 }
 
 # ── ADR-0035 status vocabulary (valid, not just terminal) ──────────────
@@ -3159,6 +3160,7 @@ class StateDB:
         project: str | None = None,
         project_source: str | None = None,
         cc_session_id: str | None = None,
+        artifacts_path: str | None = None,
     ) -> None:
         """Write attribution/provenance fields without touching updated_at.
 
@@ -3168,6 +3170,11 @@ class StateDB:
         project_source are written together (the source is meaningless alone).
         The session update and the projects-registry upsert run as one locked
         write so neither can commit without the other.
+
+        ``artifacts_path`` is written via ``COALESCE`` rather than a plain
+        assignment: a mirrored CLI session's artifact root is its transcript's
+        ``cwd``, a weaker signal than a launcher-set root (issue #2848), so a
+        later, more precise write must never be clobbered by an earlier guess.
         """
         sets: list[str] = []
         params: dict[str, Any] = {}
@@ -3182,6 +3189,9 @@ class StateDB:
         if cc_session_id is not None:
             sets.append("cc_session_id = :cc_session_id")
             params["cc_session_id"] = cc_session_id
+        if artifacts_path is not None:
+            sets.append('artifacts_path = COALESCE("artifacts_path", :artifacts_path)')
+            params["artifacts_path"] = artifacts_path
         if not sets:
             return
         params["_id"] = session_id

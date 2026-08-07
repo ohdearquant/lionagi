@@ -517,7 +517,12 @@ async def _teardown_common(
 
     all_msgs = await db.get_progression(session_prog_id)
     completion_evidence_msgs = list(all_msgs)
-    update_kwargs: dict[str, Any] = {"ended_at": time.time()}
+    # ended_at is a terminal field and must land in the same atomic write as
+    # the status transition below (see the CAS/TransitionRejectedError branch) --
+    # never written here on its own, or a failed/lost status write leaves a
+    # row with status="running" and a non-null ended_at.
+    ended_at = time.time()
+    update_kwargs: dict[str, Any] = {}
     if all_msgs:
         update_kwargs["first_msg_id"] = all_msgs[0]
         update_kwargs["last_msg_id"] = all_msgs[-1]
@@ -535,7 +540,8 @@ async def _teardown_common(
         markers = identity_markers or {}
         update_kwargs["node_metadata"] = json.dumps({**existing_metadata, **extras, **markers})
 
-    await db.update_session(session_id, **update_kwargs)
+    if update_kwargs:
+        await db.update_session(session_id, **update_kwargs)
 
     reason_code, reason_summary, evidence_refs = resolve_run_reason(
         status=status, exception=exception
@@ -822,6 +828,7 @@ async def _teardown_common(
                 actor=session_id,
                 metadata=metadata,
                 expected_statuses={pre_write_status},
+                extra_fields={"ended_at": ended_at},
             )
             if not written:
                 # CAS miss: a concurrent teardown of the same session won the race.

@@ -250,6 +250,73 @@ async def test_list_invocations_includes_schedule_run_failure_fields(tmp_path, m
     assert by_id[inv_b]["schedule_run_error_detail"] is None
 
 
+async def test_get_invocation_health_unknown_with_no_child_sessions(tmp_path, monkeypatch):
+    """An invocation with zero child sessions has no liveness evidence at
+    all -- it must report health="unknown", never a false "healthy"."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        inv_id = await _create_invocation(db)
+
+    result = await invocations_mod.get_invocation(inv_id)
+
+    assert result is not None
+    assert result["health"] == "unknown"
+    assert result["last_activity_at"] is None
+
+
+async def test_get_invocation_health_reflects_dead_child_process(tmp_path, monkeypatch):
+    """An invocation whose sole child session is 'running' but its recorded
+    process is dead and it has no artifacts/messages must surface the real
+    (orphaned) health verdict, not an unconditional "running" reading."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    now = time.time()
+
+    async with StateDB(db_path) as db:
+        inv_id = await _create_invocation(db)
+        pid = uuid.uuid4().hex
+        await db.create_progression(pid)
+        session_id = str(uuid.uuid4())
+        await db.create_session(
+            {
+                "id": session_id,
+                "progression_id": pid,
+                "name": "child",
+                "status": "running",
+                "started_at": now,
+                "invocation_id": inv_id,
+            }
+        )
+
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod, "process_liveness", lambda *_a, **_k: False)
+
+    result = await invocations_mod.get_invocation(inv_id)
+
+    assert result is not None
+    assert result["health"] == "orphaned"
+    assert result["last_activity_at"] is not None
+
+
+async def test_list_invocations_includes_health_field(tmp_path, monkeypatch):
+    """list_invocations carries the same health field as get_invocation, not
+    just the detail route -- the mission board reads the list endpoint."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        inv_id = await _create_invocation(db)
+
+    rows = await invocations_mod.list_invocations()
+    by_id = {r["id"]: r for r in rows}
+
+    assert by_id[inv_id]["health"] == "unknown"
+    assert by_id[inv_id]["last_activity_at"] is None
+
+
 async def test_list_invocations_includes_reason_fields(tmp_path, monkeypatch):
     """list_invocations serializer includes status_reason_code and
     status_reason_summary with exact values for both the set and null cases."""

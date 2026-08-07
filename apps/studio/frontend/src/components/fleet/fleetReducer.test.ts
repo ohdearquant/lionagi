@@ -186,6 +186,20 @@ describe("fleetReducer — invocation join", () => {
     expect(s.orgUnits[0].agents[0].name).toBe(resolveRunLabel(run));
   });
 
+  it("carries invocation_kind onto the agent row so a play root is distinguishable from a single agent", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [
+        makeRun({ run_id: "r1", status: "running", invocation_kind: "play" }),
+        makeRun({ run_id: "r2", status: "running", invocation_kind: "agent" }),
+      ],
+    );
+    const agents = s.orgUnits[0].agents;
+    expect(agents.find((a) => a.id === "r1")?.invocationKind).toBe("play");
+    expect(agents.find((a) => a.id === "r2")?.invocationKind).toBe("agent");
+  });
+
   it("invocation without runs still appears when no scope is active", () => {
     // Names the case that would have passed either way: no project/search
     // filter is in play here, so this test exercises the same code path

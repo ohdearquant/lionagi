@@ -613,6 +613,31 @@ async def test_teardown_updates_session_bookmarks_and_status(
     assert s["ended_at"] is not None
 
 
+async def test_teardown_does_not_stamp_ended_at_when_status_write_is_lost(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ended_at must ride the same atomic write as the terminal status, not a
+    separate call that lands unconditionally regardless of whether the
+    status transition itself wins. Simulate a lost CAS (a concurrent
+    teardown of the same session won the race) and confirm ended_at stays
+    unset rather than being stamped by an earlier, independent write."""
+    branch = Branch(name="b1")
+    ctx = await _setup_live_persist(branch)
+
+    async def _lost_race(self, *a, **k):
+        return False
+
+    monkeypatch.setattr(StateDB, "update_status", _lost_race)
+
+    await _teardown_live_persist(ctx, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s["status"] == "running"
+    assert s["ended_at"] is None
+
+
 async def test_teardown_extras_preserve_existing_node_metadata(
     temp_db_path: Path,
 ):

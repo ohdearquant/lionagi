@@ -282,6 +282,8 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
                 "ended_at": 2.0,
                 "prompt": "must not leave the service",
                 "artifacts_path": "/secret/path",
+                "invocation_kind": "play",
+                "playbook_name": "daily-triage",
             },
             {
                 "id": "run-2",
@@ -290,6 +292,8 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
                 "project": "acme/research",
                 "started_at": 3.0,
                 "ended_at": 4.0,
+                "invocation_kind": "agent",
+                "playbook_name": None,
             },
         ]
 
@@ -306,6 +310,8 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
                 "startedAt": 1.0,
                 "endedAt": 2.0,
                 "href": "/runs/run-1",
+                "kind": "play",
+                "playbookName": "daily-triage",
             },
             {
                 "id": "run-2",
@@ -315,6 +321,8 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
                 "startedAt": 3.0,
                 "endedAt": 4.0,
                 "href": "/runs/run-2",
+                "kind": "agent",
+                "playbookName": None,
             },
         ],
         "count": 2,

@@ -43,6 +43,10 @@ export interface AgentRow {
   message_count: number;
   kind: "run" | "invocation";
   invocation_id: string | null;
+  // agent | play | flow | fanout | show-play (issue #2842) — the discriminator
+  // that says whether this row is a single agent or the root of a multi-agent
+  // execution. `agentName`/label text alone never establishes that.
+  invocationKind: string | null;
 }
 
 export interface OrgUnit {
@@ -198,6 +202,7 @@ function buildOrgUnits(
       message_count: run.message_count ?? 0,
       kind: "run",
       invocation_id: run.invocation_id ?? null,
+      invocationKind: run.invocation_kind ?? null,
     };
 
     const parent = run.invocation_id ? invMap.get(run.invocation_id) : undefined;
