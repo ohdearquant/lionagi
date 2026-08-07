@@ -1281,6 +1281,59 @@ async def test_idle_session_backfilled_with_artifacts_path_even_when_project_alr
 
 
 @pytest.mark.asyncio
+async def test_attr_peeked_flag_not_set_on_backfill_failure(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same failure-atomicity requirement as the codex idle backfill
+    (test_codex_provenance_peeked_flag_not_set_on_backfill_failure): a
+    transient set_session_provenance failure inside the idle project
+    backfill must not permanently mark this in-memory state as peeked, or no
+    later pass in this process ever retries it."""
+    from lionagi.cli import mirror as mirror_mod
+
+    work = tmp_path / "ghost-proj-flaky"
+    work.mkdir()
+    uid = "eeeeeeee-0000-0000-0000-000000000099"
+    root = tmp_path / "projects"
+    path = root / "-w-proj" / f"{uid}.jsonl"
+    events = [
+        _lineage_event(uid, "g-1", None, "user", "hi") | {"cwd": str(work)},
+        _lineage_event(uid, "g-2", "g-1", "assistant", "ok"),
+    ]
+    _write_lineage_file(path, events)
+
+    attempts = []
+    real_attribute = mirror_mod._attribute_idle
+
+    async def flaky_attribute(db, state, cwd):
+        attempts.append(state.session_uid)
+        if len(attempts) == 1:
+            raise RuntimeError("set_session_provenance transient failure")
+        return await real_attribute(db, state, cwd)
+
+    monkeypatch.setattr(mirror_mod, "_attribute_idle", flaky_attribute)
+
+    async with StateDB() as db:
+        await mirror_session(db, session_uid=uid, events=events, tool_names={}, project=None)
+        assert (await db.get_session(session_db_id(uid)))["project"] is None
+
+        offsets = {str(path): path.stat().st_size}
+        states: dict[str, _FileState] = {}
+        # _one_pass's own per-transcript exception handler swallows the raise.
+        await _one_pass(db, root, states, offsets, since=None, live_window=300)
+        state = states[str(path)]
+        assert not state.attr_peeked, (
+            "the flag was set even though the backfill raised, so no later pass will retry it"
+        )
+
+        await _one_pass(db, root, states, offsets, since=None, live_window=300)
+        row = await db.get_session(session_db_id(uid))
+    assert state.attr_peeked
+    assert row["project"] == "ghost-proj-flaky"
+    assert len(attempts) == 2, f"backfill was attempted {len(attempts)} time(s), not 2"
+
+
+@pytest.mark.asyncio
 async def test_peek_head_skips_non_dict_head_line(temp_db_path: Path, tmp_path: Path) -> None:
     # A valid-JSON-but-non-dict head line (e.g. `[]`) must not wedge the idle
     # reconcile path: _peek_head must skip it like _read_new_events, so an
@@ -1589,6 +1642,56 @@ async def test_idle_codex_rollout_backfills_artifacts_path_from_header_cwd(tmp_p
 
         row = await db.get_session(codex_sid(uid))
     assert row["artifacts_path"] == "/x"
+
+
+async def test_codex_provenance_peeked_flag_not_set_on_backfill_failure(tmp_path, monkeypatch):
+    """codex_provenance_peeked is never persisted -- it only exists to avoid a
+    redundant DB round-trip on every idle pass within one process's lifetime.
+    Setting it before the backfill it guards succeeds means a transient
+    set_session_provenance failure (e.g. a DB hiccup) permanently blocks
+    retry for the rest of that process, even though the flag's own docstring
+    promise is "attempted", not "attempted once and given up on"."""
+    from lionagi.cli import mirror as mirror_mod
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000010"
+    path = tmp_path / "rollout-idle-flaky.jsonl"
+    contents = _codex_rollout_lines(uid, "Codex Desktop")
+    path.write_text(contents)
+    records = [json.loads(line) for line in contents.splitlines()]
+
+    attempts = []
+    real_attribute = mirror_mod._attribute_idle_codex
+
+    async def flaky_attribute(db, state):
+        attempts.append(state.session_uid)
+        if len(attempts) == 1:
+            raise RuntimeError("set_session_provenance transient failure")
+        return await real_attribute(db, state)
+
+    monkeypatch.setattr(mirror_mod, "_attribute_idle_codex", flaky_attribute)
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(db, rollout_uid=uid, records=records, tool_names={}, cwd=None)
+        before = await db.get_session(codex_sid(uid))
+        assert before["artifacts_path"] is None
+
+        state = _FileState(session_uid="", offset=len(contents.encode()))
+        with pytest.raises(RuntimeError):
+            await _mirror_one_codex(db, path, state, {})
+        assert not state.codex_provenance_peeked, (
+            "the flag was set even though the backfill raised, so no later pass will retry it"
+        )
+
+        written = await _mirror_one_codex(db, path, state, {})
+        assert written == 0
+        assert state.codex_provenance_peeked
+
+        row = await db.get_session(codex_sid(uid))
+    assert row["artifacts_path"] == "/x"
+    assert len(attempts) == 2, f"backfill was attempted {len(attempts)} time(s), not 2"
 
 
 async def test_partial_header_defers_classification_instead_of_bypassing_it(tmp_path):

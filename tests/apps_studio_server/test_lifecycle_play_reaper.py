@@ -412,3 +412,32 @@ def test_reap_stale_plays_version_guard_skips_claim_after_revalidation(tmp_path,
 
     play = run_async(_get_play(db_path, play_id))
     assert play["status"] == "running"
+
+
+def test_reap_stale_plays_write_is_atomic_with_ended_at(tmp_path, monkeypatch):
+    """The winning transition must stamp ended_at in the same write as the
+    status change, not depend on a follow-up update_play() call that could
+    independently fail and leave status="blocked" with ended_at=None while
+    `reaped` still counts the row. Proven by making update_play() raise: the
+    reaper must never call it at all for this transition."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    show_id = run_async(_seed_show(db_path))
+    play_id = run_async(
+        _seed_play(db_path, show_id, status="running", session_id=None, updated_at=_STALE)
+    )
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("update_play must not be called by this reaper")
+
+    monkeypatch.setattr(state_db_mod.StateDB, "update_play", _boom)
+
+    from lionagi.studio.services.lifecycle import reap_stale_plays
+
+    count = run_async(reap_stale_plays(stale_hours=6.0))
+    assert count == 1
+
+    play = run_async(_get_play(db_path, play_id))
+    assert play["status"] == "blocked"
+    assert play["ended_at"] is not None

@@ -536,9 +536,15 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window, line
                 if not state.session_uid:
                     state.session_uid = uid
                 if state.project is None and not state.attr_peeked:
-                    state.attr_peeked = True
+                    # Set the flag only after a successful backfill (mirrors
+                    # the codex_provenance_peeked fix below): _one_pass's
+                    # per-transcript exception handler swallows a failure
+                    # here, and a flag set beforehand would then suppress
+                    # every later retry for the process lifetime of this
+                    # in-memory state.
                     if cwd:
                         await _attribute_idle(db, state, cwd)
+                    state.attr_peeked = True
             seen.add(state.session_uid)
         except FileNotFoundError:
             continue
@@ -677,8 +683,12 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
     if not records:
         state.offset = new_offset
         if state.cwd and not state.codex_provenance_peeked:
-            state.codex_provenance_peeked = True
+            # Set the flag only after a successful backfill: _codex_pass's
+            # per-rollout exception handler swallows a failure here, and a
+            # flag set beforehand would then suppress every later retry for
+            # the process lifetime of this in-memory state.
             await _attribute_idle_codex(db, state)
+            state.codex_provenance_peeked = True
         return 0
 
     _derive_codex_metadata(state, records)

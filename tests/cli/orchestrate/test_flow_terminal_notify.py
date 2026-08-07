@@ -436,6 +436,52 @@ async def test_run_flow_notify_still_fires_when_invocation_finalize_raises(
     assert payload["status"] == "completed"
 
 
+async def test_run_flow_invocation_finalize_never_calls_update_invocation(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """ended_at must ride the same atomic update_status() write as the
+    terminal status in the finally block's invocation finalizer, not a
+    separate update_invocation(ended_at=...) call that could independently
+    fail after a winning status transition and leave the row terminal with
+    ended_at unset."""
+    env = _make_env(tmp_path)
+    invocation_id = str(uuid4())
+    await _make_invocation(temp_db_path, invocation_id)
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("update_invocation must not be called by this finalizer")
+
+    monkeypatch.setattr(StateDB, "update_invocation", _boom)
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.setup_orchestration",
+            AsyncMock(return_value=env),
+        ),
+        patch(
+            "lionagi.cli.orchestrate.flow._run_flow_inner",
+            AsyncMock(return_value="ok result"),
+        ),
+    ):
+        result, terminal_status = await _run_flow(
+            "claude",
+            "do the thing",
+            invocation_id=invocation_id,
+        )
+
+    assert result == "ok result"
+    assert terminal_status == "completed"
+
+    db = StateDB(str(temp_db_path))
+    await db.open()
+    try:
+        row = await db.get_invocation(invocation_id)
+    finally:
+        await db.close()
+    assert row["status"] == "completed"
+    assert row["ended_at"] is not None
+
+
 async def test_fallback_terminal_envelope_has_last_known_previous_status(
     temp_db_path: Path, tmp_path: Path
 ):

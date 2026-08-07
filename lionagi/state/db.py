@@ -434,6 +434,7 @@ EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "session": frozenset({"ended_at", "node_metadata"}),
     "invocation": frozenset({"ended_at"}),
     "schedule_run": frozenset({"ended_at", "error_detail", "exit_code"}),
+    "play": frozenset({"ended_at"}),
 }
 
 # ── ADR-0035 status vocabulary (valid, not just terminal) ──────────────
