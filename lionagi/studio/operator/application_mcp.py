@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
 from .redact import scrub_text
+from .rename_session import RENAME_SESSION_DESCRIPTION, RenameSessionInput, rename_session
 from .resume_run import RESUME_RUN_DESCRIPTION, ResumeRunInput, resume_run
 from .run_findings import RunFindingsInput, run_findings
 from .run_progress import RunProgressInput, run_progress
@@ -132,6 +133,7 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "run_findings": RunFindingsInput,
     "cancel_run": CancelRunInput,
     "resume_run": ResumeRunInput,
+    "rename_session": RenameSessionInput,
 }
 
 _TOOL_DESCRIPTIONS = {
@@ -196,6 +198,7 @@ _TOOL_DESCRIPTIONS = {
     ),
     "cancel_run": CANCEL_RUN_DESCRIPTION,
     "resume_run": RESUME_RUN_DESCRIPTION,
+    "rename_session": RENAME_SESSION_DESCRIPTION,
 }
 
 _TOOL_SCHEMAS = [
@@ -506,6 +509,7 @@ _TOOL_HANDLERS = {
     "run_findings": run_findings,
     "cancel_run": cancel_run,
     "resume_run": resume_run,
+    "rename_session": rename_session,
 }
 
 

@@ -151,7 +151,15 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
     stable = store.canonical_hash(
         {"requestId": request_id, "tool": "resume_run", "command": command}
     )
-    summary = f"Resume run {run_id[:12]} with a new instruction"
+    # instruction is required for an 'agent' resume and rejected for a
+    # checkpoint-replay one (play/flow/show-play) -- its presence here is
+    # already the kind split the service itself enforces, so the summary
+    # can say which resume this actually is without a second lookup.
+    summary = (
+        f"Resume run {run_id[:12]} with a new instruction"
+        if args.instruction is not None
+        else f"Resume run {run_id[:12]} by replaying its checkpoint"
+    )
     proposal = await store.create_proposal(
         conversation_id,
         request_id,
