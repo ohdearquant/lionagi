@@ -3448,6 +3448,102 @@ def _test_function_exists(node_id: str) -> bool:
     )
 
 
+_SYMBOL_RE = re.compile(
+    r"^(?P<dotted>[A-Za-z_][\w.]*)(?:\[(?P<quote>['\"])(?P<key>[^'\"]*)(?P=quote)\])?$"
+)
+
+
+def _resolve_module_and_suffix(dotted: str) -> tuple[Path, list[str]] | None:
+    """The real source file *dotted* names, plus the attribute path left over
+    once the module boundary is found — mirrors how Python itself resolves
+    `import a.b.c` vs `from a.b import c`: the longest dotted prefix that is
+    a real file (module or package `__init__`) wins, so `a.b.C.method` finds
+    module `a/b.py` and leaves `["C", "method"]`, never mistaking `C` for a
+    module of its own. None when no prefix at any length is a real file."""
+    parts = dotted.split(".")
+    for split in range(len(parts), 1, -1):
+        module_parts = parts[:split]
+        candidate = REPO_ROOT.joinpath(*module_parts).with_suffix(".py")
+        if candidate.is_file():
+            return candidate, parts[split:]
+        pkg_init = REPO_ROOT.joinpath(*module_parts, "__init__.py")
+        if pkg_init.is_file():
+            return pkg_init, parts[split:]
+    return None
+
+
+def _ast_defines_name(body: list[ast.stmt], name: str) -> ast.AST | None:
+    """The statement in *body* that defines top-level/class-level *name* — a
+    def, a class, or an assignment target — or None. Returns the node itself
+    (not just a bool) so a caller can descend into a class body or read an
+    assignment's value."""
+    for node in body:
+        if (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+            and node.name == name
+        ):
+            return node
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    return node
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+        ):
+            return node
+    return None
+
+
+def _symbol_resolves(symbol: str) -> bool:
+    """Whether a GraphSurface.symbol string names something real, without
+    importing it (same no-import rationale as _test_function_exists: a
+    studio-extra-gated module must still resolve here). Handles a dotted
+    module.name or module.Class.method path, and one special case — a
+    literal string subscript on a module-level dict, e.g.
+    ``pkg.mod._KIND_META['planning']`` — by checking the key is one of the
+    dict literal's own keys rather than merely that the dict exists."""
+    match = _SYMBOL_RE.match(symbol)
+    if not match:
+        return False
+    resolved = _resolve_module_and_suffix(match["dotted"])
+    if resolved is None:
+        return False
+    module_path, suffix = resolved
+    if not suffix:
+        return False  # names a bare module, not something inside it
+    tree = ast.parse(module_path.read_text(), filename=str(module_path))
+    node = _ast_defines_name(tree.body, suffix[0])
+    for name in suffix[1:]:
+        if not isinstance(node, ast.ClassDef):
+            return False
+        node = _ast_defines_name(node.body, name)
+    if node is None:
+        return False
+    key = match["key"]
+    if key is None:
+        return True
+    value = node.value if isinstance(node, ast.Assign | ast.AnnAssign) else None
+    if not isinstance(value, ast.Dict):
+        return False
+    return any(isinstance(k, ast.Constant) and k.value == key for k in value.keys)
+
+
+def test_every_symbol_resolves_to_real_source():
+    """Every manifest entry's symbol must name something that really exists,
+    not just a unique string — the gap test_manifest_keys_and_symbols_are_unique
+    left open for the seven location=None rows, which have no AST-discovered
+    location to check parity against and so had nothing resolving `symbol` at
+    all. A row whose code moved or was deleted now fails loudly here instead
+    of reading as coverage."""
+    for surface in GRAPH_SURFACES:
+        assert _symbol_resolves(surface.symbol), (
+            f"{surface.key}.symbol={surface.symbol!r} does not resolve to real source — "
+            "fix the reference or the manifest entry"
+        )
+
+
 def test_every_required_persistence_surface_has_named_evidence():
     """persistence_evidence must be both present and resolvable: a nonexistent
     file (or a typo'd test name) fails loudly instead of reading as coverage —
@@ -3554,6 +3650,41 @@ def test_manifest_keys_and_symbols_are_unique():
     assert len(keys) == len(set(keys)), "duplicate GraphSurface.key values"
     symbols = [s.symbol for s in GRAPH_SURFACES]
     assert len(symbols) == len(set(symbols)), "duplicate GraphSurface.symbol values"
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "lionagi.session.session.Session.flow",
+        "lionagi.cli.orchestrate.flow._resume_flow",
+        "lionagi.cli.engine._KIND_META['planning']",
+        "lionagi.operations.builder.OperationGraphBuilder",
+    ],
+)
+def test_symbol_resolves_accepts_real_symbols(symbol):
+    """Positive arm: every shape a manifest symbol actually takes — a plain
+    module-level function, a class method, and a dict-literal subscript —
+    resolves against real source."""
+    assert _symbol_resolves(symbol)
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "lionagi.session.session.Session.nonexistent_method",
+        "lionagi.session.session.NonexistentClass.flow",
+        "lionagi.nonexistent.module.thing",
+        "lionagi.cli.engine._KIND_META['nonexistent_kind']",
+        "not a symbol at all",
+    ],
+)
+def test_symbol_resolves_rejects_broken_symbols(symbol):
+    """Negative arm, same shapes: a deleted method, a deleted class, a
+    deleted module, a stale dict key, and unparseable text all fail rather
+    than silently resolving to something else. Without this the positive
+    arm alone would be unvalidated — a predicate that has only ever
+    returned one answer proves nothing about the answer it returns."""
+    assert not _symbol_resolves(symbol)
 
 
 # ---------------------------------------------------------------------------
