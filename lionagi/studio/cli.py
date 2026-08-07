@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -380,7 +381,13 @@ def _start_local(
         launched = _launch_vite_dev(frontend_dir, frontend_port, host=host)
         if launched:
             frontend_proc, frontend_url = launched
-            print(f"Lion Studio UI (dev):  {frontend_url}")
+            if frontend_url:
+                print(f"Lion Studio UI (dev):  {frontend_url}")
+            else:
+                warn(
+                    "Vite started but its bound address could not be "
+                    "determined — check the Vite output above."
+                )
         print(f"Lion Studio API:       http://{host}:{port}")
     else:
         # Production mode: build dist/ once, then uvicorn serves both UI and API
@@ -530,6 +537,19 @@ def _vite_dev_argv(frontend_port: int, host: str) -> list[str]:
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 _VITE_LOCAL_URL_RE = re.compile(r"Local:\s+(https?://[^\s/]+)")
+_VITE_NETWORK_URL_RE = re.compile(r"Network:\s+(https?://[^\s/]+)")
+_VITE_SETTLE_SECONDS = 0.15
+
+# Hosts for which Vite's `Local:` line is the address a caller can actually
+# reach. Anything else — a LAN IP or the 0.0.0.0/:: wildcard — binds extra
+# interfaces that only show up on Vite's `Network:` line; `Local:` stays a
+# loopback URL even when told to listen everywhere, so using it there would
+# print an address a LAN client cannot reach.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _host_wants_lan_url(host: str) -> bool:
+    return host not in _LOOPBACK_HOSTS
 
 
 def _parse_vite_local_url(line: str) -> str | None:
@@ -537,47 +557,83 @@ def _parse_vite_local_url(line: str) -> str | None:
 
     Vite colors this line with ANSI escapes whenever it thinks it has a color
     terminal (npm/npx can force this even with a piped stdout), so the escapes
-    must be stripped before matching or the parse silently misses and the
-    caller falls back to the requested (possibly wrong) address.
+    must be stripped before matching or the parse silently misses.
     """
     plain = _ANSI_ESCAPE_RE.sub("", line)
     match = _VITE_LOCAL_URL_RE.search(plain)
     return match.group(1) if match else None
 
 
+def _parse_vite_network_url(line: str) -> str | None:
+    """Extract the LAN address from a Vite startup line like `➜  Network:   http://192.168.1.5:5174/`."""
+    plain = _ANSI_ESCAPE_RE.sub("", line)
+    match = _VITE_NETWORK_URL_RE.search(plain)
+    return match.group(1) if match else None
+
+
 def _await_vite_ready_url(
     proc: subprocess.Popen,
     *,
-    fallback_host: str,
-    fallback_port: int,
+    host: str,
     timeout: float = 10.0,
-) -> str:
-    """Read Vite's startup output for the address it actually bound.
+) -> str | None:
+    """Read Vite's startup banner for the address it actually bound.
 
-    Vite auto-increments past a taken port, so the requested port is not a
-    guarantee; falls back to the requested host/port if nothing is parsed
-    before `timeout` (Vite failed to start, or logged something unexpected).
+    Loopback hosts read the `Local:` line. Non-loopback hosts (a LAN IP, or
+    the `0.0.0.0`/`::` wildcard) read `Network:` instead, since that is the
+    address reachable from outside this machine. When Vite reports more than
+    one matching line (multiple interfaces), the first one wins and a note is
+    printed saying so — callers get a single deterministic URL either way.
+
+    Returns None if nothing of the right kind is parsed before `timeout`
+    (Vite failed to start, logged an unexpected format, or never bound the
+    requested kind of address). Callers must not construct a guessed URL
+    from the requested host/port on that path, since nothing may be
+    listening there.
+
+    A background thread keeps draining stdout for the life of the process so
+    Vite never blocks on a full pipe buffer; once this function returns, that
+    thread stops parsing (the `done` flag below) and only drains. It is a
+    daemon thread and needs no explicit join — it exits with the process.
     """
-    result: queue.Queue[str | None] = queue.Queue(maxsize=1)
+    parse = _parse_vite_network_url if _host_wants_lan_url(host) else _parse_vite_local_url
+    hits: queue.Queue[str] = queue.Queue()
+    done = threading.Event()
 
     def _pump() -> None:
         if proc.stdout is None:
-            result.put(None)
             return
         for line in proc.stdout:
-            parsed = _parse_vite_local_url(line)
-            if parsed:
-                result.put(parsed)
-                return
-        result.put(None)
+            if done.is_set():
+                continue
+            found = parse(line)
+            if found:
+                hits.put(found)
 
     thread = threading.Thread(target=_pump, daemon=True)
     thread.start()
     try:
-        found = result.get(timeout=timeout)
+        first = hits.get(timeout=timeout)
     except queue.Empty:
-        found = None
-    return found or f"http://{fallback_host}:{fallback_port}"
+        done.set()
+        return None
+
+    matches = [first]
+    deadline = time.monotonic() + _VITE_SETTLE_SECONDS
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            matches.append(hits.get(timeout=remaining))
+        except queue.Empty:
+            break
+    done.set()
+
+    if len(matches) > 1:
+        kind = "Network" if _host_wants_lan_url(host) else "Local"
+        warn(f"Vite reported {len(matches)} {kind}: addresses; using the first ({matches[0]}).")
+    return matches[0]
 
 
 def _launch_vite_dev(
@@ -585,11 +641,13 @@ def _launch_vite_dev(
     frontend_port: int,
     *,
     host: str = "127.0.0.1",
-) -> tuple[subprocess.Popen, str] | None:
+) -> tuple[subprocess.Popen, str | None] | None:
     """Spawn the Vite dev server and resolve the URL it actually bound to.
 
-    Returns the process paired with the real bound URL, so the caller never
-    prints/opens an address nothing is listening on.
+    Returns the process paired with the real bound URL — or paired with None
+    when Vite's bound address could not be determined, so the caller never
+    prints/opens a guessed address nothing may be listening on. Returns None
+    only when the process itself failed to spawn.
     """
     env = {**os.environ, "PORT": str(frontend_port)}
     try:
@@ -606,7 +664,7 @@ def _launch_vite_dev(
         print("Warning: npx not found.", file=sys.stderr)
         return None
 
-    url = _await_vite_ready_url(proc, fallback_host=host, fallback_port=frontend_port)
+    url = _await_vite_ready_url(proc, host=host)
     return proc, url
 
 

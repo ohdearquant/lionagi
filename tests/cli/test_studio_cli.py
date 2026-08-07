@@ -6,8 +6,41 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
+import socket
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+
+# Real Vite fixture used by the binding/host-selection tests below — these
+# prove claims about actual Vite startup output rather than a hand-built
+# fixture, which round-1 review found could hide a real parsing defect.
+_FRONTEND_DIR = Path(__file__).resolve().parents[2] / "apps" / "studio" / "frontend"
+_VITE_BIN = _FRONTEND_DIR / "node_modules" / ".bin" / "vite"
+requires_real_vite = pytest.mark.skipif(
+    not _VITE_BIN.exists(),
+    reason="apps/studio/frontend/node_modules not installed; run `npm install` there first",
+)
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _stop(proc):
+    if proc is None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 
 @contextlib.contextmanager
@@ -697,14 +730,15 @@ def test_await_vite_ready_url_returns_the_parsed_startup_address():
         ]
     )
 
-    url = _await_vite_ready_url(proc, fallback_host="127.0.0.1", fallback_port=3000, timeout=5.0)
+    url = _await_vite_ready_url(proc, host="127.0.0.1", timeout=5.0)
 
     assert url == "http://127.0.0.1:5175"
 
 
-def test_await_vite_ready_url_falls_back_when_nothing_matches():
+def test_await_vite_ready_url_returns_none_when_nothing_matches():
     """If Vite never logs a Local: line before the timeout (crash, unexpected
-    output format), fall back to the requested host/port instead of hanging."""
+    output format), report failure honestly instead of guessing a URL nothing
+    may be listening on."""
     from unittest.mock import MagicMock
 
     from lionagi.studio.cli import _await_vite_ready_url
@@ -712,23 +746,56 @@ def test_await_vite_ready_url_falls_back_when_nothing_matches():
     proc = MagicMock()
     proc.stdout = iter(["  some unrelated output\n"])
 
-    url = _await_vite_ready_url(proc, fallback_host="127.0.0.1", fallback_port=3000, timeout=1.0)
+    url = _await_vite_ready_url(proc, host="127.0.0.1", timeout=1.0)
 
-    assert url == "http://127.0.0.1:3000"
+    assert url is None
+
+
+def test_await_vite_ready_url_uses_the_first_of_multiple_network_lines(caplog):
+    """Vite can print more than one Network: line (multiple interfaces);
+    selection must be deterministic (the first one) and the caller must be
+    told a choice was made rather than silently picking one."""
+    from unittest.mock import MagicMock
+
+    from lionagi.studio.cli import _await_vite_ready_url
+
+    proc = MagicMock()
+    proc.stdout = iter(
+        [
+            "  ➜  Local:   http://localhost:5175/\n",
+            "  ➜  Network: http://192.168.1.10:5175/\n",
+            "  ➜  Network: http://100.64.0.5:5175/\n",
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        url = _await_vite_ready_url(proc, host="0.0.0.0", timeout=5.0)
+
+    assert url == "http://192.168.1.10:5175"
+    assert any("2 Network" in r.message for r in caplog.records)
 
 
 def test_launch_vite_dev_passes_host_through_to_argv_and_returns_the_bound_url(
     tmp_path, monkeypatch
 ):
     """End-to-end (mocked Popen): the host given to _launch_vite_dev reaches the
-    spawn argv, and the returned URL is the one parsed from Vite's own output."""
+    spawn argv, and the returned URL is the one parsed from Vite's own output.
+
+    Wiring only — a non-loopback host selects `Network:`, not `Local:` (see
+    the real-Vite tests for that host-selection claim proved against actual
+    Vite output rather than a hand-built fixture)."""
     import lionagi.studio.cli as studio_mod
 
     captured_argv = {}
 
     class FakeProc:
         def __init__(self):
-            self.stdout = iter(["  ➜  Local:   http://0.0.0.0:4001/\n"])
+            self.stdout = iter(
+                [
+                    "  ➜  Local:   http://localhost:4001/\n",
+                    "  ➜  Network: http://192.168.1.50:4001/\n",
+                ]
+            )
 
     def fake_popen(argv, **kwargs):
         captured_argv["argv"] = argv
@@ -742,7 +809,7 @@ def test_launch_vite_dev_passes_host_through_to_argv_and_returns_the_bound_url(
     proc, url = result
     assert isinstance(proc, FakeProc)
     assert captured_argv["argv"] == ["npx", "vite", "--port", "4000", "--host", "0.0.0.0"]
-    assert url == "http://0.0.0.0:4001"
+    assert url == "http://192.168.1.50:4001"
 
 
 def test_launch_vite_dev_warns_and_returns_none_when_npx_missing(tmp_path, monkeypatch, capsys):
@@ -757,3 +824,73 @@ def test_launch_vite_dev_warns_and_returns_none_when_npx_missing(tmp_path, monke
 
     assert result is None
     assert "npx not found" in capsys.readouterr().err
+
+
+@requires_real_vite
+@pytest.mark.integration
+@pytest.mark.slow
+def test_launch_vite_dev_resolves_the_incremented_port_on_a_real_collision():
+    """When the requested port is already bound, real Vite auto-increments to
+    the next free one; the returned URL must carry that real port, not the
+    one that was requested (a hand-built fixture can't prove auto-increment
+    actually happens — this starts a real process against an occupied port)."""
+    import lionagi.studio.cli as studio_mod
+
+    requested_port = _free_port()
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    blocker.bind(("127.0.0.1", requested_port))
+    blocker.listen(1)
+    proc = None
+    try:
+        result = studio_mod._launch_vite_dev(_FRONTEND_DIR, requested_port, host="127.0.0.1")
+        assert result is not None
+        proc, url = result
+        assert url is not None
+        bound_port = int(url.rsplit(":", 1)[1])
+        assert bound_port > requested_port
+    finally:
+        blocker.close()
+        _stop(proc)
+
+
+@requires_real_vite
+@pytest.mark.integration
+@pytest.mark.slow
+def test_launch_vite_dev_selects_the_local_url_for_a_loopback_host():
+    """Real Vite launched with --host 127.0.0.1 only ever prints a Local:
+    line; the loopback URL must be selected."""
+    import lionagi.studio.cli as studio_mod
+
+    proc = None
+    try:
+        result = studio_mod._launch_vite_dev(_FRONTEND_DIR, _free_port(), host="127.0.0.1")
+        assert result is not None
+        proc, url = result
+        assert url is not None
+        host = url.split("://", 1)[1].rsplit(":", 1)[0]
+        assert host in ("127.0.0.1", "localhost")
+    finally:
+        _stop(proc)
+
+
+@requires_real_vite
+@pytest.mark.integration
+@pytest.mark.slow
+def test_launch_vite_dev_selects_a_lan_url_for_the_wildcard_host():
+    """Real Vite launched with --host 0.0.0.0 prints both a loopback Local:
+    line and one or more LAN Network: lines; the selected URL must be a
+    Network: address, not the loopback Local: line (r1 finding: LAN binding
+    was silently reduced to loopback because only Local: was ever parsed)."""
+    import lionagi.studio.cli as studio_mod
+
+    proc = None
+    try:
+        result = studio_mod._launch_vite_dev(_FRONTEND_DIR, _free_port(), host="0.0.0.0")
+        assert result is not None
+        proc, url = result
+        assert url is not None
+        host = url.split("://", 1)[1].rsplit(":", 1)[0]
+        assert host not in ("127.0.0.1", "localhost")
+    finally:
+        _stop(proc)
