@@ -14,6 +14,7 @@ progression, run update_status with reason, verify transition row written.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 
@@ -383,6 +384,20 @@ def test_pg_touch_activity_uses_greatest():
     assert "MAX(" in sqlite and "GREATEST(" not in sqlite
 
 
+def test_pg_merge_node_metadata_sql_never_strips_the_whole_document():
+    """Regression guard for PR #2898 round-4 Blocker: jsonb_strip_nulls over
+    the entire merged document deletes nulls that predate the patch. Cheap
+    and always-run (no live Postgres needed) so a reintroduction fails fast,
+    ahead of the live-Postgres parity test in test_merge_node_metadata_dialect_parity."""
+    sql = StateDB._merge_node_metadata_sql("postgresql")
+    assert "jsonb_strip_nulls" not in sql, sql
+
+
+def test_sqlite_merge_node_metadata_sql_uses_json_patch():
+    sql = StateDB._merge_node_metadata_sql("sqlite")
+    assert "json_patch" in sql
+
+
 def test_to_named_skips_question_mark_in_string_literal():
     sql, params = StateDB._to_named("SELECT '?' AS q, ? AS v", ["x"])
     assert sql == "SELECT '?' AS q, :p0 AS v"
@@ -467,6 +482,215 @@ async def test_postgres_capability_claim(pg_url):
                 .first()["status"]
             )
         assert status == "completed"
+    finally:
+        await db.close()
+
+
+# ── merge_session_node_metadata: dialect-parity table ─────────────────────────
+# Round 4 review of PR #2898 found that Postgres's jsonb_strip_nulls, applied to
+# the *entire* merged document, deletes nulls that predate the patch and were
+# never touched by it -- SQLite's json_patch never removes them. A real
+# NodeStarted flow segment (lionagi/cli/orchestrate/flow.py) carries
+# ended_at: None and last_heartbeat_at: None inside a "segments" array patch
+# value, so this was reachable from production, not hypothetical. The fix
+# computes the null-deletion set from the patch alone instead of stripping the
+# whole document; this table pins every case the round-4 review's live matrix
+# found, plus the SQL-NULL/JSON-null/non-object forensic arms, against both
+# backends and asserts they land on the identical value.
+
+
+async def _seed_node_metadata(db: StateDB, session_id: str, value) -> None:
+    """A bare session with node_metadata set to *value* verbatim -- the JSON
+    bind type accepts a dict, list, scalar, or None as-is."""
+    prog_id = _uid()
+    await db.create_progression(prog_id)
+    await db.create_session(
+        {"id": session_id, "progression_id": prog_id, "status": "running", "node_metadata": value}
+    )
+
+
+def _node_metadata(row: dict) -> object:
+    v = row["node_metadata"]
+    if isinstance(v, str):
+        v = json.loads(v)
+    return v
+
+
+def _pop_discarded_at(d: object) -> object:
+    """_discarded_at is time.time() at merge time -- assert its shape, not
+    its value, and hand back the rest of the document for an exact compare."""
+    if isinstance(d, dict) and "_discarded_at" in d:
+        d = dict(d)
+        ts = d.pop("_discarded_at")
+        assert isinstance(ts, float), f"_discarded_at must be a float timestamp, got {ts!r}"
+    return d
+
+
+# (name, initial node_metadata, patch, expected merged result)
+_MERGE_PARITY_CASES = [
+    ("flat_key_collision", {"a": 1}, {"a": 2}, {"a": 2}),
+    ("disjoint_top_level_key", {"a": 1}, {"b": 2}, {"a": 1, "b": 2}),
+    ("root_patch_null_removes_key", {"a": 1, "b": 2}, {"b": None}, {"a": 1}),
+    ("root_patch_null_on_absent_key_is_noop", {"a": 1}, {"c": None}, {"a": 1}),
+    (
+        "existing_untouched_nested_null_survives",
+        {"nested": {"nullable": None, "keep": 1}},
+        {"other": 2},
+        {"nested": {"nullable": None, "keep": 1}, "other": 2},
+    ),
+    (
+        # The production shape: a top-level array patch value whose elements
+        # carry nulls (flow.py's segment records). Reproduces the round-4
+        # Blocker directly rather than through a synthetic nested-object patch.
+        "patch_array_with_nested_nulls_survives",
+        {},
+        {"segments": [{"op_id": "x", "ended_at": None, "last_heartbeat_at": None}]},
+        {"segments": [{"op_id": "x", "ended_at": None, "last_heartbeat_at": None}]},
+    ),
+]
+
+# (name, initial non-object node_metadata, patch, expected result minus _discarded_at)
+_MERGE_PARITY_NONOBJECT_CASES = [
+    (
+        "existing_array_wrapped_nested_null_survives",
+        [1, {"nested_null": None}],
+        {"added": 2},
+        {"_discarded_node_metadata": [1, {"nested_null": None}], "added": 2},
+    ),
+    (
+        "existing_scalar_wrapped",
+        42,
+        {"x": 1},
+        {"_discarded_node_metadata": 42, "x": 1},
+    ),
+]
+
+
+async def test_merge_node_metadata_dialect_parity(sqlite_db: StateDB, pg_url):
+    """The same patch table lands on the identical value on SQLite and
+    PostgreSQL. Manually verified to discriminate: reintroducing
+    jsonb_strip_nulls over the whole merged document in the Postgres branch of
+    _merge_node_metadata_sql turns existing_untouched_nested_null_survives and
+    patch_array_with_nested_nulls_survives red on the Postgres leg."""
+    from sqlalchemy import text
+
+    pg = StateDB(url=pg_url)
+    await pg.open()
+    try:
+        assert pg.dialect == "postgresql"
+        for name, initial, patch, expected in _MERGE_PARITY_CASES:
+            for db in (sqlite_db, pg):
+                sid = _uid()
+                await _seed_node_metadata(db, sid, initial)
+                await db.merge_session_node_metadata(sid, patch)
+                got = _node_metadata(await db.get_session(sid))
+                assert got == expected, (
+                    f"{name} on {db.dialect}: expected {expected!r}, got {got!r}"
+                )
+
+        for name, initial, patch, expected in _MERGE_PARITY_NONOBJECT_CASES:
+            for db in (sqlite_db, pg):
+                sid = _uid()
+                await _seed_node_metadata(db, sid, initial)
+                await db.merge_session_node_metadata(sid, patch)
+                got = _pop_discarded_at(_node_metadata(await db.get_session(sid)))
+                assert got == expected, (
+                    f"{name} on {db.dialect}: expected {expected!r}, got {got!r}"
+                )
+
+        # True SQL NULL (the column's state before any session ever set it) is
+        # treated as an absent object to merge into, on both dialects.
+        for db in (sqlite_db, pg):
+            sid = _uid()
+            await _seed_node_metadata(db, sid, {"tmp": 1})
+            async with db._tx() as conn:
+                await conn.execute(
+                    text("UPDATE sessions SET node_metadata = NULL WHERE id = :id"), {"id": sid}
+                )
+            await db.merge_session_node_metadata(sid, {"x": 1})
+            got = _node_metadata(await db.get_session(sid))
+            assert got == {"x": 1}, f"SQL NULL on {db.dialect}: got {got!r}"
+
+        # JSON null (create_session's default when node_metadata is omitted --
+        # SQLAlchemy's JSON bind serializes Python None to the JSON null
+        # literal, not SQL NULL) is likewise absent, not a foreign shape.
+        for db in (sqlite_db, pg):
+            sid = _uid()
+            prog_id = _uid()
+            await db.create_progression(prog_id)
+            await db.create_session({"id": sid, "progression_id": prog_id, "status": "running"})
+            await db.merge_session_node_metadata(sid, {"x": 1})
+            got = _node_metadata(await db.get_session(sid))
+            assert got == {"x": 1}, f"JSON null default on {db.dialect}: got {got!r}"
+    finally:
+        await pg.close()
+
+
+async def test_merge_node_metadata_rejects_nested_object_patch_on_both_dialects(
+    sqlite_db: StateDB, pg_url
+):
+    """A patch value that is itself a dict is refused on every dialect,
+    identically, before any SQL runs -- sqlite's json_patch would merge it
+    recursively and Postgres's jsonb `||` would replace it shallowly, so
+    allowing it would persist different state per backend (round-4 Medium)."""
+    pg = StateDB(url=pg_url)
+    await pg.open()
+    try:
+        for db in (sqlite_db, pg):
+            with pytest.raises(ValueError, match="nested object patch"):
+                await db.merge_session_node_metadata(_uid(), {"nested": {"a": 1}})
+    finally:
+        await pg.close()
+
+
+async def test_merge_node_metadata_malformed_existing_text_sqlite_only(sqlite_db: StateDB):
+    """Non-JSON text in node_metadata is a sqlite-only state: Postgres's typed
+    json column rejects invalid text at write time (asserted in
+    test_postgres_json_column_rejects_non_json_text below), so this case can
+    only be reached on sqlite. There, merge preserves it verbatim under
+    _discarded_node_metadata instead of dropping it."""
+    from sqlalchemy import bindparam, text
+    from sqlalchemy.types import String
+
+    sid = _uid()
+    prog_id = _uid()
+    await sqlite_db.create_progression(prog_id)
+    await sqlite_db.create_session({"id": sid, "progression_id": prog_id, "status": "running"})
+    async with sqlite_db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET node_metadata = :raw WHERE id = :id").bindparams(
+                bindparam("raw", type_=String)
+            ),
+            {"raw": "not json {{{", "id": sid},
+        )
+
+    await sqlite_db.merge_session_node_metadata(sid, {"x": 1})
+    got = _pop_discarded_at(_node_metadata(await sqlite_db.get_session(sid)))
+    assert got == {"_discarded_node_metadata": "not json {{{", "x": 1}
+
+
+async def test_postgres_json_column_rejects_non_json_text(pg_url):
+    """The dialect difference the sqlite-only arm above depends on: Postgres's
+    typed json column refuses invalid text before merge_session_node_metadata
+    is ever reached, so the malformed-text arm cannot occur on that backend."""
+    from sqlalchemy import bindparam, text
+    from sqlalchemy.types import String
+
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        sid = _uid()
+        prog_id = _uid()
+        await db.create_progression(prog_id)
+        await db.create_session({"id": sid, "progression_id": prog_id, "status": "running"})
+        with pytest.raises(Exception):  # noqa: B017, PT011 -- backend-specific DBAPI error
+            async with db._tx() as conn:
+                await conn.execute(
+                    text("UPDATE sessions SET node_metadata = :raw WHERE id = :id").bindparams(
+                        bindparam("raw", type_=String)
+                    ),
+                    {"raw": "not json {{{", "id": sid},
+                )
     finally:
         await db.close()
 
