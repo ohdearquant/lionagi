@@ -167,18 +167,47 @@ def _frontmatter_problem(path: Path) -> str:
 def _mcp_servers_gate(mcp: object) -> tuple[dict[str, dict], list[str]]:
     """Validate a plugin.json 'mcpServers' block without ever raising.
 
+    The Claude Code plugin schema documents 'mcpServers' as a string (a path to
+    an external MCP config file), an array of those, or an inline object
+    mapping server names to their configuration — this validator used to accept
+    only the object form, refusing valid plugins that used the other two. Only
+    the object form has entries this validator can inspect further (e.g. for
+    the stub check below), so a string or an array passes the type gate with
+    nothing left to check; an array element that is not a string is reported
+    the same way a malformed object entry is.
+
     Returns the entries safe to iterate further (e.g. for the stub check) plus a
     list of problem descriptions. A malformed top-level block, or an entry whose
-    value is not itself an object, is reported and dropped from the returned
-    dict — never left in it — so a caller can keep going without calling a dict
-    method on something that turned out not to be one. Both the per-plugin and
-    the standalone-scan branch share this gate, so a fix here fixes both at once
-    and the two can never drift back apart.
+    value is not itself a non-empty object, is reported and dropped from the
+    returned dict — never left in it — so a caller can keep going without
+    calling a dict method on something that turned out not to be one. An empty
+    inline entry (``{}``) is rejected to match a behavioral divergence observed
+    against the upstream `claude plugin validate` command (Claude Code
+    2.1.224): this validator used to accept it silently where that command
+    refuses it with ``mcpServers: Invalid input``. The captured command
+    output backing that observation is checked in at
+    testdata/claude_plugin_validate_empty_mcp_server.txt (rejection) and
+    testdata/claude_plugin_validate_nonempty_mcp_server.txt (a well-formed
+    entry, for contrast) alongside this script, so the parity claim is
+    checkable against a recorded run rather than resting on prose alone. Both
+    the per-plugin and the standalone-scan branch share this gate, so a fix
+    here fixes both at once and the two can never drift back apart.
     """
     if mcp is None:
         return {}, []
+    if isinstance(mcp, str):
+        return {}, []
+    if isinstance(mcp, list):
+        problems = [
+            f"mcpServers[{index}] must be a string, got {type(item).__name__}"
+            for index, item in enumerate(mcp)
+            if not isinstance(item, str)
+        ]
+        return {}, problems
     if not isinstance(mcp, dict):
-        return {}, [f"'mcpServers' must be an object, got {type(mcp).__name__}"]
+        return {}, [
+            f"'mcpServers' must be a string, an array, or an object, got {type(mcp).__name__}"
+        ]
     usable: dict[str, dict] = {}
     problems: list[str] = []
     for server_name, server_cfg in mcp.items():
@@ -186,6 +215,9 @@ def _mcp_servers_gate(mcp: object) -> tuple[dict[str, dict], list[str]]:
             problems.append(
                 f"mcpServers['{server_name}'] must be an object, got {type(server_cfg).__name__}"
             )
+            continue
+        if not server_cfg:
+            problems.append(f"mcpServers['{server_name}'] must not be empty")
             continue
         usable[server_name] = server_cfg
     return usable, problems

@@ -1,0 +1,21 @@
+Captured output of the upstream `claude plugin validate` tool (Claude Code
+2.1.224), run against a plugin.json whose "mcpServers" block contains a
+single entry with an empty object value:
+
+  {"mcpServers": {"empty": {}}}
+
+Command: claude plugin validate <plugin-dir>
+
+Validating plugin manifest: <plugin-dir>/.claude-plugin/plugin.json
+
+✘ Found 1 error:
+
+  ❯ mcpServers: Invalid input
+
+✘ Validation failed
+exit code: 1
+
+This is the evidence backing the empty-inline-entry rejection in
+_mcp_servers_gate() (marketplace/scripts/validate_manifests.py). The
+temp directory path in the original run has been replaced with
+<plugin-dir> above; nothing else was edited.

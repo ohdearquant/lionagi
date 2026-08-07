@@ -21,11 +21,12 @@ vi.mock("@/lib/api", () => ({
   listRuns: vi.fn(),
   listInvocations: vi.fn(),
   listSchedules: vi.fn(),
-  // No .mockReset() call site below ever touches this one — it keeps this
+  // No .mockReset() call site below ever touches these two — they keep this
   // default resolved value for the whole file, so every existing DATA_OK
-  // assertion here stays valid without threading a dispositions fixture
-  // through tests that aren't about dispositions at all.
+  // assertion here stays valid without threading a dispositions/gated-plays
+  // fixture through tests that aren't about either at all.
   listAttentionDispositions: vi.fn().mockResolvedValue({}),
+  listGatedPlays: vi.fn().mockResolvedValue([]),
 }));
 
 import { listRuns, listInvocations, listSchedules } from "@/lib/api";
@@ -270,6 +271,8 @@ describe("useLiveBoard — schedules degrade-to-null on fetch failure", () => {
       limit: 100,
       offset: 0,
       has_next: false,
+      total: 0,
+      completed_total: 0,
     });
     vi.mocked(listSchedules).mockRejectedValue(new Error("schedules endpoint down"));
 
@@ -322,7 +325,14 @@ describe("useLiveBoard — schedules degrade-to-null on fetch failure", () => {
       has_next: false,
       has_prev: false,
     };
-    const invsResp = { invocations: [], limit: 100, offset: 0, has_next: false };
+    const invsResp = {
+      invocations: [],
+      limit: 100,
+      offset: 0,
+      has_next: false,
+      total: 0,
+      completed_total: 0,
+    };
 
     vi.mocked(listRuns).mockResolvedValue(runsResp);
     vi.mocked(listInvocations).mockResolvedValue(invsResp);

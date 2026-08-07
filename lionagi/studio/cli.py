@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
 from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._argtypes import JsonArgument
 from lionagi.cli._logging import log_error, warn
@@ -156,6 +157,9 @@ def _validate_mode_flags(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
 
+@auto_register(
+    area="studio", cli=CliDeclaration(seed="studio", parser_factory=add_studio_subparser)
+)
 def run_studio(args: argparse.Namespace) -> int:
     if not getattr(args, "studio_action", None):
         args.studio_action = "start"
@@ -837,8 +841,12 @@ def _cmd_limits(args: argparse.Namespace) -> int:
         return 1
     cap = result.get("max_scheduled_concurrent")
     cap_display = "unlimited" if not cap else str(cap)
-    print(f"Max concurrent fires: {cap_display}")
-    print(f"Current in-flight:    {result.get('current_inflight', 0)}")
+    print(f"Max concurrent fires:      {cap_display}")
+    print(f"Current in-flight:         {result.get('current_inflight', 0)}")
+    adhoc_cap = result.get("max_adhoc_concurrent")
+    adhoc_cap_display = "unlimited" if not adhoc_cap else str(adhoc_cap)
+    print(f"Max concurrent ad-hoc:     {adhoc_cap_display}")
+    print(f"Current ad-hoc in-flight:  {result.get('current_adhoc_inflight', 0)}")
     return 0
 
 
@@ -2351,6 +2359,9 @@ _ACTION_MAP = {
 }
 
 
+@auto_register(
+    area="schedule", cli=CliDeclaration(seed="schedule", parser_factory=add_schedule_subparser)
+)
 def run_schedule(args: argparse.Namespace) -> int:
     action = getattr(args, "schedule_action", None)
     fn = _ACTION_MAP.get(action)

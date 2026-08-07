@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from lionagi import Branch
+from lionagi._auto import CliDeclaration, auto_register
 from lionagi._errors import ConfigurationError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import (
@@ -1589,6 +1590,7 @@ def _resolve_model_and_prompt(args: argparse.Namespace) -> tuple[str | None, str
     return None
 
 
+@auto_register(area="agent", cli=CliDeclaration(seed="agent", parser_factory=add_agent_subparser))
 def run_agent(args: argparse.Namespace) -> int:
     """Dispatch agent command."""
     if getattr(args, "list_profiles", False):

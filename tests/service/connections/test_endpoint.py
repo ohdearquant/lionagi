@@ -1334,3 +1334,187 @@ class TestRetryConfigDefaultRetriesRealErrors:
                     with pytest.raises(ConnectionError):
                         await endpoint.call({}, skip_payload_creation=True)
         assert call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# #2393 — a retried POST to a non-idempotent creation endpoint must carry a
+# stable Idempotency-Key reused across every attempt, so an ambiguous lost
+# response cannot be replayed into a second billable job.
+# ---------------------------------------------------------------------------
+
+
+class TestIdempotencyKeyOnRetriedPosts:
+    def _make_endpoint(self, *, idempotent_retries: bool, max_retries: int = 3) -> Endpoint:
+        config = EndpointConfig(
+            name="test",
+            provider="test",
+            endpoint="v1/images/generations",
+            base_url="https://api.test.com",
+            auth_type="bearer",
+            api_key="test-key",
+            method="POST",
+            max_retries=max_retries,
+            idempotent_retries=idempotent_retries,
+        )
+        return Endpoint(config=config)
+
+    def _make_ok_response(self, body: dict | None = None):
+        r = AsyncMock(spec=aiohttp.ClientResponse)
+        r.status = 200
+        r.closed = False
+        r.release = MagicMock()
+        r.json = AsyncMock(return_value=body or {"ok": True})
+        return r
+
+    def _make_error_response(self, status: int):
+        r = AsyncMock(spec=aiohttp.ClientResponse)
+        r.status = status
+        r.closed = False
+        r.release = MagicMock()
+        r.request_info = MagicMock()
+        r.history = []
+        r.headers = {}
+        r.json = AsyncMock(return_value={"error": f"status {status}"})
+
+        def _raise_for_status():
+            raise aiohttp.ClientResponseError(
+                request_info=r.request_info,
+                history=r.history,
+                status=status,
+                message=f"status {status}",
+                headers=r.headers,
+            )
+
+        r.raise_for_status = _raise_for_status
+        return r
+
+    @pytest.mark.asyncio
+    async def test_same_idempotency_key_reused_across_retries(self):
+        """A 500 on attempt 1 followed by a 200 on attempt 2 must reach the
+        server with the SAME Idempotency-Key both times -- a fresh key per
+        attempt would defeat server-side dedup of the ambiguous first try."""
+        endpoint = self._make_endpoint(idempotent_retries=True, max_retries=3)
+        sent_headers: list[dict] = []
+
+        attempt = 0
+
+        def _make_new_session(*args, **kwargs):
+            nonlocal attempt
+            attempt += 1
+            resp = self._make_error_response(500) if attempt == 1 else self._make_ok_response()
+
+            mock_session = AsyncMock(spec=aiohttp.ClientSession)
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            async def _request(*a, **kw):
+                sent_headers.append(dict(kw["headers"]))
+                return resp
+
+            mock_session.request = _request
+            return mock_session
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
+                with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+                    await endpoint.call({"prompt": "a cat"})
+
+        assert attempt == 2
+        assert len(sent_headers) == 2
+        assert "Idempotency-Key" in sent_headers[0]
+        assert sent_headers[0]["Idempotency-Key"] == sent_headers[1]["Idempotency-Key"]
+
+    @pytest.mark.asyncio
+    async def test_two_separate_calls_get_different_keys(self):
+        """Two distinct logical requests must not collide on the same key."""
+        endpoint = self._make_endpoint(idempotent_retries=True, max_retries=1)
+        sent_headers: list[dict] = []
+
+        def _make_new_session(*args, **kwargs):
+            mock_session = AsyncMock(spec=aiohttp.ClientSession)
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            async def _request(*a, **kw):
+                sent_headers.append(dict(kw["headers"]))
+                return self._make_ok_response()
+
+            mock_session.request = _request
+            return mock_session
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
+                await endpoint.call({"prompt": "a cat"})
+                await endpoint.call({"prompt": "a dog"})
+
+        assert len(sent_headers) == 2
+        assert sent_headers[0]["Idempotency-Key"] != sent_headers[1]["Idempotency-Key"]
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_absent_when_not_opted_in(self):
+        endpoint = self._make_endpoint(idempotent_retries=False, max_retries=1)
+        sent_headers: list[dict] = []
+
+        def _make_new_session(*args, **kwargs):
+            mock_session = AsyncMock(spec=aiohttp.ClientSession)
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            async def _request(*a, **kw):
+                sent_headers.append(dict(kw["headers"]))
+                return self._make_ok_response()
+
+            mock_session.request = _request
+            return mock_session
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
+                await endpoint.call({"prompt": "a cat"})
+
+        assert "Idempotency-Key" not in sent_headers[0]
+
+    @pytest.mark.asyncio
+    async def test_same_key_reused_across_retries_via_retry_config(self):
+        """The opt-in RetryConfig path re-invokes ``self._call`` (and therefore
+        ``_call_aiohttp``) fresh on every attempt from outside -- the key must
+        be minted in ``call()``, before that wrapper is entered, or each
+        attempt would silently mint its own."""
+        from lionagi.service.resilience import RetryConfig
+
+        config = EndpointConfig(
+            name="test",
+            provider="test",
+            endpoint="v1/images/generations",
+            base_url="https://api.test.com",
+            auth_type="bearer",
+            api_key="test-key",
+            method="POST",
+            idempotent_retries=True,
+        )
+        endpoint = Endpoint(config=config, retry_config=RetryConfig(max_retries=2, base_delay=0.01))
+        sent_headers: list[dict] = []
+        attempt = 0
+
+        def _make_new_session(*args, **kwargs):
+            nonlocal attempt
+            attempt += 1
+            resp = self._make_error_response(500) if attempt == 1 else self._make_ok_response()
+
+            mock_session = AsyncMock(spec=aiohttp.ClientSession)
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=False)
+
+            async def _request(*a, **kw):
+                sent_headers.append(dict(kw["headers"]))
+                return resp
+
+            mock_session.request = _request
+            return mock_session
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
+                await endpoint.call({"prompt": "a cat"})
+
+        assert attempt == 2
+        assert len(sent_headers) == 2
+        assert sent_headers[0]["Idempotency-Key"] == sent_headers[1]["Idempotency-Key"]

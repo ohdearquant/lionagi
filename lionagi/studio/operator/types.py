@@ -222,6 +222,11 @@ class OperatorEngineTurn:
     store_path: str | None = None
     run_dir: Any | None = None
     provider_session_id: str | None = None
+    # The conversation's durable branch identity (see
+    # OperatorStore.claim_branch_id). None only for a caller that never
+    # claimed one (e.g. a bare unit test) -- build_operator_branch falls back
+    # to a fresh random id in that case, the same default Branch() always had.
+    branch_id: str | None = None
     model: str | None = None
     provider: str | None = None
     effort: str | None = None

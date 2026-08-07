@@ -10,6 +10,8 @@ import json
 import sys
 from pathlib import Path
 
+from lionagi._auto import CliDeclaration, auto_register
+
 __all__ = (
     "add_doctor_subparser",
     "run_doctor",
@@ -229,6 +231,9 @@ def add_doctor_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+@auto_register(
+    area="doctor", cli=CliDeclaration(seed="doctor", parser_factory=add_doctor_subparser)
+)
 def run_doctor(args: argparse.Namespace) -> int:
     checks = collect_checks()
     if getattr(args, "json", False):

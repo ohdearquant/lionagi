@@ -86,4 +86,33 @@ describe("AttentionQueue.tsx — source contract", () => {
     expect(src).toMatch(/attention\.open/);
     expect(src).toMatch(/ItemLink/);
   });
+
+  it("gated items only offer Acknowledge — a gate is resolved by the real approve/reject action, not a discharge", () => {
+    expect(src).toMatch(/isGated\s*=\s*item\.reason\s*===\s*"gated"/);
+    expect(src).toMatch(/\{!isGated\s*&&/);
+    // Acknowledge must sit outside the !isGated guard so it always renders.
+    const ackIndex = src.indexOf('save("acknowledged")');
+    const guardIndex = src.indexOf("{!isGated &&");
+    expect(ackIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(ackIndex).toBeLessThan(guardIndex);
+  });
+
+  it("view-all and overflow links point at the dedicated Attention page, not Fleet", () => {
+    expect(src).toMatch(/to="\/attention"/);
+    expect(src).not.toMatch(/to="\/fleet"/);
+  });
+
+  it("renders exactly one row per informational digest reason — no raw AttentionRows underneath", () => {
+    // The digest map must render only DigestRow, never AttentionRow, per
+    // group — a "collapse into one digest row" promise that still renders
+    // extra raw rows underneath is not a collapse.
+    const digestsBlock = src.slice(src.indexOf("digests.map"), src.indexOf("digests.map") + 400);
+    expect(digestsBlock).toMatch(/<DigestRow/);
+    expect(digestsBlock).not.toMatch(/<AttentionRow/);
+  });
+
+  it("exports AttentionRow for reuse on the dedicated Attention page", () => {
+    expect(src).toMatch(/export function AttentionRow/);
+  });
 });

@@ -10,7 +10,8 @@
       "toggleTheme": "Cambiar tema",
       "switchToZh": "Cambiar a chino",
       "switchToEn": "Cambiar a inglés",
-      "selectLanguage": "Seleccionar idioma"
+      "selectLanguage": "Seleccionar idioma",
+      "teams": "Equipos"
     },
     "palette": {
       "ariaLabel": "Paleta de comandos",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "Información general",
       "fleet": "Flota",
-      "homeAria": "Pestañas de inicio"
+      "homeAria": "Pestañas de inicio",
+      "attention": "Atención"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -235,7 +237,11 @@
       "filteredHint": "Prueba otro tipo o borra la búsqueda.",
       "createFirst": "Crea el primero",
       "createWorkflow": "Nuevo flujo de trabajo",
-      "createAgent": "Nuevo agente"
+      "createAgent": "Nuevo agente",
+      "allSkill": "No se encontraron skills.",
+      "allSkillHint": "Agrega un SKILL.md en ~/.lionagi/skills/<name>/ para verlo aquí.",
+      "allPlugin": "No se encontraron plugins.",
+      "allPluginHint": "Instala un plugin en ~/.claude/plugins/ para verlo aquí."
     },
     "table": {
       "kind": "Tipo",
@@ -296,7 +302,19 @@
       "lastUsed": "Último uso",
       "never": "nunca",
       "recentInvocations": "Invocaciones recientes",
-      "noInvocations": "Aún no hay invocaciones registradas."
+      "noInvocations": "Aún no hay invocaciones registradas.",
+      "skillValidationFailed": "La validación falló. Corrige los errores antes de guardar.",
+      "pluginOwnedSkillHint": "Incluido en un plugin — edita los archivos del plugin directamente para cambiarlo.",
+      "readOnly": "Solo lectura",
+      "skillTools": "Herramientas permitidas",
+      "skillInstructions": "Instrucciones",
+      "pluginHooks": "Hooks",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "Servidores MCP",
+      "pluginHooksSection": "Configuración de hooks",
+      "pluginReadmeSection": "README",
+      "yes": "Sí",
+      "no": "No"
     },
     "template": {
       "badge": "Integrado",
@@ -450,8 +468,8 @@
       "statErrorsRecent": "Errores (recientes)",
       "noBranchErrorsPartial": "No hay errores en los mensajes cargados.",
       "noFilesPartial": "No se detectaron operaciones de archivo en los mensajes cargados.",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "No se pudo cargar el historial anterior — esta conversación avanzó antes de que se completara la solicitud.",
+      "reloadConversation": "Recargar conversación",
       "graphEdgeCount": "{count} aristas",
       "graphImpliedHidden": "· {count} implícitas ocultas",
       "graphHideImplied": "ocultar implícitas",
@@ -462,7 +480,17 @@
       "graphNodeStatusPaused": "pausado",
       "graphNodeStatusDone": "listo",
       "graphNodeStatusFailed": "fallido",
-      "graphNodeStatusEscalated": "escalado"
+      "graphNodeStatusEscalated": "escalado",
+      "progressTotal": "Total",
+      "progressCompleted": "Completado",
+      "progressRunning": "En ejecución",
+      "progressFailed": "Fallido",
+      "progressPending": "Pendiente",
+      "progressElapsed": "Transcurrido",
+      "expandGraph": "Expandir gráfico de ejecución",
+      "collapseGraph": "Contraer gráfico de ejecución",
+      "closeExpandedGraph": "Cerrar",
+      "nodeNoBranch": "No se encontró ninguna rama para «{node}» — este paso aún no ha comenzado."
     },
     "masterAria": "Lista de historial",
     "detailAria": "Detalle del elemento"
@@ -473,7 +501,9 @@
     "sections": {
       "health": "Estado",
       "maintenance": "Mantenimiento",
-      "settings": "Configuración"
+      "settings": "Configuración",
+      "adminEvents": "Eventos de administración",
+      "data": "Datos"
     },
     "health": {
       "stateDb": "DB de estado",
@@ -542,6 +572,21 @@
       "switchToZh": "Cambiar a chino",
       "english": "Inglés",
       "chinese": "Chino"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Filtrar por acción",
+      "targetPlaceholder": "Filtrar por ID de destino",
+      "filter": "Filtrar",
+      "loadError": "No se pudieron cargar los eventos de administración.",
+      "empty": "Aún no se registraron eventos de administración.",
+      "when": "Cuándo",
+      "action": "Acción",
+      "target": "Destino",
+      "actor": "Actor"
+    },
+    "data": {
+      "engineRuns": "Ejecuciones de motor",
+      "definitions": "Definiciones"
     }
   },
   "schedules": {
@@ -807,7 +852,8 @@
       "updated": "Actualizado",
       "branchesTitle": "Ramas ({count})",
       "noBranches": "Sin ramas.",
-      "msgs": " mensajes"
+      "msgs": " mensajes",
+      "engineRuns": "Ejecuciones de motor"
     },
     "split": {
       "master": "Lista de sesiones",
@@ -859,7 +905,7 @@
         "stuck": "bloqueado · sin progreso",
         "gated": "esperando aprobación"
       },
-      "more": "+{count, plural, one {# más} other {# más}} — ver todo en Historial →",
+      "more": "+{count, plural, one {# más} other {# más}} — ver todo →",
       "digestLatest": "último: {name} · hace {age}",
       "streakCount": "{count}× falló",
       "disposition": {
@@ -888,7 +934,17 @@
       },
       "showDischarged": "Mostrar descargados",
       "hideDischarged": "Ocultar descargados",
-      "dischargedEmpty": "No hay elementos descargados"
+      "dischargedEmpty": "No hay elementos descargados",
+      "page": {
+        "title": "Atención",
+        "subtitle": "Todos los elementos que requieren atención del operador, activos y descartados.",
+        "filterActive": "Activos",
+        "filterDischarged": "Descartados",
+        "filterAll": "Todos",
+        "emptyActive": "No hay nada que requiera atención ahora mismo.",
+        "emptyDischarged": "No hay elementos descartados.",
+        "emptyAll": "No hay elementos de atención."
+      }
     },
     "liveBoard": {
       "title": "En ejecución ahora",
@@ -1117,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Equipos",
+    "subtitle": "Equipos de agentes que coordinan a través de una bandeja de entrada compartida",
+    "loadError": "No se pudieron cargar los equipos.",
+    "emptyTitle": "Aún no hay equipos",
+    "emptyBody": "Los equipos se crean con `li team create` y coordinan a través de una bandeja de entrada compartida.",
+    "table": {
+      "name": "Nombre",
+      "members": "Miembros",
+      "lastModified": "Última modificación",
+      "oneMember": "1 miembro",
+      "memberCount": "{count} miembros"
+    },
+    "loadMore": "Cargar más",
+    "loadingMore": "Cargando…",
+    "detail": {
+      "close": "Cerrar",
+      "members": "Miembros",
+      "created": "Creado",
+      "messages": "Mensajes ({count})",
+      "noMessages": "Aún no hay mensajes."
+    }
+  },
+  "engineRuns": {
+    "title": "Ejecuciones de motor",
+    "subtitle": "Invocaciones individuales del motor por debajo de las sesiones de orquestación",
+    "filterKind": "Filtrar por tipo",
+    "filterStatus": "Filtrar por estado",
+    "filterStatusAll": "Todos los estados",
+    "filterSession": "Filtrar por ID de sesión",
+    "filterApply": "Filtrar",
+    "loadError": "No se pudieron cargar las ejecuciones de motor.",
+    "emptyTitle": "No se encontraron ejecuciones de motor",
+    "emptyBody": "Las ejecuciones de motor aparecen aquí cuando un motor (p. ej. `li engine`) registra una invocación.",
+    "table": {
+      "kind": "Tipo",
+      "status": "Estado",
+      "started": "Inicio",
+      "session": "Sesión"
+    },
+    "detail": {
+      "close": "Cerrar",
+      "notFound": "Ejecución de motor no encontrada.",
+      "started": "Inicio",
+      "ended": "Fin",
+      "exportDir": "Directorio de exportación",
+      "error": "Error",
+      "spec": "Especificación"
+    }
+  },
+  "definitions": {
+    "title": "Definiciones",
+    "subtitle": "Todas las definiciones de agente y playbook con versiones, con un checkpoint de instantánea masiva",
+    "filterKind": "Filtrar por tipo",
+    "filterKindAll": "Todos los tipos",
+    "snapshotAll": "Crear instantánea de todo",
+    "snapshotting": "Creando instantánea…",
+    "snapshotDone": "Se crearon {count} instantánea(s).",
+    "snapshotFailed": "Falló la instantánea.",
+    "loadError": "No se pudieron cargar las definiciones.",
+    "emptyTitle": "No se encontraron definiciones",
+    "emptyBody": "Las definiciones de agente y playbook aparecen aquí una vez creadas.",
+    "table": {
+      "kind": "Tipo",
+      "name": "Nombre",
+      "version": "Versión",
+      "noVersions": "sin historial",
+      "updated": "Actualizado"
+    }
   }
 }

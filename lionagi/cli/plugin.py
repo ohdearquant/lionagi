@@ -7,6 +7,8 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
+
 from ._logging import log_error
 
 
@@ -237,6 +239,9 @@ def _run_set_enabled(name: str, *, enabled: bool) -> int:
     return 0
 
 
+@auto_register(
+    area="plugin", cli=CliDeclaration(seed="plugin", parser_factory=add_plugin_subparser)
+)
 def run_plugin(args: argparse.Namespace) -> int:
     if args.plugin_command == "list":
         return _run_list()

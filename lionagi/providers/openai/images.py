@@ -106,6 +106,7 @@ class OpenaiImageGenerationEndpoint(Endpoint):
         if config is None:
             kwargs.setdefault("timeout", 120)
             kwargs.setdefault("max_retries", 3)
+            kwargs.setdefault("idempotent_retries", True)
         super().__init__(config=config, **kwargs)
 
 
@@ -119,6 +120,7 @@ class OpenaiImageEditEndpoint(Endpoint):
         if config is None:
             kwargs.setdefault("timeout", 120)
             kwargs.setdefault("max_retries", 3)
+            kwargs.setdefault("idempotent_retries", True)
         super().__init__(config=config, **kwargs)
 
     async def _call(self, payload: dict, headers: dict, **kwargs):

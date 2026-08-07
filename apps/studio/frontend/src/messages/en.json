@@ -10,7 +10,8 @@
       "toggleTheme": "Toggle theme",
       "switchToZh": "Switch to Chinese",
       "switchToEn": "Switch to English",
-      "selectLanguage": "Select language"
+      "selectLanguage": "Select language",
+      "teams": "Teams"
     },
     "palette": {
       "ariaLabel": "Command palette",
@@ -38,7 +39,8 @@
     "tabs": {
       "overview": "Overview",
       "fleet": "Fleet",
-      "homeAria": "Home tabs"
+      "homeAria": "Home tabs",
+      "attention": "Attention"
     }
   },
   "runResume": {
@@ -237,7 +239,11 @@
       "filteredHint": "Try a different kind or clear the search.",
       "createFirst": "Create your first",
       "createWorkflow": "New Workflow",
-      "createAgent": "New Agent"
+      "createAgent": "New Agent",
+      "allSkill": "No skills found.",
+      "allSkillHint": "Add a SKILL.md under ~/.lionagi/skills/<name>/ to see it here.",
+      "allPlugin": "No plugins found.",
+      "allPluginHint": "Install a plugin under ~/.claude/plugins/ to see it here."
     },
     "table": {
       "kind": "Kind",
@@ -298,7 +304,19 @@
       "lastUsed": "Last used",
       "never": "never",
       "recentInvocations": "Recent invocations",
-      "noInvocations": "No invocations recorded yet."
+      "noInvocations": "No invocations recorded yet.",
+      "skillValidationFailed": "Validation failed. Fix the errors below before saving.",
+      "pluginOwnedSkillHint": "Bundled with a plugin — edit the plugin's files directly to change it.",
+      "readOnly": "Read-only",
+      "skillTools": "Allowed Tools",
+      "skillInstructions": "Instructions",
+      "pluginHooks": "Hooks",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP Servers",
+      "pluginHooksSection": "Hooks Configuration",
+      "pluginReadmeSection": "README",
+      "yes": "Yes",
+      "no": "No"
     },
     "template": {
       "badge": "Built-in",
@@ -462,7 +480,17 @@
       "graphNodeStatusPaused": "paused",
       "graphNodeStatusDone": "done",
       "graphNodeStatusFailed": "failed",
-      "graphNodeStatusEscalated": "escalated"
+      "graphNodeStatusEscalated": "escalated",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "History list",
     "detailAria": "Item detail"
@@ -473,7 +501,9 @@
     "sections": {
       "health": "Health",
       "maintenance": "Maintenance",
-      "settings": "Settings"
+      "settings": "Settings",
+      "adminEvents": "Admin events",
+      "data": "Data"
     },
     "health": {
       "stateDb": "State DB",
@@ -542,6 +572,21 @@
       "switchToZh": "切换为中文",
       "english": "English",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Filter by action",
+      "targetPlaceholder": "Filter by target ID",
+      "filter": "Filter",
+      "loadError": "Failed to load admin events.",
+      "empty": "No admin events recorded yet.",
+      "when": "When",
+      "action": "Action",
+      "target": "Target",
+      "actor": "Actor"
+    },
+    "data": {
+      "engineRuns": "Engine runs",
+      "definitions": "Definitions"
     }
   },
   "schedules": {
@@ -807,7 +852,8 @@
       "updated": "Updated",
       "branchesTitle": "Branches ({count})",
       "noBranches": "No branches.",
-      "msgs": " msgs"
+      "msgs": " msgs",
+      "engineRuns": "Engine runs"
     },
     "split": {
       "master": "Session list",
@@ -859,7 +905,7 @@
         "stuck": "stuck · no progress",
         "gated": "awaiting approval"
       },
-      "more": "+{count} more — view all in History →",
+      "more": "+{count} more — view all →",
       "digestLatest": "latest: {name} · {age} ago",
       "streakCount": "{count}× failed",
       "disposition": {
@@ -888,7 +934,17 @@
       },
       "showDischarged": "Show discharged",
       "hideDischarged": "Hide discharged",
-      "dischargedEmpty": "No discharged items"
+      "dischargedEmpty": "No discharged items",
+      "page": {
+        "title": "Attention",
+        "subtitle": "Every item needing operator attention, active and discharged.",
+        "filterActive": "Active",
+        "filterDischarged": "Discharged",
+        "filterAll": "All",
+        "emptyActive": "Nothing needs attention right now.",
+        "emptyDischarged": "No discharged items.",
+        "emptyAll": "No attention items."
+      }
     },
     "liveBoard": {
       "title": "Running now",
@@ -1117,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Teams",
+    "subtitle": "Crews of agents coordinating through a shared inbox",
+    "loadError": "Failed to load teams.",
+    "emptyTitle": "No teams yet",
+    "emptyBody": "Teams are created with `li team create` and coordinate through a shared inbox.",
+    "table": {
+      "name": "Name",
+      "members": "Members",
+      "lastModified": "Last modified",
+      "oneMember": "1 member",
+      "memberCount": "{count} members"
+    },
+    "loadMore": "Load more",
+    "loadingMore": "Loading…",
+    "detail": {
+      "close": "Close",
+      "members": "Members",
+      "created": "Created",
+      "messages": "Messages ({count})",
+      "noMessages": "No messages yet."
+    }
+  },
+  "engineRuns": {
+    "title": "Engine runs",
+    "subtitle": "Individual engine invocations underneath orchestration sessions",
+    "filterKind": "Filter by kind",
+    "filterStatus": "Filter by status",
+    "filterStatusAll": "All statuses",
+    "filterSession": "Filter by session ID",
+    "filterApply": "Filter",
+    "loadError": "Failed to load engine runs.",
+    "emptyTitle": "No engine runs found",
+    "emptyBody": "Engine runs appear here once an engine (e.g. `li engine`) records an invocation.",
+    "table": {
+      "kind": "Kind",
+      "status": "Status",
+      "started": "Started",
+      "session": "Session"
+    },
+    "detail": {
+      "close": "Close",
+      "notFound": "Engine run not found.",
+      "started": "Started",
+      "ended": "Ended",
+      "exportDir": "Export dir",
+      "error": "Error",
+      "spec": "Spec"
+    }
+  },
+  "definitions": {
+    "title": "Definitions",
+    "subtitle": "Every versioned agent and playbook definition, with a bulk snapshot checkpoint",
+    "filterKind": "Filter by kind",
+    "filterKindAll": "All kinds",
+    "snapshotAll": "Snapshot all",
+    "snapshotting": "Snapshotting…",
+    "snapshotDone": "Created {count} snapshot(s).",
+    "snapshotFailed": "Snapshot failed.",
+    "loadError": "Failed to load definitions.",
+    "emptyTitle": "No definitions found",
+    "emptyBody": "Agent and playbook definitions appear here once created.",
+    "table": {
+      "kind": "Kind",
+      "name": "Name",
+      "version": "Version",
+      "noVersions": "no history",
+      "updated": "Updated"
+    }
   }
 }

@@ -99,6 +99,9 @@ Relevant settings and defaults are:
 MAX_SCHEDULED_CONCURRENT = int(
     os.environ.get("LIONAGI_STUDIO_MAX_SCHEDULED_CONCURRENT", "4")
 )
+MAX_ADHOC_CONCURRENT = int(
+    os.environ.get("LIONAGI_STUDIO_MAX_ADHOC_CONCURRENT", "4")
+)
 INVOCATION_DEADLINE_SECONDS = int(
     os.environ.get("LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS", "7200")
 )
@@ -110,6 +113,13 @@ CHECKPOINT_INTERVAL_SECONDS = int(
     os.environ.get("LIONAGI_STUDIO_CHECKPOINT_INTERVAL_SECONDS", "3600")
 )
 ```
+
+`MAX_ADHOC_CONCURRENT` bounds the host task-worker pass's own executions (step 4 above) from a
+capacity pool independent of `MAX_SCHEDULED_CONCURRENT`: the two lanes are additive, so a daemon
+running both at their defaults permits up to `4 + 4 = 8` concurrent executions, not 4. `0` makes
+either lane unlimited. `GET /api/schedules/limits` reports both caps and both in-flight counts
+(`max_scheduled_concurrent`/`current_inflight` and `max_adhoc_concurrent`/`current_adhoc_inflight`)
+so an operator can read the daemon's actual total capacity rather than assuming one shared ceiling.
 
 Exact lifecycle semantics:
 

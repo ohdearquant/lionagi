@@ -517,7 +517,28 @@ async def _teardown_common(
 
     all_msgs = await db.get_progression(session_prog_id)
     completion_evidence_msgs = list(all_msgs)
-    update_kwargs: dict[str, Any] = {"ended_at": time.time()}
+
+    # Fetched before this call's own write so started_at reflects session
+    # creation, not a value this same update is about to touch.
+    session_before_teardown = await db.get_session(session_id) or {}
+
+    # ended_at and duration_ms are terminal fields and must land in the same
+    # atomic write as the status transition below (see the
+    # CAS/TransitionRejectedError branch) -- never written here on their own, or
+    # a failed/lost status write leaves a row with status="running" carrying a
+    # non-null end time and duration. duration_ms is derived from ended_at, so
+    # it inherits that requirement rather than merely resembling it.
+    ended_at = time.time()
+    duration_ms: float | None = None
+    started_at = session_before_teardown.get("started_at")
+    if isinstance(started_at, int | float):
+        # The prerequisite for telling "never started" / "hung before first
+        # request" / "request sent, no response" apart on a terminal row --
+        # duration_ms was previously left NULL on every session regardless of
+        # outcome, which is loudest on a zero-turn timeout: the record could
+        # not even say how long nothing happened for.
+        duration_ms = max(0.0, (ended_at - started_at) * 1000)
+    update_kwargs: dict[str, Any] = {}
     if all_msgs:
         update_kwargs["first_msg_id"] = all_msgs[0]
         update_kwargs["last_msg_id"] = all_msgs[-1]
@@ -532,14 +553,12 @@ async def _teardown_common(
         # (sqlite/postgres would merge it differently -- see
         # StateDB._merge_node_metadata). Switching this call to the atomic
         # merge would turn today's benign-if-racy read-modify-write into a
-        # hard ValueError on every run with injection activity. This is a
-        # real, not-yet-closed instance of the same clobber class the sweep
-        # fix above closes; closing it safely needs a schema decision
-        # (flatten khive_injection to scalar keys, or a merge-helper variant
-        # that tolerates one level of nested object) that is out of scope
-        # for this round.
-        session = await db.get_session(session_id) or {}
-        existing_metadata = session.get("node_metadata") or {}
+        # hard ValueError on every run with injection activity. So this stays
+        # an open instance of the clobber class that the stale-sweep path in
+        # kill.py closes; closing it safely needs a schema decision (flatten
+        # khive_injection to scalar keys, or a merge-helper variant that
+        # tolerates one level of nested object).
+        existing_metadata = session_before_teardown.get("node_metadata") or {}
         if isinstance(existing_metadata, str):
             try:
                 existing_metadata = json.loads(existing_metadata)
@@ -550,7 +569,8 @@ async def _teardown_common(
         markers = identity_markers or {}
         update_kwargs["node_metadata"] = json.dumps({**existing_metadata, **extras, **markers})
 
-    await db.update_session(session_id, **update_kwargs)
+    if update_kwargs:
+        await db.update_session(session_id, **update_kwargs)
 
     reason_code, reason_summary, evidence_refs = resolve_run_reason(
         status=status, exception=exception
@@ -835,6 +855,11 @@ async def _teardown_common(
                 actor=session_id,
                 metadata=metadata,
                 expected_statuses={pre_write_status},
+                extra_fields=(
+                    {"ended_at": ended_at}
+                    if duration_ms is None
+                    else {"ended_at": ended_at, "duration_ms": duration_ms}
+                ),
             )
             if not written:
                 # CAS miss: a concurrent teardown of the same session won the race.
@@ -998,7 +1023,24 @@ async def teardown_persist(
         return final_status
     except Exception as exc:
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
-        return status
+        # A failure anywhere in the block above (any of _teardown_common's
+        # separate write transactions, or the bookkeeping around them) must
+        # not make this return the *requested* terminal status as if it had
+        # landed -- that status may never have reached the database. Read
+        # back what is actually durable instead; only fall back to the
+        # caller's request if even that read fails.
+        try:
+            persisted = await db.get_session(ctx["session_id"])
+        except Exception:  # noqa: BLE001 -- best-effort; the DB itself may be unreachable
+            persisted = None
+        if persisted is not None and persisted.get("status"):
+            return persisted["status"]
+        # The readback itself failed (or found nothing) -- there is no
+        # evidence the requested terminal status ever reached the database.
+        # Reporting `status` here would be the same false-terminal-status
+        # class this teardown path exists to prevent, so surface an
+        # explicit unknown outcome instead of a guess.
+        return "unknown"
     finally:
         # Release branch ownership even when the bookkeeping above failed -- a
         # stranded owner marker would make the long-lived branch unresumable.

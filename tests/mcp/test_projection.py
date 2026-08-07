@@ -129,7 +129,7 @@ from importlib import import_module
 print(type(attribute_import).__name__)
 print(type(dotted_import).__name__)
 print(type(import_module("lionagi.cli.main")).__name__)
-print(getattr(import_module("lionagi.cli.main"), "_COMMAND_REGISTRY", None) is not None)
+print(getattr(import_module("lionagi.cli.main"), "build_cli_parser", None) is not None)
 """
 
 
@@ -155,8 +155,8 @@ def test_attribute_style_import_of_cli_main_yields_the_function(tmp_path) -> Non
 
 def test_command_registry_is_reached_through_the_module() -> None:
     module = import_module("lionagi.cli.main")
-    assert module._COMMAND_REGISTRY
-    assert callable(module._build_parser)
+    assert callable(module.build_cli_parser)
+    assert callable(module.seed_for)
 
 
 # ── unrepresentable means unavailable ────────────────────────────────────────

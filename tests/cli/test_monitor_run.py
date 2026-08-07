@@ -1777,6 +1777,48 @@ async def test_dispatch_wait_reconciliation_never_flips_an_already_terminal_row(
 
 
 @pytest.mark.asyncio
+async def test_effective_session_status_reconcile_populates_duration_ms(
+    temp_db_path: Path,
+) -> None:
+    """Reconciling a profile session to its linked engine session's terminal
+    status must derive duration_ms the same as every other terminal write,
+    not leave it NULL because this call site never computed it."""
+    async with StateDB() as db:
+        profile_started_at = time.time() - 9.0
+        profile_prog = str(uuid.uuid4())
+        await db.create_progression(profile_prog)
+        profile_id = str(uuid.uuid4())
+        await db.create_session(
+            {
+                "id": profile_id,
+                "progression_id": profile_prog,
+                "status": "running",
+                "started_at": profile_started_at,
+                "node_metadata": {"linked_engine_session_id": "engine-recon-1"},
+            }
+        )
+        engine_prog = str(uuid.uuid4())
+        await db.create_progression(engine_prog)
+        await db.create_session(
+            {
+                "id": "engine-recon-1",
+                "progression_id": engine_prog,
+                "status": "completed",
+                "started_at": profile_started_at,
+            }
+        )
+
+        row = await db.get_session(profile_id)
+        result = await _effective_session_status(db, row)
+        assert result["status"] == "completed"
+
+        persisted = await db.get_session(profile_id)
+        assert persisted["ended_at"] is not None
+        assert persisted["duration_ms"] == pytest.approx(
+            (persisted["ended_at"] - profile_started_at) * 1000
+        )
+
+
 async def test_effective_session_status_cas_mismatch_reports_persisted_status(
     temp_db_path: Path,
 ) -> None:

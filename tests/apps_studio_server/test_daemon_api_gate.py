@@ -123,10 +123,12 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/sessions/{session_id}/signals"),
     ("GET", "/api/sessions/{session_id}/stream"),
     ("GET", "/api/shows/"),
+    ("GET", "/api/shows/gated-plays"),
     ("GET", "/api/shows/{topic}"),
     ("GET", "/api/shows/{topic}/stream"),
     ("GET", "/api/skills/"),
     ("GET", "/api/skills/{name}"),
+    ("POST", "/api/skills/{name}/validate"),
     ("GET", "/api/stats"),
     ("GET", "/api/stats/activity"),
     ("GET", "/api/stats/spend"),
@@ -275,7 +277,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 129
+    assert len(_GOLDEN_ROUTES) == 131
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -764,7 +766,12 @@ def test_schedules_limits_response_shape(tmp_path, monkeypatch):
 
     r = client.get("/api/schedules/limits")
     assert r.status_code == 200
-    assert sorted(r.json().keys()) == ["current_inflight", "max_scheduled_concurrent"]
+    assert sorted(r.json().keys()) == [
+        "current_adhoc_inflight",
+        "current_inflight",
+        "max_adhoc_concurrent",
+        "max_scheduled_concurrent",
+    ]
 
 
 def test_schedules_create_response_shape(tmp_path, monkeypatch):

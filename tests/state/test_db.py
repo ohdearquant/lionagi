@@ -1541,10 +1541,11 @@ async def test_list_definition_versions(db: StateDB):
 
 
 async def test_save_definition_rejects_non_editable_kind(db: StateDB):
-    """ADR-0077: skills + arbitrary kinds are read-only and must be rejected."""
+    """ADR-0077: arbitrary kinds outside the editable set (agent, playbook,
+    skill) are read-only and must be rejected."""
     import pytest
 
-    for bad_kind in ("skill", "plugin", "something_else"):
+    for bad_kind in ("plugin", "something_else"):
         with pytest.raises(ValueError, match="Invalid definition kind"):
             await db.save_definition(
                 kind=bad_kind,
@@ -1552,6 +1553,17 @@ async def test_save_definition_rejects_non_editable_kind(db: StateDB):
                 path=".lionagi/x",
                 content="content",
             )
+
+
+async def test_save_definition_accepts_skill_kind(db: StateDB):
+    """Skills joined the editable set alongside agent/playbook (skill editor)."""
+    version = await db.save_definition(
+        kind="skill",
+        name="x",
+        path=".lionagi/skills/x/SKILL.md",
+        content="content",
+    )
+    assert version == 1
 
 
 async def test_get_definition_missing(db: StateDB):
@@ -1979,6 +1991,54 @@ async def test_readonly_rejects_write_attempt(tmp_path):
             await ro.execute("INSERT INTO schema_meta (key, value) VALUES ('x', 'y')")
     finally:
         await ro.close()
+
+
+async def test_writable_read_does_not_issue_begin_immediate(tmp_path):
+    """StateDB._read() on a writable engine must not reserve the SQLite
+    writer slot. Tracing the raw driver connection during a plain read must
+    show no BEGIN IMMEDIATE -- only the SELECT."""
+    db_path = tmp_path / "read_no_lock.db"
+    db = StateDB(db_path)
+    await db.open()
+    try:
+        statements: list[str] = []
+        async with db._read() as conn:
+            raw_conn = await conn.get_raw_connection()
+            await raw_conn.driver_connection.set_trace_callback(statements.append)
+            result = await conn.execute(text("SELECT 42 AS answer"))
+            assert result.scalar() == 42
+            await raw_conn.driver_connection.set_trace_callback(None)
+        upper = [s.strip().upper() for s in statements]
+        assert "BEGIN IMMEDIATE" not in upper, upper
+    finally:
+        await db.close()
+
+
+async def test_writable_read_survives_a_concurrent_write_lock(tmp_path):
+    """A read must complete while a separate connection holds SQLite's
+    writer lock via BEGIN IMMEDIATE -- it must not wait out the busy
+    timeout behind a lock it never needed to contend for."""
+    db_path = tmp_path / "read_survives_lock.db"
+    seed = StateDB(db_path)
+    await seed.open()
+    await seed.close()
+
+    db = StateDB(db_path)
+    await db.open()
+    try:
+        blocker = sqlite3.connect(str(db_path), timeout=0)
+        blocker.execute("BEGIN IMMEDIATE")
+        try:
+            start = time.monotonic()
+            rows = await db.fetch_all("SELECT 42 AS answer")
+            elapsed = time.monotonic() - start
+        finally:
+            blocker.rollback()
+            blocker.close()
+        assert rows == [{"answer": 42}]
+        assert elapsed < 1.0, f"read waited {elapsed}s behind a lock it should not contend for"
+    finally:
+        await db.close()
 
 
 # ── update_status extra_fields: schedule_run ────────────────────────────────

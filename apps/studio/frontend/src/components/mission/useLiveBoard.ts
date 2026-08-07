@@ -11,7 +11,13 @@
  */
 
 import { useEffect, useReducer, useRef } from "react";
-import { listRuns, listInvocations, listSchedules, listAttentionDispositions } from "@/lib/api";
+import {
+  listRuns,
+  listInvocations,
+  listSchedules,
+  listAttentionDispositions,
+  listGatedPlays,
+} from "@/lib/api";
 import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
 
@@ -50,15 +56,18 @@ export function useLiveBoard(): BoardState {
       if (!active) return;
       try {
         const nowSec = Math.floor(Date.now() / 1000);
-        // Schedules and dispositions each feed one part of the board only —
-        // a failed fetch must not take down the whole board, so both
-        // degrade to null (keep last-known) rather than rejecting the poll.
-        const [runsResp, invsResp, schedulesResp, dispositionsResp] = await Promise.all([
-          listRuns({ per_page: 200 }),
-          listInvocations({ limit: 100 }),
-          listSchedules({ enabled: true }).catch(() => null),
-          listAttentionDispositions().catch(() => null),
-        ]);
+        // Schedules, dispositions, and gated plays each feed one part of the
+        // board only — a failed fetch must not take down the whole board, so
+        // all three degrade to null (keep last-known) rather than rejecting
+        // the poll.
+        const [runsResp, invsResp, schedulesResp, dispositionsResp, gatedPlaysResp] =
+          await Promise.all([
+            listRuns({ per_page: 200 }),
+            listInvocations({ limit: 100 }),
+            listSchedules({ enabled: true }).catch(() => null),
+            listAttentionDispositions().catch(() => null),
+            listGatedPlays().catch(() => null),
+          ]);
         if (!active) return;
 
         lastSuccessAt = Date.now();
@@ -73,6 +82,7 @@ export function useLiveBoard(): BoardState {
             invocations: invsResp.invocations,
             schedules: schedulesResp?.schedules ?? null,
             dispositions: dispositionsResp,
+            gatedPlays: gatedPlaysResp,
             nowSec,
           });
         }

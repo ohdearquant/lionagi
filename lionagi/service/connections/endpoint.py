@@ -191,6 +191,19 @@ class Endpoint:
         else:
             payload, headers = self.create_payload(request, extra_headers=extra_headers, **kwargs)
 
+        if (
+            self.config.idempotent_retries
+            and self.config.method.upper() == "POST"
+            and "Idempotency-Key" not in headers
+        ):
+            import uuid
+
+            # Minted once per logical request, here -- before either retry path
+            # (native _call_aiohttp or the opt-in RetryConfig wrapper below) is
+            # entered -- and reused verbatim across every attempt, so the
+            # provider can recognize a lost-response replay as the same request.
+            headers = {**headers, "Idempotency-Key": str(uuid.uuid4())}
+
         call_func = self._call
 
         if self.retry_config:

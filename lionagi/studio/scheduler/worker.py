@@ -158,6 +158,13 @@ _HEARTBEAT_UPSERT_SQL = """
 
 ExecuteFn = Callable[[dict[str, Any]], Awaitable[tuple[int, str]]]
 
+# Optional global-concurrency-slot hooks (see claim_and_execute/worker_tick).
+# The default of None means "unlimited" -- this module stays engine-agnostic
+# and fully backward compatible for standalone callers/tests that never wire
+# a daemon-wide cap.
+ReserveSlotFn = Callable[[], Awaitable[tuple[bool, Any]]]
+ReleaseSlotFn = Callable[[Any], None]
+
 
 def _normalize_json_list(value: Any) -> list[Any]:
     """Normalize a JSON column that is a string on SQLite but a native list
@@ -325,6 +332,8 @@ async def claim_and_execute(
     heartbeat_ttl: float = DEFAULT_HEARTBEAT_TTL_SECONDS,
     waiter_cap_multiplier: int = DEFAULT_WAITER_CAP_MULTIPLIER,
     key_concurrency: int = DEFAULT_KEY_CONCURRENCY,
+    reserve_slot: ReserveSlotFn | None = None,
+    release_slot: ReleaseSlotFn | None = None,
 ) -> int:
     """Claim every eligible queued row this worker can serve, then execute each.
 
@@ -334,6 +343,18 @@ async def claim_and_execute(
     terminal decision transitions to ``skipped`` (see ``_reject_claim``). See
     docs/internals/studio.md#lionagistudioschedulerworkerpy for the paging,
     staleness, and return-count contract.
+
+    *reserve_slot*/*release_slot* let a caller enforce a top-level
+    concurrency cap around each execution. The Studio scheduler passes its
+    own ``MAX_ADHOC_CONCURRENT``-backed reservation here (``_reserve_adhoc_
+    slot``) — a pool deliberately independent of ``MAX_SCHEDULED_CONCURRENT``,
+    so ad-hoc executions have their own guaranteed capacity instead of
+    competing with scheduled fires for one shared ceiling. When
+    *reserve_slot* is supplied and refuses for a candidate, that row is left
+    ``queued`` for the next tick rather than claimed — the same deferral
+    posture ``admit()`` already uses for other capacity refusals. Omitted
+    (``None``), this module imposes no concurrency limit of its own,
+    matching prior behavior.
     """
     execute = execute if execute is not None else default_execute
     now = now if now is not None else time.time()
@@ -409,40 +430,57 @@ async def claim_and_execute(
             if decision.terminal:
                 await _reject_claim(db, row, decision)
             continue
+
+        slot_claim: Any = None
+        if reserve_slot is not None:
+            slot_allowed, slot_claim = await reserve_slot()
+            if not slot_allowed:
+                # No global capacity right now -- leave this row queued for
+                # the next tick, same deferral posture as an admit() refusal.
+                continue
+
         concurrency_key = row["concurrency_key"]
         run_id = row["id"]
-        result = await transition(
-            db,
-            TransitionRequest(
-                entity_type="schedule_run",
-                entity_id=run_id,
-                from_state="queued",
-                to_state="running",
-                reason=StateReason(
-                    code=RunReasons.STARTED_OK,
-                    summary=f"claimed by host worker {worker_id}",
+        # Everything from here through execution runs under this one
+        # try/finally so a reserved slot is always released on every exit --
+        # including an exception or cancellation raised by the
+        # queued->running transition itself, not just by execution.
+        try:
+            result = await transition(
+                db,
+                TransitionRequest(
+                    entity_type="schedule_run",
+                    entity_id=run_id,
+                    from_state="queued",
+                    to_state="running",
+                    reason=StateReason(
+                        code=RunReasons.STARTED_OK,
+                        summary=f"claimed by host worker {worker_id}",
+                    ),
+                    actor=Actor(type="system", id=worker_id),
+                    idempotency_key=f"claim:{run_id}:{worker_id}:{now}",
                 ),
-                actor=Actor(type="system", id=worker_id),
-                idempotency_key=f"claim:{run_id}:{worker_id}:{now}",
-            ),
-            patch={
-                "leased_by": worker_id,
-                "lease_expires_at": now + lease_ttl,
-                "lease_attempts": row["lease_attempts"] + 1,
-            },
-        )
-        if not result.applied:
-            continue
-        claimed += 1
-        if concurrency_key is not None:
-            # Advisory: nothing else in this same pass may claim a row
-            # sharing this key, even after this row finishes executing.
-            worker_caps.claimed_keys.add(concurrency_key)
-        # Lease identity travels to the terminal write: if it lapses mid-run
-        # and the reaper reassigns the row, this write's guard mismatches
-        # and is dropped instead of clobbering the live lease.
-        lease_guard = {"leased_by": worker_id, "lease_expires_at": now + lease_ttl}
-        await _execute_claimed(db, run_id, row, execute, lease_guard)
+                patch={
+                    "leased_by": worker_id,
+                    "lease_expires_at": now + lease_ttl,
+                    "lease_attempts": row["lease_attempts"] + 1,
+                },
+            )
+            if not result.applied:
+                continue
+            claimed += 1
+            if concurrency_key is not None:
+                # Advisory: nothing else in this same pass may claim a row
+                # sharing this key, even after this row finishes executing.
+                worker_caps.claimed_keys.add(concurrency_key)
+            # Lease identity travels to the terminal write: if it lapses
+            # mid-run and the reaper reassigns the row, this write's guard
+            # mismatches and is dropped instead of clobbering the live lease.
+            lease_guard = {"leased_by": worker_id, "lease_expires_at": now + lease_ttl}
+            await _execute_claimed(db, run_id, row, execute, lease_guard)
+        finally:
+            if release_slot is not None:
+                release_slot(slot_claim)
 
     return claimed
 
@@ -564,10 +602,15 @@ async def worker_tick(
     heartbeat_ttl: float = DEFAULT_HEARTBEAT_TTL_SECONDS,
     waiter_cap_multiplier: int = DEFAULT_WAITER_CAP_MULTIPLIER,
     key_concurrency: int = DEFAULT_KEY_CONCURRENCY,
+    reserve_slot: ReserveSlotFn | None = None,
+    release_slot: ReleaseSlotFn | None = None,
 ) -> dict[str, int]:
     """One worker tick: heartbeat, then reaper pass, then claim pass. Split from
     any sleep loop so tests (and the Studio daemon's own tick) can drive a
-    single pass directly without a timer."""
+    single pass directly without a timer.
+
+    See ``claim_and_execute`` for *reserve_slot*/*release_slot*.
+    """
     now = now if now is not None else time.time()
     await register_heartbeat(
         db,
@@ -588,5 +631,7 @@ async def worker_tick(
         heartbeat_ttl=heartbeat_ttl,
         waiter_cap_multiplier=waiter_cap_multiplier,
         key_concurrency=key_concurrency,
+        reserve_slot=reserve_slot,
+        release_slot=release_slot,
     )
     return {**reaped, "claimed": claimed}

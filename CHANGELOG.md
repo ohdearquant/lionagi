@@ -6,6 +6,97 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-08-07
+
+0.34.0 was tagged but never published to PyPI: its release build stopped on a
+public-surface contract test, so this is the first 0.34.x on PyPI. The library
+and Studio changes are the same as 0.34.0; only the fix below is new.
+
+### Fixed
+
+- Recorded the `GET /api/shows/gated-plays` endpoint in the public HTTP surface
+  baseline. The endpoint shipped in 0.34.0, but the frozen route baseline and
+  its expected route count were left at the previous 134 routes, so the surface
+  gate failed against the live 135. The baseline now matches the shipped app:
+  one route added, none removed or changed, and no schema changes.
+- Stopped the HTTP surface gate from comparing the application's own version
+  string, which every release bump changes by design. It described the build
+  rather than the shape of the surface, so it coupled two unrelated things: a
+  release that changed no route still had to carry a regenerated baseline, and
+  that regenerated diff was indistinguishable from a real surface change. The
+  route set, schemas, and title are still compared.
+
+## [0.34.0] - 2026-08-07
+
+A Studio-heavy release. Most of the work is in the local Studio daemon and its
+surfaces, plus a set of correctness fixes in state persistence, the scheduler,
+and run reporting.
+
+### Security
+
+- Bumped `js-yaml` to 4.3.1 for GHSA-5p4m-2wfm-xmqj, where `!!omap` resolves in
+  quadratic time so a small crafted document can consume disproportionate CPU.
+  The dependency is development-only and transitive, reached through frontend
+  tooling; it is not part of the published Python package.
+
+### Added
+
+- Studio gains Teams, Engine runs, Definitions, and Attention spaces, plus an
+  admin action log.
+- Skills are now first-class editable definitions.
+- Operator: run inspection, cancellation, and resume with strict ownership
+  scoping; one conversation is now one branch; sessions can be renamed; the
+  Operator reads where the human is now rather than where they were.
+- A needs-attention discharge lifecycle with durable dispositions.
+- Aggregate cost visibility across fleet and history, and a fleet project
+  filter with server-backed counts.
+- Schedule card health derived from run evidence.
+- Sensitive fields are redacted from library and agent definition reads.
+- `job.status` over MCP now exposes execution-graph, artifact-contract, and
+  stall detail.
+- Clean review verdicts now carry verification evidence.
+
+### Fixed
+
+- Execution graphs render readably instead of collapsing into a vertical
+  strip, with honest edge reduction, edge-aware folding, and a fixed node card.
+  An operation's lifecycle signals stay under one name.
+- Run state reporting matches what actually happened: flows no longer report
+  success when terminal nodes never ran, dependents of a rejected gate node are
+  short-circuited, and default run names reflect what a run actually is.
+- Cost that was never reported is surfaced as unreported rather than counted as
+  zero spend. Cache tokens and whole-tree CLI usage are counted, and retries no
+  longer duplicate creation POSTs.
+- State persistence: plain reads no longer reserve the writer lock, teardown no
+  longer claims an unrecorded status, `insert_artifact`'s natural-key upsert is
+  atomic, and invocation linkage is backfilled on a resumed session.
+- Scheduler keeps the tick unblocked, admits ad-hoc work through the global
+  limit, and reconciles dispatched orphans.
+- CLI providers survive stream reconnects and orphan-held pipes.
+- Escalation-leg CLI transcripts link to their parent run.
+- Four correctness gaps closed in Progression membership, graph conformance,
+  marketplace validation, and reservation rollback.
+- Assorted Studio fixes: continuing a conversation from a finished session no
+  longer 405s, the definitions save route validates agent role and mode like
+  the agents API, MCP server args and env validate independently of transport,
+  artifact verification is labelled with when it was taken, Operator failure
+  messages point at evidence that exists, and the dev-mode Vite URL resolves
+  honestly across bind failures and LAN hosts.
+
+### Changed
+
+- Public surfaces are registered through an auto-registration seam
+  (`lionagi/_auto.py`), with CLI declaration markers across 17 command modules
+  and the casts CLI and HTTP surfaces consolidated into
+  `lionagi/casts/surfaces.py`.
+- `Progression` membership is now O(1), with lazy cold imports.
+- State hot-path index, bounded mirror ingestion, and safe chunked retention.
+- A frontend consistency pass across the main Studio surfaces.
+- A contract-oracle test suite pins the public CLI and HTTP surfaces against
+  committed baselines. Captured fixtures are redacted, keep host-specific state
+  out of the repository, and normalize interpreter-version-dependent argparse
+  rendering so a baseline cannot be broken by a CPython patch release.
+
 ## [0.33.0] - 2026-08-04
 
 ### Upgrading from 0.32.0

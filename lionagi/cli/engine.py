@@ -10,6 +10,8 @@ import time
 import uuid
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
+
 from ._logging import log_error, progress, warn
 
 # ── Engine kind registry ───────────────────────────────────────────────────
@@ -196,6 +198,9 @@ def add_engine_subparser(subparsers: argparse._SubParsersAction) -> None:
 # ── Main dispatch ──────────────────────────────────────────────────────────
 
 
+@auto_register(
+    area="engine", cli=CliDeclaration(seed="engine", parser_factory=add_engine_subparser)
+)
 def run_engine(args: argparse.Namespace) -> int:
     """Entry point called from main() when args.command == 'engine'."""
     from lionagi.ln.concurrency import run_async
@@ -286,6 +291,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
                     {
                         "id": run_id,
                         "created_at": started_at,
+                        "started_at": started_at,
                         "progression_id": prog_id,
                         "name": f"engine:{kind}",
                         "status": "running",
@@ -469,6 +475,7 @@ async def _maybe_update_db(
                 signal_session_id,
                 new_status=_session_status,
                 reason_code=_reason,
+                extra_fields={"ended_at": ended_at or time.time()},
             )
         except Exception as exc:  # noqa: BLE001
             warn(f"could not update engine session status in StateDB: {exc}")

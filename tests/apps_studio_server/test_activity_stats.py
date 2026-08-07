@@ -174,12 +174,14 @@ def test_status_aliases_fold_into_rendered_buckets(tmp_path, monkeypatch):
     data = client.get("/api/stats/activity").json()
 
     last = data["buckets"][-1]
-    assert last["completed"] == 1
-    assert last["failed"] == 1
+    # completed_empty is terminal but unsuccessful (ADR-0064) -- it folds
+    # into "failed" alongside timed_out, never into "completed".
+    assert last["completed"] == 0
+    assert last["failed"] == 2
     assert last["cancelled"] == 1
     assert data["total"] == 3
-    # denom = 1 completed + 1 failed + 1 cancelled
-    assert data["completion_rate"] == pytest.approx(1 / 3)
+    # denom = 0 completed + 2 failed + 1 cancelled
+    assert data["completion_rate"] == pytest.approx(0.0)
 
 
 def test_null_and_unknown_statuses_count_in_total_only(tmp_path, monkeypatch):

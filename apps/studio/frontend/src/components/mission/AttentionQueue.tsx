@@ -3,17 +3,22 @@
  *
  * Actionable items (gated, stuck) get individual rows with one-click open.
  * Informational items (failed, stale) collapse into one digest row per
- * reason — count + latest + link into History — never a wall of red.
- * Orphaned (daemon-restart housekeeping) runs never reach the attention
- * list at all — they surface only in the Recent history strip as a neutral
- * chip, so nothing here is pure housekeeping noise.
+ * reason — count + latest + link into the dedicated Attention tab, never a
+ * wall of red. Orphaned (daemon-restart housekeeping) runs never reach the
+ * attention list at all — they surface only in the Recent history strip as
+ * a neutral chip, so nothing here is pure housekeeping noise.
  *
  * Discharge lifecycle: every row also offers Acknowledge/Resolve/Snooze/
- * Expected. These persist server-side (see boardReducer's dispositions
- * join) — a discharged (resolved/expected/snoozed) item leaves this default
- * view on the next poll, but stays queryable via "Show discharged" below.
- * Acknowledged items stay visible here, only restyled: acknowledging is
- * "seen, not fixed," never a hide.
+ * Expected — except "gated" rows, which offer Acknowledge only. A gate is
+ * resolved by the actual approve/reject action on the run, not discharged
+ * out of this list; letting it be snoozed/resolved here would hide a
+ * pending approval without anyone having acted on it.
+ *
+ * These persist server-side (see boardReducer's dispositions join) — a
+ * discharged (resolved/expected/snoozed) item leaves this default view on
+ * the next poll, but stays queryable via "Show discharged" below or the
+ * full Attention tab. Acknowledged items stay visible here, only restyled:
+ * acknowledging is "seen, not fixed," never a hide.
  */
 
 import { useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
@@ -23,7 +28,7 @@ import SectionLabel from "@/components/ui/SectionLabel";
 import Chip from "@/components/ui/Chip";
 import Skeleton from "@/components/ui/Skeleton";
 import { type AttentionItem, type AttentionReason } from "./boardReducer";
-import { runDeepLink, invocationDeepLink, scheduleDeepLink } from "@/lib/runDeepLink";
+import { runDeepLink, invocationDeepLink, scheduleDeepLink, playDeepLink } from "@/lib/runDeepLink";
 import { putAttentionDisposition, deleteAttentionDisposition, ApiError } from "@/lib/api";
 import type { AttentionDispositionState } from "@/lib/api";
 import { formatElapsed } from "@/lib/elapsed";
@@ -138,7 +143,7 @@ export default function AttentionQueue({ items, dischargedItems, nowSec }: Props
             </button>
           )}
           <Link
-            to="/fleet"
+            to="/attention"
             className="font-data text-[length:var(--t-xs)] text-content-muted transition-colors duration-100"
           >
             {t("attention.viewAll")}
@@ -152,30 +157,25 @@ export default function AttentionQueue({ items, dischargedItems, nowSec }: Props
         ))}
         {actionable.length > MAX_ACTIONABLE_ROWS && (
           <Link
-            to="/fleet"
+            to="/attention"
             className="flex items-center justify-center bg-surface-raised px-3 py-2 font-data text-[length:var(--t-xs)] text-content-muted transition-colors duration-100"
             style={{ borderTop: "1px solid var(--edge-hairline)" }}
           >
             {t("attention.more", { count: actionable.length - MAX_ACTIONABLE_ROWS })}
           </Link>
         )}
+        {/* Failed/stale are informational once read — one digest row each,
+            count + latest + link into the full Attention tab. No raw rows
+            underneath: a "collapse into one row" promise that still adds
+            three more rows is not a collapse. */}
         {digests.map(({ reason, group }, idx) => (
-          <div key={reason}>
-            <DigestRow
-              reason={reason}
-              group={group}
-              nowSec={nowSec}
-              first={idx === 0 && actionable.length === 0}
-            />
-            {/* The digest stays one line, but the freshest failures are
-                directly openable — a count alone isn't actionable. */}
-            {reason === "failed" &&
-              group
-                .slice(0, 3)
-                .map((item) => (
-                  <AttentionRow key={item.id} item={item} nowSec={nowSec} first={false} />
-                ))}
-          </div>
+          <DigestRow
+            key={reason}
+            reason={reason}
+            group={group}
+            nowSec={nowSec}
+            first={idx === 0 && actionable.length === 0}
+          />
         ))}
       </div>
 
@@ -212,7 +212,7 @@ function DigestRow({
   const latest = group[0];
   return (
     <Link
-      to="/fleet"
+      to="/attention"
       className="flex items-center gap-3 bg-surface-raised px-3 py-2 transition-colors duration-100 hover:bg-surface-overlay"
       style={{ borderTop: first ? undefined : "1px solid var(--edge-hairline)" }}
     >
@@ -260,6 +260,13 @@ function ItemLink({
   if (item.kind === "schedule") {
     return (
       <Link {...scheduleDeepLink(id)} className={className} style={style}>
+        {children}
+      </Link>
+    );
+  }
+  if (item.kind === "play") {
+    return (
+      <Link {...playDeepLink()} className={className} style={style}>
         {children}
       </Link>
     );
@@ -413,6 +420,10 @@ function DispositionControls({ item }: { item: AttentionItem }) {
     );
   }
 
+  // A gate is resolved by an actual approve/reject action on the run, not
+  // by discharging it here — only Acknowledge ("seen, not fixed") applies.
+  const isGated = item.reason === "gated";
+
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1.5">
       <button
@@ -424,37 +435,41 @@ function DispositionControls({ item }: { item: AttentionItem }) {
       >
         {t("attention.action.acknowledge")}
       </button>
-      <button
-        type="button"
-        disabled={pending}
-        aria-label={t("attention.action.resolveAria", { name: item.name })}
-        className={actionButtonClass}
-        onClick={() => void save("resolved")}
-      >
-        {t("attention.action.resolve")}
-      </button>
-      <button
-        type="button"
-        disabled={pending}
-        aria-label={t("attention.action.snoozeAria", { name: item.name, duration: "1h" })}
-        className={actionButtonClass}
-        onClick={() =>
-          void save("snoozed", {
-            expiresAt: Math.floor(Date.now() / 1000) + SNOOZE_DURATIONS[0].seconds,
-          })
-        }
-      >
-        {t("attention.action.snooze", { duration: SNOOZE_DURATIONS[0].labelKey })}
-      </button>
-      <button
-        type="button"
-        disabled={pending}
-        aria-label={t("attention.action.expectedAria", { name: item.name })}
-        className={actionButtonClass}
-        onClick={() => setExpectedOpen(true)}
-      >
-        {t("attention.action.expected")}
-      </button>
+      {!isGated && (
+        <>
+          <button
+            type="button"
+            disabled={pending}
+            aria-label={t("attention.action.resolveAria", { name: item.name })}
+            className={actionButtonClass}
+            onClick={() => void save("resolved")}
+          >
+            {t("attention.action.resolve")}
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            aria-label={t("attention.action.snoozeAria", { name: item.name, duration: "1h" })}
+            className={actionButtonClass}
+            onClick={() =>
+              void save("snoozed", {
+                expiresAt: Math.floor(Date.now() / 1000) + SNOOZE_DURATIONS[0].seconds,
+              })
+            }
+          >
+            {t("attention.action.snooze", { duration: SNOOZE_DURATIONS[0].labelKey })}
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            aria-label={t("attention.action.expectedAria", { name: item.name })}
+            className={actionButtonClass}
+            onClick={() => setExpectedOpen(true)}
+          >
+            {t("attention.action.expected")}
+          </button>
+        </>
+      )}
       {error && (
         <span className="text-[length:var(--t-xs)]" style={{ color: "var(--status-failure)" }}>
           {error}
@@ -464,7 +479,8 @@ function DispositionControls({ item }: { item: AttentionItem }) {
   );
 }
 
-function AttentionRow({
+/** Exported for reuse on the dedicated Attention page — same row, same discharge controls. */
+export function AttentionRow({
   item,
   nowSec,
   first,

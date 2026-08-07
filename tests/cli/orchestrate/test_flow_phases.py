@@ -1024,6 +1024,84 @@ async def test_execute_dag_role_attributed_node_missing_spawn_id_fails_loud(tmp_
             await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
 
 
+async def test_execute_dag_drains_segment_metadata_write_before_returning(tmp_path):
+    """Node-completion segment metadata is written by a fire-and-forget task.
+    If _execute_dag returned before that write landed, a caller running
+    finalization right after (as teardown does) could overwrite the
+    session's whole node_metadata object without ever seeing the segment.
+    The write must be drained -- awaited -- before _execute_dag returns."""
+    import asyncio as _real_asyncio
+
+    class _SlowFakeDB(_FakeDB):
+        async def update_session(self, session_id, **kw):
+            await _real_asyncio.sleep(0.05)
+            await super().update_session(session_id, **kw)
+
+        # The segment write goes through the atomic merge, so that is the call
+        # the drain has to wait for. Without a slow path here the test would
+        # pass whether or not _execute_dag drains anything.
+        async def merge_session_node_metadata(self, session_id, patch):
+            await _real_asyncio.sleep(0.05)
+            await super().merge_session_node_metadata(session_id, patch)
+
+    fake_db = _SlowFakeDB()
+    env = _make_env(
+        tmp_path,
+        live_persist={"db": fake_db, "session_id": "sess-1", "identity_markers": {}},
+    )
+    env.session.include_branches(_FakeBranch("researcher"))
+
+    assignments = [TaskAssignment(task="x", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=set(),
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+    from lionagi.session.signal import NodeCompleted, NodeStarted
+
+    async def _run_dag_and_emit_node_signals(*_args, **_kwargs):
+        handlers = dict(env.session._observers)
+        handlers[NodeStarted](NodeStarted(op_id="node-0", name="researcher"), None)
+        handlers[NodeCompleted](NodeCompleted(op_id="node-0", name="researcher"), None)
+        return {"operation_results": {"node-0": "output"}, "spawned_operations": 0}
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = _run_dag_and_emit_node_signals
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    # Accept either write shape: a merge patch carries the dict directly, a
+    # whole-column write carries it JSON-serialized. What is being pinned is
+    # that the segment write landed, not which call carried it.
+    segment_writes = []
+    for _sid, kw in fake_db.calls:
+        if "merge_patch" in kw:
+            payload = kw["merge_patch"]
+        elif "node_metadata" in kw:
+            raw = kw["node_metadata"]
+            payload = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+        else:
+            continue
+        if "segments" in payload:
+            segment_writes.append(payload)
+    assert segment_writes, "expected the node-completion segment write to have landed"
+    assert segment_writes[-1]["segments"], "segment entry for the completed node was not recorded"
+
+
 # ── Reactive spawn artifact enforcement through REAL teardown ─────────────────
 # Replaces the old interim regression test that pinned spawned artifacts as
 # permanently non-required (a spawned node used to have no way to learn its

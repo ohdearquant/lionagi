@@ -673,10 +673,17 @@ async def transition_sessions(
             # WHERE status='running' only allows a legal forward transition,
             # and the last_message_at/updated_at equality guards stop this
             # from clobbering a session that went active again mid-check.
+            _started_at = current.get("started_at")
+            _duration_ms = (
+                max(0.0, (now - _started_at) * 1000)
+                if isinstance(_started_at, int | float)
+                else None
+            )
             async with db.transaction() as conn:
                 result = await conn.execute(
                     text(
                         "UPDATE sessions SET status=:status, ended_at=:now, updated_at=:now, "
+                        "  duration_ms=:duration_ms, "
                         "  status_reason_code=:rcode, status_reason_summary=:rsummary, "
                         "  status_evidence_refs=:erefs "
                         "WHERE id=:sid AND status='running'"
@@ -686,6 +693,7 @@ async def transition_sessions(
                     {
                         "status": target_status,
                         "now": now,
+                        "duration_ms": _duration_ms,
                         "rcode": effective_reason_code,
                         "rsummary": effective_reason_summary,
                         "erefs": effective_evidence_refs,
@@ -799,15 +807,36 @@ async def prune_sessions(session_ids: list[str]) -> int:
             """
         )
         await db.commit()
+    # Recorded after the aiosqlite transaction above commits — insert_admin_event
+    # opens its own StateDB (SQLAlchemy) write transaction; nesting it inside
+    # the aiosqlite block would self-deadlock on the sqlite write lock.
+    from lionagi.state.db import StateDB
+
+    async with StateDB() as sdb:
+        await sdb.insert_admin_event(
+            action="prune_sessions",
+            details={"requested_session_ids": unique_ids, "pruned": pruned},
+            actor="admin",
+        )
     return pruned
 
 
 async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
     """Transition phantom sessions to 'failed' via the sanctioned status path;
     rows are preserved so reason history and artifacts stay inspectable."""
-    from lionagi.studio.services.lifecycle import reap_phantom_sessions
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.lifecycle import reap_phantom_sessions_detailed
 
-    return await reap_phantom_sessions(stale_hours=stale_hours, actor="admin_prune")
+    count, session_ids = await reap_phantom_sessions_detailed(
+        stale_hours=stale_hours, actor="admin_prune"
+    )
+    async with StateDB() as db:
+        await db.insert_admin_event(
+            action="prune_phantoms",
+            details={"count": count, "session_ids": session_ids, "stale_hours": stale_hours},
+            actor="admin_prune",
+        )
+    return count
 
 
 # ---------------------------------------------------------------------------

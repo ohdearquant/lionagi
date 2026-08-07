@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
 from .redact import scrub_text
+from .rename_session import RENAME_SESSION_DESCRIPTION, RenameSessionInput, rename_session
 from .resume_run import RESUME_RUN_DESCRIPTION, ResumeRunInput, resume_run
 from .run_findings import RunFindingsInput, run_findings
 from .run_progress import RunProgressInput, run_progress
@@ -132,10 +133,18 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "run_findings": RunFindingsInput,
     "cancel_run": CancelRunInput,
     "resume_run": ResumeRunInput,
+    "rename_session": RenameSessionInput,
 }
 
 _TOOL_DESCRIPTIONS = {
-    "list_recent_runs": ("List at most 20 recent Studio runs as a redacted read-only projection."),
+    "list_recent_runs": (
+        "List at most 20 recent Studio runs as a redacted read-only projection. "
+        "Each entry carries 'kind' (agent, play, flow, fanout, or show-play) and "
+        "'playbookName' when set -- a run may be a play root coordinating other "
+        "runs, and 'agentName' alone never establishes that a run is a single "
+        "agent. Read 'kind' before characterizing a run. For 'how is this play "
+        "going', use run_progress instead."
+    ),
     "run_stats": (
         "Count runs over a whole window (24h or 7d) with per-status totals and "
         "completion rate. Use this for 'how many runs did I have', which "
@@ -196,6 +205,7 @@ _TOOL_DESCRIPTIONS = {
     ),
     "cancel_run": CANCEL_RUN_DESCRIPTION,
     "resume_run": RESUME_RUN_DESCRIPTION,
+    "rename_session": RENAME_SESSION_DESCRIPTION,
 }
 
 _TOOL_SCHEMAS = [
@@ -244,6 +254,8 @@ async def list_recent_runs(arguments: dict[str, Any]) -> dict[str, Any]:
             "startedAt": row.get("started_at"),
             "endedAt": row.get("ended_at"),
             "href": f"/runs/{row.get('id')}",
+            "kind": row.get("invocation_kind"),
+            "playbookName": row.get("playbook_name"),
         }
         for row in rows[: args.limit]
         if isinstance(row.get("id"), str)
@@ -506,6 +518,7 @@ _TOOL_HANDLERS = {
     "run_findings": run_findings,
     "cancel_run": cancel_run,
     "resume_run": resume_run,
+    "rename_session": rename_session,
 }
 
 

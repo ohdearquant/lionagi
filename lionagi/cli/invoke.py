@@ -10,6 +10,8 @@ import time
 import uuid
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
+
 from ._logging import hint, log_error
 
 # ── async helpers ─────────────────────────────────────────────────────────────
@@ -203,6 +205,9 @@ def _parse_metadata(raw: str | None) -> dict | None:
     return parsed
 
 
+@auto_register(
+    area="invoke", cli=CliDeclaration(seed="invoke", parser_factory=add_invoke_subparser)
+)
 def run_invoke(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
 

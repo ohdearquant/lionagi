@@ -1345,9 +1345,16 @@ export interface InvocationSummary {
   created_at: number;
   updated_at: number;
   node_metadata: Record<string, unknown> | null;
+  status_reason_summary?: string | null;
   // ADR-0026: project provenance from the most-recently updated child session.
   project?: string | null;
   project_source?: string | null;
+  // ADR-0057 health verdict (worst-of across child sessions) + the real
+  // last-activity timestamp behind it, "unknown" when the invocation has
+  // no child sessions yet (issue #2851) — same vocabulary runs use, plus
+  // "unknown" for a case runs never hit (a run always has itself).
+  health?: "healthy" | "idle" | "unresponsive" | "stale" | "orphaned" | "zombie" | "unknown" | null;
+  last_activity_at?: number | null;
 }
 
 export interface InvocationSession {
@@ -1400,10 +1407,17 @@ export interface InvocationListResponse {
   limit: number;
   offset: number;
   has_next: boolean;
+  /** Real total matching the filters, not just this page's row count —
+   * `limit` caps at 200, so counting `invocations` instead plateaus there. */
+  total: number;
+  /** Total matching the filters with status == "completed" specifically,
+   * ignoring `params.status` — always a meaningful success-rate numerator. */
+  completed_total: number;
 }
 
 export interface InvocationListParams {
   skill?: string;
+  plugin?: string;
   status?: string;
   limit?: number;
   offset?: number;
@@ -1414,6 +1428,7 @@ export async function listInvocations(
 ): Promise<InvocationListResponse> {
   const query = new URLSearchParams();
   if (params?.skill) query.set("skill", params.skill);
+  if (params?.plugin) query.set("plugin", params.plugin);
   if (params?.status) query.set("status", params.status);
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset !== undefined) query.set("offset", String(params.offset));
@@ -1432,7 +1447,9 @@ export interface DefinitionSummary {
   name: string;
   path: string;
   disk_path: string;
-  has_versions: boolean;
+  // null when the version-history store could not be read for the listing
+  // (distinct from false, which means "never saved a version").
+  has_versions: boolean | null;
   version: number;
   updated_at: number;
 }
@@ -1449,8 +1466,11 @@ export interface DefinitionDetail {
   name: string;
   path: string;
   content: string;
-  version: number;
-  versions: DefinitionVersion[];
+  // version/versions are null when the version-history store could not be
+  // read; content/path are always disk-backed and always present.
+  version: number | null;
+  versions: DefinitionVersion[] | null;
+  history_available: boolean;
 }
 
 export async function listDefinitions(
@@ -1466,12 +1486,26 @@ export async function getDefinition(kind: string, name: string): Promise<Definit
   );
 }
 
+// A specific historical version's content -- distinct from DefinitionDetail
+// (the current definition): the backend's single-version read has nothing
+// to fall back on, so it either answers with a real version number and
+// content or refuses outright; it never returns the versions/history_available
+// fields DefinitionDetail carries.
+export interface DefinitionVersionDetail {
+  kind: string;
+  name: string;
+  version: number;
+  content: string;
+  created_at: number;
+  message: string | null;
+}
+
 export async function getDefinitionVersion(
   kind: string,
   name: string,
   version: number,
-): Promise<DefinitionDetail> {
-  return fetchJson<DefinitionDetail>(
+): Promise<DefinitionVersionDetail> {
+  return fetchJson<DefinitionVersionDetail>(
     `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/versions/${version}`,
   );
 }
@@ -1553,6 +1587,19 @@ export async function listSkills(): Promise<{ skills: SkillSummary[] }> {
 
 export async function getSkill(name: string): Promise<SkillDetail> {
   return fetchJson<SkillDetail>(`/api/skills/${encodeURIComponent(name)}`);
+}
+
+export interface SkillValidationResult {
+  ok: boolean;
+  errors: string[] | null;
+}
+
+export async function validateSkill(name: string, content: string): Promise<SkillValidationResult> {
+  return fetchJson<SkillValidationResult>(`/api/skills/${encodeURIComponent(name)}/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
 }
 
 // ─── Plugins ──────────────────────────────────────────────────────────────────
@@ -1742,6 +1789,22 @@ export async function getPluginSkill(
   );
 }
 
+export interface PluginAgentDetail {
+  name: string;
+  description: string;
+  path: string;
+  content: string;
+}
+
+export async function getPluginAgent(
+  pluginName: string,
+  agentName: string,
+): Promise<PluginAgentDetail> {
+  return fetchJson<PluginAgentDetail>(
+    `/api/plugins/${encodeURIComponent(pluginName)}/agents/${encodeURIComponent(agentName)}`,
+  );
+}
+
 // ─── Admin ────────────────────────────────────────────────────────────────────
 
 export type PhantomReason = "process_dead" | "missing_artifacts" | "stale_lock";
@@ -1779,6 +1842,31 @@ export async function pruneAdmin(body: AdminPruneRequest): Promise<{ pruned: num
   });
 }
 
+export interface AdminEvent {
+  id: string;
+  created_at: number;
+  action: string;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+  actor: string;
+}
+
+export interface AdminEventListParams {
+  action?: string;
+  target_id?: string;
+  limit?: number;
+}
+
+export async function getAdminEvents(params?: AdminEventListParams): Promise<AdminEvent[]> {
+  const query = new URLSearchParams();
+  if (params?.action) query.set("action", params.action);
+  if (params?.target_id) query.set("target_id", params.target_id);
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  const res = await fetchJson<{ events: AdminEvent[] }>(`/api/admin/events${qs ? `?${qs}` : ""}`);
+  return res.events;
+}
+
 // ─── Admin maintenance (Phase C Move 3) ──────────────────────────────────────
 
 export type MaintenanceAction = "vacuum" | "checkpoint" | "prune";
@@ -1808,6 +1896,58 @@ export async function runMaintenance(action: MaintenanceAction): Promise<Mainten
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action }),
   });
+}
+
+// ─── Teams (`li team` crews with a shared inbox) ──────────────────────────────
+
+export interface TeamSummary {
+  id: string;
+  name: string;
+  member_count: number;
+  last_modified: number;
+}
+
+export interface TeamListResponse {
+  teams: TeamSummary[];
+  limit: number;
+  offset: number;
+  total: number;
+  has_next: boolean;
+}
+
+export interface TeamMessage {
+  id: string;
+  from: string;
+  to: string | string[];
+  content: string;
+  timestamp: string;
+  read_by: Record<string, unknown>;
+  kind: string;
+  from_op?: string;
+  artifacts?: string[];
+}
+
+export interface TeamDetail {
+  id: string;
+  name: string;
+  members: string[];
+  messages: TeamMessage[];
+  created_at: string;
+}
+
+export async function listTeams(params?: {
+  limit?: number;
+  offset?: number;
+}): Promise<TeamListResponse> {
+  const query = new URLSearchParams();
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  if (params?.offset != null) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return fetchJson<TeamListResponse>(`/api/teams/${qs ? `?${qs}` : ""}`);
+}
+
+export async function getTeam(teamId: string): Promise<TeamDetail> {
+  return fetchJson<TeamDetail>(`/api/teams/${encodeURIComponent(teamId)}`);
 }
 
 // ─── Projects (ADR-0026) ──────────────────────────────────────────────────────
@@ -2148,6 +2288,23 @@ export async function listEngineRuns(params?: EngineRunListParams): Promise<Engi
 
 export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
   return fetchJson<EngineRunSummary>(`/api/engine-runs/${encodeURIComponent(runId)}`);
+}
+
+// ─── Shows / plays ──────────────────────────────────────────────────────────
+
+/** A play currently sitting in the `gated` lifecycle status, read live. */
+export interface GatedPlaySummary {
+  id: string;
+  topic: string;
+  play_name: string;
+  started_at: number | null;
+  updated_at: number | null;
+  feedback: string | null;
+  session_id: string | null;
+}
+
+export async function listGatedPlays(): Promise<GatedPlaySummary[]> {
+  return fetchJson<GatedPlaySummary[]>("/api/shows/gated-plays");
 }
 
 // ─── Engine definitions ───────────────────────────────────────────────────────

@@ -75,6 +75,7 @@ _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__run_findings",
     "mcp__studio_operator__cancel_run",
     "mcp__studio_operator__resume_run",
+    "mcp__studio_operator__rename_session",
 ]
 _MODEL_CONTEXT_FRAME_LIMIT = 64
 _MODEL_CONTEXT_BYTE_LIMIT = 128 * 1024
@@ -615,4 +616,11 @@ def build_operator_branch(turn: OperatorEngineTurn):
         }
     model_name = _apply_operator_effort(provider, model_name, turn.effort, model_kwargs)
     chat_model = iModel(provider=provider, model=model_name, **model_kwargs)
-    return Branch(system=_SYSTEM_PROMPT, chat_model=chat_model)
+    # The conversation's own durable identity, so this turn's branch/session
+    # persists as the same log entry every other turn of this conversation
+    # uses instead of a fresh, unrelated one (see OperatorStore.claim_branch_id).
+    # No live Branch is ever cached across turns -- only this id is reused.
+    branch_kwargs: dict[str, Any] = {"system": _SYSTEM_PROMPT, "chat_model": chat_model}
+    if turn.branch_id:
+        branch_kwargs["id"] = turn.branch_id
+    return Branch(**branch_kwargs)

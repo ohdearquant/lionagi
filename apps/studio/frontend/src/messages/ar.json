@@ -10,7 +10,8 @@
       "toggleTheme": "تبديل السمة",
       "switchToZh": "التبديل إلى الصينية",
       "switchToEn": "التبديل إلى الإنجليزية",
-      "selectLanguage": "اختر اللغة"
+      "selectLanguage": "اختر اللغة",
+      "teams": "الفرق"
     },
     "palette": {
       "ariaLabel": "لوحة الأوامر",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "نظرة عامة",
       "fleet": "أسطول الوكلاء",
-      "homeAria": "تبويبات الصفحة الرئيسية"
+      "homeAria": "تبويبات الصفحة الرئيسية",
+      "attention": "الانتباه"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -235,7 +237,11 @@
       "filteredHint": "جرّب نوعًا آخر أو امسح البحث.",
       "createFirst": "أنشئ أول",
       "createWorkflow": "سير عمل جديد",
-      "createAgent": "وكيل جديد"
+      "createAgent": "وكيل جديد",
+      "allSkill": "لم يتم العثور على مهارات.",
+      "allSkillHint": "أضف ملف SKILL.md ضمن ~/.lionagi/skills/<name>/ لتظهر هنا.",
+      "allPlugin": "لم يتم العثور على إضافات.",
+      "allPluginHint": "ثبّت إضافة ضمن ~/.claude/plugins/ لتظهر هنا."
     },
     "table": {
       "kind": "النوع",
@@ -296,7 +302,19 @@
       "lastUsed": "آخر استخدام",
       "never": "أبدًا",
       "recentInvocations": "الاستدعاءات الأخيرة",
-      "noInvocations": "لم تُسجّل أي استدعاءات بعد."
+      "noInvocations": "لم تُسجّل أي استدعاءات بعد.",
+      "skillValidationFailed": "فشل التحقق. أصلح الأخطاء أدناه قبل الحفظ.",
+      "pluginOwnedSkillHint": "مرفقة ضمن إضافة — عدّل ملفات الإضافة مباشرة لتغييرها.",
+      "readOnly": "للقراءة فقط",
+      "skillTools": "الأدوات المسموح بها",
+      "skillInstructions": "التعليمات",
+      "pluginHooks": "الخطافات",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "خوادم MCP",
+      "pluginHooksSection": "إعدادات الخطافات",
+      "pluginReadmeSection": "README",
+      "yes": "نعم",
+      "no": "لا"
     },
     "template": {
       "badge": "مدمج",
@@ -450,8 +468,8 @@
       "statErrorsRecent": "الأخطاء (الأخيرة)",
       "noBranchErrorsPartial": "لا توجد أخطاء في الرسائل المحمّلة.",
       "noFilesPartial": "لم تُكتشف عمليات على الملفات في الرسائل المحمّلة.",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "تعذر تحميل السجل الأقدم — تقدمت هذه المحادثة قبل اكتمال الطلب.",
+      "reloadConversation": "إعادة تحميل المحادثة",
       "graphEdgeCount": "{count} حافة",
       "graphImpliedHidden": "· {count} ضمنية مخفية",
       "graphHideImplied": "إخفاء الضمنية",
@@ -462,7 +480,17 @@
       "graphNodeStatusPaused": "متوقف مؤقتًا",
       "graphNodeStatusDone": "تم",
       "graphNodeStatusFailed": "فشل",
-      "graphNodeStatusEscalated": "تم التصعيد"
+      "graphNodeStatusEscalated": "تم التصعيد",
+      "progressTotal": "الإجمالي",
+      "progressCompleted": "مكتمل",
+      "progressRunning": "قيد التشغيل",
+      "progressFailed": "فشل",
+      "progressPending": "قيد الانتظار",
+      "progressElapsed": "الوقت المنقضي",
+      "expandGraph": "توسيع الرسم البياني للتنفيذ",
+      "collapseGraph": "طي الرسم البياني للتنفيذ",
+      "closeExpandedGraph": "إغلاق",
+      "nodeNoBranch": "لم يتم العثور على فرع لـ “{node}” — لم تبدأ هذه الخطوة بعد."
     },
     "masterAria": "قائمة السجل",
     "detailAria": "تفاصيل العنصر"
@@ -473,7 +501,9 @@
     "sections": {
       "health": "الصحة",
       "maintenance": "الصيانة",
-      "settings": "الإعدادات"
+      "settings": "الإعدادات",
+      "adminEvents": "أحداث الإدارة",
+      "data": "البيانات"
     },
     "health": {
       "stateDb": "قاعدة بيانات الحالة",
@@ -542,6 +572,21 @@
       "switchToZh": "التبديل إلى الصينية",
       "english": "الإنجليزية",
       "chinese": "الصينية"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "تصفية حسب الإجراء",
+      "targetPlaceholder": "تصفية حسب معرّف الهدف",
+      "filter": "تصفية",
+      "loadError": "تعذّر تحميل أحداث الإدارة.",
+      "empty": "لم يُسجَّل أي حدث إداري بعد.",
+      "when": "الوقت",
+      "action": "الإجراء",
+      "target": "الهدف",
+      "actor": "المنفّذ"
+    },
+    "data": {
+      "engineRuns": "عمليات تشغيل المحرك",
+      "definitions": "التعريفات"
     }
   },
   "schedules": {
@@ -807,7 +852,8 @@
       "updated": "آخر تحديث",
       "branchesTitle": "الفروع ({count})",
       "noBranches": "لا توجد فروع.",
-      "msgs": " رسائل"
+      "msgs": " رسائل",
+      "engineRuns": "عمليات تشغيل المحرك"
     },
     "split": {
       "master": "قائمة الجلسات",
@@ -859,7 +905,7 @@
         "stuck": "عالق · لا تقدم",
         "gated": "بانتظار الموافقة"
       },
-      "more": "+{count, plural, zero {لا مزيد — عرض الكل في السجل ←} one {# آخر — عرض الكل في السجل ←} two {# آخران — عرض الكل في السجل ←} few {# أخرى — عرض الكل في السجل ←} many {# آخر — عرض الكل في السجل ←} other {# آخر — عرض الكل في السجل ←}}",
+      "more": "+{count, plural, zero {لا مزيد — عرض الكل ←} one {# آخر — عرض الكل ←} two {# آخران — عرض الكل ←} few {# أخرى — عرض الكل ←} many {# آخر — عرض الكل ←} other {# آخر — عرض الكل ←}}",
       "digestLatest": "الأحدث: {name} · منذ {age}",
       "streakCount": "{count, plural, zero {لا إخفاقات} one {فشل مرة واحدة} two {فشل مرتين} few {فشل # مرات} many {فشل # مرة} other {فشل # مرة}}",
       "disposition": {
@@ -888,7 +934,17 @@
       },
       "showDischarged": "إظهار العناصر المعالجة",
       "hideDischarged": "إخفاء العناصر المعالجة",
-      "dischargedEmpty": "لا توجد عناصر معالجة"
+      "dischargedEmpty": "لا توجد عناصر معالجة",
+      "page": {
+        "title": "الانتباه",
+        "subtitle": "كل العناصر التي تحتاج انتباه المشغّل، النشطة والمُنجَزة.",
+        "filterActive": "نشطة",
+        "filterDischarged": "مُنجَزة",
+        "filterAll": "الكل",
+        "emptyActive": "لا شيء يحتاج انتباهًا الآن.",
+        "emptyDischarged": "لا توجد عناصر مُنجَزة.",
+        "emptyAll": "لا توجد عناصر انتباه."
+      }
     },
     "liveBoard": {
       "title": "قيد التشغيل الآن",
@@ -1117,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "الفرق",
+    "subtitle": "طواقم من الوكلاء تنسّق عبر صندوق وارد مشترك",
+    "loadError": "تعذّر تحميل الفرق.",
+    "emptyTitle": "لا توجد فرق بعد",
+    "emptyBody": "يتم إنشاء الفرق باستخدام `li team create` وتنسّق عبر صندوق وارد مشترك.",
+    "table": {
+      "name": "الاسم",
+      "members": "الأعضاء",
+      "lastModified": "آخر تعديل",
+      "oneMember": "عضو واحد",
+      "memberCount": "{count} أعضاء"
+    },
+    "loadMore": "تحميل المزيد",
+    "loadingMore": "جارٍ التحميل…",
+    "detail": {
+      "close": "إغلاق",
+      "members": "الأعضاء",
+      "created": "أُنشئ",
+      "messages": "الرسائل ({count})",
+      "noMessages": "لا توجد رسائل بعد."
+    }
+  },
+  "engineRuns": {
+    "title": "عمليات تشغيل المحرك",
+    "subtitle": "استدعاءات المحرك الفردية تحت جلسات التنسيق",
+    "filterKind": "تصفية حسب النوع",
+    "filterStatus": "تصفية حسب الحالة",
+    "filterStatusAll": "كل الحالات",
+    "filterSession": "تصفية حسب معرّف الجلسة",
+    "filterApply": "تصفية",
+    "loadError": "تعذّر تحميل عمليات تشغيل المحرك.",
+    "emptyTitle": "لم يتم العثور على عمليات تشغيل للمحرك",
+    "emptyBody": "تظهر عمليات تشغيل المحرك هنا بمجرد أن يسجّل محرك (مثل `li engine`) استدعاءً.",
+    "table": {
+      "kind": "النوع",
+      "status": "الحالة",
+      "started": "بدأ",
+      "session": "الجلسة"
+    },
+    "detail": {
+      "close": "إغلاق",
+      "notFound": "لم يتم العثور على عملية تشغيل المحرك.",
+      "started": "بدأ",
+      "ended": "انتهى",
+      "exportDir": "دليل التصدير",
+      "error": "خطأ",
+      "spec": "المواصفة"
+    }
+  },
+  "definitions": {
+    "title": "التعريفات",
+    "subtitle": "كل تعريف وكيل ودليل عمل خاضع للإصدارات، مع نقطة تفتيش لقطة جماعية",
+    "filterKind": "تصفية حسب النوع",
+    "filterKindAll": "كل الأنواع",
+    "snapshotAll": "التقاط لقطة للكل",
+    "snapshotting": "جارٍ التقاط اللقطة…",
+    "snapshotDone": "تم إنشاء {count} لقطة.",
+    "snapshotFailed": "فشلت اللقطة.",
+    "loadError": "تعذّر تحميل التعريفات.",
+    "emptyTitle": "لم يتم العثور على تعريفات",
+    "emptyBody": "تظهر تعريفات الوكيل ودليل العمل هنا بمجرد إنشائها.",
+    "table": {
+      "kind": "النوع",
+      "name": "الاسم",
+      "version": "الإصدار",
+      "noVersions": "لا يوجد سجل",
+      "updated": "آخر تحديث"
+    }
   }
 }

@@ -208,6 +208,7 @@ async def mirror_session(
     provider: str | None = "anthropic",
     name: str | None = None,
     status: str = "running",
+    cwd: str | None = None,
     source_path: str | None = None,
     event_sources: list[tuple[int, int, str]] | None = None,
     max_preview_chars: int | None = None,
@@ -222,6 +223,10 @@ async def mirror_session(
     ``bound_mirror_content`` before it is written, with a resolvable source pointer
     on ``node_metadata.mirror_source``. Omitting them keeps the legacy unbounded
     write, for callers with no live transcript file behind the events.
+
+    ``cwd`` is the transcript's own working directory -- the CLI's artifact root
+    (issue #2848) -- written to ``artifacts_path`` on create, and backfilled on an
+    existing row that lacks one without ever overwriting one that is already set.
     """
     sid = session_db_id(session_uid)
     branch_id = _det(session_uid, "branch")
@@ -272,6 +277,7 @@ async def mirror_session(
                 "provider": provider,
                 "project": project,
                 "project_source": project_source,
+                "artifacts_path": cwd,
                 "started_at": first_ts,
                 "updated_at": last_ts,
             }
@@ -279,7 +285,12 @@ async def mirror_session(
     else:
         cc_session_id = session_uid if existing.get("cc_session_id") is None else None
         provenance_project = project if project and not existing.get("project") else None
-        if cc_session_id is not None or provenance_project is not None:
+        provenance_artifacts_path = cwd if cwd and not existing.get("artifacts_path") else None
+        if (
+            cc_session_id is not None
+            or provenance_project is not None
+            or provenance_artifacts_path is not None
+        ):
             # Backfill attribution for an already-seen session (INSERT OR IGNORE never
             # updates); writes without disturbing the liveness clock.
             await db.set_session_provenance(
@@ -287,6 +298,7 @@ async def mirror_session(
                 cc_session_id=cc_session_id,
                 project=provenance_project,
                 project_source=project_source if provenance_project is not None else None,
+                artifacts_path=provenance_artifacts_path,
             )
     await db.create_branch(
         {

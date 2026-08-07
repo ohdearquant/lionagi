@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 
+from lionagi._auto import CliDeclaration, auto_register
+
 from ._logging import log_error
 from ._util import EXIT_CODE_ENVIRONMENT_ERROR
 
@@ -45,6 +47,7 @@ def add_mcp_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+@auto_register(area="mcp", cli=CliDeclaration(seed="mcp", parser_factory=add_mcp_subparser))
 def run_mcp(args: argparse.Namespace) -> int:
     if getattr(args, "action", "serve") != "serve":
         log_error(f"unknown mcp action: {args.action}")

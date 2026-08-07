@@ -965,9 +965,16 @@ async def schedule_limits_route() -> dict[str, Any]:
 
     from ..scheduler.engine import scheduler
 
+    # The scheduled and ad-hoc lanes draw from independent capacity pools
+    # (see MAX_ADHOC_CONCURRENT's own docstring in config.py) -- an operator
+    # reading only the scheduled cap would under-provision by the ad-hoc
+    # lane's own additive capacity, since the daemon can run both caps'
+    # worth of executions at once.
     return {
         "max_scheduled_concurrent": config.MAX_SCHEDULED_CONCURRENT,
         "current_inflight": scheduler._global_inflight,
+        "max_adhoc_concurrent": config.MAX_ADHOC_CONCURRENT,
+        "current_adhoc_inflight": scheduler._adhoc_inflight,
     }
 
 

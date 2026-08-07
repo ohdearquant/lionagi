@@ -10,7 +10,8 @@
       "toggleTheme": "Changer de thème",
       "switchToZh": "Passer au chinois",
       "switchToEn": "Passer à l’anglais",
-      "selectLanguage": "Choisir la langue"
+      "selectLanguage": "Choisir la langue",
+      "teams": "Équipes"
     },
     "palette": {
       "ariaLabel": "Palette de commandes",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "Vue d’ensemble",
       "fleet": "Flotte",
-      "homeAria": "Onglets d’accueil"
+      "homeAria": "Onglets d’accueil",
+      "attention": "Attention"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -235,7 +237,11 @@
       "filteredHint": "Essayez un autre type ou effacez la recherche.",
       "createFirst": "Créer le premier",
       "createWorkflow": "Nouveau workflow",
-      "createAgent": "Nouvel agent"
+      "createAgent": "Nouvel agent",
+      "allSkill": "Aucun skill trouvé.",
+      "allSkillHint": "Ajoutez un SKILL.md sous ~/.lionagi/skills/<name>/ pour le voir ici.",
+      "allPlugin": "Aucun plugin trouvé.",
+      "allPluginHint": "Installez un plugin sous ~/.claude/plugins/ pour le voir ici."
     },
     "table": {
       "kind": "Type",
@@ -296,7 +302,19 @@
       "lastUsed": "Dernière utilisation",
       "never": "jamais",
       "recentInvocations": "Invocations récentes",
-      "noInvocations": "Aucune invocation enregistrée pour le moment."
+      "noInvocations": "Aucune invocation enregistrée pour le moment.",
+      "skillValidationFailed": "Échec de la validation. Corrigez les erreurs ci-dessous avant d'enregistrer.",
+      "pluginOwnedSkillHint": "Fourni avec un plugin — modifiez les fichiers du plugin directement pour le changer.",
+      "readOnly": "Lecture seule",
+      "skillTools": "Outils autorisés",
+      "skillInstructions": "Instructions",
+      "pluginHooks": "Hooks",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "Serveurs MCP",
+      "pluginHooksSection": "Configuration des hooks",
+      "pluginReadmeSection": "README",
+      "yes": "Oui",
+      "no": "Non"
     },
     "template": {
       "badge": "Intégré",
@@ -450,8 +468,8 @@
       "statErrorsRecent": "Erreurs (récentes)",
       "noBranchErrorsPartial": "Aucune erreur dans les messages chargés.",
       "noFilesPartial": "Aucune opération de fichier détectée dans les messages chargés.",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "Impossible de charger l'historique antérieur — cette conversation a avancé avant la fin de la requête.",
+      "reloadConversation": "Recharger la conversation",
       "graphEdgeCount": "{count} arêtes",
       "graphImpliedHidden": "· {count} implicites masquées",
       "graphHideImplied": "masquer les implicites",
@@ -462,7 +480,17 @@
       "graphNodeStatusPaused": "en pause",
       "graphNodeStatusDone": "terminé",
       "graphNodeStatusFailed": "échoué",
-      "graphNodeStatusEscalated": "escaladé"
+      "graphNodeStatusEscalated": "escaladé",
+      "progressTotal": "Total",
+      "progressCompleted": "Terminé",
+      "progressRunning": "En cours",
+      "progressFailed": "Échoué",
+      "progressPending": "En attente",
+      "progressElapsed": "Écoulé",
+      "expandGraph": "Développer le graphique d'exécution",
+      "collapseGraph": "Réduire le graphique d'exécution",
+      "closeExpandedGraph": "Fermer",
+      "nodeNoBranch": "Aucune branche trouvée pour « {node} » — cette étape n'a pas encore commencé."
     },
     "masterAria": "Liste d’historique",
     "detailAria": "Détail de l’élément"
@@ -473,7 +501,9 @@
     "sections": {
       "health": "Santé",
       "maintenance": "Maintenance",
-      "settings": "Paramètres"
+      "settings": "Paramètres",
+      "adminEvents": "Événements d'administration",
+      "data": "Données"
     },
     "health": {
       "stateDb": "DB d’état",
@@ -542,6 +572,21 @@
       "switchToZh": "Passer au chinois",
       "english": "Anglais",
       "chinese": "Chinois"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Filtrer par action",
+      "targetPlaceholder": "Filtrer par ID de cible",
+      "filter": "Filtrer",
+      "loadError": "Échec du chargement des événements d'administration.",
+      "empty": "Aucun événement d'administration enregistré pour l'instant.",
+      "when": "Quand",
+      "action": "Action",
+      "target": "Cible",
+      "actor": "Acteur"
+    },
+    "data": {
+      "engineRuns": "Exécutions moteur",
+      "definitions": "Définitions"
     }
   },
   "schedules": {
@@ -807,7 +852,8 @@
       "updated": "Mis à jour",
       "branchesTitle": "Branches ({count})",
       "noBranches": "Aucune branche.",
-      "msgs": " messages"
+      "msgs": " messages",
+      "engineRuns": "Exécutions moteur"
     },
     "split": {
       "master": "Liste des sessions",
@@ -859,7 +905,7 @@
         "stuck": "bloqué · aucune progression",
         "gated": "en attente d’approbation"
       },
-      "more": "+{count, plural, one {# autre} other {# autres}} — tout voir dans l’Historique →",
+      "more": "+{count, plural, one {# autre} other {# autres}} — tout voir →",
       "digestLatest": "dernier : {name} · il y a {age}",
       "streakCount": "{count}× en échec",
       "disposition": {
@@ -888,7 +934,17 @@
       },
       "showDischarged": "Afficher les éléments clôturés",
       "hideDischarged": "Masquer les éléments clôturés",
-      "dischargedEmpty": "Aucun élément clôturé"
+      "dischargedEmpty": "Aucun élément clôturé",
+      "page": {
+        "title": "Attention",
+        "subtitle": "Tous les éléments nécessitant l’attention de l’opérateur, actifs et classés.",
+        "filterActive": "Actifs",
+        "filterDischarged": "Classés",
+        "filterAll": "Tous",
+        "emptyActive": "Rien ne nécessite d’attention pour le moment.",
+        "emptyDischarged": "Aucun élément classé.",
+        "emptyAll": "Aucun élément d’attention."
+      }
     },
     "liveBoard": {
       "title": "En cours maintenant",
@@ -1117,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Équipes",
+    "subtitle": "Équipes d'agents qui se coordonnent via une boîte de réception partagée",
+    "loadError": "Échec du chargement des équipes.",
+    "emptyTitle": "Aucune équipe pour l'instant",
+    "emptyBody": "Les équipes sont créées avec `li team create` et se coordonnent via une boîte de réception partagée.",
+    "table": {
+      "name": "Nom",
+      "members": "Membres",
+      "lastModified": "Dernière modification",
+      "oneMember": "1 membre",
+      "memberCount": "{count} membres"
+    },
+    "loadMore": "Charger plus",
+    "loadingMore": "Chargement…",
+    "detail": {
+      "close": "Fermer",
+      "members": "Membres",
+      "created": "Créé le",
+      "messages": "Messages ({count})",
+      "noMessages": "Aucun message pour l'instant."
+    }
+  },
+  "engineRuns": {
+    "title": "Exécutions moteur",
+    "subtitle": "Invocations individuelles du moteur sous les sessions d'orchestration",
+    "filterKind": "Filtrer par type",
+    "filterStatus": "Filtrer par statut",
+    "filterStatusAll": "Tous les statuts",
+    "filterSession": "Filtrer par ID de session",
+    "filterApply": "Filtrer",
+    "loadError": "Échec du chargement des exécutions moteur.",
+    "emptyTitle": "Aucune exécution moteur trouvée",
+    "emptyBody": "Les exécutions moteur apparaissent ici dès qu'un moteur (ex. `li engine`) enregistre une invocation.",
+    "table": {
+      "kind": "Type",
+      "status": "Statut",
+      "started": "Démarré",
+      "session": "Session"
+    },
+    "detail": {
+      "close": "Fermer",
+      "notFound": "Exécution moteur introuvable.",
+      "started": "Démarré",
+      "ended": "Terminé",
+      "exportDir": "Répertoire d'export",
+      "error": "Erreur",
+      "spec": "Spécification"
+    }
+  },
+  "definitions": {
+    "title": "Définitions",
+    "subtitle": "Toutes les définitions d'agent et de playbook versionnées, avec un instantané groupé",
+    "filterKind": "Filtrer par type",
+    "filterKindAll": "Tous les types",
+    "snapshotAll": "Instantané de tout",
+    "snapshotting": "Instantané en cours…",
+    "snapshotDone": "{count} instantané(s) créé(s).",
+    "snapshotFailed": "Échec de l'instantané.",
+    "loadError": "Échec du chargement des définitions.",
+    "emptyTitle": "Aucune définition trouvée",
+    "emptyBody": "Les définitions d'agent et de playbook apparaissent ici une fois créées.",
+    "table": {
+      "kind": "Type",
+      "name": "Nom",
+      "version": "Version",
+      "noVersions": "aucun historique",
+      "updated": "Mis à jour"
+    }
   }
 }

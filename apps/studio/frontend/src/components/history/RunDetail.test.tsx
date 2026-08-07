@@ -1477,3 +1477,366 @@ describe("history/RunDetail.tsx — a collapsed pair keeps its richer edge", () 
     expect(out.map((e) => e.id)).toEqual(["cond", "other"]);
   });
 });
+
+// ─── Graph-node drill-down: matching ───────────────────────────────────────
+// Graph nodes are keyed by authored role/assignment name (WorkerStepNode.id);
+// branches carry agent_name, falling back to name, then an id prefix — see
+// implementation_brief.md and the measured RunDetail.tsx:335 formula. Both
+// match arms (a node WITH a branch, a node WITHOUT one) are exercised here.
+
+function makeBranch(overrides: Partial<import("@/lib/api").SessionBranch>) {
+  return {
+    id: "abcdef1234567890",
+    name: "",
+    created_at: 0,
+    messages: [],
+    ...overrides,
+  } as import("@/lib/api").SessionBranch;
+}
+
+describe("history/RunDetail.tsx — matchGraphNodeToBranch (graph-node drill-down)", () => {
+  it("match arm: resolves by exact branch name first, ahead of agent_name", async () => {
+    // branch.name is unique/durable per session; agent_name is a role label
+    // shared by every branch with that role. An exact name match must win
+    // even when a different branch's agent_name also matches the node id.
+    const { matchGraphNodeToBranch } = await import("./RunDetail");
+    const branches = [
+      makeBranch({ id: "b1", name: "analyst-role", agent_name: "analyst" }),
+      makeBranch({ id: "b2", name: "analyst", agent_name: null }),
+    ];
+    const match = matchGraphNodeToBranch("analyst", branches);
+    expect(match?.id).toBe("b2");
+  });
+
+  it("match arm: falls back to agent_name only when exactly one branch carries it", async () => {
+    const { matchGraphNodeToBranch } = await import("./RunDetail");
+    const branches = [makeBranch({ id: "b1", name: "analyst-role", agent_name: "analyst" })];
+    const match = matchGraphNodeToBranch("analyst", branches);
+    expect(match?.id).toBe("b1");
+  });
+
+  it("match arm: two branches sharing a role's agent_name is ambiguous — resolves via the unique branch name instead, regardless of list order", async () => {
+    // Duplicate-implementer scenario: {name:"implementer-2",
+    // agent_name:"implementer"} ordered before the branch whose exact name
+    // is the clicked node id. agent_name alone can't disambiguate (both
+    // branches carry it) — the exact name match must win, and win the same
+    // way whichever order the branches list arrives in.
+    const { matchGraphNodeToBranch } = await import("./RunDetail");
+    const forward = [
+      makeBranch({ id: "b1", name: "implementer-2", agent_name: "implementer" }),
+      makeBranch({ id: "b2", name: "implementer", agent_name: "implementer" }),
+    ];
+    expect(matchGraphNodeToBranch("implementer", forward)?.id).toBe("b2");
+
+    const reversed = [
+      makeBranch({ id: "b2", name: "implementer", agent_name: "implementer" }),
+      makeBranch({ id: "b1", name: "implementer-2", agent_name: "implementer" }),
+    ];
+    expect(matchGraphNodeToBranch("implementer", reversed)?.id).toBe("b2");
+  });
+
+  it("match arm: falls back to name when no agent_name matches", async () => {
+    const { matchGraphNodeToBranch } = await import("./RunDetail");
+    const branches = [
+      makeBranch({ id: "b1", name: "other", agent_name: "someone-else" }),
+      makeBranch({ id: "b2", name: "tester", agent_name: null }),
+    ];
+    const match = matchGraphNodeToBranch("tester", branches);
+    expect(match?.id).toBe("b2");
+  });
+
+  it("match arm: falls back to an 8-char id prefix when neither agent_name nor name matches", async () => {
+    const { matchGraphNodeToBranch } = await import("./RunDetail");
+    const branches = [makeBranch({ id: "9e5f593fabcdef01", name: "", agent_name: null })];
+    const match = matchGraphNodeToBranch("9e5f593f", branches);
+    expect(match?.id).toBe("9e5f593fabcdef01");
+  });
+
+  it("unmatched arm: returns null when nothing resolves — the explicit no-branch case", async () => {
+    const { matchGraphNodeToBranch } = await import("./RunDetail");
+    const branches = [makeBranch({ id: "b1", name: "tester", agent_name: "tester" })];
+    expect(matchGraphNodeToBranch("nonexistent-role", branches)).toBeNull();
+  });
+
+  it("matched branch resolves to the SAME key branchToRunStep uses (stepKeyForBranch identity)", async () => {
+    const { matchGraphNodeToBranch, stepKeyForBranch, branchToRunStep } =
+      await import("./RunDetail");
+    const branch = makeBranch({ id: "b1", name: "reviewer", agent_name: "reviewer" });
+    const match = matchGraphNodeToBranch("reviewer", [branch]);
+    expect(match).not.toBeNull();
+    const key = stepKeyForBranch(match!);
+    const step = branchToRunStep(branch, "completed");
+    // The drill-down expands/highlights expandedSteps.has(key) and scrolls to
+    // `#step-${key}` — both must agree with what RunStepCard actually renders.
+    expect(key).toBe(step.step);
+  });
+});
+
+// ─── Header-source identity + terminal no-signal presentation ─────────────
+// The progress summary and the graph nodes must derive from the exact same
+// reconciled status map, and a node with no lifecycle signal on a finished
+// run must never present as "running".
+
+describe("history/RunDetail.tsx — computeReconciledNodeStatuses / computeProgressCountsForGraph", () => {
+  const graph = {
+    nodes: [
+      { id: "a" },
+      { id: "b" },
+      { id: "c" },
+    ] as unknown as import("@/lib/types").WorkerGraph["nodes"],
+    edges: [{ source: "a", target: "b" }] as unknown as import("@/lib/types").WorkerGraph["edges"],
+  };
+
+  it("terminal no-signal presentation: an isolated node stuck 'running' on a DONE run reads pending, never running", async () => {
+    const { computeReconciledNodeStatuses } = await import("./RunDetail");
+    // "c" has no outgoing edges (no descendant to trigger suppression) and no
+    // terminal signal was ever recorded for it — on a done run that must
+    // read as absence of information ("pending"), never as live work.
+    const reconciled = computeReconciledNodeStatuses(graph, { c: "running" }, true);
+    expect(reconciled?.c).toBe("pending");
+  });
+
+  it("descendant-terminal suppression corrects a stale 'running' reading to 'completed' before the terminal-run collapse runs", async () => {
+    const { computeReconciledNodeStatuses } = await import("./RunDetail");
+    // "a" still reads "running" but its descendant "b" already completed —
+    // "a" could not still be running, so it resolves to "completed" (a
+    // terminal status), not "pending".
+    const reconciled = computeReconciledNodeStatuses(graph, { a: "running", b: "completed" }, true);
+    expect(reconciled?.a).toBe("completed");
+  });
+
+  it("descendant-terminal suppression holds even on a still-live run (not done-gated)", async () => {
+    const { computeReconciledNodeStatuses } = await import("./RunDetail");
+    const reconciled = computeReconciledNodeStatuses(
+      graph,
+      { a: "running", b: "completed" },
+      false,
+    );
+    expect(reconciled?.a).toBe("completed");
+  });
+
+  it("header-source identity: counts are derived from the exact reconciled map, so they cannot diverge from what the graph would render", async () => {
+    const { computeReconciledNodeStatuses, computeProgressCountsForGraph } =
+      await import("./RunDetail");
+    const reconciled = computeReconciledNodeStatuses(graph, { a: "running", b: "completed" }, true);
+    const counts = computeProgressCountsForGraph(graph, reconciled);
+    // Same map both consumers would read: a→completed (descendant
+    // suppression, since b already completed), b→completed, c→pending (no
+    // entry, default — collapse leaves it as-is since it was never active).
+    expect(counts).toMatchObject({ total: 3, completed: 2, running: 0, pending: 1, failed: 0 });
+    expect(counts?.hasFailure).toBe(false);
+  });
+
+  it("hasFailure trips the unmissable-failure header tone when any node is failed or escalated", async () => {
+    const { computeReconciledNodeStatuses, computeProgressCountsForGraph } =
+      await import("./RunDetail");
+    const reconciled = computeReconciledNodeStatuses(graph, { a: "escalated" }, true);
+    const counts = computeProgressCountsForGraph(graph, reconciled);
+    expect(counts?.hasFailure).toBe(true);
+    expect(counts?.failed).toBe(1);
+  });
+
+  it("returns undefined/null gracefully when there is no run graph yet", async () => {
+    const { computeReconciledNodeStatuses, computeProgressCountsForGraph } =
+      await import("./RunDetail");
+    expect(computeReconciledNodeStatuses(null, undefined, false)).toBeUndefined();
+    expect(computeProgressCountsForGraph(null, undefined)).toBeNull();
+  });
+});
+
+// ─── Expand / close wiring + full-content-width placement ─────────────────
+// Source-text checks mirroring the existing wiring-assertion style in this
+// file (e.g. "authored run graph is rendered unreduced" above) — the
+// behavior itself (open/close/Escape) is a DOM-event state machine that is
+// exercised end-to-end by the pure reducer style tests above and by manual
+// verification (documented in run_detail_implementation.md); these pin the
+// wiring so a refactor can't silently drop the close paths.
+
+describe("history/RunDetail.tsx — execution-graph expand/close wiring", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("Escape closes the expanded graph overlay", () => {
+    expect(src).toMatch(/event\.key === "Escape"/);
+    expect(src).toMatch(/setGraphExpanded\(false\)/);
+  });
+
+  it("an explicit close button also closes the overlay", () => {
+    expect(src).toMatch(/onClick={\(\) => setGraphExpanded\(false\)}/);
+  });
+
+  it("the expand control opens the overlay", () => {
+    expect(src).toMatch(/onClick={\(\) => setGraphExpanded\(true\)}/);
+  });
+
+  it("the run-dag panel is not constrained narrower than its flex parent (full-content-width placement)", () => {
+    expect(src).toMatch(/id="run-dag" className="w-full scroll-mt-4"/);
+  });
+
+  it("both the inline and expanded WorkerCanvas embeds read nodeStatuses from the same reconciled map", () => {
+    const occurrences = src.match(/nodeStatuses={reconciledNodeStatuses}/g) ?? [];
+    expect(occurrences.length).toBe(2);
+    // No remaining callsite passes the raw (unreconciled) map to the graph.
+    expect(src).not.toMatch(/nodeStatuses={nodeStatuses}/);
+  });
+
+  it("the progress summary bar renders from the same progressCounts used by both graph embeds", () => {
+    const occurrences = src.match(/<ProgressSummaryBar counts={progressCounts}/g) ?? [];
+    expect(occurrences.length).toBe(2);
+  });
+});
+
+// ─── Unmatched-node explicit state ─────────────────────────────────────────
+
+describe("history/RunDetail.tsx — unmatched graph-node click shows an explicit state", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("a click that resolves no branch sets unmatchedNodeId instead of silently no-opping", () => {
+    expect(src).toMatch(/setUnmatchedNodeId\(nodeId\)/);
+  });
+
+  it("renders the explicit no-branch state when unmatchedNodeId is set", () => {
+    expect(src).toMatch(/data-testid="run-dag-unmatched-node"/);
+    expect(src).toMatch(/t\("nodeNoBranch", \{ node: unmatchedNodeId \}\)/);
+  });
+
+  it("a subsequent matched click clears the no-branch state", () => {
+    expect(src).toMatch(/setUnmatchedNodeId\(null\)/);
+  });
+});
+
+// ─── Follow-mode wiring (live/done) into WorkerCanvas ──────────────────────
+//
+// WorkerCanvas's follow-mode reducer (initialFollowModeState(live, done)) and
+// its "Follow"/"Following" toggle (gated on `live`, see WorkerCanvas.tsx) are
+// dead in production unless RunDetail actually passes its own `live`/`done`
+// state down as props — both default to `false` in WorkerCanvas, so an
+// embed that omits them behaves as an already-finished, never-live run no
+// matter what the session is actually doing. RunDetail already computes
+// `live`/`done` (used a few lines below for `OperationGraphSection`), so this
+// pins that the SAME values reach every WorkerCanvas embed too.
+
+describe("history/RunDetail.tsx — WorkerCanvas live/done wiring for follow-mode", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+  const workerCanvasBlocks = src.match(/<WorkerCanvas[^]*?\/>/g) ?? [];
+
+  it("finds both the inline and expanded WorkerCanvas embeds to check", () => {
+    expect(workerCanvasBlocks.length).toBe(2);
+  });
+
+  it("every WorkerCanvas embed passes the run's live state, so follow-mode can activate on a live run", () => {
+    for (const block of workerCanvasBlocks) {
+      expect(block).toMatch(/\blive={/);
+    }
+  });
+
+  it("every WorkerCanvas embed passes the run's done state, so follow-mode is force-disabled on a finished run", () => {
+    for (const block of workerCanvasBlocks) {
+      expect(block).toMatch(/\bdone={/);
+    }
+  });
+});
+
+// ─── Expanded-overlay status persistence (onLayoutHeight stability) ───────
+//
+// WorkerCanvas's layout effect lists `onLayoutHeight` in its dependency
+// array (see WorkerCanvas.tsx), so a fresh inline arrow passed on every
+// RunDetail rerender re-triggers a bare relayout that clears execStatus
+// until the separate status-application effect happens to also rerun. An
+// inline `() => {}` at the expanded call site reproduced exactly this: the
+// expanded graph flashed to all-pending while the inline panel kept
+// completed/running styling. Both embeds must reference a stable
+// (useCallback/useRef-backed) identifier, never an inline arrow.
+
+describe("history/RunDetail.tsx — WorkerCanvas onLayoutHeight is a stable reference", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+  const workerCanvasBlocks = src.match(/<WorkerCanvas[^]*?\/>/g) ?? [];
+
+  it("finds both WorkerCanvas embeds", () => {
+    expect(workerCanvasBlocks.length).toBe(2);
+  });
+
+  it("no embed passes an inline arrow function as onLayoutHeight — that identity churns every render and re-triggers WorkerCanvas's layout effect, clobbering execStatus", () => {
+    for (const block of workerCanvasBlocks) {
+      const match = block.match(/onLayoutHeight={([^}]*)}/);
+      expect(match).not.toBeNull();
+      expect(match![1]).not.toMatch(/=>/);
+    }
+  });
+
+  it("the expanded embed's onLayoutHeight identifier is declared via useCallback so it is stable across rerenders", () => {
+    const expandedBlockIndex = src.indexOf("closeExpandedGraph");
+    const expandedWorkerCanvas = workerCanvasBlocks.find(
+      (b) => src.indexOf(b) > expandedBlockIndex,
+    );
+    expect(expandedWorkerCanvas).toBeDefined();
+    const match = expandedWorkerCanvas!.match(/onLayoutHeight={(\w+)}/);
+    expect(match).not.toBeNull();
+    const identifier = match![1];
+    expect(src).toMatch(new RegExp(`const ${identifier} = useCallback\\(`));
+  });
+});
+
+// ─── Dag panel height policy (floor / grow-only) ────────────────────────────
+//
+// computeReservedHeight (useLayout.ts) reports the EXACT height a graph will
+// render at its applied zoom, and that helper is unit-tested in isolation.
+// But the production panel (dagHeight, driven by onDagLayoutHeight below)
+// intentionally does not always reserve that exact number: it floors to
+// DAG_MIN_HEIGHT, with no ceiling (a capped card would force fitView below
+// the readability floor for a graph taller than the cap — the enclosing page
+// scrolls past a tall card instead), and — for a given run id — only ever
+// grows, never shrinks, so a mid-stream layout that computes a smaller
+// height than what's already committed does not shrink the panel underneath
+// the reader. This test pins that policy directly against the real
+// onDagLayoutHeight reducer logic (mirrored here byte-for-byte from source,
+// since the closure isn't exported), not just against computeReservedHeight.
+
+describe("history/RunDetail.tsx — the dag panel height policy is floor/grow-only", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+  const DAG_MIN_HEIGHT = 280;
+
+  it("pins the floor constant the policy tests below assume", () => {
+    expect(src).toMatch(/const DAG_MIN_HEIGHT = 280;/);
+  });
+
+  it("onDagLayoutHeight floors the incoming computeReservedHeight value, then only grows the committed height for the run id, with no ceiling", () => {
+    expect(src).toMatch(/const clamped = Math\.max\(DAG_MIN_HEIGHT, Math\.ceil\(height\)\);/);
+    expect(src).toMatch(
+      /height: Math\.max\(prev\.id === id \? prev\.height : DAG_MIN_HEIGHT, clamped\),/,
+    );
+  });
+
+  // Reference implementation matching the source above, so the *behavior* —
+  // not just the presence of the lines — is pinned.
+  function reduce(
+    prev: { id: string; height: number },
+    id: string,
+    height: number,
+  ): { id: string; height: number } {
+    const clamped = Math.max(DAG_MIN_HEIGHT, Math.ceil(height));
+    return { id, height: Math.max(prev.id === id ? prev.height : DAG_MIN_HEIGHT, clamped) };
+  }
+
+  it("a layout below the floor is floored, not passed through", () => {
+    const result = reduce({ id: "run-1", height: DAG_MIN_HEIGHT }, "run-1", 120);
+    expect(result.height).toBe(DAG_MIN_HEIGHT);
+  });
+
+  it("a layout far above the floor is passed through — no ceiling", () => {
+    const result = reduce({ id: "run-1", height: DAG_MIN_HEIGHT }, "run-1", 4000);
+    expect(result.height).toBe(4000);
+  });
+
+  it("a later smaller layout for the SAME run never shrinks the committed height (grow-only mid-stream)", () => {
+    const grown = reduce({ id: "run-1", height: DAG_MIN_HEIGHT }, "run-1", 420);
+    expect(grown.height).toBe(420);
+    const shrunk = reduce(grown, "run-1", 300);
+    expect(shrunk.height).toBe(420);
+  });
+
+  it("switching to a DIFFERENT run id resets the floor instead of carrying over the previous run's committed height", () => {
+    const grown = reduce({ id: "run-1", height: DAG_MIN_HEIGHT }, "run-1", 420);
+    const nextRun = reduce(grown, "run-2", 150);
+    expect(nextRun.height).toBe(DAG_MIN_HEIGHT);
+  });
+});

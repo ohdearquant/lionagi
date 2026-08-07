@@ -10,7 +10,8 @@
       "toggleTheme": "Design umschalten",
       "switchToZh": "Zu Chinesisch wechseln",
       "switchToEn": "Zu Englisch wechseln",
-      "selectLanguage": "Sprache auswählen"
+      "selectLanguage": "Sprache auswählen",
+      "teams": "Teams"
     },
     "palette": {
       "ariaLabel": "Befehlspalette",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "Übersicht",
       "fleet": "Flotte",
-      "homeAria": "Startseiten-Tabs"
+      "homeAria": "Startseiten-Tabs",
+      "attention": "Achtung"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -235,7 +237,11 @@
       "filteredHint": "Versuche einen anderen Typ oder setze die Suche zurück.",
       "createFirst": "Ersten erstellen",
       "createWorkflow": "Neuer Workflow",
-      "createAgent": "Neuer Agent"
+      "createAgent": "Neuer Agent",
+      "allSkill": "Keine Skills gefunden.",
+      "allSkillHint": "Füge eine SKILL.md unter ~/.lionagi/skills/<name>/ hinzu, um sie hier zu sehen.",
+      "allPlugin": "Keine Plugins gefunden.",
+      "allPluginHint": "Installiere ein Plugin unter ~/.claude/plugins/, um es hier zu sehen."
     },
     "table": {
       "kind": "Typ",
@@ -296,7 +302,19 @@
       "lastUsed": "Zuletzt verwendet",
       "never": "nie",
       "recentInvocations": "Letzte Aufrufe",
-      "noInvocations": "Noch keine Aufrufe aufgezeichnet."
+      "noInvocations": "Noch keine Aufrufe aufgezeichnet.",
+      "skillValidationFailed": "Validierung fehlgeschlagen. Behebe die Fehler unten, bevor du speicherst.",
+      "pluginOwnedSkillHint": "Teil eines Plugins — bearbeite die Dateien des Plugins direkt, um es zu ändern.",
+      "readOnly": "Schreibgeschützt",
+      "skillTools": "Erlaubte Tools",
+      "skillInstructions": "Anweisungen",
+      "pluginHooks": "Hooks",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP-Server",
+      "pluginHooksSection": "Hooks-Konfiguration",
+      "pluginReadmeSection": "README",
+      "yes": "Ja",
+      "no": "Nein"
     },
     "template": {
       "badge": "Integriert",
@@ -450,8 +468,8 @@
       "statErrorsRecent": "Fehler (aktuell)",
       "noBranchErrorsPartial": "Keine Fehler in den geladenen Nachrichten.",
       "noFilesPartial": "Keine Dateioperationen in den geladenen Nachrichten erkannt.",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "Ältere Verlaufsdaten konnten nicht geladen werden — diese Unterhaltung ist weitergegangen, bevor die Anfrage abgeschlossen wurde.",
+      "reloadConversation": "Unterhaltung neu laden",
       "graphEdgeCount": "{count} Kanten",
       "graphImpliedHidden": "· {count} implizite ausgeblendet",
       "graphHideImplied": "implizite ausblenden",
@@ -462,7 +480,17 @@
       "graphNodeStatusPaused": "pausiert",
       "graphNodeStatusDone": "fertig",
       "graphNodeStatusFailed": "fehlgeschlagen",
-      "graphNodeStatusEscalated": "eskaliert"
+      "graphNodeStatusEscalated": "eskaliert",
+      "progressTotal": "Gesamt",
+      "progressCompleted": "Abgeschlossen",
+      "progressRunning": "Läuft",
+      "progressFailed": "Fehlgeschlagen",
+      "progressPending": "Ausstehend",
+      "progressElapsed": "Verstrichen",
+      "expandGraph": "Ausführungsgraph erweitern",
+      "collapseGraph": "Ausführungsgraph einklappen",
+      "closeExpandedGraph": "Schließen",
+      "nodeNoBranch": "Kein Branch für „{node}“ gefunden — dieser Schritt hat noch nicht begonnen."
     },
     "masterAria": "Verlaufsliste",
     "detailAria": "Elementdetails"
@@ -473,7 +501,9 @@
     "sections": {
       "health": "Zustand",
       "maintenance": "Wartung",
-      "settings": "Einstellungen"
+      "settings": "Einstellungen",
+      "adminEvents": "Admin-Ereignisse",
+      "data": "Daten"
     },
     "health": {
       "stateDb": "Status-DB",
@@ -542,6 +572,21 @@
       "switchToZh": "切换为中文",
       "english": "Englisch",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Nach Aktion filtern",
+      "targetPlaceholder": "Nach Ziel-ID filtern",
+      "filter": "Filtern",
+      "loadError": "Admin-Ereignisse konnten nicht geladen werden.",
+      "empty": "Noch keine Admin-Ereignisse erfasst.",
+      "when": "Wann",
+      "action": "Aktion",
+      "target": "Ziel",
+      "actor": "Akteur"
+    },
+    "data": {
+      "engineRuns": "Engine-Läufe",
+      "definitions": "Definitionen"
     }
   },
   "schedules": {
@@ -807,7 +852,8 @@
       "updated": "Aktualisiert",
       "branchesTitle": "{count, plural, one {Branch (#)} other {Branches (#)}}",
       "noBranches": "Keine Branches.",
-      "msgs": " Nachrichten"
+      "msgs": " Nachrichten",
+      "engineRuns": "Engine-Läufe"
     },
     "split": {
       "master": "Sessionliste",
@@ -859,7 +905,7 @@
         "stuck": "blockiert · kein Fortschritt",
         "gated": "wartet auf Genehmigung"
       },
-      "more": "+{count, plural, one {# mehr} other {# mehr}} — alle im Verlauf anzeigen →",
+      "more": "+{count, plural, one {# mehr} other {# mehr}} — alle anzeigen →",
       "digestLatest": "neueste: {name} · vor {age}",
       "streakCount": "{count, plural, one {#× fehlgeschlagen} other {#× fehlgeschlagen}}",
       "disposition": {
@@ -888,7 +934,17 @@
       },
       "showDischarged": "Erledigte anzeigen",
       "hideDischarged": "Erledigte ausblenden",
-      "dischargedEmpty": "Keine erledigten Einträge"
+      "dischargedEmpty": "Keine erledigten Einträge",
+      "page": {
+        "title": "Achtung",
+        "subtitle": "Alle Punkte, die die Aufmerksamkeit des Bedieners erfordern, aktiv und erledigt.",
+        "filterActive": "Aktiv",
+        "filterDischarged": "Erledigt",
+        "filterAll": "Alle",
+        "emptyActive": "Im Moment ist nichts zu beachten.",
+        "emptyDischarged": "Keine erledigten Einträge.",
+        "emptyAll": "Keine Einträge."
+      }
     },
     "liveBoard": {
       "title": "Läuft jetzt",
@@ -1117,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Teams",
+    "subtitle": "Agenten-Teams, die sich über einen gemeinsamen Posteingang koordinieren",
+    "loadError": "Teams konnten nicht geladen werden.",
+    "emptyTitle": "Noch keine Teams",
+    "emptyBody": "Teams werden mit `li team create` erstellt und koordinieren sich über einen gemeinsamen Posteingang.",
+    "table": {
+      "name": "Name",
+      "members": "Mitglieder",
+      "lastModified": "Zuletzt geändert",
+      "oneMember": "1 Mitglied",
+      "memberCount": "{count} Mitglieder"
+    },
+    "loadMore": "Mehr laden",
+    "loadingMore": "Wird geladen…",
+    "detail": {
+      "close": "Schließen",
+      "members": "Mitglieder",
+      "created": "Erstellt",
+      "messages": "Nachrichten ({count})",
+      "noMessages": "Noch keine Nachrichten."
+    }
+  },
+  "engineRuns": {
+    "title": "Engine-Läufe",
+    "subtitle": "Einzelne Engine-Aufrufe unterhalb von Orchestrierungs-Sitzungen",
+    "filterKind": "Nach Art filtern",
+    "filterStatus": "Nach Status filtern",
+    "filterStatusAll": "Alle Status",
+    "filterSession": "Nach Sitzungs-ID filtern",
+    "filterApply": "Filtern",
+    "loadError": "Engine-Läufe konnten nicht geladen werden.",
+    "emptyTitle": "Keine Engine-Läufe gefunden",
+    "emptyBody": "Engine-Läufe erscheinen hier, sobald eine Engine (z. B. `li engine`) einen Aufruf protokolliert.",
+    "table": {
+      "kind": "Art",
+      "status": "Status",
+      "started": "Gestartet",
+      "session": "Sitzung"
+    },
+    "detail": {
+      "close": "Schließen",
+      "notFound": "Engine-Lauf nicht gefunden.",
+      "started": "Gestartet",
+      "ended": "Beendet",
+      "exportDir": "Export-Verzeichnis",
+      "error": "Fehler",
+      "spec": "Spezifikation"
+    }
+  },
+  "definitions": {
+    "title": "Definitionen",
+    "subtitle": "Alle versionierten Agenten- und Playbook-Definitionen, mit Sammel-Snapshot-Checkpoint",
+    "filterKind": "Nach Art filtern",
+    "filterKindAll": "Alle Arten",
+    "snapshotAll": "Alles sichern",
+    "snapshotting": "Wird gesichert…",
+    "snapshotDone": "{count} Snapshot(s) erstellt.",
+    "snapshotFailed": "Snapshot fehlgeschlagen.",
+    "loadError": "Definitionen konnten nicht geladen werden.",
+    "emptyTitle": "Keine Definitionen gefunden",
+    "emptyBody": "Agenten- und Playbook-Definitionen erscheinen hier, sobald sie erstellt wurden.",
+    "table": {
+      "kind": "Art",
+      "name": "Name",
+      "version": "Version",
+      "noVersions": "kein Verlauf",
+      "updated": "Aktualisiert"
+    }
   }
 }

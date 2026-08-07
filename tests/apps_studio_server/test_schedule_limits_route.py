@@ -39,13 +39,20 @@ def test_limits_route_returns_cap_and_inflight(tmp_path, monkeypatch):
     _patch_db(monkeypatch, tmp_path / "state.db")
     monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 7)
     monkeypatch.setattr(scheduler, "_global_inflight", 3)
+    monkeypatch.setattr(studio_config, "MAX_ADHOC_CONCURRENT", 5)
+    monkeypatch.setattr(scheduler, "_adhoc_inflight", 2)
 
     client = _make_client()
     resp = client.get("/api/schedules/limits")
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"max_scheduled_concurrent": 7, "current_inflight": 3}
+    assert body == {
+        "max_scheduled_concurrent": 7,
+        "current_inflight": 3,
+        "max_adhoc_concurrent": 5,
+        "current_adhoc_inflight": 2,
+    }
 
 
 def test_limits_route_resolves_before_schedule_id_param_route(tmp_path, monkeypatch):

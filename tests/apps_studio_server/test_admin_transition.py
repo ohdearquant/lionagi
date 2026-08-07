@@ -137,6 +137,47 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# Test: the raw-SQL CAS write populates duration_ms like every other terminal write
+# ---------------------------------------------------------------------------
+
+
+def test_transition_sessions_populates_duration_ms(tmp_path, monkeypatch):
+    """transition_sessions() writes status via a hand-rolled UPDATE (not
+    update_status()/_transition()), so it must compute duration_ms itself --
+    this call site is not covered by the centralized derivation."""
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.admin as adm
+
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    old_ts = time.time() - 7 * 3600
+
+    _run(_seed_stale_session(db_path, sid, last_message_at=old_ts, updated_at=old_ts))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    result = _run(
+        adm.transition_sessions(
+            session_ids=[sid],
+            target_status="failed",
+            reason_code="run.failed.exception",
+            reason_summary="test duration_ms",
+            actor="test",
+        )
+    )
+    assert sid in result["transitioned"]
+
+    from lionagi.state.db import StateDB
+
+    async def _get(db_path, sid):
+        async with StateDB(db_path) as db:
+            return await db.get_session(sid)
+
+    row = _run(_get(db_path, sid))
+    assert row["ended_at"] is not None
+    assert row["duration_ms"] == pytest.approx((row["ended_at"] - old_ts) * 1000)
+
+
+# ---------------------------------------------------------------------------
 # Test: an already-terminal session is never touched by the reconcile CAS
 # ---------------------------------------------------------------------------
 

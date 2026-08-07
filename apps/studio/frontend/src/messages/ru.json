@@ -10,7 +10,8 @@
       "toggleTheme": "Сменить тему",
       "switchToZh": "Переключить на китайский",
       "switchToEn": "Переключить на английский",
-      "selectLanguage": "Выбрать язык"
+      "selectLanguage": "Выбрать язык",
+      "teams": "Команды"
     },
     "palette": {
       "ariaLabel": "Палитра команд",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "Обзор",
       "fleet": "Пул агентов",
-      "homeAria": "Вкладки главной"
+      "homeAria": "Вкладки главной",
+      "attention": "Внимание"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -235,7 +237,11 @@
       "filteredHint": "Попробуйте другой тип или очистите поиск.",
       "createFirst": "Создать первый",
       "createWorkflow": "Новый рабочий процесс",
-      "createAgent": "Новый агент"
+      "createAgent": "Новый агент",
+      "allSkill": "Навыки не найдены.",
+      "allSkillHint": "Добавьте SKILL.md в ~/.lionagi/skills/<name>/, чтобы увидеть его здесь.",
+      "allPlugin": "Плагины не найдены.",
+      "allPluginHint": "Установите плагин в ~/.claude/plugins/, чтобы увидеть его здесь."
     },
     "table": {
       "kind": "Тип",
@@ -296,7 +302,19 @@
       "lastUsed": "Последнее использование",
       "never": "никогда",
       "recentInvocations": "Последние вызовы",
-      "noInvocations": "Вызовы еще не записаны."
+      "noInvocations": "Вызовы еще не записаны.",
+      "skillValidationFailed": "Проверка не пройдена. Исправьте ошибки ниже перед сохранением.",
+      "pluginOwnedSkillHint": "Поставляется с плагином — чтобы изменить, редактируйте файлы плагина напрямую.",
+      "readOnly": "Только чтение",
+      "skillTools": "Разрешённые инструменты",
+      "skillInstructions": "Инструкции",
+      "pluginHooks": "Хуки",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP-серверы",
+      "pluginHooksSection": "Настройка хуков",
+      "pluginReadmeSection": "README",
+      "yes": "Да",
+      "no": "Нет"
     },
     "template": {
       "badge": "Встроенный",
@@ -450,8 +468,8 @@
       "statErrorsRecent": "Ошибки (последние)",
       "noBranchErrorsPartial": "В загруженных сообщениях ошибок нет.",
       "noFilesPartial": "В загруженных сообщениях операции с файлами не обнаружены.",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "Не удалось загрузить более раннюю историю — разговор продолжился до завершения запроса.",
+      "reloadConversation": "Перезагрузить разговор",
       "graphEdgeCount": "рёбер: {count}",
       "graphImpliedHidden": "· скрыто неявных: {count}",
       "graphHideImplied": "скрыть неявные",
@@ -462,7 +480,17 @@
       "graphNodeStatusPaused": "приостановлено",
       "graphNodeStatusDone": "готово",
       "graphNodeStatusFailed": "ошибка",
-      "graphNodeStatusEscalated": "эскалировано"
+      "graphNodeStatusEscalated": "эскалировано",
+      "progressTotal": "Всего",
+      "progressCompleted": "Завершено",
+      "progressRunning": "Выполняется",
+      "progressFailed": "Ошибка",
+      "progressPending": "Ожидание",
+      "progressElapsed": "Прошло времени",
+      "expandGraph": "Развернуть граф выполнения",
+      "collapseGraph": "Свернуть граф выполнения",
+      "closeExpandedGraph": "Закрыть",
+      "nodeNoBranch": "Ветка для «{node}» не найдена — этот шаг ещё не начался."
     },
     "masterAria": "Список истории",
     "detailAria": "Сведения об элементе"
@@ -473,7 +501,9 @@
     "sections": {
       "health": "Состояние",
       "maintenance": "Обслуживание",
-      "settings": "Настройки"
+      "settings": "Настройки",
+      "adminEvents": "События администрирования",
+      "data": "Данные"
     },
     "health": {
       "stateDb": "БД состояния",
@@ -542,6 +572,21 @@
       "switchToZh": "切换为中文",
       "english": "английский",
       "chinese": "китайский"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Фильтр по действию",
+      "targetPlaceholder": "Фильтр по ID цели",
+      "filter": "Фильтр",
+      "loadError": "Не удалось загрузить события администрирования.",
+      "empty": "Пока нет зарегистрированных событий администрирования.",
+      "when": "Когда",
+      "action": "Действие",
+      "target": "Цель",
+      "actor": "Исполнитель"
+    },
+    "data": {
+      "engineRuns": "Запуски движка",
+      "definitions": "Определения"
     }
   },
   "schedules": {
@@ -807,7 +852,8 @@
       "updated": "Обновлено",
       "branchesTitle": "Ветки ({count})",
       "noBranches": "Веток нет.",
-      "msgs": " сообщ."
+      "msgs": " сообщ.",
+      "engineRuns": "Запуски движка"
     },
     "split": {
       "master": "Список сессий",
@@ -859,7 +905,7 @@
         "stuck": "зависло · нет прогресса",
         "gated": "ожидает подтверждения"
       },
-      "more": "+{count, plural, one {# еще — показать все в истории →} few {# еще — показать все в истории →} many {# еще — показать все в истории →} other {# еще — показать все в истории →}}",
+      "more": "+{count, plural, one {# еще — показать все →} few {# еще — показать все →} many {# еще — показать все →} other {# еще — показать все →}}",
       "digestLatest": "последнее: {name} · {age} назад",
       "streakCount": "{count, plural, one {# сбой} few {# сбоя} many {# сбоев} other {# сбоя}} подряд",
       "disposition": {
@@ -888,7 +934,17 @@
       },
       "showDischarged": "Показать закрытые",
       "hideDischarged": "Скрыть закрытые",
-      "dischargedEmpty": "Нет закрытых элементов"
+      "dischargedEmpty": "Нет закрытых элементов",
+      "page": {
+        "title": "Внимание",
+        "subtitle": "Все элементы, требующие внимания оператора, активные и снятые.",
+        "filterActive": "Активные",
+        "filterDischarged": "Снятые",
+        "filterAll": "Все",
+        "emptyActive": "Сейчас ничего не требует внимания.",
+        "emptyDischarged": "Нет снятых элементов.",
+        "emptyAll": "Нет элементов внимания."
+      }
     },
     "liveBoard": {
       "title": "Выполняется сейчас",
@@ -1117,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Команды",
+    "subtitle": "Команды агентов, координирующихся через общий почтовый ящик",
+    "loadError": "Не удалось загрузить команды.",
+    "emptyTitle": "Пока нет команд",
+    "emptyBody": "Команды создаются командой `li team create` и координируются через общий почтовый ящик.",
+    "table": {
+      "name": "Название",
+      "members": "Участники",
+      "lastModified": "Последнее изменение",
+      "oneMember": "1 участник",
+      "memberCount": "{count} участников"
+    },
+    "loadMore": "Загрузить ещё",
+    "loadingMore": "Загрузка…",
+    "detail": {
+      "close": "Закрыть",
+      "members": "Участники",
+      "created": "Создано",
+      "messages": "Сообщения ({count})",
+      "noMessages": "Пока нет сообщений."
+    }
+  },
+  "engineRuns": {
+    "title": "Запуски движка",
+    "subtitle": "Отдельные вызовы движка внутри сессий оркестрации",
+    "filterKind": "Фильтр по типу",
+    "filterStatus": "Фильтр по статусу",
+    "filterStatusAll": "Все статусы",
+    "filterSession": "Фильтр по ID сессии",
+    "filterApply": "Фильтр",
+    "loadError": "Не удалось загрузить запуски движка.",
+    "emptyTitle": "Запуски движка не найдены",
+    "emptyBody": "Запуски движка появятся здесь, как только движок (например, `li engine`) зафиксирует вызов.",
+    "table": {
+      "kind": "Тип",
+      "status": "Статус",
+      "started": "Начат",
+      "session": "Сессия"
+    },
+    "detail": {
+      "close": "Закрыть",
+      "notFound": "Запуск движка не найден.",
+      "started": "Начат",
+      "ended": "Завершён",
+      "exportDir": "Каталог экспорта",
+      "error": "Ошибка",
+      "spec": "Спецификация"
+    }
+  },
+  "definitions": {
+    "title": "Определения",
+    "subtitle": "Все версионированные определения агентов и плейбуков с контрольной точкой массового снимка",
+    "filterKind": "Фильтр по типу",
+    "filterKindAll": "Все типы",
+    "snapshotAll": "Снимок всего",
+    "snapshotting": "Создание снимка…",
+    "snapshotDone": "Создано снимков: {count}.",
+    "snapshotFailed": "Не удалось создать снимок.",
+    "loadError": "Не удалось загрузить определения.",
+    "emptyTitle": "Определения не найдены",
+    "emptyBody": "Определения агентов и плейбуков появятся здесь после создания.",
+    "table": {
+      "kind": "Тип",
+      "name": "Название",
+      "version": "Версия",
+      "noVersions": "нет истории",
+      "updated": "Обновлено"
+    }
   }
 }

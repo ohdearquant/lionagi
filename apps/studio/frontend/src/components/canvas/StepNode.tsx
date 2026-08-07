@@ -73,15 +73,24 @@ export interface StepNodeData {
   toolCallCount?: number;
 }
 
-function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
-  const t = useTranslations("history.detail");
-  // roleColor arrives as a data-driven CSS var string — keep inline
-  const roleColor = ROLE_VAR[data.role] || "var(--content-muted)";
-  const status = data.execStatus ?? "pending";
-  const reducedMotion = usePrefersReducedMotion();
-  const isTerminalError = status === "failed" || status === "escalated";
+// Non-animation precedence cues (border weight + a left-edge status rail)
+// that must remain readable at the minimum fit zoom (0.1), where the pulse
+// ring and label text are effectively invisible. running is strongest (3px
+// border, brightest rail), completed/failed/warn are moderate and mutually
+// distinguishable by color alone (2px, distinct rail hue), pending/queued
+// recede (1px, no rail) so they never compete with completed work for
+// attention. Exported so StepNode.test.ts can assert the precedence
+// contract without mounting React Flow.
+export interface NodeVisualStyle {
+  borderWidth: number;
+  borderColor: string;
+  bgColor: string;
+  labelColor: string;
+  railColor: string;
+}
 
-  // These colors derive from status data (dag-* tokens) — keep inline
+export function computeNodeVisualStyle(status: NodeExecStatus, selected: boolean): NodeVisualStyle {
+  const isTerminalError = status === "failed" || status === "escalated";
   const isWarn = status === "awaiting_approval" || status === "paused";
 
   const borderColor =
@@ -119,6 +128,34 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
             ? "var(--dag-warn-label)"
             : "var(--content-primary)";
 
+  const borderWidth =
+    status === "running" ? 3 : status === "completed" || isTerminalError || isWarn ? 2 : 1;
+
+  const railColor =
+    status === "running"
+      ? "var(--dag-running-border)"
+      : status === "completed"
+        ? "var(--dag-completed-border)"
+        : isTerminalError
+          ? "var(--dag-failed-border)"
+          : isWarn
+            ? "var(--dag-warn-border)"
+            : "transparent";
+
+  return { borderWidth, borderColor, bgColor, labelColor, railColor };
+}
+
+function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
+  const t = useTranslations("history.detail");
+  // roleColor arrives as a data-driven CSS var string — keep inline
+  const roleColor = ROLE_VAR[data.role] || "var(--content-muted)";
+  const status = data.execStatus ?? "pending";
+  const reducedMotion = usePrefersReducedMotion();
+
+  // These derive from status data (dag-* tokens) — keep inline
+  const visual = computeNodeVisualStyle(status, !!selected);
+  const borderWidth = selected ? Math.max(visual.borderWidth, 2) : visual.borderWidth;
+
   // The bottom-right corner always says something. Elapsed time once there is
   // any, the status word before that. A corner that can be empty makes the
   // card change shape as a run progresses, and a reader who has to re-find a
@@ -134,8 +171,8 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
     <div
       className="relative flex flex-col justify-between rounded-md px-2.5 py-2"
       style={{
-        background: bgColor,
-        border: `${selected || status === "running" ? 2 : 1}px solid ${borderColor}`,
+        background: visual.bgColor,
+        border: `${borderWidth}px solid ${visual.borderColor}`,
         width: NODE_WIDTH,
         height: NODE_HEIGHT,
         boxShadow:
@@ -147,6 +184,16 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         transition: "border-color 0.15s, background 0.15s, box-shadow 0.15s",
       }}
     >
+      {/* Status rail — a left-edge color bar that survives the readability
+          zoom floor even when the card is too small to read text or icons.
+          A span, not a div: the card's rows() test selects direct div
+          children of this card as its two content rows, and the rail is
+          decorative chrome, not a third row. */}
+      <span
+        className="pointer-events-none absolute inset-y-0 left-0 block rounded-l-md"
+        style={{ width: 3, background: visual.railColor }}
+      />
+
       <Handle
         type="target"
         position={Position.Left}
@@ -163,7 +210,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
       <div className="flex items-start justify-between gap-1.5">
         <span
           className="truncate font-mono text-[length:var(--t-sm)] font-semibold leading-snug"
-          style={{ color: labelColor }}
+          style={{ color: visual.labelColor }}
         >
           {data.label}
         </span>

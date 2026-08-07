@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.service.connections.endpoint import Endpoint
+from lionagi.service.connections.endpoint_config import EndpointConfig
 
 from ._config import OpenAIConfigs
 
@@ -50,3 +51,8 @@ __all__ = (
 @OpenAIConfigs.BATCH.register
 class OpenaiBatchEndpoint(Endpoint):
     """OpenAI batch creation endpoint."""
+
+    def __init__(self, config: EndpointConfig = None, **kwargs):
+        if config is None:
+            kwargs.setdefault("idempotent_retries", True)
+        super().__init__(config=config, **kwargs)

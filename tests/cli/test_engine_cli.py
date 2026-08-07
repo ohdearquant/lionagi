@@ -803,6 +803,9 @@ def test_main_routes_engine_command(monkeypatch):
 
     # Get the actual main.py module (not the main() function exported via __init__)
     main_module = importlib.import_module("lionagi.cli.main")
+    engine_mod = importlib.import_module("lionagi.cli.engine")
+
+    from lionagi._auto import _MARKER_ATTR, _isolated_registry_for_tests
 
     run_engine_calls = []
 
@@ -810,10 +813,19 @@ def test_main_routes_engine_command(monkeypatch):
         run_engine_calls.append(args)
         return 0
 
-    monkeypatch.setattr(main_module, "run_engine", _mock_run_engine)
+    # The real `run_engine` carries the auto-registration marker as a property
+    # of the function object itself (not the module attribute); copy it onto
+    # the mock, and claim the seed module's `__module__` too, so the typed CLI
+    # seam still finds exactly one matching `engine` marker.
+    setattr(_mock_run_engine, _MARKER_ATTR, getattr(engine_mod.run_engine, _MARKER_ATTR))
+    _mock_run_engine.__module__ = engine_mod.__name__
+    monkeypatch.setattr(engine_mod, "run_engine", _mock_run_engine)
 
-    # 'engine run research <spec>' — must be routed to run_engine.
-    rc = main_module.main(["engine", "run", "research", "test topic"])
+    # 'engine run research <spec>' — must be routed to run_engine. The seed
+    # registry is isolated so this test's monkeypatch is what gets discovered,
+    # regardless of whether another test already realized the "engine" seed.
+    with _isolated_registry_for_tests():
+        rc = main_module.main(["engine", "run", "research", "test topic"])
     assert rc == 0
     assert len(run_engine_calls) == 1
     assert run_engine_calls[0].command == "engine"
@@ -946,3 +958,53 @@ async def test_engine_run_skips_signal_binding_on_session_id_collision(
         # The engine_runs record itself still persisted.
         runs = await db.get_engine_run(run_id)
         assert runs is not None
+
+
+async def test_maybe_update_db_mirrors_engines_ended_at_onto_the_session(tmp_path):
+    """_maybe_update_db's engine_runs write and its mirrored session
+    update_status() call must agree on ended_at -- the caller-supplied
+    timestamp, not whatever time.time() the centralizer stamps on its own."""
+    pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
+
+    from lionagi.cli.engine import _maybe_update_db
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    run_id = "engine-ended-at-test-001"
+
+    async with StateDB(db_path) as db:
+        prog_id = f"{run_id}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "created_at": 100.0,
+                "progression_id": prog_id,
+                "name": "engine:research",
+                "status": "running",
+                "started_at": 100.0,
+                "invocation_kind": None,
+            }
+        )
+        await db.insert_engine_run(
+            run_id=run_id,
+            kind="research",
+            spec_json={"spec": "GQA"},
+            started_at=100.0,
+            session_id=run_id,
+        )
+
+        await _maybe_update_db(
+            db,
+            run_id,
+            "completed",
+            ended_at=130.0,
+            signal_session_id=run_id,
+        )
+
+        session_row = await db.get_session(run_id)
+        engine_row = await db.get_engine_run(run_id)
+
+    assert engine_row["ended_at"] == 130.0
+    assert session_row["ended_at"] == 130.0
+    assert session_row["duration_ms"] == pytest.approx(30000.0)

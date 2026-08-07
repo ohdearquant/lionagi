@@ -60,6 +60,8 @@ class SchedulerStateService(Protocol):
 
     async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]: ...
 
+    async def list_dispatched_running_schedule_runs(self) -> list[dict[str, Any]]: ...
+
     async def tombstone_and_replace_schedule_run(
         self,
         orphan_id: str,
@@ -169,6 +171,10 @@ class _DBSchedulerStateService:
     async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]:
         async with StateDB() as db:
             return await db.list_undispatched_schedule_runs()
+
+    async def list_dispatched_running_schedule_runs(self) -> list[dict[str, Any]]:
+        async with StateDB() as db:
+            return await db.list_dispatched_running_schedule_runs()
 
     async def tombstone_and_replace_schedule_run(
         self,
@@ -360,6 +366,23 @@ async def resolve_invocation_terminal(
                 "completed",
                 RunReasons.COMPLETED_OK,
                 "All child sessions completed successfully.",
+                evidence_refs,
+                metadata,
+            )
+        # Nothing above matched: at least one child session has not reached
+        # ANY terminal status (e.g. still "running") even though the
+        # invocation's own leader process has already exited. The leader's
+        # exit is not evidence that a child's own work finished -- it is
+        # only evidence that the leader's stderr pipe closed (see #2535).
+        # Never silently trust fallback_status="completed" here; route to
+        # the same no-evidence bucket a known-empty child already uses.
+        if fallback_status == "completed":
+            return (
+                "completed_empty",
+                RunReasons.COMPLETED_EMPTY_NO_EVIDENCE,
+                "Invocation's leader process exited 0 while at least one "
+                "child session had not reached a terminal status; the "
+                "leader's exit is not evidence that the child's work finished.",
                 evidence_refs,
                 metadata,
             )

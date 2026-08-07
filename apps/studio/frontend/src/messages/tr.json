@@ -10,7 +10,8 @@
       "toggleTheme": "temayı değiştir",
       "switchToZh": "Çinceye geç",
       "switchToEn": "İngilizceye geç",
-      "selectLanguage": "Dil seç"
+      "selectLanguage": "Dil seç",
+      "teams": "Takımlar"
     },
     "palette": {
       "ariaLabel": "komut paleti",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "genel bakış",
       "fleet": "ajan filosu",
-      "homeAria": "ana sayfa sekmeleri"
+      "homeAria": "ana sayfa sekmeleri",
+      "attention": "Dikkat"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -235,7 +237,11 @@
       "filteredHint": "başka bir tür dene veya aramayı temizle.",
       "createFirst": "ilkini oluştur",
       "createWorkflow": "yeni iş akışı",
-      "createAgent": "yeni ajan"
+      "createAgent": "yeni ajan",
+      "allSkill": "Skill bulunamadı.",
+      "allSkillHint": "Burada görmek için ~/.lionagi/skills/<name>/ altına bir SKILL.md ekleyin.",
+      "allPlugin": "Eklenti bulunamadı.",
+      "allPluginHint": "Burada görmek için ~/.claude/plugins/ altına bir eklenti kurun."
     },
     "table": {
       "kind": "tür",
@@ -296,7 +302,19 @@
       "lastUsed": "son kullanım",
       "never": "hiçbir zaman",
       "recentInvocations": "son çağrılar",
-      "noInvocations": "henüz kayıtlı çağrı yok."
+      "noInvocations": "henüz kayıtlı çağrı yok.",
+      "skillValidationFailed": "Doğrulama başarısız oldu. Kaydetmeden önce aşağıdaki hataları düzeltin.",
+      "pluginOwnedSkillHint": "Bir eklentiyle birlikte gelir — değiştirmek için eklentinin dosyalarını doğrudan düzenleyin.",
+      "readOnly": "Salt okunur",
+      "skillTools": "İzin Verilen Araçlar",
+      "skillInstructions": "Talimatlar",
+      "pluginHooks": "Kancalar",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP Sunucuları",
+      "pluginHooksSection": "Kanca Yapılandırması",
+      "pluginReadmeSection": "README",
+      "yes": "Evet",
+      "no": "Hayır"
     },
     "template": {
       "badge": "yerleşik",
@@ -450,8 +468,8 @@
       "statErrorsRecent": "hatalar (son)",
       "noBranchErrorsPartial": "yüklenen mesajlarda hata yok.",
       "noFilesPartial": "yüklenen mesajlarda dosya işlemi algılanmadı.",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "Daha eski geçmiş yüklenemedi — bu konuşma istek tamamlanmadan önce ilerledi.",
+      "reloadConversation": "Konuşmayı yeniden yükle",
       "graphEdgeCount": "{count} kenar",
       "graphImpliedHidden": "· {count} örtük gizli",
       "graphHideImplied": "örtükleri gizle",
@@ -462,7 +480,17 @@
       "graphNodeStatusPaused": "duraklatıldı",
       "graphNodeStatusDone": "tamamlandı",
       "graphNodeStatusFailed": "başarısız",
-      "graphNodeStatusEscalated": "yükseltildi"
+      "graphNodeStatusEscalated": "yükseltildi",
+      "progressTotal": "Toplam",
+      "progressCompleted": "Tamamlandı",
+      "progressRunning": "Çalışıyor",
+      "progressFailed": "Başarısız",
+      "progressPending": "Beklemede",
+      "progressElapsed": "Geçen süre",
+      "expandGraph": "Yürütme grafiğini genişlet",
+      "collapseGraph": "Yürütme grafiğini daralt",
+      "closeExpandedGraph": "Kapat",
+      "nodeNoBranch": "“{node}” için dal bulunamadı — bu adım henüz başlamadı."
     },
     "masterAria": "geçmiş listesi",
     "detailAria": "öğe ayrıntısı"
@@ -473,7 +501,9 @@
     "sections": {
       "health": "sağlık",
       "maintenance": "bakım",
-      "settings": "ayarlar"
+      "settings": "ayarlar",
+      "adminEvents": "Yönetici olayları",
+      "data": "Veri"
     },
     "health": {
       "stateDb": "State DB",
@@ -542,6 +572,21 @@
       "switchToZh": "Çinceye geç",
       "english": "İngilizce",
       "chinese": "Çince"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Eyleme göre filtrele",
+      "targetPlaceholder": "Hedef ID'ye göre filtrele",
+      "filter": "Filtrele",
+      "loadError": "Yönetici olayları yüklenemedi.",
+      "empty": "Henüz kaydedilmiş yönetici olayı yok.",
+      "when": "Ne zaman",
+      "action": "Eylem",
+      "target": "Hedef",
+      "actor": "Yürüten"
+    },
+    "data": {
+      "engineRuns": "Motor çalıştırmaları",
+      "definitions": "Tanımlar"
     }
   },
   "schedules": {
@@ -807,7 +852,8 @@
       "updated": "güncellendi",
       "branchesTitle": "dallar ({count})",
       "noBranches": "dal yok.",
-      "msgs": " mesaj"
+      "msgs": " mesaj",
+      "engineRuns": "Motor çalıştırmaları"
     },
     "split": {
       "master": "oturum listesi",
@@ -859,7 +905,7 @@
         "stuck": "takıldı · ilerleme yok",
         "gated": "onay bekliyor"
       },
-      "more": "{count, plural, one {+# daha — tümünü geçmişte gör →} other {+# daha — tümünü geçmişte gör →}}",
+      "more": "{count, plural, one {+# daha — tümünü gör →} other {+# daha — tümünü gör →}}",
       "digestLatest": "en son: {name} · {age} önce",
       "streakCount": "{count, plural, one {#× başarısız} other {#× başarısız}}",
       "disposition": {
@@ -888,7 +934,17 @@
       },
       "showDischarged": "Kapatılanları göster",
       "hideDischarged": "Kapatılanları gizle",
-      "dischargedEmpty": "Kapatılmış öğe yok"
+      "dischargedEmpty": "Kapatılmış öğe yok",
+      "page": {
+        "title": "Dikkat",
+        "subtitle": "Operatör dikkati gerektiren tüm öğeler, etkin ve kapatılmış.",
+        "filterActive": "Etkin",
+        "filterDischarged": "Kapatıldı",
+        "filterAll": "Tümü",
+        "emptyActive": "Şu anda dikkat gerektiren bir şey yok.",
+        "emptyDischarged": "Kapatılmış öğe yok.",
+        "emptyAll": "Dikkat öğesi yok."
+      }
     },
     "liveBoard": {
       "title": "şu anda çalışıyor",
@@ -1117,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Takımlar",
+    "subtitle": "Paylaşılan bir gelen kutusu üzerinden koordine olan ajan ekipleri",
+    "loadError": "Takımlar yüklenemedi.",
+    "emptyTitle": "Henüz takım yok",
+    "emptyBody": "Takımlar `li team create` ile oluşturulur ve paylaşılan bir gelen kutusu üzerinden koordine olur.",
+    "table": {
+      "name": "Ad",
+      "members": "Üyeler",
+      "lastModified": "Son değişiklik",
+      "oneMember": "1 üye",
+      "memberCount": "{count} üye"
+    },
+    "loadMore": "Daha fazla yükle",
+    "loadingMore": "Yükleniyor…",
+    "detail": {
+      "close": "Kapat",
+      "members": "Üyeler",
+      "created": "Oluşturulma",
+      "messages": "Mesajlar ({count})",
+      "noMessages": "Henüz mesaj yok."
+    }
+  },
+  "engineRuns": {
+    "title": "Motor çalıştırmaları",
+    "subtitle": "Orkestrasyon oturumlarının altındaki tekil motor çağrıları",
+    "filterKind": "Türe göre filtrele",
+    "filterStatus": "Duruma göre filtrele",
+    "filterStatusAll": "Tüm durumlar",
+    "filterSession": "Oturum ID'sine göre filtrele",
+    "filterApply": "Filtrele",
+    "loadError": "Motor çalıştırmaları yüklenemedi.",
+    "emptyTitle": "Motor çalıştırması bulunamadı",
+    "emptyBody": "Bir motor (ör. `li engine`) bir çağrı kaydettiğinde motor çalıştırmaları burada görünür.",
+    "table": {
+      "kind": "Tür",
+      "status": "Durum",
+      "started": "Başladı",
+      "session": "Oturum"
+    },
+    "detail": {
+      "close": "Kapat",
+      "notFound": "Motor çalıştırması bulunamadı.",
+      "started": "Başladı",
+      "ended": "Bitti",
+      "exportDir": "Dışa aktarma dizini",
+      "error": "Hata",
+      "spec": "Spesifikasyon"
+    }
+  },
+  "definitions": {
+    "title": "Tanımlar",
+    "subtitle": "Sürümlenmiş her ajan ve playbook tanımı, toplu anlık görüntü kontrol noktasıyla",
+    "filterKind": "Türe göre filtrele",
+    "filterKindAll": "Tüm türler",
+    "snapshotAll": "Tümünün anlık görüntüsünü al",
+    "snapshotting": "Anlık görüntü alınıyor…",
+    "snapshotDone": "{count} anlık görüntü oluşturuldu.",
+    "snapshotFailed": "Anlık görüntü başarısız oldu.",
+    "loadError": "Tanımlar yüklenemedi.",
+    "emptyTitle": "Tanım bulunamadı",
+    "emptyBody": "Ajan ve playbook tanımları oluşturulduğunda burada görünür.",
+    "table": {
+      "kind": "Tür",
+      "name": "Ad",
+      "version": "Sürüm",
+      "noVersions": "geçmiş yok",
+      "updated": "Güncellendi"
+    }
   }
 }
