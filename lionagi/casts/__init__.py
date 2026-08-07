@@ -3,38 +3,52 @@
 
 """casts — composable agent configuration: patterns, profiles, packs, and emission contracts."""
 
-from .catalog import build_catalog
-from .emission import (
-    SPAWN_ALLOWED_OPERATIONS,
-    AnalysisResult,
-    ArtifactProduced,
-    ComplexityScore,
-    ComplianceVerdict,
-    Conflict,
-    DesignSpec,
-    Diagnosis,
-    Document,
-    EscalationRequest,
-    ExecutionPlan,
-    Finding,
-    Gap,
-    Objection,
-    OperationOutcome,
-    Postmortem,
-    Proposal,
-    Recommendation,
-    RiskAssessment,
-    SpawnRequest,
-    Synthesis,
-    TaskAssignment,
-    Verdict,
-    VerificationResult,
-    build_emission_operable,
-    field_name_for,
-)
-from .pack import Pack, RoleConfig, RolePolicy
-from .pattern import Mode, Pattern, PatternKind, Role, list_modes, list_roles
-from .profile import Profile
+from ..ln._lazy_init import lazy_import
+
+_LAZY_MAP: dict[str, tuple[str, str | None]] = {
+    "build_catalog": ("catalog", None),
+    "SPAWN_ALLOWED_OPERATIONS": ("emission", None),
+    "AnalysisResult": ("emission", None),
+    "ArtifactProduced": ("emission", None),
+    "ComplexityScore": ("emission", None),
+    "ComplianceVerdict": ("emission", None),
+    "Conflict": ("emission", None),
+    "DesignSpec": ("emission", None),
+    "Diagnosis": ("emission", None),
+    "Document": ("emission", None),
+    "EscalationRequest": ("emission", None),
+    "ExecutionPlan": ("emission", None),
+    "Finding": ("emission", None),
+    "Gap": ("emission", None),
+    "Objection": ("emission", None),
+    "OperationOutcome": ("emission", None),
+    "Postmortem": ("emission", None),
+    "Proposal": ("emission", None),
+    "Recommendation": ("emission", None),
+    "RiskAssessment": ("emission", None),
+    "SpawnRequest": ("emission", None),
+    "Synthesis": ("emission", None),
+    "TaskAssignment": ("emission", None),
+    "Verdict": ("emission", None),
+    "VerificationResult": ("emission", None),
+    "build_emission_operable": ("emission", None),
+    "field_name_for": ("emission", None),
+    "Pack": ("pack", None),
+    "RoleConfig": ("pack", None),
+    "RolePolicy": ("pack", None),
+    "Mode": ("pattern", None),
+    "Pattern": ("pattern", None),
+    "PatternKind": ("pattern", None),
+    "Role": ("pattern", None),
+    "list_modes": ("pattern", None),
+    "list_roles": ("pattern", None),
+    "Profile": ("profile", None),
+}
+
+
+def __getattr__(name: str):
+    return lazy_import(name, _LAZY_MAP, __name__, globals())
+
 
 __all__ = (
     # catalog (read-only metadata seam)
