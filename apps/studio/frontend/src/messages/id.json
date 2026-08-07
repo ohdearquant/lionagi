@@ -552,7 +552,17 @@
       "last": "terakhir",
       "never": "tidak pernah dijalankan",
       "paused": "Dijeda",
-      "notScheduled": "Tidak dijadwalkan"
+      "notScheduled": "Tidak dijadwalkan",
+      "health": {
+        "healthy": "Sehat",
+        "failing": "Gagal",
+        "overdue": "Terlambat",
+        "neverFired": "Belum pernah berjalan",
+        "noEvidence": "Tidak ada bukti",
+        "lastOutcome": "terakhir {outcome} {delta} lalu",
+        "neverFiredSince": "belum pernah berjalan sejak {date}",
+        "noEvidenceHint": "tidak ada eksekusi tercatat"
+      }
     },
     "run": {
       "elapsed": "{delta} berlalu",

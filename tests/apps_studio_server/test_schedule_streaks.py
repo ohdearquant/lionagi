@@ -195,15 +195,18 @@ async def test_list_schedules_issues_constant_queries_not_per_row(temp_db_path):
         and "pragma" not in s.lower()
     ]
     # One SELECT for the schedules themselves, one batched count, one batched
-    # streak query. All three are per-call: the count moves only when the path
-    # gains a query, never when it gains a row.
+    # streak query, and two batched health-evidence queries (recorded rows,
+    # then executed rows -- each filters before it ranks, so neither can be
+    # collapsed into the other without reintroducing the bounded-window bug
+    # they replaced). All five are per-call: the count moves only when the
+    # path gains a query, never when it gains a row.
     #
-    # A writable open would add a fourth, reading the recorded schema version
+    # A writable open would add a sixth, reading the recorded schema version
     # before applying anything. list_schedules() is a read route and opens
     # read-only on an on-disk SQLite store, which skips the schema step
     # entirely -- so on this fixture the schema read is absent by design, and
     # its reappearance would mean a read route went back to a writable open.
-    assert len(select_statements) == 3, select_statements
+    assert len(select_statements) == 5, select_statements
 
     for sid in sids:
         row = next(r for r in rows if r["id"] == sid)

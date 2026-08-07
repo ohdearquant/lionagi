@@ -552,7 +552,17 @@
       "last": "শেষ",
       "never": "কখনও রান হয়নি",
       "paused": "বিরতিতে",
-      "notScheduled": "নির্ধারিত নয়"
+      "notScheduled": "নির্ধারিত নয়",
+      "health": {
+        "healthy": "সুস্থ",
+        "failing": "ব্যর্থ",
+        "overdue": "বিলম্বিত",
+        "neverFired": "কখনো চলেনি",
+        "noEvidence": "কোনো প্রমাণ নেই",
+        "lastOutcome": "সর্বশেষ {outcome} {delta} আগে",
+        "neverFiredSince": "{date} থেকে কখনো চলেনি",
+        "noEvidenceHint": "কোনো এক্সিকিউশন রেকর্ড করা হয়নি"
+      }
     },
     "run": {
       "elapsed": "{delta} কেটেছে",

@@ -552,7 +552,17 @@
       "last": "آخری",
       "never": "کبھی نہیں چلا",
       "paused": "موقوف",
-      "notScheduled": "شیڈول نہیں"
+      "notScheduled": "شیڈول نہیں",
+      "health": {
+        "healthy": "صحت مند",
+        "failing": "ناکام",
+        "overdue": "تاخیر شدہ",
+        "neverFired": "کبھی نہیں چلی",
+        "noEvidence": "کوئی ثبوت نہیں",
+        "lastOutcome": "آخری بار {outcome} {delta} پہلے",
+        "neverFiredSince": "{date} سے کبھی نہیں چلی",
+        "noEvidenceHint": "کوئی عملدرآمد ریکارڈ نہیں"
+      }
     },
     "run": {
       "elapsed": "⁨{delta}⁩ گزر چکا",

@@ -552,7 +552,17 @@
       "last": "последний",
       "never": "никогда не запускалось",
       "paused": "Приостановлено",
-      "notScheduled": "Не запланировано"
+      "notScheduled": "Не запланировано",
+      "health": {
+        "healthy": "Исправно",
+        "failing": "Сбой",
+        "overdue": "Просрочено",
+        "neverFired": "Никогда не запускался",
+        "noEvidence": "Нет данных",
+        "lastOutcome": "последний раз {outcome} {delta} назад",
+        "neverFiredSince": "никогда не запускался с {date}",
+        "noEvidenceHint": "выполнение не зафиксировано"
+      }
     },
     "run": {
       "elapsed": "прошло {delta}",

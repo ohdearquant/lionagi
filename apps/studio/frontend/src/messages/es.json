@@ -552,7 +552,17 @@
       "last": "última",
       "never": "nunca ejecutada",
       "paused": "En pausa",
-      "notScheduled": "Sin programar"
+      "notScheduled": "Sin programar",
+      "health": {
+        "healthy": "Saludable",
+        "failing": "Con fallos",
+        "overdue": "Atrasada",
+        "neverFired": "Nunca se ejecutó",
+        "noEvidence": "Sin evidencia",
+        "lastOutcome": "última vez {outcome} hace {delta}",
+        "neverFiredSince": "nunca se ejecutó desde {date}",
+        "noEvidenceHint": "no se registró ninguna ejecución"
+      }
     },
     "run": {
       "elapsed": "{delta} transcurrido",
