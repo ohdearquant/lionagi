@@ -2388,6 +2388,75 @@ class StateDB:
                 session.get("project_source") or "git_remote",
             )
 
+    @staticmethod
+    def _decrement_invocation_session_count_sql(dialect: str) -> str:
+        # SQLite MAX(a,b) is a scalar greatest; Postgres MAX() is an aggregate,
+        # so the 2-arg scalar form must be GREATEST() there. Floor at zero so
+        # a stale or out-of-order decrement never reports a negative count.
+        if dialect == "sqlite":
+            return (
+                "UPDATE invocations SET session_count = MAX(session_count - 1, 0), "
+                "updated_at = :now WHERE id = :inv_id"
+            )
+        return (
+            "UPDATE invocations SET session_count = GREATEST(session_count - 1, 0), "
+            "updated_at = :now WHERE id = :inv_id"
+        )
+
+    async def attach_session_invocation(self, session_id: str, invocation_id: str) -> None:
+        """Point an existing session row at *invocation_id*.
+
+        ``create_session``'s ``INSERT ... ON CONFLICT (id) DO NOTHING`` only
+        links a session to its invocation at the moment the row is first
+        inserted; a resume reopens that same row instead of inserting a new
+        one, so its invocation_id would otherwise never be recorded. This is
+        the same sessions.invocation_id + invocations.session_count linkage
+        applied to a row that already exists, guarded so a repeat call (or
+        one that finds the link already current) does not double-count.
+        Repointing away from a prior invocation also decrements that
+        invocation's count, so it stops claiming a session it no longer has.
+
+        On PostgreSQL the prior-invocation read takes ``FOR UPDATE``: SQLite's
+        ``_tx()`` already serializes writers with its own write lock plus
+        ``BEGIN IMMEDIATE``, so a second attach cannot even start its SELECT
+        until the first has committed. PostgreSQL at READ COMMITTED has no
+        such serialization — a second concurrent attach could read the same
+        prior invocation_id a first attach is about to repoint away from,
+        then decrement that stale value after its own UPDATE's WHERE clause
+        re-evaluates against the row the first attach already moved.
+        Locking the row before reading it forces the second attach to block
+        until the first commits, so it re-reads the invocation the first
+        attach actually left the session on.
+        """
+        now = time.time()
+        async with self._tx() as conn:
+            prev_query = "SELECT invocation_id FROM sessions WHERE id = :sid"
+            if self.dialect == "postgresql":
+                prev_query += " FOR UPDATE"
+            prev_row = (await conn.execute(text(prev_query), {"sid": session_id})).first()
+            prev_invocation_id = prev_row[0] if prev_row else None
+
+            result = await conn.execute(
+                text(
+                    "UPDATE sessions SET invocation_id = :inv_id, updated_at = :now "
+                    "WHERE id = :sid AND (invocation_id IS NULL OR invocation_id != :inv_id)"
+                ),
+                {"inv_id": invocation_id, "now": now, "sid": session_id},
+            )
+            if result.rowcount:
+                if prev_invocation_id and prev_invocation_id != invocation_id:
+                    await conn.execute(
+                        text(self._decrement_invocation_session_count_sql(self.dialect)),
+                        {"now": now, "inv_id": prev_invocation_id},
+                    )
+                await conn.execute(
+                    text(
+                        "UPDATE invocations SET session_count = session_count + 1, "
+                        "updated_at = :now WHERE id = :inv_id"
+                    ),
+                    {"now": now, "inv_id": invocation_id},
+                )
+
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         async with self._read() as conn:
             row = (
