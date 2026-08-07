@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "Vue d’ensemble",
       "fleet": "Flotte",
-      "homeAria": "Onglets d’accueil"
+      "homeAria": "Onglets d’accueil",
+      "attention": "Attention"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "bloqué · aucune progression",
         "gated": "en attente d’approbation"
       },
-      "more": "+{count, plural, one {# autre} other {# autres}} — tout voir dans l’Historique →",
+      "more": "+{count, plural, one {# autre} other {# autres}} — tout voir →",
       "digestLatest": "dernier : {name} · il y a {age}",
       "streakCount": "{count}× en échec",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "Afficher les éléments clôturés",
       "hideDischarged": "Masquer les éléments clôturés",
-      "dischargedEmpty": "Aucun élément clôturé"
+      "dischargedEmpty": "Aucun élément clôturé",
+      "page": {
+        "title": "Attention",
+        "subtitle": "Tous les éléments nécessitant l’attention de l’opérateur, actifs et classés.",
+        "filterActive": "Actifs",
+        "filterDischarged": "Classés",
+        "filterAll": "Tous",
+        "emptyActive": "Rien ne nécessite d’attention pour le moment.",
+        "emptyDischarged": "Aucun élément classé.",
+        "emptyAll": "Aucun élément d’attention."
+      }
     },
     "liveBoard": {
       "title": "En cours maintenant",

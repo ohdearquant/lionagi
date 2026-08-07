@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "genel bakış",
       "fleet": "ajan filosu",
-      "homeAria": "ana sayfa sekmeleri"
+      "homeAria": "ana sayfa sekmeleri",
+      "attention": "Dikkat"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "takıldı · ilerleme yok",
         "gated": "onay bekliyor"
       },
-      "more": "{count, plural, one {+# daha — tümünü geçmişte gör →} other {+# daha — tümünü geçmişte gör →}}",
+      "more": "{count, plural, one {+# daha — tümünü gör →} other {+# daha — tümünü gör →}}",
       "digestLatest": "en son: {name} · {age} önce",
       "streakCount": "{count, plural, one {#× başarısız} other {#× başarısız}}",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "Kapatılanları göster",
       "hideDischarged": "Kapatılanları gizle",
-      "dischargedEmpty": "Kapatılmış öğe yok"
+      "dischargedEmpty": "Kapatılmış öğe yok",
+      "page": {
+        "title": "Dikkat",
+        "subtitle": "Operatör dikkati gerektiren tüm öğeler, etkin ve kapatılmış.",
+        "filterActive": "Etkin",
+        "filterDischarged": "Kapatıldı",
+        "filterAll": "Tümü",
+        "emptyActive": "Şu anda dikkat gerektiren bir şey yok.",
+        "emptyDischarged": "Kapatılmış öğe yok.",
+        "emptyAll": "Dikkat öğesi yok."
+      }
     },
     "liveBoard": {
       "title": "şu anda çalışıyor",

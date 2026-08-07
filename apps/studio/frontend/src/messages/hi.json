@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "ओवरव्यू",
       "fleet": "एजेंट फ़्लीट",
-      "homeAria": "होम टैब"
+      "homeAria": "होम टैब",
+      "attention": "ध्यान"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "अटका · कोई प्रगति नहीं",
         "gated": "मंज़ूरी की प्रतीक्षा"
       },
-      "more": "+{count, plural, one {# और} other {# और}} — इतिहास में सभी देखें →",
+      "more": "+{count, plural, one {# और} other {# और}} — सभी देखें →",
       "digestLatest": "नवीनतम: {name} · {age} पहले",
       "streakCount": "{count}× विफल",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "निपटाए गए दिखाएं",
       "hideDischarged": "निपटाए गए छिपाएं",
-      "dischargedEmpty": "कोई निपटाया गया आइटम नहीं"
+      "dischargedEmpty": "कोई निपटाया गया आइटम नहीं",
+      "page": {
+        "title": "ध्यान देने योग्य",
+        "subtitle": "ऑपरेटर के ध्यान की आवश्यकता वाली सभी वस्तुएं, सक्रिय और निपटाई गई।",
+        "filterActive": "सक्रिय",
+        "filterDischarged": "निपटाई गई",
+        "filterAll": "सभी",
+        "emptyActive": "अभी किसी ध्यान की आवश्यकता नहीं है।",
+        "emptyDischarged": "कोई निपटाई गई वस्तु नहीं।",
+        "emptyAll": "कोई ध्यान वस्तु नहीं।"
+      }
     },
     "liveBoard": {
       "title": "अभी चल रहा",

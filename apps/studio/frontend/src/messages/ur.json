@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "جائزہ",
       "fleet": "ایجنٹ فلیٹ",
-      "homeAria": "ہوم ٹیبز"
+      "homeAria": "ہوم ٹیبز",
+      "attention": "توجہ"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "اٹکا ہوا · کوئی پیش رفت نہیں",
         "gated": "منظوری کا منتظر"
       },
-      "more": "{count, plural, one {+# مزید — History میں سب دیکھیں →} other {+# مزید — History میں سب دیکھیں →}}",
+      "more": "{count, plural, one {+# مزید — سب دیکھیں →} other {+# مزید — سب دیکھیں →}}",
       "digestLatest": "تازہ ترین: ⁨{name}⁩ · ⁨{age}⁩ پہلے",
       "streakCount": "{count, plural, one {#× ناکام} other {#× ناکام}}",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "نمٹائے گئے دکھائیں",
       "hideDischarged": "نمٹائے گئے چھپائیں",
-      "dischargedEmpty": "کوئی نمٹایا گیا آئٹم نہیں"
+      "dischargedEmpty": "کوئی نمٹایا گیا آئٹم نہیں",
+      "page": {
+        "title": "توجہ درکار",
+        "subtitle": "آپریٹر کی توجہ درکار تمام آئٹمز، فعال اور نمٹائے گئے۔",
+        "filterActive": "فعال",
+        "filterDischarged": "نمٹایا گیا",
+        "filterAll": "سب",
+        "emptyActive": "ابھی کسی چیز پر توجہ درکار نہیں۔",
+        "emptyDischarged": "کوئی نمٹایا گیا آئٹم نہیں۔",
+        "emptyAll": "کوئی توجہ آئٹم نہیں۔"
+      }
     },
     "liveBoard": {
       "title": "ابھی چل رہا ہے",

@@ -17,6 +17,7 @@ function HomeOverview() {
           tabs={[
             { id: "overview", label: t("tabs.overview"), to: "/", active: true },
             { id: "fleet", label: t("tabs.fleet"), to: "/fleet", active: false },
+            { id: "attention", label: t("tabs.attention"), to: "/attention", active: false },
           ]}
         />
       </div>

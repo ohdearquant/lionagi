@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "Ikhtisar",
       "fleet": "Armada Agen",
-      "homeAria": "Tab beranda"
+      "homeAria": "Tab beranda",
+      "attention": "Perhatian"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "macet · tidak ada kemajuan",
         "gated": "menunggu persetujuan"
       },
-      "more": "+{count, plural, other {# lagi}} — lihat semua di Riwayat →",
+      "more": "+{count, plural, other {# lagi}} — lihat semua →",
       "digestLatest": "terbaru: {name} · {age} lalu",
       "streakCount": "{count, plural, other {#× gagal}}",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "Tampilkan yang terselesaikan",
       "hideDischarged": "Sembunyikan yang terselesaikan",
-      "dischargedEmpty": "Tidak ada item yang terselesaikan"
+      "dischargedEmpty": "Tidak ada item yang terselesaikan",
+      "page": {
+        "title": "Perhatian",
+        "subtitle": "Semua item yang perlu perhatian operator, aktif maupun yang sudah diselesaikan.",
+        "filterActive": "Aktif",
+        "filterDischarged": "Diselesaikan",
+        "filterAll": "Semua",
+        "emptyActive": "Tidak ada yang perlu diperhatikan saat ini.",
+        "emptyDischarged": "Tidak ada item yang diselesaikan.",
+        "emptyAll": "Tidak ada item perhatian."
+      }
     },
     "liveBoard": {
       "title": "Sedang berjalan",

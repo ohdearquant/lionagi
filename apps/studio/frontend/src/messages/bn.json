@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "ওভারভিউ",
       "fleet": "এজেন্ট ফ্লিট",
-      "homeAria": "হোম ট্যাব"
+      "homeAria": "হোম ট্যাব",
+      "attention": "দৃষ্টি"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "আটকে আছে · অগ্রগতি নেই",
         "gated": "অনুমোদনের অপেক্ষায়"
       },
-      "more": "{count, plural, one {+আরও #টি — হিস্ট্রিতে সব দেখুন →} other {+আরও #টি — হিস্ট্রিতে সব দেখুন →}}",
+      "more": "{count, plural, one {+আরও #টি — সব দেখুন →} other {+আরও #টি — সব দেখুন →}}",
       "digestLatest": "সর্বশেষ: {name} · {age} আগে",
       "streakCount": "{count, plural, one {#× ব্যর্থ} other {#× ব্যর্থ}}",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "নিষ্পত্তি হওয়া দেখান",
       "hideDischarged": "নিষ্পত্তি হওয়া লুকান",
-      "dischargedEmpty": "কোনো নিষ্পত্তি হওয়া আইটেম নেই"
+      "dischargedEmpty": "কোনো নিষ্পত্তি হওয়া আইটেম নেই",
+      "page": {
+        "title": "দৃষ্টি প্রয়োজন",
+        "subtitle": "অপারেটরের দৃষ্টি প্রয়োজন এমন সব আইটেম, সক্রিয় ও নিষ্পত্তিকৃত।",
+        "filterActive": "সক্রিয়",
+        "filterDischarged": "নিষ্পত্তিকৃত",
+        "filterAll": "সব",
+        "emptyActive": "এখন কোনো কিছুতে দৃষ্টি দেওয়ার প্রয়োজন নেই।",
+        "emptyDischarged": "কোনো নিষ্পত্তিকৃত আইটেম নেই।",
+        "emptyAll": "কোনো দৃষ্টি আইটেম নেই।"
+      }
     },
     "liveBoard": {
       "title": "এখন রানিং",

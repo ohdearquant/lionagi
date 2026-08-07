@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "Visão geral",
       "fleet": "Frota",
-      "homeAria": "Abas da página inicial"
+      "homeAria": "Abas da página inicial",
+      "attention": "Atenção"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "travado · sem progresso",
         "gated": "aguardando aprovação"
       },
-      "more": "+{count, plural, one {# a mais} other {# a mais}} — ver tudo em Histórico →",
+      "more": "+{count, plural, one {# a mais} other {# a mais}} — ver tudo →",
       "digestLatest": "mais recente: {name} · há {age}",
       "streakCount": "{count, plural, one {#× falhou} other {#× falharam}}",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "Mostrar baixados",
       "hideDischarged": "Ocultar baixados",
-      "dischargedEmpty": "Nenhum item baixado"
+      "dischargedEmpty": "Nenhum item baixado",
+      "page": {
+        "title": "Atenção",
+        "subtitle": "Todos os itens que precisam de atenção do operador, ativos e dispensados.",
+        "filterActive": "Ativos",
+        "filterDischarged": "Dispensados",
+        "filterAll": "Todos",
+        "emptyActive": "Nada precisa de atenção no momento.",
+        "emptyDischarged": "Nenhum item dispensado.",
+        "emptyAll": "Nenhum item de atenção."
+      }
     },
     "liveBoard": {
       "title": "Em execução agora",

@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "개요",
       "fleet": "에이전트 플릿",
-      "homeAria": "홈 탭"
+      "homeAria": "홈 탭",
+      "attention": "주의"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "멈춤 · 진행 없음",
         "gated": "승인 대기 중"
       },
-      "more": "{count, plural, other {+#개 더 — 기록에서 모두 보기 →}}",
+      "more": "{count, plural, other {+#개 더 — 모두 보기 →}}",
       "digestLatest": "최신: {name} · {age} 전",
       "streakCount": "{count, plural, other {#× 실패}}",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "처리된 항목 표시",
       "hideDischarged": "처리된 항목 숨기기",
-      "dischargedEmpty": "처리된 항목이 없습니다"
+      "dischargedEmpty": "처리된 항목이 없습니다",
+      "page": {
+        "title": "주의 필요",
+        "subtitle": "운영자의 주의가 필요한 모든 항목, 진행 중 및 해제된 항목.",
+        "filterActive": "진행 중",
+        "filterDischarged": "해제됨",
+        "filterAll": "전체",
+        "emptyActive": "지금은 주의가 필요한 항목이 없습니다.",
+        "emptyDischarged": "해제된 항목이 없습니다.",
+        "emptyAll": "주의 항목이 없습니다."
+      }
     },
     "liveBoard": {
       "title": "현재 실행 중",

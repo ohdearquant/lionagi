@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "Übersicht",
       "fleet": "Flotte",
-      "homeAria": "Startseiten-Tabs"
+      "homeAria": "Startseiten-Tabs",
+      "attention": "Achtung"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "blockiert · kein Fortschritt",
         "gated": "wartet auf Genehmigung"
       },
-      "more": "+{count, plural, one {# mehr} other {# mehr}} — alle im Verlauf anzeigen →",
+      "more": "+{count, plural, one {# mehr} other {# mehr}} — alle anzeigen →",
       "digestLatest": "neueste: {name} · vor {age}",
       "streakCount": "{count, plural, one {#× fehlgeschlagen} other {#× fehlgeschlagen}}",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "Erledigte anzeigen",
       "hideDischarged": "Erledigte ausblenden",
-      "dischargedEmpty": "Keine erledigten Einträge"
+      "dischargedEmpty": "Keine erledigten Einträge",
+      "page": {
+        "title": "Achtung",
+        "subtitle": "Alle Punkte, die die Aufmerksamkeit des Bedieners erfordern, aktiv und erledigt.",
+        "filterActive": "Aktiv",
+        "filterDischarged": "Erledigt",
+        "filterAll": "Alle",
+        "emptyActive": "Im Moment ist nichts zu beachten.",
+        "emptyDischarged": "Keine erledigten Einträge.",
+        "emptyAll": "Keine Einträge."
+      }
     },
     "liveBoard": {
       "title": "Läuft jetzt",

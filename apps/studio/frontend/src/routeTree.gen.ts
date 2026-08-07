@@ -19,6 +19,7 @@ import { Route as HistoryRouteImport } from './routes/history'
 import { Route as FleetRouteImport } from './routes/fleet'
 import { Route as DesignerRouteImport } from './routes/designer'
 import { Route as CanvasRouteImport } from './routes/canvas'
+import { Route as AttentionRouteImport } from './routes/attention'
 import { Route as AgentsRouteImport } from './routes/agents'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TeamsIndexRouteImport } from './routes/teams/index'
@@ -90,6 +91,11 @@ const DesignerRoute = DesignerRouteImport.update({
 const CanvasRoute = CanvasRouteImport.update({
   id: '/canvas',
   path: '/canvas',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AttentionRoute = AttentionRouteImport.update({
+  id: '/attention',
+  path: '/attention',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AgentsRoute = AgentsRouteImport.update({
@@ -206,6 +212,7 @@ const PlaybooksNameEditIndexRoute = PlaybooksNameEditIndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/agents': typeof AgentsRoute
+  '/attention': typeof AttentionRoute
   '/canvas': typeof CanvasRoute
   '/designer': typeof DesignerRoute
   '/fleet': typeof FleetRoute
@@ -240,6 +247,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/agents': typeof AgentsRoute
+  '/attention': typeof AttentionRoute
   '/canvas': typeof CanvasRoute
   '/designer': typeof DesignerRoute
   '/fleet': typeof FleetRoute
@@ -275,6 +283,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/agents': typeof AgentsRoute
+  '/attention': typeof AttentionRoute
   '/canvas': typeof CanvasRoute
   '/designer': typeof DesignerRoute
   '/fleet': typeof FleetRoute
@@ -311,6 +320,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/agents'
+    | '/attention'
     | '/canvas'
     | '/designer'
     | '/fleet'
@@ -345,6 +355,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/agents'
+    | '/attention'
     | '/canvas'
     | '/designer'
     | '/fleet'
@@ -379,6 +390,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/agents'
+    | '/attention'
     | '/canvas'
     | '/designer'
     | '/fleet'
@@ -414,6 +426,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AgentsRoute: typeof AgentsRoute
+  AttentionRoute: typeof AttentionRoute
   CanvasRoute: typeof CanvasRoute
   DesignerRoute: typeof DesignerRoute
   FleetRoute: typeof FleetRoute
@@ -516,6 +529,13 @@ declare module '@tanstack/react-router' {
       path: '/canvas'
       fullPath: '/canvas'
       preLoaderRoute: typeof CanvasRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/attention': {
+      id: '/attention'
+      path: '/attention'
+      fullPath: '/attention'
+      preLoaderRoute: typeof AttentionRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/agents': {
@@ -678,6 +698,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AgentsRoute: AgentsRoute,
+  AttentionRoute: AttentionRoute,
   CanvasRoute: CanvasRoute,
   DesignerRoute: DesignerRoute,
   FleetRoute: FleetRoute,

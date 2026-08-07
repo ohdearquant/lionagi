@@ -39,7 +39,8 @@
     "tabs": {
       "overview": "Overview",
       "fleet": "Fleet",
-      "homeAria": "Home tabs"
+      "homeAria": "Home tabs",
+      "attention": "Attention"
     }
   },
   "runResume": {
@@ -878,7 +879,7 @@
         "stuck": "stuck · no progress",
         "gated": "awaiting approval"
       },
-      "more": "+{count} more — view all in History →",
+      "more": "+{count} more — view all →",
       "digestLatest": "latest: {name} · {age} ago",
       "streakCount": "{count}× failed",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "Show discharged",
       "hideDischarged": "Hide discharged",
-      "dischargedEmpty": "No discharged items"
+      "dischargedEmpty": "No discharged items",
+      "page": {
+        "title": "Attention",
+        "subtitle": "Every item needing operator attention, active and discharged.",
+        "filterActive": "Active",
+        "filterDischarged": "Discharged",
+        "filterAll": "All",
+        "emptyActive": "Nothing needs attention right now.",
+        "emptyDischarged": "No discharged items.",
+        "emptyAll": "No attention items."
+      }
     },
     "liveBoard": {
       "title": "Running now",

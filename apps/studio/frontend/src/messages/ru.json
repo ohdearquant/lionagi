@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "Обзор",
       "fleet": "Пул агентов",
-      "homeAria": "Вкладки главной"
+      "homeAria": "Вкладки главной",
+      "attention": "Внимание"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "зависло · нет прогресса",
         "gated": "ожидает подтверждения"
       },
-      "more": "+{count, plural, one {# еще — показать все в истории →} few {# еще — показать все в истории →} many {# еще — показать все в истории →} other {# еще — показать все в истории →}}",
+      "more": "+{count, plural, one {# еще — показать все →} few {# еще — показать все →} many {# еще — показать все →} other {# еще — показать все →}}",
       "digestLatest": "последнее: {name} · {age} назад",
       "streakCount": "{count, plural, one {# сбой} few {# сбоя} many {# сбоев} other {# сбоя}} подряд",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "Показать закрытые",
       "hideDischarged": "Скрыть закрытые",
-      "dischargedEmpty": "Нет закрытых элементов"
+      "dischargedEmpty": "Нет закрытых элементов",
+      "page": {
+        "title": "Внимание",
+        "subtitle": "Все элементы, требующие внимания оператора, активные и снятые.",
+        "filterActive": "Активные",
+        "filterDischarged": "Снятые",
+        "filterAll": "Все",
+        "emptyActive": "Сейчас ничего не требует внимания.",
+        "emptyDischarged": "Нет снятых элементов.",
+        "emptyAll": "Нет элементов внимания."
+      }
     },
     "liveBoard": {
       "title": "Выполняется сейчас",

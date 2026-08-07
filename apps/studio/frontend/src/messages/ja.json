@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "概要",
       "fleet": "エージェントフリート",
-      "homeAria": "ホームタブ"
+      "homeAria": "ホームタブ",
+      "attention": "注意"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "停止中 · 進捗なし",
         "gated": "承認待ち"
       },
-      "more": "+{count, plural, other {# 件 — 履歴ですべて表示 →}}",
+      "more": "+{count, plural, other {# 件 — すべて表示 →}}",
       "digestLatest": "最新: {name} · {age}前",
       "streakCount": "{count, plural, other {#回失敗}}",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "処理済みを表示",
       "hideDischarged": "処理済みを隠す",
-      "dischargedEmpty": "処理済みの項目はありません"
+      "dischargedEmpty": "処理済みの項目はありません",
+      "page": {
+        "title": "注意事項",
+        "subtitle": "オペレーターの対応が必要なすべての項目（対応中・解除済み）。",
+        "filterActive": "対応中",
+        "filterDischarged": "解除済み",
+        "filterAll": "すべて",
+        "emptyActive": "現在、対応が必要な項目はありません。",
+        "emptyDischarged": "解除済みの項目はありません。",
+        "emptyAll": "注意項目はありません。"
+      }
     },
     "liveBoard": {
       "title": "現在実行中",

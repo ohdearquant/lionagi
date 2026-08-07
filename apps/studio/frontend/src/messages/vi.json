@@ -35,7 +35,8 @@
     "tabs": {
       "overview": "tổng quan",
       "fleet": "nhóm tác nhân",
-      "homeAria": "thẻ trang chủ"
+      "homeAria": "thẻ trang chủ",
+      "attention": "Chú ý"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -878,7 +879,7 @@
         "stuck": "kẹt · không tiến triển",
         "gated": "đang chờ phê duyệt"
       },
-      "more": "{count, plural, other {+# nữa — xem tất cả trong lịch sử →}}",
+      "more": "{count, plural, other {+# nữa — xem tất cả →}}",
       "digestLatest": "mới nhất: {name} · {age} trước",
       "streakCount": "{count, plural, other {#× thất bại}}",
       "disposition": {
@@ -907,7 +908,17 @@
       },
       "showDischarged": "Hiện mục đã xử lý",
       "hideDischarged": "Ẩn mục đã xử lý",
-      "dischargedEmpty": "Không có mục nào đã xử lý"
+      "dischargedEmpty": "Không có mục nào đã xử lý",
+      "page": {
+        "title": "Chú ý",
+        "subtitle": "Mọi mục cần người vận hành chú ý, đang hoạt động và đã xử lý.",
+        "filterActive": "Đang hoạt động",
+        "filterDischarged": "Đã xử lý",
+        "filterAll": "Tất cả",
+        "emptyActive": "Hiện không có gì cần chú ý.",
+        "emptyDischarged": "Không có mục nào đã xử lý.",
+        "emptyAll": "Không có mục chú ý nào."
+      }
     },
     "liveBoard": {
       "title": "đang chạy",
