@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import contextlib
+import ipaddress
 import json
 import math
 import os
@@ -383,11 +385,8 @@ def _start_local(
             frontend_proc, frontend_url = launched
             if frontend_url:
                 print(f"Lion Studio UI (dev):  {frontend_url}")
-            else:
-                warn(
-                    "Vite started but its bound address could not be "
-                    "determined — check the Vite output above."
-                )
+            # else: _launch_vite_dev already printed a specific, actionable
+            # warning (early exit / stream end / timeout) with captured output.
         print(f"Lion Studio API:       http://{host}:{port}")
     else:
         # Production mode: build dist/ once, then uvicorn serves both UI and API
@@ -540,16 +539,36 @@ _VITE_LOCAL_URL_RE = re.compile(r"Local:\s+(https?://[^\s/]+)")
 _VITE_NETWORK_URL_RE = re.compile(r"Network:\s+(https?://[^\s/]+)")
 _VITE_SETTLE_SECONDS = 0.15
 
-# Hosts for which Vite's `Local:` line is the address a caller can actually
-# reach. Anything else — a LAN IP or the 0.0.0.0/:: wildcard — binds extra
-# interfaces that only show up on Vite's `Network:` line; `Local:` stays a
-# loopback URL even when told to listen everywhere, so using it there would
-# print an address a LAN client cannot reach.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+# Startup-output lines kept for diagnostics when Vite fails to report a
+# bound address — bounded so a runaway process can't grow this unbounded.
+_STARTUP_TAIL_LINES = 40
+
+
+def _host_is_loopback(host: str) -> bool:
+    """True when `host` is a loopback address — the address whose `Local:`
+    line is the one a caller can actually reach. Anything else — a LAN IP,
+    a real hostname, or the 0.0.0.0/:: wildcard — binds extra interfaces
+    that only show up on Vite's `Network:` line; `Local:` stays a loopback
+    URL even when told to listen everywhere, so using it there would print
+    an address a LAN client cannot reach.
+
+    Numeric hosts (127.0.0.1, 127.0.0.2, ::1, ...) are classified via
+    `ipaddress` rather than an exact-string allowlist, since the entire
+    127.0.0.0/8 block is loopback, not just 127.0.0.1. `localhost` and
+    `*.localhost` get explicit handling since they aren't IP literals.
+    The 0.0.0.0/:: wildcards are "unspecified", not loopback, and stay
+    LAN-seeking.
+    """
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _host_wants_lan_url(host: str) -> bool:
-    return host not in _LOOPBACK_HOSTS
+    return not _host_is_loopback(host)
 
 
 def _parse_vite_local_url(line: str) -> str | None:
@@ -571,6 +590,13 @@ def _parse_vite_network_url(line: str) -> str | None:
     return match.group(1) if match else None
 
 
+# Sentinel pushed onto the hits queue by the reader thread when Vite's
+# stdout hits EOF (process exited, or otherwise closed the stream) — lets
+# the caller learn about that promptly instead of blocking for the full
+# readiness timeout.
+_STREAM_EOF = object()
+
+
 def _await_vite_ready_url(
     proc: subprocess.Popen,
     *,
@@ -585,11 +611,20 @@ def _await_vite_ready_url(
     one matching line (multiple interfaces), the first one wins and a note is
     printed saying so — callers get a single deterministic URL either way.
 
-    Returns None if nothing of the right kind is parsed before `timeout`
-    (Vite failed to start, logged an unexpected format, or never bound the
-    requested kind of address). Callers must not construct a guessed URL
-    from the requested host/port on that path, since nothing may be
-    listening there.
+    Returns None on failure and prints one of three distinct, actionable
+    warnings so a crashed Vite doesn't read the same as a slow one:
+
+    - the process exited early (exit code included);
+    - its output stream ended without matching a readiness line while the
+      process is still running (unexpected format);
+    - it genuinely never produced a matching line before `timeout`.
+
+    Every case includes the last `_STARTUP_TAIL_LINES` of captured output
+    (stdout merged with stderr — see `_launch_vite_dev`) so "check the Vite
+    output" is something the warning can actually show, not just say.
+
+    Callers must not construct a guessed URL from the requested host/port
+    on the failure path, since nothing may be listening there.
 
     A background thread keeps draining stdout for the life of the process so
     Vite never blocks on a full pipe buffer; once this function returns, that
@@ -597,25 +632,66 @@ def _await_vite_ready_url(
     daemon thread and needs no explicit join — it exits with the process.
     """
     parse = _parse_vite_network_url if _host_wants_lan_url(host) else _parse_vite_local_url
-    hits: queue.Queue[str] = queue.Queue()
+    hits: queue.Queue[object] = queue.Queue()
     done = threading.Event()
+    tail_lock = threading.Lock()
+    tail: collections.deque[str] = collections.deque(maxlen=_STARTUP_TAIL_LINES)
 
     def _pump() -> None:
         if proc.stdout is None:
+            hits.put(_STREAM_EOF)
             return
-        for line in proc.stdout:
-            if done.is_set():
-                continue
-            found = parse(line)
-            if found:
-                hits.put(found)
+        try:
+            for line in proc.stdout:
+                with tail_lock:
+                    tail.append(line.rstrip("\n"))
+                if done.is_set():
+                    continue
+                found = parse(line)
+                if found:
+                    hits.put(found)
+        finally:
+            hits.put(_STREAM_EOF)
 
     thread = threading.Thread(target=_pump, daemon=True)
     thread.start()
+
+    def _diagnostics() -> str:
+        with tail_lock:
+            lines = list(tail)
+        if not lines:
+            return " No output was captured."
+        return "\nCaptured Vite output (most recent lines):\n  " + "\n  ".join(lines)
+
     try:
         first = hits.get(timeout=timeout)
     except queue.Empty:
         done.set()
+        warn(
+            f"Timed out after {timeout:.0f}s waiting for Vite to report a bound "
+            f"address.{_diagnostics()}"
+        )
+        return None
+
+    if first is _STREAM_EOF:
+        done.set()
+        exit_code = proc.poll()
+        if exit_code is None:
+            # Stdout closed before the process was reaped — give it a brief
+            # grace window rather than reporting "still running" spuriously.
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=1.0)
+            exit_code = proc.poll()
+        if exit_code is not None:
+            warn(
+                f"Vite exited early (exit code {exit_code}) before reporting a "
+                f"bound address.{_diagnostics()}"
+            )
+        else:
+            warn(
+                "Vite's output stream ended before reporting a bound address, "
+                f"and the process is still running.{_diagnostics()}"
+            )
         return None
 
     matches = [first]
@@ -625,9 +701,12 @@ def _await_vite_ready_url(
         if remaining <= 0:
             break
         try:
-            matches.append(hits.get(timeout=remaining))
+            item = hits.get(timeout=remaining)
         except queue.Empty:
             break
+        if item is _STREAM_EOF:
+            continue
+        matches.append(item)
     done.set()
 
     if len(matches) > 1:
@@ -656,7 +735,10 @@ def _launch_vite_dev(
             cwd=str(frontend_dir),
             env=env,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            # Merged into stdout (not discarded) so a crash's diagnostics
+            # are part of the same captured stream _await_vite_ready_url
+            # already reads and can show on failure.
+            stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
         )

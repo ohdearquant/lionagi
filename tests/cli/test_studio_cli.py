@@ -10,6 +10,8 @@ import logging
 import os
 import socket
 import subprocess
+import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -894,3 +896,72 @@ def test_launch_vite_dev_selects_a_lan_url_for_the_wildcard_host():
         assert host not in ("127.0.0.1", "localhost")
     finally:
         _stop(proc)
+
+
+def test_await_vite_ready_url_returns_fast_and_reports_exit_code_on_early_exit(caplog):
+    """A child that exits immediately (crash, missing entry point, bad cwd)
+    must not stall the readiness wait for the full timeout — the reader
+    thread learns about EOF promptly, and the caller reports the exit code
+    plus captured output instead of a generic "check the output" message
+    with nothing to check."""
+    from lionagi.studio.cli import _await_vite_ready_url
+
+    proc = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "print('starting up'); import sys; sys.exit(3)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    start = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        url = _await_vite_ready_url(proc, host="127.0.0.1", timeout=10.0)
+    elapsed = time.monotonic() - start
+    proc.wait(timeout=5)
+
+    assert url is None
+    assert elapsed < 2.0, f"took {elapsed:.2f}s — must not stall for the full timeout"
+    messages = [r.message for r in caplog.records]
+    assert any("exit code 3" in m for m in messages), messages
+    assert any("starting up" in m for m in messages), messages
+
+
+def test_host_is_loopback_classifies_numeric_and_named_loopback_hosts():
+    """The whole 127.0.0.0/8 block is loopback, not just 127.0.0.1, and so
+    is any ::1 form — classification must be semantic (via `ipaddress`),
+    not an exact-string allowlist."""
+    from lionagi.studio.cli import _host_is_loopback
+
+    assert _host_is_loopback("127.0.0.1") is True
+    assert _host_is_loopback("127.0.0.2") is True
+    assert _host_is_loopback("::1") is True
+    assert _host_is_loopback("localhost") is True
+
+
+def test_host_is_loopback_rejects_wildcard_lan_and_hostname():
+    from lionagi.studio.cli import _host_is_loopback
+
+    assert _host_is_loopback("0.0.0.0") is False
+    assert _host_is_loopback("::") is False
+    assert _host_is_loopback("192.168.1.5") is False
+    assert _host_is_loopback("my-machine.example.com") is False
+
+
+def test_launch_vite_dev_selects_the_local_url_for_a_non_default_loopback_host(
+    tmp_path, monkeypatch
+):
+    """127.0.0.2 is a valid loopback address but not the exact string
+    "127.0.0.1"; it must still route to the Local: parser and resolve to
+    the address Vite actually printed."""
+    import lionagi.studio.cli as studio_mod
+
+    class FakeProc:
+        def __init__(self):
+            self.stdout = iter(["  ➜  Local:   http://127.0.0.2:4001/\n"])
+
+    monkeypatch.setattr(studio_mod.subprocess, "Popen", lambda argv, **kwargs: FakeProc())
+
+    result = studio_mod._launch_vite_dev(tmp_path, 4000, host="127.0.0.2")
+
+    assert result is not None
+    proc, url = result
+    assert url == "http://127.0.0.2:4001"
