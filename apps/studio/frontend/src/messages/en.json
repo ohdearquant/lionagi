@@ -544,6 +544,7 @@
       "triggering": "Triggering…",
       "runStarted": "Run started: {id}",
       "triggerFailed": "Failed to trigger",
+      "toggleFailed": "Failed to toggle",
       "every": "every {interval}",
       "in": "in {delta}",
       "overdue": "overdue {delta}",

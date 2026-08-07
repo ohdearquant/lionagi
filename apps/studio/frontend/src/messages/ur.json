@@ -544,6 +544,7 @@
       "triggering": "ٹرگر ہو رہا ہے…",
       "runStarted": "رن شروع ہوا: ⁨{id}⁩",
       "triggerFailed": "ٹرگر ناکام",
+      "toggleFailed": "ٹوگل ناکام",
       "every": "ہر ⁨{interval}⁩",
       "in": "⁨{delta}⁩ میں",
       "overdue": "⁨{delta}⁩ تاخیر سے",

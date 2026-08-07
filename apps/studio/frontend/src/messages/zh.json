@@ -544,6 +544,7 @@
       "triggering": "触发中…",
       "runStarted": "已触发：{id}",
       "triggerFailed": "触发失败",
+      "toggleFailed": "切换失败",
       "every": "每 {interval}",
       "in": "{delta}后",
       "overdue": "已逾期 {delta}",

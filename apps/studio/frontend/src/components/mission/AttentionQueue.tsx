@@ -17,6 +17,7 @@ import Chip from "@/components/ui/Chip";
 import Skeleton from "@/components/ui/Skeleton";
 import { type AttentionItem, type AttentionReason } from "./boardReducer";
 import { runDeepLink, invocationDeepLink, scheduleDeepLink } from "@/lib/runDeepLink";
+import { formatElapsed } from "@/lib/elapsed";
 
 /** Placeholder row count while the first fetch is in flight. */
 const SKELETON_ROWS = 3;
@@ -71,12 +72,7 @@ function elapsedLabel(startedAt: number | null, nowSec: number): string {
   // Timestamps are float epochs — floor so sub-minute ages never render
   // fractional seconds.
   const s = Math.max(0, Math.floor(nowSec - startedAt));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  const mm = m - h * 60;
-  return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
+  return formatElapsed(s, { showSeconds: false });
 }
 
 export default function AttentionQueue({ items, nowSec }: Props) {
