@@ -54,6 +54,12 @@ class EndpointConfig(BaseModel):
     api_key: str | SecretStr | None = Field(None, exclude=True)
     timeout: int = 300
     max_retries: int = 3
+    # A retried POST to a non-idempotent creation endpoint (image generation,
+    # batch creation) can double-execute billable work when the first attempt
+    # was actually accepted but its response was lost. When True, every retry
+    # of one logical request carries the same "Idempotency-Key" header so the
+    # provider can dedupe the ambiguous replay instead of re-running it.
+    idempotent_retries: bool = False
     openai_compatible: bool = False
     requires_tokens: bool = False
     context_window: int | None = None
