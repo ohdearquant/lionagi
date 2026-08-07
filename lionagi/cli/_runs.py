@@ -42,6 +42,7 @@ __all__ = (
     "active_run_id",
     "resolve_run_reason",
     "setup_agent_persist",
+    "find_incomplete_session_for_run",
     "teardown_persist",
     "teardown_agent_persist",
     "teardown_orchestration_persist",
@@ -1424,3 +1425,45 @@ async def setup_agent_persist(
 
                 unregister_shared_db(db)
         return None
+
+
+async def find_incomplete_session_for_run(run_id: str) -> dict | None:
+    """Recover a session row that ``setup_agent_persist()`` committed before
+    failing on a later step, terminalizing it if it is still "running".
+
+    ``setup_agent_persist()`` can call ``create_session()`` and then raise
+    inside the same setup (e.g. the following ``create_branch()``); it catches
+    that exception and returns None, so its caller sees no context but the
+    session row itself is still durable and left running forever. A caller
+    whose *run_id* is minted fresh for every attempt (never reused across a
+    resume, the way a new operator turn always is) can pass it here after
+    setup fails to recover that row -- and close it out -- instead of
+    reporting the run as never having existed. Returns None only when no
+    session was ever recorded under this run id.
+    """
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+    from lionagi.state.reasons import RunReasons
+
+    db = StateDB()
+    await db.open()
+    try:
+        rows = await db.get_sessions_for_run(run_id)
+        if not rows:
+            return None
+        row = rows[-1]
+        status = row.get("status")
+        if status not in SESSION_TERMINAL_STATUSES:
+            await db.update_status(
+                "session",
+                row["id"],
+                new_status="failed",
+                reason_code=RunReasons.FAILED_EXCEPTION,
+                reason_summary="run setup failed after the session row was committed",
+                source="executor",
+                actor=row["id"],
+                expected_statuses={status},
+            )
+            row = await db.get_session(row["id"]) or row
+        return row
+    finally:
+        await db.close()
