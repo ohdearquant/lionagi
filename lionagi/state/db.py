@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import shutil
 import sqlite3
 import struct
@@ -2085,10 +2086,22 @@ class StateDB:
             _rebuild,
         )
 
-    # Substring present only in a definitions CREATE SQL whose kind CHECK
-    # admits 'skill'; its absence indicates a legacy DB whose definitions
-    # table still carries the pre-skill-editor 2-value CHECK.
-    _LEGACY_DEFINITIONS_SKILL_MARKER = "'skill'"
+    # The pre-skill-editor definitions.kind CHECK admitted exactly these two
+    # values. A substring search for "'skill'" over the whole CREATE TABLE
+    # SQL false-positives on unrelated columns (e.g. a message TEXT DEFAULT
+    # 'skill'), so detection parses the kind CHECK constraint's own value
+    # set instead of scanning the statement for a marker string.
+    _LEGACY_DEFINITIONS_KIND_VALUES = frozenset({"agent", "playbook"})
+
+    @staticmethod
+    def _definitions_kind_check_values(create_sql: str) -> frozenset[str] | None:
+        """Extract the allowed ``kind`` values from a ``definitions`` CREATE
+        TABLE statement's CHECK constraint, or ``None`` if no such
+        constraint is found in the SQL."""
+        match = re.search(r"\bkind\b\s+IN\s*\(([^)]*)\)", create_sql, re.IGNORECASE)
+        if match is None:
+            return None
+        return frozenset(re.findall(r"'([^']*)'", match.group(1)))
 
     async def _drop_legacy_definitions_kind_check(self) -> None:
         """Rebuild ``definitions`` if it still carries the pre-skill-editor kind CHECK.
@@ -2117,8 +2130,9 @@ class StateDB:
         if row is None or row["sql"] is None:
             return
         create_sql: str = row["sql"]
-        if self._LEGACY_DEFINITIONS_SKILL_MARKER in create_sql:
-            # Table was already created / rebuilt with 'skill' in the CHECK.
+        if self._definitions_kind_check_values(create_sql) != self._LEGACY_DEFINITIONS_KIND_VALUES:
+            # Not the known legacy 2-value CHECK (already migrated, or an
+            # unrecognized shape) -- leave it alone.
             return
 
         # definitions holds every version of every agent/playbook/skill ever
@@ -2182,7 +2196,10 @@ class StateDB:
 
         await self._rebuild_check_constraint(
             "definitions",
-            lambda sql: sql is not None and self._LEGACY_DEFINITIONS_SKILL_MARKER in sql,
+            lambda sql: (
+                sql is not None
+                and self._definitions_kind_check_values(sql) != self._LEGACY_DEFINITIONS_KIND_VALUES
+            ),
             _rebuild,
         )
 
