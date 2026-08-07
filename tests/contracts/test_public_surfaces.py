@@ -113,16 +113,42 @@ def test_http_route_count_is_133():
     assert live["count"] == 133
 
 
+def _routes_by_key(payload: dict) -> dict[str, dict]:
+    """Project a ``capture_http()`` payload's routes into a dict keyed by
+    their actual identity, ``(methods, path)`` -- with the
+    registration-order-derived ``ordinal`` field dropped.
+
+    ``ordinal`` reflects the position a route's decorator happened to run at
+    in *this* process, not a fact about the route: ``load_studio_route_modules``
+    imports each area module in a fixed order, but ``import_module`` on an
+    already-imported module is a no-op, so a route's real position depends on
+    whichever test in the same worker imported its owning service module
+    first (many tests import a single ``lionagi.studio.services.*`` module
+    directly to unit-test a handler, without going through ``create_app()``).
+    Comparing ``ordinal`` positionally turns one such incidental reordering
+    into a whole-file diff, since every route after the moved one shifts too.
+    Keying by identity instead means an actual added/removed/changed route
+    diffs as one entry.
+    """
+    by_key: dict[str, dict] = {}
+    for route in payload["routes"]:
+        key = json.dumps([route["methods"], route["path"]], sort_keys=True)
+        by_key[key] = {k: v for k, v in route.items() if k != "ordinal"}
+    return by_key
+
+
 def test_http_routes_match_baseline():
     """http.json is generated from this branch's own base commit and is
-    byte-for-byte identical to the live capture — the strongest available
-    behavior-preservation proof. Regenerate it (and this test's expected
-    count above) only when an intentional route change lands, never to
-    paper over an unreviewed drift.
+    identical (per route, keyed by (methods, path) -- see _routes_by_key) to
+    the live capture — the strongest available behavior-preservation proof.
+    Regenerate it (and this test's expected count above) only when an
+    intentional route change lands, never to paper over an unreviewed drift.
     """
     expected = _load("http")
     live = _capture.capture_http()
-    assert _sorted_json(live) == _sorted_json(expected)
+    assert live["count"] == expected["count"]
+    assert _sorted_json(_routes_by_key(live)) == _sorted_json(_routes_by_key(expected))
+    assert _sorted_json(live["openapi"]) == _sorted_json(expected["openapi"])
 
 
 def test_http_all_routes_have_responses_field():
