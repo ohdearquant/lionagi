@@ -45,6 +45,7 @@ class OperationGraphBuilder:
         node_id: str | None = None,
         depends_on: list[str] | None = None,
         inherit_context: bool = False,
+        is_gate: bool = False,
         branch=None,
         **parameters,
     ) -> str:
@@ -64,12 +65,21 @@ class OperationGraphBuilder:
         Passing `None` for a fan silently serializes it: `sequential` edges are
         ordinary predecessors at execution time, so every worker waits for the
         one added before it.
+
+        `is_gate=True` opts this node into the flow executor's gate-reject
+        contract (see `lionagi/operations/flow.py`): if its result carries a
+        top-level `gate_verdict="reject"`, every downstream dependent is
+        short-circuited to skipped instead of running against the baseline
+        this node just rejected.
         """
         node = create_operation(operation=operation, parameters=parameters)
 
         if inherit_context and depends_on:
             node.metadata["inherit_context"] = True
             node.metadata["primary_dependency"] = depends_on[0]
+
+        if is_gate:
+            node.metadata["is_gate"] = True
 
         self.graph.add_node(node)
         self._operations[node.id] = node

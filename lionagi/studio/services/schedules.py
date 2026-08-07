@@ -421,10 +421,27 @@ async def list_schedules(
         for row in rows:
             if row.get("max_runs"):
                 row["remaining_runs"] = max(row["max_runs"] - used_by_id[row["id"]], 0)
+            if row.get("budget_usd") or row.get("budget_tokens"):
+                await _attach_spend(db, row)
             streak, last_status = streaks_by_id[row["id"]]
             row["consecutive_failures"] = streak
             row["last_status"] = last_status
     return rows
+
+
+async def _attach_spend(db: StateDB, row: dict[str, Any]) -> None:
+    """Attach the spend rollup to *row* in place, for schedules with a configured budget.
+
+    ``spend_is_partial`` (derived from ``unreported_sessions``) is what a caller/UI
+    should branch on to render "unknown/partial" instead of trusting ``spend_usd``
+    as a complete total -- see sum_schedule_spend's docstring for why an unreported
+    session's cost is not the same as a $0 one.
+    """
+    spend = await db.sum_schedule_spend(row["id"])
+    row["spend_usd"] = spend["cost_usd"]
+    row["spend_tokens"] = spend["tokens"]
+    row["unreported_sessions"] = spend["unreported_sessions"]
+    row["spend_is_partial"] = spend["unreported_sessions"] > 0
 
 
 async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
@@ -438,6 +455,8 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         if row.get("max_runs"):
             used = await db.count_schedule_runs(schedule_id, chain_depth=0)
             row["remaining_runs"] = max(row["max_runs"] - used, 0)
+        if row.get("budget_usd") or row.get("budget_tokens"):
+            await _attach_spend(db, row)
         streak, last_status = await db.schedule_run_streak(schedule_id)
         row["consecutive_failures"] = streak
         row["last_status"] = last_status

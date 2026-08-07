@@ -498,6 +498,11 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         "project_source": s.get("project_source"),
         "status_reason_code": s.get("status_reason_code"),
         "status_reason_summary": s.get("status_reason_summary"),
+        # Cost-visibility contract: NULL means the run never reported a cost
+        # (unknown), never coerced to 0.0 (free) — see usageFormat.ts.
+        "total_cost_usd": s.get("total_cost_usd"),
+        "input_tokens": s.get("input_tokens"),
+        "output_tokens": s.get("output_tokens"),
         "tags": [],
     }
 
@@ -512,6 +517,7 @@ async def list_runs(
     search: str | None = None,
     limit: int = _sessions_svc.MAX_SESSION_PAGE,
     offset: int = 0,
+    sort: str = "recent",
 ) -> list[dict[str, Any]]:
     """One page of runs. Filters are applied in SQL so the page is selected
     rather than sieved out of a whole-store read; per-row liveness and tag
@@ -526,7 +532,7 @@ async def list_runs(
         tags=tag,
         search=search,
     )
-    sessions = await _sessions_svc.list_sessions(limit=limit, offset=offset, where=where)
+    sessions = await _sessions_svc.list_sessions(limit=limit, offset=offset, where=where, sort=sort)
     now = time.time()
     out = []
     snapshot: str | None = None
@@ -721,7 +727,13 @@ async def list_runs_route(
         default=None,
         description="Case-insensitive contains match on session name or agent name",
     ),
+    sort: str = Query(
+        default="recent",
+        description="Sort order: 'recent' (default) or 'cost' (highest reported spend first)",
+    ),
 ) -> dict[str, Any]:
+    if sort not in _sessions_svc._SESSION_SORTS:
+        raise HTTPException(status_code=422, detail="sort must be one of: recent, cost")
     where = _sessions_svc.SessionFilter(
         playbook=playbook,
         statuses=_normalize_status_filter(status),
@@ -739,6 +751,7 @@ async def list_runs_route(
         search=search,
         limit=per_page,
         offset=(page - 1) * per_page,
+        sort=sort,
     )
     total = await _sessions_svc.count_sessions(where)
     return paginate_runs(runs, page=page, per_page=per_page, total=total)

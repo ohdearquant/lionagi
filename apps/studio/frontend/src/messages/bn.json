@@ -784,6 +784,8 @@
     },
     "history": {
       "label": "সেশন হিস্ট্রি",
+      "sortRecent": "সাম্প্রতিক",
+      "sortCost": "সর্বোচ্চ খরচ",
       "all": "সব",
       "completed": "সম্পন্ন",
       "failed": "ব্যর্থ",
@@ -869,6 +871,15 @@
       "completionRate": "{rate}% সম্পন্ন",
       "noTerminalRuns": "উইন্ডোতে কোনো সমাপ্ত রান নেই",
       "total": "{count, plural, one {মোট #টি} other {মোট #টি}}",
+      "staleHint": "শেষ জানা অবস্থা দেখানো হচ্ছে · রিফ্রেশ ব্যর্থ"
+    },
+    "spend": {
+      "title": "প্রতিবেদিত ব্যয়",
+      "loading": "ব্যয় লোড হচ্ছে…",
+      "error": "ব্যয় অনুপলব্ধ · {message}",
+      "unreachable": "API পৌঁছানো যায় না",
+      "empty": "উইন্ডোতে কোনো রান নেই",
+      "coverage": "{total} এর মধ্যে {reported}টি প্রতিবেদিত",
       "staleHint": "শেষ জানা অবস্থা দেখানো হচ্ছে · রিফ্রেশ ব্যর্থ"
     },
     "stale": {

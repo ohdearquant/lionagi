@@ -102,6 +102,33 @@ async def test_escalation_higher_tier_emits_node_escalated_signal():
     assert isinstance(sig.escalation_request, EscalationRequest)
 
 
+@pytest.mark.asyncio
+async def test_escalation_child_carries_readable_name_and_parent_pointer():
+    """The higher_tier child op is stamped with both `escalated_from` (the
+    parent op id) and `escalated_from_name` (a readable label) — a caller
+    outside operations/ (e.g. attributing the child's CLI transcript back to
+    the node it retries) needs the label without re-deriving it from a
+    possibly-stale reference to the parent op."""
+
+    async def cheap(**kw):
+        return EscalationRequest(reason="too hard", context={"route": "higher_tier"})
+
+    session = _session(cheap=cheap)
+
+    builder = OperationGraphBuilder()
+    parent_id = builder.add_operation("cheap", node_id="cheap")
+    graph = builder.get_graph()
+
+    await flow(session, graph, reactive=True)
+
+    child = next(
+        n
+        for n in graph.internal_nodes.values()
+        if isinstance(n, Operation) and n.metadata.get("escalated_from") == str(parent_id)
+    )
+    assert child.metadata["escalated_from_name"] == "cheap"
+
+
 # ---------------------------------------------------------------------------
 # give_up: signals without re-spawning
 # ---------------------------------------------------------------------------

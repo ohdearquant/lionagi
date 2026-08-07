@@ -42,6 +42,7 @@ __all__ = (
     "active_run_id",
     "resolve_run_reason",
     "setup_agent_persist",
+    "find_incomplete_session_for_run",
     "teardown_persist",
     "teardown_agent_persist",
     "teardown_orchestration_persist",
@@ -497,6 +498,7 @@ async def _teardown_common(
     escalated_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
+    gate_rejected_evidence: list[dict] | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -669,6 +671,27 @@ async def _teardown_common(
         )
         final_evidence_refs = escalated_evidence
 
+    # A gate node rejected mid-DAG (issue #2860) and the executor
+    # short-circuited its dependent subtree to skipped instead of running
+    # those nodes against the rejected baseline. That is a correct, deliberate
+    # stop, not a failure -- status stays "completed" -- but the reason code
+    # must say so explicitly rather than reading identically to a clean pass.
+    if gate_rejected_evidence and final_status == "completed":
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["gate_rejections"] = gate_rejected_evidence
+        final_reason_code = RunReasons.COMPLETED_GATE_REJECTED
+        gate_names = ", ".join(
+            str(e.get("label") or e.get("id") or "") for e in gate_rejected_evidence
+        )
+        final_reason_summary = (
+            f"DAG completed successfully; {len(gate_rejected_evidence)} gate(s) rejected "
+            f"({gate_names}) and their dependent subtree was short-circuited instead of "
+            "running against the rejected baseline."
+        )
+        final_evidence_refs = gate_rejected_evidence
+
     # The synthesis artifact IS the run's output. A DAG that completed but
     # whose output write raised has not delivered anything -- that is a real
     # failure of the run, not a best-effort finalize hiccup, so this flips
@@ -821,6 +844,7 @@ async def teardown_persist(
     escalated_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
+    gate_rejected_evidence: list[dict] | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -844,6 +868,7 @@ async def teardown_persist(
             escalated_evidence=escalated_evidence,
             finalize_error=finalize_error,
             artifact_write_error=artifact_write_error,
+            gate_rejected_evidence=gate_rejected_evidence,
             cwd=cwd,
             engine_session_uid=engine_session_uid,
             defer_terminal=defer_terminal,
@@ -1424,3 +1449,45 @@ async def setup_agent_persist(
 
                 unregister_shared_db(db)
         return None
+
+
+async def find_incomplete_session_for_run(run_id: str) -> dict | None:
+    """Recover a session row that ``setup_agent_persist()`` committed before
+    failing on a later step, terminalizing it if it is still "running".
+
+    ``setup_agent_persist()`` can call ``create_session()`` and then raise
+    inside the same setup (e.g. the following ``create_branch()``); it catches
+    that exception and returns None, so its caller sees no context but the
+    session row itself is still durable and left running forever. A caller
+    whose *run_id* is minted fresh for every attempt (never reused across a
+    resume, the way a new operator turn always is) can pass it here after
+    setup fails to recover that row -- and close it out -- instead of
+    reporting the run as never having existed. Returns None only when no
+    session was ever recorded under this run id.
+    """
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+    from lionagi.state.reasons import RunReasons
+
+    db = StateDB()
+    await db.open()
+    try:
+        rows = await db.get_sessions_for_run(run_id)
+        if not rows:
+            return None
+        row = rows[-1]
+        status = row.get("status")
+        if status not in SESSION_TERMINAL_STATUSES:
+            await db.update_status(
+                "session",
+                row["id"],
+                new_status="failed",
+                reason_code=RunReasons.FAILED_EXCEPTION,
+                reason_summary="run setup failed after the session row was committed",
+                source="executor",
+                actor=row["id"],
+                expected_statuses={status},
+            )
+            row = await db.get_session(row["id"]) or row
+        return row
+    finally:
+        await db.close()

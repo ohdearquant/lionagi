@@ -1509,12 +1509,32 @@ class SchedulerEngine:
         nothing to reserve or release -- both budget_usd and budget_tokens
         unset means unbounded (always False). Either configured bound
         tripping is sufficient to report exhausted.
+
+        ``spend["cost_usd"]`` is a sum of *reported* cost only -- a session
+        whose engine never priced itself contributes nothing to it, not a
+        confirmed $0. This deliberately does not force exhaustion just
+        because some sessions are unreported (that would turn a data gap
+        into an outage for schedules that are, as far as anyone can tell,
+        fine); it only makes the gap visible via a log line here and via
+        ``unreported_sessions`` in the schedule's spend rollup, so a near-
+        zero reading with many unreported sessions is legible as "unknown",
+        not silently trusted as "cheap".
         """
         budget_usd = schedule.get("budget_usd")
         budget_tokens = schedule.get("budget_tokens")
         if not budget_usd and not budget_tokens:
             return False
         spend = await self._svc.sum_schedule_spend(schedule["id"])
+        if spend.get("unreported_sessions"):
+            _log.warning(
+                "Schedule %s (%s) budget check: %d spawned session(s) never reported "
+                "cost; observed cost_usd=%.4f/tokens=%d may undercount actual spend.",
+                schedule.get("name"),
+                schedule["id"],
+                spend["unreported_sessions"],
+                spend["cost_usd"],
+                spend["tokens"],
+            )
         if budget_usd and spend["cost_usd"] >= budget_usd:
             return True
         if budget_tokens and spend["tokens"] >= budget_tokens:
@@ -1526,7 +1546,27 @@ class SchedulerEngine:
 
         Shared by the two tick-loop fire paths (_maybe_fire, _tick_github);
         fire_now() refuses instead of disabling (mirrors max_runs).
+
+        Re-reads the spend rollup (already read once by the ``_check_budget``
+        call that led here) purely to attach ``unreported_sessions`` to the
+        disable record -- a human reading why a schedule got disabled should
+        be able to tell "spend actually crossed the line" from "spend
+        crossed the line but part of it is unmeasured, so the true total may
+        be higher still". The reread is annotation only: if it fails, the
+        disable and the skip record must still land, with the count marked
+        unknown rather than the enforcement aborted.
         """
+        try:
+            spend = await self._svc.sum_schedule_spend(schedule["id"])
+        except Exception:
+            _log.warning(
+                "Could not re-read the spend rollup for schedule %s while "
+                "disabling it for budget exhaustion; recording the "
+                "unreported-session count as unknown",
+                schedule["id"],
+                exc_info=True,
+            )
+            spend = {}
         _log.info(
             "Schedule %s (%s) has exhausted its budget (budget_usd=%s, budget_tokens=%s); "
             "disabling instead of firing",
@@ -1550,6 +1590,7 @@ class SchedulerEngine:
             metadata={
                 "budget_usd": schedule.get("budget_usd"),
                 "budget_tokens": schedule.get("budget_tokens"),
+                "unreported_sessions": spend.get("unreported_sessions"),
             },
         )
         await self._svc.update_schedule(schedule["id"], enabled=0)
@@ -1558,11 +1599,13 @@ class SchedulerEngine:
         """Evaluate ``schedule["threshold_config"]`` against live metrics.
 
         Returns a breach dict (``metric``, ``op``, ``value`` = observed,
-        ``threshold`` = configured, ``window_minutes``) that renders into
-        ``{{metric}}``/``{{value}}``/``{{threshold}}`` action-prompt
-        templates (see ``_subprocess.render_action_prompt`` and the
-        github_poll precedent it already handles), or ``None`` when the
-        metric is within bounds.
+        ``threshold`` = configured, ``window_minutes``, plus
+        ``unreported_sessions``/``spend_is_partial`` when the metric is
+        ``total_cost_usd`` and some sessions in the window never reported
+        cost) that renders into ``{{metric}}``/``{{value}}``/``{{threshold}}``
+        action-prompt templates (see ``_subprocess.render_action_prompt``
+        and the github_poll precedent it already handles), or ``None`` when
+        the metric is within bounds.
         """
         config = schedule.get("threshold_config")
         if not config:
@@ -1575,13 +1618,22 @@ class SchedulerEngine:
         observed = await self._svc.metric_value(metric, window_start)
         if not _threshold.compare(op, observed, threshold_value):
             return None
-        return {
+        breach: dict[str, Any] = {
             "metric": metric,
             "op": op,
             "value": observed,
             "threshold": threshold_value,
             "window_minutes": window_minutes,
         }
+        # total_cost_usd's COALESCE(SUM(...), 0) reads an unreported session
+        # as $0 -- surface how many sessions in this same window carried no
+        # cost data at all, so a breach (or its absence) isn't mistaken for
+        # a complete reading. Every other metric has no such gap.
+        unreported = await self._svc.metric_unreported_sessions(metric, window_start)
+        if unreported:
+            breach["unreported_sessions"] = unreported
+            breach["spend_is_partial"] = True
+        return breach
 
     async def _advance_next_fire_only(self, schedule: dict, now: float) -> None:
         """Advance next_fire_at without firing the schedule's action.
