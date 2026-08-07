@@ -169,6 +169,10 @@ class DependencyAwareExecutor:
         self._gate_rejections: dict[Any, dict[str, Any]] = {}
         self._skip_reasons: dict[Any, dict[str, Any]] = {}
         self._op_start_times = {}
+        # Identity bookkeeping so every started operation gets exactly one
+        # terminal on_progress signal, whichever exit path it takes.
+        self._started_ops: set = set()
+        self._terminal_emitted: set = set()
         self._pause_event: ConcurrencyEvent | None = None
         # Fire-and-forget flow signal tasks, retained until each finishes so a
         # weakly referenced task can't disappear before it runs.
@@ -373,6 +377,45 @@ class DependencyAwareExecutor:
 
         self._emit_best_effort(_factory)
 
+    def _emit_terminal_once(
+        self, operation: Operation, branch_name: str, status: str, elapsed: float
+    ) -> None:
+        """Emit a terminal on_progress signal for `operation` at most once.
+
+        Every call site that reaches a terminal outcome (completed, failed,
+        skipped, cancelled, or an unexpected flow-level error) goes through
+        here, so a race between two exit paths for the same operation can
+        never announce two terminal signals for one identity.
+        """
+        if operation.id in self._terminal_emitted:
+            return
+        self._terminal_emitted.add(operation.id)
+        if self.on_progress:
+            self.on_progress(str(operation.id), branch_name, status, elapsed)
+
+    def _emit_abandoned_terminal(self, operation: Operation) -> None:
+        """Safety net for cancellation and unexpected flow-level errors.
+
+        If `operation` already emitted "started" but execution left
+        `_execute_operation` through the CancelledError or generic-Exception
+        handler without going through the normal completed/failed paths, the
+        node would otherwise render as perpetually running. Emit a "failed"
+        terminal (there is no separate cancelled/abandoned signal kind) so
+        every start still gets exactly one terminal outcome. No-op if this
+        operation never started, or a terminal was already emitted for it.
+        """
+        if operation.id not in self._started_ops:
+            return
+        if operation.id in self._terminal_emitted:
+            return
+        import time as _time
+
+        ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
+        branch = self.operation_branches.get(operation.id, self.session.default_branch)
+        branch_name = getattr(branch, "name", None) or ref_id
+        elapsed = _time.monotonic() - self._op_start_times.get(operation.id, _time.monotonic())
+        self._emit_terminal_once(operation, branch_name, "failed", elapsed)
+
     async def _execute_operation(self, operation: Operation, limiter: CapacityLimiter):
         if operation.execution.status in Event._TERMINAL_STATUSES:
             if self.verbose:
@@ -415,11 +458,10 @@ class DependencyAwareExecutor:
                         str(operation.id)[:8],
                     )
 
-                if self.on_progress:
-                    ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
-                    branch = self.operation_branches.get(operation.id, self.session.default_branch)
-                    branch_name = getattr(branch, "name", None) or ref_id
-                    self.on_progress(str(operation.id), branch_name, "failed", 0.0)
+                ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
+                branch = self.operation_branches.get(operation.id, self.session.default_branch)
+                branch_name = getattr(branch, "name", None) or ref_id
+                self._emit_terminal_once(operation, branch_name, "failed", 0.0)
 
                 self.completion_events[operation.id].set()
                 return
@@ -445,6 +487,7 @@ class DependencyAwareExecutor:
                 import time as _time
 
                 self._op_start_times[operation.id] = _time.monotonic()
+                self._started_ops.add(operation.id)
 
                 if self.on_progress:
                     self.on_progress(str(operation.id), branch_name, "started", 0)
@@ -476,8 +519,7 @@ class DependencyAwareExecutor:
                             operation.execution.error = error
                             self.results[operation.id] = {"error": str(error)}
                             self.failed_operations.add(operation.id)
-                            if self.on_progress:
-                                self.on_progress(str(operation.id), branch_name, "failed", elapsed)
+                            self._emit_terminal_once(operation, branch_name, "failed", elapsed)
                             if self.verbose:
                                 logger.error(
                                     "Operation %s failed (%.1fs): %s",
@@ -489,8 +531,7 @@ class DependencyAwareExecutor:
 
                         deep_update(self.context.content, dict(response_context))
 
-                    if self.on_progress:
-                        self.on_progress(str(operation.id), branch_name, "completed", elapsed)
+                    self._emit_terminal_once(operation, branch_name, "completed", elapsed)
                     if self.verbose:
                         logger.debug("Completed operation: %s (%.1fs)", ref_id, elapsed)
 
@@ -500,8 +541,7 @@ class DependencyAwareExecutor:
                 elif operation.execution.status == EventStatus.FAILED:
                     self.results[operation.id] = {"error": str(operation.execution.error)}
                     self.failed_operations.add(operation.id)
-                    if self.on_progress:
-                        self.on_progress(str(operation.id), branch_name, "failed", elapsed)
+                    self._emit_terminal_once(operation, branch_name, "failed", elapsed)
                     if self.verbose:
                         logger.error(
                             "Operation %s failed (%.1fs): %s",
@@ -512,6 +552,11 @@ class DependencyAwareExecutor:
 
         except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
             self.completion_events[operation.id].set()
+            # Cancellation (task-group teardown, timeout, abandonment) skips
+            # the normal completed/failed paths above; emit the terminal
+            # this started operation is still owed so it never renders as
+            # perpetually running.
+            self._emit_abandoned_terminal(operation)
             raise
 
         except Exception as e:
@@ -522,6 +567,8 @@ class DependencyAwareExecutor:
 
             if self.verbose:
                 logger.error("Operation %s failed: %s", str(operation.id)[:8], e)
+
+            self._emit_abandoned_terminal(operation)
 
         finally:
             self.completion_events[operation.id].set()

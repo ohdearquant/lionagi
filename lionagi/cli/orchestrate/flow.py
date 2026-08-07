@@ -689,6 +689,7 @@ async def _build_dag(
             instruction=instruction,
             context=ctx,
             messenger_bound=messenger_bound,
+            node_id=agent_ids[i],
         )
         node_ids.append(node)
 

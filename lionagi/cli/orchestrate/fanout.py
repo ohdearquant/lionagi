@@ -329,6 +329,7 @@ async def _run_fanout_inner(
             instruction=ta.task,
             context=ctx,
             messenger_bound=messenger_bound,
+            node_id=wname,
         )
         fanned_nodes.append(node)
         fanned_labels.append(w_model)
