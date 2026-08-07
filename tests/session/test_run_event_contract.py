@@ -300,6 +300,105 @@ def test_collect_branch_usage_falls_back_to_flat_usage_when_model_usage_absent()
     assert usage["output_tokens"] == 40
 
 
+def test_collect_branch_usage_model_usage_zero_valued_map_stays_zero():
+    """A genuinely zero-usage run reports a complete, well-shaped model_usage
+    map whose values are all zero -- must NOT be misrouted to flat usage just
+    because its sum is zero. Distinguishes 'valid entries summing to zero'
+    from 'no valid entries' (the malformed-map case below)."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 999, "output_tokens": 999},
+            "model_usage": {
+                "claude-sonnet-5": {
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                },
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 0
+    assert usage["output_tokens"] == 0
+    assert usage["cached_tokens"] == 0
+    assert usage["cache_write_tokens"] == 0
+
+
+def test_collect_branch_usage_partial_model_usage_falls_back_to_flat():
+    """A truthy but partial/malformed model_usage map (entries missing the
+    expected keys) must not erase real flat usage with zeros."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 80, "output_tokens": 30},
+            "model_usage": {"claude-sonnet-5": {"inputTokens": 0, "outputTokens": 0}},
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 80
+    assert usage["output_tokens"] == 30
+
+
+def test_collect_branch_usage_truncated_model_usage_entry_falls_back_to_flat():
+    """A model_usage entry that is present but not a dict (e.g. truncated /
+    corrupted mid-stream) must be treated as no valid entry."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 55, "output_tokens": 12},
+            "model_usage": {"claude-sonnet-5": "truncated"},
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 55
+    assert usage["output_tokens"] == 12
+
+
+def test_collect_branch_usage_no_subagent_result_uses_flat_usage():
+    """No model_usage key at all (no subagent spawn occurred) -- ordinary
+    flat-usage path, unaffected by the validation added for model_usage."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 21, "output_tokens": 9},
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 21
+    assert usage["output_tokens"] == 9
+
+
+def test_collect_branch_usage_openai_cached_tokens_exceeding_prompt_clamps_to_zero():
+    """OpenAI cache metadata can report cached_tokens > prompt_tokens (a
+    provider invariant violation); prompt_tokens - cached_tokens must clamp
+    at 0 rather than reach an aggregate as a negative billable dimension."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {
+                "prompt_tokens": 80,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 100},
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 0
+    assert usage["cached_tokens"] == 80
+
+
 def test_build_run_end_populates_from_branch():
     msg = MagicMock()
     msg.metadata = {

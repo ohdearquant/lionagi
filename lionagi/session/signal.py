@@ -247,25 +247,43 @@ def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int]:
     prompt_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
     details = usage.get("prompt_tokens_details")
     cached = int(details.get("cached_tokens", 0) or 0) if isinstance(details, dict) else 0
+    # Provider invariant: cached_tokens must not exceed prompt_tokens. A
+    # violation would otherwise produce a negative "uncached input" figure
+    # that reaches billing aggregates -- clamp into [0, prompt_tokens]
+    # instead of propagating it.
+    cached = max(0, min(cached, prompt_tokens))
     return prompt_tokens - cached, output_tokens, cached, 0
 
 
-def _sum_model_usage(model_usage: dict[str, Any]) -> tuple[int, int, int, int]:
+_MODEL_USAGE_ENTRY_KEYS = frozenset(
+    {"inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"}
+)
+
+
+def _sum_model_usage(model_usage: dict[str, Any]) -> tuple[int, int, int, int, bool]:
     """Sum per-model whole-tree token counts from a claude_code CLI ``modelUsage`` map.
 
     Unlike the flat top-level ``usage`` field (top-level-loop only), each
     entry here already includes descendant subagent spend, so this is the
     whole-tree figure when present.
+
+    Returns ``(input, output, cached, cache_write, has_valid_entry)``. An
+    entry only counts as valid when it is a dict carrying all four expected
+    keys -- a genuinely zero-usage model still reports the full shape, so a
+    valid entry that happens to sum to zero is distinct from no valid entry
+    at all (missing/partial/non-dict), which the caller must fall back on.
     """
     input_tokens = output_tokens = cached = cache_write = 0
+    has_valid_entry = False
     for entry in model_usage.values():
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or not _MODEL_USAGE_ENTRY_KEYS.issubset(entry):
             continue
+        has_valid_entry = True
         input_tokens += int(entry.get("inputTokens", 0) or 0)
         output_tokens += int(entry.get("outputTokens", 0) or 0)
         cached += int(entry.get("cacheReadInputTokens", 0) or 0)
         cache_write += int(entry.get("cacheCreationInputTokens", 0) or 0)
-    return input_tokens, output_tokens, cached, cache_write
+    return input_tokens, output_tokens, cached, cache_write, has_valid_entry
 
 
 def _collect_branch_usage(branch: Any) -> dict[str, Any]:
@@ -296,12 +314,17 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
         if not isinstance(mr, dict):
             continue
         model_usage = mr.get("model_usage")
+        has_valid_model_usage = False
         if isinstance(model_usage, dict) and model_usage:
             # Whole-tree per-model breakdown (claude_code CLI subagent
             # spawns) supersedes the flat usage dict below, which only
-            # reflects the top-level loop.
-            m_in, m_out, m_cached, m_cache_write = _sum_model_usage(model_usage)
-        else:
+            # reflects the top-level loop -- but only once validated: a
+            # truthy map with no well-shaped entry (missing keys, non-dict)
+            # must not silently erase real flat usage with zeros.
+            m_in, m_out, m_cached, m_cache_write, has_valid_model_usage = _sum_model_usage(
+                model_usage
+            )
+        if not has_valid_model_usage:
             usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
             m_in, m_out, m_cached, m_cache_write = _extract_usage_dims(usage)
         input_tokens += m_in
