@@ -14,6 +14,7 @@ see about secrets, tokens, or absolute host paths.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -26,6 +27,7 @@ __all__ = (
     "ARTIFACT_BYTE_CAP",
     "public_project",
     "scrub_text",
+    "known_secret_values",
     "redact_scalar",
     "redact_arguments",
     "cap_by_bytes",
@@ -123,10 +125,56 @@ def _leaf(match: re.Match[str]) -> str:
     return raw.rsplit(sep, 1)[-1] or "[redacted-path]"
 
 
-def scrub_text(text: str) -> str:
+# `scrub_text`'s regexes above only catch a secret that is *shaped* like one
+# (a known prefix, a header, an "KEY=value" assignment). A run's own config
+# can carry a secret with none of those shapes -- an arbitrary passphrase, a
+# short internal token -- and such a value survives every pattern above
+# untouched if it is echoed back verbatim in a message, tool-call argument,
+# or error string. A Studio-launched run inherits this server process's
+# environment, so that environment *is* the run's own config; this treats
+# any environment value stored under a secret-marker key
+# (see `_SECRET_KEY_MARKERS`) as a literal string to strip out of every
+# projection, in addition to (not instead of) the shape-based patterns
+# above. Values under 4 characters are excluded: below that length a literal
+# match is far more likely to be incidental shared substring noise (a short
+# numeric id, a single word) than an actual secret worth destroying
+# unrelated context for.
+_KNOWN_VALUE_MIN_LEN = 4
+
+
+def known_secret_values() -> frozenset[str]:
+    """Literal secret values read from this process's own environment --
+    the config a Studio-launched run actually inherits. See the module
+    comment above `_KNOWN_VALUE_MIN_LEN` for why this exists alongside the
+    shape-based patterns in `scrub_text`, and the length cutoff chosen."""
+    values: set[str] = set()
+    for key, value in os.environ.items():
+        if not value or len(value) < _KNOWN_VALUE_MIN_LEN:
+            continue
+        if _is_secret_key(key):
+            values.add(value)
+    return frozenset(values)
+
+
+def _scrub_known_values(text: str, known_values: frozenset[str]) -> str:
+    if not text or not known_values:
+        return text
+    for value in known_values:
+        if value in text:
+            text = text.replace(value, "[redacted]")
+    return text
+
+
+def scrub_text(text: str, *, known_values: frozenset[str] | None = None) -> str:
     """Replace absolute-path-shaped and secret-token-shaped substrings
     embedded in free text. A leaf filename survives; the directory layout and
-    the token itself do not."""
+    the token itself do not.
+
+    Also strips any literal value from ``known_values`` (default:
+    `known_secret_values()`, this process's own env-derived secret values) --
+    the complement to the shape-based patterns above, catching a genuine
+    secret whose value does not happen to look like one.
+    """
     if not text:
         return text
     text = _HEADER_SECRET_RE.sub(lambda m: f"{m.group(1)}: [redacted]", text)
@@ -135,6 +183,9 @@ def scrub_text(text: str) -> str:
     text = _ABS_POSIX_RE.sub(_leaf, text)
     text = _ABS_WIN_RE.sub(_leaf, text)
     text = _SECRET_TOKEN_RE.sub("[redacted]", text)
+    text = _scrub_known_values(
+        text, known_secret_values() if known_values is None else known_values
+    )
     return text
 
 

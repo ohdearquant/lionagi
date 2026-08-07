@@ -184,13 +184,13 @@ async def execute_resume_command(command: dict[str, Any]) -> dict[str, Any]:
             run_id, instruction=instruction, branch_id=branch_id, model=model
         )
     except RunNotFoundError as exc:
-        return {"error": "not_found", "message": str(exc)}
+        return {"error": "not_found", "message": scrub_text(str(exc))}
     except (RunBranchConflictError, RunResumeInProgressError, RunResumeUnavailableError) as exc:
-        return {"error": "conflict", "message": str(exc)}
+        return {"error": "conflict", "message": scrub_text(str(exc))}
     except (RunBranchMembershipError, ValueError) as exc:
-        return {"error": "invalid_input", "message": str(exc)}
+        return {"error": "invalid_input", "message": scrub_text(str(exc))}
     except _launches.TooManyLaunchesError as exc:
-        return {"error": "rate_limited", "message": str(exc)}
+        return {"error": "rate_limited", "message": scrub_text(str(exc))}
     except _launches.LiExecutableUnavailableError as exc:
-        return {"error": "unavailable", "message": str(exc)}
+        return {"error": "unavailable", "message": scrub_text(str(exc))}
     return {"branch_id": result["branch_id"], "invocation_id": result["invocation_id"]}
