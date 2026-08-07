@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Đang kiểm tra xem lượt chạy này có thể tiếp tục hay không…",
+    "availabilityFailed": "Không thể xác định liệu lượt chạy này có thể tiếp tục hay không.",
+    "notResumable": "Không thể tiếp tục lượt chạy này.",
+    "continueDescription": "Phát lại kế hoạch đã lưu từ nơi nó dừng lại — không có hướng dẫn mới, không có nhánh để chọn.",
+    "continueSubmit": "Tiếp tục",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Bu çalıştırmanın devam ettirilip ettirilemeyeceği kontrol ediliyor…",
+    "availabilityFailed": "Bu çalıştırmanın devam ettirilip ettirilemeyeceği belirlenemedi.",
+    "notResumable": "Bu çalıştırma devam ettirilemez.",
+    "continueDescription": "Kaydedilmiş planı kaldığı yerden yeniden oynatır — yeni talimat yok, seçilecek dal yok.",
+    "continueSubmit": "Devam et",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

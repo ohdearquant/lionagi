@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "جارٍ التحقق مما إذا كان يمكن استئناف هذا التشغيل…",
+    "availabilityFailed": "تعذر تحديد ما إذا كان يمكن استئناف هذا التشغيل.",
+    "notResumable": "لا يمكن استئناف هذا التشغيل.",
+    "continueDescription": "يعيد تشغيل الخطة المحفوظة من حيث توقفت — بلا تعليمات جديدة وبلا فرع للاختيار.",
+    "continueSubmit": "متابعة",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",

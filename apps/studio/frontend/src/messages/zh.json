@@ -57,6 +57,11 @@
     "submitting": "正在恢复…",
     "submit": "继续运行",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "正在检查此运行是否可以恢复…",
+    "availabilityFailed": "无法确定此运行是否可以恢复。",
+    "notResumable": "此运行无法恢复。",
+    "continueDescription": "从中断处重放已保存的计划——无需新指令，也无需选择分支。",
+    "continueSubmit": "继续",
     "cli": {
       "title": "CLI 备用方式",
       "copy": "复制",

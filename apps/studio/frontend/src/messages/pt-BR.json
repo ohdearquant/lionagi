@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Verificando se esta execução pode ser retomada…",
+    "availabilityFailed": "Não foi possível determinar se esta execução pode ser retomada.",
+    "notResumable": "Esta execução não pode ser retomada.",
+    "continueDescription": "Reproduz o plano salvo de onde parou — sem nova instrução, sem branch para escolher.",
+    "continueSubmit": "Continuar",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
