@@ -819,6 +819,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
