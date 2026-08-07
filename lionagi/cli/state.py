@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
 from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
 from lionagi.state.session_naming import resolve_display_name
 
@@ -1648,6 +1649,7 @@ def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+@auto_register(area="state", cli=CliDeclaration(seed="state", parser_factory=add_state_subparser))
 def run_state(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
 

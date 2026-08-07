@@ -30,6 +30,8 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
+
 from ._logging import log_error
 
 __all__ = ("add_hooks_subparser", "run_hooks")
@@ -473,6 +475,7 @@ def _run_trust(cwd: str | None, *, assume_yes: bool) -> int:
     return 0
 
 
+@auto_register(area="hooks", cli=CliDeclaration(seed="hooks", parser_factory=add_hooks_subparser))
 def run_hooks(args: argparse.Namespace) -> int:
     if args.hooks_command == "import":
         return _run_import(args.source, args.path, args.cwd)

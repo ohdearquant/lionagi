@@ -9,6 +9,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
+
 from .monitor import _since_timestamp
 
 __all__ = (
@@ -186,6 +188,7 @@ def add_stats_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+@auto_register(area="stats", cli=CliDeclaration(seed="stats", parser_factory=add_stats_subparser))
 def run_stats(args: argparse.Namespace) -> int:
     """Dispatch `li stats` subcommand."""
     from lionagi.ln.concurrency import run_async

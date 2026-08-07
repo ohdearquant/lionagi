@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.state.session_naming import sanitize_prompt_name
@@ -901,6 +902,9 @@ async def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+@auto_register(
+    area="mirror", cli=CliDeclaration(seed="mirror", parser_factory=add_mirror_subparser)
+)
 def run_mirror(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
 

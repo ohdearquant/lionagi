@@ -15,6 +15,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
 from lionagi.state.engine import mask_credentials
 
 from ._project import detect_project
@@ -1716,6 +1717,9 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+@auto_register(
+    area="monitor", cli=CliDeclaration(seed="monitor", parser_factory=add_monitor_subparser)
+)
 def run_monitor(args: argparse.Namespace) -> int:
     """Dispatch `li monitor` subcommand."""
     from lionagi.ln.concurrency import run_async

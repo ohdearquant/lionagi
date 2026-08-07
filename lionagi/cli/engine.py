@@ -10,6 +10,8 @@ import time
 import uuid
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
+
 from ._logging import log_error, progress, warn
 
 # ── Engine kind registry ───────────────────────────────────────────────────
@@ -196,6 +198,9 @@ def add_engine_subparser(subparsers: argparse._SubParsersAction) -> None:
 # ── Main dispatch ──────────────────────────────────────────────────────────
 
 
+@auto_register(
+    area="engine", cli=CliDeclaration(seed="engine", parser_factory=add_engine_subparser)
+)
 def run_engine(args: argparse.Namespace) -> int:
     """Entry point called from main() when args.command == 'engine'."""
     from lionagi.ln.concurrency import run_async
