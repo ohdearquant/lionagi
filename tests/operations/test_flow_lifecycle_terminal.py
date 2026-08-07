@@ -252,6 +252,81 @@ async def test_reactive_spawn_shares_one_name_when_spawn_branch_setup_names_the_
 
 
 @pytest.mark.asyncio
+async def test_branch_name_colliding_with_op_id_prefix_stays_pinned_through_later_rename():
+    """A branch's real ``.name`` is an unrestricted str, assignable via the
+    branch setup seam (spawn_branch_setup / on_branch_created) -- it can
+    coincidentally equal the op_id's own 8-char prefix. flow_signals used to
+    infer "this is the queued-time fallback placeholder" from string equality
+    with ``op_id[:8]``, so a genuine branch name that happened to collide
+    with the prefix was misclassified as a fallback and left unpinned; a
+    later rename (e.g. the cancellation/abandoned-terminal safety net
+    re-reading branch.name after started already fired) then split the
+    operation across two names on the Studio-facing signal bus. Structural
+    provenance (name_is_fallback, computed by the producer) replaces the
+    string comparison."""
+    from lionagi.engines.flow_signals import flow_progress_signals
+    from lionagi.operations.flow import DependencyAwareExecutor
+    from lionagi.session.branch import Branch
+    from lionagi.session.session import Session
+    from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
+
+    op = Operation(operation="work", parameters={})
+    collision_name = str(op.id)[:8]  # no reference_id -> queued's own fallback too
+
+    session = Session()
+    branch = Branch(name=collision_name)
+    session.include_branches(branch)
+    session.default_branch = branch
+
+    graph = Graph()
+    graph.add_node(op)
+
+    signal_log: list[tuple[str, str, str]] = []
+    for sig_cls, kind in (
+        (NodeQueued, "queued"),
+        (NodeStarted, "started"),
+        (NodeCompleted, "completed"),
+        (NodeFailed, "failed"),
+    ):
+        session.observe(
+            sig_cls,
+            handler=lambda s, _, kind=kind: signal_log.append((kind, s.op_id, s.name)),
+        )
+
+    async with flow_progress_signals(session, graph) as on_progress:
+        executor = DependencyAwareExecutor(session=session, graph=graph, max_concurrent=10)
+        executor.on_progress = on_progress
+
+        # queued: no reference_id -> falls back to op_id[:8], which happens
+        # to equal the branch's genuine name (pure coincidence).
+        name, is_fallback = executor._display_name(op)
+        executor._emit_progress(str(op.id), name, "queued", 0.0, is_fallback)
+
+        # started: resolves the branch's OWN name -- genuine, not a
+        # fallback, even though it coincides with op_id[:8].
+        executor._started_ops.add(op.id)
+        name, is_fallback = executor._branch_display_name(op, branch)
+        executor._emit_progress(str(op.id), name, "started", 0.0, is_fallback)
+        assert name == collision_name
+        assert is_fallback is False
+
+        # A later rename (a workspace-retargeting hook, or the cancellation
+        # safety net re-reading branch.name after started already fired)
+        # must not split the correlation.
+        branch.name = "renamed-later"
+        executor._emit_abandoned_terminal(op)
+
+    op_id = str(op.id)
+    names = {kind: name for kind, oid, name in signal_log if oid == op_id}
+    assert names["queued"] == names["started"] == collision_name
+    terminal_name = names.get("completed") or names.get("failed")
+    assert terminal_name == collision_name, (
+        "a branch name colliding with op_id[:8] must stay pinned through a "
+        f"later rename, got {signal_log}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_executor_raw_callback_diverges_without_reference_id_pre_fix_symptom():
     """Pins the pre-fix symptom at its source, one layer below the signal bus:
     the raw ``DependencyAwareExecutor.on_progress`` callback itself falls back
@@ -433,8 +508,8 @@ async def test_emit_terminal_once_is_idempotent_across_call_sites():
     executor = DependencyAwareExecutor(session=session, graph=graph, max_concurrent=10)
     executor.on_progress = log
 
-    executor._emit_terminal_once(op, "analyst", "completed", 1.0)
-    executor._emit_terminal_once(op, "analyst", "failed", 2.0)
+    executor._emit_terminal_once(op, "analyst", "completed", 1.0, False)
+    executor._emit_terminal_once(op, "analyst", "failed", 2.0, False)
 
     op_id = str(op.id)
     assert log.statuses_for(op_id) == ["completed"]

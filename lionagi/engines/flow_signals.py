@@ -43,13 +43,19 @@ def _build_node_edge_meta(graph: Any) -> dict[str, dict]:
 @contextlib.asynccontextmanager
 async def flow_progress_signals(
     session: Any, graph: Any
-) -> AsyncIterator[Callable[[str, str, str, float], None]]:
+) -> AsyncIterator[Callable[[str, str, str, float, bool], None]]:
     """Yield an ``on_progress`` callback that persists node-lifecycle signals; awaits
     every emitted signal on exit so observers finish before the caller reads what they wrote."""
     emits: list[asyncio.Future] = []
     node_edge_meta = _build_node_edge_meta(graph)
 
-    def _on_progress(op_id: str, name: str, status: str, elapsed: float) -> None:
+    def _on_progress(
+        op_id: str,
+        name: str,
+        status: str,
+        elapsed: float,
+        name_is_fallback: bool = True,
+    ) -> None:
         meta = node_edge_meta.setdefault(op_id, {})
         parent_id = meta.get("parent_id")
         depends_on = meta.get("depends_on", [])
@@ -59,14 +65,15 @@ async def flow_progress_signals(
         # started/completed/failed calls reuse it even if a branch-naming hook
         # (spawn_branch_setup) later renames the operation's cloned branch --
         # the branch name is a display concern, not the correlation key.
-        # A name that equals the op_id's own 8-char prefix is flow.py's "no
-        # reference_id / no branch bound yet" placeholder (see execute()'s
-        # queued-time fallback), not a genuine name -- pinning it would freeze
-        # a placeholder over the real display name a later signal resolves.
+        # Whether a name is a placeholder ("no reference_id / no branch bound
+        # yet", see flow.py's _display_name/_branch_display_name) is decided
+        # structurally by the producer and passed in via name_is_fallback --
+        # never inferred here by comparing against op_id's prefix, since a
+        # genuine authored name can coincide with that prefix by chance.
         sig_name = meta.get("name")
         if sig_name is None:
             sig_name = name
-            if name != op_id[:8]:
+            if not name_is_fallback:
                 meta["name"] = sig_name
         if status == "queued":
             sig: Any = NodeQueued(
