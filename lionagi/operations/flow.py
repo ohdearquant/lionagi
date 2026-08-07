@@ -153,6 +153,12 @@ class DependencyAwareExecutor:
         self.completion_events = {}
         self.operation_branches = {}
         self.skipped_operations = set()
+        # Distinct from skipped_operations: an op whose invoke() raised, kept
+        # separate from completed_operations (which still includes it, for
+        # back-compat -- a FAILED op still produced an (error) result) so a
+        # caller can tell a dead node from a genuine completion without
+        # inspecting every result value by hand.
+        self.failed_operations = set()
         # Gate-reject bookkeeping (see the module-level contract comment).
         # ``_gate_rejections``: op_id of a completed ``is_gate`` node -> the
         # reason payload to attribute to anything downstream of it.
@@ -216,6 +222,7 @@ class DependencyAwareExecutor:
             "operation_results": self.results,
             "final_context": self.context.content,
             "skipped_operations": list(self.skipped_operations),
+            "failed_operations": list(self.failed_operations),
             **self._gate_result_fields(),
         }
 
@@ -468,6 +475,7 @@ class DependencyAwareExecutor:
                             operation.execution.status = EventStatus.FAILED
                             operation.execution.error = error
                             self.results[operation.id] = {"error": str(error)}
+                            self.failed_operations.add(operation.id)
                             if self.on_progress:
                                 self.on_progress(str(operation.id), branch_name, "failed", elapsed)
                             if self.verbose:
@@ -491,6 +499,7 @@ class DependencyAwareExecutor:
 
                 elif operation.execution.status == EventStatus.FAILED:
                     self.results[operation.id] = {"error": str(operation.execution.error)}
+                    self.failed_operations.add(operation.id)
                     if self.on_progress:
                         self.on_progress(str(operation.id), branch_name, "failed", elapsed)
                     if self.verbose:
@@ -509,6 +518,7 @@ class DependencyAwareExecutor:
             # Defensive net for unexpected flow-level errors; invoke() already handles FAILED status.
             if operation.id not in self.results:
                 self.results[operation.id] = {"error": str(e)}
+            self.failed_operations.add(operation.id)
 
             if self.verbose:
                 logger.error("Operation %s failed: %s", str(operation.id)[:8], e)
@@ -891,7 +901,15 @@ class ReactiveExecutor(DependencyAwareExecutor):
             "operation_results": self.results,
             "final_context": self.context.content,
             "skipped_operations": list(self.skipped_operations),
+            "failed_operations": list(self.failed_operations),
             "spawned_operations": self._spawn_count,
+            # The roster of every node _accept_node actually accepted into
+            # the graph -- distinct from spawned_operations, which is only a
+            # running count and can't tell a caller which ids to reconcile
+            # against its own outcome sets (a node that reached a terminal
+            # status like CANCELLED with no result is still in this roster
+            # even though it never lands in results/failed/skipped).
+            "spawned_ids": list(self._spawned_ids),
             "escalated_operations": list(self._escalated_ids),
             "dropped_spawns": self._dropped_spawns,
             **self._gate_result_fields(),
@@ -1196,8 +1214,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 )
                 return False
 
-            self._spawn_count += 1
-            self._spawned_ids.add(child.id)
+            if newly_added:
+                self._spawn_count += 1
+                self._spawned_ids.add(child.id)
 
         if newly_added:
             # Store edge info in metadata so on_progress callbacks can attach it

@@ -1604,6 +1604,85 @@ async def _execute_dag(
         prior_evidence = getattr(env, "_escalated_evidence", None) or []
         env._escalated_evidence = [*prior_evidence, *escalated_evidence]
 
+    # Node-failure evidence: an operation's invoke() raised and
+    # DependencyAwareExecutor recorded EventStatus.FAILED for it, but that
+    # per-node failure was folded into completed_operations right alongside
+    # genuine completions and never rolled up into the run's own status --
+    # a run whose terminal (or any other) node died could still read as an
+    # ordinary clean completion. Mirrors the escalation evidence above: name
+    # the failed op(s) here, let stop_live_persist flip status/reason.
+    failed_op_ids = {str(x) for x in dag_result.get("failed_operations", [])}
+    failed_evidence = [
+        {"kind": "failed_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+        for i in range(len(assignments))
+        if str(node_ids[i]) in failed_op_ids
+    ]
+    for spawned_nid in sorted(failed_op_ids - known_node_strs):
+        graph_node = graph_nodes.get(spawned_nid)
+        spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        evidence_id = spawn_id or spawned_nid
+        failed_evidence.append(
+            {"kind": "failed_operation", "id": evidence_id, "label": evidence_id}
+        )
+    if failed_evidence:
+        prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior_failed_evidence, *failed_evidence]
+
+    # Lost-node evidence: a node in the fixed initial plan (node_ids /
+    # assignments, indexed 1:1) whose result never landed in
+    # operation_results at all -- distinct from a node that ran and failed
+    # (already caught above) or was legitimately never meant to run. Every
+    # other accounted-for fate is excluded explicitly: an edge-condition skip
+    # is named in skipped_operations; a leg that gave up via EscalationRequest
+    # is named in escalated_operations and already fails the run through the
+    # escalated-evidence backstop above with its own, more specific reason;
+    # a reactive/budget-refused spawn was never a planned node to begin with
+    # (dropped_spawns never touches node_ids). A cancelled run never reaches
+    # this line -- run_dag raises and the whole evidence block above is
+    # skipped -- so no separate check is needed for it. What remains here is
+    # a node the plan expected but execution never observed in any of those
+    # ways; treat it as a failure with its own evidence rather than letting
+    # it render as "(no response)" below.
+    skipped_op_ids = {str(x) for x in dag_result.get("skipped_operations", [])}
+    observed_op_ids = {str(k) for k in op_results}
+    lost_evidence = [
+        {"kind": "lost_operation", "id": agent_ids[i], "label": assignments[i].assignee}
+        for i in range(len(assignments))
+        if str(node_ids[i]) not in observed_op_ids
+        and str(node_ids[i]) not in skipped_op_ids
+        and str(node_ids[i]) not in escalated_op_ids
+    ]
+    if lost_evidence:
+        prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior_failed_evidence, *lost_evidence]
+
+    # Lost-spawn evidence: mirrors the lost-node check above, but for the
+    # reactive surface. spawned_ids (when the executor reports it) is the
+    # roster of every node _accept_node actually accepted into the graph --
+    # spawned_operations is only a running count and can't answer "which
+    # nodes were accepted" on its own. An accepted spawn that reached a
+    # terminal EventStatus (e.g. CANCELLED) without ever producing a result
+    # is absent from operation_results, failed_operations, and
+    # skipped_operations alike; without this check it would also read as a
+    # clean completion. A spawn the executor refused to accept in the first
+    # place (dropped_spawns) never enters spawned_ids, so it stays excluded
+    # here exactly as dropped_spawns already is above.
+    spawned_ids = {str(x) for x in dag_result.get("spawned_ids", [])}
+    lost_spawn_ids = (
+        spawned_ids - observed_op_ids - skipped_op_ids - escalated_op_ids - failed_op_ids
+    )
+    lost_spawn_evidence = []
+    for spawned_nid in sorted(lost_spawn_ids):
+        graph_node = graph_nodes.get(spawned_nid)
+        spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        evidence_id = spawn_id or spawned_nid
+        lost_spawn_evidence.append(
+            {"kind": "lost_operation", "id": evidence_id, "label": evidence_id}
+        )
+    if lost_spawn_evidence:
+        prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior_failed_evidence, *lost_spawn_evidence]
+
     # Gate-reject evidence (issue #2860): a mid-DAG gate node returned a
     # REJECT verdict and the executor short-circuited its dependent subtree
     # to skipped rather than let it run against the rejected baseline. This
