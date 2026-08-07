@@ -4223,4 +4223,13 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
     assert write_cancelled.is_set(), (
         "the hung control-log write must be cancelled during teardown, not left running"
     )
+    assert any("cancelled" in w and "control-log-metadata" in w for w in warnings), (
+        "a cancelled-after-timeout metadata write must be recorded through the "
+        f"caller-visible warning sink, not dropped silently; got {warnings!r}"
+    )
+    # _teardown_common's final metadata merge (lionagi/cli/_runs.py:538) also calls
+    # update_session() with node_metadata whenever extras is non-empty, which it is
+    # here (the control log). The hanging double must not still be wired for that
+    # call or this cleanup step hangs too.
+    monkeypatch.setattr(ctx["db"], "update_session", real_update_session)
     await stop_live_persist(env, status="completed")

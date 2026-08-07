@@ -1541,6 +1541,18 @@ async def _execute_dag(
                         f"abandoned {len(_abandoned)} {label} task(s) "
                         "still alive after cancellation grace period"
                     )
+            # A task can finish cancelled either here or already during the
+            # first move_on_after(2) above (its timeout cancels the host
+            # task's gather() await, which cascades cancel() onto every
+            # not-yet-done child). Either way it's a lost write, not a
+            # success: the write body's own `except Exception` never sees
+            # CancelledError (a BaseException), so without this check the
+            # caller gets no record at all that the metadata never landed.
+            _cancelled = [t for t in tasks if t.cancelled()]
+            if _cancelled:
+                _warn(
+                    f"cancelled {len(_cancelled)} {label} task(s) after timeout; write not durable"
+                )
 
         # Completion observers schedule persistence writes synchronously but the
         # writes themselves are async. Drain them while the live DB is still open.
