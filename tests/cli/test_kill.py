@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import signal
@@ -213,7 +214,13 @@ def test_terminate_pid_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch):
 def test_terminate_pid_identity_mismatch_no_signal_sent(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """If cmdline doesn't match expected_cmd, no signal is sent."""
+    """If cmdline doesn't match expected_cmd, no signal is sent.
+
+    A create-time-bearing fixture is required: without a durable
+    ``expected_create_time``/``expected_session_id``, `_check_pid_identity`
+    refuses as "unverifiable" before ever calling `_cmdline_is_lionagi`, and
+    this test would pass for that unrelated reason regardless of cmdline.
+    """
     import signal as _signal
 
     kill_calls: list[tuple[int, int]] = []
@@ -224,6 +231,7 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
     fake_psutil = MagicMock()
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "unrelated_script.py"]
+    fake_proc.create_time.return_value = 100.0
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
@@ -232,7 +240,9 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
-    result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
+    result = _terminate_pid(
+        42, grace_seconds=0.1, expected_cmd="lionagi", expected_create_time=100.0
+    )
     assert result == "identity_mismatch"
     assert kill_calls == [], "no signal must be sent on cmdline mismatch"
 
@@ -248,6 +258,7 @@ def test_terminate_pid_identity_match_sends_signal(
     fake_psutil = MagicMock()
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli.main"]
+    fake_proc.create_time.return_value = 100.0
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
@@ -256,7 +267,11 @@ def test_terminate_pid_identity_match_sends_signal(
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
-    result = _terminate_pid(42, grace_seconds=0.01, expected_cmd="lionagi")
+    # A durable create_time marker must be present for a cmdline match to
+    # authorize the kill (no session id and no create_time is "unverifiable").
+    result = _terminate_pid(
+        42, grace_seconds=0.01, expected_cmd="lionagi", expected_create_time=100.0
+    )
     # SIGTERM must have been sent
     assert any(sig == __import__("signal").SIGTERM for _, sig in kill_calls)
     assert result in ("sigterm", "sigkill")
@@ -444,12 +459,19 @@ def test_identity_rejects_path_substring(monkeypatch: pytest.MonkeyPatch):
 
     The reported false positive: ``vim /Users/lion/projects/lionagi/README.md``.
     A substring match would signal this recycled PID; an exact-token match must not.
+
+    ``expected_create_time`` is required and matched to the fake process's
+    create_time: without it, `_check_pid_identity` refuses as "unverifiable"
+    before `_cmdline_is_lionagi` ever runs, and this test would pass for that
+    unrelated reason regardless of the cmdline predicate.
     """
     kill_calls = _mock_psutil(
         monkeypatch,
         cmdline=["/usr/bin/vim", "/Users/lion/projects/lionagi/README.md"],
     )
-    result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
+    result = _terminate_pid(
+        42, grace_seconds=0.1, expected_cmd="lionagi", expected_create_time=100.0
+    )
     assert result == "identity_mismatch"
     assert kill_calls == [], "must not signal a process that only has lionagi in a path"
 
@@ -457,13 +479,13 @@ def test_identity_rejects_path_substring(monkeypatch: pytest.MonkeyPatch):
 def test_identity_accepts_dash_m_module(monkeypatch: pytest.MonkeyPatch):
     """``python -m lionagi.cli.main`` is a genuine invocation and is accepted."""
     _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionagi.cli.main"])
-    assert _check_pid_identity(42, "lionagi") == "ours"
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_accepts_li_entrypoint(monkeypatch: pytest.MonkeyPatch):
     """The ``li`` console-script entrypoint is accepted by executable basename."""
     _mock_psutil(monkeypatch, cmdline=["/opt/venv/bin/li", "kill", "abc123"])
-    assert _check_pid_identity(42, "lionagi") == "ours"
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_accepts_shebang_launched_li(monkeypatch: pytest.MonkeyPatch):
@@ -472,7 +494,7 @@ def test_identity_accepts_shebang_launched_li(monkeypatch: pytest.MonkeyPatch):
         monkeypatch,
         cmdline=["/opt/.venv/bin/python3", "/opt/.venv/bin/li", "play", "abc123"],
     )
-    assert _check_pid_identity(42, "lionagi") == "ours"
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_accepts_macos_framework_python_launcher(monkeypatch: pytest.MonkeyPatch):
@@ -485,7 +507,7 @@ def test_identity_accepts_macos_framework_python_launcher(monkeypatch: pytest.Mo
             "agent",
         ],
     )
-    assert _check_pid_identity(42, "lionagi") == "ours"
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_rejects_foreign_script_with_li_in_path(monkeypatch: pytest.MonkeyPatch):
@@ -494,7 +516,7 @@ def test_identity_rejects_foreign_script_with_li_in_path(monkeypatch: pytest.Mon
         monkeypatch,
         cmdline=["/usr/bin/python3", "/usr/local/bin/olia-tool", "run"],
     )
-    assert _check_pid_identity(42, "lionagi") == "not_ours"
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "not_ours"
 
 
 def test_identity_session_marker_match(monkeypatch: pytest.MonkeyPatch):
@@ -626,6 +648,51 @@ def test_identity_create_time_mismatch_rejected(monkeypatch: pytest.MonkeyPatch)
     assert _check_pid_identity(42, "lionagi", expected_create_time=100.5) == "not_ours"
     # within tick-rounding tolerance → accepted.
     assert _check_pid_identity(42, "lionagi", expected_create_time=100.05) == "ours"
+
+
+def test_identity_no_durable_marker_refuses_cmdline_only_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No session id AND no create_time recorded: cmdline shape alone must not authorize.
+
+    A record with neither identity field carries nothing that distinguishes the
+    live process at this pid from any other process that merely looks like a
+    lionagi invocation. Falling back to `_cmdline_is_lionagi` here would let a
+    same-looking, unrelated process be signalled.
+    """
+    _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionagi.cli"])
+    assert _check_pid_identity(42, "lionagi") == "unverifiable"
+    assert (
+        _check_pid_identity(42, "lionagi", expected_session_id=None, expected_create_time=None)
+        == "unverifiable"
+    )
+
+
+async def test_do_kill_invocation_without_pid_create_time_does_not_signal(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An invocation whose metadata carries a pid but no pid_create_time refuses the kill.
+
+    Reproduces the reported hazard: `li invoke start --metadata '{"pid": N}'`
+    stores a pid with no creation-time marker, and invocations never carry a
+    session id either, so a live process that merely looks like a lionagi
+    invocation must not receive SIGTERM.
+    """
+    kill_calls = _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+    )
+
+    async with StateDB() as db:
+        inv_id = await _seed_invocation(db, status="running", pid=4242)
+
+    rc = await _do_kill(inv_id)
+    assert rc == 1, "an unverifiable identity must block the kill"
+    assert kill_calls == [], "must not signal a process with no durable identity to confirm"
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (inv_id,))
+        assert row["status"] == "running", "must not cancel a row whose kill was refused"
 
 
 # ── current_pid_markers (launch-time recording) ───────────────────────────────
@@ -1104,6 +1171,58 @@ async def test_do_kill_all_stale_recycled_pid_swept_with_correlation(
         ] == "cancelled", "recycled pid with mismatched create_time must be swept"
 
 
+async def test_do_kill_all_stale_not_ours_evidence_reports_pid_was_alive(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The cancellation evidence for a recycled-pid sweep must say the pid WAS
+    alive, distinguishing "gone" from "alive but not ours" -- the two call for
+    different operator follow-up, and only one of them means the process is
+    actually gone.
+    """
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_psutil = MagicMock()
+    fake_proc = MagicMock()
+    fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli"]
+    fake_proc.environ.return_value = {}
+    fake_proc.create_time.return_value = 999.0  # does NOT match recorded 100.0
+    fake_psutil.Process.return_value = fake_proc
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = str(uuid.uuid4())
+        prog = str(uuid.uuid4())
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "status": "running",
+                "started_at": old_start,
+                "node_metadata": {"pid": 12345, "pid_create_time": 100.0},
+            }
+        )
+
+    rc = await _do_kill_all_stale(threshold_seconds=3600, dry_run=False)
+    assert rc == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    assert s["status"] == "cancelled"
+    evidence_raw = s["status_evidence_refs"]
+    evidence = json.loads(evidence_raw) if isinstance(evidence_raw, str) else evidence_raw
+    assert isinstance(evidence, list) and evidence
+    entry = evidence[0]
+    assert entry["pid_alive"] is True, (
+        "the pid WAS alive -- only its recorded identity didn't match"
+    )
+    assert entry["identity_verdict"] == "not_ours"
+
+
 async def test_do_kill_all_stale_matching_correlation_skips_live(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1179,6 +1298,259 @@ async def test_do_kill_all_stale_access_denied_not_cancelled(
         assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
             "status"
         ] == "running", "AccessDenied must not be treated as a dead/recycled pid"
+
+
+async def test_do_kill_all_stale_unverifiable_pid_persists_first_observed_marker(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A row skipped as unverifiable must retain evidence of that across sweeps.
+
+    Before this fix the fail-safe "treat as live" decision was only a local
+    counter for the one sweep: the record kept no `unverifiable_since` or
+    count, so a permanently-uninspectable pid was silently skipped on every
+    run forever with nothing durable to show for it. The first sweep must
+    record when this was first observed; a second sweep must keep that
+    timestamp fixed while advancing the count, not restart the clock.
+    """
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    assert s["status"] == "running"
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    first_seen = meta["unverifiable_since"]
+    assert isinstance(first_seen, float)
+    assert meta["unverifiable_count"] == 1
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta["unverifiable_since"] == first_seen, "first-observed marker must not reset"
+    assert meta["unverifiable_count"] == 2
+
+
+async def test_do_kill_all_stale_unverifiable_markers_survive_flow_metadata_write(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Ordinary flow progress must not erase the unverifiable-pid evidence a
+    sweep just recorded.
+
+    flow.py's session metadata writers (the early-graph snapshot, segment
+    writes, control-log writes) go through a shared merge-preserving helper
+    so they layer their own fields onto whatever is already in
+    `node_metadata` instead of replacing the column outright. This proves
+    the merge survives a full sweep → flow-write → sweep cycle: the marker
+    set by the first sweep must still be there, unmodified, for the second
+    sweep to build on.
+    """
+    from lionagi.cli.orchestrate.flow import _persist_node_metadata_patch
+
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    first_seen = meta["unverifiable_since"]
+    assert meta["unverifiable_count"] == 1
+
+    # Ordinary flow progress: a segment/control-log style metadata write,
+    # the same write shape flow.py's live-persist callbacks use.
+    async with StateDB() as db:
+        await _persist_node_metadata_patch(
+            db, sid, {"segments": [{"branch_name": "worker-1", "status": "completed"}]}
+        )
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta["unverifiable_since"] == first_seen, (
+        "a flow metadata write must not reset the first-observed marker"
+    )
+    assert meta["unverifiable_count"] == 2, (
+        "the sweep count must still increment after an intervening flow metadata write"
+    )
+    assert meta["segments"] == [{"branch_name": "worker-1", "status": "completed"}], (
+        "the flow metadata write itself must still land"
+    )
+
+
+async def test_do_kill_all_stale_sweep_write_does_not_clobber_interleaved_flow_write(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A flow metadata write landing INSIDE the sweep's own read-to-write
+    window must survive the sweep's write, not just a flow write that lands
+    between two separate sweep calls.
+
+    test_do_kill_all_stale_unverifiable_markers_survive_flow_metadata_write
+    (above) only proves the marker survives a full sweep -> explicit flow
+    write -> full sweep round trip; each sweep call there completes its own
+    read and write before the flow write is ever issued, so it cannot catch
+    a whole-column writer racing a concurrent write. This test forces the
+    flow write to fire from inside the sweep's SELECT (the read the sweep's
+    marker-write patch is computed from), before the sweep's own write for
+    that row runs, reproducing the exact interleaving a whole-column
+    `update_session(node_metadata=json.dumps(new_meta))` write loses:
+    seed the unverifiable markers, let the sweep read the row, land a flow
+    segment write, then let the sweep write its markers back.
+    """
+    from lionagi.cli.orchestrate.flow import _persist_node_metadata_patch
+
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+        # Seed the markers the way a prior sweep would have, so this sweep's
+        # read sees a `meta` dict that already carries them (matching round
+        # 6's reproduction, which seeded unverifiable_since/count before the
+        # interleaving).
+        await db.merge_session_node_metadata(
+            sid, {"unverifiable_since": 111.0, "unverifiable_count": 1}
+        )
+
+    real_fetch_all = StateDB.fetch_all
+    flow_write_done = asyncio.Event()
+
+    async def gated_fetch_all(self, query, params):
+        result = await real_fetch_all(self, query, params)
+        if "FROM sessions WHERE status" in query and not flow_write_done.is_set():
+            # This is the sweep's read of live session rows -- the read the
+            # per-row `meta`/marker computation below is taken from. Land a
+            # concurrent flow write right now, before the sweep issues its
+            # own write for this row.
+            async with StateDB() as flow_db:
+                await _persist_node_metadata_patch(
+                    flow_db, sid, {"segments": [{"branch_name": "worker-1"}]}
+                )
+            flow_write_done.set()
+        return result
+
+    monkeypatch.setattr(StateDB, "fetch_all", gated_fetch_all)
+    try:
+        assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+    finally:
+        monkeypatch.setattr(StateDB, "fetch_all", real_fetch_all)
+
+    assert flow_write_done.is_set(), "the gated fetch_all never fired the interleaved flow write"
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta.get("unverifiable_since") == 111.0
+    assert meta.get("unverifiable_count") == 2, (
+        "the sweep's own marker write must still land after the interleaved flow write"
+    )
+    assert meta.get("segments") == [{"branch_name": "worker-1"}], (
+        "a flow write landing inside the sweep's read-to-write window must survive "
+        "the sweep's own metadata write, not be clobbered by a whole-column snapshot"
+    )
+
+
+async def test_persist_node_metadata_patch_concurrent_writers_both_land(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Two concurrent flow-metadata writers merging onto the SAME session row
+    must both survive -- the read and the write have to happen as one atomic
+    database operation, not a get_session() followed by a separate
+    update_session(), or the second writer's read (taken before the first
+    writer's write lands) silently clobbers the first writer's patch.
+
+    This is not a hypothetical: the segment writer and the control-log writer
+    (flow.py's _persist_segments / _persist_control_log) both merge onto the
+    same session row, from independent callbacks that DAG execution can fire
+    close together, and a stale-sweep can write between either of them.
+
+    get_session() is gated so both callers finish their read before either
+    is allowed to proceed -- the worst-case interleaving -- rather than
+    relying on incidental asyncio scheduling to happen to hit it. Under the
+    fix neither caller calls get_session() at all (the merge is one atomic
+    UPDATE), so the gate never fires and sits inert; this instrumentation
+    only forces the window open for a read-then-write implementation.
+    """
+    from lionagi.cli.orchestrate.flow import _persist_node_metadata_patch
+
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321)
+        await db.merge_session_node_metadata(sid, {"seed": 1})
+
+    real_get_session = StateDB.get_session
+    barrier = asyncio.Event()
+    entered = 0
+
+    async def gated_get_session(self, session_id):
+        nonlocal entered
+        result = await real_get_session(self, session_id)
+        entered += 1
+        if entered >= 2:
+            barrier.set()
+        await barrier.wait()
+        return result
+
+    monkeypatch.setattr(StateDB, "get_session", gated_get_session)
+
+    async def _write(patch):
+        async with StateDB() as db:
+            await _persist_node_metadata_patch(db, sid, patch)
+
+    await asyncio.gather(_write({"left": 1}), _write({"right": 2}))
+
+    # Un-gate before the verification read: it must not itself wait on a
+    # barrier only the (absent, under the fix) get_session() callers could
+    # have opened past count 1.
+    monkeypatch.setattr(StateDB, "get_session", real_get_session)
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta.get("seed") == 1, "pre-existing metadata must survive both concurrent writes"
+    assert meta.get("left") == 1, "the first writer's patch must not be lost to the race"
+    assert meta.get("right") == 2, "the second writer's patch must not be lost to the race"
 
 
 async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_sweep(

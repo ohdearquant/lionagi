@@ -185,13 +185,34 @@ class _FakeBuilder:
 
 
 class _FakeDB:
-    """Minimal live-persist db stub — records update_session calls."""
+    """Minimal live-persist db stub — records update_session calls and
+    round-trips node_metadata through get_session the way the real StateDB
+    does (JSON-serialized on write, dict on read)."""
 
-    def __init__(self):
+    def __init__(self, seed_node_metadata: dict | None = None):
         self.calls: list[tuple] = []
+        self._node_metadata: dict = dict(seed_node_metadata or {})
 
     async def update_session(self, session_id, **kw):
         self.calls.append((session_id, kw))
+        if "node_metadata" in kw:
+            raw = kw["node_metadata"]
+            self._node_metadata = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+
+    async def get_session(self, session_id):
+        return {"node_metadata": dict(self._node_metadata)}
+
+    async def merge_session_node_metadata(self, session_id, patch):
+        """Mirrors StateDB.merge_session_node_metadata's merge-patch result
+        (RFC 7396: null deletes the key) without the real atomic SQL — this
+        stub is single-threaded, so it isn't exercising the race itself, only
+        the shape callers get back from it."""
+        self.calls.append((session_id, {"merge_patch": patch}))
+        merged = {**self._node_metadata, **patch}
+        for k, v in patch.items():
+            if v is None:
+                merged.pop(k, None)
+        self._node_metadata = merged
 
 
 class _FakeBranch:
@@ -245,6 +266,42 @@ async def test_build_dag_populates_node_ids(tmp_path):
     # directory — and the roster still names both workers.
     assert env.expected_worker_ids == ["researcher", "implementer"]
     assert env.worker_artifact_dirs == {}
+
+
+@pytest.mark.asyncio
+async def test_build_dag_early_graph_write_preserves_unrelated_metadata(tmp_path):
+    """_build_dag's early-DAG-snapshot write must merge onto node_metadata,
+    not replace it — a kill-sweep may have stamped unverifiable-pid evidence
+    (unverifiable_since/unverifiable_count) on this session row before the
+    flow got this far, and this write must not erase it."""
+    env = _make_env(tmp_path)
+    db = _FakeDB(seed_node_metadata={"unverifiable_since": 111.0, "unverifiable_count": 2})
+    env._live_persist = {
+        "db": db,
+        "session_id": "sess-1",
+        "identity_markers": {"pid": 4242, "pid_create_time": 1.5},
+    }
+    assignments = [TaskAssignment(task="research it", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+
+    with patch(
+        "lionagi.cli.orchestrate.flow.build_worker_branch",
+        return_value=(_FakeBranch("researcher"), "codex/gpt-5.5", None, False),
+    ):
+        await _build_dag(env, "do stuff", plan_result, reactive_spec="off")
+
+    assert db._node_metadata["unverifiable_since"] == 111.0
+    assert db._node_metadata["unverifiable_count"] == 2
+    assert db._node_metadata["pid"] == 4242
+    assert db._node_metadata.get("agents") is not None, (
+        "the early-graph snapshot itself must still land"
+    )
 
 
 @pytest.mark.asyncio
@@ -980,6 +1037,13 @@ async def test_execute_dag_drains_segment_metadata_write_before_returning(tmp_pa
             await _real_asyncio.sleep(0.05)
             await super().update_session(session_id, **kw)
 
+        # The segment write goes through the atomic merge, so that is the call
+        # the drain has to wait for. Without a slow path here the test would
+        # pass whether or not _execute_dag drains anything.
+        async def merge_session_node_metadata(self, session_id, patch):
+            await _real_asyncio.sleep(0.05)
+            await super().merge_session_node_metadata(session_id, patch)
+
     fake_db = _SlowFakeDB()
     env = _make_env(
         tmp_path,
@@ -1020,11 +1084,20 @@ async def test_execute_dag_drains_segment_metadata_write_before_returning(tmp_pa
     with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
         await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
 
-    segment_writes = [
-        json.loads(kw["node_metadata"])
-        for _sid, kw in fake_db.calls
-        if "node_metadata" in kw and "segments" in json.loads(kw["node_metadata"])
-    ]
+    # Accept either write shape: a merge patch carries the dict directly, a
+    # whole-column write carries it JSON-serialized. What is being pinned is
+    # that the segment write landed, not which call carried it.
+    segment_writes = []
+    for _sid, kw in fake_db.calls:
+        if "merge_patch" in kw:
+            payload = kw["merge_patch"]
+        elif "node_metadata" in kw:
+            raw = kw["node_metadata"]
+            payload = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+        else:
+            continue
+        if "segments" in payload:
+            segment_writes.append(payload)
     assert segment_writes, "expected the node-completion segment write to have landed"
     assert segment_writes[-1]["segments"], "segment entry for the completed node was not recorded"
 
@@ -1163,6 +1236,121 @@ async def test_reactive_spawn_required_artifact_persistence_matrix(
     else:
         assert s["status"] == "failed"
         assert s["status_reason_code"] == "run.failed.missing_artifact"
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_segment_writer_merges_into_real_statedb(
+    _flow_phase_state_db, tmp_path, monkeypatch
+):
+    """The live segment writer (_on_node_started/_on_node_completed ->
+    _record_segment -> _persist_segments), reached only through the real
+    session signal bus that _execute_dag wires with
+    `env.session.observe(NodeStarted/NodeCompleted, ...)`, must merge its
+    write onto node_metadata a concurrent writer (here: a pre-existing
+    kill-sweep unverifiable-pid marker) already put there -- not replace the
+    column outright. A test that calls `_persist_node_metadata_patch`
+    directly, as an isolated helper test does, proves the helper merges but
+    not that these two callbacks are still wired to it; this one drives the
+    actual NodeStarted/NodeCompleted signals through a real Session and reads
+    the result back off a real StateDB."""
+    import asyncio
+
+    from lionagi import Branch, Session
+    from lionagi.cli._runs import allocate_run
+    from lionagi.cli.orchestrate._orchestration import (
+        OrchestrationEnv,
+        start_live_persist,
+    )
+    from lionagi.engines import PlanningEngine
+    from lionagi.session.signal import NodeCompleted, NodeStarted
+    from lionagi.state.db import StateDB
+
+    orc_branch = Branch(name="orchestrator")
+    worker_branch = Branch(name="researcher")
+    session = Session(default_branch=orc_branch)
+    session.include_branches(worker_branch)
+    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(save_dir=str(tmp_path / "artifacts"))
+
+    env = OrchestrationEnv(
+        run=run,
+        session=session,
+        orc_branch=orc_branch,
+        builder=MagicMock(),
+        orc_profile=None,
+        orc_profile_name=None,
+        default_model_spec="claude",
+        bare=False,
+        effort=None,
+        theme=None,
+        yolo=False,
+        bypass=False,
+        verbose=False,
+        fast=False,
+        cwd=None,
+    )
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(run.artifact_root))
+    session_id = env._live_persist["session_id"]
+
+    # A prior concurrent writer (the stale-pid sweep) already stamped evidence
+    # on this row before the flow got here.
+    async with StateDB() as db:
+        await db.merge_session_node_metadata(
+            session_id, {"unverifiable_since": 111.0, "unverifiable_count": 2}
+        )
+
+    assignments = [TaskAssignment(task="research it", assignee="researcher")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=set(),
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    async def fake_run_dag(graph, **kwargs):
+        # Real signals through the real session bus -- not a call into the
+        # write helper, the actual lifecycle events _execute_dag observes.
+        await env.session.emit(NodeStarted(op_id="node-0", name="researcher", elapsed=0.0))
+        await env.session.emit(NodeCompleted(op_id="node-0", name="researcher", elapsed=1.2))
+        return {"operation_results": {"node-0": "research output"}, "spawned_operations": 0}
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = fake_run_dag
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    # _persist_segments fires the DB write as a background task (fire-and-
+    # forget from _record_segment); poll rather than assume it's landed the
+    # instant _execute_dag returns.
+    async def _read_meta():
+        async with StateDB() as db:
+            s = await db.get_session(session_id)
+        return s["node_metadata"] if s else {}
+
+    meta = {}
+    for _ in range(100):
+        meta = await _read_meta()
+        if "segments" in meta:
+            break
+        await asyncio.sleep(0.02)
+
+    assert meta.get("segments"), "the live segment writer never reached node_metadata"
+    statuses = {seg["op_id"]: seg["status"] for seg in meta["segments"]}
+    assert statuses.get("node-0") == "completed"
+    assert meta.get("unverifiable_since") == 111.0, (
+        "the segment write must merge onto the sweep's marker, not replace it"
+    )
+    assert meta.get("unverifiable_count") == 2
 
 
 # ── Tests for _synthesize ─────────────────────────────────────────────────────

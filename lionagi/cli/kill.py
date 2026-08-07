@@ -110,9 +110,13 @@ def _check_pid_identity(
     - "ours": positively identified as the run in the row.
     - "not_ours": pid is gone or held by a different process — killing it
       would hit a stranger.
-    - "unverifiable": present but uninspectable (usually permission denied).
-      Callers must treat this as still-alive, never as dead, or an unattended
-      sweep would cancel a worker it merely lacks permission to see.
+    - "unverifiable": present but uninspectable (usually permission denied),
+      or inspectable but with no durable identity recorded to check it
+      against (no session id, no create_time) — a lionagi-looking cmdline
+      alone cannot distinguish our run from any other lionagi process holding
+      this pid. Callers must treat this as still-alive, never as dead, or an
+      unattended sweep would cancel a worker it merely lacks permission to
+      see — and a direct kill must refuse rather than signal a stranger.
     - "zombie": exited, not yet reaped. Not a recycled pid (the OS won't
       reissue one before reaping) and not killable again — a finished
       termination, so folding it into "not_ours" loses a cancellation that
@@ -166,6 +170,15 @@ def _check_pid_identity(
             # cmdline alone cannot distinguish this run from a different
             # concurrent one that recycled the pid.
             return "unverifiable"
+
+    if expected_session_id is None and expected_create_time is None:
+        # Nothing durable was ever recorded for this row (e.g. an invocation,
+        # which carries no session id and may have no pid_create_time either).
+        # A lionagi-looking cmdline is not proof of identity — any other
+        # lionagi process satisfies it — so there is nothing left to check
+        # this pid against, and cmdline shape alone must not authorize a
+        # signal.
+        return "unverifiable"
 
     try:
         cmdline = proc.cmdline()
@@ -624,6 +637,7 @@ async def _do_kill_all_stale(
     skipped_recent = 0
     skipped_unverifiable = 0
     skipped_unlinked_plays = 0
+    unverifiable_tracked = 0
 
     live_status_for: dict[str, str] = {
         "sessions": "running",
@@ -662,7 +676,9 @@ async def _do_kill_all_stale(
                 # Correlate against the row's own session id/create_time (same
                 # fields the direct-kill path uses) so a recycled pid occupied
                 # by a different lionagi process doesn't pass as "still alive".
-                if pid is not None and _pid_alive(pid):
+                pid_alive_now = pid is not None and _pid_alive(pid)
+                verdict: str | None = None
+                if pid_alive_now:
                     meta = (
                         row_dict.get("node_metadata")
                         if isinstance(row_dict.get("node_metadata"), dict)
@@ -693,8 +709,36 @@ async def _do_kill_all_stale(
                         # We couldn't read enough of the process to confirm
                         # identity either way (e.g. AccessDenied). Treat as
                         # live rather than sweep it out from under a worker
-                        # we simply can't inspect.
+                        # we simply can't inspect. That decision must not be
+                        # only a per-sweep counter: persist when this was
+                        # first observed so a permanently-uninspectable pid
+                        # leaves durable evidence instead of being silently
+                        # skipped forever with nothing to show for it.
                         skipped_unverifiable += 1
+                        if not dry_run:
+                            since = meta.get("unverifiable_since")
+                            if not isinstance(since, (int, float)):
+                                since = time.time()
+                            count = meta.get("unverifiable_count")
+                            count = (count + 1) if isinstance(count, int) else 1
+                            # Merge only the two marker fields through the
+                            # atomic UPDATE. A whole-column snapshot built
+                            # from `meta` (read at the top of this loop) and
+                            # written back with update_session()/
+                            # update_invocation() can land after a concurrent
+                            # writer's own atomic merge (e.g. the flow
+                            # segment/control-log writers) and silently
+                            # overwrite whatever they just added — the same
+                            # clobber this patch closes on the flow side.
+                            marker_patch = {
+                                "unverifiable_since": since,
+                                "unverifiable_count": count,
+                            }
+                            if entity_type == "session":
+                                await db.merge_session_node_metadata(entity_id, marker_patch)
+                            else:
+                                await db.merge_invocation_node_metadata(entity_id, marker_patch)
+                            unverifiable_tracked += 1
                         if verbose:
                             print(
                                 f"  skip {entity_type} {entity_id[:12]}: process {pid} "
@@ -717,7 +761,11 @@ async def _do_kill_all_stale(
                 evidence: dict[str, Any] = {
                     "kind": "stale_kill",
                     "pid": pid,
-                    "pid_alive": False,
+                    # Numeric liveness and identity are two different questions
+                    # (issue: a live-but-recycled pid used to hardcode False
+                    # here, indistinguishable from a genuinely dead pid).
+                    "pid_alive": pid_alive_now,
+                    "identity_verdict": verdict,
                     "killed_at": time.time(),
                     "threshold_seconds": threshold_seconds,
                 }
@@ -849,6 +897,17 @@ async def _do_kill_all_stale(
         f"skipped_unverifiable_pid={skipped_unverifiable}, "
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )
+    if unverifiable_tracked:
+        # Durable evidence, not just this sweep's counter: a row that stays
+        # uninspectable forever (e.g. permission denied) never reaches any
+        # other outcome, so its unverifiable_since/count are now visible on
+        # the row itself rather than only inferred from repeated sweeps.
+        warn(
+            f"{unverifiable_tracked} running row(s) recorded first-observed "
+            "unverifiable-pid evidence this sweep (node_metadata.unverifiable_since / "
+            "unverifiable_count) — no automatic disposition is applied; inspect "
+            "with `li status` and resolve manually."
+        )
     if skipped_unlinked_plays:
         # One line per sweep, not one per row: a play created by a live run
         # never records the sessions it started, so this is a property of how

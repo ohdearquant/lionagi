@@ -4086,8 +4086,15 @@ async def test_execute_dag_records_control_log_write_failure_when_update_session
             raise RuntimeError("db unavailable")
         return await real_update_session(session_id, **kwargs)
 
+    # The control-log write goes through the atomic merge, not a whole-column
+    # update_session(). Both are faulted so the test pins "a failed write is
+    # logged" rather than pinning which call carries the write.
+    async def _raising_merge(session_id, patch):
+        raise RuntimeError("db unavailable")
+
     monkeypatch.setattr(ctx["db"], "list_pending_session_controls", _list_pending)
     monkeypatch.setattr(ctx["db"], "update_session", _raising_update_session)
+    monkeypatch.setattr(ctx["db"], "merge_session_node_metadata", _raising_merge)
 
     async def _stub_apply_session_control(db, executor, row):
         return "applied"
@@ -4179,8 +4186,21 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
             write_cancelled.set()
             raise
 
+    # Same reason as the raising variant: the control-log write is an atomic
+    # merge, so that is the call that has to hang for the drain to be exercised.
+    real_merge = ctx["db"].merge_session_node_metadata
+
+    async def _hanging_merge(session_id, patch):
+        write_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            write_cancelled.set()
+            raise
+
     monkeypatch.setattr(ctx["db"], "list_pending_session_controls", _list_pending)
     monkeypatch.setattr(ctx["db"], "update_session", _hanging_update_session)
+    monkeypatch.setattr(ctx["db"], "merge_session_node_metadata", _hanging_merge)
 
     async def _stub_apply_session_control(db, executor, row):
         return "applied"
@@ -4237,10 +4257,12 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
             f"caller-visible warning sink, not dropped silently; got {warnings!r}"
         )
     finally:
-        # _teardown_common's final metadata merge (lionagi/cli/_runs.py:538) also calls
-        # update_session() with node_metadata whenever extras is non-empty, which it is
-        # here (the control log). The hanging double must not still be wired for that
-        # call or this cleanup step hangs too. This must run even if an assertion
-        # above fails, or the hanging double stays wired and later cleanup hangs.
+        # _teardown_common's final metadata write also reaches the db whenever
+        # extras is non-empty, which it is here (the control log): once through
+        # update_session() and once through merge_session_node_metadata(). Neither
+        # hanging double may still be wired for those calls or this cleanup step
+        # hangs too. This must run even if an assertion above fails, or a hanging
+        # double stays wired and later cleanup hangs.
         monkeypatch.setattr(ctx["db"], "update_session", real_update_session)
+        monkeypatch.setattr(ctx["db"], "merge_session_node_metadata", real_merge)
         await stop_live_persist(env, status="completed")

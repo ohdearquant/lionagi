@@ -3159,6 +3159,149 @@ class StateDB:
                     params,
                 )
 
+    @staticmethod
+    def _merge_node_metadata_sql(dialect: str, table: str = "sessions") -> str:
+        """One UPDATE that reads-merges-writes node_metadata inside the
+        database, so no Python-level get_session()/get_invocation() sits
+        between the read and the write for a concurrent caller to interleave
+        with. *table* is always a fixed literal ("sessions" or "invocations")
+        supplied by this module, never caller input.
+
+        Contract, identical on both dialects: an absent key is unaffected by
+        a patch that does not mention it. A JSON null already present in the
+        stored document -- at the top level or nested inside a stored object
+        or array -- is data, not noise, and is never stripped by the merge;
+        only keys the *patch* itself sets to null are removed, matching
+        RFC 7396 merge-patch semantics (this is what sqlite's json_patch does
+        natively, and what the postgres expression below reproduces by
+        subtracting exactly the patch's own null-valued keys instead of
+        running jsonb_strip_nulls over the whole merged document). A patch
+        value that is itself a JSON object is rejected before this SQL runs
+        (see _merge_node_metadata) rather than merged shallowly on one
+        dialect and recursively on the other -- no in-tree caller sends one
+        today (checked: identity markers, segment/control logs emit only
+        flat scalars and top-level arrays), and silent divergence on that
+        case is worse than a loud refusal. A malformed or non-object existing
+        value (not a dict -- an array, scalar, or on sqlite even non-JSON
+        text) is not silently discarded: it is preserved verbatim under
+        `_discarded_node_metadata` / `_discarded_at` in the merged result, so
+        the previous state is recoverable instead of destroyed. Postgres's
+        native `json` column can never hold non-JSON text (the driver
+        rejects it on write), so that half of the guard is sqlite-only in
+        practice; the non-object (array/scalar) half applies to both.
+
+        A JSON `null` (the 4-byte text "null", valid JSON but not SQL NULL)
+        stored as the *whole* node_metadata value is treated the same as SQL
+        NULL -- i.e. as an absent object to merge into, not as a foreign
+        shape to preserve under `_discarded_node_metadata`. This is not a
+        rare case: SQLAlchemy's JSON bind type serializes a Python `None`
+        passed as node_metadata (e.g. create_session() called without that
+        field) to the JSON null literal rather than an actual SQL NULL, so
+        this is the column's default value on a large share of existing
+        rows, confirmed by reading one back after a real create_session()
+        call.
+        """
+        if dialect == "sqlite":
+            return (
+                f"UPDATE {table} SET "  # noqa: S608
+                "node_metadata = json_patch("
+                "  CASE"
+                "    WHEN node_metadata IS NULL THEN '{}'"
+                "    WHEN NOT json_valid(node_metadata) THEN"
+                "      json_object('_discarded_node_metadata', node_metadata,"
+                "                  '_discarded_at', :now)"
+                "    WHEN json_type(node_metadata) = 'object' THEN node_metadata"
+                "    WHEN json_type(node_metadata) = 'null' THEN '{}'"
+                "    ELSE json_object('_discarded_node_metadata', json(node_metadata),"
+                "                     '_discarded_at', :now)"
+                "  END,"
+                "  :patch"
+                "), "
+                "updated_at = :now "
+                "WHERE id = :id"
+            )
+        return (
+            f"UPDATE {table} SET "  # noqa: S608
+            # jsonb `||` merges keys but keeps an explicit null (unlike sqlite's
+            # json_patch, which deletes the key per RFC 7396). Rather than
+            # jsonb_strip_nulls over the whole merged document -- which also
+            # strips nulls that were already in the stored value and had
+            # nothing to do with this patch -- subtract exactly the set of
+            # keys the *patch* itself set to null, computed from :patch alone.
+            # That reproduces RFC 7396 (null-in-patch deletes the key) without
+            # touching any null that predates this merge.
+            "node_metadata = (("
+            "  CASE"
+            "    WHEN node_metadata IS NULL THEN '{}'::jsonb"
+            "    WHEN jsonb_typeof(node_metadata::jsonb) = 'object' THEN node_metadata::jsonb"
+            "    WHEN jsonb_typeof(node_metadata::jsonb) = 'null' THEN '{}'::jsonb"
+            "    ELSE jsonb_build_object('_discarded_node_metadata', node_metadata::jsonb,"
+            "                            '_discarded_at', to_jsonb(CAST(:now AS double precision)))"
+            "  END || CAST(:patch AS jsonb)"
+            ") - COALESCE("
+            "  (SELECT array_agg(kv.key) FROM jsonb_each(CAST(:patch AS jsonb)) AS kv(key, value)"
+            "   WHERE kv.value = 'null'::jsonb),"
+            "  ARRAY[]::text[]"
+            "))::json, "
+            "updated_at = :now "
+            "WHERE id = :id"
+        )
+
+    async def _merge_node_metadata(self, table: str, entity_id: str, patch: dict[str, Any]) -> None:
+        """Shared body for merge_session_node_metadata() and
+        merge_invocation_node_metadata(): validate the patch, then run the
+        single dialect-specific UPDATE for *table*.
+
+        A patch value that is itself a dict is rejected here, before any SQL
+        runs, on every dialect equally: sqlite's json_patch merges a nested
+        object recursively while postgres's `jsonb ||` replaces it shallowly,
+        and choosing one silently would make the two backends persist
+        different state from the same call. Raising is dialect-agnostic
+        because it only inspects the patch this call was given, not stored
+        state, so it adds no read before the write.
+        """
+        for key, value in patch.items():
+            if isinstance(value, dict):
+                raise ValueError(
+                    f"merge_{table[:-1]}_node_metadata does not support a nested "
+                    f"object patch value (key {key!r}): sqlite and postgres "
+                    "merge nested objects differently, so this would persist "
+                    "different state per backend. Flatten the patch or merge "
+                    "the nested object yourself before calling this."
+                )
+        now = time.time()
+        async with self._tx() as conn:
+            stmt = text(self._merge_node_metadata_sql(self.dialect, table=table)).bindparams(
+                bindparam("patch", type_=JSON)
+            )
+            await conn.execute(stmt, {"patch": patch, "now": now, "id": entity_id})
+
+    async def merge_session_node_metadata(self, session_id: str, patch: dict[str, Any]) -> None:
+        """Atomically merge *patch* into the session's node_metadata column.
+
+        Replaces the former get_session() + update_session(node_metadata=...)
+        pair: that was a read in one operation and a write in another, so two
+        concurrent callers could both read the same row and each write back a
+        patch that clobbered the other's. This runs as a single UPDATE, so
+        the merge is serialized by the database (the sqlite write lock for
+        that dialect; ordinary row-level MVCC locking on postgres) instead of
+        racing in Python.
+        """
+        await self._merge_node_metadata("sessions", session_id, patch)
+
+    async def merge_invocation_node_metadata(
+        self, invocation_id: str, patch: dict[str, Any]
+    ) -> None:
+        """Atomically merge *patch* into the invocation's node_metadata column.
+
+        Same contract and same clobber this closes as
+        merge_session_node_metadata(), for the invocations table: a
+        get_invocation() + update_invocation(node_metadata=...) pair used to
+        let two concurrent callers each read the same row and write back a
+        patch that clobbered the other's.
+        """
+        await self._merge_node_metadata("invocations", invocation_id, patch)
+
     async def update_artifact_verification(
         self,
         session_id: str,

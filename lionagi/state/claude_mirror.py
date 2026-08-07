@@ -409,12 +409,9 @@ async def link_escalation_session(
     existing = await db.get_session(sid)
     if existing is None:
         return False
-    meta = dict(existing.get("node_metadata") or {})
-    meta["escalated_from_session"] = parent_op_id
     fields: dict[str, Any] = {
         "name": name,
         "run_id": run_id,
-        "node_metadata": json.dumps(meta),
     }
     # An unresolved run project is not evidence the mirror's cwd guess is wrong —
     # leave it alone rather than overwrite a real (if imprecise) value with NULL.
@@ -422,4 +419,10 @@ async def link_escalation_session(
         fields["project"] = project
         fields["project_source"] = project_source
     await db.update_session(sid, **fields)
+    # escalated_from_session is a flat scalar, so this can go through the
+    # atomic merge (unlike the lineage/import-tally writers elsewhere in the
+    # mirror, which stamp a nested-object value and would trip the merge's
+    # dialect-parity guard) — closing the same read-modify-write clobber the
+    # sweep fix closes, at no cost.
+    await db.merge_session_node_metadata(sid, {"escalated_from_session": parent_op_id})
     return True
