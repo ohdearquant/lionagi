@@ -3,6 +3,9 @@ export interface FormatElapsedOptions {
   showSeconds?: boolean;
   /** Roll hours over into days past the 24h mark, e.g. "1d 1h" vs "25h" (default: false). */
   capAtDays?: boolean;
+  /** Keep one decimal for raw sub-minute spans, e.g. "59.9s" instead of flooring
+   * to "59s" (default: false). Minute-and-up buckets are always floored either way. */
+  subMinuteDecimal?: boolean;
 }
 
 /** Compact "Xh Ym"-style duration label shared by the run-age displays across
@@ -11,8 +14,12 @@ export function formatElapsed(
   seconds: number | null | undefined,
   opts: FormatElapsedOptions = {},
 ): string {
-  const { showSeconds = true, capAtDays = false } = opts;
+  const { showSeconds = true, capAtDays = false, subMinuteDecimal = false } = opts;
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
+
+  if (subMinuteDecimal && seconds < 60) {
+    return `${Number(seconds.toFixed(1))}s`;
+  }
 
   const total = Math.floor(seconds);
   if (total < 60) return `${total}s`;

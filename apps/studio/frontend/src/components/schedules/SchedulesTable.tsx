@@ -163,10 +163,15 @@ function ScheduleRow({
     <tr
       onClick={() => onOpen(schedule.id)}
       onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onOpen(schedule.id);
+        if (event.key !== "Enter" && event.key !== " ") return;
+        // Enter/Space on a nested control (toggle, run-now, edit) activates
+        // that control natively — the row must not also treat it as "open".
+        const target = event.target as HTMLElement;
+        if (target !== event.currentTarget && target.closest("button, a, input, [role='button']")) {
+          return;
         }
+        event.preventDefault();
+        onOpen(schedule.id);
       }}
       tabIndex={0}
       role="button"
@@ -189,12 +194,8 @@ function ScheduleRow({
           {trigger.text}
         </span>
       </td>
-      {/* stopPropagation so the toggle doesn't also open the row */}
-      <td
-        className="px-3 py-2.5"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-      >
+      {/* stopPropagation so a click on the cell padding doesn't also open the row */}
+      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
         <EnabledToggle
           scheduleId={schedule.id}
           enabled={Boolean(schedule.enabled)}

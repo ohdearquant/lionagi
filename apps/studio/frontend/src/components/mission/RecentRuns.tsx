@@ -63,7 +63,7 @@ function durationSec(run: RunSummary, nowSec: number): number | null {
 }
 
 function formatSpan(sec: number): string {
-  return formatElapsed(sec, { showSeconds: false });
+  return formatElapsed(sec, { showSeconds: false, subMinuteDecimal: true });
 }
 
 const KNOWN_STATUSES = new Set([
