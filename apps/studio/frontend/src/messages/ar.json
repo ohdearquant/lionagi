@@ -434,6 +434,10 @@
       "noMessages": "لم تُسجّل أي رسائل",
       "waitingEvents": "بانتظار أحداث دورة الحياة…",
       "noEvents": "لم تُسجّل أي أحداث لدورة الحياة",
+      "showOlderEvents": "إظهار {count, number} حدثًا أقدم",
+      "expandEventDetails": "إظهار تفاصيل الحدث",
+      "gateOutcome": "البوابة: {verdict} · {major} كبيرة، {minor} صغيرة",
+      "gateOutcomeSimple": "البوابة: {verdict}",
       "live": "مباشر",
       "noBranchErrors": "لم تُكتشف أخطاء عبر كل الفروع.",
       "noFiles": "لم تُكتشف عمليات على الملفات.",
@@ -553,7 +557,17 @@
       "last": "الأخير",
       "never": "لم يُشغّل قط",
       "paused": "متوقف مؤقتًا",
-      "notScheduled": "غير مجدول"
+      "notScheduled": "غير مجدول",
+      "health": {
+        "healthy": "سليم",
+        "failing": "فاشل",
+        "overdue": "متأخر",
+        "neverFired": "لم يعمل مطلقًا",
+        "noEvidence": "لا يوجد دليل",
+        "lastOutcome": "آخر {outcome} منذ {delta}",
+        "neverFiredSince": "لم يعمل مطلقًا منذ {date}",
+        "noEvidenceHint": "لا يوجد تنفيذ مسجل"
+      }
     },
     "run": {
       "elapsed": "انقضى {delta}",
@@ -975,6 +989,8 @@
     "roleUser": "المستخدم",
     "roleThinking": "يفكّر",
     "roleResponse": "رد",
+    "planAssignments": "{count, plural, zero {لا تكليفات} one {تكليف واحد} two {تكليفان} few {# تكليفات} many {# تكليفًا} other {# تكليف}}",
+    "planDependsOn": "يعتمد على:",
     "tabAria": "تبويب {label}، {position} من {total}"
   },
   "workflow": {

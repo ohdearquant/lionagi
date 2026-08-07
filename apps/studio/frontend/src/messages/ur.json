@@ -434,6 +434,10 @@
       "noMessages": "کوئی پیغام ریکارڈ نہیں ہوا",
       "waitingEvents": "لائف سائیکل ایونٹس کا انتظار…",
       "noEvents": "کوئی لائف سائیکل ایونٹ ریکارڈ نہیں ہوا",
+      "showOlderEvents": "{count, number} پرانے واقعات دکھائیں",
+      "expandEventDetails": "ایونٹ کی تفصیلات دکھائیں",
+      "gateOutcome": "گیٹ: {verdict} · {major} بڑے، {minor} چھوٹے",
+      "gateOutcomeSimple": "گیٹ: {verdict}",
       "live": "لائیو",
       "noBranchErrors": "تمام برانچز میں کوئی خرابی نہیں ملی۔",
       "noFiles": "کوئی فائل آپریشن نہیں ملا۔",
@@ -553,7 +557,17 @@
       "last": "آخری",
       "never": "کبھی نہیں چلا",
       "paused": "موقوف",
-      "notScheduled": "شیڈول نہیں"
+      "notScheduled": "شیڈول نہیں",
+      "health": {
+        "healthy": "صحت مند",
+        "failing": "ناکام",
+        "overdue": "تاخیر شدہ",
+        "neverFired": "کبھی نہیں چلی",
+        "noEvidence": "کوئی ثبوت نہیں",
+        "lastOutcome": "آخری بار {outcome} {delta} پہلے",
+        "neverFiredSince": "{date} سے کبھی نہیں چلی",
+        "noEvidenceHint": "کوئی عملدرآمد ریکارڈ نہیں"
+      }
     },
     "run": {
       "elapsed": "⁨{delta}⁩ گزر چکا",
@@ -975,6 +989,8 @@
     "roleUser": "یوزر",
     "roleThinking": "سوچ رہا ہے",
     "roleResponse": "جواب",
+    "planAssignments": "{count, plural, one {# تفویض} other {# تفویضات}}",
+    "planDependsOn": "انحصار:",
     "tabAria": "⁨{label}⁩ ٹیب ⁨{position}⁩ از ⁨{total}⁩"
   },
   "workflow": {

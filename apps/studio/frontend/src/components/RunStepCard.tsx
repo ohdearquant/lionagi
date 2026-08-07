@@ -1271,6 +1271,97 @@ function UserBlock({ content, timestamp }: { content: string; timestamp?: number
   );
 }
 
+export interface PlanAssignment {
+  assignee: string;
+  task: string;
+  dependencies: string[];
+}
+
+type PlanDetection =
+  | { kind: "assignments"; assignments: PlanAssignment[] }
+  | { kind: "json"; value: unknown }
+  | { kind: "none" };
+
+function extractPlanAssignments(parsed: unknown): PlanAssignment[] | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const raw = (parsed as Record<string, unknown>).assignments;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const assignments: PlanAssignment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const a = item as Record<string, unknown>;
+    const task = typeof a.task === "string" ? a.task : null;
+    const assignee =
+      typeof a.assignee === "string" ? a.assignee : typeof a.role === "string" ? a.role : null;
+    if (task == null || assignee == null) return null;
+    const depSource = a.depends_on ?? a.dependencies;
+    const dependencies = Array.isArray(depSource) ? depSource.map((d) => String(d)) : [];
+    assignments.push({ assignee, task, dependencies });
+  }
+  return assignments;
+}
+
+/** The orchestrator's structured plan output persists as a JSON string in the
+ * branch's assistant-response text (there is no dedicated message shape for
+ * it), which otherwise renders as a raw string wrapped in Markdown prose.
+ * Detects the {"assignments":[...]} shape so it can render structurally, and
+ * falls back to pretty-printed JSON for any other JSON payload rather than a
+ * single unreadable line. */
+export function detectPlanPayload(text: string): PlanDetection {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return { kind: "none" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { kind: "none" };
+  }
+  const assignments = extractPlanAssignments(parsed);
+  if (assignments) return { kind: "assignments", assignments };
+  return { kind: "json", value: parsed };
+}
+
+// A plan is model-produced and unbounded — nothing upstream caps how many
+// assignments it can contain. Render only the first N so a pathological
+// (or adversarial) plan can't force hundreds of DOM rows into the page.
+const PLAN_ASSIGNMENTS_RENDER_CAP = 50;
+
+function PlanAssignmentsView({ assignments }: { assignments: PlanAssignment[] }) {
+  const t = useTranslations("runCard");
+  const visible = assignments.slice(0, PLAN_ASSIGNMENTS_RENDER_CAP);
+  const overflow = assignments.length - visible.length;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-[length:var(--t-xs)] uppercase tracking-wide text-content-muted">
+        {t("planAssignments", { count: assignments.length })}
+      </div>
+      <ol className="flex flex-col gap-2">
+        {visible.map((a, i) => (
+          <li key={i} className="rounded border border-edge bg-surface-raised px-3 py-2">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <Badge tone="default">{a.assignee}</Badge>
+              <span className="text-body text-content-primary">{a.task}</span>
+            </div>
+            {a.dependencies.length > 0 && (
+              <div className="mt-1 text-[length:var(--t-xs)] text-content-muted">
+                {t("planDependsOn")}{" "}
+                <span className="font-mono text-content-secondary">
+                  {a.dependencies.join(", ")}
+                </span>
+              </div>
+            )}
+          </li>
+        ))}
+      </ol>
+      {overflow > 0 && (
+        <div className="text-[length:var(--t-xs)] text-content-muted">
+          {t("moreLines", { count: overflow })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AssistantBlock({
   anchorId,
   content,
@@ -1287,6 +1378,10 @@ function AssistantBlock({
   const t = useTranslations("runCard");
   const isThinking = content.startsWith("[thinking]");
   const displayText = isThinking ? content.replace(/^\[thinking\]\s*/, "") : content;
+  const planDetection = useMemo(
+    () => (isThinking ? ({ kind: "none" } as const) : detectPlanPayload(displayText)),
+    [isThinking, displayText],
+  );
   return (
     <div
       id={anchorId}
@@ -1319,6 +1414,12 @@ function AssistantBlock({
         <p className="whitespace-pre-wrap break-words text-body leading-snug text-content-muted italic">
           {displayText}
         </p>
+      ) : planDetection.kind === "assignments" ? (
+        <PlanAssignmentsView assignments={planDetection.assignments} />
+      ) : planDetection.kind === "json" ? (
+        <pre className="max-h-64 overflow-auto rounded bg-surface-base p-2 font-mono text-[length:var(--t-xs)] leading-relaxed text-content-secondary">
+          {JSON.stringify(planDetection.value, null, 2)}
+        </pre>
       ) : (
         <Suspense fallback={null}>
           <Markdown className="text-body leading-snug" fileContext={fileContext}>

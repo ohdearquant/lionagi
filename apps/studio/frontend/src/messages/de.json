@@ -434,6 +434,10 @@
       "noMessages": "Keine Nachrichten aufgezeichnet",
       "waitingEvents": "Warte auf Lifecycle-Ereignisse…",
       "noEvents": "Keine Lifecycle-Ereignisse aufgezeichnet",
+      "showOlderEvents": "{count, number} ältere Ereignisse anzeigen",
+      "expandEventDetails": "Ereignisdetails anzeigen",
+      "gateOutcome": "Gate: {verdict} · {major} schwerwiegend, {minor} gering",
+      "gateOutcomeSimple": "Gate: {verdict}",
       "live": "live",
       "noBranchErrors": "Keine Fehler über alle Branches hinweg erkannt.",
       "noFiles": "Keine Dateioperationen erkannt.",
@@ -553,7 +557,17 @@
       "last": "Zuletzt:",
       "never": "nie ausgeführt",
       "paused": "Pausiert",
-      "notScheduled": "Nicht geplant"
+      "notScheduled": "Nicht geplant",
+      "health": {
+        "healthy": "Gesund",
+        "failing": "Fehlgeschlagen",
+        "overdue": "Überfällig",
+        "neverFired": "Nie ausgeführt",
+        "noEvidence": "Kein Nachweis",
+        "lastOutcome": "zuletzt {outcome} vor {delta}",
+        "neverFiredSince": "seit {date} nie ausgeführt",
+        "noEvidenceHint": "keine Ausführung aufgezeichnet"
+      }
     },
     "run": {
       "elapsed": "{delta} verstrichen",
@@ -975,6 +989,8 @@
     "roleUser": "Benutzer",
     "roleThinking": "Denkprozess",
     "roleResponse": "Antwort",
+    "planAssignments": "{count, plural, one {# Zuweisung} other {# Zuweisungen}}",
+    "planDependsOn": "abhängig von:",
     "tabAria": "Tab {label}, {position} von {total}"
   },
   "workflow": {
