@@ -545,6 +545,68 @@ describe("transitiveReduceDisplay — semantic-guarded display-time reduction", 
     expect(hidden).toHaveLength(0);
   });
 
+  it("keeps a plain edge whose implying path's FIRST hop is rich", () => {
+    // A→B is conditional, so A→B→C is not an unconditional implication —
+    // the branch it represents may not execute, so plain A→C is not
+    // provably redundant and must survive.
+    const edges = [
+      { source: "A", target: "B", condition: "x > 0" },
+      { source: "B", target: "C" },
+      { source: "A", target: "C" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).toContainEqual({ source: "A", target: "C" });
+    expect(hidden).toHaveLength(0);
+  });
+
+  it("keeps a plain edge whose implying path's SECOND hop is rich", () => {
+    const edges = [
+      { source: "A", target: "B" },
+      { source: "B", target: "C", handler: "onMatch" },
+      { source: "A", target: "C" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).toContainEqual({ source: "A", target: "C" });
+    expect(hidden).toHaveLength(0);
+  });
+
+  it("still reduces when the ENTIRE implying path is plain (control for the two arms above)", () => {
+    const edges = [
+      { source: "A", target: "B" },
+      { source: "B", target: "C" },
+      { source: "A", target: "C" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges);
+    expect(kept).not.toContainEqual({ source: "A", target: "C" });
+    expect(hidden).toHaveLength(1);
+  });
+
+  it("keeps a plain edge whose only implying path runs through a node the caller marks not visible", () => {
+    const edges = [
+      { source: "A", target: "collapsed" },
+      { source: "collapsed", target: "C" },
+      { source: "A", target: "C" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges, {
+      visibleNodes: new Set(["A", "C"]),
+    });
+    expect(kept).toContainEqual({ source: "A", target: "C" });
+    expect(hidden).toHaveLength(0);
+  });
+
+  it("still reduces through that same node when the caller marks it visible", () => {
+    const edges = [
+      { source: "A", target: "visible" },
+      { source: "visible", target: "C" },
+      { source: "A", target: "C" },
+    ];
+    const { kept, hidden } = transitiveReduceDisplay(edges, {
+      visibleNodes: new Set(["A", "visible", "C"]),
+    });
+    expect(kept).not.toContainEqual({ source: "A", target: "C" });
+    expect(hidden).toHaveLength(1);
+  });
+
   it("returns unchanged for an already-minimal graph (identity)", () => {
     const edges = [
       { source: "A", target: "B" },

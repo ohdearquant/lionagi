@@ -173,32 +173,44 @@ export function hasCycle<E extends { source: string; target: string }>(edges: E[
 
 // Display-time transitive reduction for an authored WorkerGraph's edges.
 // Drops edge (u→v) only when v is reachable from u via a path of length ≥2
-// through OTHER edges that themselves survive as real dependencies. Two
-// guards distinguish this from transitiveReduce above:
+// where EVERY edge on that path is itself structurally plain and connects
+// two visible nodes. Three guards distinguish this from transitiveReduce
+// above:
 //   1. Whole-graph cycle detection — a cyclic graph is returned unchanged
 //      rather than reduced around the cycle.
-//   2. Semantically rich edges (see defaultIsRich) are never dropped, even
-//      when reachable via another path — they carry author intent, not
-//      structural redundancy.
+//   2. Semantically rich edges (see defaultIsRich) are never dropped, and
+//      never count as a step of an implying path — a condition/map/handler/
+//      code edge is not an unconditional implication, so it cannot stand in
+//      for the plain edge it might otherwise seem to make redundant.
+//   3. A path that passes through a node the caller says will not be
+//      rendered (options.visibleNodes) cannot justify hiding an edge either
+//      — a viewer can't confirm an implication they can't see resolve.
 // Never mutates or re-persists the input; this only affects what is
 // rendered.
 export function transitiveReduceDisplay<E extends { source: string; target: string }>(
   edges: E[],
-  options?: { isRich?: (e: E) => boolean },
+  options?: { isRich?: (e: E) => boolean; visibleNodes?: Set<string> },
 ): { kept: E[]; hidden: E[] } {
   if (edges.length === 0) return { kept: [], hidden: [] };
   if (hasCycle(edges)) return { kept: edges, hidden: [] };
 
   const isRich = options?.isRich ?? defaultIsRich;
+  const visibleNodes = options?.visibleNodes;
+  const isVisible = (id: string) => !visibleNodes || visibleNodes.has(id);
+
   const rich: E[] = [];
   const plain: E[] = [];
   for (const e of edges) {
     (isRich(e) ? rich : plain).push(e);
   }
 
-  const outEdges = new Map<string, E[]>();
-  for (const e of edges) {
-    (outEdges.get(e.source) ?? outEdges.set(e.source, []).get(e.source)!).push(e);
+  // Only a plain edge between two visible nodes can be one step of an
+  // implying path — a rich edge's implication is conditional, and a step
+  // through a hidden node is not one the viewer can see resolve.
+  const plainOutEdges = new Map<string, E[]>();
+  for (const e of plain) {
+    if (!isVisible(e.source) || !isVisible(e.target)) continue;
+    (plainOutEdges.get(e.source) ?? plainOutEdges.set(e.source, []).get(e.source)!).push(e);
   }
 
   const reachableCache = new Map<string, Set<string>>();
@@ -207,7 +219,7 @@ export function transitiveReduceDisplay<E extends { source: string; target: stri
     if (cached) return cached;
     const result = new Set<string>();
     reachableCache.set(node, result); // seed before recursing; the graph is acyclic here
-    for (const e of outEdges.get(node) ?? []) {
+    for (const e of plainOutEdges.get(node) ?? []) {
       result.add(e.target);
       for (const r of reachableFrom(e.target)) result.add(r);
     }
@@ -216,7 +228,10 @@ export function transitiveReduceDisplay<E extends { source: string; target: stri
 
   const hidden: E[] = [];
   const survivingPlain = plain.filter((e) => {
-    for (const alt of outEdges.get(e.source) ?? []) {
+    // An edge touching a hidden node can't be verified as implied by a
+    // visible path either — keep it rather than guess.
+    if (!isVisible(e.source) || !isVisible(e.target)) return true;
+    for (const alt of plainOutEdges.get(e.source) ?? []) {
       if (alt === e || alt.target === e.target) continue;
       if (reachableFrom(alt.target).has(e.target)) {
         hidden.push(e);

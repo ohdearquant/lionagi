@@ -153,8 +153,10 @@ export function resolveGraphEdges(
 export function computeDisplayEdges(
   edges: WorkerGraph["edges"],
   showImpliedEdges: boolean,
+  visibleNodeIds?: string[],
 ): { displayEdges: WorkerGraph["edges"]; hiddenCount: number } {
-  const { kept, hidden } = transitiveReduceDisplay(edges);
+  const visibleNodes = visibleNodeIds ? new Set(visibleNodeIds) : undefined;
+  const { kept, hidden } = transitiveReduceDisplay(edges, { visibleNodes });
   return { displayEdges: showImpliedEdges ? edges : kept, hiddenCount: hidden.length };
 }
 
@@ -1387,7 +1389,11 @@ export default function RunDetail({ id }: RunDetailProps) {
   const { displayEdges, hiddenCount } = useMemo(
     () =>
       runGraph
-        ? computeDisplayEdges(runGraph.edges, showImpliedEdges)
+        ? computeDisplayEdges(
+            runGraph.edges,
+            showImpliedEdges,
+            runGraph.nodes.map((n) => n.id),
+          )
         : { displayEdges: [] as WorkerGraph["edges"], hiddenCount: 0 },
     [runGraph, showImpliedEdges],
   );
