@@ -55,6 +55,12 @@ export interface ArtifactVerificationResult {
   /** Artifact ids the recorded verdict found present that no longer exist
    *  on disk. */
   absent_since_verification?: string[];
+  /** Whether a read-time disk check ran against this stored verdict.
+   *  "checked" means changed/absent_since_verification are authoritative
+   *  (even if both empty). Missing or "unknown" means no check ran — a
+   *  legacy payload, or a list view that skips the filesystem read — and
+   *  must not be presented as a current-state confirmation. */
+  staleness_check?: "unknown" | "checked";
 }
 
 export interface ArtifactVerificationNotRecorded {

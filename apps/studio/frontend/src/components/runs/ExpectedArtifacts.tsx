@@ -37,6 +37,10 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
   const missingOptional = new Set((result?.missing_optional ?? []).map((p) => p.id));
   const changedSince = new Set(result?.changed_since_verification ?? []);
   const absentSince = new Set(result?.absent_since_verification ?? []);
+  // A stored verdict without a "checked" mark never had its disk currency
+  // read — a legacy payload, or a list row that skipped the filesystem
+  // check — and must not be indistinguishable from a checked-clean result.
+  const stalenessUnknown = !!result && !result.provisional && result.staleness_check !== "checked";
 
   return (
     <div id="expected-artifacts" className="scroll-mt-24">
@@ -66,6 +70,7 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
             verified at completion, {formatCheckedAt(result.checked_at)}
           </span>
         )}
+        {stalenessUnknown && <Badge tone="default">staleness unknown</Badge>}
         {absentSince.size > 0 && <Badge tone="pending">no longer present</Badge>}
         {changedSince.size > 0 && <Badge tone="pending">files changed since verification</Badge>}
       </div>

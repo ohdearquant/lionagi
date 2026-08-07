@@ -63,8 +63,9 @@ def resolve_artifact_verification(
     if stored is not None:
         if isinstance(stored, dict) and stored.get("status") != "not_recorded":
             markers = stale_artifact_markers(stored, artifacts_root=artifacts_path)
-            if markers:
+            if markers is not None:
                 return {**stored, **markers}
+            return {**stored, "staleness_check": "unknown"}
         return stored
     if not contract:
         return None

@@ -150,4 +150,33 @@ describe("ExpectedArtifacts", () => {
     expect(view.textContent).toContain("NO LONGER PRESENT");
     expect(view.textContent).not.toContain("OK (5 B)");
   });
+
+  it("labels a legacy recorded verdict as staleness unknown, not fresh", () => {
+    // No staleness_check field at all — the shape of a payload recorded
+    // before the disk check existed, or a list row where the caller
+    // deliberately skipped it. It must not render the same as a verdict
+    // that was checked and came back clean.
+    const view = renderExpectedArtifacts({
+      status: "passed",
+      checked_at: 1700000000,
+      missing_required: [],
+      missing_optional: [],
+      produced: [{ id: "report", path: "REPORT.md", size: 5, present: true }],
+    });
+
+    expect(view.textContent).toContain("staleness unknown");
+  });
+
+  it("does not show staleness unknown once the disk check has run, even when clean", () => {
+    const view = renderExpectedArtifacts({
+      status: "passed",
+      checked_at: 1700000000,
+      missing_required: [],
+      missing_optional: [],
+      produced: [{ id: "report", path: "REPORT.md", size: 5, present: true }],
+      staleness_check: "checked",
+    });
+
+    expect(view.textContent).not.toContain("staleness unknown");
+  });
 });

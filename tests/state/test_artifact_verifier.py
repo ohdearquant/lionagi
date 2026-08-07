@@ -590,12 +590,16 @@ def test_the_reported_run_shape_now_passes_end_to_end(tmp_path):
 
 
 class TestStaleArtifactMarkers:
-    def test_a_fresh_snapshot_has_no_staleness(self, tmp_path):
+    def test_a_fresh_snapshot_is_marked_checked_with_no_staleness(self, tmp_path):
         (tmp_path / "report.md").write_text("content")
         contract = {"expected": [{"id": "report", "path": "report.md"}]}
         result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
 
-        assert stale_artifact_markers(result, artifacts_root=str(tmp_path)) is None
+        markers = stale_artifact_markers(result, artifacts_root=str(tmp_path))
+        assert markers is not None
+        assert markers["staleness_check"] == "checked"
+        assert markers["changed_since_verification"] == []
+        assert markers["absent_since_verification"] == []
 
     def test_a_file_touched_after_checked_at_is_flagged_changed(self, tmp_path):
         artifact = tmp_path / "report.md"
@@ -638,7 +642,28 @@ class TestStaleArtifactMarkers:
         contract = {"expected": [{"id": "report", "path": "report.md", "required": True}]}
         result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
 
-        assert stale_artifact_markers(result, artifacts_root=str(tmp_path)) is None
+        markers = stale_artifact_markers(result, artifacts_root=str(tmp_path))
+        assert markers is not None
+        assert markers["staleness_check"] == "checked"
+        assert markers["changed_since_verification"] == []
+        assert markers["absent_since_verification"] == []
+
+    def test_a_size_change_with_preserved_mtime_is_flagged_changed(self, tmp_path):
+        # A rewrite that preserves mtime defeats a bare mtime comparison; the
+        # comparator also compares size (from the same stat() call) so this
+        # false-negative window is narrowed rather than left silent.
+        artifact = tmp_path / "report.md"
+        artifact.write_text("content")
+        contract = {"expected": [{"id": "report", "path": "report.md"}]}
+        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
+        original_mtime = os.path.getmtime(artifact)
+
+        artifact.write_text("content, but a fair bit longer than before")
+        os.utime(artifact, (original_mtime, original_mtime))
+
+        markers = stale_artifact_markers(result, artifacts_root=str(tmp_path))
+        assert markers is not None
+        assert markers["changed_since_verification"] == ["report"]
 
     def test_malformed_verification_produces_no_markers(self, tmp_path):
         assert stale_artifact_markers({}, artifacts_root=str(tmp_path)) is None

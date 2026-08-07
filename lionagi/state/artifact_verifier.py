@@ -52,6 +52,7 @@ class VerificationResult(TypedDict):
 
 
 class StaleMarkers(TypedDict):
+    staleness_check: Literal["checked"]
     changed_since_verification: list[str]
     absent_since_verification: list[str]
 
@@ -298,10 +299,20 @@ def stale_artifact_markers(
     """Cheaply flag whether a recorded verdict's produced artifacts may no
     longer match what was on disk at `checked_at`.
 
-    This never re-verifies pass/fail — it only checks mtime and presence for
-    the artifacts the recorded verdict already found, so a caller can label
-    the verdict's currency instead of presenting a completion-time snapshot
-    as current state. Returns None when nothing looks stale.
+    This never re-verifies pass/fail — it only checks mtime+size and presence
+    for the artifacts the recorded verdict already found, so a caller can
+    label the verdict's currency instead of presenting a completion-time
+    snapshot as current state. Comparing size alongside mtime (both already
+    available from a single `stat()` call, so this stays a cheap read-time
+    check rather than a re-verify) narrows, though does not close, the
+    false-negative window a bare mtime check would have against a rewrite
+    that preserves both mtime and size.
+
+    Returns None only when the check cannot be performed at all — no
+    `artifacts_root`, or a verdict missing the `checked_at`/`produced` fields
+    the check needs (e.g. a payload recorded before this check existed). The
+    caller uses that to report an explicit unknown state rather than
+    silently treating an unchecked verdict as clean.
     """
     if not artifacts_root:
         return None
@@ -325,13 +336,17 @@ def stale_artifact_markers(
         except ArtifactPathError:
             continue
         try:
-            mtime = os.path.getmtime(full)
+            stat_result = os.stat(full)
         except OSError:
             absent.append(artifact_id)
             continue
-        if mtime > checked_at:
+        declared_size = entry.get("size")
+        size_changed = isinstance(declared_size, int) and stat_result.st_size != declared_size
+        if stat_result.st_mtime > checked_at or size_changed:
             changed.append(artifact_id)
 
-    if not changed and not absent:
-        return None
-    return {"changed_since_verification": changed, "absent_since_verification": absent}
+    return {
+        "staleness_check": "checked",
+        "changed_since_verification": changed,
+        "absent_since_verification": absent,
+    }
