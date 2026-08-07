@@ -145,6 +145,30 @@ class _GlobalSlotClaim:
         self._engine._release_global_slot()
 
 
+class _AdhocSlotClaim:
+    """One-shot handle for an in-process ad-hoc task-worker concurrency slot.
+
+    Deliberately a separate pool from ``_GlobalSlotClaim``/
+    ``MAX_SCHEDULED_CONCURRENT``: sharing one counter between the scheduled
+    and ad-hoc lanes let a continuously replenished stream of scheduled
+    fires reacquire every freed slot before the worker pass got one,
+    starving ad-hoc work indefinitely. Same release-once-in-a-finally
+    lifecycle as ``_GlobalSlotClaim``.
+    """
+
+    __slots__ = ("_engine", "_released")
+
+    def __init__(self, engine: SchedulerEngine) -> None:
+        self._engine = engine
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._engine._release_adhoc_slot()
+
+
 class _RateLimitClaim:
     """One-shot reservation against a schedule's rolling-window fire cap."""
 
@@ -426,8 +450,16 @@ class SchedulerEngine:
         self._rate_limit_lock = asyncio.Lock()
         self._rate_limit_inflight: dict[str, dict[str, float]] = {}
         # global concurrent-fire cap (single-process; see _reserve_global_slot).
+        # Scoped to SCHEDULED fires only -- the ad-hoc task-worker lane has
+        # its own independent cap below (see _reserve_adhoc_slot) so the two
+        # lanes cannot starve each other.
         self._global_slot_lock = asyncio.Lock()
         self._global_inflight = 0
+        # ad-hoc task-worker concurrency cap (single-process; see
+        # _reserve_adhoc_slot). Independent of _global_inflight/
+        # MAX_SCHEDULED_CONCURRENT by design.
+        self._adhoc_slot_lock = asyncio.Lock()
+        self._adhoc_inflight = 0
         self._deferred_log_counts: dict[str, int] = {}  # schedule_id -> deferrals since last record
         # threshold-alert cooldown reservations (single-process; see
         # _ThresholdCooldownClaim). Membership means "a fire for this
@@ -1181,11 +1213,14 @@ class SchedulerEngine:
         task applications. Not interval-gated for the same reason as
         ``_deliver_due_dispatches`` — the 30s tick is the latency floor.
 
-        Each execution reserves one of this daemon's global concurrent-fire
-        slots (``_reserve_global_slot``) so ad-hoc executions count against
-        ``MAX_SCHEDULED_CONCURRENT`` the same way scheduled fires do —
-        without this, real top-level concurrency was the configured cap plus
-        one worker lane (see #2751).
+        Each execution reserves one of this daemon's ad-hoc concurrency
+        slots (``_reserve_adhoc_slot``) so ad-hoc executions are bounded by
+        ``MAX_ADHOC_CONCURRENT`` — a pool deliberately independent of
+        ``MAX_SCHEDULED_CONCURRENT``/``_reserve_global_slot``: sharing one
+        counter between the two lanes let a continuously replenished stream
+        of scheduled fires reacquire every freed slot before this pass got
+        one, starving ad-hoc work indefinitely. Each lane now has its own
+        guaranteed capacity instead of competing for one shared pool.
         """
         from lionagi.state.db import StateDB
         from lionagi.studio.scheduler import worker as _worker
@@ -1202,7 +1237,7 @@ class SchedulerEngine:
                 db,
                 worker_id=self._task_worker_id,
                 now=now,
-                reserve_slot=self._reserve_global_slot,
+                reserve_slot=self._reserve_adhoc_slot,
                 release_slot=_release,
             )
 
@@ -1641,6 +1676,28 @@ class SchedulerEngine:
 
     def _release_global_slot(self) -> None:
         self._global_inflight = max(0, self._global_inflight - 1)
+
+    async def _reserve_adhoc_slot(self) -> tuple[bool, _AdhocSlotClaim | None]:
+        """Atomically claim one ad-hoc task-worker concurrency slot.
+
+        Mirrors ``_reserve_global_slot()`` but draws from its own counter
+        (``_adhoc_inflight``/``MAX_ADHOC_CONCURRENT``), independent of the
+        scheduled-fire cap. This is the ad-hoc lane's dedicated capacity: it
+        is never refused because the scheduled lane happens to be saturated,
+        and vice versa, so neither lane can starve the other.
+        """
+        from lionagi.studio.config import MAX_ADHOC_CONCURRENT
+
+        if MAX_ADHOC_CONCURRENT <= 0:
+            return True, None
+        async with self._adhoc_slot_lock:
+            if self._adhoc_inflight >= MAX_ADHOC_CONCURRENT:
+                return False, None
+            self._adhoc_inflight += 1
+            return True, _AdhocSlotClaim(self)
+
+    def _release_adhoc_slot(self) -> None:
+        self._adhoc_inflight = max(0, self._adhoc_inflight - 1)
 
     async def _maybe_record_deferred(self, schedule: dict, now: float) -> None:
         """Emit a throttled skipped-run record for a capacity-deferred fire.

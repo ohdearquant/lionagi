@@ -529,18 +529,21 @@ async def test_maybe_record_deferred_throttles_after_first(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _run_task_worker_tick — ad-hoc executions now count against the cap (#2751)
+# _run_task_worker_tick — ad-hoc executions draw from their own independent
+# concurrency pool (MAX_ADHOC_CONCURRENT / _adhoc_inflight), never the
+# scheduled-fire cap. A shared counter let a continuously replenished stream
+# of scheduled fires starve the ad-hoc lane indefinitely; each lane now has
+# its own guaranteed capacity.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_worker_pass_reserves_global_slot_and_counts_against_cap(monkeypatch, tmp_path):
-    """Measured, not inferred: with the cap already saturated by (simulated)
-    scheduled fires, a queued ad-hoc task must stay queued rather than
-    execute as a cap+1'th concurrent action. Freeing capacity lets it
-    execute and the slot is released once the row reaches a terminal
-    status. Before this fix the worker never called _reserve_global_slot at
-    all, so this row would have executed regardless of cap saturation."""
+async def test_worker_pass_reserves_adhoc_slot_and_counts_against_adhoc_cap(monkeypatch, tmp_path):
+    """Measured, not inferred: with the ad-hoc pool itself saturated by
+    (simulated) concurrent ad-hoc executions, a queued ad-hoc task must stay
+    queued rather than execute as a cap+1'th concurrent action. Freeing
+    ad-hoc capacity lets it execute and the slot is released once the row
+    reaches a terminal status."""
     import lionagi.state.db as state_db_mod
     import lionagi.studio.config as studio_config
     from lionagi.state.db import StateDB
@@ -549,7 +552,7 @@ async def test_worker_pass_reserves_global_slot_and_counts_against_cap(monkeypat
 
     fake_db = tmp_path / "state.db"
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
-    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 4)
+    monkeypatch.setattr(studio_config, "MAX_ADHOC_CONCURRENT", 4)
 
     async with StateDB(fake_db) as db:
         run_id = await submit_task(
@@ -560,23 +563,24 @@ async def test_worker_pass_reserves_global_slot_and_counts_against_cap(monkeypat
 
     holders = []
     for _ in range(4):
-        allowed, claim = await engine._reserve_global_slot()
+        allowed, claim = await engine._reserve_adhoc_slot()
         assert allowed is True
         holders.append(claim)
-    assert engine._global_inflight == 4
+    assert engine._adhoc_inflight == 4
 
     await engine._run_task_worker_tick(1_000.0)
 
     async with StateDB(fake_db) as db:
         row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
     assert row["status"] == "queued", (
-        "saturated cap must defer the ad-hoc row, not run it as a cap+1'th concurrent execution"
+        "saturated ad-hoc cap must defer the ad-hoc row, not run it as a cap+1'th "
+        "concurrent execution"
     )
-    assert engine._global_inflight == 4
+    assert engine._adhoc_inflight == 4
 
     for claim in holders:
         claim.release()
-    assert engine._global_inflight == 0
+    assert engine._adhoc_inflight == 0
 
     with (
         patch(
@@ -597,4 +601,64 @@ async def test_worker_pass_reserves_global_slot_and_counts_against_cap(monkeypat
     async with StateDB(fake_db) as db:
         row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
     assert row["status"] == "completed"
-    assert engine._global_inflight == 0
+    assert engine._adhoc_inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_adhoc_lane_admits_under_continuously_saturated_scheduled_cap(monkeypatch, tmp_path):
+    """Reproduces the starvation scenario a shared counter created: a
+    continuously replenished scheduled-fire stream holds the scheduled cap
+    fully saturated across every tick. With one shared counter, a refused
+    worker-pass reservation only leaves the ad-hoc row queued for the next
+    tick, and a stream of scheduled fires reacquires every freed slot first
+    -- so the ad-hoc row never gets admitted. With the ad-hoc lane's own
+    independent pool, saturation on the scheduled side has no bearing on
+    ad-hoc admission at all: the row is admitted on the very first tick."""
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.config as studio_config
+    from lionagi.state.db import StateDB
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.services.task_applications import TaskApplication, submit_task
+
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    monkeypatch.setattr(studio_config, "MAX_ADHOC_CONCURRENT", 1)
+
+    async with StateDB(fake_db) as db:
+        run_id = await submit_task(
+            db, TaskApplication(action_kind="agent", args={}, execution_target="host")
+        )
+
+    engine = SchedulerEngine(svc=_make_svc())
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.resolve_li_executable",
+            return_value=(["uv", "run", "li"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        for tick in range(5):
+            # A scheduled fire holds the one scheduled slot for this tick,
+            # then releases and immediately reacquires it before the next
+            # tick -- the same "continuously replenished stream" shape that
+            # exposed the starvation.
+            allowed, scheduled_claim = await engine._reserve_global_slot()
+            assert allowed is True
+            await engine._run_task_worker_tick(1_000.0 + tick)
+            scheduled_claim.release()
+
+    async with StateDB(fake_db) as db:
+        row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "completed", (
+        "the ad-hoc lane must be admitted from its own independent pool even "
+        "while the scheduled cap stays continuously saturated"
+    )
