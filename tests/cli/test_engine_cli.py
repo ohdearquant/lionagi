@@ -803,6 +803,9 @@ def test_main_routes_engine_command(monkeypatch):
 
     # Get the actual main.py module (not the main() function exported via __init__)
     main_module = importlib.import_module("lionagi.cli.main")
+    engine_mod = importlib.import_module("lionagi.cli.engine")
+
+    from lionagi._auto import _MARKER_ATTR, _isolated_registry_for_tests
 
     run_engine_calls = []
 
@@ -810,10 +813,19 @@ def test_main_routes_engine_command(monkeypatch):
         run_engine_calls.append(args)
         return 0
 
-    monkeypatch.setattr(main_module, "run_engine", _mock_run_engine)
+    # The real `run_engine` carries the auto-registration marker as a property
+    # of the function object itself (not the module attribute); copy it onto
+    # the mock, and claim the seed module's `__module__` too, so the typed CLI
+    # seam still finds exactly one matching `engine` marker.
+    setattr(_mock_run_engine, _MARKER_ATTR, getattr(engine_mod.run_engine, _MARKER_ATTR))
+    _mock_run_engine.__module__ = engine_mod.__name__
+    monkeypatch.setattr(engine_mod, "run_engine", _mock_run_engine)
 
-    # 'engine run research <spec>' — must be routed to run_engine.
-    rc = main_module.main(["engine", "run", "research", "test topic"])
+    # 'engine run research <spec>' — must be routed to run_engine. The seed
+    # registry is isolated so this test's monkeypatch is what gets discovered,
+    # regardless of whether another test already realized the "engine" seed.
+    with _isolated_registry_for_tests():
+        rc = main_module.main(["engine", "run", "research", "test topic"])
     assert rc == 0
     assert len(run_engine_calls) == 1
     assert run_engine_calls[0].command == "engine"

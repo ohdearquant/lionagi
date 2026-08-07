@@ -13,6 +13,8 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
+
 __all__ = (
     "add_dispatch_subparser",
     "run_dispatch",
@@ -306,6 +308,9 @@ def add_dispatch_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+@auto_register(
+    area="dispatch", cli=CliDeclaration(seed="dispatch", parser_factory=add_dispatch_subparser)
+)
 def run_dispatch(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
 

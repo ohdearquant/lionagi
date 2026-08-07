@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 import psutil
 
+from lionagi._auto import CliDeclaration, auto_register
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 
 from ._logging import log_error, warn
@@ -950,6 +951,7 @@ def add_kill_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+@auto_register(area="kill", cli=CliDeclaration(seed="kill", parser_factory=add_kill_subparser))
 def run_kill(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
 

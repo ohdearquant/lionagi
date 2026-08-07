@@ -42,8 +42,6 @@ import tempfile
 
 import pytest
 
-import lionagi.cli.main as cli_main
-
 _CLI = [sys.executable, "-m", "lionagi.cli.main"]
 
 
@@ -68,8 +66,10 @@ def _command_parser(command: str, *subs: str) -> argparse.ArgumentParser:
     contract. Private argparse attributes are used deliberately — they are
     the stable introspection surface for this.
     """
-    spec = cli_main._COMMAND_BY_NAME[command]
-    parser, _ = cli_main._build_parser(spec)
+    from lionagi._auto import build_cli_parser, seed_for
+
+    seed = seed_for(command)
+    parser = build_cli_parser(seed).parser
     for name in (command, *subs):
         sub_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
         parser = sub_action.choices[name]

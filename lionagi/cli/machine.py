@@ -20,6 +20,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
+
 __all__ = (
     "CONTRACT_VERSION",
     "MIN_SUPPORTED_CONTRACT_VERSION",
@@ -791,9 +793,9 @@ def _run_machine_command(argv: list[str]) -> dict[str, Any]:
     if module_name is not None:
         return import_module(module_name, __package__).machine_result(rest)
 
-    from .main import _COMMAND_BY_NAME
+    from lionagi._auto import command_exists
 
-    if name in _COMMAND_BY_NAME or name in ("play", "skill", "wait"):
+    if command_exists(name) or name in ("play", "skill", "wait"):
         raise MachineError(
             "unavailable",
             f"li {name} has no machine-mode result in contract version "
@@ -817,6 +819,10 @@ def add_handshake_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--machine", action="store_true", help="Emit the machine-result envelope.")
 
 
+@auto_register(
+    area="handshake",
+    cli=CliDeclaration(seed="handshake", parser_factory=add_handshake_subparser),
+)
 def run_handshake(args: argparse.Namespace) -> int:
     data = handshake_data()
     for key, value in data.items():
@@ -834,6 +840,7 @@ def add_runs_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--machine", action="store_true", help="Emit the machine-result envelope.")
 
 
+@auto_register(area="runs", cli=CliDeclaration(seed="runs", parser_factory=add_runs_subparser))
 def run_runs(args: argparse.Namespace) -> int:
     data = runs_data(getattr(args, "limit", _DEFAULT_RUNS_LIMIT))
     listing = data["runs"]
@@ -869,6 +876,9 @@ def add_lifecycle_subparser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument("--machine", action="store_true", help="Emit the machine-result envelope.")
 
 
+@auto_register(
+    area="lifecycle", cli=CliDeclaration(seed="lifecycle", parser_factory=add_lifecycle_subparser)
+)
 def run_lifecycle(args: argparse.Namespace) -> int:
     from ._logging import log_error
 

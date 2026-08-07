@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.state.session_naming import sanitize_prompt_name
@@ -23,6 +24,21 @@ from ._logging import hint, log_error, progress, warn
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+
+
+def _display_path(path: Path) -> str:
+    """Render a path under the home directory as ~/... for display.
+
+    Help text is the same on every machine this way. Printing the expanded
+    absolute path puts the running user's home directory into --help output,
+    which differs per machine and ends up in anything that captures it.
+    """
+    try:
+        return f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
 _OFFSETS_PATH = LIONAGI_HOME / "mirror" / "offsets.json"
 
 # A session whose newest message is within this window counts as live (running);
@@ -69,13 +85,13 @@ def add_mirror_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--root",
         default=None,
         metavar="DIR",
-        help=f"Claude projects directory (default {CLAUDE_PROJECTS_DIR}).",
+        help=f"Claude projects directory (default {_display_path(CLAUDE_PROJECTS_DIR)}).",
     )
     p.add_argument(
         "--codex-root",
         default=None,
         metavar="DIR",
-        help=f"Codex sessions directory (default {CODEX_SESSIONS_DIR}).",
+        help=f"Codex sessions directory (default {_display_path(CODEX_SESSIONS_DIR)}).",
     )
     p.add_argument(
         "--source",
@@ -955,6 +971,9 @@ async def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+@auto_register(
+    area="mirror", cli=CliDeclaration(seed="mirror", parser_factory=add_mirror_subparser)
+)
 def run_mirror(args: argparse.Namespace) -> int:
     from lionagi.ln.concurrency import run_async
 

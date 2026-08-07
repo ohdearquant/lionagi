@@ -8,10 +8,9 @@ import argparse
 import signal
 import sys
 import traceback
-from collections.abc import Callable
-from dataclasses import dataclass
 from importlib import import_module
-from types import ModuleType
+
+from lionagi._auto import build_cli_parser, seed_for
 
 from ._logging import configure_cli_logging, log_error
 from ._util import (
@@ -22,360 +21,16 @@ from ._util import (
 )
 
 
-def _load_agent() -> ModuleType:
-    return import_module(".agent", __package__)
-
-
-def _load_casts() -> ModuleType:
-    return import_module(".casts", __package__)
-
-
-def _load_dispatch() -> ModuleType:
-    return import_module(".dispatch", __package__)
-
-
-def _load_doctor() -> ModuleType:
-    return import_module(".doctor", __package__)
-
-
-def _load_engine() -> ModuleType:
-    return import_module(".engine", __package__)
-
-
-def _load_hooks() -> ModuleType:
-    return import_module(".hooks", __package__)
-
-
-def _load_invoke() -> ModuleType:
-    return import_module(".invoke", __package__)
-
-
-def _load_kill() -> ModuleType:
-    return import_module(".kill", __package__)
-
-
-def _load_machine() -> ModuleType:
-    return import_module(".machine", __package__)
-
-
-def _load_mcp() -> ModuleType:
-    return import_module(".mcp", __package__)
-
-
-def _load_mirror() -> ModuleType:
-    return import_module(".mirror", __package__)
-
-
-def _load_monitor() -> ModuleType:
-    return import_module(".monitor", __package__)
-
-
-def _load_orchestrate() -> ModuleType:
+def _load_orchestrate():
     return import_module(".orchestrate", __package__)
 
 
-def _load_plugin() -> ModuleType:
-    return import_module(".plugin", __package__)
+def _load_machine():
+    return import_module(".machine", __package__)
 
 
-def _load_state() -> ModuleType:
-    return import_module(".state", __package__)
-
-
-def _load_stats() -> ModuleType:
-    return import_module(".stats", __package__)
-
-
-def _load_team() -> ModuleType:
-    return import_module(".team", __package__)
-
-
-def _load_studio() -> ModuleType:
+def _load_studio():
     return import_module("lionagi.studio.cli")
-
-
-@dataclass(frozen=True)
-class _CommandSpec:
-    name: str
-    help: str
-    loader: Callable[[], ModuleType]
-    parser_factory: str
-    handler: str
-    aliases: tuple[str, ...] = ()
-
-
-_COMMAND_REGISTRY = (
-    _CommandSpec(
-        "orchestrate",
-        "Multi-agent orchestration patterns.",
-        _load_orchestrate,
-        "add_orchestrate_subparser",
-        "run_orchestrate",
-        ("o",),
-    ),
-    _CommandSpec(
-        "agent",
-        "Spawn one-shot subagent (blocking); prints final response.",
-        _load_agent,
-        "add_agent_subparser",
-        "run_agent",
-    ),
-    _CommandSpec(
-        "casts",
-        "inspect built-in roles and modes",
-        _load_casts,
-        "add_casts_subparser",
-        "run_casts",
-    ),
-    _CommandSpec(
-        "engine",
-        "Run domain-specific multi-agent engine pipelines.",
-        _load_engine,
-        "add_engine_subparser",
-        "run_engine",
-    ),
-    _CommandSpec(
-        "team",
-        "Team messaging — send/receive between named agents.",
-        _load_team,
-        "add_team_subparser",
-        "run_team",
-    ),
-    _CommandSpec(
-        "studio",
-        "Lion Studio server",
-        _load_studio,
-        "add_studio_subparser",
-        "run_studio",
-    ),
-    _CommandSpec(
-        "schedule",
-        "Manage lionagi Studio schedules.",
-        _load_studio,
-        "add_schedule_subparser",
-        "run_schedule",
-    ),
-    _CommandSpec(
-        "state",
-        "Inspect and migrate lionagi state.db.",
-        _load_state,
-        "add_state_subparser",
-        "run_state",
-    ),
-    _CommandSpec(
-        "invoke",
-        "Track a skill-level orchestration.",
-        _load_invoke,
-        "add_invoke_subparser",
-        "run_invoke",
-    ),
-    _CommandSpec(
-        "kill",
-        "Terminate a running entity (run/session/play/show).",
-        _load_kill,
-        "add_kill_subparser",
-        "run_kill",
-    ),
-    _CommandSpec(
-        "mirror",
-        "Mirror Claude Code sessions into studio (live).",
-        _load_mirror,
-        "add_mirror_subparser",
-        "run_mirror",
-    ),
-    _CommandSpec(
-        "monitor",
-        "Observe play/agent/run progress in real-time.",
-        _load_monitor,
-        "add_monitor_subparser",
-        "run_monitor",
-        ("mon",),
-    ),
-    _CommandSpec(
-        "dispatch",
-        "Inspect and acknowledge durable dispatch_outbox rows.",
-        _load_dispatch,
-        "add_dispatch_subparser",
-        "run_dispatch",
-    ),
-    _CommandSpec(
-        "doctor",
-        "Check the lionagi CLI environment/install for common failure modes.",
-        _load_doctor,
-        "add_doctor_subparser",
-        "run_doctor",
-    ),
-    _CommandSpec(
-        "stats",
-        "Read-only aggregate reporting over lionagi's StateDB.",
-        _load_stats,
-        "add_stats_subparser",
-        "run_stats",
-    ),
-    _CommandSpec(
-        "plugin",
-        "Inspect, trust, and enable/disable LionAGI plugin bundles.",
-        _load_plugin,
-        "add_plugin_subparser",
-        "run_plugin",
-    ),
-    _CommandSpec(
-        "hooks",
-        "Import Claude Code / Codex hook configs; trust imported hook commands.",
-        _load_hooks,
-        "add_hooks_subparser",
-        "run_hooks",
-    ),
-    _CommandSpec(
-        "handshake",
-        "Report the machine-result contract version this build speaks.",
-        _load_machine,
-        "add_handshake_subparser",
-        "run_handshake",
-    ),
-    _CommandSpec(
-        "runs",
-        "List recorded runs and what each one wrote.",
-        _load_machine,
-        "add_runs_subparser",
-        "run_runs",
-    ),
-    _CommandSpec(
-        "lifecycle",
-        "Report the recorded lifecycle state of a run.",
-        _load_machine,
-        "add_lifecycle_subparser",
-        "run_lifecycle",
-    ),
-    _CommandSpec(
-        "mcp",
-        "Serve the lionagi MCP server (background job submit/query) over stdio.",
-        _load_mcp,
-        "add_mcp_subparser",
-        "run_mcp",
-    ),
-)
-_COMMAND_BY_NAME = {
-    command_name: spec for spec in _COMMAND_REGISTRY for command_name in (spec.name, *spec.aliases)
-}
-
-
-def _build_parser(selected: _CommandSpec | None) -> tuple[argparse.ArgumentParser, object | None]:
-    parser = argparse.ArgumentParser(
-        prog="li",
-        description="lionagi command line — spawn subagents via any CLI-backed provider.",
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {_get_version()}",
-        help="Print the installed lionagi version and exit.",
-    )
-    parser.add_argument(
-        "--machine",
-        action="store_true",
-        help=(
-            "Emit one machine-result JSON object on stdout and send every "
-            "human-facing line to stderr."
-        ),
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    # Every command is registered for usage/error listing; only the selected
-    # one loads its real parser module, the rest stay metadata-only stubs.
-    selected_parser = None
-    for spec in _COMMAND_REGISTRY:
-        if selected is not None and spec.name == selected.name:
-            factory = getattr(selected.loader(), selected.parser_factory)
-            selected_parser = factory(subparsers)
-        else:
-            subparsers.add_parser(spec.name, aliases=list(spec.aliases), help=spec.help)
-    return parser, selected_parser
-
-
-# These forwarding functions preserve the main module's existing patch points
-# without importing a command implementation until that command is dispatched.
-def run_agent(args: argparse.Namespace) -> int:
-    return _load_agent().run_agent(args)
-
-
-def run_casts(args: argparse.Namespace) -> int:
-    return _load_casts().run_casts(args)
-
-
-def run_dispatch(args: argparse.Namespace) -> int:
-    return _load_dispatch().run_dispatch(args)
-
-
-def run_doctor(args: argparse.Namespace) -> int:
-    return _load_doctor().run_doctor(args)
-
-
-def run_engine(args: argparse.Namespace) -> int:
-    return _load_engine().run_engine(args)
-
-
-def run_invoke(args: argparse.Namespace) -> int:
-    return _load_invoke().run_invoke(args)
-
-
-def run_kill(args: argparse.Namespace) -> int:
-    return _load_kill().run_kill(args)
-
-
-def run_mcp(args: argparse.Namespace) -> int:
-    return _load_mcp().run_mcp(args)
-
-
-def run_mirror(args: argparse.Namespace) -> int:
-    return _load_mirror().run_mirror(args)
-
-
-def run_monitor(args: argparse.Namespace) -> int:
-    return _load_monitor().run_monitor(args)
-
-
-def run_orchestrate(args: argparse.Namespace) -> int:
-    return _load_orchestrate().run_orchestrate(args)
-
-
-def run_handshake(args: argparse.Namespace) -> int:
-    return _load_machine().run_handshake(args)
-
-
-def run_runs(args: argparse.Namespace) -> int:
-    return _load_machine().run_runs(args)
-
-
-def run_lifecycle(args: argparse.Namespace) -> int:
-    return _load_machine().run_lifecycle(args)
-
-
-def run_hooks(args: argparse.Namespace) -> int:
-    return _load_hooks().run_hooks(args)
-
-
-def run_plugin(args: argparse.Namespace) -> int:
-    return _load_plugin().run_plugin(args)
-
-
-def run_schedule(args: argparse.Namespace) -> int:
-    return _load_studio().run_schedule(args)
-
-
-def run_state(args: argparse.Namespace) -> int:
-    return _load_state().run_state(args)
-
-
-def run_stats(args: argparse.Namespace) -> int:
-    return _load_stats().run_stats(args)
-
-
-def run_studio(args: argparse.Namespace) -> int:
-    return _load_studio().run_studio(args)
-
-
-def run_team(args: argparse.Namespace) -> int:
-    return _load_team().run_team(args)
 
 
 def run_skill(argv: list[str]) -> int:
@@ -695,9 +350,9 @@ def _run(argv: list[str] | None = None) -> int:
 
         return run_wait(_argv[1:])
 
-    selected = _COMMAND_BY_NAME.get(_argv[0]) if _argv else None
+    selected = seed_for(_argv[0]) if _argv else None
     try:
-        parser, selected_parser = _build_parser(selected)
+        build = build_cli_parser(selected)
     except ModuleNotFoundError as exc:
         # An environment fault, not a command-scoped one — nothing ran, so
         # exit 78 rather than the 1 a started-and-failed run would return.
@@ -713,11 +368,12 @@ def _run(argv: list[str] | None = None) -> int:
         # dispatch; report it as a command-scoped error, not a traceback.
         log_error(f"command {_argv[0]!r} failed to load: {type(exc).__name__}: {exc}")
         return 1
+    parser, selected_parser = build.parser, build.selected_parser
 
     # `li o flow -p NAME`: inject the playbook's declared args as flags on
     # the flow sub-parser before argparse runs, so prompts don't swallow them.
     orch_parsers: dict[str, argparse.ArgumentParser] | None = None
-    if selected is _COMMAND_BY_NAME["orchestrate"]:
+    if selected is not None and selected.name == "orchestrate":
         orch_parsers = selected_parser
         _load_orchestrate().inject_playbook_schema_into_parser(orch_parsers["flow"], _argv)
 
@@ -725,7 +381,7 @@ def _run(argv: list[str] | None = None) -> int:
     # [MODEL] PROMPT. parse_intermixed_args is unusable: it drops the `--`
     # sentinel between passes, letting a prompt like "--bypass" after `--`
     # toggle real flags on re-parse. Split at the sentinel ourselves instead.
-    if selected is _COMMAND_BY_NAME["agent"]:
+    if selected is not None and selected.name == "agent":
         agent_parser = selected_parser
         tail = _argv[1:]
         if "--" in tail:
@@ -738,14 +394,15 @@ def _run(argv: list[str] | None = None) -> int:
         if unknown:
             agent_parser.error(f"unrecognized arguments: {' '.join(unknown)}")
         args.query = [*(args.query or []), *extras, *post]
-        return run_agent(args)
+        return build.registration.handler(args)
 
     # `li o flow` / `li o fanout` parse standalone for the same reason as
     # `agent` above (nested subparser dispatch can't intermix flags with
     # the [MODEL] PROMPT positionals). See docs/internals/cli.md.
     if (
         _argv
-        and selected is _COMMAND_BY_NAME["orchestrate"]
+        and selected is not None
+        and selected.name == "orchestrate"
         and len(_argv) > 1
         and _argv[1] in ("fanout", "flow")
     ):
@@ -765,12 +422,12 @@ def _run(argv: list[str] | None = None) -> int:
         args.query = [*(args.query or []), *extras, *post]
         args.command = "orchestrate"
         args.orch_command = sub_name
-        return run_orchestrate(args)
+        return build.registration.handler(args)
 
     # `li schedule ...` parses its own subparser directly (mirroring the
     # `agent` special-case above) so an unrecognized flag gets a one-line
     # "did you mean --X?" suggestion instead of argparse's generic usage dump.
-    if selected is _COMMAND_BY_NAME["schedule"]:
+    if selected is not None and selected.name == "schedule":
         schedule_parser = selected_parser
         # `li schedule create <kind> <name> ...` — a typed quick-create form
         # additive to the legacy flat `li schedule create NAME ...`. The kind
@@ -797,12 +454,13 @@ def _run(argv: list[str] | None = None) -> int:
                         continue
                 log_error(f"unrecognized argument: {tok}")
             return 2
-        return run_schedule(ns)
+        return build.registration.handler(ns)
 
     args = parser.parse_args(_argv)
 
     if selected is not None:
-        return globals()[selected.handler](args)
+        assert build.registration is not None
+        return build.registration.handler(args)
 
     parser.print_help()
     return 1

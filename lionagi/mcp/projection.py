@@ -29,6 +29,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from lionagi._auto import CliSeed, build_cli_parser, iter_cli_seeds, seed_for
 from lionagi.cli._argtypes import JsonArgument
 
 __all__ = (
@@ -59,16 +60,6 @@ class PlaybookResolutionError(SchemaProjectionError):
 
 
 # ── the CLI seam ─────────────────────────────────────────────────────────────
-
-
-def _cli_main() -> ModuleType:
-    """The ``lionagi.cli.main`` module object.
-
-    Plain imports of it resolve to the ``main()`` function instead (the
-    package `__init__` shadows the submodule), so this goes through
-    ``import_module`` to reach ``_COMMAND_REGISTRY``/``_build_parser``.
-    """
-    return import_module("lionagi.cli.main")
 
 
 def _subparser_actions(parser: argparse.ArgumentParser) -> list[argparse._SubParsersAction]:
@@ -106,7 +97,7 @@ def _walk(parser: argparse.ArgumentParser, prefix: tuple[str, ...], canonical: b
     return found
 
 
-def _command_tree(spec: Any) -> _Tree:
+def _command_tree(spec: CliSeed) -> _Tree:
     """Every parser path under one top-level command, freshly built.
 
     Each entry says whether the path spells every level with its canonical
@@ -115,8 +106,7 @@ def _command_tree(spec: Any) -> _Tree:
     factory's own return value, since ``orchestrate`` returns a dict of
     sub-parsers where the others return a single parser.
     """
-    main = _cli_main()
-    root, _selected = main._build_parser(spec)
+    root = build_cli_parser(spec).parser
     tree: _Tree = {}
     for sub_action in _subparser_actions(root):
         for name, aliases, sub in _canonical_choices(sub_action):
@@ -135,9 +125,8 @@ def _split(path: str) -> tuple[str, ...]:
     return parts
 
 
-def _spec_for(head: str) -> Any:
-    main = _cli_main()
-    spec = main._COMMAND_BY_NAME.get(head)
+def _spec_for(head: str) -> CliSeed:
+    spec = seed_for(head)
     if spec is None:
         raise SchemaProjectionError(head, "no such command")
     return spec
@@ -149,9 +138,8 @@ def available_paths() -> tuple[str, ...]:
     Reachability here is not authorization — what the projector can read is
     strictly wider than what the dispatch surface allows.
     """
-    main = _cli_main()
     paths: list[str] = []
-    for spec in main._COMMAND_REGISTRY:
+    for spec in iter_cli_seeds():
         for parts, (_parser, canonical) in _command_tree(spec).items():
             if canonical:
                 paths.append(" ".join(parts))

@@ -128,7 +128,7 @@ _KNOWN_MCP_SERVERS: frozenset[str] = frozenset(
 #
 # The shims below cannot be derived the same way. Each is dispatched by an
 # `_argv[0] == "..."` branch in main() ahead of argparse, so all three are
-# absent from `li --help` and from _COMMAND_BY_NAME while being real commands
+# absent from `li --help` and from the typed CLI seed registry while being real commands
 # with their own usage output. Deriving alone would reject them.
 #
 # This list is still hand-maintained, and it was short by `wait` on its first
@@ -141,9 +141,13 @@ _PRE_PARSE_SHIMS: frozenset[str] = frozenset({"play", "skill", "wait"})
 
 
 def _known_li_subcommands() -> frozenset[str]:
-    from lionagi.cli.main import _COMMAND_BY_NAME
+    from lionagi._auto import iter_cli_seeds
 
-    return frozenset(_COMMAND_BY_NAME) | _PRE_PARSE_SHIMS
+    names: set[str] = set()
+    for seed in iter_cli_seeds():
+        names.add(seed.name)
+        names.update(seed.aliases)
+    return frozenset(names) | _PRE_PARSE_SHIMS
 
 
 _KNOWN_LI_SUBCOMMANDS: frozenset[str] = _known_li_subcommands()
@@ -292,17 +296,29 @@ def test_pre_parse_shims_are_all_declared() -> None:
     introduced to stop producing. This is the drift detector for the part that
     still has to be written by hand.
     """
-    from lionagi.cli import main as cli_main
-    from lionagi.cli.main import _COMMAND_BY_NAME
+    from importlib import import_module
+
+    from lionagi._auto import iter_cli_seeds
+
+    # `import_module` reaches the module unambiguously; `from lionagi.cli
+    # import main` can resolve to the lazily-exported callable instead,
+    # depending on which spelling a prior import in this process used first
+    # (see tests/mcp/test_projection.py's attribute-vs-dotted-import probe).
+    cli_main = import_module("lionagi.cli.main")
 
     source = Path(cli_main.__file__).read_text(encoding="utf-8")
     candidates = _shim_candidates_in(source)
     assert candidates, "extractor found no argv[0] comparisons in main.py at all"
 
+    known_names: set[str] = set()
+    for seed in iter_cli_seeds():
+        known_names.add(seed.name)
+        known_names.update(seed.aliases)
+
     # Names already in the registry are dispatched normally; an argv[0] check on
     # one of those is an interception of a SUBcommand (`li agent status`,
     # `li monitor run`), not a top-level shim.
-    undeclared = candidates - frozenset(_COMMAND_BY_NAME) - _PRE_PARSE_SHIMS
+    undeclared = candidates - frozenset(known_names) - _PRE_PARSE_SHIMS
     assert not undeclared, (
         "main() dispatches these on argv[0] but they are in neither the CLI "
         f"registry nor _PRE_PARSE_SHIMS: {sorted(undeclared)}. A skill "

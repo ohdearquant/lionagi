@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from lionagi._auto import CliDeclaration, auto_register
 from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._util import AmbiguousIdError
 from lionagi.ln._json_dump import raise_if_non_finite
@@ -624,6 +625,7 @@ def add_team_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+@auto_register(area="team", cli=CliDeclaration(seed="team", parser_factory=add_team_subparser))
 def run_team(args: argparse.Namespace) -> int:
     cmd = args.team_command
     if cmd == "create":

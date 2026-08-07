@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from lionagi._auto import CliDeclaration, auto_register
 from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._argtypes import JsonArgument
 from lionagi.cli._logging import log_error, warn
@@ -156,6 +157,9 @@ def _validate_mode_flags(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
 
+@auto_register(
+    area="studio", cli=CliDeclaration(seed="studio", parser_factory=add_studio_subparser)
+)
 def run_studio(args: argparse.Namespace) -> int:
     if not getattr(args, "studio_action", None):
         args.studio_action = "start"
@@ -2351,6 +2355,9 @@ _ACTION_MAP = {
 }
 
 
+@auto_register(
+    area="schedule", cli=CliDeclaration(seed="schedule", parser_factory=add_schedule_subparser)
+)
 def run_schedule(args: argparse.Namespace) -> int:
     action = getattr(args, "schedule_action", None)
     fn = _ACTION_MAP.get(action)

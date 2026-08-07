@@ -8,6 +8,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from lionagi._auto import CliDeclaration, auto_register
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
@@ -1068,6 +1069,10 @@ def _run_orch_command(coro, *, verbose: bool, extra_handlers: tuple = ()) -> tup
     return result, 0
 
 
+@auto_register(
+    area="orchestrate",
+    cli=CliDeclaration(seed="orchestrate", parser_factory=add_orchestrate_subparser),
+)
 def run_orchestrate(args: argparse.Namespace) -> int:
     if args.orch_command == "fanout":
         resolved = _resolve_model_and_prompt(getattr(args, "query", None) or [])
