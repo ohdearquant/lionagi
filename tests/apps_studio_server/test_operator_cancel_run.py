@@ -108,6 +108,65 @@ def _command_executor(calls: list):
     return execute
 
 
+# ── cancel_run(): proposal summary names more than a bare id ────────────
+
+
+async def test_cancel_run_proposal_summary_names_project_name_status_and_elapsed(
+    tmp_path, monkeypatch
+):
+    """A human approving a destructive cancel needs more than a 12-char id
+    and an optional raw reason -- the proposal summary must also name the
+    project, the run's own name, its status, and how long it has run."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_session(
+            db,
+            status="running",
+            name="nightly-triage",
+            started_at=time.time() - 125,
+        )
+        await db.update_session(run_id, project="/Users/admin/acme-research")
+
+    store = OperatorStore(path)
+    calls: list = []
+    coordinator = OperatorCoordinator(store=store, command_executor=_command_executor(calls))
+    await coordinator.startup()
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/acme-research",
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    task = asyncio.create_task(cancel_run({"run": run_id, "reason": "stuck"}))
+    proposal = await _wait_proposal(store, request_id)
+
+    assert "acme-research" in proposal["summary"]
+    assert "nightly-triage" in proposal["summary"]
+    assert "running" in proposal["summary"]
+    assert "2m" in proposal["summary"]
+    assert "stuck" in proposal["summary"]
+    assert run_id[:12] in proposal["summary"]
+
+    decision = await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=False,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=proposal["targetVersion"],
+    )
+    await asyncio.wait_for(task, timeout=2)
+    assert decision["status"] == "failed"
+    await coordinator.shutdown()
+
+
 # ── cancel_run(): allow path -> real mutation ────────────────────────────
 
 
@@ -130,7 +189,7 @@ async def test_cancel_run_allow_path_terminates_and_persists_cancel(tmp_path, mo
     proposal = await _wait_proposal(store, request_id)
     assert not task.done()
     assert proposal["commandType"] == "cancel"
-    assert proposal["command"] == {"session_id": run_id, "reason": "stuck"}
+    assert proposal["command"] == {"session_id": run_id, "reason": "stuck", "project": None}
     assert proposal["risk"] == "execute"
 
     decision = await coordinator.decide(
@@ -143,7 +202,7 @@ async def test_cancel_run_allow_path_terminates_and_persists_cancel(tmp_path, mo
     result = await asyncio.wait_for(task, timeout=2)
 
     assert decision["status"] == "succeeded"
-    assert calls == [("cancel", {"session_id": run_id, "reason": "stuck"})]
+    assert calls == [("cancel", {"session_id": run_id, "reason": "stuck", "project": None})]
     assert result == {
         "cancelled": True,
         "status": "terminal",
@@ -396,6 +455,115 @@ async def test_execute_cancel_command_missing_session_id_raises():
         await execute_cancel_command({"reason": "no id given"})
 
 
+# ── execute_cancel_command(): running children must not be orphaned ──────
+
+
+async def test_execute_cancel_command_reaps_a_running_child_invocation(tmp_path, monkeypatch):
+    """Cancelling a session must not leave its owning invocation's process
+    running -- the same deepest-first traversal `li kill --recursive` uses
+    (lionagi/cli/kill.py::_list_running_children/_kill_one) must also run
+    here, or the child process is orphaned."""
+    from lionagi.state.db import StateDB
+    from lionagi.state.reasons import RunReasons
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    invocation_id = str(uuid.uuid4())
+    async with StateDB() as db:
+        await db.create_invocation(
+            {
+                "id": invocation_id,
+                "skill": "resume:agent",
+                "plugin": "studio_run_resume",
+                "prompt": "continue",
+                "started_at": time.time(),
+                "status": "running",
+                "node_metadata": {"pid": None},
+            }
+        )
+        progression_id = str(uuid.uuid4())
+        run_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "progression_id": progression_id,
+                "status": "running",
+                "name": "parent-run",
+                "started_at": time.time(),
+                "invocation_id": invocation_id,
+            }
+        )
+
+    result = await execute_cancel_command({"session_id": run_id, "reason": "stuck"})
+    assert result == {"status": "terminal", "id": run_id, "signal": "no_pid"}
+
+    async with StateDB() as db:
+        session_row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
+        assert session_row["status"] == "cancelled"
+
+        invocation_row = await db.fetch_one(
+            "SELECT status FROM invocations WHERE id = ?", (invocation_id,)
+        )
+        assert invocation_row["status"] == "cancelled"
+
+        invocation_transition = await db.fetch_one(
+            "SELECT * FROM status_transitions WHERE entity_id = ? AND status = 'cancelled'",
+            (invocation_id,),
+        )
+        assert invocation_transition is not None
+        assert invocation_transition["reason_code"] == RunReasons.CANCELLED_MANUAL_KILL
+
+
+async def test_execute_cancel_command_a_terminal_child_invocation_is_left_alone(
+    tmp_path, monkeypatch
+):
+    """A child that already finished on its own must not get a spurious
+    cancellation transition -- only running children are reaped."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    invocation_id = str(uuid.uuid4())
+    async with StateDB() as db:
+        await db.create_invocation(
+            {
+                "id": invocation_id,
+                "skill": "resume:agent",
+                "plugin": "studio_run_resume",
+                "prompt": "continue",
+                "started_at": time.time(),
+                "status": "completed",
+            }
+        )
+        progression_id = str(uuid.uuid4())
+        run_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "progression_id": progression_id,
+                "status": "running",
+                "name": "parent-run",
+                "started_at": time.time(),
+                "invocation_id": invocation_id,
+            }
+        )
+
+    result = await execute_cancel_command({"session_id": run_id})
+    assert result == {"status": "terminal", "id": run_id, "signal": "no_pid"}
+
+    async with StateDB() as db:
+        invocation_row = await db.fetch_one(
+            "SELECT status FROM invocations WHERE id = ?", (invocation_id,)
+        )
+        assert invocation_row["status"] == "completed"
+        transitions = await db.fetch_all(
+            "SELECT * FROM status_transitions WHERE entity_id = ?", (invocation_id,)
+        )
+        assert transitions == []
+
+
 # ── execute_cancel_command(): false-success regressions ──────────────────
 
 
@@ -597,3 +765,139 @@ async def test_cancel_run_text_search_without_project_context_stays_unscoped(tmp
     assert result["cancelled"] is False
     assert result["reason"] == "ambiguous_reference"
     assert set(result["candidates"]) == {first, second}
+
+
+async def test_cancel_run_exact_id_of_a_foreign_project_terminal_run_is_not_found(
+    tmp_path, monkeypatch
+):
+    """An exact/prefix id match must obey the same project ownership the
+    text-search arm already enforces -- a foreign project's run must not even
+    be visible as 'already terminal', which would confirm its existence."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        foreign_run = await _seed_session(db, status="completed", name="foreign-run")
+        await db.update_session(foreign_run, project="/Users/admin/acme-ops")
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/acme-research",
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    result = await cancel_run({"run": foreign_run})
+
+    assert result == {"cancelled": False, "reason": "not_found", "run_untouched": True}
+    assert await store.list_proposals_for_request(request_id) == []
+
+
+async def test_cancel_run_exact_id_of_a_foreign_project_running_run_creates_no_proposal(
+    tmp_path, monkeypatch
+):
+    """The dangerous half of the bypass: a foreign project's RUNNING run must
+    not reach the proposal/execution path at all."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        foreign_run = await _seed_session(db, status="running", name="foreign-run")
+        await db.update_session(foreign_run, project="/Users/admin/acme-ops")
+
+    store = OperatorStore(path)
+    calls: list = []
+    coordinator = OperatorCoordinator(store=store, command_executor=_command_executor(calls))
+    await coordinator.startup()
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/acme-research",
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    # A correctly-scoped resolution returns "not_found" immediately -- it
+    # never creates a proposal to wait on. Bound the wait so a regression
+    # that resumes creating a proposal fails the test instead of hanging.
+    result = await asyncio.wait_for(cancel_run({"run": foreign_run}), timeout=5)
+
+    assert result == {"cancelled": False, "reason": "not_found", "run_untouched": True}
+    assert await store.list_proposals_for_request(request_id) == []
+    assert calls == []
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (foreign_run,))
+        assert row["status"] == "running"
+    await coordinator.shutdown()
+
+
+async def test_cancel_run_ambiguous_id_prefix_hides_foreign_project_candidates(
+    tmp_path, monkeypatch
+):
+    """A short id-prefix collision must drop foreign-project candidates from
+    the ambiguity list -- and resolve uniquely when only one owned row
+    survives, rather than reporting a foreign row as a candidate."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    shared_prefix = "deadbeef"
+    owned = f"{shared_prefix}-1111-2222-3333-444455556666"
+    foreign = f"{shared_prefix}-9999-8888-7777-666655554444"
+    async with StateDB() as db:
+        prog_owned = str(uuid.uuid4())
+        await db.create_progression(prog_owned)
+        await db.create_session(
+            {
+                "id": owned,
+                "progression_id": prog_owned,
+                "status": "completed",
+                "name": "owned-run",
+                "project": "/Users/admin/acme-research",
+                "started_at": time.time(),
+            }
+        )
+        prog_foreign = str(uuid.uuid4())
+        await db.create_progression(prog_foreign)
+        await db.create_session(
+            {
+                "id": foreign,
+                "progression_id": prog_foreign,
+                "status": "completed",
+                "name": "foreign-run",
+                "project": "/Users/admin/acme-ops",
+                "started_at": time.time(),
+            }
+        )
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/acme-research",
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    result = await cancel_run({"run": shared_prefix})
+
+    assert result == {
+        "cancelled": False,
+        "status": "already_terminal",
+        "id": owned,
+        "run_untouched": True,
+    }

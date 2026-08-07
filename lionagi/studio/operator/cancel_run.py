@@ -18,20 +18,11 @@ performed by a human running ``li kill`` directly. No subprocess is spawned;
 mirrors, does not shell out either -- it creates a proposal and polls it,
 same as `cancel_run` below.
 
-``resume_run`` is intentionally absent. `../analyst/implementation_brief.md`
-§1.1/§3.4 traces the lifecycle policy (`lionagi/state/lifecycle/policy.py`)
-and finds no edge out of ``cancelled``; there is no supported surface to
-un-gate a paused run. Shipping a resume tool here would be a stub with no
-real backing action, which the brief and this module's instructions both
-rule out.
-
-Adapter seam for the shared step-7 wiring (out of this module's disjoint
-scope -- see `lifecycle_implementation.md`): `OperatorCoordinator`'s
-``command_executor`` (`coordinator.py::_execute_application_command`) today
-only understands ``command_type == "launch"``. It must grow a
-``command_type == "cancel"`` branch that calls `execute_cancel_command`
-below, or an approved cancel proposal completes as a "service_failure"
-without ever touching the run.
+``resume_run`` (`resume_run.py`) is a separate adapter: it does not un-gate
+a cancelled run's status -- the lifecycle policy
+(`lionagi/state/lifecycle/policy.py`) has no edge out of ``cancelled`` -- it
+launches a new, separate invocation that continues the same branch's
+conversation with new input, which needs no such edge.
 """
 
 from __future__ import annotations
@@ -42,6 +33,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .redact import public_project
 from .store import OperatorStore
 
 CANCEL_RUN_COMMAND_TYPE = "cancel"
@@ -59,9 +51,9 @@ CANCEL_RUN_DESCRIPTION = (
     "Accepts a run UUID, an 8+ hex id prefix, a name substring (minimum 3 "
     "characters), or 'current' for the run open when this instruction was "
     "sent. Ambiguous references return candidates rather than guessing. "
-    "There is no resume tool: the run's lifecycle policy has no edge back "
-    "out of 'cancelled', so cancellation is the only supported lifecycle "
-    "control."
+    "Use resume_run to continue a run's conversation with a new instruction "
+    "instead -- that launches a new invocation rather than reopening this "
+    "run's status."
 )
 
 
@@ -142,6 +134,31 @@ async def _allowed_project(store: OperatorStore, request_id: str) -> str | None:
     return project if isinstance(project, str) and project else None
 
 
+def _owns(row_project: Any, project: str | None) -> bool:
+    """Whether a session's ``project`` column is visible to a turn scoped to
+    ``project``. A turn with no project context (``project is None``)
+    preserves the pre-existing unscoped behavior -- see
+    ``_allowed_project``'s own docstring for why that fallback is
+    intentional rather than a hole."""
+    return project is None or row_project == project
+
+
+async def _owned_rows(db: Any, ids: list[str], project: str | None) -> list[dict[str, Any]]:
+    """Re-fetch *ids* and keep only the rows ``project`` may see, preserving
+    the input order. Used to strip foreign-project rows out of an
+    ``AmbiguousIdError``'s candidate list before it ever reaches the human --
+    a foreign row must not even be visible as an ambiguity candidate."""
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    rows = await db.fetch_all(
+        f"SELECT * FROM sessions WHERE id IN ({placeholders})",  # noqa: S608
+        tuple(ids),
+    )
+    by_id = {row["id"]: db._row_to_dict(row) for row in rows}
+    return [by_id[i] for i in ids if i in by_id and _owns(by_id[i].get("project"), project)]
+
+
 async def _resolve_run(db: Any, ref: str, *, project: str | None) -> dict[str, Any] | None:
     """Resolve *ref* to exactly one `sessions` row (a Studio "run").
 
@@ -152,9 +169,13 @@ async def _resolve_run(db: Any, ref: str, *, project: str | None) -> dict[str, A
     matching more than one session raises `AmbiguousRunReferenceError`
     rather than picking one -- never guess which process to signal.
 
-    The name/playbook substring scan is scoped to ``project`` (the calling
-    turn's own project, when it names one) -- a lifecycle tool must not
-    enumerate, let alone propose cancelling, another project's run by label.
+    Every arm -- exact id, ambiguous prefix, and the name/playbook substring
+    scan below -- is scoped to ``project`` (the calling turn's own project,
+    when it names one): a lifecycle tool must not resolve, let alone propose
+    cancelling, another project's run by id, prefix, or label. A foreign
+    exact/prefix match is reported exactly like a nonexistent one (``None``)
+    rather than as e.g. "already terminal", which would itself confirm the
+    id exists.
     """
     from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
 
@@ -165,9 +186,17 @@ async def _resolve_run(db: Any, ref: str, *, project: str | None) -> dict[str, A
     try:
         row = await fetch_unique_row(db, "sessions", ref)
     except AmbiguousIdError as exc:
-        raise AmbiguousRunReferenceError(exc.candidates) from exc
+        owned = await _owned_rows(db, exc.candidates, project)
+        if not owned:
+            return None
+        if len(owned) == 1:
+            return owned[0]
+        raise AmbiguousRunReferenceError([r["id"] for r in owned]) from exc
     if row is not None:
-        return db._row_to_dict(row)
+        row_dict = db._row_to_dict(row)
+        if not _owns(row_dict.get("project"), project):
+            return None
+        return row_dict
 
     if len(ref) < 3:
         return None
@@ -249,6 +278,38 @@ def _redacted_cancel_result(proposal: dict[str, Any], run_id: str) -> dict[str, 
     }
 
 
+def _format_elapsed(seconds: float) -> str:
+    total = max(0, int(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes}m"
+    if minutes:
+        return f"{minutes}m{secs}s"
+    return f"{secs}s"
+
+
+def _cancel_summary(row: dict[str, Any]) -> str:
+    """A human deciding whether to approve a destructive cancel needs more
+    than a bare id -- name the project, the run's own name, its status, and
+    how long it has been running."""
+    run_id = row["id"]
+    parts = [f"Cancel run {run_id[:12]}"]
+    project_label = public_project(row.get("project"))
+    if project_label:
+        parts.append(f"project {project_label}")
+    name = row.get("name")
+    if name:
+        parts.append(f"'{name}'")
+    status = row.get("status")
+    if status:
+        parts.append(f"status {status}")
+    started_at = row.get("started_at")
+    if isinstance(started_at, (int, float)):
+        parts.append(f"running {_format_elapsed(time.time() - started_at)}")
+    return " -- ".join(parts)
+
+
 async def cancel_run(arguments: dict[str, Any]) -> dict[str, Any]:
     """MCP tool handler: resolve -> durable proposal -> poll -> result.
 
@@ -288,7 +349,11 @@ async def cancel_run(arguments: dict[str, Any]) -> dict[str, Any]:
             "run_untouched": True,
         }
 
-    command = {"session_id": run_id, "reason": args.reason}
+    # Carried through to `execute_cancel_command` so ownership is checked
+    # again immediately before the process is signalled, not only once at
+    # resolution time -- the human's approval window is a gap a run's
+    # project could change across.
+    command = {"session_id": run_id, "reason": args.reason, "project": row.get("project")}
     stable = store.canonical_hash(
         {
             "requestId": request_id,
@@ -296,7 +361,7 @@ async def cancel_run(arguments: dict[str, Any]) -> dict[str, Any]:
             "command": command,
         }
     )
-    summary = f"Cancel run {run_id[:12]}"
+    summary = _cancel_summary(row)
     if args.reason:
         summary += f" -- {args.reason}"
     proposal = await store.create_proposal(
@@ -325,32 +390,56 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
     Wire this into `OperatorCoordinator`'s ``command_executor`` for
     ``command_type == "cancel"`` (see module docstring). Re-resolves the
     session by exact id at execution time: the human's deliberation window
-    may have let the run finish or fail on its own. `_persist_cancel` is a
-    no-op once the row is no longer 'running', so a race here degrades to
-    ``already_terminal`` -- never a double cancel, never a wrong-run cancel.
+    may have let the run finish or fail on its own, or its project could
+    have been reassigned since ``cancel_run`` resolved it -- ownership is
+    checked again here, not trusted from resolution alone. `_persist_cancel`
+    is a no-op once the row is no longer 'running', so a race here degrades
+    to ``already_terminal`` -- never a double cancel, never a wrong-run
+    cancel.
+
+    Reuses `lionagi.cli.kill`'s own deepest-first child traversal
+    (``_list_running_children``/``_kill_one``) so a cancel through the
+    Operator reaps a still-running owning invocation exactly the way
+    ``li kill --recursive`` does -- otherwise the session's process goes
+    terminal while its child process is orphaned.
     """
-    from lionagi.cli.kill import _kill_one
+    from lionagi.cli.kill import _kill_one, _list_running_children
     from lionagi.state.db import StateDB
 
     run_id = command.get("session_id")
     if not isinstance(run_id, str) or not run_id:
         raise ValueError("cancel command is missing session_id")
     reason = command.get("reason") or ""
+    project = command.get("project")
+    user_reason = f"Operator: {reason}" if reason else "Operator"
 
     async with StateDB() as db:
         row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (run_id,))
         if row is None:
             return {"status": "not_found", "id": run_id}
         row_dict = db._row_to_dict(row)
+        if project is not None and row_dict.get("project") != project:
+            # Fails exactly like a nonexistent id -- confirming a foreign
+            # run's terminal status here would be the same disclosure the
+            # resolution-time ownership check exists to prevent.
+            return {"status": "not_found", "id": run_id}
         if row_dict.get("status") != "running":
             return {"status": "already_terminal", "id": run_id}
+
+        # Deepest first: a running child is signalled before its parent, so
+        # it is never left orphaned by the parent going terminal ahead of it.
+        # Best-effort per child -- an identity-mismatched or already-gone
+        # child does not block the parent's own cancellation below.
+        children = await _list_running_children(db, "session", run_id)
+        for _table, child_type, child_row in children:
+            await _kill_one(db, child_type, child_row["id"], child_row, user_reason=user_reason)
 
         outcome = await _kill_one(
             db,
             "session",
             run_id,
             row_dict,
-            user_reason=f"Operator: {reason}" if reason else "Operator",
+            user_reason=user_reason,
         )
         if outcome["signal"] == "identity_mismatch":
             # _kill_one() returns without calling _persist_cancel for an
