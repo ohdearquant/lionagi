@@ -237,7 +237,11 @@
       "filteredHint": "অন্য ধরনের চেষ্টা করুন বা সার্চ পরিষ্কার করুন।",
       "createFirst": "প্রথমটি তৈরি করুন",
       "createWorkflow": "নতুন ওয়ার্কফ্লো",
-      "createAgent": "নতুন এজেন্ট"
+      "createAgent": "নতুন এজেন্ট",
+      "allSkill": "কোনো স্কিল পাওয়া যায়নি।",
+      "allSkillHint": "এখানে দেখতে ~/.lionagi/skills/<name>/ এর অধীনে একটি SKILL.md যোগ করুন।",
+      "allPlugin": "কোনো প্লাগইন পাওয়া যায়নি।",
+      "allPluginHint": "এখানে দেখতে ~/.claude/plugins/ এর অধীনে একটি প্লাগইন ইনস্টল করুন।"
     },
     "table": {
       "kind": "ধরন",
@@ -298,7 +302,19 @@
       "lastUsed": "শেষ ব্যবহৃত",
       "never": "কখনও নয়",
       "recentInvocations": "সাম্প্রতিক ইনভোকেশন",
-      "noInvocations": "এখনও কোনো ইনভোকেশন রেকর্ড করা হয়নি।"
+      "noInvocations": "এখনও কোনো ইনভোকেশন রেকর্ড করা হয়নি।",
+      "skillValidationFailed": "যাচাই ব্যর্থ হয়েছে। সংরক্ষণের আগে নিচের ত্রুটিগুলো ঠিক করুন।",
+      "pluginOwnedSkillHint": "একটি প্লাগইনের সাথে বান্ডিল করা — পরিবর্তন করতে সরাসরি প্লাগইনের ফাইল সম্পাদনা করুন।",
+      "readOnly": "শুধুমাত্র পঠনযোগ্য",
+      "skillTools": "অনুমোদিত টুলস",
+      "skillInstructions": "নির্দেশনা",
+      "pluginHooks": "হুকস",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP সার্ভার",
+      "pluginHooksSection": "হুক কনফিগারেশন",
+      "pluginReadmeSection": "README",
+      "yes": "হ্যাঁ",
+      "no": "না"
     },
     "template": {
       "badge": "বিল্ট-ইন",

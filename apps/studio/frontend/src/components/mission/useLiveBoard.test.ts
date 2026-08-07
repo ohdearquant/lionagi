@@ -271,6 +271,8 @@ describe("useLiveBoard — schedules degrade-to-null on fetch failure", () => {
       limit: 100,
       offset: 0,
       has_next: false,
+      total: 0,
+      completed_total: 0,
     });
     vi.mocked(listSchedules).mockRejectedValue(new Error("schedules endpoint down"));
 
@@ -323,7 +325,14 @@ describe("useLiveBoard — schedules degrade-to-null on fetch failure", () => {
       has_next: false,
       has_prev: false,
     };
-    const invsResp = { invocations: [], limit: 100, offset: 0, has_next: false };
+    const invsResp = {
+      invocations: [],
+      limit: 100,
+      offset: 0,
+      has_next: false,
+      total: 0,
+      completed_total: 0,
+    };
 
     vi.mocked(listRuns).mockResolvedValue(runsResp);
     vi.mocked(listInvocations).mockResolvedValue(invsResp);

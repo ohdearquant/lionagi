@@ -237,7 +237,11 @@
       "filteredHint": "دوسری قسم آزمائیں یا تلاش صاف کریں۔",
       "createFirst": "اپنا پہلا بنائیں",
       "createWorkflow": "نیا ورک فلو",
-      "createAgent": "نیا ایجنٹ"
+      "createAgent": "نیا ایجنٹ",
+      "allSkill": "کوئی سکل نہیں ملی۔",
+      "allSkillHint": "یہاں دیکھنے کے لیے ~/.lionagi/skills/<name>/ کے تحت ایک SKILL.md شامل کریں۔",
+      "allPlugin": "کوئی پلگ ان نہیں ملا۔",
+      "allPluginHint": "یہاں دیکھنے کے لیے ~/.claude/plugins/ کے تحت ایک پلگ ان انسٹال کریں۔"
     },
     "table": {
       "kind": "قسم",
@@ -298,7 +302,19 @@
       "lastUsed": "آخری استعمال",
       "never": "کبھی نہیں",
       "recentInvocations": "حالیہ انووکیشنز",
-      "noInvocations": "ابھی تک کوئی انووکیشن ریکارڈ نہیں ہوئی۔"
+      "noInvocations": "ابھی تک کوئی انووکیشن ریکارڈ نہیں ہوئی۔",
+      "skillValidationFailed": "توثیق ناکام ہو گئی۔ محفوظ کرنے سے پہلے نیچے دی گئی خرابیاں درست کریں۔",
+      "pluginOwnedSkillHint": "یہ ایک پلگ ان کے ساتھ شامل ہے — تبدیل کرنے کے لیے پلگ ان کی فائلیں براہ راست ترمیم کریں۔",
+      "readOnly": "صرف پڑھنے کے لیے",
+      "skillTools": "اجازت یافتہ ٹولز",
+      "skillInstructions": "ہدایات",
+      "pluginHooks": "ہکس",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP سرورز",
+      "pluginHooksSection": "ہک کنفیگریشن",
+      "pluginReadmeSection": "README",
+      "yes": "ہاں",
+      "no": "نہیں"
     },
     "template": {
       "badge": "بلٹ اِن",

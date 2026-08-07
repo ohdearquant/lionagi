@@ -237,7 +237,11 @@
       "filteredHint": "换个类型试试，或清除搜索条件。",
       "createFirst": "创建你的第一个",
       "createWorkflow": "新建工作流",
-      "createAgent": "新建智能体"
+      "createAgent": "新建智能体",
+      "allSkill": "未找到技能。",
+      "allSkillHint": "在 ~/.lionagi/skills/<name>/ 下添加 SKILL.md 即可在此显示。",
+      "allPlugin": "未找到插件。",
+      "allPluginHint": "在 ~/.claude/plugins/ 下安装插件即可在此显示。"
     },
     "table": {
       "kind": "类型",
@@ -298,7 +302,19 @@
       "lastUsed": "最近使用",
       "never": "从未",
       "recentInvocations": "最近调用",
-      "noInvocations": "暂无调用记录。"
+      "noInvocations": "暂无调用记录。",
+      "skillValidationFailed": "验证失败，请先修正以下错误再保存。",
+      "pluginOwnedSkillHint": "该技能随插件一起提供 — 请直接编辑插件文件来修改它。",
+      "readOnly": "只读",
+      "skillTools": "允许的工具",
+      "skillInstructions": "使用说明",
+      "pluginHooks": "钩子",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP 服务器",
+      "pluginHooksSection": "钩子配置",
+      "pluginReadmeSection": "README",
+      "yes": "是",
+      "no": "否"
     },
     "template": {
       "badge": "内置",

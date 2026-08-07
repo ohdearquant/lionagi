@@ -237,7 +237,11 @@
       "filteredHint": "Coba jenis lain atau bersihkan pencarian.",
       "createFirst": "Buat yang pertama",
       "createWorkflow": "Alur kerja baru",
-      "createAgent": "Agen baru"
+      "createAgent": "Agen baru",
+      "allSkill": "Tidak ada skill ditemukan.",
+      "allSkillHint": "Tambahkan SKILL.md di ~/.lionagi/skills/<name>/ agar muncul di sini.",
+      "allPlugin": "Tidak ada plugin ditemukan.",
+      "allPluginHint": "Instal plugin di ~/.claude/plugins/ agar muncul di sini."
     },
     "table": {
       "kind": "Jenis",
@@ -298,7 +302,19 @@
       "lastUsed": "Terakhir digunakan",
       "never": "tidak pernah",
       "recentInvocations": "Invokasi terbaru",
-      "noInvocations": "Belum ada invokasi yang tercatat."
+      "noInvocations": "Belum ada invokasi yang tercatat.",
+      "skillValidationFailed": "Validasi gagal. Perbaiki kesalahan di bawah sebelum menyimpan.",
+      "pluginOwnedSkillHint": "Disertakan dalam plugin — edit file plugin secara langsung untuk mengubahnya.",
+      "readOnly": "Hanya baca",
+      "skillTools": "Alat yang Diizinkan",
+      "skillInstructions": "Instruksi",
+      "pluginHooks": "Hook",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "Server MCP",
+      "pluginHooksSection": "Konfigurasi Hook",
+      "pluginReadmeSection": "README",
+      "yes": "Ya",
+      "no": "Tidak"
     },
     "template": {
       "badge": "Bawaan",

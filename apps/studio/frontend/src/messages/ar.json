@@ -237,7 +237,11 @@
       "filteredHint": "جرّب نوعًا آخر أو امسح البحث.",
       "createFirst": "أنشئ أول",
       "createWorkflow": "سير عمل جديد",
-      "createAgent": "وكيل جديد"
+      "createAgent": "وكيل جديد",
+      "allSkill": "لم يتم العثور على مهارات.",
+      "allSkillHint": "أضف ملف SKILL.md ضمن ~/.lionagi/skills/<name>/ لتظهر هنا.",
+      "allPlugin": "لم يتم العثور على إضافات.",
+      "allPluginHint": "ثبّت إضافة ضمن ~/.claude/plugins/ لتظهر هنا."
     },
     "table": {
       "kind": "النوع",
@@ -298,7 +302,19 @@
       "lastUsed": "آخر استخدام",
       "never": "أبدًا",
       "recentInvocations": "الاستدعاءات الأخيرة",
-      "noInvocations": "لم تُسجّل أي استدعاءات بعد."
+      "noInvocations": "لم تُسجّل أي استدعاءات بعد.",
+      "skillValidationFailed": "فشل التحقق. أصلح الأخطاء أدناه قبل الحفظ.",
+      "pluginOwnedSkillHint": "مرفقة ضمن إضافة — عدّل ملفات الإضافة مباشرة لتغييرها.",
+      "readOnly": "للقراءة فقط",
+      "skillTools": "الأدوات المسموح بها",
+      "skillInstructions": "التعليمات",
+      "pluginHooks": "الخطافات",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "خوادم MCP",
+      "pluginHooksSection": "إعدادات الخطافات",
+      "pluginReadmeSection": "README",
+      "yes": "نعم",
+      "no": "لا"
     },
     "template": {
       "badge": "مدمج",

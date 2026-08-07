@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS studio_operator_conversations (
   -- recorded a resolution yet, which is not the same as "it changed".
   resolved_provider   TEXT,
   resolved_model      TEXT,
+  -- The identity every turn's Branch is constructed with, so N turns of one
+  -- conversation persist as one branch/session instead of N unrelated ones.
+  -- NULL until the first turn claims it (see claim_branch_id) -- a
+  -- conversation created before this column existed adopts one lazily on its
+  -- next turn rather than through a history-rewriting migration.
+  branch_id          TEXT,
   pinned             INTEGER NOT NULL DEFAULT 0,
   created_at         REAL NOT NULL,
   updated_at         REAL NOT NULL,
@@ -251,6 +257,7 @@ class OperatorStore:
                         "resolved_provider": "TEXT",
                         "resolved_model": "TEXT",
                         "pinned": "INTEGER NOT NULL DEFAULT 0",
+                        "branch_id": "TEXT",
                     },
                 )
                 await self._add_missing_columns(
@@ -338,6 +345,7 @@ class OperatorStore:
             "providerSessionId": row["provider_session_id"],
             "providerModel": row["provider_model"],
             "provider": row["provider"],
+            "branchId": row["branch_id"],
             # Served beside the pin because a session that resets has to be
             # explainable: without these, "my conversation started over" has no
             # visible cause anywhere in the UI or the API.
@@ -846,6 +854,71 @@ class OperatorStore:
                 )
             await db.commit()
         return None if moved else session_id
+
+    async def claim_branch_id(self, conversation_id: str) -> str:
+        """Return the identity every turn of this conversation builds its
+        Branch with, minting and persisting one on the first call.
+
+        This is the fix for the Operator's own log showing N unrelated
+        branches for one N-turn conversation: previously every turn built a
+        brand-new ``Branch()`` with a fresh random id, so
+        ``setup_agent_persist`` (``lionagi/cli/_runs.py``) saw a never-before-
+        seen branch id on every turn and created a new ``sessions`` row for
+        each one. Feeding the SAME id back in lets that existing machinery's
+        own "resume" arm run instead: it looks up ``branch_id`` in the
+        ``branches`` table, and when found, reopens that branch's existing
+        session and appends to it rather than inserting a new row --
+        `setup_agent_persist` already contains this append path (used for CLI
+        resume); nothing about that machinery is changed here. This method
+        only decides what id every turn hands it.
+
+        A brand-new Branch object is still constructed in-process on every
+        turn -- this stores an IDENTITY (a UUID), never a live Branch, since
+        turns arrive as separate HTTP requests, the daemon restarts between
+        them, and two browser tabs can drive one conversation concurrently.
+        None of those can be assumed to share a Python object.
+
+        Idempotent and race-safe: wrapped in the store's usual
+        ``BEGIN IMMEDIATE`` transaction (the same pattern
+        ``claim_resolved_pair`` uses), which SQLite serializes against any
+        other write transaction on this file. Two turns racing to claim the
+        first id for one conversation therefore never see a NULL row at the
+        same time -- the second transaction blocks until the first commits,
+        then reads back the id the first one just wrote and returns that
+        instead of minting its own. The conversation never ends up with two
+        candidate ids to disagree about.
+
+        A conversation created before this column existed reads NULL here on
+        its first post-upgrade turn and adopts an id at that point --
+        deliberately, rather than backfilling one via migration. Its turns
+        already on record stay exactly as they were recorded; only turns from
+        here forward group under the newly-claimed id. No history is
+        rewritten.
+        """
+        await self.ensure_schema()
+        async with open_db(str(self.path())) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await (
+                await db.execute(
+                    "SELECT branch_id FROM studio_operator_conversations WHERE id = ?",
+                    (conversation_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await db.rollback()
+                raise OperatorNotFoundError(f"Operator conversation '{conversation_id}' not found")
+            existing = row["branch_id"]
+            if isinstance(existing, str) and existing:
+                await db.rollback()
+                return existing
+            new_branch_id = str(uuid.uuid4())
+            await db.execute(
+                "UPDATE studio_operator_conversations SET branch_id = ?, updated_at = ? "
+                "WHERE id = ?",
+                (new_branch_id, time.time(), conversation_id),
+            )
+            await db.commit()
+        return new_branch_id
 
     @staticmethod
     async def _write_selection(

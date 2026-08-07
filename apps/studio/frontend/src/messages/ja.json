@@ -237,7 +237,11 @@
       "filteredHint": "別の種類を試すか、検索をクリアしてください。",
       "createFirst": "最初の項目を作成",
       "createWorkflow": "新規ワークフロー",
-      "createAgent": "新規エージェント"
+      "createAgent": "新規エージェント",
+      "allSkill": "スキルが見つかりません。",
+      "allSkillHint": "~/.lionagi/skills/<name>/ に SKILL.md を追加するとここに表示されます。",
+      "allPlugin": "プラグインが見つかりません。",
+      "allPluginHint": "~/.claude/plugins/ にプラグインをインストールするとここに表示されます。"
     },
     "table": {
       "kind": "種類",
@@ -298,7 +302,19 @@
       "lastUsed": "最終使用",
       "never": "未使用",
       "recentInvocations": "最近の呼び出し",
-      "noInvocations": "呼び出しはまだ記録されていません。"
+      "noInvocations": "呼び出しはまだ記録されていません。",
+      "skillValidationFailed": "検証に失敗しました。保存する前に以下のエラーを修正してください。",
+      "pluginOwnedSkillHint": "プラグインに同梱されています — 変更するにはプラグインのファイルを直接編集してください。",
+      "readOnly": "読み取り専用",
+      "skillTools": "許可されたツール",
+      "skillInstructions": "手順",
+      "pluginHooks": "フック",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCPサーバー",
+      "pluginHooksSection": "フック設定",
+      "pluginReadmeSection": "README",
+      "yes": "はい",
+      "no": "いいえ"
     },
     "template": {
       "badge": "ビルトイン",

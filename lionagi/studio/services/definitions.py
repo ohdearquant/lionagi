@@ -18,7 +18,7 @@ from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.state.engine import mask_credentials
 
 from ..registry import studio_route
-from ._path_safety import validate_name_component
+from ._path_safety import safe_path_join, validate_name_component
 from .agents import _canonicalize_casts, _is_protected_system
 from .redaction import (
     RedactedPayloadError,
@@ -45,6 +45,10 @@ async def _lock_for(kind: str, name: str) -> asyncio.Lock:
 
 AGENTS_DIR = LIONAGI_HOME / "agents"
 PLAYBOOKS_DIR = LIONAGI_HOME / "playbooks"
+# Resolved independently of skills.py's own SKILLS_ROOT (same pattern as
+# agents.py's _AGENTS_ROOT vs. this module's AGENTS_DIR) so this module's
+# constant stays test-patchable without reaching into skills.py's module state.
+SKILLS_DIR = LIONAGI_HOME / "skills"
 
 KIND_DIRS: dict[str, Path] = {
     "agent": AGENTS_DIR,
@@ -213,11 +217,70 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
     return result
 
 
+def _resolve_skill_file(name: str) -> Path | None:
+    """Locate a skill's current content file, tolerating the legacy bare
+    ``<name>.md`` shape that some installed skills still use.
+
+    Mirrors ``skills.py``'s own resolution (canonical ``<name>/SKILL.md``
+    first, then any other ``.md`` in the directory) so Studio's editor and
+    the CLI's skill runner agree on what file a name refers to when reading.
+    Writing does not carry the same tolerance -- see ``_save_skill_definition``,
+    which always targets the canonical shape regardless of what this finds.
+    """
+    from .skills import _find_skill_md
+
+    safe_path_join(SKILLS_DIR, name)
+
+    skill_dir = SKILLS_DIR / name
+    if skill_dir.is_dir():
+        return _find_skill_md(skill_dir)
+    bare = SKILLS_DIR / f"{name}.md"
+    return bare if bare.exists() else None
+
+
+async def _get_skill_definition(name: str) -> dict[str, Any] | None:
+    disk_file = await anyio.to_thread.run_sync(partial(_resolve_skill_file, name))
+    if disk_file is None:
+        return None
+
+    content = await anyio.to_thread.run_sync(disk_file.read_text)
+    path = _relative_path(disk_file)
+
+    try:
+        versions = await _read_history("skill", name)
+    except HistoryUnavailableError:
+        return {
+            "kind": "skill",
+            "name": name,
+            "path": path,
+            "content": content,
+            "version": None,
+            "versions": None,
+            "history_available": False,
+        }
+
+    return {
+        "kind": "skill",
+        "name": name,
+        "path": path,
+        "content": content,
+        "version": versions[0]["version"] if versions else 0,
+        "versions": versions,
+        "history_available": True,
+    }
+
+
 async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
     """Get current definition content from disk + version history from DB."""
     # Validate at service boundary before any filesystem operation.
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
+
+    # Skills live outside KIND_DIRS/_find_definition_file's generic multi-kind
+    # scan -- see the KIND_DIRS comment on list_definitions_route for why --
+    # so they get a dedicated resolution path instead.
+    if kind == "skill":
+        return await _get_skill_definition(name)
 
     base = KIND_DIRS.get(kind)
     if not base:
@@ -343,6 +406,9 @@ async def save_definition(
     validate_name_component(kind, label="kind")
     validate_name_component(name, label="name")
 
+    if kind == "skill":
+        return await _save_skill_definition(name, content, message, validate=validate)
+
     base = KIND_DIRS.get(kind)
     if not base:
         raise ValueError(f"Unknown kind: {kind}")
@@ -402,6 +468,58 @@ async def save_definition(
     # ADR-0077 D2: response field is "saved_at", not "created_at"
     return {
         "kind": kind,
+        "name": name,
+        "version": version,
+        "saved_at": now,
+        "message": message,
+    }
+
+
+async def _save_skill_definition(
+    name: str, content: str, message: str | None, *, validate: bool
+) -> dict[str, Any]:
+    """Skill counterpart to ``save_definition``'s generic path.
+
+    Always writes ``<SKILLS_DIR>/<name>/SKILL.md`` regardless of what shape (if
+    any) currently exists on disk -- a save through Studio normalizes a skill
+    to the one shape ``li skill`` actually resolves (see
+    ``skills.py::_find_skill_md`` / ``lionagi/cli/skill.py``), rather than
+    preserving whatever legacy layout it started from. Plugin-bundled skills
+    live under a plugin directory, never under ``SKILLS_DIR``, so they are
+    unreachable through this path by construction, not by an extra check.
+    """
+    if validate:
+        from .skills import validate_skill_content
+
+        errors = validate_skill_content(content, name)
+        if errors:
+            raise ValueError("; ".join(errors))
+
+    disk_file = SKILLS_DIR / name / "SKILL.md"
+
+    from lionagi.state.db import StateDB
+
+    lock = await _lock_for("skill", name)
+    async with lock:
+        now = time.time()
+
+        async with StateDB() as db:
+            version = await db.save_definition(
+                kind="skill",
+                name=name,
+                path=_relative_path(disk_file),
+                content=content,
+                message=message,
+            )
+
+        def _write_disk() -> None:
+            ensure_lionagi_dir(disk_file.parent)
+            disk_file.write_text(content)
+
+        await anyio.to_thread.run_sync(_write_disk)
+
+    return {
+        "kind": "skill",
         "name": name,
         "version": version,
         "saved_at": now,
@@ -544,7 +662,12 @@ class SaveBody(BaseModel):
 
 @studio_route("/definitions/", method="GET", area="definitions", name="list_definitions")
 async def list_definitions_route(
-    # ADR-0077: "skill" removed -- KIND_DIRS excludes it as not editable.
+    # "skill" is not a KIND_DIRS entry, so it never appears in this generic
+    # multi-kind listing (its shape -- <name>/SKILL.md, not <name>.<ext> --
+    # doesn't fit KIND_DIRS/_find_definition_file's shared scan). It is still
+    # editable: GET/POST /definitions/skill/{name} route through the dedicated
+    # _get_skill_definition/_save_skill_definition path below. Listing itself
+    # comes from GET /skills/, which Studio's Library page already calls.
     kind: str | None = Query(default=None, description="Filter by kind: agent, playbook"),
 ) -> dict[str, Any]:
     return {"definitions": await list_definitions(kind)}
@@ -589,8 +712,9 @@ async def get_version_route(kind: str, name: str, version: int) -> dict[str, Any
     "/definitions/{kind}/{name}", method="POST", area="definitions", name="save_definition"
 )
 async def save_definition_route(kind: str, name: str, body: SaveBody) -> dict[str, Any]:
-    # ADR-0077: unknown kind (e.g. "skill") raises ValueError in the
-    # service layer; catch it and return 422 instead of propagating a 500.
+    # ADR-0077: an unknown kind, or content a kind's validator rejects (e.g.
+    # unparseable skill frontmatter), raises ValueError in the service layer;
+    # catch it and return 422 instead of propagating a 500.
     try:
         return await save_definition(kind, name, body.content, body.message)
     except (PermissionError, RedactedPayloadError) as e:
