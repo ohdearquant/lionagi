@@ -63,7 +63,15 @@ class _Studio(BaseHTTPRequestHandler):
                 return self._answer(201, {"id": "sched-1", "name": "nightly", "created_at": 1.5})
             return self._answer(200, {"schedules": [SCHEDULE_ROW]})
         if path == "/api/schedules/limits":
-            return self._answer(200, {"max_scheduled_concurrent": 0, "current_inflight": 2})
+            return self._answer(
+                200,
+                {
+                    "max_scheduled_concurrent": 0,
+                    "current_inflight": 2,
+                    "max_adhoc_concurrent": 4,
+                    "current_adhoc_inflight": 1,
+                },
+            )
         if path.startswith("/api/schedules/missing"):
             return self._answer(404, {"detail": "Schedule 'missing' not found"})
         if path.endswith("/status"):
@@ -172,6 +180,11 @@ def test_limits_says_unlimited_rather_than_leaving_a_falsy_cap_to_be_read(studio
     assert data["max_scheduled_concurrent"] == 0
     assert data["unlimited"] is True
     assert data["current_inflight"] == 2
+    # The ad-hoc lane's own cap is additive to the scheduled cap above, and
+    # must be surfaced independently rather than folded into it.
+    assert data["max_adhoc_concurrent"] == 4
+    assert data["adhoc_unlimited"] is False
+    assert data["current_adhoc_inflight"] == 1
 
 
 def test_a_studio_that_is_not_running_is_unavailable_not_an_empty_list(monkeypatch):

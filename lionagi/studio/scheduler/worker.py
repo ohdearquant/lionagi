@@ -344,14 +344,17 @@ async def claim_and_execute(
     docs/internals/studio.md#lionagistudioschedulerworkerpy for the paging,
     staleness, and return-count contract.
 
-    *reserve_slot*/*release_slot* let a caller enforce a daemon-wide
-    top-level-concurrency cap around each execution (e.g. the Studio
-    scheduler's ``MAX_SCHEDULED_CONCURRENT``), so ad-hoc executions count
-    against the same ceiling scheduled fires do. When *reserve_slot* is
-    supplied and refuses for a candidate, that row is left ``queued`` for the
-    next tick rather than claimed — the same deferral posture ``admit()``
-    already uses for other capacity refusals. Omitted (``None``), this
-    module imposes no concurrency limit of its own, matching prior behavior.
+    *reserve_slot*/*release_slot* let a caller enforce a top-level
+    concurrency cap around each execution. The Studio scheduler passes its
+    own ``MAX_ADHOC_CONCURRENT``-backed reservation here (``_reserve_adhoc_
+    slot``) — a pool deliberately independent of ``MAX_SCHEDULED_CONCURRENT``,
+    so ad-hoc executions have their own guaranteed capacity instead of
+    competing with scheduled fires for one shared ceiling. When
+    *reserve_slot* is supplied and refuses for a candidate, that row is left
+    ``queued`` for the next tick rather than claimed — the same deferral
+    posture ``admit()`` already uses for other capacity refusals. Omitted
+    (``None``), this module imposes no concurrency limit of its own,
+    matching prior behavior.
     """
     execute = execute if execute is not None else default_execute
     now = now if now is not None else time.time()

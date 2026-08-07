@@ -764,7 +764,12 @@ def test_schedules_limits_response_shape(tmp_path, monkeypatch):
 
     r = client.get("/api/schedules/limits")
     assert r.status_code == 200
-    assert sorted(r.json().keys()) == ["current_inflight", "max_scheduled_concurrent"]
+    assert sorted(r.json().keys()) == [
+        "current_adhoc_inflight",
+        "current_inflight",
+        "max_adhoc_concurrent",
+        "max_scheduled_concurrent",
+    ]
 
 
 def test_schedules_create_response_shape(tmp_path, monkeypatch):
