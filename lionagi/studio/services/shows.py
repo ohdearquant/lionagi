@@ -18,6 +18,7 @@ from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._db import store_exists, store_path
 from ._io import read_json_file as _read_json
+from ._io import read_json_file_checked as _read_json_checked
 from ._path_safety import public_path, safe_path_join
 from ._sse import sse_response
 
@@ -36,6 +37,27 @@ def _play_dirs(show_dir: Path) -> list[Path]:
         return [p for p in sorted(show_dir.iterdir()) if p.is_dir()]
     except OSError:
         return []
+
+
+def _live_play_meta(
+    play_dir: Path, on_disk: bool
+) -> tuple[dict[str, Any] | None, bool, str | None]:
+    """Read a DB-known play's live ``_meta.json``.
+
+    Returns ``(meta, unavailable, error)``. A DB row only exists for a play
+    whose directory was present at import time, so ``on_disk`` being False
+    now means that directory has since disappeared (deleted or moved) -
+    that is unavailable, not "never started". Likewise a ``_meta.json`` that
+    exists but fails to parse (e.g. truncated by a crashed writer) is
+    unavailable, not empty. A play directory that legitimately has no
+    ``_meta.json`` yet (never started) is a normal, available empty read.
+    """
+    if not on_disk:
+        return None, True, "play directory not found on disk"
+    read = _read_json_checked(play_dir / "_meta.json")
+    if not read.available:
+        return None, True, read.error
+    return read.value, False, None
 
 
 def _extract_goal(show_md: str | None) -> str | None:
@@ -206,7 +228,11 @@ async def get_show(topic: str) -> dict[str, Any] | None:
             # running the play, so where a play exists on disk its meta
             # (status in particular) wins; the DB row still supplies fields
             # disk doesn't carry (worktree, session linkage, merge info).
-            disk_meta = _read_json(play_dir / "_meta.json") if on_disk else None
+            # When the live read is unavailable (directory gone, file
+            # unreadable/corrupt) the DB status is stale by definition and
+            # must not be presented as current - live_state carries that
+            # instead of silently falling back to it.
+            disk_meta, live_unavailable, live_error = _live_play_meta(play_dir, on_disk)
             meta = {**db_meta, **disk_meta} if disk_meta else db_meta
 
             db_verdict = (
@@ -240,6 +266,8 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                     "depends_on": json.loads(p["depends_on"])
                     if isinstance(p["depends_on"], str)
                     else (p["depends_on"] or []),
+                    "live_state": "unavailable" if live_unavailable else "ok",
+                    "live_error": live_error,
                 }
             )
         # A play directory created on disk after import_shows() ran has no
@@ -336,6 +364,13 @@ async def list_gated_plays() -> list[dict[str, Any]]:
     disk precedence over the DB for any play present in both — answers this
     from the same resolution step ``get_show()`` uses, so the two can never
     disagree about the same play.
+
+    A DB-known play whose live state cannot currently be read (its
+    directory disappeared, or its metadata file is unreadable) is included
+    here too, tagged ``live_state: "unavailable"``, rather than either
+    silently dropping it or presenting the stale imported status as if it
+    were current. Whether that play is actually gated cannot be established
+    from this queue - it is a "look here" entry, not a gate verdict.
     """
     out: list[dict[str, Any]] = []
     for topic in sorted(await _all_show_topics()):
@@ -344,9 +379,24 @@ async def list_gated_plays() -> list[dict[str, Any]]:
             continue
         for play in show.get("plays", []):
             meta = play.get("meta") or {}
+            verdict = play.get("verdict") or {}
+            if play.get("live_state") == "unavailable":
+                out.append(
+                    {
+                        "id": f"play:{topic}:{play['name']}",
+                        "topic": topic,
+                        "play_name": play["name"],
+                        "started_at": meta.get("started_at"),
+                        "updated_at": play.get("updated_at"),
+                        "feedback": verdict.get("feedback"),
+                        "session_id": play.get("session_id"),
+                        "live_state": "unavailable",
+                        "live_error": play.get("live_error"),
+                    }
+                )
+                continue
             if meta.get("status") != "gated":
                 continue
-            verdict = play.get("verdict") or {}
             out.append(
                 {
                     "id": f"play:{topic}:{play['name']}",
@@ -356,6 +406,7 @@ async def list_gated_plays() -> list[dict[str, Any]]:
                     "updated_at": play.get("updated_at"),
                     "feedback": verdict.get("feedback"),
                     "session_id": play.get("session_id"),
+                    "live_state": "ok",
                 }
             )
     return out

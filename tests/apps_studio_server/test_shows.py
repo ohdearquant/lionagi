@@ -298,6 +298,101 @@ def test_gated_plays_surfaces_a_show_never_imported(shows_root: Path, patched_ap
     )
 
 
+def test_gated_plays_deleted_show_directory_is_reported_unavailable_not_stale(
+    shows_root: Path, patched_app
+):
+    """A play imported as `running`, rewritten on disk to `gated`, whose show
+    directory then disappears entirely (deleted or moved), must not have the
+    stale imported `running` status presented as current — the live read
+    failed, and the response must say so.
+
+    Regression for: get_show() silently falling back to the one-time-import
+    DB row once the disk directory is gone, reporting `running` as if it
+    were still true and dropping the play from list_gated_plays() as if it
+    had never been gated.
+    """
+    import shutil
+
+    import lionagi.studio.services.shows as shows_mod
+
+    from ._helpers import run_async
+
+    topic = "deleted-dir-show"
+    show_dir = shows_root / topic
+    play0 = show_dir / "play-0"
+    play0.mkdir(parents=True)
+    (show_dir / "_show.md").write_text(f"# Show: {topic}\n")
+    (play0 / "_meta.json").write_text(json.dumps({"status": "running"}))
+
+    run_async(shows_mod.import_shows())
+
+    (play0 / "_meta.json").write_text(json.dumps({"status": "gated"}))
+    shutil.rmtree(show_dir)
+
+    detail_r = patched_app.get(f"/api/shows/{topic}")
+    assert detail_r.status_code == 200
+    play0_entry = next(p for p in detail_r.json()["plays"] if p["name"] == "play-0")
+    assert play0_entry["live_state"] == "unavailable", (
+        f"a deleted show directory must not be reported as a live 'running' status: {play0_entry!r}"
+    )
+
+    gated_r = patched_app.get("/api/shows/gated-plays")
+    assert gated_r.status_code == 200
+    items = gated_r.json()
+    entry = next((i for i in items if i["topic"] == topic and i["play_name"] == "play-0"), None)
+    assert entry is not None, (
+        f"a play whose live state is unreadable must still surface in the "
+        f"gate queue instead of silently vanishing: {items!r}"
+    )
+    assert entry["live_state"] == "unavailable", (
+        f"an unreadable live state must not be presented as a confirmed 'gated' row: {entry!r}"
+    )
+
+
+def test_gated_plays_truncated_meta_json_is_reported_unavailable(shows_root: Path, patched_app):
+    """A `_meta.json` left truncated by a crashed writer must not be treated
+    the same as a play that simply has no metadata yet — the parse failure
+    must be surfaced, not silently swallowed into the stale DB status.
+
+    Regression for: `_io.read_json_file` converting a JSONDecodeError into
+    `None`, which is indistinguishable from a missing file, so a corrupt
+    live write reads as "not gated" instead of "could not be read".
+    """
+    import lionagi.studio.services.shows as shows_mod
+
+    from ._helpers import run_async
+
+    topic = "truncated-meta-show"
+    show_dir = shows_root / topic
+    play0 = show_dir / "play-0"
+    play0.mkdir(parents=True)
+    (show_dir / "_show.md").write_text(f"# Show: {topic}\n")
+    (play0 / "_meta.json").write_text(json.dumps({"status": "running"}))
+
+    run_async(shows_mod.import_shows())
+
+    # Simulate a writer crashing mid-write: valid JSON prefix, no closing brace.
+    (play0 / "_meta.json").write_text('{"status": "gated", "started_a')
+
+    detail_r = patched_app.get(f"/api/shows/{topic}")
+    assert detail_r.status_code == 200
+    play0_entry = next(p for p in detail_r.json()["plays"] if p["name"] == "play-0")
+    assert play0_entry["live_state"] == "unavailable", (
+        f"a truncated _meta.json must be surfaced as an unreadable live "
+        f"read, not silently treated as absent metadata: {play0_entry!r}"
+    )
+    assert play0_entry["live_error"], "an unavailable live read must carry a diagnostic"
+
+    gated_r = patched_app.get("/api/shows/gated-plays")
+    assert gated_r.status_code == 200
+    items = gated_r.json()
+    entry = next((i for i in items if i["topic"] == topic and i["play_name"] == "play-0"), None)
+    assert entry is not None, (
+        f"a play with a corrupt live metadata file must still surface in the gate queue: {items!r}"
+    )
+    assert entry["live_state"] == "unavailable"
+
+
 # ---------------------------------------------------------------------------
 # Path traversal tests (Fix 1)
 # ---------------------------------------------------------------------------
