@@ -134,6 +134,82 @@ async def test_get_invocation_surfaces_schedule_run_failure_fields(tmp_path, mon
     assert "unable to resolve" in result["schedule_run_error_detail"]
 
 
+# ── count_invocations() / plugin filter (real total, not a page count) ────────
+
+
+async def test_count_invocations_service_reports_real_total_past_a_small_page(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        for _ in range(5):
+            await _create_invocation(db)
+
+    page = await invocations_mod.list_invocations(limit=2)
+    assert len(page) == 2
+
+    total = await invocations_mod.count_invocations()
+    assert total == 5
+    assert total != len(page)
+
+
+async def test_list_invocations_service_filters_by_plugin(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        await db.create_invocation(
+            {
+                "id": uuid.uuid4().hex[:12],
+                "skill": "code-review",
+                "plugin": "review-toolkit",
+                "started_at": time.time(),
+            }
+        )
+        await db.create_invocation(
+            {
+                "id": uuid.uuid4().hex[:12],
+                "skill": "code-review",
+                "started_at": time.time(),
+            }
+        )
+
+    scoped = await invocations_mod.list_invocations(plugin="review-toolkit")
+    assert len(scoped) == 1
+    assert scoped[0]["plugin"] == "review-toolkit"
+
+    assert await invocations_mod.count_invocations(plugin="review-toolkit") == 1
+    assert await invocations_mod.count_invocations() == 2
+
+
+async def test_list_invocations_route_reports_total_and_completed_total(tmp_path, monkeypatch):
+    """The route response must carry real totals, not just this page's rows —
+    the frontend stats strip reads total/completed_total instead of
+    len(invocations) so a well-used skill's count doesn't plateau at 200."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        a = await _create_invocation(db, status="completed")
+        await _create_invocation(db, status="failed")
+        await _create_invocation(db, status="completed")
+        assert a  # keep a referenced; content doesn't matter for this assertion
+
+    # FastAPI resolves the route's Query(default=None) params at request
+    # time; calling the function directly bypasses that, so every Query-
+    # defaulted param must be passed explicitly here or the raw Query
+    # sentinel object leaks through as a bind parameter.
+    result = await invocations_mod.list_invocations_route(
+        skill=None, plugin=None, status=None, limit=1, offset=0
+    )
+
+    assert result["total"] == 3
+    assert result["completed_total"] == 2
+    assert len(result["invocations"]) == 1
+
+
 async def test_get_invocation_schedule_run_fields_none_for_interactive_invocation(
     tmp_path, monkeypatch
 ):

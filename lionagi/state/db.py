@@ -4786,6 +4786,7 @@ class StateDB:
         self,
         *,
         skill: str | None = None,
+        plugin: str | None = None,
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -4841,6 +4842,9 @@ class StateDB:
         if skill:
             conds.append("inv.skill = :skill")
             params["skill"] = skill
+        if plugin:
+            conds.append("inv.plugin = :plugin")
+            params["plugin"] = plugin
         if status:
             conds.append("inv.status = :status")
             params["status"] = status
@@ -4852,6 +4856,38 @@ class StateDB:
         async with self._read() as conn:
             rows = (await conn.execute(text(query), params)).mappings().all()
         return [self._row_to_dict(r) for r in rows]
+
+    async def count_invocations(
+        self,
+        *,
+        skill: str | None = None,
+        plugin: str | None = None,
+        status: str | None = None,
+    ) -> int:
+        """Real total matching the same filters ``list_invocations`` accepts.
+
+        ``list_invocations`` is paginated (its ``limit`` caps at 200 at the
+        route layer); counting the rows of one page instead of this is what
+        makes a well-used skill's invocation count silently plateau at 200
+        with nothing distinguishing that from an exact count.
+        """
+        conds: list[str] = []
+        params: dict[str, Any] = {}
+        if skill:
+            conds.append("skill = :skill")
+            params["skill"] = skill
+        if plugin:
+            conds.append("plugin = :plugin")
+            params["plugin"] = plugin
+        if status:
+            conds.append("status = :status")
+            params["status"] = status
+        query = "SELECT COUNT(*) AS n FROM invocations"
+        if conds:
+            query += " WHERE " + " AND ".join(conds)
+        async with self._read() as conn:
+            row = (await conn.execute(text(query), params)).mappings().first()
+        return row["n"]
 
     async def list_sessions_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:
         async with self._read() as conn:
