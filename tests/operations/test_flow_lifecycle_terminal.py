@@ -175,6 +175,83 @@ async def test_reactive_spawn_shares_one_name_across_queued_started_terminal():
 
 
 @pytest.mark.asyncio
+async def test_reactive_spawn_shares_one_name_when_spawn_branch_setup_names_the_clone():
+    """Same reactive-spawn setup as the test above, but the caller's
+    ``spawn_branch_setup`` hook (the public callback ``_assign_injected_branch``
+    invokes right after cloning) assigns the cloned branch a display name.
+    ``started``/``completed`` used to resolve their on_progress ``name`` from
+    ``getattr(branch, "name", None) or ref_id`` (flow.py), which then preferred
+    the hook-assigned branch name over the ``reference_id`` the ``queued``
+    signal already used -- splitting one spawned child across two identities
+    (queued=spawn-1, started/completed=<branch name>). A branch-naming hook
+    must not change which identity a reactive child's lifecycle signals
+    correlate under."""
+    import json
+
+    from lionagi.operations.node import create_operation
+    from lionagi.orchestration.patterns import grant_spawn, role_node_builder
+    from lionagi.protocols.graph.graph import Graph
+    from lionagi.session.signal import NodeCompleted, NodeFailed, NodeQueued, NodeStarted
+    from lionagi.testing import TestBranch
+
+    def _capability_chunk(**spawn_fields) -> dict:
+        payload = json.dumps({"spawn_request": spawn_fields})
+        return {"type": "stream", "chunks": [{"type": "text", "content": payload}]}
+
+    spawner = TestBranch.from_responses(
+        [_capability_chunk(instruction="do the follow-up", assignee="follower", independent=True)],
+        name="spawner",
+    )
+    follower = TestBranch.from_text("follow-up complete", name="follower")
+
+    session = _session_with_ops()
+    session.include_branches(spawner)
+    session.include_branches(follower)
+    session.default_branch = spawner
+    grant_spawn(spawner, prompt=False)
+
+    signal_log: list[tuple[str, str, str]] = []
+    for sig_cls, kind in (
+        (NodeQueued, "queued"),
+        (NodeStarted, "started"),
+        (NodeCompleted, "completed"),
+        (NodeFailed, "failed"),
+    ):
+        session.observe(
+            sig_cls,
+            handler=lambda s, _, kind=kind: signal_log.append((kind, s.op_id, s.name)),
+        )
+
+    graph = Graph()
+    root = create_operation("operate", parameters={"instruction": "start"})
+    root.branch_id = spawner.id
+    graph.add_node(root)
+
+    from lionagi.engines import Engine
+
+    def _name_the_clone(_op, clone) -> None:
+        clone.name = "explicit-child-name"
+
+    run = Engine().new_run(session=session)
+    result = await run.run_dag(
+        graph,
+        reactive=True,
+        node_builder=role_node_builder({"follower": follower}),
+        spawn_branch_setup=_name_the_clone,
+    )
+
+    assert result["spawned_operations"] == 1
+    spawned_op_id = next(oid for oid in result["completed_operations"] if str(oid) != str(root.id))
+    names = {kind: name for kind, oid, name in signal_log if oid == str(spawned_op_id)}
+    assert "started" in names, f"no started signal recorded for spawned child, got {signal_log}"
+    terminal_name = names.get("completed") or names.get("failed")
+    assert names["queued"] == names["started"] == terminal_name == "spawn-1", (
+        "a branch-naming hook must not split a reactive child's lifecycle "
+        f"identity, got {signal_log}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_executor_raw_callback_diverges_without_reference_id_pre_fix_symptom():
     """Pins the pre-fix symptom at its source, one layer below the signal bus:
     the raw ``DependencyAwareExecutor.on_progress`` callback itself falls back
