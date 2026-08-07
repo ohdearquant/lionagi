@@ -1842,6 +1842,31 @@ export async function pruneAdmin(body: AdminPruneRequest): Promise<{ pruned: num
   });
 }
 
+export interface AdminEvent {
+  id: string;
+  created_at: number;
+  action: string;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+  actor: string;
+}
+
+export interface AdminEventListParams {
+  action?: string;
+  target_id?: string;
+  limit?: number;
+}
+
+export async function getAdminEvents(params?: AdminEventListParams): Promise<AdminEvent[]> {
+  const query = new URLSearchParams();
+  if (params?.action) query.set("action", params.action);
+  if (params?.target_id) query.set("target_id", params.target_id);
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  const res = await fetchJson<{ events: AdminEvent[] }>(`/api/admin/events${qs ? `?${qs}` : ""}`);
+  return res.events;
+}
+
 // ─── Admin maintenance (Phase C Move 3) ──────────────────────────────────────
 
 export type MaintenanceAction = "vacuum" | "checkpoint" | "prune";
@@ -1871,6 +1896,58 @@ export async function runMaintenance(action: MaintenanceAction): Promise<Mainten
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action }),
   });
+}
+
+// ─── Teams (`li team` crews with a shared inbox) ──────────────────────────────
+
+export interface TeamSummary {
+  id: string;
+  name: string;
+  member_count: number;
+  last_modified: number;
+}
+
+export interface TeamListResponse {
+  teams: TeamSummary[];
+  limit: number;
+  offset: number;
+  total: number;
+  has_next: boolean;
+}
+
+export interface TeamMessage {
+  id: string;
+  from: string;
+  to: string | string[];
+  content: string;
+  timestamp: string;
+  read_by: Record<string, unknown>;
+  kind: string;
+  from_op?: string;
+  artifacts?: string[];
+}
+
+export interface TeamDetail {
+  id: string;
+  name: string;
+  members: string[];
+  messages: TeamMessage[];
+  created_at: string;
+}
+
+export async function listTeams(params?: {
+  limit?: number;
+  offset?: number;
+}): Promise<TeamListResponse> {
+  const query = new URLSearchParams();
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  if (params?.offset != null) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return fetchJson<TeamListResponse>(`/api/teams/${qs ? `?${qs}` : ""}`);
+}
+
+export async function getTeam(teamId: string): Promise<TeamDetail> {
+  return fetchJson<TeamDetail>(`/api/teams/${encodeURIComponent(teamId)}`);
 }
 
 // ─── Projects (ADR-0026) ──────────────────────────────────────────────────────
@@ -2211,6 +2288,23 @@ export async function listEngineRuns(params?: EngineRunListParams): Promise<Engi
 
 export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
   return fetchJson<EngineRunSummary>(`/api/engine-runs/${encodeURIComponent(runId)}`);
+}
+
+// ─── Shows / plays ──────────────────────────────────────────────────────────
+
+/** A play currently sitting in the `gated` lifecycle status, read live. */
+export interface GatedPlaySummary {
+  id: string;
+  topic: string;
+  play_name: string;
+  started_at: number | null;
+  updated_at: number | null;
+  feedback: string | null;
+  session_id: string | null;
+}
+
+export async function listGatedPlays(): Promise<GatedPlaySummary[]> {
+  return fetchJson<GatedPlaySummary[]>("/api/shows/gated-plays");
 }
 
 // ─── Engine definitions ───────────────────────────────────────────────────────

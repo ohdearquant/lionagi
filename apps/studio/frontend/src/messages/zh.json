@@ -10,7 +10,8 @@
       "toggleTheme": "切换主题",
       "switchToZh": "切换到中文",
       "switchToEn": "切换到英文",
-      "selectLanguage": "选择语言"
+      "selectLanguage": "选择语言",
+      "teams": "团队"
     },
     "palette": {
       "ariaLabel": "命令面板",
@@ -38,7 +39,8 @@
     "tabs": {
       "overview": "总览",
       "fleet": "智能体监控",
-      "homeAria": "首页标签页"
+      "homeAria": "首页标签页",
+      "attention": "关注"
     }
   },
   "runResume": {
@@ -466,8 +468,8 @@
       "statErrorsRecent": "错误（近期）",
       "noBranchErrorsPartial": "已加载的消息中没有错误。",
       "noFilesPartial": "已加载的消息中未检测到文件操作。",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "无法加载更早的历史记录 — 此对话在请求完成前已继续。",
+      "reloadConversation": "重新加载对话",
       "graphEdgeCount": "{count} 条边",
       "graphImpliedHidden": "· {count} 条隐含边已隐藏",
       "graphHideImplied": "隐藏隐含边",
@@ -479,16 +481,16 @@
       "graphNodeStatusDone": "完成",
       "graphNodeStatusFailed": "失败",
       "graphNodeStatusEscalated": "已升级",
-      "progressTotal": "Total",
-      "progressCompleted": "Completed",
-      "progressRunning": "Running",
-      "progressFailed": "Failed",
-      "progressPending": "Pending",
-      "progressElapsed": "Elapsed",
-      "expandGraph": "Expand execution graph",
-      "collapseGraph": "Collapse execution graph",
-      "closeExpandedGraph": "Close",
-      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
+      "progressTotal": "总计",
+      "progressCompleted": "已完成",
+      "progressRunning": "运行中",
+      "progressFailed": "失败",
+      "progressPending": "待处理",
+      "progressElapsed": "已用时间",
+      "expandGraph": "展开执行图",
+      "collapseGraph": "收起执行图",
+      "closeExpandedGraph": "关闭",
+      "nodeNoBranch": "未找到“{node}”对应的分支 — 此步骤尚未开始。"
     },
     "masterAria": "历史列表",
     "detailAria": "条目详情"
@@ -499,7 +501,9 @@
     "sections": {
       "health": "健康状态",
       "maintenance": "维护",
-      "settings": "设置"
+      "settings": "设置",
+      "adminEvents": "管理员事件",
+      "data": "数据"
     },
     "health": {
       "stateDb": "状态数据库",
@@ -568,6 +572,21 @@
       "switchToZh": "切换为中文",
       "english": "English",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "按操作筛选",
+      "targetPlaceholder": "按目标 ID 筛选",
+      "filter": "筛选",
+      "loadError": "加载管理员事件失败。",
+      "empty": "尚未记录任何管理员事件。",
+      "when": "时间",
+      "action": "操作",
+      "target": "目标",
+      "actor": "操作者"
+    },
+    "data": {
+      "engineRuns": "引擎运行",
+      "definitions": "定义"
     }
   },
   "schedules": {
@@ -833,7 +852,8 @@
       "updated": "更新时间",
       "branchesTitle": "分支（{count}）",
       "noBranches": "暂无分支。",
-      "msgs": " 条消息"
+      "msgs": " 条消息",
+      "engineRuns": "引擎运行"
     },
     "split": {
       "master": "会话列表",
@@ -885,7 +905,7 @@
         "stuck": "卡住 · 无进展",
         "gated": "待审批"
       },
-      "more": "还有 {count} 项，去历史中查看 →",
+      "more": "还有 {count} 项，查看全部 →",
       "digestLatest": "最近：{name} · {age}前",
       "streakCount": "连续失败 {count} 次",
       "disposition": {
@@ -914,7 +934,17 @@
       },
       "showDischarged": "显示已处理项",
       "hideDischarged": "隐藏已处理项",
-      "dischargedEmpty": "没有已处理的项目"
+      "dischargedEmpty": "没有已处理的项目",
+      "page": {
+        "title": "关注事项",
+        "subtitle": "所有需要处理的事项，包括进行中和已处理的。",
+        "filterActive": "进行中",
+        "filterDischarged": "已处理",
+        "filterAll": "全部",
+        "emptyActive": "目前没有需要关注的事项。",
+        "emptyDischarged": "没有已处理的事项。",
+        "emptyAll": "没有关注事项。"
+      }
     },
     "liveBoard": {
       "title": "正在运行",
@@ -1143,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "团队",
+    "subtitle": "通过共享收件箱协作的智能体团队",
+    "loadError": "加载团队失败。",
+    "emptyTitle": "暂无团队",
+    "emptyBody": "使用 `li team create` 创建团队，团队通过共享收件箱协作。",
+    "table": {
+      "name": "名称",
+      "members": "成员",
+      "lastModified": "最后修改",
+      "oneMember": "1 名成员",
+      "memberCount": "{count} 名成员"
+    },
+    "loadMore": "加载更多",
+    "loadingMore": "加载中…",
+    "detail": {
+      "close": "关闭",
+      "members": "成员",
+      "created": "创建时间",
+      "messages": "消息（{count}）",
+      "noMessages": "暂无消息。"
+    }
+  },
+  "engineRuns": {
+    "title": "引擎运行",
+    "subtitle": "编排会话之下的单次引擎调用",
+    "filterKind": "按类型筛选",
+    "filterStatus": "按状态筛选",
+    "filterStatusAll": "全部状态",
+    "filterSession": "按会话 ID 筛选",
+    "filterApply": "筛选",
+    "loadError": "加载引擎运行失败。",
+    "emptyTitle": "未找到引擎运行",
+    "emptyBody": "当引擎（例如 `li engine`）记录一次调用后，会在此处显示。",
+    "table": {
+      "kind": "类型",
+      "status": "状态",
+      "started": "开始时间",
+      "session": "会话"
+    },
+    "detail": {
+      "close": "关闭",
+      "notFound": "未找到该引擎运行。",
+      "started": "开始时间",
+      "ended": "结束时间",
+      "exportDir": "导出目录",
+      "error": "错误",
+      "spec": "规格"
+    }
+  },
+  "definitions": {
+    "title": "定义",
+    "subtitle": "所有带版本历史的智能体与剧本定义，支持批量快照",
+    "filterKind": "按类型筛选",
+    "filterKindAll": "全部类型",
+    "snapshotAll": "全部快照",
+    "snapshotting": "正在快照…",
+    "snapshotDone": "已创建 {count} 个快照。",
+    "snapshotFailed": "快照失败。",
+    "loadError": "加载定义失败。",
+    "emptyTitle": "未找到定义",
+    "emptyBody": "创建智能体或剧本定义后会显示在此处。",
+    "table": {
+      "kind": "类型",
+      "name": "名称",
+      "version": "版本",
+      "noVersions": "无历史记录",
+      "updated": "更新时间"
+    }
   }
 }

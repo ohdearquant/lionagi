@@ -10,7 +10,8 @@
       "toggleTheme": "থিম টগল করুন",
       "switchToZh": "চীনা ভাষায় যান",
       "switchToEn": "ইংরেজিতে যান",
-      "selectLanguage": "ভাষা নির্বাচন করুন"
+      "selectLanguage": "ভাষা নির্বাচন করুন",
+      "teams": "দল"
     },
     "palette": {
       "ariaLabel": "কমান্ড প্যালেট",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "ওভারভিউ",
       "fleet": "এজেন্ট ফ্লিট",
-      "homeAria": "হোম ট্যাব"
+      "homeAria": "হোম ট্যাব",
+      "attention": "দৃষ্টি"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -466,8 +468,8 @@
       "statErrorsRecent": "ত্রুটি (সাম্প্রতিক)",
       "noBranchErrorsPartial": "লোড করা মেসেজে কোনো ত্রুটি নেই।",
       "noFilesPartial": "লোড করা মেসেজে কোনো ফাইল অপারেশন শনাক্ত হয়নি।",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "পুরোনো ইতিহাস লোড করা যায়নি — অনুরোধ সম্পূর্ণ হওয়ার আগেই এই কথোপকথনটি এগিয়ে গেছে।",
+      "reloadConversation": "কথোপকথন পুনরায় লোড করুন",
       "graphEdgeCount": "{count}টি প্রান্ত",
       "graphImpliedHidden": "· {count}টি অন্তর্নিহিত লুকানো",
       "graphHideImplied": "অন্তর্নিহিত লুকান",
@@ -479,16 +481,16 @@
       "graphNodeStatusDone": "সম্পন্ন",
       "graphNodeStatusFailed": "ব্যর্থ",
       "graphNodeStatusEscalated": "এস্কেলেটেড",
-      "progressTotal": "Total",
-      "progressCompleted": "Completed",
-      "progressRunning": "Running",
-      "progressFailed": "Failed",
-      "progressPending": "Pending",
-      "progressElapsed": "Elapsed",
-      "expandGraph": "Expand execution graph",
-      "collapseGraph": "Collapse execution graph",
-      "closeExpandedGraph": "Close",
-      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
+      "progressTotal": "মোট",
+      "progressCompleted": "সম্পন্ন",
+      "progressRunning": "চলমান",
+      "progressFailed": "ব্যর্থ",
+      "progressPending": "মুলতুবি",
+      "progressElapsed": "অতিবাহিত সময়",
+      "expandGraph": "এক্সিকিউশন গ্রাফ প্রসারিত করুন",
+      "collapseGraph": "এক্সিকিউশন গ্রাফ সংকুচিত করুন",
+      "closeExpandedGraph": "বন্ধ করুন",
+      "nodeNoBranch": "“{node}”-এর জন্য কোনো ব্রাঞ্চ পাওয়া যায়নি — এই ধাপটি এখনও শুরু হয়নি।"
     },
     "masterAria": "হিস্ট্রি তালিকা",
     "detailAria": "আইটেমের বিস্তারিত"
@@ -499,7 +501,9 @@
     "sections": {
       "health": "সিস্টেমের অবস্থা",
       "maintenance": "মেইনটেন্যান্স",
-      "settings": "সেটিংস"
+      "settings": "সেটিংস",
+      "adminEvents": "অ্যাডমিন ইভেন্ট",
+      "data": "ডেটা"
     },
     "health": {
       "stateDb": "স্টেট DB",
@@ -568,6 +572,21 @@
       "switchToZh": "切换为中文",
       "english": "ইংরেজি",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "কার্যক্রম দিয়ে ফিল্টার করুন",
+      "targetPlaceholder": "টার্গেট আইডি দিয়ে ফিল্টার করুন",
+      "filter": "ফিল্টার",
+      "loadError": "অ্যাডমিন ইভেন্ট লোড করা যায়নি।",
+      "empty": "এখনও কোনো অ্যাডমিন ইভেন্ট রেকর্ড হয়নি।",
+      "when": "কখন",
+      "action": "কার্যক্রম",
+      "target": "টার্গেট",
+      "actor": "সম্পাদনকারী"
+    },
+    "data": {
+      "engineRuns": "ইঞ্জিন রান",
+      "definitions": "ডেফিনিশন"
     }
   },
   "schedules": {
@@ -833,7 +852,8 @@
       "updated": "আপডেটেড",
       "branchesTitle": "{count, plural, one {ব্রাঞ্চ (#)} other {ব্রাঞ্চ (#)}}",
       "noBranches": "কোনো ব্রাঞ্চ নেই।",
-      "msgs": " মেসেজ"
+      "msgs": " মেসেজ",
+      "engineRuns": "ইঞ্জিন রান"
     },
     "split": {
       "master": "সেশন তালিকা",
@@ -885,7 +905,7 @@
         "stuck": "আটকে আছে · অগ্রগতি নেই",
         "gated": "অনুমোদনের অপেক্ষায়"
       },
-      "more": "{count, plural, one {+আরও #টি — হিস্ট্রিতে সব দেখুন →} other {+আরও #টি — হিস্ট্রিতে সব দেখুন →}}",
+      "more": "{count, plural, one {+আরও #টি — সব দেখুন →} other {+আরও #টি — সব দেখুন →}}",
       "digestLatest": "সর্বশেষ: {name} · {age} আগে",
       "streakCount": "{count, plural, one {#× ব্যর্থ} other {#× ব্যর্থ}}",
       "disposition": {
@@ -914,7 +934,17 @@
       },
       "showDischarged": "নিষ্পত্তি হওয়া দেখান",
       "hideDischarged": "নিষ্পত্তি হওয়া লুকান",
-      "dischargedEmpty": "কোনো নিষ্পত্তি হওয়া আইটেম নেই"
+      "dischargedEmpty": "কোনো নিষ্পত্তি হওয়া আইটেম নেই",
+      "page": {
+        "title": "দৃষ্টি প্রয়োজন",
+        "subtitle": "অপারেটরের দৃষ্টি প্রয়োজন এমন সব আইটেম, সক্রিয় ও নিষ্পত্তিকৃত।",
+        "filterActive": "সক্রিয়",
+        "filterDischarged": "নিষ্পত্তিকৃত",
+        "filterAll": "সব",
+        "emptyActive": "এখন কোনো কিছুতে দৃষ্টি দেওয়ার প্রয়োজন নেই।",
+        "emptyDischarged": "কোনো নিষ্পত্তিকৃত আইটেম নেই।",
+        "emptyAll": "কোনো দৃষ্টি আইটেম নেই।"
+      }
     },
     "liveBoard": {
       "title": "এখন রানিং",
@@ -1143,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "দল",
+    "subtitle": "শেয়ার করা ইনবক্সের মাধ্যমে সমন্বিত এজেন্ট দল",
+    "loadError": "দল লোড করা যায়নি।",
+    "emptyTitle": "এখনও কোনো দল নেই",
+    "emptyBody": "`li team create` দিয়ে দল তৈরি হয় এবং তারা শেয়ার করা ইনবক্সের মাধ্যমে সমন্বয় করে।",
+    "table": {
+      "name": "নাম",
+      "members": "সদস্য",
+      "lastModified": "সর্বশেষ পরিবর্তিত",
+      "oneMember": "১ জন সদস্য",
+      "memberCount": "{count} জন সদস্য"
+    },
+    "loadMore": "আরও লোড করুন",
+    "loadingMore": "লোড হচ্ছে…",
+    "detail": {
+      "close": "বন্ধ করুন",
+      "members": "সদস্য",
+      "created": "তৈরি হয়েছে",
+      "messages": "বার্তা ({count})",
+      "noMessages": "এখনও কোনো বার্তা নেই।"
+    }
+  },
+  "engineRuns": {
+    "title": "ইঞ্জিন রান",
+    "subtitle": "অর্কেস্ট্রেশন সেশনের নিচে পৃথক ইঞ্জিন ইনভোকেশন",
+    "filterKind": "ধরন দিয়ে ফিল্টার করুন",
+    "filterStatus": "স্ট্যাটাস দিয়ে ফিল্টার করুন",
+    "filterStatusAll": "সব স্ট্যাটাস",
+    "filterSession": "সেশন আইডি দিয়ে ফিল্টার করুন",
+    "filterApply": "ফিল্টার",
+    "loadError": "ইঞ্জিন রান লোড করা যায়নি।",
+    "emptyTitle": "কোনো ইঞ্জিন রান পাওয়া যায়নি",
+    "emptyBody": "কোনো ইঞ্জিন (যেমন `li engine`) একটি ইনভোকেশন রেকর্ড করলে ইঞ্জিন রান এখানে দেখা যাবে।",
+    "table": {
+      "kind": "ধরন",
+      "status": "স্ট্যাটাস",
+      "started": "শুরু হয়েছে",
+      "session": "সেশন"
+    },
+    "detail": {
+      "close": "বন্ধ করুন",
+      "notFound": "ইঞ্জিন রান পাওয়া যায়নি।",
+      "started": "শুরু হয়েছে",
+      "ended": "শেষ হয়েছে",
+      "exportDir": "এক্সপোর্ট ডিরেক্টরি",
+      "error": "ত্রুটি",
+      "spec": "স্পেক"
+    }
+  },
+  "definitions": {
+    "title": "ডেফিনিশন",
+    "subtitle": "প্রতিটি সংস্করণযুক্ত এজেন্ট ও প্লেবুক ডেফিনিশন, বাল্ক স্ন্যাপশট চেকপয়েন্টসহ",
+    "filterKind": "ধরন দিয়ে ফিল্টার করুন",
+    "filterKindAll": "সব ধরন",
+    "snapshotAll": "সব স্ন্যাপশট নিন",
+    "snapshotting": "স্ন্যাপশট নেওয়া হচ্ছে…",
+    "snapshotDone": "{count}টি স্ন্যাপশট তৈরি হয়েছে।",
+    "snapshotFailed": "স্ন্যাপশট ব্যর্থ হয়েছে।",
+    "loadError": "ডেফিনিশন লোড করা যায়নি।",
+    "emptyTitle": "কোনো ডেফিনিশন পাওয়া যায়নি",
+    "emptyBody": "তৈরি হওয়ার পর এজেন্ট ও প্লেবুক ডেফিনিশন এখানে দেখা যাবে।",
+    "table": {
+      "kind": "ধরন",
+      "name": "নাম",
+      "version": "সংস্করণ",
+      "noVersions": "কোনো ইতিহাস নেই",
+      "updated": "আপডেট হয়েছে"
+    }
   }
 }

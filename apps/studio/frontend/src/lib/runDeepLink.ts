@@ -19,3 +19,13 @@ export function scheduleDeepLink(scheduleId: string): {
 } {
   return { to: "/schedules", search: { s: scheduleId } };
 }
+
+/**
+ * Play counterpart. There is no dedicated show/play detail route yet (the
+ * legacy `/shows` route redirects to `/fleet`), so this is a same
+ * best-effort landing spot as `invocationDeepLink` until one exists — not a
+ * deep link into the specific play.
+ */
+export function playDeepLink(): { to: "/fleet" } {
+  return { to: "/fleet" };
+}

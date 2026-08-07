@@ -18,6 +18,7 @@ from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._db import store_exists, store_path
 from ._io import read_json_file as _read_json
+from ._io import read_json_file_checked as _read_json_checked
 from ._path_safety import public_path, safe_path_join
 from ._sse import sse_response
 
@@ -36,6 +37,27 @@ def _play_dirs(show_dir: Path) -> list[Path]:
         return [p for p in sorted(show_dir.iterdir()) if p.is_dir()]
     except OSError:
         return []
+
+
+def _live_play_meta(
+    play_dir: Path, on_disk: bool
+) -> tuple[dict[str, Any] | None, bool, str | None]:
+    """Read a DB-known play's live ``_meta.json``.
+
+    Returns ``(meta, unavailable, error)``. A DB row only exists for a play
+    whose directory was present at import time, so ``on_disk`` being False
+    now means that directory has since disappeared (deleted or moved) -
+    that is unavailable, not "never started". Likewise a ``_meta.json`` that
+    exists but fails to parse (e.g. truncated by a crashed writer) is
+    unavailable, not empty. A play directory that legitimately has no
+    ``_meta.json`` yet (never started) is a normal, available empty read.
+    """
+    if not on_disk:
+        return None, True, "play directory not found on disk"
+    read = _read_json_checked(play_dir / "_meta.json")
+    if not read.available:
+        return None, True, read.error
+    return read.value, False, None
 
 
 def _extract_goal(show_md: str | None) -> str | None:
@@ -182,37 +204,90 @@ async def get_show(topic: str) -> dict[str, Any] | None:
 
     if db_plays:
         plays = []
+        known_play_names: set[str] = set()
+        disk_dirs = _play_dirs(show_dir) if dir_exists else []
+        disk_play_names = {d.name for d in disk_dirs}
         for p in db_plays:
+            known_play_names.add(p["name"])
             play_dir = show_dir / p["name"]
+            on_disk = p["name"] in disk_play_names
+            db_meta = {
+                "worktree": p["worktree"],
+                "branch": p["branch"],
+                "attempt": p["attempt"],
+                "started_at": p["started_at"],
+                "ended_at": p["ended_at"],
+                "exit_code": p["exit_code"],
+                "merged_at": p["merged_at"],
+                "merge_sha": p["merge_sha"],
+                "status": p["status"],
+            }
+            # The plays table is populated once by import_shows() and never
+            # resynced, so its status can only be as fresh as the last
+            # import. _meta.json is written live by whatever is actually
+            # running the play, so where a play exists on disk its meta
+            # (status in particular) wins; the DB row still supplies fields
+            # disk doesn't carry (worktree, session linkage, merge info).
+            # When the live read is unavailable (directory gone, file
+            # unreadable/corrupt) the DB status is stale by definition and
+            # must not be presented as current - live_state carries that
+            # instead of silently falling back to it.
+            disk_meta, live_unavailable, live_error = _live_play_meta(play_dir, on_disk)
+            meta = {**db_meta, **disk_meta} if disk_meta else db_meta
+
+            db_verdict = (
+                {
+                    "gate_passed": bool(p["gate_passed"]) if p["gate_passed"] is not None else None,
+                    "feedback": p["gate_feedback"],
+                }
+                if p["gate_passed"] is not None
+                else None
+            )
+            disk_verdict = _read_json(play_dir / "_verdict.json") if on_disk else None
+            verdict = disk_verdict if disk_verdict is not None else db_verdict
+
+            if on_disk:
+                try:
+                    updated_at = play_dir.stat().st_mtime
+                except OSError:
+                    updated_at = p["updated_at"]
+            else:
+                updated_at = p["updated_at"]
+
             plays.append(
                 {
                     "name": p["name"],
-                    "meta": {
-                        "worktree": p["worktree"],
-                        "branch": p["branch"],
-                        "attempt": p["attempt"],
-                        "started_at": p["started_at"],
-                        "ended_at": p["ended_at"],
-                        "exit_code": p["exit_code"],
-                        "merged_at": p["merged_at"],
-                        "merge_sha": p["merge_sha"],
-                        "status": p["status"],
-                    },
-                    "verdict": {
-                        "gate_passed": bool(p["gate_passed"])
-                        if p["gate_passed"] is not None
-                        else None,
-                        "feedback": p["gate_feedback"],
-                    }
-                    if p["gate_passed"] is not None
-                    else _read_json(play_dir / "_verdict.json"),
+                    "meta": meta,
+                    "verdict": verdict,
                     "session_id": p["session_id"],
                     "session_name": p.get("session_name"),
                     "intent": _read_text(play_dir / "_intent.md") if dir_exists else None,
-                    "updated_at": p["updated_at"],
+                    "updated_at": updated_at,
                     "depends_on": json.loads(p["depends_on"])
                     if isinstance(p["depends_on"], str)
                     else (p["depends_on"] or []),
+                    "live_state": "unavailable" if live_unavailable else "ok",
+                    "live_error": live_error,
+                }
+            )
+        # A play directory created on disk after import_shows() ran has no
+        # DB row at all (not just a stale one). Merge those in too, so a
+        # DB-backed show still reflects every live play.
+        for play_dir in disk_dirs:
+            if play_dir.name in known_play_names:
+                continue
+            meta = _read_json(play_dir / "_meta.json") or {}
+            verdict = _read_json(play_dir / "_verdict.json")
+            try:
+                updated_at = play_dir.stat().st_mtime
+            except OSError:
+                updated_at = None
+            plays.append(
+                {
+                    "name": play_dir.name,
+                    "meta": meta,
+                    "verdict": verdict,
+                    "updated_at": updated_at,
                 }
             )
     elif dir_exists:
@@ -247,6 +322,94 @@ async def get_show(topic: str) -> dict[str, Any] | None:
         "status_source": status_source,
         "plays": plays,
     }
+
+
+async def _all_show_topics() -> set[str]:
+    """Union of every show topic on disk and every show topic in the DB.
+
+    ``list_shows()`` returns DB rows only once the DB has any rows at all
+    (see ``_list_shows_db()``), so a show directory that was never imported
+    would otherwise never be considered by the gated-play queue. This is a
+    single one-level ``iterdir()`` over ``SHOWS_ROOT`` plus one DB query —
+    no play directories are touched here.
+    """
+    topics: set[str] = set()
+    if SHOWS_ROOT.exists():
+        for path in SHOWS_ROOT.iterdir():
+            if path.is_dir():
+                topics.add(path.name)
+    if await _db_available():
+        try:
+            async with _open_db(store_path()) as db:
+                cur = await db.execute("SELECT topic FROM shows")
+                rows = await cur.fetchall()
+                topics.update(row["topic"] for row in rows)
+        except Exception:
+            _log.warning("_all_show_topics DB query failed, using filesystem only", exc_info=True)
+    return topics
+
+
+async def list_gated_plays() -> list[dict[str, Any]]:
+    """Every play, across every show, currently sitting in the ``gated``
+    lifecycle status — read live (disk status winning over any DB row for
+    the same play), the same merge ``get_show()`` performs.
+
+    The ``plays`` table is populated once by ``import_shows()`` and never
+    resynced afterward (a show already in the DB is skipped on re-import),
+    so it cannot be the source of truth for a live alert queue: a play
+    directory created after import has no DB row, a play rewritten on disk
+    after import has a stale DB row, and a show never imported has no DB
+    row at all. Enumerating every show directory on disk (unioned with
+    every DB topic) and going through ``get_show()`` per show — which gives
+    disk precedence over the DB for any play present in both — answers this
+    from the same resolution step ``get_show()`` uses, so the two can never
+    disagree about the same play.
+
+    A DB-known play whose live state cannot currently be read (its
+    directory disappeared, or its metadata file is unreadable) is included
+    here too, tagged ``live_state: "unavailable"``, rather than either
+    silently dropping it or presenting the stale imported status as if it
+    were current. Whether that play is actually gated cannot be established
+    from this queue - it is a "look here" entry, not a gate verdict.
+    """
+    out: list[dict[str, Any]] = []
+    for topic in sorted(await _all_show_topics()):
+        show = await get_show(topic)
+        if show is None:
+            continue
+        for play in show.get("plays", []):
+            meta = play.get("meta") or {}
+            verdict = play.get("verdict") or {}
+            if play.get("live_state") == "unavailable":
+                out.append(
+                    {
+                        "id": f"play:{topic}:{play['name']}",
+                        "topic": topic,
+                        "play_name": play["name"],
+                        "started_at": meta.get("started_at"),
+                        "updated_at": play.get("updated_at"),
+                        "feedback": verdict.get("feedback"),
+                        "session_id": play.get("session_id"),
+                        "live_state": "unavailable",
+                        "live_error": play.get("live_error"),
+                    }
+                )
+                continue
+            if meta.get("status") != "gated":
+                continue
+            out.append(
+                {
+                    "id": f"play:{topic}:{play['name']}",
+                    "topic": topic,
+                    "play_name": play["name"],
+                    "started_at": meta.get("started_at"),
+                    "updated_at": play.get("updated_at"),
+                    "feedback": verdict.get("feedback"),
+                    "session_id": play.get("session_id"),
+                    "live_state": "ok",
+                }
+            )
+    return out
 
 
 async def import_shows() -> dict[str, int]:
@@ -574,6 +737,13 @@ async def watch_show(topic: str) -> AsyncGenerator[str]:
 @studio_route("/shows/", method="GET", area="shows", name="list_shows")
 async def list_shows_route() -> list[dict[str, Any]]:
     return await list_shows()
+
+
+# Registered before /shows/{topic} — a path param route would otherwise
+# swallow this literal segment as a topic name.
+@studio_route("/shows/gated-plays", method="GET", area="shows", name="list_gated_plays")
+async def list_gated_plays_route() -> list[dict[str, Any]]:
+    return await list_gated_plays()
 
 
 # ADR-0077: state-mutating (INSERT OR IGNORE), so POST not GET. The CLI command

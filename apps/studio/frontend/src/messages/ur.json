@@ -10,7 +10,8 @@
       "toggleTheme": "تھیم بدلیں",
       "switchToZh": "چینی پر سوئچ کریں",
       "switchToEn": "انگریزی پر سوئچ کریں",
-      "selectLanguage": "زبان منتخب کریں"
+      "selectLanguage": "زبان منتخب کریں",
+      "teams": "ٹیمیں"
     },
     "palette": {
       "ariaLabel": "کمانڈ پیلیٹ",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "جائزہ",
       "fleet": "ایجنٹ فلیٹ",
-      "homeAria": "ہوم ٹیبز"
+      "homeAria": "ہوم ٹیبز",
+      "attention": "توجہ"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -466,8 +468,8 @@
       "statErrorsRecent": "خرابیاں (حالیہ)",
       "noBranchErrorsPartial": "لوڈ شدہ پیغامات میں کوئی خرابی نہیں۔",
       "noFilesPartial": "لوڈ شدہ پیغامات میں کوئی فائل آپریشن نہیں ملا۔",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "پرانی ہسٹری لوڈ نہیں ہو سکی — درخواست مکمل ہونے سے پہلے یہ گفتگو آگے بڑھ گئی۔",
+      "reloadConversation": "گفتگو دوبارہ لوڈ کریں",
       "graphEdgeCount": "{count} کنارے",
       "graphImpliedHidden": "· {count} ضمنی چھپے ہوئے",
       "graphHideImplied": "ضمنی چھپائیں",
@@ -479,16 +481,16 @@
       "graphNodeStatusDone": "مکمل",
       "graphNodeStatusFailed": "ناکام",
       "graphNodeStatusEscalated": "بڑھایا گیا",
-      "progressTotal": "Total",
-      "progressCompleted": "Completed",
-      "progressRunning": "Running",
-      "progressFailed": "Failed",
-      "progressPending": "Pending",
-      "progressElapsed": "Elapsed",
-      "expandGraph": "Expand execution graph",
-      "collapseGraph": "Collapse execution graph",
-      "closeExpandedGraph": "Close",
-      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
+      "progressTotal": "کل",
+      "progressCompleted": "مکمل",
+      "progressRunning": "جاری",
+      "progressFailed": "ناکام",
+      "progressPending": "زیرِ التوا",
+      "progressElapsed": "گزرا وقت",
+      "expandGraph": "ایگزیکیوشن گراف پھیلائیں",
+      "collapseGraph": "ایگزیکیوشن گراف سمیٹیں",
+      "closeExpandedGraph": "بند کریں",
+      "nodeNoBranch": "“{node}” کے لیے کوئی برانچ نہیں ملی — یہ مرحلہ ابھی شروع نہیں ہوا۔"
     },
     "masterAria": "ہسٹری فہرست",
     "detailAria": "آئٹم تفصیل"
@@ -499,7 +501,9 @@
     "sections": {
       "health": "صحت",
       "maintenance": "مینٹیننس",
-      "settings": "سیٹنگز"
+      "settings": "سیٹنگز",
+      "adminEvents": "ایڈمن ایونٹس",
+      "data": "ڈیٹا"
     },
     "health": {
       "stateDb": "State DB",
@@ -568,6 +572,21 @@
       "switchToZh": "切换为中文",
       "english": "انگریزی",
       "chinese": "چینی"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "عمل کے لحاظ سے فلٹر کریں",
+      "targetPlaceholder": "ٹارگٹ ID کے لحاظ سے فلٹر کریں",
+      "filter": "فلٹر کریں",
+      "loadError": "ایڈمن ایونٹس لوڈ کرنے میں ناکامی۔",
+      "empty": "ابھی تک کوئی ایڈمن ایونٹ درج نہیں ہوا۔",
+      "when": "کب",
+      "action": "عمل",
+      "target": "ٹارگٹ",
+      "actor": "کرنے والا"
+    },
+    "data": {
+      "engineRuns": "انجن رنز",
+      "definitions": "تعریفات"
     }
   },
   "schedules": {
@@ -833,7 +852,8 @@
       "updated": "اپ ڈیٹ شدہ",
       "branchesTitle": "برانچز (⁨{count}⁩)",
       "noBranches": "کوئی برانچ نہیں۔",
-      "msgs": " پیغامات"
+      "msgs": " پیغامات",
+      "engineRuns": "انجن رنز"
     },
     "split": {
       "master": "سیشن فہرست",
@@ -885,7 +905,7 @@
         "stuck": "اٹکا ہوا · کوئی پیش رفت نہیں",
         "gated": "منظوری کا منتظر"
       },
-      "more": "{count, plural, one {+# مزید — History میں سب دیکھیں →} other {+# مزید — History میں سب دیکھیں →}}",
+      "more": "{count, plural, one {+# مزید — سب دیکھیں →} other {+# مزید — سب دیکھیں →}}",
       "digestLatest": "تازہ ترین: ⁨{name}⁩ · ⁨{age}⁩ پہلے",
       "streakCount": "{count, plural, one {#× ناکام} other {#× ناکام}}",
       "disposition": {
@@ -914,7 +934,17 @@
       },
       "showDischarged": "نمٹائے گئے دکھائیں",
       "hideDischarged": "نمٹائے گئے چھپائیں",
-      "dischargedEmpty": "کوئی نمٹایا گیا آئٹم نہیں"
+      "dischargedEmpty": "کوئی نمٹایا گیا آئٹم نہیں",
+      "page": {
+        "title": "توجہ درکار",
+        "subtitle": "آپریٹر کی توجہ درکار تمام آئٹمز، فعال اور نمٹائے گئے۔",
+        "filterActive": "فعال",
+        "filterDischarged": "نمٹایا گیا",
+        "filterAll": "سب",
+        "emptyActive": "ابھی کسی چیز پر توجہ درکار نہیں۔",
+        "emptyDischarged": "کوئی نمٹایا گیا آئٹم نہیں۔",
+        "emptyAll": "کوئی توجہ آئٹم نہیں۔"
+      }
     },
     "liveBoard": {
       "title": "ابھی چل رہا ہے",
@@ -1143,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "ٹیمیں",
+    "subtitle": "مشترکہ ان باکس کے ذریعے ہم آہنگی کرنے والے ایجنٹوں کے دستے",
+    "loadError": "ٹیمیں لوڈ کرنے میں ناکامی۔",
+    "emptyTitle": "ابھی تک کوئی ٹیم نہیں",
+    "emptyBody": "ٹیمیں `li team create` سے بنائی جاتی ہیں اور مشترکہ ان باکس کے ذریعے ہم آہنگی کرتی ہیں۔",
+    "table": {
+      "name": "نام",
+      "members": "اراکین",
+      "lastModified": "آخری ترمیم",
+      "oneMember": "1 رکن",
+      "memberCount": "{count} اراکین"
+    },
+    "loadMore": "مزید لوڈ کریں",
+    "loadingMore": "لوڈ ہو رہا ہے…",
+    "detail": {
+      "close": "بند کریں",
+      "members": "اراکین",
+      "created": "بنائی گئی",
+      "messages": "پیغامات ({count})",
+      "noMessages": "ابھی تک کوئی پیغام نہیں۔"
+    }
+  },
+  "engineRuns": {
+    "title": "انجن رنز",
+    "subtitle": "آرکسٹریشن سیشنز کے نیچے انفرادی انجن انوکیشنز",
+    "filterKind": "قسم کے لحاظ سے فلٹر کریں",
+    "filterStatus": "حیثیت کے لحاظ سے فلٹر کریں",
+    "filterStatusAll": "تمام حیثیتیں",
+    "filterSession": "سیشن ID کے لحاظ سے فلٹر کریں",
+    "filterApply": "فلٹر کریں",
+    "loadError": "انجن رنز لوڈ کرنے میں ناکامی۔",
+    "emptyTitle": "کوئی انجن رن نہیں ملا",
+    "emptyBody": "جب کوئی انجن (مثلاً `li engine`) کوئی انوکیشن ریکارڈ کرے گا تو انجن رنز یہاں دکھائی دیں گے۔",
+    "table": {
+      "kind": "قسم",
+      "status": "حیثیت",
+      "started": "شروع ہوا",
+      "session": "سیشن"
+    },
+    "detail": {
+      "close": "بند کریں",
+      "notFound": "انجن رن نہیں ملا۔",
+      "started": "شروع ہوا",
+      "ended": "ختم ہوا",
+      "exportDir": "ایکسپورٹ ڈائریکٹری",
+      "error": "خرابی",
+      "spec": "اسپیک"
+    }
+  },
+  "definitions": {
+    "title": "تعریفات",
+    "subtitle": "ہر ورژن شدہ ایجنٹ اور پلے بک تعریف، بلک سنیپ شاٹ چیک پوائنٹ کے ساتھ",
+    "filterKind": "قسم کے لحاظ سے فلٹر کریں",
+    "filterKindAll": "تمام اقسام",
+    "snapshotAll": "سب کا سنیپ شاٹ لیں",
+    "snapshotting": "سنیپ شاٹ لیا جا رہا ہے…",
+    "snapshotDone": "{count} سنیپ شاٹ بنائے گئے۔",
+    "snapshotFailed": "سنیپ شاٹ ناکام ہو گیا۔",
+    "loadError": "تعریفات لوڈ کرنے میں ناکامی۔",
+    "emptyTitle": "کوئی تعریف نہیں ملی",
+    "emptyBody": "بننے کے بعد ایجنٹ اور پلے بک تعریفات یہاں دکھائی دیں گی۔",
+    "table": {
+      "kind": "قسم",
+      "name": "نام",
+      "version": "ورژن",
+      "noVersions": "کوئی تاریخ نہیں",
+      "updated": "اپ ڈیٹ ہوا"
+    }
   }
 }

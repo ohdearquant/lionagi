@@ -807,15 +807,36 @@ async def prune_sessions(session_ids: list[str]) -> int:
             """
         )
         await db.commit()
+    # Recorded after the aiosqlite transaction above commits — insert_admin_event
+    # opens its own StateDB (SQLAlchemy) write transaction; nesting it inside
+    # the aiosqlite block would self-deadlock on the sqlite write lock.
+    from lionagi.state.db import StateDB
+
+    async with StateDB() as sdb:
+        await sdb.insert_admin_event(
+            action="prune_sessions",
+            details={"requested_session_ids": unique_ids, "pruned": pruned},
+            actor="admin",
+        )
     return pruned
 
 
 async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
     """Transition phantom sessions to 'failed' via the sanctioned status path;
     rows are preserved so reason history and artifacts stay inspectable."""
-    from lionagi.studio.services.lifecycle import reap_phantom_sessions
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.lifecycle import reap_phantom_sessions_detailed
 
-    return await reap_phantom_sessions(stale_hours=stale_hours, actor="admin_prune")
+    count, session_ids = await reap_phantom_sessions_detailed(
+        stale_hours=stale_hours, actor="admin_prune"
+    )
+    async with StateDB() as db:
+        await db.insert_admin_event(
+            action="prune_phantoms",
+            details={"count": count, "session_ids": session_ids, "stale_hours": stale_hours},
+            actor="admin_prune",
+        )
+    return count
 
 
 # ---------------------------------------------------------------------------

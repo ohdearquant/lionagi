@@ -123,6 +123,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/sessions/{session_id}/signals"),
     ("GET", "/api/sessions/{session_id}/stream"),
     ("GET", "/api/shows/"),
+    ("GET", "/api/shows/gated-plays"),
     ("GET", "/api/shows/{topic}"),
     ("GET", "/api/shows/{topic}/stream"),
     ("GET", "/api/skills/"),
@@ -276,7 +277,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 130
+    assert len(_GOLDEN_ROUTES) == 131
 
 
 def _compiled_match_shape(path_template: str) -> str:

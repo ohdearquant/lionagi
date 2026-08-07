@@ -5154,8 +5154,15 @@ class StateDB:
             conds.append("action = :action")
             params["action"] = action
         if target_id:
-            conds.append("target_id = :target_id")
+            # Batch actions (transition, prune_phantoms, prune_sessions) affect
+            # many rows but record a single event with target_id=NULL and the
+            # affected ids inside `details`; an exact target_id match alone
+            # would silently return nothing for those ids. `details` is a JSON
+            # column stored as TEXT, so a substring match over its serialized
+            # form also catches ids embedded there.
+            conds.append("(target_id = :target_id OR details LIKE :target_like)")
             params["target_id"] = target_id
+            params["target_like"] = f'%"{target_id}"%'
         if conds:
             query += " WHERE " + " AND ".join(conds)
         query += " ORDER BY created_at DESC LIMIT :limit"

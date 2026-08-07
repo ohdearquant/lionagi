@@ -65,6 +65,7 @@ function FleetPage() {
           tabs={[
             { id: "overview", label: t("tabs.overview"), to: "/", active: false },
             { id: "fleet", label: t("tabs.fleet"), to: "/fleet", active: true },
+            { id: "attention", label: t("tabs.attention"), to: "/attention", active: false },
           ]}
         />
       </div>

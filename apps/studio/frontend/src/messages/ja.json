@@ -10,7 +10,8 @@
       "toggleTheme": "テーマを切り替え",
       "switchToZh": "中国語に切り替え",
       "switchToEn": "英語に切り替え",
-      "selectLanguage": "言語を選択"
+      "selectLanguage": "言語を選択",
+      "teams": "チーム"
     },
     "palette": {
       "ariaLabel": "コマンドパレット",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "概要",
       "fleet": "エージェントフリート",
-      "homeAria": "ホームタブ"
+      "homeAria": "ホームタブ",
+      "attention": "注意"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -466,8 +468,8 @@
       "statErrorsRecent": "エラー (最近)",
       "noBranchErrorsPartial": "読み込まれたメッセージにエラーはありません。",
       "noFilesPartial": "読み込まれたメッセージにファイル操作は検出されていません。",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "過去の履歴を読み込めませんでした — リクエストが完了する前に会話が進みました。",
+      "reloadConversation": "会話を再読み込み",
       "graphEdgeCount": "{count} 本のエッジ",
       "graphImpliedHidden": "· 暗黙のエッジ {count} 本を非表示",
       "graphHideImplied": "暗黙のエッジを隠す",
@@ -479,16 +481,16 @@
       "graphNodeStatusDone": "完了",
       "graphNodeStatusFailed": "失敗",
       "graphNodeStatusEscalated": "エスカレーション",
-      "progressTotal": "Total",
-      "progressCompleted": "Completed",
-      "progressRunning": "Running",
-      "progressFailed": "Failed",
-      "progressPending": "Pending",
-      "progressElapsed": "Elapsed",
-      "expandGraph": "Expand execution graph",
-      "collapseGraph": "Collapse execution graph",
-      "closeExpandedGraph": "Close",
-      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
+      "progressTotal": "合計",
+      "progressCompleted": "完了",
+      "progressRunning": "実行中",
+      "progressFailed": "失敗",
+      "progressPending": "保留中",
+      "progressElapsed": "経過時間",
+      "expandGraph": "実行グラフを展開",
+      "collapseGraph": "実行グラフを折りたたむ",
+      "closeExpandedGraph": "閉じる",
+      "nodeNoBranch": "「{node}」のブランチが見つかりません — このステップはまだ開始されていません。"
     },
     "masterAria": "履歴一覧",
     "detailAria": "項目の詳細"
@@ -499,7 +501,9 @@
     "sections": {
       "health": "ヘルス",
       "maintenance": "メンテナンス",
-      "settings": "設定"
+      "settings": "設定",
+      "adminEvents": "管理イベント",
+      "data": "データ"
     },
     "health": {
       "stateDb": "状態DB",
@@ -568,6 +572,21 @@
       "switchToZh": "中国語に切り替え",
       "english": "英語",
       "chinese": "中国語"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "アクションで絞り込む",
+      "targetPlaceholder": "ターゲットIDで絞り込む",
+      "filter": "絞り込む",
+      "loadError": "管理イベントの読み込みに失敗しました。",
+      "empty": "記録された管理イベントはまだありません。",
+      "when": "日時",
+      "action": "アクション",
+      "target": "ターゲット",
+      "actor": "実行者"
+    },
+    "data": {
+      "engineRuns": "エンジン実行",
+      "definitions": "定義"
     }
   },
   "schedules": {
@@ -833,7 +852,8 @@
       "updated": "更新",
       "branchesTitle": "ブランチ ({count})",
       "noBranches": "ブランチはありません。",
-      "msgs": " 件のメッセージ"
+      "msgs": " 件のメッセージ",
+      "engineRuns": "エンジン実行"
     },
     "split": {
       "master": "セッション一覧",
@@ -885,7 +905,7 @@
         "stuck": "停止中 · 進捗なし",
         "gated": "承認待ち"
       },
-      "more": "+{count, plural, other {# 件 — 履歴ですべて表示 →}}",
+      "more": "+{count, plural, other {# 件 — すべて表示 →}}",
       "digestLatest": "最新: {name} · {age}前",
       "streakCount": "{count, plural, other {#回失敗}}",
       "disposition": {
@@ -914,7 +934,17 @@
       },
       "showDischarged": "処理済みを表示",
       "hideDischarged": "処理済みを隠す",
-      "dischargedEmpty": "処理済みの項目はありません"
+      "dischargedEmpty": "処理済みの項目はありません",
+      "page": {
+        "title": "注意事項",
+        "subtitle": "オペレーターの対応が必要なすべての項目（対応中・解除済み）。",
+        "filterActive": "対応中",
+        "filterDischarged": "解除済み",
+        "filterAll": "すべて",
+        "emptyActive": "現在、対応が必要な項目はありません。",
+        "emptyDischarged": "解除済みの項目はありません。",
+        "emptyAll": "注意項目はありません。"
+      }
     },
     "liveBoard": {
       "title": "現在実行中",
@@ -1143,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "チーム",
+    "subtitle": "共有受信箱で連携するエージェントチーム",
+    "loadError": "チームの読み込みに失敗しました。",
+    "emptyTitle": "チームはまだありません",
+    "emptyBody": "チームは `li team create` で作成され、共有受信箱を通じて連携します。",
+    "table": {
+      "name": "名前",
+      "members": "メンバー",
+      "lastModified": "最終更新",
+      "oneMember": "1人のメンバー",
+      "memberCount": "{count}人のメンバー"
+    },
+    "loadMore": "もっと読み込む",
+    "loadingMore": "読み込み中…",
+    "detail": {
+      "close": "閉じる",
+      "members": "メンバー",
+      "created": "作成日",
+      "messages": "メッセージ（{count}）",
+      "noMessages": "メッセージはまだありません。"
+    }
+  },
+  "engineRuns": {
+    "title": "エンジン実行",
+    "subtitle": "オーケストレーションセッション配下の個々のエンジン呼び出し",
+    "filterKind": "種類で絞り込む",
+    "filterStatus": "ステータスで絞り込む",
+    "filterStatusAll": "すべてのステータス",
+    "filterSession": "セッションIDで絞り込む",
+    "filterApply": "絞り込む",
+    "loadError": "エンジン実行の読み込みに失敗しました。",
+    "emptyTitle": "エンジン実行が見つかりません",
+    "emptyBody": "エンジン（例: `li engine`）が呼び出しを記録すると、ここにエンジン実行が表示されます。",
+    "table": {
+      "kind": "種類",
+      "status": "ステータス",
+      "started": "開始",
+      "session": "セッション"
+    },
+    "detail": {
+      "close": "閉じる",
+      "notFound": "エンジン実行が見つかりません。",
+      "started": "開始",
+      "ended": "終了",
+      "exportDir": "エクスポート先ディレクトリ",
+      "error": "エラー",
+      "spec": "スペック"
+    }
+  },
+  "definitions": {
+    "title": "定義",
+    "subtitle": "バージョン管理されたすべてのエージェント・プレイブック定義。一括スナップショットのチェックポイント付き",
+    "filterKind": "種類で絞り込む",
+    "filterKindAll": "すべての種類",
+    "snapshotAll": "すべてスナップショット",
+    "snapshotting": "スナップショット中…",
+    "snapshotDone": "{count} 件のスナップショットを作成しました。",
+    "snapshotFailed": "スナップショットに失敗しました。",
+    "loadError": "定義の読み込みに失敗しました。",
+    "emptyTitle": "定義が見つかりません",
+    "emptyBody": "エージェントおよびプレイブックの定義は、作成されるとここに表示されます。",
+    "table": {
+      "kind": "種類",
+      "name": "名前",
+      "version": "バージョン",
+      "noVersions": "履歴なし",
+      "updated": "更新日時"
+    }
   }
 }

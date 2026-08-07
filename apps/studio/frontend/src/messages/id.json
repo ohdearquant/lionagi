@@ -10,7 +10,8 @@
       "toggleTheme": "Alihkan tema",
       "switchToZh": "Beralih ke bahasa Mandarin",
       "switchToEn": "Beralih ke bahasa Inggris",
-      "selectLanguage": "Pilih bahasa"
+      "selectLanguage": "Pilih bahasa",
+      "teams": "Tim"
     },
     "palette": {
       "ariaLabel": "Palet perintah",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "Ikhtisar",
       "fleet": "Armada Agen",
-      "homeAria": "Tab beranda"
+      "homeAria": "Tab beranda",
+      "attention": "Perhatian"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -466,8 +468,8 @@
       "statErrorsRecent": "Kesalahan (terbaru)",
       "noBranchErrorsPartial": "Tidak ada kesalahan dalam pesan yang dimuat.",
       "noFilesPartial": "Tidak ada operasi file terdeteksi dalam pesan yang dimuat.",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "Riwayat lama tidak dapat dimuat — percakapan ini berlanjut sebelum permintaan selesai.",
+      "reloadConversation": "Muat ulang percakapan",
       "graphEdgeCount": "{count} sisi",
       "graphImpliedHidden": "· {count} implisit disembunyikan",
       "graphHideImplied": "sembunyikan implisit",
@@ -480,15 +482,15 @@
       "graphNodeStatusFailed": "gagal",
       "graphNodeStatusEscalated": "dieskalasi",
       "progressTotal": "Total",
-      "progressCompleted": "Completed",
-      "progressRunning": "Running",
-      "progressFailed": "Failed",
-      "progressPending": "Pending",
-      "progressElapsed": "Elapsed",
-      "expandGraph": "Expand execution graph",
-      "collapseGraph": "Collapse execution graph",
-      "closeExpandedGraph": "Close",
-      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
+      "progressCompleted": "Selesai",
+      "progressRunning": "Berjalan",
+      "progressFailed": "Gagal",
+      "progressPending": "Tertunda",
+      "progressElapsed": "Waktu berlalu",
+      "expandGraph": "Perluas grafik eksekusi",
+      "collapseGraph": "Ciutkan grafik eksekusi",
+      "closeExpandedGraph": "Tutup",
+      "nodeNoBranch": "Tidak ada cabang yang ditemukan untuk “{node}” — langkah ini belum dimulai."
     },
     "masterAria": "Daftar riwayat",
     "detailAria": "Detail item"
@@ -499,7 +501,9 @@
     "sections": {
       "health": "Kesehatan",
       "maintenance": "Pemeliharaan",
-      "settings": "Pengaturan"
+      "settings": "Pengaturan",
+      "adminEvents": "Peristiwa admin",
+      "data": "Data"
     },
     "health": {
       "stateDb": "DB state",
@@ -568,6 +572,21 @@
       "switchToZh": "切换为中文",
       "english": "Inggris",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Filter berdasarkan aksi",
+      "targetPlaceholder": "Filter berdasarkan ID target",
+      "filter": "Filter",
+      "loadError": "Gagal memuat peristiwa admin.",
+      "empty": "Belum ada peristiwa admin yang tercatat.",
+      "when": "Waktu",
+      "action": "Aksi",
+      "target": "Target",
+      "actor": "Pelaku"
+    },
+    "data": {
+      "engineRuns": "Proses engine",
+      "definitions": "Definisi"
     }
   },
   "schedules": {
@@ -833,7 +852,8 @@
       "updated": "Diperbarui",
       "branchesTitle": "{count, plural, other {Branch (#)}}",
       "noBranches": "Tidak ada branch.",
-      "msgs": " pesan"
+      "msgs": " pesan",
+      "engineRuns": "Proses engine"
     },
     "split": {
       "master": "Daftar sesi",
@@ -885,7 +905,7 @@
         "stuck": "macet · tidak ada kemajuan",
         "gated": "menunggu persetujuan"
       },
-      "more": "+{count, plural, other {# lagi}} — lihat semua di Riwayat →",
+      "more": "+{count, plural, other {# lagi}} — lihat semua →",
       "digestLatest": "terbaru: {name} · {age} lalu",
       "streakCount": "{count, plural, other {#× gagal}}",
       "disposition": {
@@ -914,7 +934,17 @@
       },
       "showDischarged": "Tampilkan yang terselesaikan",
       "hideDischarged": "Sembunyikan yang terselesaikan",
-      "dischargedEmpty": "Tidak ada item yang terselesaikan"
+      "dischargedEmpty": "Tidak ada item yang terselesaikan",
+      "page": {
+        "title": "Perhatian",
+        "subtitle": "Semua item yang perlu perhatian operator, aktif maupun yang sudah diselesaikan.",
+        "filterActive": "Aktif",
+        "filterDischarged": "Diselesaikan",
+        "filterAll": "Semua",
+        "emptyActive": "Tidak ada yang perlu diperhatikan saat ini.",
+        "emptyDischarged": "Tidak ada item yang diselesaikan.",
+        "emptyAll": "Tidak ada item perhatian."
+      }
     },
     "liveBoard": {
       "title": "Sedang berjalan",
@@ -1143,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Tim",
+    "subtitle": "Kru agen yang berkoordinasi lewat kotak masuk bersama",
+    "loadError": "Gagal memuat tim.",
+    "emptyTitle": "Belum ada tim",
+    "emptyBody": "Tim dibuat dengan `li team create` dan berkoordinasi lewat kotak masuk bersama.",
+    "table": {
+      "name": "Nama",
+      "members": "Anggota",
+      "lastModified": "Terakhir diubah",
+      "oneMember": "1 anggota",
+      "memberCount": "{count} anggota"
+    },
+    "loadMore": "Muat lebih banyak",
+    "loadingMore": "Memuat…",
+    "detail": {
+      "close": "Tutup",
+      "members": "Anggota",
+      "created": "Dibuat",
+      "messages": "Pesan ({count})",
+      "noMessages": "Belum ada pesan."
+    }
+  },
+  "engineRuns": {
+    "title": "Proses engine",
+    "subtitle": "Pemanggilan engine individual di bawah sesi orkestrasi",
+    "filterKind": "Filter berdasarkan jenis",
+    "filterStatus": "Filter berdasarkan status",
+    "filterStatusAll": "Semua status",
+    "filterSession": "Filter berdasarkan ID sesi",
+    "filterApply": "Filter",
+    "loadError": "Gagal memuat proses engine.",
+    "emptyTitle": "Tidak ada proses engine ditemukan",
+    "emptyBody": "Proses engine muncul di sini setelah sebuah engine (misalnya `li engine`) mencatat sebuah pemanggilan.",
+    "table": {
+      "kind": "Jenis",
+      "status": "Status",
+      "started": "Dimulai",
+      "session": "Sesi"
+    },
+    "detail": {
+      "close": "Tutup",
+      "notFound": "Proses engine tidak ditemukan.",
+      "started": "Dimulai",
+      "ended": "Berakhir",
+      "exportDir": "Direktori ekspor",
+      "error": "Error",
+      "spec": "Spesifikasi"
+    }
+  },
+  "definitions": {
+    "title": "Definisi",
+    "subtitle": "Setiap definisi agen dan playbook yang memiliki riwayat versi, dengan checkpoint snapshot massal",
+    "filterKind": "Filter berdasarkan jenis",
+    "filterKindAll": "Semua jenis",
+    "snapshotAll": "Snapshot semua",
+    "snapshotting": "Membuat snapshot…",
+    "snapshotDone": "{count} snapshot dibuat.",
+    "snapshotFailed": "Snapshot gagal.",
+    "loadError": "Gagal memuat definisi.",
+    "emptyTitle": "Tidak ada definisi ditemukan",
+    "emptyBody": "Definisi agen dan playbook muncul di sini setelah dibuat.",
+    "table": {
+      "kind": "Jenis",
+      "name": "Nama",
+      "version": "Versi",
+      "noVersions": "tanpa riwayat",
+      "updated": "Diperbarui"
+    }
   }
 }

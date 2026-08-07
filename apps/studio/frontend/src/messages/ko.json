@@ -10,7 +10,8 @@
       "toggleTheme": "테마 전환",
       "switchToZh": "중국어로 전환",
       "switchToEn": "영어로 전환",
-      "selectLanguage": "언어 선택"
+      "selectLanguage": "언어 선택",
+      "teams": "팀"
     },
     "palette": {
       "ariaLabel": "명령 팔레트",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "개요",
       "fleet": "에이전트 플릿",
-      "homeAria": "홈 탭"
+      "homeAria": "홈 탭",
+      "attention": "주의"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -466,8 +468,8 @@
       "statErrorsRecent": "오류(최근)",
       "noBranchErrorsPartial": "로드된 메시지에 오류가 없습니다.",
       "noFilesPartial": "로드된 메시지에서 감지된 파일 작업이 없습니다.",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "이전 기록을 불러올 수 없습니다 — 요청이 완료되기 전에 대화가 진행되었습니다.",
+      "reloadConversation": "대화 다시 불러오기",
       "graphEdgeCount": "엣지 {count}개",
       "graphImpliedHidden": "· 암시적 {count}개 숨김",
       "graphHideImplied": "암시적 숨기기",
@@ -479,16 +481,16 @@
       "graphNodeStatusDone": "완료",
       "graphNodeStatusFailed": "실패",
       "graphNodeStatusEscalated": "에스컬레이션",
-      "progressTotal": "Total",
-      "progressCompleted": "Completed",
-      "progressRunning": "Running",
-      "progressFailed": "Failed",
-      "progressPending": "Pending",
-      "progressElapsed": "Elapsed",
-      "expandGraph": "Expand execution graph",
-      "collapseGraph": "Collapse execution graph",
-      "closeExpandedGraph": "Close",
-      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
+      "progressTotal": "전체",
+      "progressCompleted": "완료",
+      "progressRunning": "실행 중",
+      "progressFailed": "실패",
+      "progressPending": "대기 중",
+      "progressElapsed": "경과 시간",
+      "expandGraph": "실행 그래프 펼치기",
+      "collapseGraph": "실행 그래프 접기",
+      "closeExpandedGraph": "닫기",
+      "nodeNoBranch": "“{node}”에 대한 브랜치를 찾을 수 없습니다 — 이 단계는 아직 시작되지 않았습니다."
     },
     "masterAria": "기록 목록",
     "detailAria": "항목 세부 정보"
@@ -499,7 +501,9 @@
     "sections": {
       "health": "상태",
       "maintenance": "유지 관리",
-      "settings": "설정"
+      "settings": "설정",
+      "adminEvents": "관리 이벤트",
+      "data": "데이터"
     },
     "health": {
       "stateDb": "State DB",
@@ -568,6 +572,21 @@
       "switchToZh": "중국어로 전환",
       "english": "영어",
       "chinese": "중국어"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "작업으로 필터링",
+      "targetPlaceholder": "대상 ID로 필터링",
+      "filter": "필터",
+      "loadError": "관리 이벤트를 불러오지 못했습니다.",
+      "empty": "아직 기록된 관리 이벤트가 없습니다.",
+      "when": "시각",
+      "action": "작업",
+      "target": "대상",
+      "actor": "실행자"
+    },
+    "data": {
+      "engineRuns": "엔진 실행",
+      "definitions": "정의"
     }
   },
   "schedules": {
@@ -833,7 +852,8 @@
       "updated": "업데이트됨",
       "branchesTitle": "브랜치({count})",
       "noBranches": "브랜치 없음.",
-      "msgs": " 메시지"
+      "msgs": " 메시지",
+      "engineRuns": "엔진 실행"
     },
     "split": {
       "master": "세션 목록",
@@ -885,7 +905,7 @@
         "stuck": "멈춤 · 진행 없음",
         "gated": "승인 대기 중"
       },
-      "more": "{count, plural, other {+#개 더 — 기록에서 모두 보기 →}}",
+      "more": "{count, plural, other {+#개 더 — 모두 보기 →}}",
       "digestLatest": "최신: {name} · {age} 전",
       "streakCount": "{count, plural, other {#× 실패}}",
       "disposition": {
@@ -914,7 +934,17 @@
       },
       "showDischarged": "처리된 항목 표시",
       "hideDischarged": "처리된 항목 숨기기",
-      "dischargedEmpty": "처리된 항목이 없습니다"
+      "dischargedEmpty": "처리된 항목이 없습니다",
+      "page": {
+        "title": "주의 필요",
+        "subtitle": "운영자의 주의가 필요한 모든 항목, 진행 중 및 해제된 항목.",
+        "filterActive": "진행 중",
+        "filterDischarged": "해제됨",
+        "filterAll": "전체",
+        "emptyActive": "지금은 주의가 필요한 항목이 없습니다.",
+        "emptyDischarged": "해제된 항목이 없습니다.",
+        "emptyAll": "주의 항목이 없습니다."
+      }
     },
     "liveBoard": {
       "title": "현재 실행 중",
@@ -1143,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "팀",
+    "subtitle": "공유 수신함으로 조율하는 에이전트 팀",
+    "loadError": "팀을 불러오지 못했습니다.",
+    "emptyTitle": "아직 팀이 없습니다",
+    "emptyBody": "팀은 `li team create`로 생성되며 공유 수신함을 통해 조율합니다.",
+    "table": {
+      "name": "이름",
+      "members": "구성원",
+      "lastModified": "최근 수정",
+      "oneMember": "멤버 1명",
+      "memberCount": "멤버 {count}명"
+    },
+    "loadMore": "더 보기",
+    "loadingMore": "로딩 중…",
+    "detail": {
+      "close": "닫기",
+      "members": "구성원",
+      "created": "생성됨",
+      "messages": "메시지 ({count})",
+      "noMessages": "아직 메시지가 없습니다."
+    }
+  },
+  "engineRuns": {
+    "title": "엔진 실행",
+    "subtitle": "오케스트레이션 세션 아래의 개별 엔진 호출",
+    "filterKind": "종류로 필터링",
+    "filterStatus": "상태로 필터링",
+    "filterStatusAll": "모든 상태",
+    "filterSession": "세션 ID로 필터링",
+    "filterApply": "필터",
+    "loadError": "엔진 실행을 불러오지 못했습니다.",
+    "emptyTitle": "엔진 실행을 찾을 수 없습니다",
+    "emptyBody": "엔진(예: `li engine`)이 호출을 기록하면 여기에 엔진 실행이 표시됩니다.",
+    "table": {
+      "kind": "종류",
+      "status": "상태",
+      "started": "시작됨",
+      "session": "세션"
+    },
+    "detail": {
+      "close": "닫기",
+      "notFound": "엔진 실행을 찾을 수 없습니다.",
+      "started": "시작됨",
+      "ended": "종료됨",
+      "exportDir": "내보내기 디렉터리",
+      "error": "오류",
+      "spec": "스펙"
+    }
+  },
+  "definitions": {
+    "title": "정의",
+    "subtitle": "버전이 관리되는 모든 에이전트·플레이북 정의, 일괄 스냅샷 체크포인트 포함",
+    "filterKind": "종류로 필터링",
+    "filterKindAll": "모든 종류",
+    "snapshotAll": "전체 스냅샷",
+    "snapshotting": "스냅샷 생성 중…",
+    "snapshotDone": "{count}개의 스냅샷을 생성했습니다.",
+    "snapshotFailed": "스냅샷에 실패했습니다.",
+    "loadError": "정의를 불러오지 못했습니다.",
+    "emptyTitle": "정의를 찾을 수 없습니다",
+    "emptyBody": "에이전트와 플레이북 정의는 생성되면 여기에 표시됩니다.",
+    "table": {
+      "kind": "종류",
+      "name": "이름",
+      "version": "버전",
+      "noVersions": "이력 없음",
+      "updated": "업데이트됨"
+    }
   }
 }

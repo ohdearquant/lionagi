@@ -21,11 +21,12 @@ vi.mock("@/lib/api", () => ({
   listRuns: vi.fn(),
   listInvocations: vi.fn(),
   listSchedules: vi.fn(),
-  // No .mockReset() call site below ever touches this one — it keeps this
+  // No .mockReset() call site below ever touches these two — they keep this
   // default resolved value for the whole file, so every existing DATA_OK
-  // assertion here stays valid without threading a dispositions fixture
-  // through tests that aren't about dispositions at all.
+  // assertion here stays valid without threading a dispositions/gated-plays
+  // fixture through tests that aren't about either at all.
   listAttentionDispositions: vi.fn().mockResolvedValue({}),
+  listGatedPlays: vi.fn().mockResolvedValue([]),
 }));
 
 import { listRuns, listInvocations, listSchedules } from "@/lib/api";

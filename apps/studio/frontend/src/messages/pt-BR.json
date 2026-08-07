@@ -10,7 +10,8 @@
       "toggleTheme": "Alternar tema",
       "switchToZh": "Mudar para chinês",
       "switchToEn": "Mudar para inglês",
-      "selectLanguage": "Selecionar idioma"
+      "selectLanguage": "Selecionar idioma",
+      "teams": "Equipes"
     },
     "palette": {
       "ariaLabel": "Paleta de comandos",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "Visão geral",
       "fleet": "Frota",
-      "homeAria": "Abas da página inicial"
+      "homeAria": "Abas da página inicial",
+      "attention": "Atenção"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -466,8 +468,8 @@
       "statErrorsRecent": "Erros (recentes)",
       "noBranchErrorsPartial": "Nenhum erro nas mensagens carregadas.",
       "noFilesPartial": "Nenhuma operação de arquivo detectada nas mensagens carregadas.",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "Não foi possível carregar o histórico anterior — esta conversa avançou antes que a solicitação fosse concluída.",
+      "reloadConversation": "Recarregar conversa",
       "graphEdgeCount": "{count} arestas",
       "graphImpliedHidden": "· {count} implícitas ocultas",
       "graphHideImplied": "ocultar implícitas",
@@ -480,15 +482,15 @@
       "graphNodeStatusFailed": "falhou",
       "graphNodeStatusEscalated": "escalado",
       "progressTotal": "Total",
-      "progressCompleted": "Completed",
-      "progressRunning": "Running",
-      "progressFailed": "Failed",
-      "progressPending": "Pending",
-      "progressElapsed": "Elapsed",
-      "expandGraph": "Expand execution graph",
-      "collapseGraph": "Collapse execution graph",
-      "closeExpandedGraph": "Close",
-      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
+      "progressCompleted": "Concluído",
+      "progressRunning": "Em execução",
+      "progressFailed": "Falhou",
+      "progressPending": "Pendente",
+      "progressElapsed": "Decorrido",
+      "expandGraph": "Expandir gráfico de execução",
+      "collapseGraph": "Recolher gráfico de execução",
+      "closeExpandedGraph": "Fechar",
+      "nodeNoBranch": "Nenhum branch encontrado para “{node}” — esta etapa ainda não começou."
     },
     "masterAria": "Lista do histórico",
     "detailAria": "Detalhes do item"
@@ -499,7 +501,9 @@
     "sections": {
       "health": "Integridade",
       "maintenance": "Manutenção",
-      "settings": "Configurações"
+      "settings": "Configurações",
+      "adminEvents": "Eventos administrativos",
+      "data": "Dados"
     },
     "health": {
       "stateDb": "DB de estado",
@@ -568,6 +572,21 @@
       "switchToZh": "切换为中文",
       "english": "Inglês",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Filtrar por ação",
+      "targetPlaceholder": "Filtrar por ID de destino",
+      "filter": "Filtrar",
+      "loadError": "Falha ao carregar os eventos administrativos.",
+      "empty": "Nenhum evento administrativo registrado ainda.",
+      "when": "Quando",
+      "action": "Ação",
+      "target": "Destino",
+      "actor": "Autor"
+    },
+    "data": {
+      "engineRuns": "Execuções de engine",
+      "definitions": "Definições"
     }
   },
   "schedules": {
@@ -833,7 +852,8 @@
       "updated": "Atualizado",
       "branchesTitle": "{count, plural, one {Branch (#)} other {Branches (#)}}",
       "noBranches": "Nenhum branch.",
-      "msgs": " msgs"
+      "msgs": " msgs",
+      "engineRuns": "Execuções de engine"
     },
     "split": {
       "master": "Lista de sessões",
@@ -885,7 +905,7 @@
         "stuck": "travado · sem progresso",
         "gated": "aguardando aprovação"
       },
-      "more": "+{count, plural, one {# a mais} other {# a mais}} — ver tudo em Histórico →",
+      "more": "+{count, plural, one {# a mais} other {# a mais}} — ver tudo →",
       "digestLatest": "mais recente: {name} · há {age}",
       "streakCount": "{count, plural, one {#× falhou} other {#× falharam}}",
       "disposition": {
@@ -914,7 +934,17 @@
       },
       "showDischarged": "Mostrar baixados",
       "hideDischarged": "Ocultar baixados",
-      "dischargedEmpty": "Nenhum item baixado"
+      "dischargedEmpty": "Nenhum item baixado",
+      "page": {
+        "title": "Atenção",
+        "subtitle": "Todos os itens que precisam de atenção do operador, ativos e dispensados.",
+        "filterActive": "Ativos",
+        "filterDischarged": "Dispensados",
+        "filterAll": "Todos",
+        "emptyActive": "Nada precisa de atenção no momento.",
+        "emptyDischarged": "Nenhum item dispensado.",
+        "emptyAll": "Nenhum item de atenção."
+      }
     },
     "liveBoard": {
       "title": "Em execução agora",
@@ -1143,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Equipes",
+    "subtitle": "Equipes de agentes que se coordenam por uma caixa de entrada compartilhada",
+    "loadError": "Falha ao carregar as equipes.",
+    "emptyTitle": "Ainda não há equipes",
+    "emptyBody": "As equipes são criadas com `li team create` e se coordenam por uma caixa de entrada compartilhada.",
+    "table": {
+      "name": "Nome",
+      "members": "Membros",
+      "lastModified": "Última modificação",
+      "oneMember": "1 membro",
+      "memberCount": "{count} membros"
+    },
+    "loadMore": "Carregar mais",
+    "loadingMore": "Carregando…",
+    "detail": {
+      "close": "Fechar",
+      "members": "Membros",
+      "created": "Criado",
+      "messages": "Mensagens ({count})",
+      "noMessages": "Ainda não há mensagens."
+    }
+  },
+  "engineRuns": {
+    "title": "Execuções de engine",
+    "subtitle": "Invocações individuais do engine abaixo das sessões de orquestração",
+    "filterKind": "Filtrar por tipo",
+    "filterStatus": "Filtrar por status",
+    "filterStatusAll": "Todos os status",
+    "filterSession": "Filtrar por ID de sessão",
+    "filterApply": "Filtrar",
+    "loadError": "Falha ao carregar as execuções de engine.",
+    "emptyTitle": "Nenhuma execução de engine encontrada",
+    "emptyBody": "As execuções de engine aparecem aqui assim que um engine (ex.: `li engine`) registra uma invocação.",
+    "table": {
+      "kind": "Tipo",
+      "status": "Status",
+      "started": "Iniciado",
+      "session": "Sessão"
+    },
+    "detail": {
+      "close": "Fechar",
+      "notFound": "Execução de engine não encontrada.",
+      "started": "Iniciado",
+      "ended": "Finalizado",
+      "exportDir": "Diretório de exportação",
+      "error": "Erro",
+      "spec": "Especificação"
+    }
+  },
+  "definitions": {
+    "title": "Definições",
+    "subtitle": "Todas as definições de agente e playbook com versão, com um checkpoint de snapshot em massa",
+    "filterKind": "Filtrar por tipo",
+    "filterKindAll": "Todos os tipos",
+    "snapshotAll": "Criar snapshot de tudo",
+    "snapshotting": "Criando snapshot…",
+    "snapshotDone": "{count} snapshot(s) criado(s).",
+    "snapshotFailed": "Falha no snapshot.",
+    "loadError": "Falha ao carregar as definições.",
+    "emptyTitle": "Nenhuma definição encontrada",
+    "emptyBody": "As definições de agente e playbook aparecem aqui assim que criadas.",
+    "table": {
+      "kind": "Tipo",
+      "name": "Nome",
+      "version": "Versão",
+      "noVersions": "sem histórico",
+      "updated": "Atualizado"
+    }
   }
 }

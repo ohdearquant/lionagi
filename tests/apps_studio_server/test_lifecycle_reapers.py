@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -984,6 +985,57 @@ def test_admin_prune_all_phantom_transitions_not_deletes(tmp_path, monkeypatch):
     assert sess is not None, "session row should be preserved (not deleted)"
     assert sess["status"] == "failed"
     assert run_async(_count_transitions(db_path, sid)) >= 1
+
+
+async def _list_admin_events(db_path, **kwargs):
+    async with StateDB(db_path) as db:
+        return await db.list_admin_events(**kwargs)
+
+
+def test_admin_prune_all_phantom_writes_admin_event(tmp_path, monkeypatch):
+    """A visible destructive action must leave an audit row, not just a count:
+    the adjacent table renders 'No admin events recorded yet' when nothing was
+    recorded, which is indistinguishable from 'nothing happened' unless this
+    path actually writes one."""
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    from fastapi.testclient import TestClient
+
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    missing_dir = str(tmp_path / "ghost_arts_event")
+    stale_time = time.time() - 7200
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status="running",
+            started_at=stale_time,
+            updated_at=stale_time,
+            artifacts_path=missing_dir,
+        )
+    )
+
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    from lionagi.studio.app import app
+
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    r = client.post("/api/admin/prune", json={"all_phantom": True})
+    assert r.status_code == 200
+    assert r.json()["pruned"] == 1
+
+    events = run_async(_list_admin_events(db_path, action="prune_phantoms"))
+    assert len(events) == 1, "prune_phantoms must write exactly one admin_events row"
+    details = events[0]["details"]
+    if isinstance(details, str):
+        details = json.loads(details)
+    assert details["count"] == 1
+    assert sid in details["session_ids"]
+
+    # The row is also findable by filtering on the affected session id, even
+    # though target_id is NULL on a batch event.
+    by_session = run_async(_list_admin_events(db_path, target_id=sid))
+    assert any(e["action"] == "prune_phantoms" for e in by_session)
 
 
 # ── phantom_count in stats ───────────────────────────────────────────────────

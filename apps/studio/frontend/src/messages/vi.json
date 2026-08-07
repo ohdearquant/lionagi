@@ -10,7 +10,8 @@
       "toggleTheme": "đổi giao diện",
       "switchToZh": "chuyển sang tiếng Trung",
       "switchToEn": "chuyển sang tiếng Anh",
-      "selectLanguage": "Chọn ngôn ngữ"
+      "selectLanguage": "Chọn ngôn ngữ",
+      "teams": "Nhóm"
     },
     "palette": {
       "ariaLabel": "bảng lệnh",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "tổng quan",
       "fleet": "nhóm tác nhân",
-      "homeAria": "thẻ trang chủ"
+      "homeAria": "thẻ trang chủ",
+      "attention": "Chú ý"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -466,8 +468,8 @@
       "statErrorsRecent": "lỗi (gần đây)",
       "noBranchErrorsPartial": "không có lỗi trong các tin nhắn đã tải.",
       "noFilesPartial": "không phát hiện thao tác tệp trong các tin nhắn đã tải.",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "Không thể tải lịch sử cũ hơn — cuộc trò chuyện này đã tiếp tục trước khi yêu cầu hoàn tất.",
+      "reloadConversation": "Tải lại cuộc trò chuyện",
       "graphEdgeCount": "{count} cạnh",
       "graphImpliedHidden": "· ẩn {count} cạnh ngầm định",
       "graphHideImplied": "ẩn cạnh ngầm định",
@@ -479,16 +481,16 @@
       "graphNodeStatusDone": "xong",
       "graphNodeStatusFailed": "thất bại",
       "graphNodeStatusEscalated": "đã leo thang",
-      "progressTotal": "Total",
-      "progressCompleted": "Completed",
-      "progressRunning": "Running",
-      "progressFailed": "Failed",
-      "progressPending": "Pending",
-      "progressElapsed": "Elapsed",
-      "expandGraph": "Expand execution graph",
-      "collapseGraph": "Collapse execution graph",
-      "closeExpandedGraph": "Close",
-      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
+      "progressTotal": "Tổng",
+      "progressCompleted": "Hoàn tất",
+      "progressRunning": "Đang chạy",
+      "progressFailed": "Thất bại",
+      "progressPending": "Đang chờ",
+      "progressElapsed": "Thời gian trôi qua",
+      "expandGraph": "Mở rộng biểu đồ thực thi",
+      "collapseGraph": "Thu gọn biểu đồ thực thi",
+      "closeExpandedGraph": "Đóng",
+      "nodeNoBranch": "Không tìm thấy nhánh cho “{node}” — bước này chưa bắt đầu."
     },
     "masterAria": "danh sách lịch sử",
     "detailAria": "chi tiết mục"
@@ -499,7 +501,9 @@
     "sections": {
       "health": "trạng thái hệ thống",
       "maintenance": "bảo trì",
-      "settings": "cài đặt"
+      "settings": "cài đặt",
+      "adminEvents": "Sự kiện quản trị",
+      "data": "Dữ liệu"
     },
     "health": {
       "stateDb": "State DB",
@@ -568,6 +572,21 @@
       "switchToZh": "chuyển sang tiếng Trung",
       "english": "tiếng Anh",
       "chinese": "tiếng Trung"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Lọc theo hành động",
+      "targetPlaceholder": "Lọc theo ID mục tiêu",
+      "filter": "Lọc",
+      "loadError": "Không thể tải sự kiện quản trị.",
+      "empty": "Chưa có sự kiện quản trị nào được ghi lại.",
+      "when": "Thời điểm",
+      "action": "Hành động",
+      "target": "Mục tiêu",
+      "actor": "Người thực hiện"
+    },
+    "data": {
+      "engineRuns": "Lượt chạy engine",
+      "definitions": "Định nghĩa"
     }
   },
   "schedules": {
@@ -833,7 +852,8 @@
       "updated": "đã cập nhật",
       "branchesTitle": "nhánh ({count})",
       "noBranches": "không có nhánh.",
-      "msgs": " tin nhắn"
+      "msgs": " tin nhắn",
+      "engineRuns": "Lượt chạy engine"
     },
     "split": {
       "master": "danh sách phiên",
@@ -885,7 +905,7 @@
         "stuck": "kẹt · không tiến triển",
         "gated": "đang chờ phê duyệt"
       },
-      "more": "{count, plural, other {+# nữa — xem tất cả trong lịch sử →}}",
+      "more": "{count, plural, other {+# nữa — xem tất cả →}}",
       "digestLatest": "mới nhất: {name} · {age} trước",
       "streakCount": "{count, plural, other {#× thất bại}}",
       "disposition": {
@@ -914,7 +934,17 @@
       },
       "showDischarged": "Hiện mục đã xử lý",
       "hideDischarged": "Ẩn mục đã xử lý",
-      "dischargedEmpty": "Không có mục nào đã xử lý"
+      "dischargedEmpty": "Không có mục nào đã xử lý",
+      "page": {
+        "title": "Chú ý",
+        "subtitle": "Mọi mục cần người vận hành chú ý, đang hoạt động và đã xử lý.",
+        "filterActive": "Đang hoạt động",
+        "filterDischarged": "Đã xử lý",
+        "filterAll": "Tất cả",
+        "emptyActive": "Hiện không có gì cần chú ý.",
+        "emptyDischarged": "Không có mục nào đã xử lý.",
+        "emptyAll": "Không có mục chú ý nào."
+      }
     },
     "liveBoard": {
       "title": "đang chạy",
@@ -1143,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Nhóm",
+    "subtitle": "Các đội tác nhân phối hợp qua hộp thư đến dùng chung",
+    "loadError": "Không thể tải danh sách nhóm.",
+    "emptyTitle": "Chưa có nhóm nào",
+    "emptyBody": "Các nhóm được tạo bằng `li team create` và phối hợp qua hộp thư đến dùng chung.",
+    "table": {
+      "name": "Tên",
+      "members": "Thành viên",
+      "lastModified": "Sửa đổi lần cuối",
+      "oneMember": "1 thành viên",
+      "memberCount": "{count} thành viên"
+    },
+    "loadMore": "Tải thêm",
+    "loadingMore": "Đang tải…",
+    "detail": {
+      "close": "Đóng",
+      "members": "Thành viên",
+      "created": "Đã tạo",
+      "messages": "Tin nhắn ({count})",
+      "noMessages": "Chưa có tin nhắn nào."
+    }
+  },
+  "engineRuns": {
+    "title": "Lượt chạy engine",
+    "subtitle": "Các lượt gọi engine riêng lẻ bên dưới các phiên điều phối",
+    "filterKind": "Lọc theo loại",
+    "filterStatus": "Lọc theo trạng thái",
+    "filterStatusAll": "Tất cả trạng thái",
+    "filterSession": "Lọc theo ID phiên",
+    "filterApply": "Lọc",
+    "loadError": "Không thể tải lượt chạy engine.",
+    "emptyTitle": "Không tìm thấy lượt chạy engine nào",
+    "emptyBody": "Lượt chạy engine sẽ xuất hiện ở đây khi một engine (ví dụ `li engine`) ghi lại một lượt gọi.",
+    "table": {
+      "kind": "Loại",
+      "status": "Trạng thái",
+      "started": "Bắt đầu",
+      "session": "Phiên"
+    },
+    "detail": {
+      "close": "Đóng",
+      "notFound": "Không tìm thấy lượt chạy engine.",
+      "started": "Bắt đầu",
+      "ended": "Kết thúc",
+      "exportDir": "Thư mục xuất",
+      "error": "Lỗi",
+      "spec": "Đặc tả"
+    }
+  },
+  "definitions": {
+    "title": "Định nghĩa",
+    "subtitle": "Mọi định nghĩa agent và playbook có phiên bản, kèm chốt chụp nhanh hàng loạt",
+    "filterKind": "Lọc theo loại",
+    "filterKindAll": "Tất cả loại",
+    "snapshotAll": "Chụp nhanh tất cả",
+    "snapshotting": "Đang chụp nhanh…",
+    "snapshotDone": "Đã tạo {count} bản chụp nhanh.",
+    "snapshotFailed": "Chụp nhanh thất bại.",
+    "loadError": "Không thể tải định nghĩa.",
+    "emptyTitle": "Không tìm thấy định nghĩa nào",
+    "emptyBody": "Định nghĩa agent và playbook sẽ xuất hiện ở đây khi được tạo.",
+    "table": {
+      "kind": "Loại",
+      "name": "Tên",
+      "version": "Phiên bản",
+      "noVersions": "chưa có lịch sử",
+      "updated": "Đã cập nhật"
+    }
   }
 }

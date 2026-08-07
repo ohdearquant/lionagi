@@ -10,7 +10,8 @@
       "toggleTheme": "थीम बदलें",
       "switchToZh": "चीनी पर स्विच करें",
       "switchToEn": "अंग्रेज़ी पर स्विच करें",
-      "selectLanguage": "भाषा चुनें"
+      "selectLanguage": "भाषा चुनें",
+      "teams": "टीमें"
     },
     "palette": {
       "ariaLabel": "कमांड पैलेट",
@@ -34,7 +35,8 @@
     "tabs": {
       "overview": "ओवरव्यू",
       "fleet": "एजेंट फ़्लीट",
-      "homeAria": "होम टैब"
+      "homeAria": "होम टैब",
+      "attention": "ध्यान"
     },
     "topbar": {
       "khiveLink": "khive.ai",
@@ -466,8 +468,8 @@
       "statErrorsRecent": "त्रुटियाँ (हाल की)",
       "noBranchErrorsPartial": "लोड किए गए मैसेज में कोई त्रुटि नहीं।",
       "noFilesPartial": "लोड किए गए मैसेज में कोई फ़ाइल ऑपरेशन नहीं मिला।",
-      "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation",
+      "olderUnavailable": "पुराना इतिहास लोड नहीं किया जा सका — अनुरोध पूरा होने से पहले यह बातचीत आगे बढ़ गई।",
+      "reloadConversation": "बातचीत फिर से लोड करें",
       "graphEdgeCount": "{count} किनारे",
       "graphImpliedHidden": "· {count} निहित छिपे",
       "graphHideImplied": "निहित छिपाएँ",
@@ -479,16 +481,16 @@
       "graphNodeStatusDone": "पूर्ण",
       "graphNodeStatusFailed": "विफल",
       "graphNodeStatusEscalated": "एस्केलेटेड",
-      "progressTotal": "Total",
-      "progressCompleted": "Completed",
-      "progressRunning": "Running",
-      "progressFailed": "Failed",
-      "progressPending": "Pending",
-      "progressElapsed": "Elapsed",
-      "expandGraph": "Expand execution graph",
-      "collapseGraph": "Collapse execution graph",
-      "closeExpandedGraph": "Close",
-      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
+      "progressTotal": "कुल",
+      "progressCompleted": "पूर्ण",
+      "progressRunning": "चल रहा है",
+      "progressFailed": "विफल",
+      "progressPending": "लंबित",
+      "progressElapsed": "व्यतीत समय",
+      "expandGraph": "निष्पादन ग्राफ विस्तृत करें",
+      "collapseGraph": "निष्पादन ग्राफ संक्षिप्त करें",
+      "closeExpandedGraph": "बंद करें",
+      "nodeNoBranch": "“{node}” के लिए कोई शाखा नहीं मिली — यह चरण अभी शुरू नहीं हुआ है।"
     },
     "masterAria": "इतिहास सूची",
     "detailAria": "आइटम विवरण"
@@ -499,7 +501,9 @@
     "sections": {
       "health": "हेल्थ",
       "maintenance": "मेंटेनेंस",
-      "settings": "सेटिंग्स"
+      "settings": "सेटिंग्स",
+      "adminEvents": "एडमिन इवेंट",
+      "data": "डेटा"
     },
     "health": {
       "stateDb": "स्टेट DB",
@@ -568,6 +572,21 @@
       "switchToZh": "चीनी पर स्विच करें",
       "english": "अंग्रेज़ी",
       "chinese": "चीनी"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "कार्रवाई से फ़िल्टर करें",
+      "targetPlaceholder": "टारगेट ID से फ़िल्टर करें",
+      "filter": "फ़िल्टर करें",
+      "loadError": "एडमिन इवेंट लोड करने में विफल.",
+      "empty": "अभी तक कोई एडमिन इवेंट दर्ज नहीं हुआ.",
+      "when": "कब",
+      "action": "कार्रवाई",
+      "target": "टारगेट",
+      "actor": "करने वाला"
+    },
+    "data": {
+      "engineRuns": "इंजन रन",
+      "definitions": "परिभाषाएं"
     }
   },
   "schedules": {
@@ -833,7 +852,8 @@
       "updated": "अपडेट हुआ",
       "branchesTitle": "ब्रांच ({count})",
       "noBranches": "कोई ब्रांच नहीं।",
-      "msgs": " मैसेज"
+      "msgs": " मैसेज",
+      "engineRuns": "इंजन रन"
     },
     "split": {
       "master": "सेशन सूची",
@@ -885,7 +905,7 @@
         "stuck": "अटका · कोई प्रगति नहीं",
         "gated": "मंज़ूरी की प्रतीक्षा"
       },
-      "more": "+{count, plural, one {# और} other {# और}} — इतिहास में सभी देखें →",
+      "more": "+{count, plural, one {# और} other {# और}} — सभी देखें →",
       "digestLatest": "नवीनतम: {name} · {age} पहले",
       "streakCount": "{count}× विफल",
       "disposition": {
@@ -914,7 +934,17 @@
       },
       "showDischarged": "निपटाए गए दिखाएं",
       "hideDischarged": "निपटाए गए छिपाएं",
-      "dischargedEmpty": "कोई निपटाया गया आइटम नहीं"
+      "dischargedEmpty": "कोई निपटाया गया आइटम नहीं",
+      "page": {
+        "title": "ध्यान देने योग्य",
+        "subtitle": "ऑपरेटर के ध्यान की आवश्यकता वाली सभी वस्तुएं, सक्रिय और निपटाई गई।",
+        "filterActive": "सक्रिय",
+        "filterDischarged": "निपटाई गई",
+        "filterAll": "सभी",
+        "emptyActive": "अभी किसी ध्यान की आवश्यकता नहीं है।",
+        "emptyDischarged": "कोई निपटाई गई वस्तु नहीं।",
+        "emptyAll": "कोई ध्यान वस्तु नहीं।"
+      }
     },
     "liveBoard": {
       "title": "अभी चल रहा",
@@ -1143,5 +1173,75 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "टीमें",
+    "subtitle": "साझा इनबॉक्स के माध्यम से समन्वय करने वाले एजेंटों के दल",
+    "loadError": "टीमें लोड करने में विफल.",
+    "emptyTitle": "अभी तक कोई टीम नहीं",
+    "emptyBody": "टीमें `li team create` से बनाई जाती हैं और साझा इनबॉक्स से समन्वय करती हैं.",
+    "table": {
+      "name": "नाम",
+      "members": "सदस्य",
+      "lastModified": "अंतिम बार संशोधित",
+      "oneMember": "1 सदस्य",
+      "memberCount": "{count} सदस्य"
+    },
+    "loadMore": "और लोड करें",
+    "loadingMore": "लोड हो रहा है…",
+    "detail": {
+      "close": "बंद करें",
+      "members": "सदस्य",
+      "created": "बनाया गया",
+      "messages": "संदेश ({count})",
+      "noMessages": "अभी तक कोई संदेश नहीं."
+    }
+  },
+  "engineRuns": {
+    "title": "इंजन रन",
+    "subtitle": "ऑर्केस्ट्रेशन सत्रों के नीचे व्यक्तिगत इंजन इनवोकेशन",
+    "filterKind": "प्रकार से फ़िल्टर करें",
+    "filterStatus": "स्थिति से फ़िल्टर करें",
+    "filterStatusAll": "सभी स्थितियां",
+    "filterSession": "सत्र ID से फ़िल्टर करें",
+    "filterApply": "फ़िल्टर करें",
+    "loadError": "इंजन रन लोड करने में विफल.",
+    "emptyTitle": "कोई इंजन रन नहीं मिला",
+    "emptyBody": "जब कोई इंजन (जैसे `li engine`) इनवोकेशन दर्ज करता है, तो इंजन रन यहां दिखाई देते हैं.",
+    "table": {
+      "kind": "प्रकार",
+      "status": "स्थिति",
+      "started": "शुरू हुआ",
+      "session": "सत्र"
+    },
+    "detail": {
+      "close": "बंद करें",
+      "notFound": "इंजन रन नहीं मिला.",
+      "started": "शुरू हुआ",
+      "ended": "समाप्त हुआ",
+      "exportDir": "एक्सपोर्ट डायरेक्टरी",
+      "error": "त्रुटि",
+      "spec": "स्पेक"
+    }
+  },
+  "definitions": {
+    "title": "परिभाषाएं",
+    "subtitle": "हर संस्करण-नियंत्रित एजेंट और प्लेबुक परिभाषा, बल्क स्नैपशॉट चेकपॉइंट सहित",
+    "filterKind": "प्रकार से फ़िल्टर करें",
+    "filterKindAll": "सभी प्रकार",
+    "snapshotAll": "सभी का स्नैपशॉट लें",
+    "snapshotting": "स्नैपशॉट लिया जा रहा है…",
+    "snapshotDone": "{count} स्नैपशॉट बनाए गए.",
+    "snapshotFailed": "स्नैपशॉट विफल.",
+    "loadError": "परिभाषाएं लोड करने में विफल.",
+    "emptyTitle": "कोई परिभाषा नहीं मिली",
+    "emptyBody": "बनाए जाने पर एजेंट और प्लेबुक परिभाषाएं यहां दिखाई देंगी.",
+    "table": {
+      "kind": "प्रकार",
+      "name": "नाम",
+      "version": "संस्करण",
+      "noVersions": "कोई इतिहास नहीं",
+      "updated": "अद्यतन"
+    }
   }
 }

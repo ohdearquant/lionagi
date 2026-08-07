@@ -284,20 +284,32 @@ async def reap_phantom_sessions(
     Uses ``admin_svc.list_phantom_sessions()`` for detection.
     Returns count transitioned.
     """
+    _reaped, ids = await reap_phantom_sessions_detailed(stale_hours=stale_hours, actor=actor)
+    return len(ids)
+
+
+async def reap_phantom_sessions_detailed(
+    *,
+    stale_hours: float | None = None,
+    actor: str = "studio_lifecycle_reaper",
+) -> tuple[int, list[str]]:
+    """Same as ``reap_phantom_sessions``, but also returns the reaped session
+    ids — callers that need to record what was actually touched (e.g. an
+    admin-event audit row) can't reconstruct that from a bare count."""
     from lionagi.studio.config import PHANTOM_STALE_HOURS
 
     if stale_hours is None:
         stale_hours = PHANTOM_STALE_HOURS
 
     if state_db_known_absent():
-        return 0
+        return 0, []
 
     phantoms = await admin_svc.list_phantom_sessions(stale_hours=stale_hours)
     if not phantoms:
-        return 0
+        return 0, []
 
     now = time.time()
-    reaped = 0
+    reaped_ids: list[str] = []
 
     for phantom in phantoms:
         sid = phantom["session_id"]
@@ -356,7 +368,7 @@ async def reap_phantom_sessions(
                     )
             if transitioned:
                 _log.info("Phantom session %s reaped (reason=%s)", sid, phantom_reason)
-                reaped += 1
+                reaped_ids.append(sid)
             else:
                 _log.debug("Session %s skipped (status changed before CAS lock)", sid)
         except LookupError:
@@ -364,7 +376,7 @@ async def reap_phantom_sessions(
         except Exception:
             _log.exception("Failed to reap phantom session %s", sid)
 
-    return reaped
+    return len(reaped_ids), reaped_ids
 
 
 # ── play-level staleness reaper ──────────────────────────────────────────────

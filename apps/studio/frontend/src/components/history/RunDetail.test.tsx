@@ -1516,7 +1516,7 @@ describe("history/RunDetail.tsx — matchGraphNodeToBranch (graph-node drill-dow
   });
 
   it("match arm: two branches sharing a role's agent_name is ambiguous — resolves via the unique branch name instead, regardless of list order", async () => {
-    // The reviewer's duplicate-implementer scenario: {name:"implementer-2",
+    // Duplicate-implementer scenario: {name:"implementer-2",
     // agent_name:"implementer"} ordered before the branch whose exact name
     // is the clicked node id. agent_name alone can't disambiguate (both
     // branches carry it) — the exact name match must win, and win the same
