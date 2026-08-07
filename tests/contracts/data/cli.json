@@ -180,7 +180,7 @@
           {
             "option_strings": [],
             "dest": "query",
-            "required": true,
+            "required": false,
             "nargs": "*",
             "default": null,
             "choices": null,
@@ -480,7 +480,7 @@
           {
             "option_strings": [],
             "dest": "query",
-            "required": true,
+            "required": false,
             "nargs": "*",
             "default": null,
             "choices": null,
@@ -1107,7 +1107,7 @@
         {
           "option_strings": [],
           "dest": "query",
-          "required": true,
+          "required": false,
           "nargs": "*",
           "default": null,
           "choices": null,

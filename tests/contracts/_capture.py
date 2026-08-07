@@ -187,11 +187,26 @@ def capture_http() -> dict[str, Any]:
 # ── CLI registry + parser tree ───────────────────────────────────────────────
 
 
+def _required_flag(a: argparse.Action) -> Any:
+    """``a.required`` for a ``nargs='*'`` positional -- CPython's own
+    internal bookkeeping value on the Action object, not an enforced
+    constraint: parsing zero arguments into it has always succeeded on every
+    supported Python version. That attribute's default value changed from
+    ``True`` (3.10/3.11) to ``False`` (3.12+) with no parsing-behavior change
+    at all, so trusting it raw makes the contract flag an interpreter upgrade
+    as a CLI surface change. Normalize to the value every version actually
+    enforces (never required) rather than whatever the raw attribute reports.
+    """
+    if not a.option_strings and a.nargs == "*":
+        return False
+    return getattr(a, "required", None)
+
+
 def _action_to_dict(a: argparse.Action) -> dict[str, Any]:
     return {
         "option_strings": list(a.option_strings),
         "dest": a.dest,
-        "required": getattr(a, "required", None),
+        "required": _required_flag(a),
         "nargs": a.nargs if isinstance(a.nargs, (int, str, type(None))) else str(a.nargs),
         "default": a.default
         if isinstance(a.default, (int, str, float, bool, type(None)))
