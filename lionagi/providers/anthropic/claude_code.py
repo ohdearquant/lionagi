@@ -858,6 +858,9 @@ async def stream_claude_code_cli(  # noqa: C901
             elif typ == "result":
                 session.result = obj.get("result", "").strip()
                 session.usage = obj.get("usage", {})
+                # modelUsage is whole-agent-tree (includes Task-tool subagent
+                # spawns); the flat `usage` above is top-level-loop-only.
+                session.model_usage = obj.get("modelUsage") or {}
                 session.total_cost_usd = obj.get("total_cost_usd")
                 session.num_turns = obj.get("num_turns")
                 session.duration_ms = obj.get("duration_ms")
@@ -869,6 +872,8 @@ async def stream_claude_code_cli(  # noqa: C901
                 result_meta: dict[str, Any] = {}
                 if session.usage:
                     result_meta["usage"] = session.usage
+                if session.model_usage:
+                    result_meta["model_usage"] = session.model_usage
                 if session.total_cost_usd is not None:
                     result_meta["total_cost_usd"] = session.total_cost_usd
                 if session.num_turns is not None:

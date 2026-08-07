@@ -57,10 +57,12 @@ class RunStart(Signal):
 
 
 class RunEnd(Signal):
-    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free)."""
+    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt tokens in both provider conventions; cached_tokens/cache_write_tokens carry the billing dimensions that convention otherwise drops or folds in."""
 
     input_tokens: int = 0
     output_tokens: int = 0
+    cached_tokens: int = 0
+    cache_write_tokens: int = 0
     total_cost_usd: float | None = None
     num_turns: int = 0
     duration_ms: float = 0.0
@@ -225,17 +227,67 @@ def lane_for(signals: Iterable[Signal | Any]) -> NodeLifecycleState:
     return state
 
 
+def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Split a raw provider usage dict into (input, output, cached, cache_write) tokens.
+
+    Anthropic-style: ``input_tokens`` already excludes cache activity; cache
+    reads/writes arrive separately as ``cache_read_input_tokens`` /
+    ``cache_creation_input_tokens``. OpenAI-style: ``prompt_tokens`` INCLUDES
+    cached reads, split out under ``prompt_tokens_details.cached_tokens`` --
+    subtracted here so the returned "input" figure means "uncached prompt
+    tokens" under both conventions.
+    """
+    output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
+    if "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage:
+        cached = int(usage.get("cache_read_input_tokens", 0) or 0)
+        cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        return input_tokens, output_tokens, cached, cache_write
+
+    prompt_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
+    details = usage.get("prompt_tokens_details")
+    cached = int(details.get("cached_tokens", 0) or 0) if isinstance(details, dict) else 0
+    return prompt_tokens - cached, output_tokens, cached, 0
+
+
+def _sum_model_usage(model_usage: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Sum per-model whole-tree token counts from a claude_code CLI ``modelUsage`` map.
+
+    Unlike the flat top-level ``usage`` field (top-level-loop only), each
+    entry here already includes descendant subagent spend, so this is the
+    whole-tree figure when present.
+    """
+    input_tokens = output_tokens = cached = cache_write = 0
+    for entry in model_usage.values():
+        if not isinstance(entry, dict):
+            continue
+        input_tokens += int(entry.get("inputTokens", 0) or 0)
+        output_tokens += int(entry.get("outputTokens", 0) or 0)
+        cached += int(entry.get("cacheReadInputTokens", 0) or 0)
+        cache_write += int(entry.get("cacheCreationInputTokens", 0) or 0)
+    return input_tokens, output_tokens, cached, cache_write
+
+
 def _collect_branch_usage(branch: Any) -> dict[str, Any]:
     """Sum provider-reported usage across all AssistantResponse messages on branch. total_cost_usd stays None (unknown) until a message actually reports a cost — never coerced to 0.0 (free)."""
     input_tokens = 0
     output_tokens = 0
+    cached_tokens = 0
+    cache_write_tokens = 0
     total_cost_usd: float | None = None
     num_turns = 0
 
     try:
         messages = list(branch.msgs.messages)
     except Exception:  # noqa: BLE001
-        return {"input_tokens": 0, "output_tokens": 0, "total_cost_usd": None, "num_turns": 0}
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "total_cost_usd": None,
+            "num_turns": 0,
+        }
 
     for msg in messages:
         mr = (
@@ -243,9 +295,19 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
         )
         if not isinstance(mr, dict):
             continue
-        usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
-        input_tokens += int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
-        output_tokens += int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
+        model_usage = mr.get("model_usage")
+        if isinstance(model_usage, dict) and model_usage:
+            # Whole-tree per-model breakdown (claude_code CLI subagent
+            # spawns) supersedes the flat usage dict below, which only
+            # reflects the top-level loop.
+            m_in, m_out, m_cached, m_cache_write = _sum_model_usage(model_usage)
+        else:
+            usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
+            m_in, m_out, m_cached, m_cache_write = _extract_usage_dims(usage)
+        input_tokens += m_in
+        output_tokens += m_out
+        cached_tokens += m_cached
+        cache_write_tokens += m_cache_write
         # Presence, not truthiness: an explicit total_cost_usd=0.0 (real free
         # call) must not fall through `x or y` to the cost/None fallback.
         if "total_cost_usd" in mr and mr["total_cost_usd"] is not None:
@@ -261,6 +323,8 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cached_tokens": cached_tokens,
+        "cache_write_tokens": cache_write_tokens,
         "total_cost_usd": total_cost_usd,
         "num_turns": num_turns,
     }
@@ -270,6 +334,8 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
     """Sum _collect_branch_usage across multiple branches (multi-leg DAG runs). duration_ms is excluded — wall-clock across parallel legs isn't simply summable."""
     input_tokens = 0
     output_tokens = 0
+    cached_tokens = 0
+    cache_write_tokens = 0
     total_cost_usd: float | None = None
     num_turns = 0
 
@@ -277,6 +343,8 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
         usage = _collect_branch_usage(branch)
         input_tokens += usage["input_tokens"]
         output_tokens += usage["output_tokens"]
+        cached_tokens += usage["cached_tokens"]
+        cache_write_tokens += usage["cache_write_tokens"]
         if usage["total_cost_usd"] is not None:
             total_cost_usd = (total_cost_usd or 0.0) + usage["total_cost_usd"]
         num_turns += usage["num_turns"]
@@ -284,6 +352,8 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cached_tokens": cached_tokens,
+        "cache_write_tokens": cache_write_tokens,
         "total_cost_usd": total_cost_usd,
         "num_turns": num_turns,
     }

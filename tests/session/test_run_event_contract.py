@@ -144,6 +144,162 @@ def test_collect_branch_usage_anthropic_convention():
     assert usage["output_tokens"] == 30
 
 
+# ---------------------------------------------------------------------------
+# #2889 — cache-token dimensions (Anthropic cache_read/cache_creation,
+# OpenAI prompt_tokens_details.cached_tokens)
+# ---------------------------------------------------------------------------
+
+
+def test_run_end_cache_token_fields_default():
+    sig = RunEnd()
+    assert sig.cached_tokens == 0
+    assert sig.cache_write_tokens == 0
+
+
+def test_run_end_cache_token_fields_explicit():
+    sig = RunEnd(cached_tokens=500, cache_write_tokens=25)
+    assert sig.cached_tokens == 500
+    assert sig.cache_write_tokens == 25
+
+
+def test_collect_branch_usage_anthropic_convention_pins_cache_dimensions():
+    """Anthropic-style payload: input_tokens already excludes cache; cache
+    reads/writes arrive as separate keys the old projection dropped entirely."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {
+                "input_tokens": 80,
+                "output_tokens": 30,
+                "cache_read_input_tokens": 500,
+                "cache_creation_input_tokens": 25,
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 80
+    assert usage["output_tokens"] == 30
+    assert usage["cached_tokens"] == 500
+    assert usage["cache_write_tokens"] == 25
+
+
+def test_collect_branch_usage_openai_convention_splits_cached_from_prompt_tokens():
+    """OpenAI-style payload: prompt_tokens INCLUDES cached reads; the old
+    projection folded them into input_tokens with no way to separate them
+    back out. cached_tokens must be split OUT of input_tokens, not added
+    alongside it."""
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 20,
+                "prompt_tokens_details": {"cached_tokens": 800},
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 200
+    assert usage["output_tokens"] == 20
+    assert usage["cached_tokens"] == 800
+    assert usage["cache_write_tokens"] == 0
+
+
+def test_collect_multi_branch_usage_sums_cache_dimensions():
+    branch_a = MagicMock()
+    branch_a.msgs.messages = [
+        MagicMock(
+            metadata={
+                "model_response": {
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cache_read_input_tokens": 100,
+                        "cache_creation_input_tokens": 3,
+                    },
+                }
+            }
+        )
+    ]
+    branch_b = MagicMock()
+    branch_b.msgs.messages = [
+        MagicMock(
+            metadata={
+                "model_response": {
+                    "usage": {
+                        "input_tokens": 20,
+                        "output_tokens": 8,
+                        "cache_read_input_tokens": 50,
+                        "cache_creation_input_tokens": 7,
+                    },
+                }
+            }
+        )
+    ]
+    usage = _collect_multi_branch_usage([branch_a, branch_b])
+    assert usage["cached_tokens"] == 150
+    assert usage["cache_write_tokens"] == 10
+
+
+# ---------------------------------------------------------------------------
+# #2379 — claude_code whole-agent-tree usage: a per-model modelUsage
+# breakdown (subagent spend included) must be preferred over the flat,
+# top-level-loop-only usage dict when both are present on the same message.
+# ---------------------------------------------------------------------------
+
+
+def test_collect_branch_usage_prefers_model_usage_whole_tree_over_flat_usage():
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            # Flat usage: top-level loop only, undercounts a Task-tool subagent spawn.
+            "usage": {"input_tokens": 100, "output_tokens": 40},
+            # modelUsage: whole tree, includes the subagent's spend too.
+            "model_usage": {
+                "claude-sonnet-5": {
+                    "inputTokens": 100,
+                    "outputTokens": 40,
+                    "cacheReadInputTokens": 10,
+                    "cacheCreationInputTokens": 2,
+                },
+                "claude-haiku-4-5": {
+                    "inputTokens": 300,
+                    "outputTokens": 150,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                },
+            },
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 400
+    assert usage["output_tokens"] == 190
+    assert usage["cached_tokens"] == 10
+    assert usage["cache_write_tokens"] == 2
+    # Not the flat (self-only) figures -- those would undercount the subagent.
+    assert usage["input_tokens"] != 100
+
+
+def test_collect_branch_usage_falls_back_to_flat_usage_when_model_usage_absent():
+    msg = MagicMock()
+    msg.metadata = {
+        "model_response": {
+            "usage": {"input_tokens": 100, "output_tokens": 40},
+        }
+    }
+    branch = MagicMock()
+    branch.msgs.messages = [msg]
+    usage = _collect_branch_usage(branch)
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 40
+
+
 def test_build_run_end_populates_from_branch():
     msg = MagicMock()
     msg.metadata = {
