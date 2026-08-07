@@ -1441,7 +1441,9 @@ export interface DefinitionSummary {
   name: string;
   path: string;
   disk_path: string;
-  has_versions: boolean;
+  // null when the version-history store could not be read for the listing
+  // (distinct from false, which means "never saved a version").
+  has_versions: boolean | null;
   version: number;
   updated_at: number;
 }
@@ -1458,8 +1460,11 @@ export interface DefinitionDetail {
   name: string;
   path: string;
   content: string;
-  version: number;
-  versions: DefinitionVersion[];
+  // version/versions are null when the version-history store could not be
+  // read; content/path are always disk-backed and always present.
+  version: number | null;
+  versions: DefinitionVersion[] | null;
+  history_available: boolean;
 }
 
 export async function listDefinitions(
@@ -1475,12 +1480,26 @@ export async function getDefinition(kind: string, name: string): Promise<Definit
   );
 }
 
+// A specific historical version's content -- distinct from DefinitionDetail
+// (the current definition): the backend's single-version read has nothing
+// to fall back on, so it either answers with a real version number and
+// content or refuses outright; it never returns the versions/history_available
+// fields DefinitionDetail carries.
+export interface DefinitionVersionDetail {
+  kind: string;
+  name: string;
+  version: number;
+  content: string;
+  created_at: number;
+  message: string | null;
+}
+
 export async function getDefinitionVersion(
   kind: string,
   name: string,
   version: number,
-): Promise<DefinitionDetail> {
-  return fetchJson<DefinitionDetail>(
+): Promise<DefinitionVersionDetail> {
+  return fetchJson<DefinitionVersionDetail>(
     `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/versions/${version}`,
   );
 }

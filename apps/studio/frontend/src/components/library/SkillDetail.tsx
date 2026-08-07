@@ -19,6 +19,7 @@ import {
 import type {
   DefinitionDetail,
   DefinitionVersion,
+  DefinitionVersionDetail,
   SkillDetail as SkillSummaryDetail,
 } from "@/lib/api";
 import { formatInvocationAge, useInvocationStats } from "@/lib/useInvocationStats";
@@ -56,7 +57,7 @@ export function SkillDetail({ name, pluginName, onBack }: SkillDetailProps) {
   const [validationErrors, setValidationErrors] = useState<string[] | null>(null);
   const [savedOk, setSavedOk] = useState(false);
 
-  const [previewVer, setPreviewVer] = useState<DefinitionDetail | null>(null);
+  const [previewVer, setPreviewVer] = useState<DefinitionVersionDetail | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { stats, loading: statsLoading } = useInvocationStats("skill", name);
@@ -250,7 +251,7 @@ export function SkillDetail({ name, pluginName, onBack }: SkillDetailProps) {
                   {t("saveDone")}
                 </span>
               )}
-              {def && (
+              {def && def.version != null && (
                 <span className="font-data text-[length:var(--t-xs)] text-content-muted">
                   v{def.version}
                 </span>
@@ -406,8 +407,9 @@ export function SkillDetail({ name, pluginName, onBack }: SkillDetailProps) {
         </div>
       </div>
 
-      {/* Version history strip */}
-      {!readOnly && !editing && def && def.versions.length > 0 && (
+      {/* Version history strip — omitted (not crashed) when the history
+          store is unreadable; def.content above still renders either way. */}
+      {!readOnly && !editing && def && def.versions && def.versions.length > 0 && (
         <div className="shrink-0 overflow-x-auto border-t border-edge">
           <div className="flex gap-0" style={{ minWidth: "max-content" }}>
             {[...def.versions]
