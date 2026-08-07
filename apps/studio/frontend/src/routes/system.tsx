@@ -383,6 +383,10 @@ function DataSection() {
           <span>{t("data.engineRuns")}</span>
           <span aria-hidden="true">→</span>
         </Link>
+        <Link to="/definitions" className={linkCls}>
+          <span>{t("data.definitions")}</span>
+          <span aria-hidden="true">→</span>
+        </Link>
       </div>
     </section>
   );

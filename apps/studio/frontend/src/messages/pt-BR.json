@@ -558,7 +558,8 @@
       "actor": "Autor"
     },
     "data": {
-      "engineRuns": "Execuções de engine"
+      "engineRuns": "Execuções de engine",
+      "definitions": "Definições"
     }
   },
   "schedules": {
@@ -1184,6 +1185,26 @@
       "exportDir": "Diretório de exportação",
       "error": "Erro",
       "spec": "Especificação"
+    }
+  },
+  "definitions": {
+    "title": "Definições",
+    "subtitle": "Todas as definições de agente e playbook com versão, com um checkpoint de snapshot em massa",
+    "filterKind": "Filtrar por tipo",
+    "filterKindAll": "Todos os tipos",
+    "snapshotAll": "Criar snapshot de tudo",
+    "snapshotting": "Criando snapshot…",
+    "snapshotDone": "{count} snapshot(s) criado(s).",
+    "snapshotFailed": "Falha no snapshot.",
+    "loadError": "Falha ao carregar as definições.",
+    "emptyTitle": "Nenhuma definição encontrada",
+    "emptyBody": "As definições de agente e playbook aparecem aqui assim que criadas.",
+    "table": {
+      "kind": "Tipo",
+      "name": "Nome",
+      "version": "Versão",
+      "noVersions": "sem histórico",
+      "updated": "Atualizado"
     }
   }
 }

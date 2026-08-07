@@ -558,7 +558,8 @@
       "actor": "Actor"
     },
     "data": {
-      "engineRuns": "Engine runs"
+      "engineRuns": "Engine runs",
+      "definitions": "Definitions"
     }
   },
   "schedules": {
@@ -1184,6 +1185,26 @@
       "exportDir": "Export dir",
       "error": "Error",
       "spec": "Spec"
+    }
+  },
+  "definitions": {
+    "title": "Definitions",
+    "subtitle": "Every versioned agent and playbook definition, with a bulk snapshot checkpoint",
+    "filterKind": "Filter by kind",
+    "filterKindAll": "All kinds",
+    "snapshotAll": "Snapshot all",
+    "snapshotting": "Snapshotting…",
+    "snapshotDone": "Created {count} snapshot(s).",
+    "snapshotFailed": "Snapshot failed.",
+    "loadError": "Failed to load definitions.",
+    "emptyTitle": "No definitions found",
+    "emptyBody": "Agent and playbook definitions appear here once created.",
+    "table": {
+      "kind": "Kind",
+      "name": "Name",
+      "version": "Version",
+      "noVersions": "no history",
+      "updated": "Updated"
     }
   }
 }

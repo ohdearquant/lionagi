@@ -558,7 +558,8 @@
       "actor": "操作者"
     },
     "data": {
-      "engineRuns": "引擎运行"
+      "engineRuns": "引擎运行",
+      "definitions": "定义"
     }
   },
   "schedules": {
@@ -1184,6 +1185,26 @@
       "exportDir": "导出目录",
       "error": "错误",
       "spec": "规格"
+    }
+  },
+  "definitions": {
+    "title": "定义",
+    "subtitle": "所有带版本历史的智能体与剧本定义，支持批量快照",
+    "filterKind": "按类型筛选",
+    "filterKindAll": "全部类型",
+    "snapshotAll": "全部快照",
+    "snapshotting": "正在快照…",
+    "snapshotDone": "已创建 {count} 个快照。",
+    "snapshotFailed": "快照失败。",
+    "loadError": "加载定义失败。",
+    "emptyTitle": "未找到定义",
+    "emptyBody": "创建智能体或剧本定义后会显示在此处。",
+    "table": {
+      "kind": "类型",
+      "name": "名称",
+      "version": "版本",
+      "noVersions": "无历史记录",
+      "updated": "更新时间"
     }
   }
 }

@@ -558,7 +558,8 @@
       "actor": "Yürüten"
     },
     "data": {
-      "engineRuns": "Motor çalıştırmaları"
+      "engineRuns": "Motor çalıştırmaları",
+      "definitions": "Tanımlar"
     }
   },
   "schedules": {
@@ -1184,6 +1185,26 @@
       "exportDir": "Dışa aktarma dizini",
       "error": "Hata",
       "spec": "Spesifikasyon"
+    }
+  },
+  "definitions": {
+    "title": "Tanımlar",
+    "subtitle": "Sürümlenmiş her ajan ve playbook tanımı, toplu anlık görüntü kontrol noktasıyla",
+    "filterKind": "Türe göre filtrele",
+    "filterKindAll": "Tüm türler",
+    "snapshotAll": "Tümünün anlık görüntüsünü al",
+    "snapshotting": "Anlık görüntü alınıyor…",
+    "snapshotDone": "{count} anlık görüntü oluşturuldu.",
+    "snapshotFailed": "Anlık görüntü başarısız oldu.",
+    "loadError": "Tanımlar yüklenemedi.",
+    "emptyTitle": "Tanım bulunamadı",
+    "emptyBody": "Ajan ve playbook tanımları oluşturulduğunda burada görünür.",
+    "table": {
+      "kind": "Tür",
+      "name": "Ad",
+      "version": "Sürüm",
+      "noVersions": "geçmiş yok",
+      "updated": "Güncellendi"
     }
   }
 }

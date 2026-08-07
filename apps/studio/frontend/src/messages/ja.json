@@ -558,7 +558,8 @@
       "actor": "実行者"
     },
     "data": {
-      "engineRuns": "エンジン実行"
+      "engineRuns": "エンジン実行",
+      "definitions": "定義"
     }
   },
   "schedules": {
@@ -1184,6 +1185,26 @@
       "exportDir": "エクスポート先ディレクトリ",
       "error": "エラー",
       "spec": "スペック"
+    }
+  },
+  "definitions": {
+    "title": "定義",
+    "subtitle": "バージョン管理されたすべてのエージェント・プレイブック定義。一括スナップショットのチェックポイント付き",
+    "filterKind": "種類で絞り込む",
+    "filterKindAll": "すべての種類",
+    "snapshotAll": "すべてスナップショット",
+    "snapshotting": "スナップショット中…",
+    "snapshotDone": "{count} 件のスナップショットを作成しました。",
+    "snapshotFailed": "スナップショットに失敗しました。",
+    "loadError": "定義の読み込みに失敗しました。",
+    "emptyTitle": "定義が見つかりません",
+    "emptyBody": "エージェントおよびプレイブックの定義は、作成されるとここに表示されます。",
+    "table": {
+      "kind": "種類",
+      "name": "名前",
+      "version": "バージョン",
+      "noVersions": "履歴なし",
+      "updated": "更新日時"
     }
   }
 }

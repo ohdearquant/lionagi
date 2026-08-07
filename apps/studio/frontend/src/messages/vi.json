@@ -558,7 +558,8 @@
       "actor": "Người thực hiện"
     },
     "data": {
-      "engineRuns": "Lượt chạy engine"
+      "engineRuns": "Lượt chạy engine",
+      "definitions": "Định nghĩa"
     }
   },
   "schedules": {
@@ -1184,6 +1185,26 @@
       "exportDir": "Thư mục xuất",
       "error": "Lỗi",
       "spec": "Đặc tả"
+    }
+  },
+  "definitions": {
+    "title": "Định nghĩa",
+    "subtitle": "Mọi định nghĩa agent và playbook có phiên bản, kèm chốt chụp nhanh hàng loạt",
+    "filterKind": "Lọc theo loại",
+    "filterKindAll": "Tất cả loại",
+    "snapshotAll": "Chụp nhanh tất cả",
+    "snapshotting": "Đang chụp nhanh…",
+    "snapshotDone": "Đã tạo {count} bản chụp nhanh.",
+    "snapshotFailed": "Chụp nhanh thất bại.",
+    "loadError": "Không thể tải định nghĩa.",
+    "emptyTitle": "Không tìm thấy định nghĩa nào",
+    "emptyBody": "Định nghĩa agent và playbook sẽ xuất hiện ở đây khi được tạo.",
+    "table": {
+      "kind": "Loại",
+      "name": "Tên",
+      "version": "Phiên bản",
+      "noVersions": "chưa có lịch sử",
+      "updated": "Đã cập nhật"
     }
   }
 }

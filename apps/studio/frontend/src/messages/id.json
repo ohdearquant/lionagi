@@ -558,7 +558,8 @@
       "actor": "Pelaku"
     },
     "data": {
-      "engineRuns": "Proses engine"
+      "engineRuns": "Proses engine",
+      "definitions": "Definisi"
     }
   },
   "schedules": {
@@ -1184,6 +1185,26 @@
       "exportDir": "Direktori ekspor",
       "error": "Error",
       "spec": "Spesifikasi"
+    }
+  },
+  "definitions": {
+    "title": "Definisi",
+    "subtitle": "Setiap definisi agen dan playbook yang memiliki riwayat versi, dengan checkpoint snapshot massal",
+    "filterKind": "Filter berdasarkan jenis",
+    "filterKindAll": "Semua jenis",
+    "snapshotAll": "Snapshot semua",
+    "snapshotting": "Membuat snapshot…",
+    "snapshotDone": "{count} snapshot dibuat.",
+    "snapshotFailed": "Snapshot gagal.",
+    "loadError": "Gagal memuat definisi.",
+    "emptyTitle": "Tidak ada definisi ditemukan",
+    "emptyBody": "Definisi agen dan playbook muncul di sini setelah dibuat.",
+    "table": {
+      "kind": "Jenis",
+      "name": "Nama",
+      "version": "Versi",
+      "noVersions": "tanpa riwayat",
+      "updated": "Diperbarui"
     }
   }
 }

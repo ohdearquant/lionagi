@@ -558,7 +558,8 @@
       "actor": "Akteur"
     },
     "data": {
-      "engineRuns": "Engine-Läufe"
+      "engineRuns": "Engine-Läufe",
+      "definitions": "Definitionen"
     }
   },
   "schedules": {
@@ -1184,6 +1185,26 @@
       "exportDir": "Export-Verzeichnis",
       "error": "Fehler",
       "spec": "Spezifikation"
+    }
+  },
+  "definitions": {
+    "title": "Definitionen",
+    "subtitle": "Alle versionierten Agenten- und Playbook-Definitionen, mit Sammel-Snapshot-Checkpoint",
+    "filterKind": "Nach Art filtern",
+    "filterKindAll": "Alle Arten",
+    "snapshotAll": "Alles sichern",
+    "snapshotting": "Wird gesichert…",
+    "snapshotDone": "{count} Snapshot(s) erstellt.",
+    "snapshotFailed": "Snapshot fehlgeschlagen.",
+    "loadError": "Definitionen konnten nicht geladen werden.",
+    "emptyTitle": "Keine Definitionen gefunden",
+    "emptyBody": "Agenten- und Playbook-Definitionen erscheinen hier, sobald sie erstellt wurden.",
+    "table": {
+      "kind": "Art",
+      "name": "Name",
+      "version": "Version",
+      "noVersions": "kein Verlauf",
+      "updated": "Aktualisiert"
     }
   }
 }

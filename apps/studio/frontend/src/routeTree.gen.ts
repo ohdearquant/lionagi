@@ -32,6 +32,7 @@ import { Route as KanbanIndexRouteImport } from './routes/kanban/index'
 import { Route as InvocationsIndexRouteImport } from './routes/invocations/index'
 import { Route as EnginesIndexRouteImport } from './routes/engines/index'
 import { Route as EngineRunsIndexRouteImport } from './routes/engine-runs/index'
+import { Route as DefinitionsIndexRouteImport } from './routes/definitions/index'
 import { Route as AdminIndexRouteImport } from './routes/admin/index'
 import { Route as RunsIdRouteImport } from './routes/runs/$id'
 import { Route as InvocationsIdRouteImport } from './routes/invocations/$id'
@@ -156,6 +157,11 @@ const EngineRunsIndexRoute = EngineRunsIndexRouteImport.update({
   path: '/engine-runs/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DefinitionsIndexRoute = DefinitionsIndexRouteImport.update({
+  id: '/definitions/',
+  path: '/definitions/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminIndexRoute = AdminIndexRouteImport.update({
   id: '/admin/',
   path: '/admin/',
@@ -213,6 +219,7 @@ export interface FileRoutesByFullPath {
   '/invocations/$id': typeof InvocationsIdRoute
   '/runs/$id': typeof RunsIdRoute
   '/admin/': typeof AdminIndexRoute
+  '/definitions/': typeof DefinitionsIndexRoute
   '/engine-runs/': typeof EngineRunsIndexRoute
   '/engines/': typeof EnginesIndexRoute
   '/invocations/': typeof InvocationsIndexRoute
@@ -246,6 +253,7 @@ export interface FileRoutesByTo {
   '/invocations/$id': typeof InvocationsIdRoute
   '/runs/$id': typeof RunsIdRoute
   '/admin': typeof AdminIndexRoute
+  '/definitions': typeof DefinitionsIndexRoute
   '/engine-runs': typeof EngineRunsIndexRoute
   '/engines': typeof EnginesIndexRoute
   '/invocations': typeof InvocationsIndexRoute
@@ -280,6 +288,7 @@ export interface FileRoutesById {
   '/invocations/$id': typeof InvocationsIdRoute
   '/runs/$id': typeof RunsIdRoute
   '/admin/': typeof AdminIndexRoute
+  '/definitions/': typeof DefinitionsIndexRoute
   '/engine-runs/': typeof EngineRunsIndexRoute
   '/engines/': typeof EnginesIndexRoute
   '/invocations/': typeof InvocationsIndexRoute
@@ -315,6 +324,7 @@ export interface FileRouteTypes {
     | '/invocations/$id'
     | '/runs/$id'
     | '/admin/'
+    | '/definitions/'
     | '/engine-runs/'
     | '/engines/'
     | '/invocations/'
@@ -348,6 +358,7 @@ export interface FileRouteTypes {
     | '/invocations/$id'
     | '/runs/$id'
     | '/admin'
+    | '/definitions'
     | '/engine-runs'
     | '/engines'
     | '/invocations'
@@ -381,6 +392,7 @@ export interface FileRouteTypes {
     | '/invocations/$id'
     | '/runs/$id'
     | '/admin/'
+    | '/definitions/'
     | '/engine-runs/'
     | '/engines/'
     | '/invocations/'
@@ -415,6 +427,7 @@ export interface RootRouteChildren {
   InvocationsIdRoute: typeof InvocationsIdRoute
   RunsIdRoute: typeof RunsIdRoute
   AdminIndexRoute: typeof AdminIndexRoute
+  DefinitionsIndexRoute: typeof DefinitionsIndexRoute
   EngineRunsIndexRoute: typeof EngineRunsIndexRoute
   EnginesIndexRoute: typeof EnginesIndexRoute
   InvocationsIndexRoute: typeof InvocationsIndexRoute
@@ -596,6 +609,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EngineRunsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/definitions/': {
+      id: '/definitions/'
+      path: '/definitions'
+      fullPath: '/definitions/'
+      preLoaderRoute: typeof DefinitionsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/': {
       id: '/admin/'
       path: '/admin'
@@ -671,6 +691,7 @@ const rootRouteChildren: RootRouteChildren = {
   InvocationsIdRoute: InvocationsIdRoute,
   RunsIdRoute: RunsIdRoute,
   AdminIndexRoute: AdminIndexRoute,
+  DefinitionsIndexRoute: DefinitionsIndexRoute,
   EngineRunsIndexRoute: EngineRunsIndexRoute,
   EnginesIndexRoute: EnginesIndexRoute,
   InvocationsIndexRoute: InvocationsIndexRoute,

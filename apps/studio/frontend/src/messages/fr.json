@@ -558,7 +558,8 @@
       "actor": "Acteur"
     },
     "data": {
-      "engineRuns": "Exécutions moteur"
+      "engineRuns": "Exécutions moteur",
+      "definitions": "Définitions"
     }
   },
   "schedules": {
@@ -1184,6 +1185,26 @@
       "exportDir": "Répertoire d'export",
       "error": "Erreur",
       "spec": "Spécification"
+    }
+  },
+  "definitions": {
+    "title": "Définitions",
+    "subtitle": "Toutes les définitions d'agent et de playbook versionnées, avec un instantané groupé",
+    "filterKind": "Filtrer par type",
+    "filterKindAll": "Tous les types",
+    "snapshotAll": "Instantané de tout",
+    "snapshotting": "Instantané en cours…",
+    "snapshotDone": "{count} instantané(s) créé(s).",
+    "snapshotFailed": "Échec de l'instantané.",
+    "loadError": "Échec du chargement des définitions.",
+    "emptyTitle": "Aucune définition trouvée",
+    "emptyBody": "Les définitions d'agent et de playbook apparaissent ici une fois créées.",
+    "table": {
+      "kind": "Type",
+      "name": "Nom",
+      "version": "Version",
+      "noVersions": "aucun historique",
+      "updated": "Mis à jour"
     }
   }
 }
