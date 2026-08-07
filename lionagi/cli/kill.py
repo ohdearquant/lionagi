@@ -109,9 +109,13 @@ def _check_pid_identity(
     - "ours": positively identified as the run in the row.
     - "not_ours": pid is gone or held by a different process — killing it
       would hit a stranger.
-    - "unverifiable": present but uninspectable (usually permission denied).
-      Callers must treat this as still-alive, never as dead, or an unattended
-      sweep would cancel a worker it merely lacks permission to see.
+    - "unverifiable": present but uninspectable (usually permission denied),
+      or inspectable but with no durable identity recorded to check it
+      against (no session id, no create_time) — a lionagi-looking cmdline
+      alone cannot distinguish our run from any other lionagi process holding
+      this pid. Callers must treat this as still-alive, never as dead, or an
+      unattended sweep would cancel a worker it merely lacks permission to
+      see — and a direct kill must refuse rather than signal a stranger.
     - "zombie": exited, not yet reaped. Not a recycled pid (the OS won't
       reissue one before reaping) and not killable again — a finished
       termination, so folding it into "not_ours" loses a cancellation that
@@ -165,6 +169,15 @@ def _check_pid_identity(
             # cmdline alone cannot distinguish this run from a different
             # concurrent one that recycled the pid.
             return "unverifiable"
+
+    if expected_session_id is None and expected_create_time is None:
+        # Nothing durable was ever recorded for this row (e.g. an invocation,
+        # which carries no session id and may have no pid_create_time either).
+        # A lionagi-looking cmdline is not proof of identity — any other
+        # lionagi process satisfies it — so there is nothing left to check
+        # this pid against, and cmdline shape alone must not authorize a
+        # signal.
+        return "unverifiable"
 
     try:
         cmdline = proc.cmdline()

@@ -248,6 +248,7 @@ def test_terminate_pid_identity_match_sends_signal(
     fake_psutil = MagicMock()
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "-m", "lionagi.cli.main"]
+    fake_proc.create_time.return_value = 100.0
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
@@ -256,7 +257,11 @@ def test_terminate_pid_identity_match_sends_signal(
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
-    result = _terminate_pid(42, grace_seconds=0.01, expected_cmd="lionagi")
+    # A durable create_time marker must be present for a cmdline match to
+    # authorize the kill (no session id and no create_time is "unverifiable").
+    result = _terminate_pid(
+        42, grace_seconds=0.01, expected_cmd="lionagi", expected_create_time=100.0
+    )
     # SIGTERM must have been sent
     assert any(sig == __import__("signal").SIGTERM for _, sig in kill_calls)
     assert result in ("sigterm", "sigkill")
@@ -457,13 +462,13 @@ def test_identity_rejects_path_substring(monkeypatch: pytest.MonkeyPatch):
 def test_identity_accepts_dash_m_module(monkeypatch: pytest.MonkeyPatch):
     """``python -m lionagi.cli.main`` is a genuine invocation and is accepted."""
     _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionagi.cli.main"])
-    assert _check_pid_identity(42, "lionagi") == "ours"
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_accepts_li_entrypoint(monkeypatch: pytest.MonkeyPatch):
     """The ``li`` console-script entrypoint is accepted by executable basename."""
     _mock_psutil(monkeypatch, cmdline=["/opt/venv/bin/li", "kill", "abc123"])
-    assert _check_pid_identity(42, "lionagi") == "ours"
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_accepts_shebang_launched_li(monkeypatch: pytest.MonkeyPatch):
@@ -472,7 +477,7 @@ def test_identity_accepts_shebang_launched_li(monkeypatch: pytest.MonkeyPatch):
         monkeypatch,
         cmdline=["/opt/.venv/bin/python3", "/opt/.venv/bin/li", "play", "abc123"],
     )
-    assert _check_pid_identity(42, "lionagi") == "ours"
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_accepts_macos_framework_python_launcher(monkeypatch: pytest.MonkeyPatch):
@@ -485,7 +490,7 @@ def test_identity_accepts_macos_framework_python_launcher(monkeypatch: pytest.Mo
             "agent",
         ],
     )
-    assert _check_pid_identity(42, "lionagi") == "ours"
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "ours"
 
 
 def test_identity_rejects_foreign_script_with_li_in_path(monkeypatch: pytest.MonkeyPatch):
@@ -494,7 +499,7 @@ def test_identity_rejects_foreign_script_with_li_in_path(monkeypatch: pytest.Mon
         monkeypatch,
         cmdline=["/usr/bin/python3", "/usr/local/bin/olia-tool", "run"],
     )
-    assert _check_pid_identity(42, "lionagi") == "not_ours"
+    assert _check_pid_identity(42, "lionagi", expected_create_time=100.0) == "not_ours"
 
 
 def test_identity_session_marker_match(monkeypatch: pytest.MonkeyPatch):
@@ -626,6 +631,51 @@ def test_identity_create_time_mismatch_rejected(monkeypatch: pytest.MonkeyPatch)
     assert _check_pid_identity(42, "lionagi", expected_create_time=100.5) == "not_ours"
     # within tick-rounding tolerance → accepted.
     assert _check_pid_identity(42, "lionagi", expected_create_time=100.05) == "ours"
+
+
+def test_identity_no_durable_marker_refuses_cmdline_only_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No session id AND no create_time recorded: cmdline shape alone must not authorize.
+
+    A record with neither identity field carries nothing that distinguishes the
+    live process at this pid from any other process that merely looks like a
+    lionagi invocation. Falling back to `_cmdline_is_lionagi` here would let a
+    same-looking, unrelated process be signalled.
+    """
+    _mock_psutil(monkeypatch, cmdline=["/usr/bin/python3", "-m", "lionagi.cli"])
+    assert _check_pid_identity(42, "lionagi") == "unverifiable"
+    assert (
+        _check_pid_identity(42, "lionagi", expected_session_id=None, expected_create_time=None)
+        == "unverifiable"
+    )
+
+
+async def test_do_kill_invocation_without_pid_create_time_does_not_signal(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An invocation whose metadata carries a pid but no pid_create_time refuses the kill.
+
+    Reproduces the reported hazard: `li invoke start --metadata '{"pid": N}'`
+    stores a pid with no creation-time marker, and invocations never carry a
+    session id either, so a live process that merely looks like a lionagi
+    invocation must not receive SIGTERM.
+    """
+    kill_calls = _mock_psutil(
+        monkeypatch,
+        cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+    )
+
+    async with StateDB() as db:
+        inv_id = await _seed_invocation(db, status="running", pid=4242)
+
+    rc = await _do_kill(inv_id)
+    assert rc == 1, "an unverifiable identity must block the kill"
+    assert kill_calls == [], "must not signal a process with no durable identity to confirm"
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (inv_id,))
+        assert row["status"] == "running", "must not cancel a row whose kill was refused"
 
 
 # ── current_pid_markers (launch-time recording) ───────────────────────────────
