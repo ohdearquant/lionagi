@@ -316,6 +316,58 @@ def test_delete_fences_a_replayed_put_from_resurrecting_the_disposition(tmp_path
     assert recreated["state"] == "acknowledged"
 
 
+def test_active_row_put_with_stale_revision_is_last_writer_wins_not_fenced(tmp_path, monkeypatch):
+    """Contract, not a bug: a stale-revision PUT against a row that is still
+    ACTIVE applies unconditionally and overwrites newer fields -- the
+    revision fence only guards recreating a row a DELETE already removed.
+    Fencing active-row updates too would reject an operator's own retried
+    PUT, which is itself a "stale revision" from the server's point of
+    view, breaking the idempotent-retry contract upsert_disposition
+    promises."""
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from lionagi.studio.services import attention as attention_mod
+
+    first = _run(
+        attention_mod.upsert_disposition(
+            "run:lww", state="acknowledged", source_status="failed", actor="operator"
+        )
+    )
+    assert first["revision"] == 1
+
+    second = _run(
+        attention_mod.upsert_disposition(
+            "run:lww",
+            state="snoozed",
+            source_status="failed",
+            actor="operator",
+            expires_at=time.time() + 3600,
+            revision=first["revision"],
+        )
+    )
+    assert second["state"] == "snoozed"
+    assert second["revision"] == 2
+
+    # A PUT carrying the now-stale revision 1 (e.g. a delayed retry of the
+    # first PUT) is not rejected: it overwrites the revision-2 fields.
+    third = _run(
+        attention_mod.upsert_disposition(
+            "run:lww",
+            state="acknowledged",
+            source_status="failed",
+            actor="operator",
+            revision=first["revision"],
+        )
+    )
+    assert third["state"] == "acknowledged"
+    assert third["revision"] == 3
+
+    listed = _run(attention_mod.list_dispositions())
+    assert listed["run:lww"]["state"] == "acknowledged"
+
+
 def test_http_put_after_delete_rejects_stale_revision(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     client = _make_client(db_path, monkeypatch)
@@ -467,6 +519,146 @@ def test_reopening_store_does_not_fail_and_keeps_rows(tmp_path, monkeypatch):
 
     listed = _run(attention_mod.list_dispositions())
     assert listed["run:persisted"]["state"] == "resolved"
+
+
+def _create_pre_revision_attention_db(db_path: Path) -> None:
+    """Build the exact shape ``feat(studio): durable discharge lifecycle``
+    (604dfd6fc) produced: ``attention_dispositions`` and
+    ``attention_disposition_history`` already exist, but without
+    ``revision``/``sequence`` -- those columns and the
+    ``attention_disposition_revisions`` ledger were only added later, and
+    that later commit never bumped ``schema_meta.version`` off '2' either.
+    metadata.create_all() only creates *missing* tables, so opening a store
+    already in this shape with current code creates the (new)
+    attention_disposition_revisions table but silently leaves the two
+    pre-existing tables without their new columns."""
+    import sqlite3
+
+    from lionagi.state.db import _SCHEMA_PATH
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute("DROP TABLE attention_disposition_revisions")
+        conn.execute("DROP INDEX idx_attention_disposition_history_sequence")
+        conn.execute("ALTER TABLE attention_disposition_history DROP COLUMN sequence")
+        conn.execute("ALTER TABLE attention_dispositions DROP COLUMN revision")
+        conn.execute("UPDATE schema_meta SET value = '2' WHERE key = 'version'")
+
+        # run:active -- three PUTs before the upgrade. Its true revision
+        # count (3) must survive the backfill, not collapse to a flat 1.
+        conn.execute(
+            "INSERT INTO attention_dispositions "
+            "(item_id, state, note, created_at, updated_at, expires_at, actor, source_status) "
+            "VALUES ('run:active', 'resolved', NULL, 1.0, 3.0, NULL, 'operator', 'failed')"
+        )
+        for i, (prior, new, ts) in enumerate(
+            [
+                (None, "acknowledged", 1.0),
+                ("acknowledged", "snoozed", 2.0),
+                ("snoozed", "resolved", 3.0),
+            ]
+        ):
+            conn.execute(
+                "INSERT INTO attention_disposition_history "
+                "(id, item_id, prior_state, new_state, note, actor, source_status, created_at) "
+                "VALUES (?, 'run:active', ?, ?, NULL, 'operator', 'failed', ?)",
+                (f"hist-active-{i}", prior, new, ts),
+            )
+
+        # run:deleted -- acknowledged then undone (DELETE) before the
+        # upgrade. No active row, but a PUT that predates the DELETE must
+        # still be fenced against it after the upgrade.
+        conn.execute(
+            "INSERT INTO attention_disposition_history "
+            "(id, item_id, prior_state, new_state, note, actor, source_status, created_at) "
+            "VALUES ('hist-deleted-0', 'run:deleted', NULL, 'acknowledged', NULL, "
+            "'operator', 'failed', 10.0)"
+        )
+        conn.execute(
+            "INSERT INTO attention_disposition_history "
+            "(id, item_id, prior_state, new_state, note, actor, source_status, created_at) "
+            "VALUES ('hist-deleted-1', 'run:deleted', 'acknowledged', 'open', NULL, "
+            "'operator', 'failed', 11.0)"
+        )
+        conn.commit()
+
+
+def test_attention_dispositions_upgrade_from_pre_revision_store(tmp_path, monkeypatch):
+    """Opening a store already in the pre-revision/sequence shape must
+    migrate it, not just re-stamp it: ordered history reads without
+    ``OperationalError``, revision backfills from the true history count,
+    a DELETE-then-replayed-PUT is fenced (409), and the fence for an item
+    already deleted *before* the upgrade survives the upgrade too."""
+    db_path = tmp_path / "state.db"
+    _create_pre_revision_attention_db(db_path)
+    _patch_db(monkeypatch, db_path)
+    _run(_init_db(db_path))
+
+    from fastapi import HTTPException
+
+    from lionagi.studio.services import attention as attention_mod
+
+    # (c) ordered history reads without OperationalError; (e) old rows read
+    # back in their original (created_at, id) order via the backfilled
+    # sequence.
+    history = _run(attention_mod.disposition_history("run:active"))
+    assert [h["new_state"] for h in history] == ["acknowledged", "snoozed", "resolved"]
+
+    # Revision backfilled from the true history count (3 PUTs), not a flat 1.
+    listed = _run(attention_mod.list_dispositions())
+    assert listed["run:active"]["revision"] == 3
+
+    # (d) a PUT continues the ledger from the backfilled count.
+    again = _run(
+        attention_mod.upsert_disposition(
+            "run:active",
+            state="acknowledged",
+            source_status="failed",
+            actor="operator",
+            revision=3,
+        )
+    )
+    assert again["revision"] == 4
+
+    # (d) DELETE then a replayed PUT is fenced (409).
+    _run(attention_mod.delete_disposition("run:active", actor="operator"))
+    with pytest.raises(HTTPException) as exc_info:
+        _run(
+            attention_mod.upsert_disposition(
+                "run:active",
+                state="acknowledged",
+                source_status="failed",
+                actor="operator",
+                revision=4,
+            )
+        )
+    assert exc_info.value.status_code == 409
+
+    # The fence for an item deleted *before* the upgrade must also survive:
+    # a replay of the pre-delete PUT (stale revision) is rejected...
+    with pytest.raises(HTTPException) as exc_info2:
+        _run(
+            attention_mod.upsert_disposition(
+                "run:deleted",
+                state="acknowledged",
+                source_status="failed",
+                actor="operator",
+                revision=1,
+            )
+        )
+    assert exc_info2.value.status_code == 409
+
+    # ...while a caller that beats the backfilled ledger succeeds.
+    recreated = _run(
+        attention_mod.upsert_disposition(
+            "run:deleted",
+            state="acknowledged",
+            source_status="failed",
+            actor="operator",
+            revision=2,
+        )
+    )
+    assert recreated["state"] == "acknowledged"
 
 
 # ---------------------------------------------------------------------------

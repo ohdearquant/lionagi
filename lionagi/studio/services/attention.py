@@ -150,7 +150,20 @@ async def upsert_disposition(
     that high, or it is rejected (409) rather than resurrecting a stale
     disposition -- e.g. a delayed retry of the pre-delete PUT arriving after
     the undo, replaying an old expires_at. Updating an already-active row
-    never fences: nothing was lost to resurrect."""
+    never fences: nothing was lost to resurrect.
+
+    This means an ACTIVE row is deliberately last-writer-wins: a PUT
+    carrying a stale (or absent) revision against a row that is still
+    active always applies, even if a newer PUT already moved it on --
+    e.g. a revision-1 PUT landing after a revision-2 PUT overwrites the
+    revision-2 fields and becomes revision 3. This is chosen, not missed:
+    the fence exists to stop *resurrection after delete*, where a stale
+    write recreates something a human already discharged, not to arbitrate
+    between concurrent edits to a row that's still there to see and retry
+    against. Guarding active-row updates too would break the idempotent
+    retry this function promises above -- an operator's own retried PUT is
+    itself a "stale revision against an active row" from the server's
+    point of view, and it must still apply."""
     if not item_id.strip():
         raise HTTPException(status_code=422, detail="item_id must not be empty")
     if state not in _VALID_STATES:
