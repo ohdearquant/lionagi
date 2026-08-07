@@ -233,6 +233,7 @@ _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin",
 _SESSION_COLUMNS = frozenset(
     {
         "cc_session_id",
+        "run_id",
         "name",
         "user",
         "node_metadata",
@@ -3145,6 +3146,91 @@ class StateDB:
             )
         return [dict(r) for r in rows]
 
+    async def spend_stats(self, *, window_start: float) -> dict[str, Any]:
+        """Reported-spend aggregate for the Mission Control spend panel.
+
+        Anchored on the same COALESCE(ended_at, started_at, created_at)
+        timestamp as activity_stats, so the spend panel and the activity
+        panel describe the same population for the same window. Unreported
+        (NULL total_cost_usd) sessions are counted but never coerced into
+        the sum — reported_usd stays None whenever no row in the window
+        reported a cost, rather than reading as a genuine $0.
+        """
+        query = """
+            SELECT
+                SUM(CASE WHEN total_cost_usd IS NOT NULL THEN total_cost_usd END) AS reported_usd,
+                SUM(CASE WHEN total_cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS reported_count,
+                SUM(CASE WHEN total_cost_usd IS NULL THEN 1 ELSE 0 END) AS unreported_count
+            FROM sessions
+            WHERE COALESCE(ended_at, started_at, created_at) >= :window_start
+        """  # noqa: S608
+        async with self._read() as conn:
+            row = (
+                (await conn.execute(text(query), {"window_start": window_start})).mappings().first()
+            )
+        reported_usd = row["reported_usd"] if row else None
+        return {
+            "reported_usd": float(reported_usd) if reported_usd is not None else None,
+            "reported_count": int(row["reported_count"] or 0) if row else 0,
+            "unreported_count": int(row["unreported_count"] or 0) if row else 0,
+        }
+
+    # Session-grain spend dimensions only. Branch-level attribution (by
+    # model, by the per-branch agent role within a flow) needs a coverage
+    # check against branch-level total_cost_usd before it can be trusted —
+    # see the cost-visibility design doc's Stage 2 gate. These three
+    # columns are single-valued per session, so grouping by them carries no
+    # such risk.
+    _SPEND_ROLLUP_COLUMNS: dict[str, str] = {
+        "project": "project",
+        "agent": "agent_name",
+        "playbook": "playbook_name",
+    }
+    _SPEND_ROLLUP_MAX_LIMIT = 50
+
+    async def spend_rollup(
+        self, *, window_start: float, dimension: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Session-grain spend rollup, one row per distinct dimension value,
+        highest reported spend first (unreported-only groups last). Same
+        window anchor and never-coerce-NULL contract as spend_stats.
+        """
+        column = self._SPEND_ROLLUP_COLUMNS.get(dimension)
+        if column is None:
+            raise ValueError(f"dimension must be one of: {', '.join(self._SPEND_ROLLUP_COLUMNS)}")
+        bounded_limit = max(1, min(int(limit), self._SPEND_ROLLUP_MAX_LIMIT))
+        query = f"""
+            SELECT
+                {column} AS rollup_key,
+                SUM(CASE WHEN total_cost_usd IS NOT NULL THEN total_cost_usd END) AS reported_usd,
+                SUM(CASE WHEN total_cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS reported_count,
+                SUM(CASE WHEN total_cost_usd IS NULL THEN 1 ELSE 0 END) AS unreported_count
+            FROM sessions
+            WHERE COALESCE(ended_at, started_at, created_at) >= :window_start
+            GROUP BY {column}
+            ORDER BY reported_usd IS NULL, reported_usd DESC
+            LIMIT :limit
+        """  # noqa: S608
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(query), {"window_start": window_start, "limit": bounded_limit}
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [
+            {
+                "key": r["rollup_key"],
+                "reported_usd": float(r["reported_usd"]) if r["reported_usd"] is not None else None,
+                "reported_count": int(r["reported_count"] or 0),
+                "unreported_count": int(r["unreported_count"] or 0),
+            }
+            for r in rows
+        ]
+
     # ── Projects ──────────────────────────────────────────────────────
 
     async def _upsert_project_stmt(
@@ -4015,21 +4101,38 @@ class StateDB:
         total_cost_usd / (input_tokens + output_tokens). Used for the
         budget_usd / budget_tokens pre-fire gate: mirrors count_schedule_runs
         but sums a spend column instead of counting rows.
+
+        ``total_cost_usd`` is NULL when a session's cost was never reported
+        (the engine that ran it doesn't price itself), not when the session
+        was free -- COALESCE(...,0) on the sum is still the right headline
+        total, but a schedule whose spawned sessions mostly went unreported
+        would otherwise read as cheap rather than unmeasured. ``unreported_sessions``
+        counts terminal sessions (SESSION_TERMINAL_STATUSES) with a NULL
+        total_cost_usd; a still-running session's cost is expected to be
+        unknown until it finishes and isn't counted as a gap.
         """
+        status_placeholders = ", ".join(
+            f":status{i}" for i in range(len(SESSION_TERMINAL_STATUSES))
+        )
+        params: dict[str, Any] = {"schedule_id": schedule_id}
+        params.update({f"status{i}": s for i, s in enumerate(SESSION_TERMINAL_STATUSES)})
         query = (
-            "SELECT COALESCE(SUM(s.total_cost_usd), 0) AS cost_usd, "
+            "SELECT COALESCE(SUM(s.total_cost_usd), 0) AS cost_usd, "  # noqa: S608
             "COALESCE(SUM(s.input_tokens), 0) AS input_tokens, "
-            "COALESCE(SUM(s.output_tokens), 0) AS output_tokens "
+            "COALESCE(SUM(s.output_tokens), 0) AS output_tokens, "
+            "SUM(CASE WHEN s.total_cost_usd IS NULL "
+            f"AND s.status IN ({status_placeholders}) THEN 1 ELSE 0 END) AS unreported_sessions "
             "FROM schedule_runs sr JOIN sessions s ON s.invocation_id = sr.invocation_id "
             "WHERE sr.schedule_id = :schedule_id"
         )
         async with self._read() as conn:
-            row = (await conn.execute(text(query), {"schedule_id": schedule_id})).mappings().first()
+            row = (await conn.execute(text(query), params)).mappings().first()
         if not row:
-            return {"cost_usd": 0.0, "tokens": 0}
+            return {"cost_usd": 0.0, "tokens": 0, "unreported_sessions": 0}
         return {
             "cost_usd": float(row["cost_usd"] or 0),
             "tokens": int(row["input_tokens"] or 0) + int(row["output_tokens"] or 0),
+            "unreported_sessions": int(row["unreported_sessions"] or 0),
         }
 
     # Threshold-alert metrics (studio-wide, not scoped to a single schedule's
@@ -4135,6 +4238,34 @@ class StateDB:
                 (await conn.execute(text(query), {"window_start": window_start})).mappings().first()
             )
         return float(row["n"]) if row and row["n"] is not None else 0.0
+
+    async def metric_unreported_sessions(self, metric: str, window_start: float) -> int:
+        """Count terminal sessions in the metric's window with a NULL total_cost_usd.
+
+        Companion to the ``total_cost_usd`` branch of ``metric_value()``:
+        that query's COALESCE(SUM(total_cost_usd), 0) is the right headline
+        sum but treats an unreported session's cost as zero, so a threshold
+        alert on a mostly-unreported window can silently read as "cheap"
+        instead of "unmeasured". Only ``total_cost_usd`` has a NULL/reported
+        distinction to expose -- every other metric returns 0. A still-
+        running session's cost is expected to be NULL and isn't a gap.
+        """
+        if metric != "total_cost_usd":
+            return 0
+        status_placeholders = ", ".join(
+            f":status{i}" for i in range(len(SESSION_TERMINAL_STATUSES))
+        )
+        params: dict[str, Any] = {"window_start": window_start}
+        params.update({f"status{i}": s for i, s in enumerate(SESSION_TERMINAL_STATUSES)})
+        query = (
+            "SELECT COUNT(*) AS n FROM sessions "  # noqa: S608
+            "WHERE COALESCE(ended_at, started_at, created_at) >= :window_start "
+            "AND total_cost_usd IS NULL "
+            f"AND status IN ({status_placeholders})"
+        )
+        async with self._read() as conn:
+            row = (await conn.execute(text(query), params)).mappings().first()
+        return int(row["n"]) if row and row["n"] is not None else 0
 
     async def schedule_run_streak(self, schedule_id: str) -> tuple[int, str | None]:
         """Consecutive terminal 'failed' streak and most recent status, newest-first, capped at 50 rows."""
@@ -4455,43 +4586,6 @@ class StateDB:
 
     # ── Artifacts (ADR-0077) ─────────────────────────────────────────────
 
-    async def _find_artifact_id(
-        self,
-        *,
-        kind: str,
-        name: str,
-        invocation_id: str | None,
-        session_id: str | None,
-    ) -> str | None:
-        """Return the artifact id matching the natural key, or None."""
-        if invocation_id is not None and session_id is not None:
-            sql = (
-                "SELECT id FROM artifacts "
-                "WHERE invocation_id = :inv_id AND session_id = :ses_id AND kind = :kind AND name = :name"
-            )
-            params = {"inv_id": invocation_id, "ses_id": session_id, "kind": kind, "name": name}
-        elif invocation_id is not None:
-            sql = (
-                "SELECT id FROM artifacts "
-                "WHERE invocation_id = :inv_id AND session_id IS NULL AND kind = :kind AND name = :name"
-            )
-            params = {"inv_id": invocation_id, "kind": kind, "name": name}
-        elif session_id is not None:
-            sql = (
-                "SELECT id FROM artifacts "
-                "WHERE session_id = :ses_id AND invocation_id IS NULL AND kind = :kind AND name = :name"
-            )
-            params = {"ses_id": session_id, "kind": kind, "name": name}
-        else:
-            sql = (
-                "SELECT id FROM artifacts "
-                "WHERE invocation_id IS NULL AND session_id IS NULL AND kind = :kind AND name = :name"
-            )
-            params = {"kind": kind, "name": name}
-        async with self._read() as conn:
-            row = (await conn.execute(text(sql), params)).mappings().first()
-        return row["id"] if row else None
-
     async def insert_artifact(
         self,
         *,
@@ -4502,7 +4596,18 @@ class StateDB:
         session_id: str | None = None,
         file_path: str | None = None,
     ) -> str:
-        """Upsert one structured artifact; return its stable id."""
+        """Upsert one structured artifact; return its stable id.
+
+        The natural-key lookup and the write happen in one statement — a
+        separate SELECT-then-INSERT let two concurrent callers both observe
+        no existing row and both attempt an INSERT, and the loser hit one of
+        the four partial unique indexes below as an IntegrityError instead
+        of the documented upsert. ``ON CONFLICT`` target and its WHERE
+        clause must match one of ``idx_artifacts_natural_key_*`` in
+        schema.sql exactly (both SQLite and Postgres require the conflict
+        target to name the specific partial index); which one applies is
+        already known from which of invocation_id/session_id are set.
+        """
         if not kind:
             raise ValueError("artifact kind is required")
         if not name:
@@ -4514,39 +4619,52 @@ class StateDB:
             # rather than trusting whatever recorded the reference.
             _check_path_safe(file_path, "file_path")
         now = time.time()
-        existing_id = await self._find_artifact_id(
-            kind=kind, name=name, invocation_id=invocation_id, session_id=session_id
-        )
-        if existing_id:
-            async with self._tx() as conn:
-                await conn.execute(
-                    text(
-                        "UPDATE artifacts SET content = :content, file_path = :fp, updated_at = :now WHERE id = :id"
-                    ).bindparams(bindparam("content", type_=JSON)),
-                    {"content": content, "fp": file_path, "now": now, "id": existing_id},
-                )
-            return existing_id
         art_id = uuid.uuid4().hex[:12]
-        async with self._tx() as conn:
-            await conn.execute(
-                text(
-                    "INSERT INTO artifacts "
-                    "(id, invocation_id, session_id, created_at, updated_at, kind, name, content, file_path) "
-                    "VALUES (:id, :inv_id, :ses_id, :now, :now2, :kind, :name, :content, :fp)"
-                ).bindparams(bindparam("content", type_=JSON)),
-                {
-                    "id": art_id,
-                    "inv_id": invocation_id,
-                    "ses_id": session_id,
-                    "now": now,
-                    "now2": now,
-                    "kind": kind,
-                    "name": name,
-                    "content": content,
-                    "fp": file_path,
-                },
+        if invocation_id is not None and session_id is not None:
+            conflict = (
+                "(invocation_id, session_id, kind, name) "
+                "WHERE invocation_id IS NOT NULL AND session_id IS NOT NULL"
             )
-        return art_id
+        elif invocation_id is not None:
+            conflict = (
+                "(invocation_id, kind, name) WHERE invocation_id IS NOT NULL AND session_id IS NULL"
+            )
+        elif session_id is not None:
+            conflict = (
+                "(session_id, kind, name) WHERE session_id IS NOT NULL AND invocation_id IS NULL"
+            )
+        else:
+            conflict = "(kind, name) WHERE invocation_id IS NULL AND session_id IS NULL"
+        async with self._tx() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "INSERT INTO artifacts "  # noqa: S608
+                            "(id, invocation_id, session_id, created_at, updated_at, kind, name, content, file_path) "
+                            "VALUES (:id, :inv_id, :ses_id, :now, :now2, :kind, :name, :content, :fp) "
+                            f"ON CONFLICT {conflict} DO UPDATE SET "
+                            "content = excluded.content, file_path = excluded.file_path, "
+                            "updated_at = excluded.updated_at "
+                            "RETURNING id"
+                        ).bindparams(bindparam("content", type_=JSON)),
+                        {
+                            "id": art_id,
+                            "inv_id": invocation_id,
+                            "ses_id": session_id,
+                            "now": now,
+                            "now2": now,
+                            "kind": kind,
+                            "name": name,
+                            "content": content,
+                            "fp": file_path,
+                        },
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return row["id"]
 
     async def list_artifacts_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:
         async with self._read() as conn:

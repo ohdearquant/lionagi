@@ -4,14 +4,26 @@
  * component wiring gets source-contract assertions since this project has
  * no @testing-library/react.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { sortByNextFire } from "./SchedulesTable";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { IntlProvider } from "use-intl";
+import SchedulesTable, { sortByNextFire } from "./SchedulesTable";
+import { ToastProvider } from "@/components/ui/Toast";
+import enMessages from "@/messages/en.json";
 import type { ScheduleSummary } from "@/lib/types";
 
 const TABLE_FILE = path.resolve(__dirname, "SchedulesTable.tsx");
 const SRC = fs.readFileSync(TABLE_FILE, "utf-8");
+
+const api = vi.hoisted(() => ({
+  triggerSchedule: vi.fn(() => Promise.resolve({ run_id: "run-abcdefgh" })),
+  disableSchedule: vi.fn(() => Promise.resolve(undefined)),
+  enableSchedule: vi.fn(() => Promise.resolve(undefined)),
+}));
+vi.mock("@/lib/api", () => api);
 
 function schedule(overrides: Partial<ScheduleSummary> = {}): ScheduleSummary {
   return {
@@ -138,5 +150,137 @@ describe("SchedulesTable — source contract", () => {
 
   it("row click opens the schedule detail via onOpen", () => {
     expect(SRC).toContain("onClick={() => onOpen(schedule.id)}");
+  });
+});
+
+// ─── Keyboard interaction — mounted, real event bubbling ───────────────────
+//
+// Enter/Space keydown bubbles up the DOM independently of a nested control's
+// own click handling, so the row's key handler must ignore keys that
+// originated inside a nested interactive element (button/link/input) —
+// otherwise activating a nested control also "opens" the row.
+
+describe("SchedulesTable — keyboard interaction (mounted)", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  let onOpen: ReturnType<typeof vi.fn<(id: string) => void>>;
+  let onChanged: ReturnType<typeof vi.fn<() => void>>;
+
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    api.triggerSchedule.mockClear();
+    api.disableSchedule.mockClear();
+    api.enableSchedule.mockClear();
+    onOpen = vi.fn<(id: string) => void>();
+    onChanged = vi.fn<() => void>();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    if (root) act(() => root?.unmount());
+    root = null;
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  async function mount() {
+    await act(async () => {
+      root?.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <ToastProvider>
+            <SchedulesTable
+              schedules={[schedule({ id: "sched-1", name: "nightly-build" })]}
+              runs={[]}
+              nowMs={1_700_000_000_000}
+              onChanged={onChanged}
+              onOpen={onOpen}
+            />
+          </ToastProvider>
+        </IntlProvider>,
+      );
+    });
+  }
+
+  function keydown(el: Element, key: string) {
+    act(() => {
+      el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    });
+  }
+
+  // A real Enter/Space press on a focused native <button> also fires a
+  // "click" — jsdom doesn't synthesize that automatically, so tests that
+  // assert the nested control's own action ran dispatch it explicitly,
+  // exactly like the browser does after the keydown.
+  function click(el: Element) {
+    act(() => {
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+  }
+
+  async function flush() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it("Enter and Space on the row itself open the schedule, once each", async () => {
+    await mount();
+    const row = container.querySelector('tr[aria-label="nightly-build"]');
+    expect(row).not.toBeNull();
+
+    keydown(row!, "Enter");
+    expect(onOpen).toHaveBeenCalledTimes(1);
+
+    keydown(row!, " ");
+    expect(onOpen).toHaveBeenCalledTimes(2);
+    expect(onOpen).toHaveBeenNthCalledWith(1, "sched-1");
+  });
+
+  it("Enter on Run now triggers the run only — the row does not also open", async () => {
+    await mount();
+    const runNow = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent === "Run now",
+    );
+    expect(runNow).toBeTruthy();
+
+    keydown(runNow!, "Enter");
+    expect(onOpen).not.toHaveBeenCalled();
+
+    click(runNow!);
+    await flush();
+    expect(api.triggerSchedule).toHaveBeenCalledTimes(1);
+    expect(api.triggerSchedule).toHaveBeenCalledWith("sched-1");
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("Enter on the edit action opens the editor once, not twice", async () => {
+    await mount();
+    const edit = container.querySelector('button[aria-label="Edit"]');
+    expect(edit).not.toBeNull();
+
+    keydown(edit!, "Enter");
+    expect(onOpen).not.toHaveBeenCalled();
+
+    click(edit!);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onOpen).toHaveBeenCalledWith("sched-1");
+  });
+
+  it("Space on the toggle flips it without also opening the row", async () => {
+    await mount();
+    const toggle = container.querySelector('button[aria-label="Disable schedule"]');
+    expect(toggle).not.toBeNull();
+
+    keydown(toggle!, " ");
+    expect(onOpen).not.toHaveBeenCalled();
+
+    click(toggle!);
+    await flush();
+    expect(api.disableSchedule).toHaveBeenCalledTimes(1);
+    expect(api.disableSchedule).toHaveBeenCalledWith("sched-1");
+    expect(onOpen).not.toHaveBeenCalled();
   });
 });

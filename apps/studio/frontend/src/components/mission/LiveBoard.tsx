@@ -22,6 +22,7 @@ import Skeleton from "@/components/ui/Skeleton";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { runDeepLink, invocationDeepLink } from "@/lib/runDeepLink";
+import { formatElapsed } from "@/lib/elapsed";
 import { resolveRunLabel } from "@/lib/runLabel";
 import { runCreationKey, invocationCreationKey } from "./boardReducer";
 
@@ -49,19 +50,6 @@ interface Props {
 function elapsedSec(startedAt: number | null | undefined, nowSec: number): number | null {
   if (startedAt == null) return null;
   return Math.max(0, Math.floor(nowSec - startedAt));
-}
-
-function formatElapsed(sec: number | null): string {
-  if (sec == null) return "—";
-  if (sec < 60) return `${sec}s`;
-  const m = Math.floor(sec / 60);
-  if (m < 60) {
-    const s = sec % 60;
-    return s > 0 ? `${m}m ${s}s` : `${m}m`;
-  }
-  const h = Math.floor(m / 60);
-  const mm = m - h * 60;
-  return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
 }
 
 function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {

@@ -540,6 +540,7 @@
       "triggering": "ट्रिगर हो रहा है…",
       "runStarted": "रन शुरू हुआ: {id}",
       "triggerFailed": "ट्रिगर विफल",
+      "toggleFailed": "टॉगल विफल",
       "every": "हर {interval}",
       "in": "{delta} में",
       "overdue": "{delta} से ओवरड्यू",
@@ -794,6 +795,8 @@
     },
     "history": {
       "label": "सेशन इतिहास",
+      "sortRecent": "हाल की",
+      "sortCost": "सर्वाधिक लागत",
       "all": "सभी",
       "completed": "पूरा हुआ",
       "failed": "विफल",
@@ -871,6 +874,15 @@
       "completionRate": "{rate}% पूर्णता",
       "noTerminalRuns": "विंडो में कोई समाप्त हुए रन नहीं",
       "total": "कुल {count}",
+      "staleHint": "आखिरी ज्ञात दिखा रहा है · रीफ़्रेश विफल"
+    },
+    "spend": {
+      "title": "रिपोर्ट किया गया खर्च",
+      "loading": "खर्च लोड हो रहा है…",
+      "error": "खर्च अनुपलब्ध · {message}",
+      "unreachable": "API पहुँच से बाहर है",
+      "empty": "विंडो में कोई रन नहीं",
+      "coverage": "{total} में से {reported} रिपोर्ट की गईं",
       "staleHint": "आखिरी ज्ञात दिखा रहा है · रीफ़्रेश विफल"
     },
     "stale": {

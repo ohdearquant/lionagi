@@ -540,6 +540,7 @@
       "triggering": "tetikleniyor…",
       "runStarted": "çalıştırma başladı: {id}",
       "triggerFailed": "tetikleme başarısız",
+      "toggleFailed": "geçiş başarısız",
       "every": "her {interval}",
       "in": "{delta} içinde",
       "overdue": "{delta} gecikti",
@@ -794,6 +795,8 @@
     },
     "history": {
       "label": "oturum geçmişi",
+      "sortRecent": "Son",
+      "sortCost": "En yüksek maliyet",
       "all": "tümü",
       "completed": "tamamlandı",
       "failed": "başarısız",
@@ -871,6 +874,15 @@
       "completionRate": "%{rate} tamamlanma",
       "noTerminalRuns": "Zaman aralığında sonlanmış çalıştırma yok",
       "total": "{count, plural, one {toplam #} other {toplam #}}",
+      "staleHint": "son bilinen gösteriliyor · yenileme başarısız"
+    },
+    "spend": {
+      "title": "Bildirilen harcama",
+      "loading": "Harcama yükleniyor…",
+      "error": "Harcama kullanılamıyor · {message}",
+      "unreachable": "API erişilemiyor",
+      "empty": "Bu pencerede çalışma yok",
+      "coverage": "{total} içinden {reported} bildirildi",
       "staleHint": "son bilinen gösteriliyor · yenileme başarısız"
     },
     "stale": {

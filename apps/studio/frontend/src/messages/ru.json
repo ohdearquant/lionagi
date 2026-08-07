@@ -540,6 +540,7 @@
       "triggering": "Запуск…",
       "runStarted": "Запуск начат: {id}",
       "triggerFailed": "Не удалось запустить",
+      "toggleFailed": "Не удалось переключить",
       "every": "каждые {interval}",
       "in": "через {delta}",
       "overdue": "просрочено на {delta}",
@@ -794,6 +795,8 @@
     },
     "history": {
       "label": "История сессий",
+      "sortRecent": "Недавние",
+      "sortCost": "Самые дорогие",
       "all": "Все",
       "completed": "Завершенные",
       "failed": "С ошибкой",
@@ -871,6 +874,15 @@
       "completionRate": "{rate}% завершения",
       "noTerminalRuns": "Нет терминальных запусков в окне",
       "total": "{count, plural, one {# всего} few {# всего} many {# всего} other {# всего}}",
+      "staleHint": "показано последнее известное · обновить не удалось"
+    },
+    "spend": {
+      "title": "Заявленные расходы",
+      "loading": "Загрузка расходов…",
+      "error": "Расходы недоступны · {message}",
+      "unreachable": "API недоступен",
+      "empty": "Нет запусков в этом окне",
+      "coverage": "{reported} из {total} с указанной стоимостью",
       "staleHint": "показано последнее известное · обновить не удалось"
     },
     "stale": {
