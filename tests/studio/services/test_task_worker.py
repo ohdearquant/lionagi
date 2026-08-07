@@ -498,3 +498,72 @@ async def test_worker_tick_releases_slot_when_execute_raises(db: StateDB) -> Non
     assert release_calls == ["token-b"]
     row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
     assert row["status"] == "failed"
+
+
+async def test_worker_tick_releases_slot_when_queued_to_running_transition_raises(
+    db: StateDB, monkeypatch
+) -> None:
+    """The reserved slot must be released even when the queued->running
+    transition itself raises, not only when execute() raises. Before the
+    fix, the release `finally` started after this transition call, so a
+    raise here leaked the slot permanently while leaving the row `queued`."""
+    from lionagi.studio.scheduler import worker as worker_mod
+
+    run_id = await _submit_host_task(db)
+
+    release_calls: list[object] = []
+
+    async def _allowing_reserve() -> tuple[bool, object | None]:
+        return True, "token-c"
+
+    async def _boom_transition(*args, **kwargs):
+        raise RuntimeError("transition boom")
+
+    monkeypatch.setattr(worker_mod, "transition", _boom_transition)
+
+    with pytest.raises(RuntimeError, match="transition boom"):
+        await worker_tick(
+            db,
+            worker_id="w1",
+            execute=_noop_execute,
+            reserve_slot=_allowing_reserve,
+            release_slot=release_calls.append,
+        )
+
+    assert release_calls == ["token-c"], "reserved slot must be released when transition() raises"
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "queued"
+
+
+async def test_worker_tick_releases_slot_when_queued_to_running_transition_cancelled(
+    db: StateDB, monkeypatch
+) -> None:
+    """Same hazard as above but for asyncio.CancelledError specifically --
+    the reproduction shape from the review: reserve succeeds, then the
+    queued->running transition is cancelled before it can complete."""
+    from lionagi.studio.scheduler import worker as worker_mod
+
+    run_id = await _submit_host_task(db)
+
+    release_calls: list[object] = []
+
+    async def _allowing_reserve() -> tuple[bool, object | None]:
+        return True, "token-d"
+
+    async def _cancelled_transition(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(worker_mod, "transition", _cancelled_transition)
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker_tick(
+            db,
+            worker_id="w1",
+            execute=_noop_execute,
+            reserve_slot=_allowing_reserve,
+            release_slot=release_calls.append,
+        )
+
+    assert release_calls == ["token-d"], "reserved slot must be released on cancellation too"
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "queued"

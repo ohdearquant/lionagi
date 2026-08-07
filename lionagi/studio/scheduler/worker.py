@@ -438,40 +438,42 @@ async def claim_and_execute(
 
         concurrency_key = row["concurrency_key"]
         run_id = row["id"]
-        result = await transition(
-            db,
-            TransitionRequest(
-                entity_type="schedule_run",
-                entity_id=run_id,
-                from_state="queued",
-                to_state="running",
-                reason=StateReason(
-                    code=RunReasons.STARTED_OK,
-                    summary=f"claimed by host worker {worker_id}",
-                ),
-                actor=Actor(type="system", id=worker_id),
-                idempotency_key=f"claim:{run_id}:{worker_id}:{now}",
-            ),
-            patch={
-                "leased_by": worker_id,
-                "lease_expires_at": now + lease_ttl,
-                "lease_attempts": row["lease_attempts"] + 1,
-            },
-        )
-        if not result.applied:
-            if release_slot is not None:
-                release_slot(slot_claim)
-            continue
-        claimed += 1
-        if concurrency_key is not None:
-            # Advisory: nothing else in this same pass may claim a row
-            # sharing this key, even after this row finishes executing.
-            worker_caps.claimed_keys.add(concurrency_key)
-        # Lease identity travels to the terminal write: if it lapses mid-run
-        # and the reaper reassigns the row, this write's guard mismatches
-        # and is dropped instead of clobbering the live lease.
-        lease_guard = {"leased_by": worker_id, "lease_expires_at": now + lease_ttl}
+        # Everything from here through execution runs under this one
+        # try/finally so a reserved slot is always released on every exit --
+        # including an exception or cancellation raised by the
+        # queued->running transition itself, not just by execution.
         try:
+            result = await transition(
+                db,
+                TransitionRequest(
+                    entity_type="schedule_run",
+                    entity_id=run_id,
+                    from_state="queued",
+                    to_state="running",
+                    reason=StateReason(
+                        code=RunReasons.STARTED_OK,
+                        summary=f"claimed by host worker {worker_id}",
+                    ),
+                    actor=Actor(type="system", id=worker_id),
+                    idempotency_key=f"claim:{run_id}:{worker_id}:{now}",
+                ),
+                patch={
+                    "leased_by": worker_id,
+                    "lease_expires_at": now + lease_ttl,
+                    "lease_attempts": row["lease_attempts"] + 1,
+                },
+            )
+            if not result.applied:
+                continue
+            claimed += 1
+            if concurrency_key is not None:
+                # Advisory: nothing else in this same pass may claim a row
+                # sharing this key, even after this row finishes executing.
+                worker_caps.claimed_keys.add(concurrency_key)
+            # Lease identity travels to the terminal write: if it lapses
+            # mid-run and the reaper reassigns the row, this write's guard
+            # mismatches and is dropped instead of clobbering the live lease.
+            lease_guard = {"leased_by": worker_id, "lease_expires_at": now + lease_ttl}
             await _execute_claimed(db, run_id, row, execute, lease_guard)
         finally:
             if release_slot is not None:
