@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol, get_args
 
 from sqlalchemy import JSON, bindparam, text
@@ -245,9 +246,21 @@ class SQLAlchemyLifecycleService:
 
         now = time.time()
 
+        # Every session's terminal write (any caller, any patch) derives
+        # ended_at/duration_ms from the same row read here, instead of each
+        # writer computing it independently (or not at all).
+        needs_duration_basis = (
+            command.entity_type == "session"
+            and command.to_status in policy.terminal_statuses
+            and {"started_at", "ended_at"}.isdisjoint(extra_guard)
+        )
+
         async with self._db._tx() as conn:
             guard_cols = list(extra_guard)
-            select_cols = ", ".join(["status", "updated_at", *guard_cols])
+            fetch_cols = ["status", "updated_at", *guard_cols]
+            if needs_duration_basis:
+                fetch_cols += ["started_at", "ended_at"]
+            select_cols = ", ".join(fetch_cols)
             sel = f"SELECT {select_cols} FROM {policy.table} WHERE id = :id"  # noqa: S608
             if self._db.dialect != "sqlite":
                 sel += " FOR UPDATE"
@@ -402,6 +415,19 @@ class SQLAlchemyLifecycleService:
                         current_status=previous_status,
                         transition_id=None,
                     )
+
+            if needs_duration_basis and not same_status:
+                ended_at_value = command.patch.get("ended_at", row["ended_at"])
+                if ended_at_value is None:
+                    ended_at_value = now
+                patch = dict(command.patch)
+                patch.setdefault("ended_at", ended_at_value)
+                if "duration_ms" not in patch:
+                    started_at = row["started_at"]
+                    if isinstance(started_at, int | float):
+                        patch["duration_ms"] = max(0.0, (ended_at_value - started_at) * 1000)
+                if patch != dict(command.patch):
+                    command = replace(command, patch=patch)
 
             transition_id = await self._write(
                 conn,

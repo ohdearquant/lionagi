@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from lionagi.cli._runs import _teardown_common
+from lionagi.cli._runs import _teardown_common, find_incomplete_session_for_run
 from lionagi.state.db import StateDB
 
 
@@ -88,3 +88,72 @@ async def test_teardown_common_populates_duration_ms_on_zero_turn_timeout(db, mo
     row = await db.get_session(sid)
     assert row["duration_ms"] == pytest.approx(300_000.0)
     assert row["first_msg_id"] is None
+
+
+async def test_find_incomplete_session_for_run_populates_duration_ms(tmp_path, monkeypatch):
+    """setup-recovery path: a session row committed by setup_agent_persist()
+    before it raised is still 'running' forever unless recovered here -- the
+    recovery write must also carry a duration, not just a terminal status."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+
+    started_at = time.time() - 4.0
+    async with StateDB(db_path) as db:
+        prog_id = "prog-recover-1"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": "sess-recover-1",
+                "run_id": "run-recover-1",
+                "progression_id": prog_id,
+                "status": "running",
+                "started_at": started_at,
+            }
+        )
+
+    row = await find_incomplete_session_for_run("run-recover-1")
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["ended_at"] is not None
+    assert row["duration_ms"] == pytest.approx((row["ended_at"] - started_at) * 1000)
+
+
+async def test_engine_maybe_update_db_populates_session_duration_ms(db):
+    """`li engine run` links an engine_runs row to a mirrored sessions row and
+    terminalizes both through _maybe_update_db(); the sessions row must carry
+    a duration the same as every other terminal write, and started_at must be
+    set at creation for there to be anything to subtract from."""
+    from lionagi.cli.engine import _maybe_update_db
+
+    started_at = 1_700_000_000.0
+    await db.insert_engine_run(
+        run_id="engine-run-1",
+        kind="research",
+        spec_json={},
+        started_at=started_at,
+    )
+    prog_id = "prog-engine-1"
+    await db.create_progression(prog_id)
+    await db.create_session(
+        {
+            "id": "engine-session-1",
+            "created_at": started_at,
+            "started_at": started_at,
+            "progression_id": prog_id,
+            "name": "engine:research",
+            "status": "running",
+        }
+    )
+
+    await _maybe_update_db(
+        db,
+        "engine-run-1",
+        "completed",
+        ended_at=started_at + 42.0,
+        signal_session_id="engine-session-1",
+    )
+
+    row = await db.get_session("engine-session-1")
+    assert row["status"] == "completed"
+    assert row["ended_at"] is not None
+    assert row["duration_ms"] == pytest.approx((row["ended_at"] - started_at) * 1000)

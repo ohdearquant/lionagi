@@ -649,6 +649,24 @@ async def test_doctor_sweeps_stale_running_sessions_to_aborted(
     assert s_recent["status"] == "running"
 
 
+async def test_doctor_sweep_populates_duration_ms(temp_db_path: Path):
+    old = time.time() - (48 * 3600)
+    async with StateDB() as db:
+        stale = await _seed_session(db, status="running")
+        await db.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (old, stale),
+        )
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+    assert result["swept"] == 1
+
+    async with StateDB() as db:
+        row = await db.get_session(stale)
+    assert row["ended_at"] is not None
+    assert row["duration_ms"] == pytest.approx((row["ended_at"] - old) * 1000)
+
+
 async def test_doctor_leaves_an_old_session_whose_process_is_still_running(
     temp_db_path: Path,
 ):

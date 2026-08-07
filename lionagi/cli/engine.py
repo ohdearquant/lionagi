@@ -286,6 +286,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
                     {
                         "id": run_id,
                         "created_at": started_at,
+                        "started_at": started_at,
                         "progression_id": prog_id,
                         "name": f"engine:{kind}",
                         "status": "running",

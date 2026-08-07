@@ -313,6 +313,38 @@ def test_reap_null_status_sessions_dead_process(tmp_path, monkeypatch):
     assert run_async(_count_transitions(db_path, sid)) >= 1
 
 
+def test_reap_null_status_sessions_populates_duration_ms(tmp_path, monkeypatch):
+    """The reaper pre-sets ended_at via update_session, then transitions status
+    via update_status in a second call -- duration_ms must still land, derived
+    from the same started_at/ended_at pair, not just ended_at alone."""
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    stale_time = time.time() - 7200
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            artifacts_path=None,
+            started_at=stale_time,
+            updated_at=stale_time,
+        )
+    )
+
+    import lionagi.studio.services.lifecycle as lc_mod
+
+    monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
+
+    from lionagi.studio.services.lifecycle import reap_null_status_sessions
+
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
+    assert count == 1
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess["status"] == "failed"
+    assert sess["duration_ms"] == pytest.approx((sess["ended_at"] - stale_time) * 1000)
+
+
 def test_reap_null_status_sessions_skips_live_process(tmp_path, monkeypatch):
     """Null-status session with live process is not transitioned."""
     db_path = tmp_path / "state.db"
@@ -517,6 +549,32 @@ def test_reap_phantom_sessions_missing_artifacts(tmp_path, monkeypatch):
 
     reason = run_async(_get_reason(db_path, sid))
     assert reason == "phantom_reaped"
+
+
+def test_reap_phantom_sessions_populates_duration_ms(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    missing_dir = str(tmp_path / "ghost_artifacts_duration")
+    stale_time = time.time() - 7200
+    sid = run_async(
+        _seed_session(
+            db_path,
+            status="running",
+            started_at=stale_time,
+            updated_at=stale_time,
+            artifacts_path=missing_dir,
+        )
+    )
+
+    from lionagi.studio.services.lifecycle import reap_phantom_sessions
+
+    count = run_async(reap_phantom_sessions(stale_hours=1.0))
+    assert count == 1
+
+    sess = run_async(_get_session(db_path, sid))
+    assert sess["status"] == "failed"
+    assert sess["duration_ms"] == pytest.approx((sess["ended_at"] - stale_time) * 1000)
 
 
 def test_reap_phantom_sessions_completes_mirrored_claude_session(tmp_path, monkeypatch):
