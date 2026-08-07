@@ -6,7 +6,7 @@
  * - It does not import Drawer (master-detail doctrine)
  */
 
-import { afterEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, it, expect, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as React from "react";
@@ -15,10 +15,39 @@ import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import RunStepCard from "@/components/RunStepCard";
 import enMessages from "@/messages/en.json";
-import type { RunStep } from "@/lib/types";
+import type { RunStep, WorkerGraph } from "@/lib/types";
 
 vi.mock("@/components/ui/Markdown", () => ({
   default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+// Mounting RunDetail for real exercises the hidden-count badge + toggle as an
+// actual render/click, not a source-text regex (which can pass while JSX
+// placement or the click handler is broken). Everything mounted needs real
+// network/router-context dependencies stubbed: getSession/streamSession/
+// streamSignals hit real SSE/fetch plumbing, ResumeRun renders a
+// @tanstack/react-router <Link> that throws outside a RouterProvider, and the
+// real WorkerCanvas drags in dagre + the full ReactFlow tree, none of which
+// this test needs — only that it received the right edge set.
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return {
+    ...actual,
+    getSession: vi.fn(),
+    getInvocation: vi.fn(),
+    streamSession: vi.fn(() => () => {}),
+    streamSignals: vi.fn(() => () => {}),
+  };
+});
+
+vi.mock("@/components/history/ResumeRun", () => ({
+  default: () => null,
+}));
+
+vi.mock("@/components/canvas/WorkerCanvas", () => ({
+  default: (props: { graph: { edges: unknown[] } }) => (
+    <div data-testid="worker-canvas" data-edge-count={props.graph.edges.length} />
+  ),
 }));
 
 const HISTORY_DIR = path.resolve(__dirname);
@@ -121,30 +150,36 @@ describe("fleet/SessionDetail.tsx — renders RunDetail without fullPage", () =>
   });
 });
 
-// ─── Authored graph is never transitively reduced ────────────────────────────
+// ─── Authored graph is reduced at display time only ──────────────────────────
 // runGraph is Studio's persisted early_graph — the exact graph the designer
-// authored, edges and conditions included. Applying transitiveReduce() to it
-// would silently drop an authored conditional edge (e.g. A→B, B→C, and a
-// conditional A→C) whenever the runtime happens to also reach C via B — the
-// runtime emitter's depends_on is a predecessor list, not proof an edge is
-// synthetic. Reduction stays scoped to buildOperationGraph's runtime-derived
-// opGraph (whose edges genuinely are a raw ancestor list).
+// authored, resolved (resolveGraphEdges) but otherwise as wired: it can carry
+// one depends_on-style edge per ancestor, same as the runtime opGraph below,
+// so it clutters the same way a raw ancestor list does. Unlike opGraph, an
+// authored edge can also carry a condition/handler/map/code mode — semantics
+// the designer put there on purpose, not structural redundancy. So the
+// authored graph IS reduced, but only for display (never mutated/re-persisted)
+// and only through transitiveReduceDisplay, whose semantic guard never drops
+// a rich edge and whose cycle guard renders everything unchanged if the graph
+// isn't a DAG — plain transitiveReduce (used for opGraph) has neither guard.
 
-describe("history/RunDetail.tsx — authored run graph is rendered unreduced", () => {
+describe("history/RunDetail.tsx — authored run graph is reduced at display time only", () => {
   const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
 
-  it("does not import transitiveReduce", () => {
-    expect(src).not.toMatch(/transitiveReduce/);
+  it("imports the display-time transitiveReduceDisplay, not the runtime transitiveReduce", () => {
+    const importBlock = src.match(/import \{[^}]*\} from "@\/lib\/operationGraph";/)?.[0] ?? "";
+    expect(importBlock).toMatch(/transitiveReduceDisplay/);
+    expect(importBlock).not.toMatch(/\btransitiveReduce\b/);
   });
 
-  it("passes runGraph directly to WorkerCanvas, not a reduced copy", () => {
-    expect(src).toMatch(/graph={runGraph}/);
+  it("does not pass runGraph directly to WorkerCanvas — edges go through the reduction first", () => {
+    expect(src).not.toMatch(/graph={runGraph}/);
+    expect(src).toMatch(/graph=\{\{\s*\.\.\.runGraph,\s*edges:\s*displayEdges\s*\}\}/);
   });
 });
 
-describe("transitiveReduce (lib/operationGraph) — why RunDetail must not apply it to runGraph", () => {
-  it("would drop an authored conditional A→C that transitiveReduce sees as redundant via A→B→C", async () => {
-    const { transitiveReduce } = await import("@/lib/operationGraph");
+describe("transitiveReduceDisplay (lib/operationGraph) — why it's safe to apply to runGraph where plain transitiveReduce was not", () => {
+  it("keeps an authored conditional A→C that plain transitiveReduce would drop as redundant via A→B→C", async () => {
+    const { transitiveReduce, transitiveReduceDisplay } = await import("@/lib/operationGraph");
 
     // Mirrors an authored WorkerGraph: A→B, B→C, and a conditional A→C.
     const authoredEdges = [
@@ -153,15 +188,282 @@ describe("transitiveReduce (lib/operationGraph) — why RunDetail must not apply
       { id: "e-ac", source: "A", target: "C", condition: "score > 0.8" },
     ];
 
-    // What the old code did (reduce the authored graph): loses the
-    // conditional edge, because C is reachable from A through B.
+    // The runtime reducer would drop it: C is reachable from A through B,
+    // and it has no notion of "this edge carries a condition".
     const wouldHaveReduced = transitiveReduce(authoredEdges);
     expect(wouldHaveReduced.find((e) => e.id === "e-ac")).toBeUndefined();
 
-    // What RunDetail does now: pass the authored edges through unchanged,
-    // so the conditional A→C survives.
-    const rendered = authoredEdges;
-    expect(rendered.find((e) => e.id === "e-ac")).toBeDefined();
+    // The display-time reducer RunDetail actually calls keeps it.
+    const { kept, hidden } = transitiveReduceDisplay(authoredEdges);
+    expect(kept.find((e) => e.id === "e-ac")).toBeDefined();
+    expect(hidden).toHaveLength(0);
+  });
+});
+
+// ─── Reduced-by-default with a show-implied-edges escape hatch ───────────────
+// computeDisplayEdges is the pure core of RunDetail's edge-selection useMemo:
+// reduce by default (transitiveReduceDisplay), fall back to the full resolved
+// set when the toggle is on, and always report how many edges the reduction
+// hid so the chrome can show it regardless of which set is currently shown.
+
+describe("computeDisplayEdges (RunDetail) — reduced-by-default, toggle restores the full set", () => {
+  const diamondWithSkip: WorkerGraph["edges"] = [
+    { id: "e-ab", source: "A", target: "B", mode: "simple" },
+    { id: "e-bc", source: "B", target: "C", mode: "simple" },
+    { id: "e-ac", source: "A", target: "C", mode: "simple" }, // redundant: A→B→C
+  ];
+
+  it("reduces by default and reports the hidden count", async () => {
+    const { computeDisplayEdges } = await import("./RunDetail");
+    const { displayEdges, hiddenCount } = computeDisplayEdges(diamondWithSkip, false);
+    expect(displayEdges).toHaveLength(2);
+    expect(displayEdges.find((e) => e.id === "e-ac")).toBeUndefined();
+    expect(hiddenCount).toBe(1);
+  });
+
+  it("show-implied-edges toggle restores the full resolved set without losing the hidden count", async () => {
+    const { computeDisplayEdges } = await import("./RunDetail");
+    const { displayEdges, hiddenCount } = computeDisplayEdges(diamondWithSkip, true);
+    expect(displayEdges).toHaveLength(3);
+    expect(displayEdges.find((e) => e.id === "e-ac")).toBeDefined();
+    expect(hiddenCount).toBe(1);
+  });
+
+  it("a semantic edge survives reduction — hiddenCount is 0, nothing to toggle", async () => {
+    const { computeDisplayEdges } = await import("./RunDetail");
+    const withCondition: WorkerGraph["edges"] = [
+      { id: "e-ab", source: "A", target: "B", mode: "simple" },
+      { id: "e-bc", source: "B", target: "C", mode: "simple" },
+      { id: "e-ac", source: "A", target: "C", mode: "simple", condition: "score > 0.8" },
+    ];
+    const { displayEdges, hiddenCount } = computeDisplayEdges(withCondition, false);
+    expect(displayEdges).toHaveLength(3);
+    expect(hiddenCount).toBe(0);
+  });
+
+  it("empty edges reduce to empty, zero hidden", async () => {
+    const { computeDisplayEdges } = await import("./RunDetail");
+    expect(computeDisplayEdges([], false)).toEqual({ displayEdges: [], hiddenCount: 0 });
+  });
+});
+
+// ─── Hidden-count badge + show-implied-edges toggle wired into the chrome ────
+
+describe("history/RunDetail.tsx — hidden-implied-edge count and toggle wired into the run-dag chrome", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("the run-dag SectionHeader receives edgeCount/hiddenCount/toggle props sourced from the reduction", () => {
+    const start = src.indexOf('id="run-dag"');
+    const end = src.indexOf("</Suspense>", start);
+    const block = src.slice(start, end);
+    expect(block).toMatch(/edgeCount=\{displayEdges\.length\}/);
+    expect(block).toMatch(/hiddenCount=\{hiddenCount\}/);
+    expect(block).toMatch(/onToggleImplied=\{.*setShowImpliedEdges/);
+    expect(block).toMatch(/showImplied=\{showImpliedEdges\}/);
+  });
+
+  it("SectionHeader only renders the hidden badge/toggle once hiddenCount is positive, and defaults to reduced", () => {
+    expect(src).toMatch(/hiddenCount\s*!=\s*null\s*&&\s*hiddenCount\s*>\s*0/);
+    expect(src).toMatch(/const \[showImpliedEdges, setShowImpliedEdges\] = useState\(false\)/);
+  });
+});
+
+// ─── Hidden-count badge + toggle, mounted for real ───────────────────────────
+// The two describe blocks above (computeDisplayEdges, and the source-text
+// checks on the run-dag SectionHeader call) establish the pure selection
+// logic is right and that the JSX wires the right prop names — but neither
+// proves the badge text actually renders, that the button actually flips
+// which edge set WorkerCanvas receives, or that a graph with nothing hidden
+// omits the toggle. This mounts the real RunDetail (getSession/streamSession/
+// streamSignals/ResumeRun/WorkerCanvas mocked at module scope, above) against
+// a diamond-with-skip graph (A→B→C plus a redundant A→C) and drives the
+// button through a real click.
+
+describe("history/RunDetail.tsx — hidden-count badge and show-implied toggle, mounted", () => {
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    // jsdom does not implement scrollIntoView; RunDetail calls it on load
+    // (see RunDetail.pagination.test.tsx, which mounts the same component).
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const diamondWithSkipGraph = {
+    name: "run",
+    description: "",
+    nodes: [
+      {
+        id: "A",
+        label: "A",
+        role: "",
+        assignment: "",
+        prompt: "",
+        capacity: 1,
+        timeout: null,
+        inputs: [],
+        outputs: [],
+      },
+      {
+        id: "B",
+        label: "B",
+        role: "",
+        assignment: "",
+        prompt: "",
+        capacity: 1,
+        timeout: null,
+        inputs: [],
+        outputs: [],
+      },
+      {
+        id: "C",
+        label: "C",
+        role: "",
+        assignment: "",
+        prompt: "",
+        capacity: 1,
+        timeout: null,
+        inputs: [],
+        outputs: [],
+      },
+    ],
+    edges: [
+      { id: "e-ab", source: "A", target: "B", mode: "simple" as const },
+      { id: "e-bc", source: "B", target: "C", mode: "simple" as const },
+      { id: "e-ac", source: "A", target: "C", mode: "simple" as const }, // redundant: A→B→C
+    ],
+  };
+
+  const minimalSession = (graph: unknown) => ({
+    id: "run-mount-1",
+    name: "run-mount-1",
+    created_at: 0,
+    updated_at: 0,
+    status: "completed",
+    branches: [],
+    graph,
+  });
+
+  async function mountRunDetail(graph: unknown) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue(minimalSession(graph) as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-mount-1" />
+        </IntlProvider>,
+      );
+    });
+    // getSession resolves asynchronously and lazy(WorkerCanvas) suspends for
+    // at least one microtask; flush both before asserting.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return {
+      container,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("shows the hidden-count badge and the reduced edge set by default", async () => {
+    const { container, unmount } = await mountRunDetail(diamondWithSkipGraph);
+    try {
+      expect(container.textContent).toContain("1 implied hidden");
+      const canvas = container.querySelector('[data-testid="worker-canvas"]');
+      expect(canvas?.getAttribute("data-edge-count")).toBe("2");
+      const toggle = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "show implied edges",
+      );
+      expect(toggle).toBeDefined();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("clicking the toggle flips the button label and hands WorkerCanvas the full edge set", async () => {
+    const { container, unmount } = await mountRunDetail(diamondWithSkipGraph);
+    try {
+      const toggle = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "show implied edges",
+      );
+      expect(toggle).toBeDefined();
+
+      await act(async () => {
+        toggle?.click();
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const canvasAfter = container.querySelector('[data-testid="worker-canvas"]');
+      expect(canvasAfter?.getAttribute("data-edge-count")).toBe("3");
+      const hideButton = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "hide implied",
+      );
+      expect(hideButton).toBeDefined();
+      // The badge count itself must not change on toggle — 1 edge is still
+      // implied, whichever set is currently shown.
+      expect(container.textContent).toContain("1 implied hidden");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("an already-minimal graph (nothing hidden) renders no badge and no toggle", async () => {
+    const minimalGraph = {
+      name: "run",
+      description: "",
+      nodes: [
+        {
+          id: "A",
+          label: "A",
+          role: "",
+          assignment: "",
+          prompt: "",
+          capacity: 1,
+          timeout: null,
+          inputs: [],
+          outputs: [],
+        },
+        {
+          id: "B",
+          label: "B",
+          role: "",
+          assignment: "",
+          prompt: "",
+          capacity: 1,
+          timeout: null,
+          inputs: [],
+          outputs: [],
+        },
+      ],
+      edges: [{ id: "e-ab", source: "A", target: "B", mode: "simple" as const }],
+    };
+    const { container, unmount } = await mountRunDetail(minimalGraph);
+    try {
+      expect(container.textContent).not.toContain("implied hidden");
+      const toggle = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "show implied edges" || b.textContent === "hide implied",
+      );
+      expect(toggle).toBeUndefined();
+      const canvas = container.querySelector('[data-testid="worker-canvas"]');
+      expect(canvas?.getAttribute("data-edge-count")).toBe("1");
+    } finally {
+      unmount();
+    }
   });
 });
 
@@ -675,6 +977,309 @@ describe("history/RunDetail.tsx — badgeForEvent (NodeEscalated route=notify)",
       payload: {},
     });
     expect(badge.label).toBe("escalated");
+  });
+});
+
+// ─── visibleEventPayloadEntries / summarizeHookEvent — #2862 ─────────────────
+// Element/Signal attach created_at/metadata/schema_version to every signal
+// row; the events panel must not dump them into the one-line summary, and a
+// HookSignal row must read as a human summary, not a struct.
+
+function sig(overrides: Partial<import("@/lib/api").SignalEvent> = {}) {
+  return {
+    id: "e1",
+    session_id: "s1",
+    seq: 1,
+    kind: "HookSignal",
+    op_id: "op-a",
+    ts: 1000,
+    payload: {},
+    ...overrides,
+  } as import("@/lib/api").SignalEvent;
+}
+
+describe("history/RunDetail.tsx — visibleEventPayloadEntries", () => {
+  it("drops op_id, schema_version, and created_at from the visible entries", async () => {
+    const { visibleEventPayloadEntries } = await import("./RunDetail");
+    const entries = visibleEventPayloadEntries({
+      op_id: "op-a",
+      schema_version: 1,
+      created_at: 1786034040.25,
+      name: "step1",
+    });
+    expect(entries).toEqual([["name", "step1"]]);
+  });
+
+  it("drops empty metadata but keeps non-empty metadata", async () => {
+    const { visibleEventPayloadEntries } = await import("./RunDetail");
+    expect(visibleEventPayloadEntries({ metadata: {} })).toEqual([]);
+    expect(visibleEventPayloadEntries({ metadata: { k: "v" } })).toEqual([
+      ["metadata", { k: "v" }],
+    ]);
+  });
+
+  it("returns [] for an undefined payload", async () => {
+    const { visibleEventPayloadEntries } = await import("./RunDetail");
+    expect(visibleEventPayloadEntries(undefined)).toEqual([]);
+  });
+});
+
+describe("history/RunDetail.tsx — summarizeHookEvent", () => {
+  it("summarizes a tool.pre hook as 'point · tool_name'", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    const summary = summarizeHookEvent(
+      sig({
+        kind: "HookSignal",
+        payload: { point: "tool.pre", kwargs: { tool_name: "read_file", call_id: "c1" } },
+      }),
+    );
+    expect(summary).toBe("tool.pre · read_file");
+  });
+
+  it("falls back to the bare point when kwargs has no recognized field", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    const summary = summarizeHookEvent(
+      sig({ kind: "HookSignal", payload: { point: "session.start", kwargs: {} } }),
+    );
+    expect(summary).toBe("session.start");
+  });
+
+  it("returns null for a non-hook signal", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    expect(summarizeHookEvent(sig({ kind: "NodeStarted", payload: { name: "step1" } }))).toBeNull();
+  });
+
+  it("returns null when a HookSignal payload has no point", async () => {
+    const { summarizeHookEvent } = await import("./RunDetail");
+    expect(summarizeHookEvent(sig({ kind: "HookSignal", payload: {} }))).toBeNull();
+  });
+});
+
+// ─── deriveGateOutcome — #2863 ────────────────────────────────────────────────
+// A gate/review step's structured verdict is a different population from
+// runtime tool errors; deriveGateOutcome scans the signal stream for it so
+// the page can surface "Gate: approve-with-fixes · 1 major, 5 minor" beside
+// the (possibly zero) runtime-error count instead of letting the green
+// "no errors" text read as the run's overall verdict.
+
+describe("history/RunDetail.tsx — deriveGateOutcome", () => {
+  it("returns null when no StructuredOutput signal carries a verdict shape", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    expect(
+      deriveGateOutcome([sig({ kind: "NodeStarted", payload: { name: "step1" } })]),
+    ).toBeNull();
+  });
+
+  it("extracts verdict and major/minor counts from a review-shaped StructuredOutput", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            gate_verdict: "approve-with-fixes",
+            findings: [
+              { severity: "high", description: "a" },
+              { severity: "medium", description: "b" },
+              { severity: "low", description: "c" },
+            ],
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toEqual({
+      verdict: "approve-with-fixes",
+      major: 1,
+      minor: 2,
+      hasFindings: true,
+    });
+  });
+
+  it("extracts a boolean gate_passed shape with no findings breakdown", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({ kind: "StructuredOutput", payload: { data: { gate_passed: false } } }),
+    ]);
+    expect(outcome).toEqual({ verdict: "reject", major: 0, minor: 0, hasFindings: false });
+  });
+
+  it("uses the most recent verdict when multiple StructuredOutput signals carry one", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({ id: "e1", kind: "StructuredOutput", payload: { data: { gate_verdict: "reject" } } }),
+      sig({ id: "e2", kind: "StructuredOutput", payload: { data: { gate_verdict: "approve" } } }),
+    ]);
+    expect(outcome?.verdict).toBe("approve");
+  });
+
+  it("ignores a StructuredOutput signal whose data has neither shape", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({ kind: "StructuredOutput", payload: { data: { assignments: [] } } }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  it("does not badge a coding-engine result shape (bare `passed`, no gate key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            passed: true,
+            measurements: { rounds: 2 },
+            caveats: [],
+            experiment_ref: "",
+            verdict_ref: "V1",
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  it("does not badge a hypothesis-engine result shape (bare `passed`, no gate key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            passed: false,
+            measurements: "0/3 assertions held",
+            caveats: ["budget exhausted"],
+            experiment_ref: "E1",
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  it("does not badge a generic Verdict/ComplianceVerdict shape (bare `verdict`, no gate_verdict key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: { verdict: "REJECT", rationale: "unmet acceptance criteria", unmet: ["a"] },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  it("does not badge a hypothesis-engine ConclusionDrawn shape (bare `verdict`, no gate_verdict key)", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome([
+      sig({
+        kind: "StructuredOutput",
+        payload: {
+          data: {
+            verdict: "confirmed",
+            rationale: "3/3 assertions held",
+            question_ref: "Q1",
+            result_ref: "R1",
+            basis: "empirical",
+            confidence: 0.8,
+            limitations: [],
+          },
+        },
+      }),
+    ]);
+    expect(outcome).toBeNull();
+  });
+
+  // A flow-layer DAG gate (lionagi/operations/flow.py's is_gate contract) never
+  // emits a StructuredOutput signal — its rejection surfaces only as this
+  // session-level terminal reason code (lionagi/cli/_runs.py, RunReasons.
+  // COMPLETED_GATE_REJECTED). deriveGateOutcome must read that shape too, or a
+  // DAG gate can reject with no badge ever appearing.
+  it("badges a reject from the session's gate-rejected reason code when no StructuredOutput verdict exists", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome(
+      [sig({ kind: "NodeCompleted", payload: { name: "step1" } })],
+      { status_reason_code: "run.completed.gate_rejected" },
+    );
+    expect(outcome).toEqual({ verdict: "reject", major: 0, minor: 0, hasFindings: false });
+  });
+
+  it("does not badge on an unrelated terminal reason code", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome(
+      [sig({ kind: "NodeCompleted", payload: { name: "step1" } })],
+      { status_reason_code: "run.completed.ok" },
+    );
+    expect(outcome).toBeNull();
+  });
+
+  it("prefers a StructuredOutput verdict over the gate-rejected reason code", async () => {
+    const { deriveGateOutcome } = await import("./RunDetail");
+    const outcome = deriveGateOutcome(
+      [sig({ kind: "StructuredOutput", payload: { data: { gate_verdict: "approve" } } })],
+      { status_reason_code: "run.completed.gate_rejected" },
+    );
+    expect(outcome?.verdict).toBe("approve");
+  });
+});
+
+// ─── EventsSection — "show older" paging ─────────────────────────────────────
+// The events list renders only the newest `renderStep` rows and pages older
+// rows in on click; a bug here would either drop rows or scramble the
+// chronological order readers rely on when scanning a run's history.
+
+describe("history/RunDetail.tsx — EventsSection show-older paging", () => {
+  function hookEvents(count: number) {
+    return Array.from({ length: count }, (_, i) =>
+      sig({ id: `e${i}`, kind: "HookSignal", payload: { point: `p${i}` } }),
+    );
+  }
+
+  function renderEvents(events: ReturnType<typeof hookEvents>, renderStep: number) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    mountedCards.push({ container, root });
+    act(() => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <EventsSectionForTest events={events} live={false} renderStep={renderStep} />
+        </IntlProvider>,
+      );
+    });
+    return container;
+  }
+
+  function visiblePoints(container: HTMLDivElement) {
+    return Array.from(container.querySelectorAll("#run-events .divide-y > div")).map((row) => {
+      const match = row.textContent?.match(/p(\d+)/);
+      return match ? `p${match[1]}` : null;
+    });
+  }
+
+  let EventsSectionForTest: (typeof import("./RunDetail"))["EventsSection"];
+
+  beforeAll(async () => {
+    ({ EventsSection: EventsSectionForTest } = await import("./RunDetail"));
+  });
+
+  it("clicking 'show older' pages back further while preserving chronological order", () => {
+    const events = hookEvents(7); // p0..p6
+    const container = renderEvents(events, 3);
+
+    // Only the newest 3 rows render initially, oldest-to-newest within the window.
+    expect(visiblePoints(container)).toEqual(["p4", "p5", "p6"]);
+
+    const button = container.querySelector("button");
+    expect(button).not.toBeNull();
+    act(() => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Paging back reveals the next-older 3 rows, prepended in order — the
+    // previously-visible rows keep their relative order, nothing is reshuffled.
+    expect(visiblePoints(container)).toEqual(["p1", "p2", "p3", "p4", "p5", "p6"]);
   });
 });
 

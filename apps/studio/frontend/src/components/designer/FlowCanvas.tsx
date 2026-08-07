@@ -735,7 +735,7 @@ export default function FlowCanvas({
                           }
                           setEditingSignal(null);
                         }}
-                        className="flex h-6 flex-1 items-center justify-center rounded bg-accent font-ui text-[length:var(--t-xs)] text-white hover:opacity-90"
+                        className="flex h-6 flex-1 items-center justify-center rounded bg-accent font-ui text-[length:var(--t-xs)] text-accent-contrast hover:opacity-90"
                       >
                         Save
                       </button>

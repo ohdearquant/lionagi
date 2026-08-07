@@ -24,6 +24,123 @@ __all__ = (
 )
 
 
+class _MembersDeque(deque):
+    """A ``deque`` that keeps a bound membership ``set`` in sync on every mutation.
+
+    ``Progression.order`` is a public, directly-mutable deque: external code
+    (tests, third-party callers, ``Pile`` internals) mutates it in place —
+    ``p.order.append(x)``, ``p.order[0] = x``, ``p.order.popleft()``, etc. A
+    length-only staleness check (comparing ``len(order)`` across calls) cannot
+    detect a length-preserving external write (e.g. ``order[0] = x``, or a
+    ``popleft()`` paired with an ``append()``), so this class instead updates
+    the bound set eagerly, inside every mutating operation, using the same
+    duplicate-aware discard rule as the rest of ``Progression`` (an id is only
+    dropped from the set once no occurrence of it remains in the deque).
+    """
+
+    def __init__(self, iterable=(), /, members: set | None = None):
+        super().__init__(iterable)
+        self._members_ref: set | None = members
+
+    def bind(self, members: set) -> None:
+        """Point this deque at a (freshly rebuilt) membership set."""
+        self._members_ref = members
+
+    def __setitem__(self, key, value) -> None:
+        if isinstance(key, slice):
+            super().__setitem__(key, value)
+            if self._members_ref is not None:
+                self._members_ref.clear()
+                self._members_ref.update(self)
+        else:
+            old = self[key]
+            super().__setitem__(key, value)
+            if self._members_ref is not None:
+                if old not in self:
+                    self._members_ref.discard(old)
+                self._members_ref.add(value)
+
+    def __delitem__(self, key) -> None:
+        if isinstance(key, slice):
+            super().__delitem__(key)
+            if self._members_ref is not None:
+                self._members_ref.clear()
+                self._members_ref.update(self)
+        else:
+            old = self[key]
+            super().__delitem__(key)
+            if self._members_ref is not None and old not in self:
+                self._members_ref.discard(old)
+
+    def __iadd__(self, other):
+        other = list(other)
+        result = super().__iadd__(other)
+        if self._members_ref is not None:
+            self._members_ref.update(other)
+        return result
+
+    def append(self, x) -> None:
+        super().append(x)
+        if self._members_ref is not None:
+            self._members_ref.add(x)
+
+    def appendleft(self, x) -> None:
+        super().appendleft(x)
+        if self._members_ref is not None:
+            self._members_ref.add(x)
+
+    def pop(self):
+        value = super().pop()
+        if self._members_ref is not None and value not in self:
+            self._members_ref.discard(value)
+        return value
+
+    def popleft(self):
+        value = super().popleft()
+        if self._members_ref is not None and value not in self:
+            self._members_ref.discard(value)
+        return value
+
+    def insert(self, index, x) -> None:
+        super().insert(index, x)
+        if self._members_ref is not None:
+            self._members_ref.add(x)
+
+    def remove(self, value) -> None:
+        super().remove(value)
+        if self._members_ref is not None and value not in self:
+            self._members_ref.discard(value)
+
+    def extend(self, iterable) -> None:
+        iterable = list(iterable)
+        super().extend(iterable)
+        if self._members_ref is not None:
+            self._members_ref.update(iterable)
+
+    def extendleft(self, iterable) -> None:
+        iterable = list(iterable)
+        super().extendleft(iterable)
+        if self._members_ref is not None:
+            self._members_ref.update(iterable)
+
+    def clear(self) -> None:
+        super().clear()
+        if self._members_ref is not None:
+            self._members_ref.clear()
+
+    def __imul__(self, n: int) -> _MembersDeque:
+        # `n <= 0` drops every element (membership must shrink to empty);
+        # `n >= 1` only duplicates existing ids, so the *set* of unique
+        # members is unchanged and the bound set needs no update.
+        if n <= 0:
+            self.clear()
+            return self
+        return super().__imul__(n)
+
+    # `rotate` and `reverse` permute existing entries without changing which
+    # ids are present, so the bound membership set never needs an update.
+
+
 class Progression(Element, Ordering[T], Generic[T]):
     """Ordered sequence of item UUIDs with set-backed O(1) membership checks."""
 
@@ -38,13 +155,49 @@ class Progression(Element, Ordering[T], Generic[T]):
         description="A human-readable identifier for the progression.",
     )
     _members: set[UUID] = PrivateAttr(default_factory=set)
+    # Length of `order` as of the last known-good `_members` sync, used only to
+    # detect that `order` was replaced wholesale (`p.order = deque(...)`).
+    #
+    # CRITICAL DESIGN RATIONALE: `order` is a public, directly-mutable deque,
+    # and external code (tests, third-party callers, `Pile` internals) is
+    # expected to mutate it in place rather than going through `Progression`'s
+    # methods. `order` is therefore always wrapped in a `_MembersDeque` (see
+    # above), which keeps `_members` correct on every such mutation, including
+    # length-preserving ones (`order[0] = x`, `popleft()` + `append()`) that a
+    # length-only staleness check cannot see. Public behavior — membership
+    # correctness after *any* direct `order` mutation — must never be
+    # narrowed to "only length-changing mutations are safe".
+    _order_len: int = PrivateAttr(default=0)
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)
-        self._members = set(self.order)
+        self._rebuild_members()
 
     def _rebuild_members(self) -> None:
+        if not isinstance(self.order, _MembersDeque):
+            self.order = _MembersDeque(self.order)
         self._members = set(self.order)
+        self.order.bind(self._members)
+        self._order_len = len(self.order)
+
+    def _ensure_synced(self) -> None:
+        # Must be called before any read of, or incremental update to,
+        # `_members`/`_order_len`. `_MembersDeque` keeps `_members` correct on
+        # every direct mutation of `order` itself, but `order` can also be
+        # replaced wholesale (`p.order = deque(...)`, or a plain-deque copy
+        # produced by pydantic re-validation), or be a wrapper that belongs to
+        # (is bound to) a *different* `Progression` instance's `_members` set
+        # — ownership is checked by identity
+        # (`order._members_ref is self._members`), not just type and length,
+        # so a foreign or unbound wrapper of matching length can't silently
+        # pass as synced.
+        order = self.order
+        if (
+            not isinstance(order, _MembersDeque)
+            or len(order) != self._order_len
+            or order._members_ref is not self._members
+        ):
+            self._rebuild_members()
 
     @field_validator("order", mode="before")
     def _validate_ordering(cls, value: Any) -> deque[UUID]:
@@ -63,11 +216,8 @@ class Progression(Element, Ordering[T], Generic[T]):
     def __contains__(self, item: Any) -> bool:
         try:
             refs = validate_order(item)
-            # Recomputed from `order` rather than the `_members` cache: `order`
-            # is a public mutable deque, so direct external mutation (e.g.
-            # `progression.order.append(x)`) can desync a cached set without
-            # this method ever knowing.
-            members = set(self.order)
+            self._ensure_synced()
+            members = self._members
             return all(ref in members for ref in refs)
         except (ValueError, TypeError):
             return False
@@ -96,15 +246,18 @@ class Progression(Element, Ordering[T], Generic[T]):
             self.order = deque(as_list)
             self._rebuild_members()
         else:
+            self._ensure_synced()
             try:
                 old = self.order[key]
                 self.order[key] = refs[0]
                 if old not in self.order:
                     self._members.discard(old)
                 self._members.add(refs[0])
+                self._order_len = len(self.order)
             except IndexError:
                 self.order.insert(key, refs[0])
                 self._members.add(refs[0])
+                self._order_len = len(self.order)
 
     def __delitem__(self, key: int | slice) -> None:
         if isinstance(key, slice):
@@ -128,6 +281,7 @@ class Progression(Element, Ordering[T], Generic[T]):
     def clear(self) -> None:
         self.order.clear()
         self._members.clear()
+        self._order_len = 0
 
     def include(self, item: Any, /) -> bool:
         try:
@@ -137,12 +291,14 @@ class Progression(Element, Ordering[T], Generic[T]):
         if not refs:
             return True
 
+        self._ensure_synced()
         appended = False
         for ref in refs:
             if ref not in self._members:
                 self.order.append(ref)
                 self._members.add(ref)
                 appended = True
+        self._order_len = len(self.order)
         return appended
 
     def exclude(self, item: Any, /) -> bool:
@@ -160,15 +316,19 @@ class Progression(Element, Ordering[T], Generic[T]):
         return len(self.order) < before
 
     def append(self, item: Any, /) -> None:
+        self._ensure_synced()
         if isinstance(item, Element):
             self.order.append(item.id)
             self._members.add(item.id)
+            self._order_len = len(self.order)
             return
         refs = validate_order(item)
         self.order.extend(refs)
         self._members.update(refs)
+        self._order_len = len(self.order)
 
     def pop(self, index: int = -1) -> UUID:
+        self._ensure_synced()
         try:
             if index == -1 or index == len(self.order) - 1:
                 uid = self.order.pop()
@@ -179,6 +339,7 @@ class Progression(Element, Ordering[T], Generic[T]):
                 del self.order[index]
             if uid not in self.order:
                 self._members.discard(uid)
+            self._order_len = len(self.order)
             return uid
         except Exception as e:
             raise ItemNotFoundError(str(e)) from e
@@ -186,9 +347,11 @@ class Progression(Element, Ordering[T], Generic[T]):
     def popleft(self) -> UUID:
         if not self.order:
             raise ItemNotFoundError("No items in progression.")
+        self._ensure_synced()
         uid = self.order.popleft()
         if uid not in self.order:
             self._members.discard(uid)
+        self._order_len = len(self.order)
         return uid
 
     def remove(self, item: Any, /) -> None:
@@ -198,6 +361,7 @@ class Progression(Element, Ordering[T], Generic[T]):
             raise ItemNotFoundError(str(item)) from e
         if not refs:
             return
+        self._ensure_synced()
         missing = [r for r in refs if r not in self._members]
         if missing:
             raise ItemNotFoundError(str(missing))
@@ -218,8 +382,10 @@ class Progression(Element, Ordering[T], Generic[T]):
     def extend(self, other: Progression) -> None:
         if not isinstance(other, Progression):
             raise ValueError("Can only extend with another Progression.")
+        self._ensure_synced()
         self.order.extend(other.order)
         self._members.update(other.order)
+        self._order_len = len(self.order)
 
     def __add__(self, other: Any) -> Progression[T]:
         new_refs = validate_order(other)
@@ -244,10 +410,12 @@ class Progression(Element, Ordering[T], Generic[T]):
 
     def insert(self, index: int, item: ID.RefSeq, /) -> None:
         item_ = validate_order(item)
+        self._ensure_synced()
         for i in reversed(item_):
             uid = ID.get_id(i)
             self.order.insert(index, uid)
             self._members.add(uid)
+        self._order_len = len(self.order)
 
     def _validate_index(self, index: int, allow_end: bool = False) -> int:
         length = len(self.order)

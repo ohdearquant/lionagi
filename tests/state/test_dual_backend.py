@@ -1289,3 +1289,101 @@ async def test_postgres_teardown_gives_up_rather_than_deadlocking_after_it_holds
         assert await db.get_message(msg) is not None
     finally:
         await db.close()
+
+
+# ── Postgres leg: attach_session_invocation's prior-invocation read races ────
+# a concurrent repoint (round-2 review of PR #2884). SQLite serializes this
+# through its own write lock plus BEGIN IMMEDIATE; PostgreSQL at READ
+# COMMITTED does not, so the prior-invocation SELECT takes FOR UPDATE there.
+
+
+async def test_postgres_attach_session_invocation_decrements_off_the_value_a_concurrent_repoint_left(
+    pg_url,
+):
+    """A concurrent attach must decrement the invocation another attach's
+    still-open transaction actually left the session on, not the value it
+    read before that transaction committed.
+
+    A holder connection takes the session row's lock and repoints it
+    old -> mid — the same statements ``attach_session_invocation`` runs —
+    without committing, standing in for a first attach still in flight. A
+    concurrent ``attach_session_invocation(sid, new)`` call must block on
+    that lock (proving the fix takes it at all) rather than reading old's
+    invocation_id straight through; once the holder commits, it must resolve
+    against mid. Without the ``FOR UPDATE`` fix, the unlocked SELECT would
+    read old immediately (the holder hasn't committed yet), block later on
+    the UPDATE's implicit row lock instead, and decrement old after its own
+    WHERE clause re-evaluates against the post-commit row — leaving mid's
+    count stale at 1, exactly the round-2 finding.
+    """
+    import asyncio
+
+    from sqlalchemy import text as _text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        assert db.dialect == "postgresql"
+        old, mid, new = _uid(), _uid(), _uid()
+        now = time.time()
+        for inv_id in (old, mid, new):
+            await db.create_invocation({"id": inv_id, "skill": "show", "started_at": now})
+
+        prog = _uid()
+        await db.create_progression(prog)
+        sid = _uid()
+        await db.create_session(
+            {"id": sid, "progression_id": prog, "status": "running", "invocation_id": old}
+        )
+        assert (await db.get_invocation(old))["session_count"] == 1
+
+        engine = create_async_engine(pg_url)
+        try:
+            async with engine.connect() as holder:
+                async with holder.begin():
+                    await holder.execute(
+                        _text("SELECT invocation_id FROM sessions WHERE id = :sid FOR UPDATE"),
+                        {"sid": sid},
+                    )
+                    await holder.execute(
+                        _text("UPDATE sessions SET invocation_id = :mid WHERE id = :sid"),
+                        {"mid": mid, "sid": sid},
+                    )
+                    await holder.execute(
+                        _text(
+                            "UPDATE invocations SET session_count = "
+                            "GREATEST(session_count - 1, 0) WHERE id = :old"
+                        ),
+                        {"old": old},
+                    )
+                    await holder.execute(
+                        _text(
+                            "UPDATE invocations SET session_count = session_count + 1 "
+                            "WHERE id = :mid"
+                        ),
+                        {"mid": mid},
+                    )
+
+                    second = asyncio.create_task(db.attach_session_invocation(sid, new))
+                    with pytest.raises(asyncio.TimeoutError):
+                        await asyncio.wait_for(asyncio.shield(second), timeout=1.5)
+                    assert not second.done(), (
+                        "the concurrent attach did not block on the row lock — "
+                        "the FOR UPDATE fix is not being taken"
+                    )
+                # holder's transaction commits here, releasing the lock the
+                # blocked attach is waiting on.
+
+                await asyncio.wait_for(second, timeout=10)
+        finally:
+            await engine.dispose()
+
+        assert (await db.get_invocation(old))["session_count"] == 0
+        assert (await db.get_invocation(mid))["session_count"] == 0
+        assert (await db.get_invocation(new))["session_count"] == 1
+        assert await db.list_sessions_for_invocation(old) == []
+        assert await db.list_sessions_for_invocation(mid) == []
+        assert [r["id"] for r in await db.list_sessions_for_invocation(new)] == [sid]
+    finally:
+        await db.close()

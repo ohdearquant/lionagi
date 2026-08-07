@@ -51,6 +51,12 @@ class VerificationResult(TypedDict):
     produced: list[ProducedArtifact]
 
 
+class StaleMarkers(TypedDict):
+    staleness_check: Literal["checked"]
+    changed_since_verification: list[str]
+    absent_since_verification: list[str]
+
+
 def _safe_join(root: str, rel: str) -> str:
     """Join rel under root, rejecting absolute paths, globs, '..', and escapes."""
     if not isinstance(rel, str) or not rel or rel.startswith("/") or "\x00" in rel:
@@ -285,3 +291,62 @@ def missing_artifact_evidence(missing: list[dict[str, Any]]) -> list[dict[str, s
         }
         for entry in missing
     ]
+
+
+def stale_artifact_markers(
+    verification: dict[str, Any], *, artifacts_root: str | None
+) -> StaleMarkers | None:
+    """Cheaply flag whether a recorded verdict's produced artifacts may no
+    longer match what was on disk at `checked_at`.
+
+    This never re-verifies pass/fail — it only checks mtime+size and presence
+    for the artifacts the recorded verdict already found, so a caller can
+    label the verdict's currency instead of presenting a completion-time
+    snapshot as current state. Comparing size alongside mtime (both already
+    available from a single `stat()` call, so this stays a cheap read-time
+    check rather than a re-verify) narrows, though does not close, the
+    false-negative window a bare mtime check would have against a rewrite
+    that preserves both mtime and size.
+
+    Returns None only when the check cannot be performed at all — no
+    `artifacts_root`, or a verdict missing the `checked_at`/`produced` fields
+    the check needs (e.g. a payload recorded before this check existed). The
+    caller uses that to report an explicit unknown state rather than
+    silently treating an unchecked verdict as clean.
+    """
+    if not artifacts_root:
+        return None
+    checked_at = verification.get("checked_at")
+    produced = verification.get("produced")
+    if not isinstance(checked_at, (int, float)) or not isinstance(produced, list):
+        return None
+
+    root = os.path.realpath(artifacts_root)
+    changed: list[str] = []
+    absent: list[str] = []
+    for entry in produced:
+        if not isinstance(entry, dict):
+            continue
+        artifact_id = entry.get("id")
+        rel_path = entry.get("path")
+        if not artifact_id or not rel_path:
+            continue
+        try:
+            full = _safe_join(root, rel_path)
+        except ArtifactPathError:
+            continue
+        try:
+            stat_result = os.stat(full)
+        except OSError:
+            absent.append(artifact_id)
+            continue
+        declared_size = entry.get("size")
+        size_changed = isinstance(declared_size, int) and stat_result.st_size != declared_size
+        if stat_result.st_mtime > checked_at or size_changed:
+            changed.append(artifact_id)
+
+    return {
+        "staleness_check": "checked",
+        "changed_since_verification": changed,
+        "absent_since_verification": absent,
+    }

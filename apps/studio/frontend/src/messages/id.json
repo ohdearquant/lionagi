@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Memeriksa apakah proses ini dapat dilanjutkan…",
+    "availabilityFailed": "Tidak dapat menentukan apakah proses ini dapat dilanjutkan.",
+    "notResumable": "Proses ini tidak dapat dilanjutkan.",
+    "continueDescription": "Memutar ulang rencana yang tersimpan dari titik terakhir — tanpa instruksi baru, tanpa cabang untuk dipilih.",
+    "continueSubmit": "Lanjutkan",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -429,6 +434,10 @@
       "noMessages": "Tidak ada pesan tercatat",
       "waitingEvents": "Menunggu peristiwa siklus hidup…",
       "noEvents": "Tidak ada peristiwa siklus hidup tercatat",
+      "showOlderEvents": "Tampilkan {count, number} peristiwa yang lebih lama",
+      "expandEventDetails": "Tampilkan detail peristiwa",
+      "gateOutcome": "Gate: {verdict} · {major} besar, {minor} kecil",
+      "gateOutcomeSimple": "Gate: {verdict}",
       "live": "live",
       "noBranchErrors": "Tidak ada kesalahan terdeteksi di semua branch.",
       "noFiles": "Tidak ada operasi file terdeteksi.",
@@ -442,7 +451,18 @@
       "noBranchErrorsPartial": "Tidak ada kesalahan dalam pesan yang dimuat.",
       "noFilesPartial": "Tidak ada operasi file terdeteksi dalam pesan yang dimuat.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count} sisi",
+      "graphImpliedHidden": "· {count} implisit disembunyikan",
+      "graphHideImplied": "sembunyikan implisit",
+      "graphShowImplied": "tampilkan sisi implisit",
+      "graphNodeStatusQueued": "antre",
+      "graphNodeStatusRunning": "berjalan",
+      "graphNodeStatusApproval": "persetujuan",
+      "graphNodeStatusPaused": "dijeda",
+      "graphNodeStatusDone": "selesai",
+      "graphNodeStatusFailed": "gagal",
+      "graphNodeStatusEscalated": "dieskalasi"
     },
     "masterAria": "Daftar riwayat",
     "detailAria": "Detail item"
@@ -540,6 +560,7 @@
       "triggering": "Memicu…",
       "runStarted": "Eksekusi dimulai: {id}",
       "triggerFailed": "Gagal memicu",
+      "toggleFailed": "Gagal mengalihkan",
       "every": "setiap {interval}",
       "in": "dalam {delta}",
       "overdue": "terlambat {delta}",
@@ -547,7 +568,17 @@
       "last": "terakhir",
       "never": "tidak pernah dijalankan",
       "paused": "Dijeda",
-      "notScheduled": "Tidak dijadwalkan"
+      "notScheduled": "Tidak dijadwalkan",
+      "health": {
+        "healthy": "Sehat",
+        "failing": "Gagal",
+        "overdue": "Terlambat",
+        "neverFired": "Belum pernah berjalan",
+        "noEvidence": "Tidak ada bukti",
+        "lastOutcome": "terakhir {outcome} {delta} lalu",
+        "neverFiredSince": "belum pernah berjalan sejak {date}",
+        "noEvidenceHint": "tidak ada eksekusi tercatat"
+      }
     },
     "run": {
       "elapsed": "{delta} berlalu",
@@ -784,6 +815,8 @@
     },
     "history": {
       "label": "Riwayat sesi",
+      "sortRecent": "Terbaru",
+      "sortCost": "Biaya tertinggi",
       "all": "Semua",
       "completed": "Selesai",
       "failed": "Gagal",
@@ -797,6 +830,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -820,7 +861,34 @@
       },
       "more": "+{count, plural, other {# lagi}} — lihat semua di Riwayat →",
       "digestLatest": "terbaru: {name} · {age} lalu",
-      "streakCount": "{count, plural, other {#× gagal}}"
+      "streakCount": "{count, plural, other {#× gagal}}",
+      "disposition": {
+        "acknowledged": "diketahui",
+        "resolved": "terselesaikan",
+        "expected": "diharapkan",
+        "snoozed": "ditunda"
+      },
+      "action": {
+        "acknowledge": "Ketahui",
+        "acknowledgeAria": "Ketahui {name}",
+        "resolve": "Selesaikan",
+        "resolveAria": "Selesaikan {name}",
+        "snooze": "Tunda {duration}",
+        "snoozeAria": "Tunda {name} selama {duration}",
+        "expected": "Diharapkan",
+        "expectedAria": "Tandai {name} sebagai diharapkan",
+        "undo": "Urungkan",
+        "undoAria": "Urungkan penyelesaian {name}",
+        "confirm": "Konfirmasi",
+        "cancel": "Batal",
+        "notePlaceholder": "Mengapa ini diharapkan?",
+        "noteRequired": "Catatan wajib diisi",
+        "saveFailed": "Tidak tersimpan · {message}",
+        "expiryLabel": "Kedaluwarsa dalam"
+      },
+      "showDischarged": "Tampilkan yang terselesaikan",
+      "hideDischarged": "Sembunyikan yang terselesaikan",
+      "dischargedEmpty": "Tidak ada item yang terselesaikan"
     },
     "liveBoard": {
       "title": "Sedang berjalan",
@@ -861,6 +929,15 @@
       "completionRate": "{rate}% selesai",
       "noTerminalRuns": "Tidak ada eksekusi yang selesai dalam jendela",
       "total": "{count, plural, other {# total}}",
+      "staleHint": "menampilkan yang terakhir diketahui · penyegaran gagal"
+    },
+    "spend": {
+      "title": "Pengeluaran yang dilaporkan",
+      "loading": "Memuat pengeluaran…",
+      "error": "Pengeluaran tidak tersedia · {message}",
+      "unreachable": "API tidak terjangkau",
+      "empty": "Tidak ada run dalam jendela ini",
+      "coverage": "{reported} dari {total} dilaporkan",
       "staleHint": "menampilkan yang terakhir diketahui · penyegaran gagal"
     },
     "stale": {
@@ -958,6 +1035,8 @@
     "roleUser": "pengguna",
     "roleThinking": "berpikir",
     "roleResponse": "respons",
+    "planAssignments": "{count, plural, other {# penugasan}}",
+    "planDependsOn": "bergantung pada:",
     "tabAria": "tab {label} {position} dari {total}"
   },
   "workflow": {

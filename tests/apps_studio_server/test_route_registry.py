@@ -253,6 +253,7 @@ _MIGRATED_AREAS = {
     "admin",
     "schedules",
     "stats",
+    "attention",
 }
 
 

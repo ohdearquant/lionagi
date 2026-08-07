@@ -22,6 +22,8 @@ import Skeleton from "@/components/ui/Skeleton";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { runDeepLink, invocationDeepLink } from "@/lib/runDeepLink";
+import { formatElapsed } from "@/lib/elapsed";
+import { resolveRunLabel } from "@/lib/runLabel";
 import { runCreationKey, invocationCreationKey } from "./boardReducer";
 
 /**
@@ -50,26 +52,13 @@ function elapsedSec(startedAt: number | null | undefined, nowSec: number): numbe
   return Math.max(0, Math.floor(nowSec - startedAt));
 }
 
-function formatElapsed(sec: number | null): string {
-  if (sec == null) return "—";
-  if (sec < 60) return `${sec}s`;
-  const m = Math.floor(sec / 60);
-  if (m < 60) {
-    const s = sec % 60;
-    return s > 0 ? `${m}m ${s}s` : `${m}m`;
-  }
-  const h = Math.floor(m / 60);
-  const mm = m - h * 60;
-  return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
-}
-
 function RunCard({ run, nowSec }: { run: RunSummary; nowSec: number }) {
   const t = useTranslations("mission");
   const elapsed = elapsedSec(run.started_at ?? undefined, nowSec);
   // Last activity falls back to started_at when no heartbeat has landed yet
   // — never to "no data", since a fresh run has always at least started.
   const lastActivity = elapsedSec(run.last_message_at ?? run.started_at ?? undefined, nowSec);
-  const name = run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12);
+  const name = resolveRunLabel(run);
   // Honest staleness: a process-dead run must not render as a live one.
   // Health axis only — duration never factors into this flag.
   // TODO(unify): route through deriveDisplayStatus once status/verdict/
@@ -275,9 +264,7 @@ const BOARD_MAX_HEIGHT = "max-h-[420px]";
 function BoardTableRow({ card, nowSec }: { card: LiveCard; nowSec: number }) {
   const t = useTranslations("mission");
   const isRun = card.kind === "run";
-  const name = isRun
-    ? (card.run.playbook_name ?? card.run.agent_name ?? card.run.run_id.slice(-12))
-    : card.invocation.skill;
+  const name = isRun ? resolveRunLabel(card.run) : card.invocation.skill;
   const startedAt = isRun ? (card.run.started_at ?? undefined) : card.invocation.started_at;
   const elapsed = elapsedSec(startedAt, nowSec);
   const lastActivityAt = isRun

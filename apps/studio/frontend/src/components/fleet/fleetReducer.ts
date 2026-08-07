@@ -27,6 +27,7 @@
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus, isEffectivelyActive, type RunStatusInput } from "@/lib/runStatus";
+import { resolveRunLabel } from "@/lib/runLabel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,9 @@ export interface RecentRow {
   status_reason_code?: string | null;
   status_reason_summary?: string | null;
   endedAtSec: number | null;
+  // Cost-visibility contract: `null` means unreported (unknown), never a
+  // coerced 0 — format with usageFormat.ts, don't branch on truthiness.
+  totalCostUsd: number | null;
 }
 
 export interface FleetState {
@@ -186,7 +190,7 @@ function buildOrgUnits(
     const elapsed = elapsedSec(run.started_at ?? null, nowSec);
     const row: AgentRow = {
       id: run.run_id,
-      name: run.playbook_name ?? run.agent_name ?? run.run_id.slice(-12),
+      name: resolveRunLabel(run),
       status: run.status,
       effectiveHealth: run.effective_health ?? null,
       elapsedSec: elapsed,
@@ -251,21 +255,33 @@ function buildOrgUnits(
   return units;
 }
 
-/** Terminal runs mapped to history rows, newest first. Shared with the
- *  Fleet view's lazy pagination, which maps older pages the same way. */
-export function terminalRecentRows(runs: RunSummary[]): RecentRow[] {
+function mapRunsToRecentRows(runs: RunSummary[]): RecentRow[] {
   return runs
     .filter((r) => !isActive(r))
-    .sort((a, b) => (b.ended_at ?? b.started_at ?? 0) - (a.ended_at ?? a.started_at ?? 0))
     .map((r) => ({
       id: r.run_id,
-      name: r.playbook_name ?? r.agent_name ?? r.run_id.slice(-12),
+      name: resolveRunLabel(r),
       status: r.status,
       invocation_id: r.invocation_id ?? null,
       status_reason_code: r.status_reason_code,
       status_reason_summary: r.status_reason_summary,
       endedAtSec: r.ended_at ?? r.started_at ?? null,
+      totalCostUsd: r.total_cost_usd ?? null,
     }));
+}
+
+/** Terminal runs mapped to history rows, newest first. Shared with the
+ *  Fleet view's lazy pagination, which maps older pages the same way. */
+export function terminalRecentRows(runs: RunSummary[]): RecentRow[] {
+  return mapRunsToRecentRows(runs).sort((a, b) => (b.endedAtSec ?? 0) - (a.endedAtSec ?? 0));
+}
+
+/** Terminal runs mapped to history rows, preserving the server's own order —
+ *  for the "Highest cost" history sort, where /api/runs/?sort=cost has
+ *  already computed the ordering and a client re-sort by end time would
+ *  silently undo it. */
+export function terminalRecentRowsServerOrder(runs: RunSummary[]): RecentRow[] {
+  return mapRunsToRecentRows(runs);
 }
 
 /** One fetched page of older history rows. */
@@ -286,10 +302,15 @@ export interface HistoryPager {
  * would otherwise both fetch the same page and double-advance past the next
  * one. A concurrent call resolves to null without fetching; a failed fetch
  * keeps its page number so the next fire retries it.
+ *
+ * mapRows defaults to the recency ordering; the "Highest cost" history sort
+ * passes terminalRecentRowsServerOrder so later pages stay in the server's
+ * cost order instead of being re-sorted by end time.
  */
 export function createHistoryPager(
   fetchPage: (page: number) => Promise<{ runs: RunSummary[]; has_next: boolean }>,
   firstPage = 2,
+  mapRows: (runs: RunSummary[]) => RecentRow[] = terminalRecentRows,
 ): HistoryPager {
   let nextPage = firstPage;
   let inFlight = false;
@@ -301,7 +322,7 @@ export function createHistoryPager(
       const page = nextPage;
       nextPage = page + 1;
       return fetchPage(page)
-        .then((resp) => ({ rows: terminalRecentRows(resp.runs), hasMore: resp.has_next }))
+        .then((resp) => ({ rows: mapRows(resp.runs), hasMore: resp.has_next }))
         .catch(() => {
           nextPage = page;
           return null;

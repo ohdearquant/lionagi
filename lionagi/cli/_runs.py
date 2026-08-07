@@ -42,6 +42,7 @@ __all__ = (
     "active_run_id",
     "resolve_run_reason",
     "setup_agent_persist",
+    "find_incomplete_session_for_run",
     "teardown_persist",
     "teardown_agent_persist",
     "teardown_orchestration_persist",
@@ -495,8 +496,10 @@ async def _teardown_common(
     extras: dict | None = None,
     identity_markers: dict | None = None,
     escalated_evidence: list[dict] | None = None,
+    failed_operation_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
+    gate_rejected_evidence: list[dict] | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -620,9 +623,85 @@ async def _teardown_common(
                 str(entry.get("id", "")) for entry in missing
             ]
 
+    # Node-failure backstop: a DAG operation's invoke() raised
+    # and the executor recorded EventStatus.FAILED for it, but that per-node
+    # failure was folded into completed_operations right alongside genuine
+    # completions and never rolled up into the run's own status -- a run
+    # whose terminal (or any other) node died could still read as an
+    # ordinary clean completion. See lionagi/operations/flow.py's
+    # failed_operations tracking and _execute_dag's evidence collection.
+    # Runs before the completion-trust gate below: a run whose nodes all
+    # failed typically produces no artifacts or commits either, so the gate
+    # would otherwise demote it to "completed_empty" first and this failure
+    # evidence would never see a status that reflects it.
+    if failed_operation_evidence and final_status == "completed":
+        from lionagi.state.reasons import RunReasons
+
+        final_status = "failed"
+        final_reason_code = RunReasons.FAILED_EXCEPTION
+        ids = [str(e.get("id", "")) for e in failed_operation_evidence]
+        final_reason_summary = (
+            f"{len(failed_operation_evidence)} operation(s) failed: {', '.join(ids)}."
+        )
+        final_evidence_refs = failed_operation_evidence
+
+    # Escalation backstop: a leg that gave up mid-run via EscalationRequest without
+    # an artifact contract must not read as a clean completion. Also runs ahead of
+    # the completion-trust gate for the same reason as the node-failure backstop
+    # above -- an escalated run with no evidence must not be demoted to
+    # "completed_empty" before this check has a chance to run.
+    if escalated_evidence and final_status == "completed":
+        from lionagi.state.reasons import RunReasons
+
+        final_status = "failed"
+        final_reason_code = RunReasons.FAILED_ESCALATED
+        ids = [str(e.get("id", "")) for e in escalated_evidence]
+        final_reason_summary = (
+            f"{len(escalated_evidence)} operation(s) escalated without producing "
+            f"required output: {', '.join(ids)}."
+        )
+        final_evidence_refs = escalated_evidence
+
+    # Gate-rejection backstop: a gate node rejected mid-DAG (issue #2860) and the
+    # executor short-circuited its dependent subtree to skipped instead of running
+    # those nodes against the rejected baseline. That is a correct, deliberate
+    # stop, not a failure -- status stays "completed" -- but the reason code must
+    # say so explicitly rather than reading identically to a clean pass. Runs
+    # before the completion-trust gate below, alongside the node-failure and
+    # escalation backstops: a gate-rejected run typically produces no artifacts
+    # or commits either (the rejected subtree never ran), and unlike those two
+    # backstops this one deliberately leaves final_status at "completed" instead
+    # of flipping to "failed" -- so it cannot rely on the trust gate's own
+    # `final_status == "completed"` guard to skip it and must run first so its
+    # evidence is in place before that gate's no-evidence check runs.
+    if gate_rejected_evidence and final_status == "completed":
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["gate_rejections"] = gate_rejected_evidence
+        final_reason_code = RunReasons.COMPLETED_GATE_REJECTED
+        gate_names = ", ".join(
+            str(e.get("label") or e.get("id") or "") for e in gate_rejected_evidence
+        )
+        final_reason_summary = (
+            f"DAG completed successfully; {len(gate_rejected_evidence)} gate(s) rejected "
+            f"({gate_names}) and their dependent subtree was short-circuited instead of "
+            "running against the rejected baseline."
+        )
+        final_evidence_refs = gate_rejected_evidence
+
     # Completion-trust gate: don't accept "completed" on faith. Require a git trace
     # (commits ahead/dirty tree) or a durable assistant response as real evidence.
-    if final_status == "completed" and not (verification and verification.get("produced")):
+    # Skipped when gate_rejected_evidence fired above: a gate rejection is itself
+    # real evidence of a deliberate stop, and (unlike the node-failure/escalation
+    # backstops) it leaves final_status at "completed" rather than "failed", so
+    # without this guard the demotion below would still run and overwrite the
+    # gate-rejection reason/evidence with a plain no-evidence verdict.
+    if (
+        final_status == "completed"
+        and not gate_rejected_evidence
+        and not (verification and verification.get("produced"))
+    ):
         from lionagi.state.completion_evidence import (
             check_completion_evidence,
             has_completion_evidence,
@@ -654,20 +733,6 @@ async def _teardown_common(
                         ),
                     }
                 ]
-
-    # Escalation backstop: a leg that gave up mid-run via EscalationRequest without
-    # an artifact contract must not read as a clean completion.
-    if escalated_evidence and final_status == "completed":
-        from lionagi.state.reasons import RunReasons
-
-        final_status = "failed"
-        final_reason_code = RunReasons.FAILED_ESCALATED
-        ids = [str(e.get("id", "")) for e in escalated_evidence]
-        final_reason_summary = (
-            f"{len(escalated_evidence)} operation(s) escalated without producing "
-            f"required output: {', '.join(ids)}."
-        )
-        final_evidence_refs = escalated_evidence
 
     # The synthesis artifact IS the run's output. A DAG that completed but
     # whose output write raised has not delivered anything -- that is a real
@@ -819,8 +884,10 @@ async def teardown_persist(
     exception: BaseException | None = None,
     extras: dict | None = None,
     escalated_evidence: list[dict] | None = None,
+    failed_operation_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
+    gate_rejected_evidence: list[dict] | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -842,8 +909,10 @@ async def teardown_persist(
             extras=extras,
             identity_markers=ctx.get("identity_markers"),
             escalated_evidence=escalated_evidence,
+            failed_operation_evidence=failed_operation_evidence,
             finalize_error=finalize_error,
             artifact_write_error=artifact_write_error,
+            gate_rejected_evidence=gate_rejected_evidence,
             cwd=cwd,
             engine_session_uid=engine_session_uid,
             defer_terminal=defer_terminal,
@@ -1229,6 +1298,14 @@ async def setup_agent_persist(
 
             existing_msg_ids = set(await db.get_progression(branch_prog_id))
 
+            if invocation_id and existing_session.get("invocation_id") != invocation_id:
+                # A resume reopens this row rather than inserting a new one,
+                # so the ON CONFLICT DO NOTHING branch below never runs for
+                # it and this leg's invocation_id would otherwise be
+                # dropped. Backfill the same linkage a brand-new session
+                # gets at insert time.
+                await db.attach_session_invocation(session_id, invocation_id)
+
             # The adopted row's drain declaration is rewritten by the reopen
             # above, in the same statement that installs this leg's process
             # markers. Nothing to do here for a row that was terminal.
@@ -1424,3 +1501,45 @@ async def setup_agent_persist(
 
                 unregister_shared_db(db)
         return None
+
+
+async def find_incomplete_session_for_run(run_id: str) -> dict | None:
+    """Recover a session row that ``setup_agent_persist()`` committed before
+    failing on a later step, terminalizing it if it is still "running".
+
+    ``setup_agent_persist()`` can call ``create_session()`` and then raise
+    inside the same setup (e.g. the following ``create_branch()``); it catches
+    that exception and returns None, so its caller sees no context but the
+    session row itself is still durable and left running forever. A caller
+    whose *run_id* is minted fresh for every attempt (never reused across a
+    resume, the way a new operator turn always is) can pass it here after
+    setup fails to recover that row -- and close it out -- instead of
+    reporting the run as never having existed. Returns None only when no
+    session was ever recorded under this run id.
+    """
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
+    from lionagi.state.reasons import RunReasons
+
+    db = StateDB()
+    await db.open()
+    try:
+        rows = await db.get_sessions_for_run(run_id)
+        if not rows:
+            return None
+        row = rows[-1]
+        status = row.get("status")
+        if status not in SESSION_TERMINAL_STATUSES:
+            await db.update_status(
+                "session",
+                row["id"],
+                new_status="failed",
+                reason_code=RunReasons.FAILED_EXCEPTION,
+                reason_summary="run setup failed after the session row was committed",
+                source="executor",
+                actor=row["id"],
+                expected_statuses={status},
+            )
+            row = await db.get_session(row["id"]) or row
+        return row
+    finally:
+        await db.close()

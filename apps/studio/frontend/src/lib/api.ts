@@ -17,6 +17,7 @@ import type {
   OperatorProposalResult,
   OperatorTurnAccepted,
   OperatorTurnRequest,
+  ResumeAvailability,
   RunDetail,
   RunResumeRequest,
   RunResumeResponse,
@@ -730,6 +731,8 @@ export function streamOperatorConversation(
 
 // ─── Runs ─────────────────────────────────────────────────────────────────────
 
+export type RunSort = "recent" | "cost";
+
 export interface RunListParams {
   page?: number;
   per_page?: number;
@@ -738,6 +741,8 @@ export interface RunListParams {
   project?: string;
   project_null?: boolean;
   search?: string;
+  /** "recent" (default) or "cost" — highest reported spend first, server-side. */
+  sort?: RunSort;
 }
 
 export interface RunListResponse {
@@ -761,6 +766,7 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
     query.set("project", params.project);
   }
   if (params?.search) query.set("search", params.search);
+  if (params?.sort) query.set("sort", params.sort);
   for (const value of params?.status ?? []) query.append("status", value);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   // The daemon registers this list route with a trailing slash (unlike
@@ -800,6 +806,14 @@ export async function resumeRun(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
   });
+}
+
+// Read-only precheck (services/run_resume.py resume_availability) so the UI
+// can determine resumability BEFORE rendering the resume action — a run
+// with no checkpoint reads as an explicit, explained state rather than a
+// dead or guessed-at control.
+export async function getResumeAvailability(runId: string): Promise<ResumeAvailability> {
+  return fetchJson<ResumeAvailability>(`/api/runs/${encodeURIComponent(runId)}/resume`);
 }
 
 export interface RunFileContent {
@@ -1203,6 +1217,7 @@ export interface SessionBranch {
 export interface SessionDetail {
   id: string;
   name: string;
+  invocation_kind?: string | null;
   created_at: number;
   updated_at: number;
   status?: string | null;
@@ -1889,6 +1904,41 @@ export async function getActivityStats(window: ActivityWindow): Promise<Activity
   return fetchJson<ActivityStats>(`/api/stats/activity?window=${window}`);
 }
 
+// Cost-visibility contract: `reported_usd` is `null` whenever no session in
+// the window reported a cost — never coerced to 0. `coverage` is the
+// fraction of the window's sessions (including in-flight/non-terminal ones)
+// that reported a cost at all.
+export interface SpendStats {
+  window: ActivityWindow;
+  reported_usd: number | null;
+  reported_count: number;
+  unreported_count: number;
+  total_count: number;
+  coverage: number | null;
+}
+
+export async function getSpendStats(window: ActivityWindow): Promise<SpendStats> {
+  return fetchJson<SpendStats>(`/api/stats/spend?window=${window}`);
+}
+
+export interface SpendRollupRow {
+  key: string | null;
+  reported_usd: number | null;
+  reported_count: number;
+  unreported_count: number;
+}
+
+export interface SpendRollup {
+  window: ActivityWindow;
+  by_project: SpendRollupRow[];
+  by_agent: SpendRollupRow[];
+  by_playbook: SpendRollupRow[];
+}
+
+export async function getSpendRollup(window: ActivityWindow): Promise<SpendRollup> {
+  return fetchJson<SpendRollup>(`/api/stats/spend/rollup?window=${window}`);
+}
+
 // ─── Schedules (ADR-0027) ───────────────────────────────────────────────────
 
 export type GitHubEventFilter = "pr_merged" | "pr_opened" | "pr_updated" | "pr_closed";
@@ -1971,6 +2021,96 @@ export async function listScheduleRuns(
   if (params?.offset != null) query.set("offset", String(params.offset));
   const qs = query.toString();
   return fetchJson(`/api/schedules/${encodeURIComponent(scheduleId)}/runs${qs ? `?${qs}` : ""}`);
+}
+
+// ─── Attention dispositions (needs-attention discharge lifecycle) ────────────
+
+export type AttentionDispositionState = "acknowledged" | "resolved" | "expected" | "snoozed";
+
+export interface AttentionDisposition {
+  item_id: string;
+  state: AttentionDispositionState;
+  note: string | null;
+  created_at: number;
+  updated_at: number;
+  expires_at: number | null;
+  actor: string;
+  source_status: string;
+  /** Server-owned, monotonic per item_id. Echo back on the next PUT — required
+   * to recreate an item a DELETE has removed; a stale value is rejected (409). */
+  revision: number;
+}
+
+export interface AttentionDispositionHistoryEntry {
+  id: string;
+  item_id: string;
+  prior_state: AttentionDispositionState | "open" | null;
+  new_state: AttentionDispositionState | "open";
+  note: string | null;
+  actor: string;
+  source_status: string | null;
+  created_at: number;
+}
+
+/** Batch-read current, non-lapsed dispositions keyed by item_id. */
+export async function listAttentionDispositions(): Promise<Record<string, AttentionDisposition>> {
+  const res = await fetchJson<{ dispositions: Record<string, AttentionDisposition> }>(
+    "/api/attention/dispositions/",
+  );
+  return res.dispositions;
+}
+
+/**
+ * Create-or-replace one item's disposition. Idempotent under retry while the
+ * disposition stays active. `revision` should be the value last read for
+ * this item_id (e.g. `item.disposition?.revision`) — required to recreate a
+ * disposition a DELETE has removed; omitted or stale, the server rejects
+ * with 409 rather than resurrecting stale data.
+ */
+export async function putAttentionDisposition(
+  itemId: string,
+  body: {
+    state: AttentionDispositionState;
+    sourceStatus: string;
+    note?: string;
+    expiresAt?: number;
+    actor?: string;
+    revision?: number;
+  },
+): Promise<AttentionDisposition> {
+  return fetchJson<AttentionDisposition>(
+    `/api/attention/dispositions/${encodeURIComponent(itemId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        state: body.state,
+        source_status: body.sourceStatus,
+        note: body.note,
+        expires_at: body.expiresAt,
+        actor: body.actor,
+        revision: body.revision,
+      }),
+    },
+  );
+}
+
+/** Remove a disposition (undo — the item returns to open). */
+export async function deleteAttentionDisposition(
+  itemId: string,
+): Promise<{ item_id: string; deleted: boolean }> {
+  return fetchJson(`/api/attention/dispositions/${encodeURIComponent(itemId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getAttentionDispositionHistory(
+  itemId: string,
+): Promise<AttentionDispositionHistoryEntry[]> {
+  const res = await fetchJson<{ item_id: string; history: AttentionDispositionHistoryEntry[] }>(
+    `/api/attention/dispositions/${encodeURIComponent(itemId)}/history`,
+  );
+  return res.history;
 }
 
 // ─── Engine runs (Phase C Move 2) ─────────────────────────────────────────────

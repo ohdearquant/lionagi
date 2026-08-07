@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "이 실행을 재개할 수 있는지 확인하는 중…",
+    "availabilityFailed": "이 실행을 재개할 수 있는지 확인할 수 없습니다.",
+    "notResumable": "이 실행은 재개할 수 없습니다.",
+    "continueDescription": "중단된 지점부터 저장된 계획을 다시 실행합니다 — 새 지침이나 선택할 브랜치가 없습니다.",
+    "continueSubmit": "계속",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -429,6 +434,10 @@
       "noMessages": "기록된 메시지 없음",
       "waitingEvents": "수명 주기 이벤트 대기 중…",
       "noEvents": "기록된 수명 주기 이벤트 없음",
+      "showOlderEvents": "이전 이벤트 {count, number}개 표시",
+      "expandEventDetails": "이벤트 세부정보 표시",
+      "gateOutcome": "게이트: {verdict} · 주요 {major}건, 경미 {minor}건",
+      "gateOutcomeSimple": "게이트: {verdict}",
       "live": "라이브",
       "noBranchErrors": "모든 브랜치에서 감지된 오류가 없습니다.",
       "noFiles": "감지된 파일 작업이 없습니다.",
@@ -442,7 +451,18 @@
       "noBranchErrorsPartial": "로드된 메시지에 오류가 없습니다.",
       "noFilesPartial": "로드된 메시지에서 감지된 파일 작업이 없습니다.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "엣지 {count}개",
+      "graphImpliedHidden": "· 암시적 {count}개 숨김",
+      "graphHideImplied": "암시적 숨기기",
+      "graphShowImplied": "암시적 엣지 표시",
+      "graphNodeStatusQueued": "대기중",
+      "graphNodeStatusRunning": "실행중",
+      "graphNodeStatusApproval": "승인",
+      "graphNodeStatusPaused": "일시중지",
+      "graphNodeStatusDone": "완료",
+      "graphNodeStatusFailed": "실패",
+      "graphNodeStatusEscalated": "에스컬레이션"
     },
     "masterAria": "기록 목록",
     "detailAria": "항목 세부 정보"
@@ -540,6 +560,7 @@
       "triggering": "트리거 중…",
       "runStarted": "실행 시작됨: {id}",
       "triggerFailed": "트리거 실패",
+      "toggleFailed": "전환 실패",
       "every": "{interval}마다",
       "in": "{delta} 후",
       "overdue": "{delta} 지연",
@@ -547,7 +568,17 @@
       "last": "마지막",
       "never": "실행된 적 없음",
       "paused": "일시중지됨",
-      "notScheduled": "예약 안 됨"
+      "notScheduled": "예약 안 됨",
+      "health": {
+        "healthy": "정상",
+        "failing": "실패",
+        "overdue": "지연",
+        "neverFired": "실행된 적 없음",
+        "noEvidence": "증거 없음",
+        "lastOutcome": "{delta} 전 {outcome}",
+        "neverFiredSince": "{date}부터 실행된 적 없음",
+        "noEvidenceHint": "실행 기록 없음"
+      }
     },
     "run": {
       "elapsed": "{delta} 경과",
@@ -784,6 +815,8 @@
     },
     "history": {
       "label": "세션 기록",
+      "sortRecent": "최근",
+      "sortCost": "비용 높은 순",
       "all": "전체",
       "completed": "완료됨",
       "failed": "실패",
@@ -797,6 +830,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -820,7 +861,34 @@
       },
       "more": "{count, plural, other {+#개 더 — 기록에서 모두 보기 →}}",
       "digestLatest": "최신: {name} · {age} 전",
-      "streakCount": "{count, plural, other {#× 실패}}"
+      "streakCount": "{count, plural, other {#× 실패}}",
+      "disposition": {
+        "acknowledged": "확인됨",
+        "resolved": "해결됨",
+        "expected": "예상됨",
+        "snoozed": "지연됨"
+      },
+      "action": {
+        "acknowledge": "확인",
+        "acknowledgeAria": "{name} 확인",
+        "resolve": "해결",
+        "resolveAria": "{name} 해결",
+        "snooze": "{duration} 지연",
+        "snoozeAria": "{name}을(를) {duration} 동안 지연",
+        "expected": "예상됨으로 표시",
+        "expectedAria": "{name}을(를) 예상됨으로 표시",
+        "undo": "실행 취소",
+        "undoAria": "{name}의 처리 취소",
+        "confirm": "확인",
+        "cancel": "취소",
+        "notePlaceholder": "왜 예상되는 상황인가요?",
+        "noteRequired": "메모가 필요합니다",
+        "saveFailed": "저장되지 않음 · {message}",
+        "expiryLabel": "만료 시간"
+      },
+      "showDischarged": "처리된 항목 표시",
+      "hideDischarged": "처리된 항목 숨기기",
+      "dischargedEmpty": "처리된 항목이 없습니다"
     },
     "liveBoard": {
       "title": "현재 실행 중",
@@ -861,6 +929,15 @@
       "completionRate": "완료율 {rate}%",
       "noTerminalRuns": "기간 내 종료된 실행 없음",
       "total": "{count, plural, other {총 #개}}",
+      "staleHint": "마지막으로 알려진 값 표시 중 · 새로고침 실패"
+    },
+    "spend": {
+      "title": "보고된 지출",
+      "loading": "지출 불러오는 중…",
+      "error": "지출 사용 불가 · {message}",
+      "unreachable": "API에 연결할 수 없음",
+      "empty": "이 기간에 실행 없음",
+      "coverage": "{total}개 중 {reported}개 보고됨",
       "staleHint": "마지막으로 알려진 값 표시 중 · 새로고침 실패"
     },
     "stale": {
@@ -958,6 +1035,8 @@
     "roleUser": "사용자",
     "roleThinking": "생각 중",
     "roleResponse": "응답",
+    "planAssignments": "{count, plural, other {할당 #개}}",
+    "planDependsOn": "의존 대상:",
     "tabAria": "{label} 탭 {position}/{total}"
   },
   "workflow": {

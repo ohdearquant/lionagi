@@ -6,7 +6,16 @@
  * the scroll container.
  */
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslations } from "use-intl";
 import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
@@ -17,9 +26,15 @@ import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
-import { buildNodeStatusesByName, buildOperationGraph, laneFor } from "@/lib/operationGraph";
+import {
+  buildNodeStatusesByName,
+  buildOperationGraph,
+  laneFor,
+  transitiveReduceDisplay,
+} from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
-import { deriveDisplayStatus, isEffectivelyActive } from "@/lib/runStatus";
+import { deriveDisplayStatus, deriveVerdict, isEffectivelyActive } from "@/lib/runStatus";
+import type { Verdict } from "@/lib/runStatus";
 import type { RunMessage, RunResumeResponse, RunStep, WorkerGraph } from "@/lib/types";
 import type { NodeExecStatus } from "@/components/canvas/StepNode";
 
@@ -135,6 +150,24 @@ export function resolveGraphEdges(
     }
   }
   return pairOrder.map((pair) => byPair.get(pair)!);
+}
+
+// The authored graph's resolved edges (resolveGraphEdges output) include
+// every ancestor the designer wired, direct and transitive alike — the same
+// "one depends_on entry per predecessor" redundancy transitiveReduce exists
+// for on the runtime path, just authored instead of engine-emitted. Reduce
+// it the same way, display-time only and with the semantic guard
+// (transitiveReduceDisplay never drops a condition/handler/map/code edge),
+// so a viewer sees the minimal picture by default with a one-click escape
+// hatch back to the full resolved set — never a dependency silently erased.
+export function computeDisplayEdges(
+  edges: WorkerGraph["edges"],
+  showImpliedEdges: boolean,
+  visibleNodeIds?: string[],
+): { displayEdges: WorkerGraph["edges"]; hiddenCount: number } {
+  const visibleNodes = visibleNodeIds ? new Set(visibleNodeIds) : undefined;
+  const { kept, hidden } = transitiveReduceDisplay(edges, { visibleNodes });
+  return { displayEdges: showImpliedEdges ? edges : kept, hiddenCount: hidden.length };
 }
 
 // Raw SSE payloads arrive as an untyped Record — this is the boundary where
@@ -400,13 +433,28 @@ function SectionHeader({
   label,
   count,
   errorTone,
+  edgeCount,
+  hiddenCount,
+  onToggleImplied,
+  showImplied,
+  trailing,
 }: {
   label: string;
   count?: number;
   errorTone?: boolean;
+  /** Edge count of whatever graph is actually being rendered (reduced by
+   * default, or the full resolved set when showImplied is on). */
+  edgeCount?: number;
+  /** Edges transitiveReduceDisplay dropped as transitively implied — the
+   * toggle button and "N implied hidden" badge render only when > 0. */
+  hiddenCount?: number;
+  onToggleImplied?: () => void;
+  showImplied?: boolean;
+  trailing?: ReactNode;
 }) {
+  const t = useTranslations("history.detail");
   return (
-    <div className="mb-2 flex items-center gap-2">
+    <div className="mb-2 flex flex-wrap items-center gap-2">
       <h2 className="text-label font-semibold text-content-primary">{label}</h2>
       {count != null && (
         <span
@@ -419,6 +467,26 @@ function SectionHeader({
           {count}
         </span>
       )}
+      {edgeCount != null && (
+        <span className="rounded px-1.5 py-0 font-mono text-[length:var(--t-xs)] bg-surface-overlay text-content-muted">
+          {t("graphEdgeCount", { count: edgeCount })}
+        </span>
+      )}
+      {hiddenCount != null && hiddenCount > 0 && (
+        <>
+          <span className="font-mono text-[length:var(--t-xs)] text-content-muted">
+            {t("graphImpliedHidden", { count: hiddenCount })}
+          </span>
+          <button
+            type="button"
+            onClick={onToggleImplied}
+            className="rounded border border-edge px-1.5 py-0 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary"
+          >
+            {showImplied ? t("graphHideImplied") : t("graphShowImplied")}
+          </button>
+        </>
+      )}
+      {trailing}
     </div>
   );
 }
@@ -589,7 +657,113 @@ interface ErrorEntry {
   summary?: string;
 }
 
-function ErrorsSection({ errors, partial }: { errors: ErrorEntry[]; partial?: boolean }) {
+export interface GateOutcome {
+  verdict: Verdict;
+  major: number;
+  minor: number;
+  /** True when the emission carried a findings list (a review-style verdict);
+   *  false for a bare pass/fail gate, which has no severity breakdown. */
+  hasFindings: boolean;
+}
+
+const BLOCKING_FINDING_SEVERITIES = new Set(["critical", "high"]);
+
+// Flow-layer DAG gates (lionagi/operations/flow.py's is_gate contract) never
+// emit a StructuredOutput signal — a rejecting gate's verdict lives in the
+// operation result the executor inspects internally, and surfaces to the
+// outside world only as this session-level terminal reason code (set by the
+// CLI teardown in lionagi/cli/_runs.py once the DAG completes with at least
+// one short-circuited gate). It is the one shape that channel actually
+// reaches the run-detail payload through today (SessionDetail.status_reason_code,
+// via services/sessions.py get_session) — mirrored here as a literal rather
+// than imported, same pattern as runStatus.ts's ZOMBIE_REASON_CODE.
+const GATE_REJECTED_REASON_CODE = "run.completed.gate_rejected";
+
+// Runtime errors (tool-call failures) and a gate/review step's verdict are
+// different populations — a run can have zero of the former and still carry
+// a "request changes" finding from the latter. Scanning newest-first mirrors
+// how a reader thinks about it: the most recent structured verdict is the
+// one that matters, not the first one emitted.
+//
+// A bare `verdict: string` or `passed: boolean` field is NOT a reliable gate
+// signal — plenty of unrelated structured outputs across the codebase carry
+// exactly those field names (e.g. a coding-engine result's `passed`, a
+// hypothesis-engine result's `passed`, a generic Verdict/ComplianceVerdict's
+// `verdict`) and would otherwise render a false "Gate" badge. Only the
+// dedicated `gate_verdict` / `gate_passed` keys — which no non-gate emission
+// in the codebase uses — identify an output AS a gate result.
+export function deriveGateOutcome(
+  events: SignalEvent[],
+  runStatus?: { status_reason_code?: string | null } | null,
+): GateOutcome | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev.kind !== "StructuredOutput") continue;
+    const data = ev.payload?.data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const d = data as Record<string, unknown>;
+    if (typeof d.gate_verdict === "string" && d.gate_verdict) {
+      const findings = Array.isArray(d.findings) ? d.findings : [];
+      let major = 0;
+      let minor = 0;
+      for (const f of findings) {
+        const severity =
+          f && typeof f === "object" ? (f as Record<string, unknown>).severity : null;
+        if (typeof severity === "string" && BLOCKING_FINDING_SEVERITIES.has(severity)) major += 1;
+        else minor += 1;
+      }
+      return { verdict: deriveVerdict(d.gate_verdict), major, minor, hasFindings: true };
+    }
+    if (typeof d.gate_passed === "boolean") {
+      return {
+        verdict: d.gate_passed ? "approve" : "reject",
+        major: 0,
+        minor: 0,
+        hasFindings: false,
+      };
+    }
+  }
+  // No direct-producer StructuredOutput carried a verdict — fall back to the
+  // DAG-gate reason code. This channel only ever reports a rejection (there is
+  // no matching "a gate passed" reason code to derive "approve" from), so it
+  // never contradicts a StructuredOutput-derived approve/approve-with-fixes above.
+  if (runStatus?.status_reason_code === GATE_REJECTED_REASON_CODE) {
+    return { verdict: "reject", major: 0, minor: 0, hasFindings: false };
+  }
+  return null;
+}
+
+const GATE_OUTCOME_TONE: Record<Verdict, string> = {
+  approve: "bg-status-success-bg text-status-success",
+  "approve-with-fixes": "bg-status-warning-bg text-status-warning",
+  "request-changes": "bg-status-error-bg text-status-error",
+  reject: "bg-status-error-bg text-status-error",
+  none: "bg-surface-overlay text-content-muted",
+};
+
+function GateOutcomeBadge({ outcome }: { outcome: GateOutcome }) {
+  const t = useTranslations("history.detail");
+  const label = outcome.hasFindings
+    ? t("gateOutcome", { verdict: outcome.verdict, major: outcome.major, minor: outcome.minor })
+    : t("gateOutcomeSimple", { verdict: outcome.verdict });
+  return (
+    <span
+      className={`rounded px-1.5 py-0 font-mono text-[length:var(--t-xs)] font-semibold ${GATE_OUTCOME_TONE[outcome.verdict]}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function ErrorsSection({
+  errors,
+  partial,
+  gateOutcome,
+}: {
+  errors: ErrorEntry[];
+  partial?: boolean;
+  gateOutcome?: GateOutcome | null;
+}) {
   const t = useTranslations("history.detail");
   const groups = useMemo(() => {
     const map = new Map<string, ErrorEntry[]>();
@@ -618,6 +792,7 @@ function ErrorsSection({ errors, partial }: { errors: ErrorEntry[]; partial?: bo
         label={t("sectionErrors")}
         count={errors.length}
         errorTone={errors.length > 0}
+        trailing={gateOutcome ? <GateOutcomeBadge outcome={gateOutcome} /> : undefined}
       />
       {errors.length === 0 ? (
         <div className="flex items-center gap-2 rounded border border-edge bg-surface-raised px-4 py-3 text-sm text-status-success">
@@ -786,7 +961,65 @@ interface LaneSummary {
   count: number;
 }
 
-function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean }) {
+// Rendered-row cap for the events list — independent of lane summaries/counts
+// above, which always aggregate over the full `events` array so a job whose
+// terminal event falls outside the rendered window still reports correctly.
+// The window keeps the NEWEST rows (the tail is where a reader looks after a
+// run ends); older rows page in on demand instead of being dropped.
+const EVENTS_RENDER_STEP = 500;
+
+// Element/Signal attach these on every row: `created_at` duplicates the row's
+// own timestamp column, `schema_version` is a constant, and `metadata` is
+// populated for a minority of signals — noise in the one-line summary, not
+// information a reader is looking for.
+const NOISY_PAYLOAD_KEYS = new Set(["schema_version", "created_at"]);
+
+function isEmptyPayloadValue(v: unknown): boolean {
+  if (v == null || v === "") return true;
+  if (typeof v === "object") return Object.keys(v as object).length === 0;
+  return false;
+}
+
+export function visibleEventPayloadEntries(
+  payload: Record<string, unknown> | undefined,
+): [string, unknown][] {
+  if (!payload) return [];
+  return Object.entries(payload).filter(
+    ([k, v]) => k !== "op_id" && !NOISY_PAYLOAD_KEYS.has(k) && !isEmptyPayloadValue(v),
+  );
+}
+
+// HookSignal rows are the most common row in the stream. Their payload is a
+// `point` (which hook fired) plus a `kwargs` bag whose shape varies per
+// point — pick whichever of these names what the hook actually touched, so
+// the row reads as "tool.pre · read_file" instead of a struct dump.
+const HOOK_SUMMARY_KWARGS = ["tool_name", "branch_id", "model", "role"];
+
+export function summarizeHookEvent(ev: SignalEvent): string | null {
+  if (ev.kind !== "HookSignal") return null;
+  const point = typeof ev.payload?.point === "string" ? ev.payload.point : null;
+  if (!point) return null;
+  const kwargs =
+    ev.payload?.kwargs && typeof ev.payload.kwargs === "object"
+      ? (ev.payload.kwargs as Record<string, unknown>)
+      : {};
+  const detail = HOOK_SUMMARY_KWARGS.map((k) => kwargs[k]).find(
+    (v): v is string => typeof v === "string" && v.length > 0,
+  );
+  return detail ? `${point} · ${detail}` : point;
+}
+
+export function EventsSection({
+  events,
+  live,
+  renderStep = EVENTS_RENDER_STEP,
+}: {
+  events: SignalEvent[];
+  live: boolean;
+  /** Paging window size; defaults to EVENTS_RENDER_STEP. Overridable so tests
+   *  can exercise the "show older" page-back without rendering hundreds of rows. */
+  renderStep?: number;
+}) {
   const t = useTranslations("history.detail");
   const laneSummaries = useMemo((): LaneSummary[] => {
     const byOp = new Map<string, LaneSignal[]>();
@@ -803,6 +1036,31 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
       count: kinds.length,
     }));
   }, [events]);
+
+  const [renderCap, setRenderCap] = useState(renderStep);
+  // A switch to a new (empty) run must reset the render window immediately,
+  // not after a post-render effect — adjusted during render (React's
+  // documented pattern for resetting state on a prop change) rather than in
+  // a useEffect, which would cascade an extra render for every run switch.
+  const isEmpty = events.length === 0;
+  const [wasEmpty, setWasEmpty] = useState(isEmpty);
+  if (isEmpty !== wasEmpty) {
+    setWasEmpty(isEmpty);
+    if (isEmpty) setRenderCap(renderStep);
+  }
+
+  const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedEvents((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const hiddenOlderEvents = Math.max(0, events.length - renderCap);
+  const visibleEvents = hiddenOlderEvents > 0 ? events.slice(hiddenOlderEvents) : events;
 
   return (
     <div id="run-events" className="scroll-mt-4">
@@ -847,43 +1105,79 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
         </div>
       ) : (
         <div className="max-h-72 overflow-y-auto rounded border border-edge bg-surface-raised">
+          {hiddenOlderEvents > 0 && (
+            <button
+              type="button"
+              onClick={() => setRenderCap((c) => c + renderStep)}
+              className="w-full border-b border-edge px-3 py-1.5 text-center font-mono text-[length:var(--t-xs)] text-content-muted hover:bg-surface-overlay hover:text-content-secondary"
+            >
+              {t("showOlderEvents", { count: Math.min(hiddenOlderEvents, renderStep) })}
+            </button>
+          )}
           <div className="flex flex-col divide-y divide-edge-subtle">
-            {events.map((ev) => {
+            {visibleEvents.map((ev) => {
               const badge = badgeForEvent(ev);
-              const hasPayload = ev.payload && Object.keys(ev.payload).length > 0;
+              const hookSummary = summarizeHookEvent(ev);
+              const visibleEntries = visibleEventPayloadEntries(ev.payload);
+              const hasRawPayload = ev.payload && Object.keys(ev.payload).length > 0;
+              const isExpanded = expandedEvents.has(ev.id);
               return (
-                <div
-                  key={ev.id}
-                  className="flex items-start gap-2 px-3 py-1.5 hover:bg-surface-overlay"
-                >
-                  <span className="mt-0.5 shrink-0 font-mono text-[length:var(--t-xs)] tabular-nums text-content-muted">
-                    {new Date(ev.ts * 1000).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                      second: "2-digit",
-                    })}
-                  </span>
-                  <span
-                    className={`mt-0.5 shrink-0 rounded px-1.5 py-0 font-mono text-[length:var(--t-xs)] font-semibold ${badge.tone}`}
-                  >
-                    {badge.label}
-                  </span>
-                  {ev.op_id && (
-                    <span className="mt-0.5 shrink-0 font-mono text-[length:var(--t-xs)] text-content-secondary">
-                      {ev.op_id}
+                <div key={ev.id} className="hover:bg-surface-overlay">
+                  <div className="flex items-start gap-2 px-3 py-1.5">
+                    <span className="mt-0.5 shrink-0 font-mono text-[length:var(--t-xs)] tabular-nums text-content-muted">
+                      {new Date(ev.ts * 1000).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      })}
                     </span>
-                  )}
-                  {hasPayload && (
-                    <span className="min-w-0 truncate font-mono text-[length:var(--t-xs)] text-content-muted">
-                      {Object.entries(ev.payload)
-                        .filter(([k]) => k !== "op_id")
-                        .slice(0, 3)
-                        .map(([k, v]) => {
-                          const s = compactValue(v);
-                          return `${k}=${s.length > 40 ? s.slice(0, 40) + "…" : s}`;
-                        })
-                        .join("  ")}
+                    <span
+                      className={`mt-0.5 shrink-0 rounded px-1.5 py-0 font-mono text-[length:var(--t-xs)] font-semibold ${badge.tone}`}
+                    >
+                      {badge.label}
                     </span>
+                    {ev.op_id && (
+                      <span className="mt-0.5 shrink-0 font-mono text-[length:var(--t-xs)] text-content-secondary">
+                        {ev.op_id}
+                      </span>
+                    )}
+                    {hookSummary ? (
+                      <span className="min-w-0 truncate font-mono text-[length:var(--t-xs)] text-content-muted">
+                        {hookSummary}
+                      </span>
+                    ) : (
+                      visibleEntries.length > 0 && (
+                        <span className="min-w-0 truncate font-mono text-[length:var(--t-xs)] text-content-muted">
+                          {visibleEntries
+                            .slice(0, 3)
+                            .map(([k, v]) => {
+                              const s = compactValue(v);
+                              return `${k}=${s.length > 40 ? s.slice(0, 40) + "…" : s}`;
+                            })
+                            .join("  ")}
+                        </span>
+                      )
+                    )}
+                    {hasRawPayload && (
+                      <button
+                        type="button"
+                        aria-expanded={isExpanded}
+                        aria-label={t("expandEventDetails")}
+                        onClick={() => toggleExpanded(ev.id)}
+                        className="ml-auto shrink-0 text-content-muted hover:text-content-secondary"
+                      >
+                        {isExpanded ? (
+                          <IconChevronDown size={10} strokeWidth={2.25} />
+                        ) : (
+                          <IconChevronRight size={10} strokeWidth={2.25} />
+                        )}
+                      </button>
+                    )}
+                  </div>
+                  {isExpanded && (
+                    <pre className="max-h-48 overflow-auto border-t border-edge-subtle bg-surface-base px-3 py-2 font-mono text-[length:var(--t-xs)] leading-relaxed text-content-secondary">
+                      {JSON.stringify(ev.payload, null, 2)}
+                    </pre>
                   )}
                 </div>
               );
@@ -897,11 +1191,15 @@ function EventsSection({ events, live }: { events: SignalEvent[]; live: boolean 
 
 // ── Public component ──────────────────────────────────────────────────────────
 
-// Bounds for the execution-graph panel. The floor keeps a tiny pipeline from
-// collapsing into a sliver; the cap keeps a huge fan-out from swallowing the
-// page — past it the canvas pans/zooms inside the panel.
+// Floor for the execution-graph panel — keeps a tiny pipeline from collapsing
+// into a sliver. No ceiling: the card sizes to the laid-out graph's reported
+// bounding-box height (post-reduction, post-depth-scaled-ranksep) so fitView
+// has room to keep a deep chain's cards above the readability floor
+// (WorkerCanvas's FIT_ZOOM_FLOOR); a capped card would force fitView below
+// that floor for every graph taller than the cap. The enclosing page scrolls
+// past a tall card; the canvas itself only pans once it's still wider/taller
+// than the floor-zoomed viewport.
 const DAG_MIN_HEIGHT = 280;
-const DAG_MAX_HEIGHT = 560;
 
 export interface RunDetailProps {
   /** Session ID to load. */
@@ -925,7 +1223,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   const dagHeight = dagHeightFor.id === id ? dagHeightFor.height : DAG_MIN_HEIGHT;
   const onDagLayoutHeight = useCallback(
     (height: number) => {
-      const clamped = Math.min(DAG_MAX_HEIGHT, Math.max(DAG_MIN_HEIGHT, Math.ceil(height)));
+      const clamped = Math.max(DAG_MIN_HEIGHT, Math.ceil(height));
       setDagHeightFor((prev) => ({
         id,
         height: Math.max(prev.id === id ? prev.height : DAG_MIN_HEIGHT, clamped),
@@ -1266,7 +1564,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     for (const step of steps) {
       for (const p of extractFilePaths(step.messages ?? [])) set.add(p);
     }
-    return Array.from(set);
+    return Array.from(set).sort();
   }, [steps, session]);
 
   const errors = useMemo(() => {
@@ -1287,18 +1585,10 @@ export default function RunDetail({ id }: RunDetailProps) {
     return errs;
   }, [steps]);
 
-  const files = useMemo(() => {
-    const paths = new Set<string>();
-    for (const step of steps) {
-      for (const msg of step.messages ?? []) {
-        if (msg.role === "tool_call" && msg.arguments) {
-          const fp = msg.arguments.file_path || msg.arguments.path;
-          if (typeof fp === "string") paths.add(fp);
-        }
-      }
-    }
-    return Array.from(paths).sort();
-  }, [steps]);
+  const gateOutcome = useMemo(
+    () => deriveGateOutcome(signalEvents, session),
+    [signalEvents, session],
+  );
 
   const opGraph = useMemo(
     () => buildOperationGraph(signalEvents.filter((e) => !!e.op_id)),
@@ -1317,11 +1607,27 @@ export default function RunDetail({ id }: RunDetailProps) {
   );
 
   // runGraph is the persisted/authored graph (Studio's early_graph) — its
-  // edges are exactly what the designer wired, and may carry conditions that
-  // only apply to a specific (possibly transitive-looking) edge. Do NOT
-  // transitively reduce it: unlike the runtime-derived opGraph below (whose
-  // edges come from depends_on ancestor lists and legitimately need
-  // deduplication), every authored edge here is meaningful and must render.
+  // edges are exactly what the designer wired, resolved (resolveGraphEdges,
+  // above) but not yet reduced. Like the runtime-derived opGraph below, a
+  // depends_on-style ancestor set can carry edges a shorter chain already
+  // implies; unlike opGraph, an authored edge can also carry a
+  // condition/handler/map/code mode the designer put there on purpose. So
+  // this is reduced too, but display-time only and through
+  // transitiveReduceDisplay (not the runtime transitiveReduce): it never
+  // drops a semantically rich edge, and a hidden dependency is always one
+  // toggle away from view, never silently gone.
+  const [showImpliedEdges, setShowImpliedEdges] = useState(false);
+  const { displayEdges, hiddenCount } = useMemo(
+    () =>
+      runGraph
+        ? computeDisplayEdges(
+            runGraph.edges,
+            showImpliedEdges,
+            runGraph.nodes.map((n) => n.id),
+          )
+        : { displayEdges: [] as WorkerGraph["edges"], hiddenCount: 0 },
+    [runGraph, showImpliedEdges],
+  );
 
   // Live per-node status correlated by authored step id (Node* payload.name),
   // never by op_id — see lib/operationGraph.ts. Only meaningful when a
@@ -1442,6 +1748,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       <ResumeRun
         key={session.id}
         runId={session.id}
+        invocationKind={session.invocation_kind ?? null}
         branches={session.branches}
         onResumed={handleResumed}
       />
@@ -1454,7 +1761,14 @@ export default function RunDetail({ id }: RunDetailProps) {
       />
       {runGraph && shouldRenderAuthoredGraph(runGraph, opGraph) ? (
         <div id="run-dag" className="scroll-mt-4">
-          <SectionHeader label={t("sectionExecutionGraph")} count={runGraph.nodes.length} />
+          <SectionHeader
+            label={t("sectionExecutionGraph")}
+            count={runGraph.nodes.length}
+            edgeCount={displayEdges.length}
+            hiddenCount={hiddenCount}
+            onToggleImplied={() => setShowImpliedEdges((v) => !v)}
+            showImplied={showImpliedEdges}
+          />
           {/* A fan-out of dozens of workers cannot be legible in the same
               280px that fits a five-step pipeline — the panel takes its height
               from the laid-out graph's bounding box so fitView has room to
@@ -1466,7 +1780,7 @@ export default function RunDetail({ id }: RunDetailProps) {
           >
             <Suspense fallback={null}>
               <WorkerCanvas
-                graph={runGraph}
+                graph={{ ...runGraph, edges: displayEdges }}
                 editable={false}
                 execSteps={execSteps}
                 nodeStatuses={nodeStatuses}
@@ -1525,8 +1839,8 @@ export default function RunDetail({ id }: RunDetailProps) {
         olderMessagesRemaining={hiddenOlderCount}
         loadingOlder={loadingOlder}
       />
-      <ErrorsSection errors={errors} partial={partialWindow} />
-      <FilesSection files={files} partial={partialWindow} />
+      <ErrorsSection errors={errors} partial={partialWindow} gateOutcome={gateOutcome} />
+      <FilesSection files={runFiles} partial={partialWindow} />
       <EventsSection events={signalEvents} live={live && !done} />
       <div ref={bottomRef} />
     </div>

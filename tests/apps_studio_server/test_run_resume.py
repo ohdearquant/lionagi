@@ -533,6 +533,48 @@ def test_missing_cli_branch_snapshot_returns_conflict_before_launch(resume_harne
     assert launched == []
 
 
+def test_get_and_post_agree_when_the_branch_snapshot_is_missing(resume_harness, monkeypatch):
+    """GET (resume_availability) used to answer "resumable" off branch
+    membership alone, never checking that the branch's CLI snapshot actually
+    exists — the same prerequisite POST's dispatch enforces via
+    _ensure_branch_snapshot_available and 409s on when missing. That let the
+    button light up and then fail on click, the exact defect class this
+    resume-dispatch work exists to kill. Both routes must now share the same
+    prerequisite check, so a session with a resolvable branch but no snapshot
+    reads as not-resumable before the button is ever offered, not just when
+    it's pressed.
+    """
+    import lionagi.cli._runs as cli_runs
+
+    _svc, db_path, client, launched = resume_harness
+    run_id = str(uuid.uuid4())
+    branch_id = str(uuid.uuid4())
+    _run(_seed_run(db_path, run_id=run_id, branch_ids=[branch_id]))
+
+    def _missing_snapshot(_branch_id: str):
+        raise FileNotFoundError("snapshot was pruned")
+
+    monkeypatch.setattr(cli_runs, "find_branch", _missing_snapshot)
+
+    get_response = client.get(f"/api/runs/{run_id}/resume")
+    assert get_response.status_code == 200, get_response.text
+    get_body = get_response.json()
+    assert get_body["resumable"] is False
+    assert get_body["reason"] == "snapshot_unavailable"
+
+    post_response = client.post(
+        f"/api/runs/{run_id}/resume",
+        json={"instruction": "Continue."},
+    )
+    assert post_response.status_code == 409, post_response.text
+
+    # Same underlying check, same exception text — GET's explanation and
+    # POST's refusal must describe the identical fact, not two different ones
+    # that merely happen to both be negative.
+    assert get_body["message"] == post_response.json()["detail"]
+    assert launched == []
+
+
 def test_corrupt_cli_branch_snapshot_returns_conflict_before_launch(
     resume_harness, monkeypatch, tmp_path
 ):

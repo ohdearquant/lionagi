@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "जाँच की जा रही है कि क्या यह रन फिर से शुरू किया जा सकता है…",
+    "availabilityFailed": "यह निर्धारित नहीं किया जा सका कि यह रन फिर से शुरू किया जा सकता है या नहीं।",
+    "notResumable": "इस रन को फिर से शुरू नहीं किया जा सकता।",
+    "continueDescription": "जहाँ यह रुका था वहीं से सहेजी गई योजना को फिर से चलाता है — कोई नया निर्देश नहीं, कोई शाखा चुनने की आवश्यकता नहीं।",
+    "continueSubmit": "जारी रखें",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -429,6 +434,10 @@
       "noMessages": "कोई मैसेज रिकॉर्ड नहीं है",
       "waitingEvents": "लाइफ़साइकल इवेंट की प्रतीक्षा…",
       "noEvents": "कोई लाइफ़साइकल इवेंट रिकॉर्ड नहीं है",
+      "showOlderEvents": "{count, number} पुरानी घटनाएं दिखाएं",
+      "expandEventDetails": "इवेंट विवरण दिखाएं",
+      "gateOutcome": "गेट: {verdict} · {major} प्रमुख, {minor} छोटे",
+      "gateOutcomeSimple": "गेट: {verdict}",
       "live": "लाइव",
       "noBranchErrors": "किसी भी ब्रांच में त्रुटि नहीं मिली।",
       "noFiles": "कोई फ़ाइल ऑपरेशन नहीं मिला।",
@@ -442,7 +451,18 @@
       "noBranchErrorsPartial": "लोड किए गए मैसेज में कोई त्रुटि नहीं।",
       "noFilesPartial": "लोड किए गए मैसेज में कोई फ़ाइल ऑपरेशन नहीं मिला।",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count} किनारे",
+      "graphImpliedHidden": "· {count} निहित छिपे",
+      "graphHideImplied": "निहित छिपाएँ",
+      "graphShowImplied": "निहित किनारे दिखाएँ",
+      "graphNodeStatusQueued": "कतार में",
+      "graphNodeStatusRunning": "चालू",
+      "graphNodeStatusApproval": "अनुमोदन",
+      "graphNodeStatusPaused": "रुका हुआ",
+      "graphNodeStatusDone": "पूर्ण",
+      "graphNodeStatusFailed": "विफल",
+      "graphNodeStatusEscalated": "एस्केलेटेड"
     },
     "masterAria": "इतिहास सूची",
     "detailAria": "आइटम विवरण"
@@ -540,6 +560,7 @@
       "triggering": "ट्रिगर हो रहा है…",
       "runStarted": "रन शुरू हुआ: {id}",
       "triggerFailed": "ट्रिगर विफल",
+      "toggleFailed": "टॉगल विफल",
       "every": "हर {interval}",
       "in": "{delta} में",
       "overdue": "{delta} से ओवरड्यू",
@@ -547,7 +568,17 @@
       "last": "पिछला",
       "never": "कभी रन नहीं हुआ",
       "paused": "रोका गया",
-      "notScheduled": "निर्धारित नहीं"
+      "notScheduled": "निर्धारित नहीं",
+      "health": {
+        "healthy": "स्वस्थ",
+        "failing": "विफल",
+        "overdue": "लंबित",
+        "neverFired": "कभी नहीं चली",
+        "noEvidence": "कोई प्रमाण नहीं",
+        "lastOutcome": "पिछली बार {outcome} {delta} पहले",
+        "neverFiredSince": "{date} से कभी नहीं चली",
+        "noEvidenceHint": "कोई निष्पादन दर्ज नहीं"
+      }
     },
     "run": {
       "elapsed": "{delta} बीत गया",
@@ -784,6 +815,8 @@
     },
     "history": {
       "label": "सेशन इतिहास",
+      "sortRecent": "हाल की",
+      "sortCost": "सर्वाधिक लागत",
       "all": "सभी",
       "completed": "पूरा हुआ",
       "failed": "विफल",
@@ -797,6 +830,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -820,7 +861,34 @@
       },
       "more": "+{count, plural, one {# और} other {# और}} — इतिहास में सभी देखें →",
       "digestLatest": "नवीनतम: {name} · {age} पहले",
-      "streakCount": "{count}× विफल"
+      "streakCount": "{count}× विफल",
+      "disposition": {
+        "acknowledged": "स्वीकृत",
+        "resolved": "हल हो गया",
+        "expected": "अपेक्षित",
+        "snoozed": "स्थगित"
+      },
+      "action": {
+        "acknowledge": "स्वीकार करें",
+        "acknowledgeAria": "{name} को स्वीकार करें",
+        "resolve": "हल करें",
+        "resolveAria": "{name} को हल करें",
+        "snooze": "{duration} के लिए स्थगित करें",
+        "snoozeAria": "{name} को {duration} के लिए स्थगित करें",
+        "expected": "अपेक्षित",
+        "expectedAria": "{name} को अपेक्षित के रूप में चिह्नित करें",
+        "undo": "पूर्ववत करें",
+        "undoAria": "{name} की निपटान स्थिति पूर्ववत करें",
+        "confirm": "पुष्टि करें",
+        "cancel": "रद्द करें",
+        "notePlaceholder": "यह अपेक्षित क्यों है?",
+        "noteRequired": "एक टिप्पणी आवश्यक है",
+        "saveFailed": "सहेजा नहीं गया · {message}",
+        "expiryLabel": "समाप्ति"
+      },
+      "showDischarged": "निपटाए गए दिखाएं",
+      "hideDischarged": "निपटाए गए छिपाएं",
+      "dischargedEmpty": "कोई निपटाया गया आइटम नहीं"
     },
     "liveBoard": {
       "title": "अभी चल रहा",
@@ -861,6 +929,15 @@
       "completionRate": "{rate}% पूर्णता",
       "noTerminalRuns": "विंडो में कोई समाप्त हुए रन नहीं",
       "total": "कुल {count}",
+      "staleHint": "आखिरी ज्ञात दिखा रहा है · रीफ़्रेश विफल"
+    },
+    "spend": {
+      "title": "रिपोर्ट किया गया खर्च",
+      "loading": "खर्च लोड हो रहा है…",
+      "error": "खर्च अनुपलब्ध · {message}",
+      "unreachable": "API पहुँच से बाहर है",
+      "empty": "विंडो में कोई रन नहीं",
+      "coverage": "{total} में से {reported} रिपोर्ट की गईं",
       "staleHint": "आखिरी ज्ञात दिखा रहा है · रीफ़्रेश विफल"
     },
     "stale": {
@@ -958,6 +1035,8 @@
     "roleUser": "यूज़र",
     "roleThinking": "सोच रहा है",
     "roleResponse": "रिस्पॉन्स",
+    "planAssignments": "{count, plural, one {# असाइनमेंट} other {# असाइनमेंट}}",
+    "planDependsOn": "इस पर निर्भर है:",
     "tabAria": "{label} टैब {position}/{total}"
   },
   "workflow": {

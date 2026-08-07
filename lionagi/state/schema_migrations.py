@@ -192,6 +192,22 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("export_dir", "TEXT"),
         ("error", "TEXT"),
     ],
+    # Fencing revision added after attention_dispositions/history already
+    # shipped (schema_version was never bumped for their original add, so a
+    # store carrying them predates this column too). DEFAULT 1 only
+    # satisfies ALTER TABLE's NOT NULL requirement -- StateDB's one-time
+    # attention-dispositions backfill raises pre-existing rows to their true
+    # history-derived count.
+    "attention_dispositions": [
+        ("revision", "INTEGER NOT NULL DEFAULT 1"),
+    ],
+    # Global append-order counter, added alongside attention_dispositions
+    # .revision above. DEFAULT 0 is a placeholder for the ALTER TABLE NOT
+    # NULL requirement only -- 0 never survives the backfill, which assigns
+    # every pre-existing row a real (created_at, id)-ordered value.
+    "attention_disposition_history": [
+        ("sequence", "INTEGER NOT NULL DEFAULT 0"),
+    ],
     # ADR-0059: durable dispatch outbox; see engine_runs above re ALTER TABLE
     "dispatch_outbox": [
         ("id", "TEXT NOT NULL"),
@@ -227,6 +243,17 @@ _MESSAGE_POINTER_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_branches_progression_id ON branches(progression_id)",
 )
 
+# attention_disposition_history predates its `sequence` column on a store
+# already carrying the table (see attention_disposition_history above), so
+# metadata.create_all() never issues this CREATE INDEX for it either -- same
+# reasoning as _MESSAGE_POINTER_INDEXES. Must run after StateDB's
+# attention-dispositions backfill assigns unique sequence values, or the
+# uniqueness check fails against the ALTER TABLE ... DEFAULT 0 placeholder.
+_ATTENTION_HISTORY_SEQUENCE_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_attention_disposition_history_sequence "
+    "ON attention_disposition_history(sequence)",
+)
+
 MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
     "sqlite": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
@@ -238,6 +265,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         *_MESSAGE_POINTER_INDEXES,
         "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
         "ON branches(session_id, created_at)",
+        *_ATTENTION_HISTORY_SEQUENCE_INDEX,
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
@@ -249,5 +277,6 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         *_MESSAGE_POINTER_INDEXES,
         "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
         "ON branches(session_id, created_at)",
+        *_ATTENTION_HISTORY_SEQUENCE_INDEX,
     ),
 }

@@ -668,6 +668,32 @@ def _refuse_without_prompt(verb: Verb, args: dict[str, Any], prompt: str | None)
     )
 
 
+def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> None:
+    """Refuse a submission naming an agent profile nothing declares.
+
+    Checked with the exact resolver a spawned run itself would use (same
+    directories, same cwd, same plugin/ambiguity rules), so this never
+    refuses a name the run would have found. Unresolved, the failure used to
+    surface only inside the spawned process — after the job record already
+    existed with nothing on it to say why — leaving a caller to poll a run
+    that died silently on start.
+    """
+    name = args.get("agent")
+    if not name:
+        return
+    from lionagi.cli._providers import (
+        AgentProfileNotFoundError,
+        AmbiguousProfileNameError,
+        load_agent_profile,
+    )
+
+    with roster._resolving_under(cwd):
+        try:
+            load_agent_profile(name)
+        except (AgentProfileNotFoundError, AmbiguousProfileNameError) as exc:
+            raise OpError("invalid_input", str(exc)) from exc
+
+
 def _resolve_cwd(args: dict[str, Any]) -> str | None:
     """The caller's working directory, resolved the way it will be used.
 
@@ -693,6 +719,7 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
     _refuse_without_model(verb, schema, args, prompt)
     _refuse_without_prompt(verb, args, prompt)
     cwd = _resolve_cwd(args)
+    _refuse_unknown_profile(args, cwd)
     flags = render_argv(schema, args)
     assert verb.job_kind is not None
     result = jobs.submit(
@@ -754,7 +781,12 @@ async def _run_job(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
             max_wait=args.get("max_wait", 60.0),
             poll_interval=args.get("poll_interval", 1.0),
         )
-    return _JOB_EXECUTORS[verb.name](args)
+    result = _JOB_EXECUTORS[verb.name](args)
+    if verb.name == "job.status" and args.get("detail"):
+        from . import _run_detail
+
+        result["detail"] = await _run_detail.build_run_detail(args["run_id"])
+    return result
 
 
 def _run_roster(verb: Verb, args: dict[str, Any]) -> dict[str, Any]:
