@@ -203,6 +203,101 @@ def test_gated_plays_surfaces_a_gate_created_after_import(shows_root: Path, patc
     assert "play-1" in play_names, f"gated play created after import missing from queue: {items!r}"
 
 
+def test_gated_plays_disk_status_wins_over_stale_db_row(shows_root: Path, patched_app):
+    """A play imported with one status, then rewritten on disk to `gated`,
+    must surface in the queue with the disk status — the DB row is a
+    one-time import mirror with no live status writer, so a stale DB status
+    must not hide a live gate.
+
+    Regression for: import play-0 with disk status `running`, then rewrite
+    play-0/_meta.json to `gated`. get_show() must report `gated` (not the
+    stale `running`), and list_gated_plays() must not be `[]` — the two must
+    never disagree about the same play.
+    """
+    import lionagi.studio.services.shows as shows_mod
+
+    from ._helpers import run_async
+
+    topic = "stale-db-show"
+    show_dir = shows_root / topic
+    play0 = show_dir / "play-0"
+    play0.mkdir(parents=True)
+    (show_dir / "_show.md").write_text(f"# Show: {topic}\n")
+    (play0 / "_meta.json").write_text(
+        json.dumps({"status": "running", "started_at": "2024-01-01T00:00:00Z"})
+    )
+
+    run_async(shows_mod.import_shows())
+
+    # The play is rewritten in place after import — no new play, so the DB
+    # row for play-0 stays "running" forever unless something re-imports.
+    (play0 / "_meta.json").write_text(
+        json.dumps({"status": "gated", "started_at": "2024-01-01T00:00:00Z"})
+    )
+
+    detail_r = patched_app.get(f"/api/shows/{topic}")
+    assert detail_r.status_code == 200
+    play0_status = next(
+        p["meta"]["status"] for p in detail_r.json()["plays"] if p["name"] == "play-0"
+    )
+    assert play0_status == "gated", (
+        f"get_show() must report the live disk status, got {play0_status!r}"
+    )
+
+    gated_r = patched_app.get("/api/shows/gated-plays")
+    assert gated_r.status_code == 200
+    items = gated_r.json()
+    assert any(item["topic"] == topic and item["play_name"] == "play-0" for item in items), (
+        f"disk gate hidden by stale DB row: {items!r}"
+    )
+
+
+def test_gated_plays_surfaces_a_show_never_imported(shows_root: Path, patched_app):
+    """A show directory that was never imported must still be scanned for
+    gated plays. Once any show has been imported, list_shows() returns DB
+    rows only, so deriving the gated queue's show set from list_shows()
+    silently drops every show that import_shows() never touched.
+
+    Regression for: import one show so the DB is non-empty, then create a
+    second, never-imported show with a gated play — the queue must not
+    silently omit it.
+    """
+    import lionagi.studio.services.shows as shows_mod
+
+    from ._helpers import run_async
+
+    imported_topic = "imported-show-r6"
+    imported_dir = shows_root / imported_topic
+    imported_play = imported_dir / "play-0"
+    imported_play.mkdir(parents=True)
+    (imported_dir / "_show.md").write_text(f"# Show: {imported_topic}\n")
+    (imported_play / "_meta.json").write_text(json.dumps({"status": "success"}))
+
+    run_async(shows_mod.import_shows())
+
+    never_topic = "never-imported-show-r6"
+    never_dir = shows_root / never_topic
+    never_play = never_dir / "play-1"
+    never_play.mkdir(parents=True)
+    (never_dir / "_show.md").write_text(f"# Show: {never_topic}\n")
+    (never_play / "_meta.json").write_text(json.dumps({"status": "gated"}))
+
+    list_r = patched_app.get("/api/shows")
+    assert list_r.status_code == 200
+    listed_topics = {item["topic"] for item in list_r.json()}
+    assert never_topic not in listed_topics, (
+        "test assumption broken: /api/shows already surfaces the unimported "
+        "show, so this no longer exercises the gated-queue's own scan"
+    )
+
+    gated_r = patched_app.get("/api/shows/gated-plays")
+    assert gated_r.status_code == 200
+    items = gated_r.json()
+    assert any(item["topic"] == never_topic and item["play_name"] == "play-1" for item in items), (
+        f"gated play in a never-imported show omitted from queue: {items!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Path traversal tests (Fix 1)
 # ---------------------------------------------------------------------------
