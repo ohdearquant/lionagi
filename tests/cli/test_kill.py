@@ -213,7 +213,13 @@ def test_terminate_pid_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch):
 def test_terminate_pid_identity_mismatch_no_signal_sent(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """If cmdline doesn't match expected_cmd, no signal is sent."""
+    """If cmdline doesn't match expected_cmd, no signal is sent.
+
+    A create-time-bearing fixture is required: without a durable
+    ``expected_create_time``/``expected_session_id``, `_check_pid_identity`
+    refuses as "unverifiable" before ever calling `_cmdline_is_lionagi`, and
+    this test would pass for that unrelated reason regardless of cmdline.
+    """
     import signal as _signal
 
     kill_calls: list[tuple[int, int]] = []
@@ -224,6 +230,7 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
     fake_psutil = MagicMock()
     fake_proc = MagicMock()
     fake_proc.cmdline.return_value = ["/usr/bin/python3", "unrelated_script.py"]
+    fake_proc.create_time.return_value = 100.0
     fake_psutil.Process.return_value = fake_proc
     fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
     fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
@@ -232,7 +239,9 @@ def test_terminate_pid_identity_mismatch_no_signal_sent(
     fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
     monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
 
-    result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
+    result = _terminate_pid(
+        42, grace_seconds=0.1, expected_cmd="lionagi", expected_create_time=100.0
+    )
     assert result == "identity_mismatch"
     assert kill_calls == [], "no signal must be sent on cmdline mismatch"
 
@@ -449,12 +458,19 @@ def test_identity_rejects_path_substring(monkeypatch: pytest.MonkeyPatch):
 
     The reported false positive: ``vim /Users/lion/projects/lionagi/README.md``.
     A substring match would signal this recycled PID; an exact-token match must not.
+
+    ``expected_create_time`` is required and matched to the fake process's
+    create_time: without it, `_check_pid_identity` refuses as "unverifiable"
+    before `_cmdline_is_lionagi` ever runs, and this test would pass for that
+    unrelated reason regardless of the cmdline predicate.
     """
     kill_calls = _mock_psutil(
         monkeypatch,
         cmdline=["/usr/bin/vim", "/Users/lion/projects/lionagi/README.md"],
     )
-    result = _terminate_pid(42, grace_seconds=0.1, expected_cmd="lionagi")
+    result = _terminate_pid(
+        42, grace_seconds=0.1, expected_cmd="lionagi", expected_create_time=100.0
+    )
     assert result == "identity_mismatch"
     assert kill_calls == [], "must not signal a process that only has lionagi in a path"
 
@@ -1309,6 +1325,69 @@ async def test_do_kill_all_stale_unverifiable_pid_persists_first_observed_marker
     meta = json.loads(meta) if isinstance(meta, str) else meta
     assert meta["unverifiable_since"] == first_seen, "first-observed marker must not reset"
     assert meta["unverifiable_count"] == 2
+
+
+async def test_do_kill_all_stale_unverifiable_markers_survive_flow_metadata_write(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Ordinary flow progress must not erase the unverifiable-pid evidence a
+    sweep just recorded.
+
+    flow.py's session metadata writers (the early-graph snapshot, segment
+    writes, control-log writes) go through a shared merge-preserving helper
+    so they layer their own fields onto whatever is already in
+    `node_metadata` instead of replacing the column outright. This proves
+    the merge survives a full sweep → flow-write → sweep cycle: the marker
+    set by the first sweep must still be there, unmodified, for the second
+    sweep to build on.
+    """
+    from lionagi.cli.orchestrate.flow import _persist_node_metadata_patch
+
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+
+    fake_access_denied = type("AccessDenied", (Exception,), {})
+    fake_psutil = MagicMock()
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = fake_access_denied
+    fake_psutil.ZombieProcess = type("ZombieProcess", (fake_psutil.NoSuchProcess,), {})
+    fake_psutil.Process.side_effect = fake_access_denied("no access")
+    monkeypatch.setattr("lionagi.cli.kill.psutil", fake_psutil)
+
+    old_start = time.time() - 7200
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=54321, started_at=old_start)
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    first_seen = meta["unverifiable_since"]
+    assert meta["unverifiable_count"] == 1
+
+    # Ordinary flow progress: a segment/control-log style metadata write,
+    # the same write shape flow.py's live-persist callbacks use.
+    async with StateDB() as db:
+        await _persist_node_metadata_patch(
+            db, sid, {"segments": [{"branch_name": "worker-1", "status": "completed"}]}
+        )
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+
+    async with StateDB() as db:
+        s = await db.get_session(sid)
+    meta = s["node_metadata"]
+    meta = json.loads(meta) if isinstance(meta, str) else meta
+    assert meta["unverifiable_since"] == first_seen, (
+        "a flow metadata write must not reset the first-observed marker"
+    )
+    assert meta["unverifiable_count"] == 2, (
+        "the sweep count must still increment after an intervening flow metadata write"
+    )
+    assert meta["segments"] == [{"branch_name": "worker-1", "status": "completed"}], (
+        "the flow metadata write itself must still land"
+    )
 
 
 async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_sweep(
