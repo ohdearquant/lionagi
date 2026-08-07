@@ -104,7 +104,9 @@ const SAMPLE_VALUES = {
   kind: "navigate",
   label: "Tab",
   logPages: 10,
+  major: 1,
   message: "oops",
+  minor: 5,
   minute: "05",
   n: 5,
   name: "worker",
@@ -124,6 +126,7 @@ const SAMPLE_VALUES = {
   time: "18:00",
   title: "Fleet readiness review",
   total: 5,
+  verdict: "approve",
   version: "2",
 };
 
@@ -196,8 +199,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 868 leaves", () => {
-    expect(EN_LEAVES.size).toBe(868);
+  it("en.json has 874 leaves", () => {
+    expect(EN_LEAVES.size).toBe(874);
   });
 
   it.each(LOCALES.map((l) => l.code))(

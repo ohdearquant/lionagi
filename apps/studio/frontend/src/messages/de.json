@@ -429,6 +429,10 @@
       "noMessages": "Keine Nachrichten aufgezeichnet",
       "waitingEvents": "Warte auf Lifecycle-Ereignisse…",
       "noEvents": "Keine Lifecycle-Ereignisse aufgezeichnet",
+      "showOlderEvents": "{count, number} ältere Ereignisse anzeigen",
+      "expandEventDetails": "Ereignisdetails anzeigen",
+      "gateOutcome": "Gate: {verdict} · {major} schwerwiegend, {minor} gering",
+      "gateOutcomeSimple": "Gate: {verdict}",
       "live": "live",
       "noBranchErrors": "Keine Fehler über alle Branches hinweg erkannt.",
       "noFiles": "Keine Dateioperationen erkannt.",
@@ -970,6 +974,8 @@
     "roleUser": "Benutzer",
     "roleThinking": "Denkprozess",
     "roleResponse": "Antwort",
+    "planAssignments": "{count, plural, one {# Zuweisung} other {# Zuweisungen}}",
+    "planDependsOn": "abhängig von:",
     "tabAria": "Tab {label}, {position} von {total}"
   },
   "workflow": {

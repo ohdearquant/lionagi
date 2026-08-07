@@ -429,6 +429,10 @@
       "noMessages": "暂无消息记录",
       "waitingEvents": "等待生命周期事件…",
       "noEvents": "暂无生命周期事件",
+      "showOlderEvents": "显示 {count, number} 条更早的事件",
+      "expandEventDetails": "显示事件详情",
+      "gateOutcome": "关卡：{verdict} · {major} 个重大，{minor} 个次要",
+      "gateOutcomeSimple": "关卡：{verdict}",
       "live": "实时",
       "noBranchErrors": "所有分支均未检测到错误。",
       "noFiles": "未检测到文件操作。",
@@ -970,6 +974,8 @@
     "roleUser": "用户",
     "roleThinking": "思考",
     "roleResponse": "回复",
+    "planAssignments": "{count} 个任务分配",
+    "planDependsOn": "依赖于：",
     "tabAria": "{label} 标签页,第 {position} 个,共 {total} 个"
   },
   "workflow": {
