@@ -54,7 +54,7 @@ async def flow_progress_signals(
         name: str,
         status: str,
         elapsed: float,
-        name_is_fallback: bool = True,
+        name_is_fallback: bool,
     ) -> None:
         meta = node_edge_meta.setdefault(op_id, {})
         parent_id = meta.get("parent_id")
@@ -70,6 +70,16 @@ async def flow_progress_signals(
         # structurally by the producer and passed in via name_is_fallback --
         # never inferred here by comparing against op_id's prefix, since a
         # genuine authored name can coincide with that prefix by chance.
+        #
+        # name_is_fallback has no default: this is an internal seam with an
+        # enumerable, all-internal caller set (the four lifecycle producers in
+        # operations/flow.py, all of which already pass the bit explicitly).
+        # "Unknown provenance" isn't a real state a caller can be in here, so
+        # there is no safe value to default to -- treating an untagged call as
+        # fallback silently produced the exact split-identity bug this guards
+        # against for a caller whose first name happened to be authored.
+        # Requiring the keyword makes a caller that doesn't know its own
+        # provenance fail loudly (TypeError) instead of guessing wrong.
         sig_name = meta.get("name")
         if sig_name is None:
             sig_name = name

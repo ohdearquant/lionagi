@@ -327,6 +327,42 @@ async def test_branch_name_colliding_with_op_id_prefix_stays_pinned_through_late
 
 
 @pytest.mark.asyncio
+async def test_on_progress_seam_requires_provenance_instead_of_defaulting():
+    """r5 found that ``flow_signals._on_progress`` defaulted
+    ``name_is_fallback=True``, so an untagged caller supplying an authored
+    name at queued and the UUID prefix at started rendered a split identity:
+    a direct probe fed ``on_progress(op_id, "authored-name", "queued", 0.0)``
+    then ``on_progress(op_id, op_id[:8], "started", 0.0)`` and the bus showed
+    ``queued=authored-name``, ``started=109b2103`` -- two names for one op.
+
+    The seam's only callers are the four lifecycle producers in
+    ``operations/flow.py``, and all four already pass the bit explicitly, so
+    there is no real "unknown provenance" case to default for. This test
+    pins the seam shut: reproducing the exact untagged call shape from the
+    probe above must now fail loudly (TypeError) rather than silently
+    guessing fallback=True and risking the split-identity render.
+    """
+    from lionagi.engines.flow_signals import flow_progress_signals
+    from lionagi.session.branch import Branch
+
+    op = Operation(operation="work", parameters={})
+    session = Session()
+    branch = Branch(name="root")
+    session.include_branches(branch)
+    session.default_branch = branch
+
+    graph = Graph()
+    graph.add_node(op)
+
+    async with flow_progress_signals(session, graph) as on_progress:
+        op_id = str(op.id)
+        with pytest.raises(TypeError):
+            on_progress(op_id, "authored-name", "queued", 0.0)
+        with pytest.raises(TypeError):
+            on_progress(op_id, op_id[:8], "started", 0.0)
+
+
+@pytest.mark.asyncio
 async def test_executor_raw_callback_diverges_without_reference_id_pre_fix_symptom():
     """Pins the pre-fix symptom at its source, one layer below the signal bus:
     the raw ``DependencyAwareExecutor.on_progress`` callback itself falls back
