@@ -850,7 +850,34 @@
       },
       "more": "{count, plural, other {+#개 더 — 기록에서 모두 보기 →}}",
       "digestLatest": "최신: {name} · {age} 전",
-      "streakCount": "{count, plural, other {#× 실패}}"
+      "streakCount": "{count, plural, other {#× 실패}}",
+      "disposition": {
+        "acknowledged": "확인됨",
+        "resolved": "해결됨",
+        "expected": "예상됨",
+        "snoozed": "지연됨"
+      },
+      "action": {
+        "acknowledge": "확인",
+        "acknowledgeAria": "{name} 확인",
+        "resolve": "해결",
+        "resolveAria": "{name} 해결",
+        "snooze": "{duration} 지연",
+        "snoozeAria": "{name}을(를) {duration} 동안 지연",
+        "expected": "예상됨으로 표시",
+        "expectedAria": "{name}을(를) 예상됨으로 표시",
+        "undo": "실행 취소",
+        "undoAria": "{name}의 처리 취소",
+        "confirm": "확인",
+        "cancel": "취소",
+        "notePlaceholder": "왜 예상되는 상황인가요?",
+        "noteRequired": "메모가 필요합니다",
+        "saveFailed": "저장되지 않음 · {message}",
+        "expiryLabel": "만료 시간"
+      },
+      "showDischarged": "처리된 항목 표시",
+      "hideDischarged": "처리된 항목 숨기기",
+      "dischargedEmpty": "처리된 항목이 없습니다"
     },
     "liveBoard": {
       "title": "현재 실행 중",

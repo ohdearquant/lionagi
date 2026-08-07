@@ -850,7 +850,34 @@
       },
       "more": "+{count, plural, one {# और} other {# और}} — इतिहास में सभी देखें →",
       "digestLatest": "नवीनतम: {name} · {age} पहले",
-      "streakCount": "{count}× विफल"
+      "streakCount": "{count}× विफल",
+      "disposition": {
+        "acknowledged": "स्वीकृत",
+        "resolved": "हल हो गया",
+        "expected": "अपेक्षित",
+        "snoozed": "स्थगित"
+      },
+      "action": {
+        "acknowledge": "स्वीकार करें",
+        "acknowledgeAria": "{name} को स्वीकार करें",
+        "resolve": "हल करें",
+        "resolveAria": "{name} को हल करें",
+        "snooze": "{duration} के लिए स्थगित करें",
+        "snoozeAria": "{name} को {duration} के लिए स्थगित करें",
+        "expected": "अपेक्षित",
+        "expectedAria": "{name} को अपेक्षित के रूप में चिह्नित करें",
+        "undo": "पूर्ववत करें",
+        "undoAria": "{name} की निपटान स्थिति पूर्ववत करें",
+        "confirm": "पुष्टि करें",
+        "cancel": "रद्द करें",
+        "notePlaceholder": "यह अपेक्षित क्यों है?",
+        "noteRequired": "एक टिप्पणी आवश्यक है",
+        "saveFailed": "सहेजा नहीं गया · {message}",
+        "expiryLabel": "समाप्ति"
+      },
+      "showDischarged": "निपटाए गए दिखाएं",
+      "hideDischarged": "निपटाए गए छिपाएं",
+      "dischargedEmpty": "कोई निपटाया गया आइटम नहीं"
     },
     "liveBoard": {
       "title": "अभी चल रहा",

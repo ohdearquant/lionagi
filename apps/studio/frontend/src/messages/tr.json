@@ -850,7 +850,34 @@
       },
       "more": "{count, plural, one {+# daha — tümünü geçmişte gör →} other {+# daha — tümünü geçmişte gör →}}",
       "digestLatest": "en son: {name} · {age} önce",
-      "streakCount": "{count, plural, one {#× başarısız} other {#× başarısız}}"
+      "streakCount": "{count, plural, one {#× başarısız} other {#× başarısız}}",
+      "disposition": {
+        "acknowledged": "onaylandı",
+        "resolved": "çözüldü",
+        "expected": "beklenen",
+        "snoozed": "ertelendi"
+      },
+      "action": {
+        "acknowledge": "Onayla",
+        "acknowledgeAria": "{name} öğesini onayla",
+        "resolve": "Çöz",
+        "resolveAria": "{name} öğesini çöz",
+        "snooze": "{duration} ertele",
+        "snoozeAria": "{name} öğesini {duration} ertele",
+        "expected": "Beklenen olarak işaretle",
+        "expectedAria": "{name} öğesini beklenen olarak işaretle",
+        "undo": "Geri al",
+        "undoAria": "{name} öğesinin kapatılmasını geri al",
+        "confirm": "Onayla",
+        "cancel": "İptal",
+        "notePlaceholder": "Bu neden bekleniyor?",
+        "noteRequired": "Not gerekli",
+        "saveFailed": "Kaydedilmedi · {message}",
+        "expiryLabel": "Şu sürede sona erer"
+      },
+      "showDischarged": "Kapatılanları göster",
+      "hideDischarged": "Kapatılanları gizle",
+      "dischargedEmpty": "Kapatılmış öğe yok"
     },
     "liveBoard": {
       "title": "şu anda çalışıyor",

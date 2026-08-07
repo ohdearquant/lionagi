@@ -8,7 +8,7 @@
  */
 
 import type { RunSummary, ScheduleSummary } from "@/lib/types";
-import type { InvocationSummary } from "@/lib/api";
+import type { AttentionDisposition, InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus, isOrphanedReason } from "@/lib/runStatus";
 import { resolveRunLabel } from "@/lib/runLabel";
 
@@ -33,8 +33,17 @@ export interface BoardState {
    * the systemEmpty derivation.
    */
   schedulesKnown: boolean;
-  /** Items needing operator attention. */
+  /** Server-persisted discharge dispositions, keyed by attention item id. */
+  dispositions: Record<string, AttentionDisposition>;
+  /** Items needing operator attention — open + acknowledged (visible by default). */
   attentionItems: AttentionItem[];
+  /**
+   * Items discharged as resolved/expected/snoozed — excluded from the
+   * default view, shown only when an operator asks to see them.
+   */
+  dischargedAttentionItems: AttentionItem[];
+  /** attentionItems with no disposition at all (excludes acknowledged). */
+  unacknowledgedAttentionCount: number;
   /**
    * True when the daemon has no work at all (no runs, invocations, or
    * schedules) — gates the zero-state guided cards. Stays false until
@@ -63,6 +72,8 @@ export interface AttentionItem {
   streakCount?: number;
   /** One-line failure reason — present on "failed" items when the run carries one. */
   reasonSummary?: string;
+  /** Server-persisted discharge state, joined by id. Absent = "open". */
+  disposition?: AttentionDisposition;
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -75,6 +86,8 @@ export type BoardAction =
       invocations: InvocationSummary[];
       /** null = schedules fetch failed this cycle — keep the last-known list. */
       schedules: ScheduleSummary[] | null;
+      /** null = dispositions fetch failed this cycle — keep the last-known map. */
+      dispositions?: Record<string, AttentionDisposition> | null;
       nowSec: number;
     }
   | { type: "DATA_ERROR"; message: string }
@@ -112,12 +125,20 @@ function failedRecently(
   return nowSec - ref <= FAILED_ATTENTION_WINDOW_SEC;
 }
 
+/** Disposition states that discharge an item out of the default active view. */
+const DISCHARGED_STATES: ReadonlySet<AttentionDisposition["state"]> = new Set([
+  "resolved",
+  "expected",
+  "snoozed",
+]);
+
 function buildAttentionItems(
   runs: RunSummary[],
   invocations: InvocationSummary[],
   schedules: ScheduleSummary[],
   nowSec: number,
-): AttentionItem[] {
+  dispositions: Record<string, AttentionDisposition>,
+): { active: AttentionItem[]; discharged: AttentionItem[] } {
   const items: AttentionItem[] = [];
 
   for (const sched of schedules) {
@@ -222,11 +243,31 @@ function buildAttentionItems(
 
   // Deduplicate by id (a run could match multiple reasons — take first/worst)
   const seen = new Set<string>();
-  return items.filter((item) => {
+  const deduped = items.filter((item) => {
     if (seen.has(item.id)) return false;
     seen.add(item.id);
     return true;
   });
+
+  // Join the persisted disposition (if any) onto each derived item, then
+  // split into the default-visible active list and the discharged list.
+  // "open" (no disposition) and "acknowledged" stay in the active list —
+  // acknowledged must stay visible, only restyled; resolved/expected/snoozed
+  // leave it but remain queryable via dischargedAttentionItems. A lapsed
+  // snoozed/expected disposition is never present here at all: the server
+  // read already drops it, so the item is simply "open" again.
+  const active: AttentionItem[] = [];
+  const discharged: AttentionItem[] = [];
+  for (const item of deduped) {
+    const disposition = dispositions[item.id];
+    const joined = disposition ? { ...item, disposition } : item;
+    if (disposition && DISCHARGED_STATES.has(disposition.state)) {
+      discharged.push(joined);
+    } else {
+      active.push(joined);
+    }
+  }
+  return { active, discharged };
 }
 
 // Board order (Running now): creation order, oldest first — never recency.
@@ -281,7 +322,10 @@ export function initialBoardState(): BoardState {
     recentRuns: [],
     schedules: [],
     schedulesKnown: false,
+    dispositions: {},
     attentionItems: [],
+    dischargedAttentionItems: [],
+    unacknowledgedAttentionCount: 0,
     systemEmpty: false,
     dataState: "loading",
     lastUpdatedMs: null,
@@ -300,10 +344,18 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
       const { runs, invocations, nowSec } = action;
       const schedules = action.schedules ?? state.schedules;
       const schedulesKnown = state.schedulesKnown || action.schedules !== null;
+      const dispositions = action.dispositions ?? state.dispositions;
       const activeRuns = deriveActiveRuns(runs);
       const activeInvocations = deriveActiveInvocations(invocations);
       const recentRuns = deriveRecentRuns(runs);
-      const attentionItems = buildAttentionItems(runs, invocations, schedules, nowSec);
+      const { active: attentionItems, discharged: dischargedAttentionItems } = buildAttentionItems(
+        runs,
+        invocations,
+        schedules,
+        nowSec,
+        dispositions,
+      );
+      const unacknowledgedAttentionCount = attentionItems.filter((i) => !i.disposition).length;
       // A degraded schedules fetch before the first successful one leaves an
       // empty placeholder list — never declare the system empty from it.
       const systemEmpty =
@@ -316,7 +368,10 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
         recentRuns,
         schedules,
         schedulesKnown,
+        dispositions,
         attentionItems,
+        dischargedAttentionItems,
+        unacknowledgedAttentionCount,
         systemEmpty,
         dataState: "live",
         lastUpdatedMs: Date.now(),

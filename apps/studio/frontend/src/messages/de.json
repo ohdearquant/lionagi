@@ -850,7 +850,34 @@
       },
       "more": "+{count, plural, one {# mehr} other {# mehr}} — alle im Verlauf anzeigen →",
       "digestLatest": "neueste: {name} · vor {age}",
-      "streakCount": "{count, plural, one {#× fehlgeschlagen} other {#× fehlgeschlagen}}"
+      "streakCount": "{count, plural, one {#× fehlgeschlagen} other {#× fehlgeschlagen}}",
+      "disposition": {
+        "acknowledged": "bestätigt",
+        "resolved": "gelöst",
+        "expected": "erwartet",
+        "snoozed": "verschoben"
+      },
+      "action": {
+        "acknowledge": "Bestätigen",
+        "acknowledgeAria": "{name} bestätigen",
+        "resolve": "Lösen",
+        "resolveAria": "{name} lösen",
+        "snooze": "{duration} verschieben",
+        "snoozeAria": "{name} um {duration} verschieben",
+        "expected": "Erwartet",
+        "expectedAria": "{name} als erwartet markieren",
+        "undo": "Rückgängig",
+        "undoAria": "Erledigung von {name} rückgängig machen",
+        "confirm": "Bestätigen",
+        "cancel": "Abbrechen",
+        "notePlaceholder": "Warum ist das erwartet?",
+        "noteRequired": "Eine Notiz ist erforderlich",
+        "saveFailed": "Nicht gespeichert · {message}",
+        "expiryLabel": "Läuft ab in"
+      },
+      "showDischarged": "Erledigte anzeigen",
+      "hideDischarged": "Erledigte ausblenden",
+      "dischargedEmpty": "Keine erledigten Einträge"
     },
     "liveBoard": {
       "title": "Läuft jetzt",

@@ -1986,6 +1986,96 @@ export async function listScheduleRuns(
   return fetchJson(`/api/schedules/${encodeURIComponent(scheduleId)}/runs${qs ? `?${qs}` : ""}`);
 }
 
+// ─── Attention dispositions (needs-attention discharge lifecycle) ────────────
+
+export type AttentionDispositionState = "acknowledged" | "resolved" | "expected" | "snoozed";
+
+export interface AttentionDisposition {
+  item_id: string;
+  state: AttentionDispositionState;
+  note: string | null;
+  created_at: number;
+  updated_at: number;
+  expires_at: number | null;
+  actor: string;
+  source_status: string;
+  /** Server-owned, monotonic per item_id. Echo back on the next PUT — required
+   * to recreate an item a DELETE has removed; a stale value is rejected (409). */
+  revision: number;
+}
+
+export interface AttentionDispositionHistoryEntry {
+  id: string;
+  item_id: string;
+  prior_state: AttentionDispositionState | "open" | null;
+  new_state: AttentionDispositionState | "open";
+  note: string | null;
+  actor: string;
+  source_status: string | null;
+  created_at: number;
+}
+
+/** Batch-read current, non-lapsed dispositions keyed by item_id. */
+export async function listAttentionDispositions(): Promise<Record<string, AttentionDisposition>> {
+  const res = await fetchJson<{ dispositions: Record<string, AttentionDisposition> }>(
+    "/api/attention/dispositions/",
+  );
+  return res.dispositions;
+}
+
+/**
+ * Create-or-replace one item's disposition. Idempotent under retry while the
+ * disposition stays active. `revision` should be the value last read for
+ * this item_id (e.g. `item.disposition?.revision`) — required to recreate a
+ * disposition a DELETE has removed; omitted or stale, the server rejects
+ * with 409 rather than resurrecting stale data.
+ */
+export async function putAttentionDisposition(
+  itemId: string,
+  body: {
+    state: AttentionDispositionState;
+    sourceStatus: string;
+    note?: string;
+    expiresAt?: number;
+    actor?: string;
+    revision?: number;
+  },
+): Promise<AttentionDisposition> {
+  return fetchJson<AttentionDisposition>(
+    `/api/attention/dispositions/${encodeURIComponent(itemId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        state: body.state,
+        source_status: body.sourceStatus,
+        note: body.note,
+        expires_at: body.expiresAt,
+        actor: body.actor,
+        revision: body.revision,
+      }),
+    },
+  );
+}
+
+/** Remove a disposition (undo — the item returns to open). */
+export async function deleteAttentionDisposition(
+  itemId: string,
+): Promise<{ item_id: string; deleted: boolean }> {
+  return fetchJson(`/api/attention/dispositions/${encodeURIComponent(itemId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getAttentionDispositionHistory(
+  itemId: string,
+): Promise<AttentionDispositionHistoryEntry[]> {
+  const res = await fetchJson<{ item_id: string; history: AttentionDispositionHistoryEntry[] }>(
+    `/api/attention/dispositions/${encodeURIComponent(itemId)}/history`,
+  );
+  return res.history;
+}
+
 // ─── Engine runs (Phase C Move 2) ─────────────────────────────────────────────
 
 export interface EngineRunSummary {

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
 import type { RunSummary, ScheduleSummary } from "@/lib/types";
-import type { InvocationSummary } from "@/lib/api";
+import type { AttentionDisposition, InvocationSummary } from "@/lib/api";
 import { resolveRunLabel } from "@/lib/runLabel";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -50,8 +50,34 @@ function dispatchOk(
   invocations: InvocationSummary[] = [],
   nowSec = 1_000_000,
   schedules: ScheduleSummary[] | null = null,
+  dispositions: Record<string, AttentionDisposition> | null = null,
 ): BoardState {
-  return boardReducer(state, { type: "DATA_OK", runs, invocations, schedules, nowSec });
+  return boardReducer(state, {
+    type: "DATA_OK",
+    runs,
+    invocations,
+    schedules,
+    dispositions,
+    nowSec,
+  });
+}
+
+function makeDisposition(
+  overrides: Partial<AttentionDisposition> & {
+    item_id: string;
+    state: AttentionDisposition["state"];
+  },
+): AttentionDisposition {
+  const base: Omit<AttentionDisposition, "item_id" | "state"> = {
+    note: null,
+    created_at: 1_000_000,
+    updated_at: 1_000_000,
+    expires_at: null,
+    actor: "operator",
+    source_status: "failed",
+    revision: 1,
+  };
+  return { ...base, ...overrides };
 }
 
 function makeSchedule(
@@ -622,5 +648,141 @@ describe("systemEmpty", () => {
     expect(s.systemEmpty).toBe(true);
     s = dispatchOk(s, [], [], 1_000_001, null);
     expect(s.systemEmpty).toBe(true);
+  });
+});
+
+// ─── Attention discharge lifecycle (dispositions join/filter) ────────────────
+
+describe("boardReducer — disposition join and active/discharged split", () => {
+  it("an item with no disposition is 'open' — active, no disposition field", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({ run_id: "r1", status: "failed", started_at: 1_000_000 - 600 }),
+    ]);
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].disposition).toBeUndefined();
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+    expect(s.unacknowledgedAttentionCount).toBe(1);
+  });
+
+  it("acknowledged stays in the active list, restyled, and leaves the unacknowledged count", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [makeRun({ run_id: "r1", status: "failed", started_at: nowSec - 600 })],
+      [],
+      nowSec,
+      null,
+      { "run:r1": makeDisposition({ item_id: "run:r1", state: "acknowledged" }) },
+    );
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].disposition?.state).toBe("acknowledged");
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+    expect(s.unacknowledgedAttentionCount).toBe(0);
+  });
+
+  it("resolved leaves the active list for dischargedAttentionItems", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [makeRun({ run_id: "r1", status: "failed", started_at: nowSec - 600 })],
+      [],
+      nowSec,
+      null,
+      { "run:r1": makeDisposition({ item_id: "run:r1", state: "resolved" }) },
+    );
+    expect(s.attentionItems).toHaveLength(0);
+    expect(s.dischargedAttentionItems).toHaveLength(1);
+    expect(s.dischargedAttentionItems[0].disposition?.state).toBe("resolved");
+    expect(s.unacknowledgedAttentionCount).toBe(0);
+  });
+
+  it("expected and snoozed also leave the active list", () => {
+    const nowSec = 1_000_000;
+    const runs = [
+      makeRun({ run_id: "r-expected", status: "failed", started_at: nowSec - 600 }),
+      makeRun({ run_id: "r-snoozed", status: "failed", started_at: nowSec - 600 }),
+    ];
+    const dispositions = {
+      "run:r-expected": makeDisposition({
+        item_id: "run:r-expected",
+        state: "expected",
+        note: "deploy window",
+        expires_at: nowSec + 3600,
+      }),
+      "run:r-snoozed": makeDisposition({
+        item_id: "run:r-snoozed",
+        state: "snoozed",
+        expires_at: nowSec + 3600,
+      }),
+    };
+    const s = dispatchOk(initialBoardState(), runs, [], nowSec, null, dispositions);
+    expect(s.attentionItems).toHaveLength(0);
+    expect(s.dischargedAttentionItems).toHaveLength(2);
+  });
+
+  it("a resolved disposition on an old run never suppresses a different, later run with a new id", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [makeRun({ run_id: "new-failure", status: "failed", started_at: nowSec - 600 })],
+      [],
+      nowSec,
+      null,
+      // A disposition keyed to a *different* item id (the prior occurrence)
+      // must never touch this run — item ids are per-occurrence by construction.
+      { "run:old-failure": makeDisposition({ item_id: "run:old-failure", state: "resolved" }) },
+    );
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].id).toBe("run:new-failure");
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+  });
+
+  it("a schedule streak re-enters the active list after recovering and re-crossing the threshold, even with a stale resolved disposition", () => {
+    // The streak item id is stable (sched:<id>) across the whole burst — the
+    // reducer doesn't know "this streak" from "that streak", so a lingering
+    // resolved disposition DOES still hide a re-crossed streak today; this
+    // is the documented weakness of the per-item overlay design (issue
+    // fences: schedule streak re-entry is expiry/threshold-driven, not a
+    // generation key). We assert the actually-implemented contract: absent
+    // a disposition, the item is active again.
+    const nowSec = 1_000_000;
+    const sched = makeSchedule({ id: "s1", name: "nightly", consecutive_failures: 5 });
+    const s = dispatchOk(initialBoardState(), [], [], nowSec, [sched]);
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].id).toBe("sched:s1");
+    expect(s.attentionItems[0].disposition).toBeUndefined();
+  });
+
+  it("degrades to the last-known dispositions map when a poll's dispositions fetch fails (null)", () => {
+    const nowSec = 1_000_000;
+    const run = makeRun({ run_id: "r1", status: "failed", started_at: nowSec - 600 });
+    let s = dispatchOk(initialBoardState(), [run], [], nowSec, null, {
+      "run:r1": makeDisposition({ item_id: "run:r1", state: "resolved" }),
+    });
+    expect(s.dischargedAttentionItems).toHaveLength(1);
+
+    // Next poll: dispositions fetch failed (null) — the last-known map must
+    // be kept, same contract as the existing schedules degrade-to-null path.
+    s = dispatchOk(s, [run], [], nowSec + 3, null, null);
+    expect(s.dischargedAttentionItems).toHaveLength(1);
+    expect(s.dispositions["run:r1"].state).toBe("resolved");
+  });
+
+  it("a lapsed snoozed/expected disposition is simply absent from the server read — the item reads as open again", () => {
+    // The server (list_dispositions) already drops lapsed rows; the reducer
+    // only ever sees what's still active, so an item with no matching key
+    // in the dispositions map is open, never distinguished from "never
+    // discharged" — this is the documented, intentional lapse semantics.
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [makeRun({ run_id: "r1", status: "failed", started_at: nowSec - 600 })],
+      [],
+      nowSec,
+      null,
+      {}, // server already excluded the lapsed row
+    );
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].disposition).toBeUndefined();
   });
 });

@@ -850,7 +850,34 @@
       },
       "more": "{count, plural, other {+# nữa — xem tất cả trong lịch sử →}}",
       "digestLatest": "mới nhất: {name} · {age} trước",
-      "streakCount": "{count, plural, other {#× thất bại}}"
+      "streakCount": "{count, plural, other {#× thất bại}}",
+      "disposition": {
+        "acknowledged": "đã xác nhận",
+        "resolved": "đã giải quyết",
+        "expected": "dự kiến",
+        "snoozed": "đã hoãn"
+      },
+      "action": {
+        "acknowledge": "Xác nhận",
+        "acknowledgeAria": "Xác nhận {name}",
+        "resolve": "Giải quyết",
+        "resolveAria": "Giải quyết {name}",
+        "snooze": "Hoãn {duration}",
+        "snoozeAria": "Hoãn {name} trong {duration}",
+        "expected": "Đánh dấu là dự kiến",
+        "expectedAria": "Đánh dấu {name} là dự kiến",
+        "undo": "Hoàn tác",
+        "undoAria": "Hoàn tác xử lý {name}",
+        "confirm": "Xác nhận",
+        "cancel": "Hủy",
+        "notePlaceholder": "Tại sao điều này được dự kiến?",
+        "noteRequired": "Cần có ghi chú",
+        "saveFailed": "Chưa lưu · {message}",
+        "expiryLabel": "Hết hạn sau"
+      },
+      "showDischarged": "Hiện mục đã xử lý",
+      "hideDischarged": "Ẩn mục đã xử lý",
+      "dischargedEmpty": "Không có mục nào đã xử lý"
     },
     "liveBoard": {
       "title": "đang chạy",

@@ -60,6 +60,7 @@ _DOCS_PATHS = frozenset({"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redir
 # mounting rule).
 _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/api/agents/{name}"),
+    ("DELETE", "/api/attention/dispositions/{item_id}"),
     ("DELETE", "/api/engine-defs/{def_id}"),
     ("DELETE", "/api/mcp/servers/{name}"),
     ("DELETE", "/api/operator/conversations/{conversation_id}"),
@@ -78,6 +79,8 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/approvals/{approval_id}"),
     ("GET", "/api/artifacts/by-session/{session_id}"),
     ("GET", "/api/artifacts/{artifact_id}"),
+    ("GET", "/api/attention/dispositions/"),
+    ("GET", "/api/attention/dispositions/{item_id}/history"),
     ("GET", "/api/casts/"),
     ("GET", "/api/definitions/"),
     ("GET", "/api/definitions/{kind}/{name}"),
@@ -188,6 +191,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/workflow-defs/"),
     ("POST", "/api/workflow-defs/{def_id}/run"),
     ("PUT", "/api/agents/{name}"),
+    ("PUT", "/api/attention/dispositions/{item_id}"),
     ("PUT", "/api/engine-defs/{def_id}"),
     ("PUT", "/api/mcp/servers/{name}"),
     ("PUT", "/api/playbooks/{name}"),
@@ -271,7 +275,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 125
+    assert len(_GOLDEN_ROUTES) == 129
 
 
 def _compiled_match_shape(path_template: str) -> str:
