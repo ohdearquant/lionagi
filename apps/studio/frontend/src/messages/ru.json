@@ -235,7 +235,11 @@
       "filteredHint": "Попробуйте другой тип или очистите поиск.",
       "createFirst": "Создать первый",
       "createWorkflow": "Новый рабочий процесс",
-      "createAgent": "Новый агент"
+      "createAgent": "Новый агент",
+      "allSkill": "Навыки не найдены.",
+      "allSkillHint": "Добавьте SKILL.md в ~/.lionagi/skills/<name>/, чтобы увидеть его здесь.",
+      "allPlugin": "Плагины не найдены.",
+      "allPluginHint": "Установите плагин в ~/.claude/plugins/, чтобы увидеть его здесь."
     },
     "table": {
       "kind": "Тип",
@@ -296,7 +300,19 @@
       "lastUsed": "Последнее использование",
       "never": "никогда",
       "recentInvocations": "Последние вызовы",
-      "noInvocations": "Вызовы еще не записаны."
+      "noInvocations": "Вызовы еще не записаны.",
+      "skillValidationFailed": "Проверка не пройдена. Исправьте ошибки ниже перед сохранением.",
+      "pluginOwnedSkillHint": "Поставляется с плагином — чтобы изменить, редактируйте файлы плагина напрямую.",
+      "readOnly": "Только чтение",
+      "skillTools": "Разрешённые инструменты",
+      "skillInstructions": "Инструкции",
+      "pluginHooks": "Хуки",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP-серверы",
+      "pluginHooksSection": "Настройка хуков",
+      "pluginReadmeSection": "README",
+      "yes": "Да",
+      "no": "Нет"
     },
     "template": {
       "badge": "Встроенный",

@@ -235,7 +235,11 @@
       "filteredHint": "thử loại khác hoặc xóa tìm kiếm.",
       "createFirst": "tạo mục đầu tiên",
       "createWorkflow": "quy trình làm việc mới",
-      "createAgent": "tác nhân mới"
+      "createAgent": "tác nhân mới",
+      "allSkill": "Không tìm thấy skill nào.",
+      "allSkillHint": "Thêm SKILL.md vào ~/.lionagi/skills/<name>/ để hiển thị ở đây.",
+      "allPlugin": "Không tìm thấy plugin nào.",
+      "allPluginHint": "Cài đặt plugin vào ~/.claude/plugins/ để hiển thị ở đây."
     },
     "table": {
       "kind": "loại",
@@ -296,7 +300,19 @@
       "lastUsed": "dùng gần nhất",
       "never": "chưa bao giờ",
       "recentInvocations": "lần gọi gần đây",
-      "noInvocations": "chưa ghi nhận lần gọi nào."
+      "noInvocations": "chưa ghi nhận lần gọi nào.",
+      "skillValidationFailed": "Xác thực thất bại. Sửa các lỗi bên dưới trước khi lưu.",
+      "pluginOwnedSkillHint": "Được đóng gói cùng plugin — chỉnh sửa trực tiếp tệp của plugin để thay đổi.",
+      "readOnly": "Chỉ đọc",
+      "skillTools": "Công cụ được phép",
+      "skillInstructions": "Hướng dẫn",
+      "pluginHooks": "Hook",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "Máy chủ MCP",
+      "pluginHooksSection": "Cấu hình Hook",
+      "pluginReadmeSection": "README",
+      "yes": "Có",
+      "no": "Không"
     },
     "template": {
       "badge": "tích hợp sẵn",

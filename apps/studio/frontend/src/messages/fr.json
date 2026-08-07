@@ -235,7 +235,11 @@
       "filteredHint": "Essayez un autre type ou effacez la recherche.",
       "createFirst": "Créer le premier",
       "createWorkflow": "Nouveau workflow",
-      "createAgent": "Nouvel agent"
+      "createAgent": "Nouvel agent",
+      "allSkill": "Aucun skill trouvé.",
+      "allSkillHint": "Ajoutez un SKILL.md sous ~/.lionagi/skills/<name>/ pour le voir ici.",
+      "allPlugin": "Aucun plugin trouvé.",
+      "allPluginHint": "Installez un plugin sous ~/.claude/plugins/ pour le voir ici."
     },
     "table": {
       "kind": "Type",
@@ -296,7 +300,19 @@
       "lastUsed": "Dernière utilisation",
       "never": "jamais",
       "recentInvocations": "Invocations récentes",
-      "noInvocations": "Aucune invocation enregistrée pour le moment."
+      "noInvocations": "Aucune invocation enregistrée pour le moment.",
+      "skillValidationFailed": "Échec de la validation. Corrigez les erreurs ci-dessous avant d'enregistrer.",
+      "pluginOwnedSkillHint": "Fourni avec un plugin — modifiez les fichiers du plugin directement pour le changer.",
+      "readOnly": "Lecture seule",
+      "skillTools": "Outils autorisés",
+      "skillInstructions": "Instructions",
+      "pluginHooks": "Hooks",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "Serveurs MCP",
+      "pluginHooksSection": "Configuration des hooks",
+      "pluginReadmeSection": "README",
+      "yes": "Oui",
+      "no": "Non"
     },
     "template": {
       "badge": "Intégré",
