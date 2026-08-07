@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -25,7 +25,10 @@ import ConditionEdgeComponent from "./ConditionEdge";
 import type { ConditionEdgeData } from "./ConditionEdge";
 import SidePanel from "./SidePanel";
 import type { Selection } from "./SidePanel";
-import { getLayoutedElements } from "./useLayout";
+import { getLayoutedElements, computeReservedHeight } from "./useLayout";
+import { followModeReducer, initialFollowModeState, shouldAutoCenter } from "./followMode";
+import { reconcileNodeStatuses, computeStagePosition } from "@/lib/execGraphProgress";
+import type { GraphEdge } from "@/lib/execGraphProgress";
 
 import type {
   AgentProfileSummary,
@@ -105,10 +108,81 @@ interface WorkerCanvasProps {
    * panel). Suppresses the MiniMap — at that size it reads as a floating
    * cluster of gray nodes rather than a useful overview. */
   compact?: boolean;
-  /** Reports the laid-out graph's bounding-box height (px) after each layout,
-   * so an embedding container can size itself to the graph's real shape
-   * instead of guessing from node count. */
+  /** Reports the graph's SCALED rendered height (px, via computeReservedHeight
+   * over the layout bbox and the container's available width) after each
+   * layout and on container resize, so an embedding container reserves the
+   * height the graph will actually draw instead of the unscaled bbox. */
   onLayoutHeight?: (height: number) => void;
+  /** True while the run is actively streaming. Gates follow-mode's default-on
+   * behavior and the visible Follow toggle; RunDetail wires this once it
+   * adopts follow mode — omitted callers simply never see it activate. */
+  live?: boolean;
+  /** True once the run has reached a terminal state. Forces follow mode off
+   * permanently and collapses any node with no terminal signal to "pending"
+   * (absence of information) rather than leaving it looking like live work. */
+  done?: boolean;
+  /** Fired on node click with the authored node id, in addition to the
+   * existing side-panel selection — lets an embedding container (e.g.
+   * RunDetail) correlate the click to a branch without WorkerCanvas knowing
+   * about branches. */
+  onNodeSelect?: (nodeId: string) => void;
+}
+
+function graphEdgesOf(edges: WorkerLinkEdge[]): GraphEdge[] {
+  return edges.map((e) => ({ source: e.source, target: e.target }));
+}
+
+// Combines the live nodeStatuses signal with the legacy execSteps/currentStep
+// fallback (same precedence WorkerCanvas has always used per node), then
+// applies the shared reconciliation invariants over the WHOLE resulting map:
+// a node cannot still read "running" once a descendant has reached a
+// terminal state, and — once the run is done — any status that never reached
+// a terminal state collapses to "pending", i.e. unknown/no-telemetry rather
+// than active. Exported so this can be tested without mounting React Flow.
+export function computeEffectiveNodeStatuses(
+  graphNodeIds: string[],
+  graphEdges: GraphEdge[],
+  nodeStatuses: Record<string, NodeExecStatus> | undefined,
+  execSteps: Array<{ step: string; status: string }>,
+  currentStep: string | null | undefined,
+  done: boolean,
+): Record<string, NodeExecStatus> {
+  const completedIds = new Set(
+    execSteps.filter((s) => s.status === "completed").map((s) => s.step),
+  );
+  const base: Record<string, NodeExecStatus> = {};
+  for (const id of graphNodeIds) {
+    const live = nodeStatuses?.[id];
+    if (live) base[id] = live;
+    else if (id === currentStep) base[id] = "running";
+    else if (completedIds.has(id)) base[id] = "completed";
+    else base[id] = "pending";
+  }
+  return reconcileNodeStatuses(graphNodeIds, graphEdges, base, done);
+}
+
+// The point the viewport should center on to keep the running frontier in
+// view: the centroid of every node currently "running" (post-reconciliation
+// status), in graph coordinates. null when nothing is running — a caller
+// must not auto-pan in that case. Pure so follow-mode centering logic is
+// testable without mounting React Flow.
+export function computeFollowCenter(
+  nodes: Array<{
+    id: string;
+    position: { x: number; y: number };
+    width?: number | null;
+    height?: number | null;
+  }>,
+  statuses: Record<string, NodeExecStatus>,
+): { x: number; y: number } | null {
+  const running = nodes.filter((n) => statuses[n.id] === "running");
+  if (running.length === 0) return null;
+  const xs = running.map((n) => n.position.x + (n.width ?? 210) / 2);
+  const ys = running.map((n) => n.position.y + (n.height ?? 60) / 2);
+  return {
+    x: xs.reduce((a, b) => a + b, 0) / xs.length,
+    y: ys.reduce((a, b) => a + b, 0) / ys.length,
+  };
 }
 
 // ─── Conversion helpers ─────────────────────────────────
@@ -261,6 +335,9 @@ export default function WorkerCanvas({
   onChange,
   compact = false,
   onLayoutHeight,
+  live = false,
+  done = false,
+  onNodeSelect,
 }: WorkerCanvasProps) {
   const initialised = useRef(false);
 
@@ -270,6 +347,10 @@ export default function WorkerCanvas({
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selection, setSelection] = useState<Selection>({ type: "none" });
+  // Bounding box of the most recent layout — kept in a ref (not state) so the
+  // resize observer can recompute the reserved height without re-running the
+  // layout effect itself.
+  const layoutBBoxRef = useRef<{ width: number; height: number } | null>(null);
 
   // The fitView PROP fits once, on init — before an async graph load has laid
   // anything out, and before an embedding container has grown to the layout's
@@ -296,29 +377,59 @@ export default function WorkerCanvas({
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(refit);
+    const observer = new ResizeObserver(() => {
+      refit();
+      const bbox = layoutBBoxRef.current;
+      if (bbox) {
+        onLayoutHeight?.(computeReservedHeight(bbox.width, bbox.height, el.clientWidth));
+      }
+    });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [refit]);
+  }, [refit, onLayoutHeight]);
 
-  // Layout on mount or when graph changes
+  // Layout on mount or when graph changes. The layout returns the UNSCALED
+  // bbox; onLayoutHeight reports the SCALED height (via computeReservedHeight,
+  // using the same width-constrained-fit-zoom math fitView itself applies)
+  // so an embedding container reserves exactly the height the graph will
+  // actually draw, never the raw bbox that leaves dead space below a wide,
+  // width-constrained graph.
   useEffect(() => {
     const {
       nodes: ln,
       edges: le,
       height,
       ranks,
+      width,
     } = getLayoutedElements(initialFlowNodes, initialFlowEdges, "LR");
     setNodes(ln);
     setEdges(attachRankDistance(le, ranks));
     initialised.current = true;
-    onLayoutHeight?.(height);
+    layoutBBoxRef.current = { width, height };
+    const containerWidth = containerRef.current?.clientWidth ?? 0;
+    onLayoutHeight?.(computeReservedHeight(width, height, containerWidth));
     refit();
   }, [initialFlowNodes, initialFlowEdges, setNodes, setEdges, onLayoutHeight, refit]);
 
-  // Apply execution status to nodes. nodeStatuses (live signal-derived, keyed
-  // by authored step id) takes priority per node; nodes it doesn't cover fall
-  // back to the legacy execSteps/currentStep derivation.
+  // The combined per-node status map: nodeStatuses (live signal-derived)
+  // takes priority per node, nodes it doesn't cover fall back to the legacy
+  // execSteps/currentStep derivation, and the whole map is then reconciled
+  // (descendant-terminal suppression + terminal-run unknown-status collapse)
+  // before it ever reaches a node's execStatus. Pure derivation from props —
+  // memoized rather than pushed into state from an effect.
+  const effectiveStatuses = useMemo(() => {
+    if (execSteps.length === 0 && !currentStep && !nodeStatuses) return {};
+    return computeEffectiveNodeStatuses(
+      graph.nodes.map((n) => n.id),
+      graphEdgesOf(graph.edges),
+      nodeStatuses,
+      execSteps,
+      currentStep,
+      done,
+    );
+  }, [execSteps, currentStep, nodeStatuses, done, graph.nodes, graph.edges]);
+
+  // Apply the effective status map to the laid-out flow nodes/edges.
   useEffect(() => {
     if (execSteps.length === 0 && !currentStep && !nodeStatuses) return;
 
@@ -327,18 +438,10 @@ export default function WorkerCanvas({
     );
 
     setNodes((nds) =>
-      nds.map((n) => {
-        let status: StepNodeData["execStatus"] = "pending";
-        const live = nodeStatuses?.[n.id];
-        if (live) status = live;
-        else if (n.id === currentStep) status = "running";
-        else if (completedMap.has(n.id)) status = "completed";
-
-        return {
-          ...n,
-          data: { ...n.data, execStatus: status },
-        };
-      }),
+      nds.map((n) => ({
+        ...n,
+        data: { ...n.data, execStatus: effectiveStatuses[n.id] ?? "pending" },
+      })),
     );
 
     setEdges((eds) =>
@@ -350,7 +453,59 @@ export default function WorkerCanvas({
         },
       })),
     );
-  }, [execSteps, currentStep, nodeStatuses, setNodes, setEdges]);
+  }, [execSteps, currentStep, nodeStatuses, effectiveStatuses, setNodes, setEdges]);
+
+  // ── Stage / rank position — honest under transitive reduction because it
+  // is derived from the authored edge set, never the displayed one. ──
+  const stagePosition = useMemo(
+    () =>
+      computeStagePosition(
+        graph.nodes.map((n) => n.id),
+        graphEdgesOf(graph.edges),
+        effectiveStatuses,
+        done,
+      ),
+    [graph.nodes, graph.edges, effectiveStatuses, done],
+  );
+
+  // ── Follow mode — auto-center the running frontier while live, disabled
+  // permanently for the run by any manual pan/zoom, never on a finished run.
+  const [followState, dispatchFollow] = useReducer(
+    followModeReducer,
+    initialFollowModeState(live, done),
+  );
+  const runStateRef = useRef({ live, done });
+  useEffect(() => {
+    if (runStateRef.current.live !== live || runStateRef.current.done !== done) {
+      dispatchFollow({ type: "run_state_changed", live, done });
+      runStateRef.current = { live, done };
+    }
+  }, [live, done]);
+
+  const onMoveStart = useCallback(() => {
+    dispatchFollow({ type: "manual_interaction" });
+  }, []);
+
+  const followTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (followTimerRef.current) clearTimeout(followTimerRef.current);
+    };
+  }, []);
+  useEffect(() => {
+    if (!shouldAutoCenter(followState, live, done)) return;
+    const center = computeFollowCenter(nodes, effectiveStatuses);
+    if (!center) return;
+    if (followTimerRef.current) clearTimeout(followTimerRef.current);
+    followTimerRef.current = setTimeout(() => {
+      dispatchFollow({ type: "programmatic_pan_start" });
+      const zoom = flowRef.current?.getZoom() ?? 1;
+      flowRef.current?.setCenter(center.x, center.y, { duration: 500, zoom });
+      followTimerRef.current = setTimeout(() => {
+        dispatchFollow({ type: "programmatic_pan_end" });
+      }, 550);
+    }, 500);
+  }, [followState, live, done, nodes, effectiveStatuses]);
 
   // Emit changes to parent
   useEffect(() => {
@@ -396,8 +551,9 @@ export default function WorkerCanvas({
       } else {
         setSelection({ type: "node", id: typedNode.id, data: typedNode.data });
       }
+      onNodeSelect?.(typedNode.id);
     },
-    [execSteps, editable, panClearOfPanel],
+    [execSteps, editable, panClearOfPanel, onNodeSelect],
   );
 
   // Edge click
@@ -517,6 +673,7 @@ export default function WorkerCanvas({
           onNodeClick={onNodeClick}
           onEdgeClick={onEdgeClick}
           onPaneClick={onPaneClick}
+          onMoveStart={onMoveStart}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           nodesDraggable={true}
@@ -571,6 +728,28 @@ export default function WorkerCanvas({
             </defs>
           </svg>
         </ReactFlow>
+
+        {/* Stage / rank position — derived from the authored edge set, so
+            reduction never changes it. Rendered whenever the graph has at
+            least one stage. */}
+        {stagePosition.totalStages > 0 && (
+          <div className="pointer-events-none absolute left-2 top-2 z-10 rounded border border-edge bg-surface-raised/90 px-1.5 py-0.5 font-mono text-[length:var(--t-xs)] text-content-secondary shadow-card">
+            Rank {stagePosition.stage} of {stagePosition.totalStages}
+          </div>
+        )}
+
+        {/* Follow toggle — visible any time the run is live, regardless of
+            follow's current state, so a manually-interrupted follow always
+            has a way back on. */}
+        {live && (
+          <button
+            type="button"
+            onClick={() => dispatchFollow({ type: "toggle" })}
+            className="absolute right-2 top-2 z-10 rounded-md border border-edge bg-surface-raised/90 px-2 py-1 text-[length:var(--t-xs)] font-medium text-content-secondary shadow-card hover:bg-surface-overlay hover:text-content-primary"
+          >
+            {followState.following ? "Following" : "Follow"}
+          </button>
+        )}
 
         {/* Toolbar */}
         {editable && (

@@ -372,6 +372,36 @@ export interface LayoutedGraph {
   /** node id -> longest-path depth (rank index), for edge rank-distance
    * styling (ConditionEdge's long-range smooth-step routing). */
   ranks: Map<string, number>;
+  /** UNSCALED bounding-box width, for computeReservedHeight callers. */
+  width: number;
+}
+
+// fitView is width-constrained for any graph wider than its container (true
+// of almost every real run graph), so the zoom actually applied is clamped
+// to what dagre's own container-fit contract already uses in WorkerCanvas:
+// padding 0.15, min 0.1 ("the readability zoom floor" — a wider graph never
+// renders smaller than this), max 1 (never zoomed in past 1:1 to fit).
+export const DAG_FIT_PADDING = 0.15;
+export const DAG_MIN_ZOOM = 0.1;
+export const DAG_MAX_ZOOM = 1;
+
+// getLayoutedElements (below) reports the graph's UNSCALED bounding-box
+// size. A container that reserves height at that value reserves for a shape
+// the graph never actually draws: at the zoom fitView will actually apply —
+// width-constrained and clamped to the same floor/ceiling WorkerCanvas uses
+// — the rendered height is smaller. Given the bbox and the container width
+// the panel will actually have, this returns the height that will actually
+// render, so a wide graph does not leave the rest of its reserved panel
+// empty.
+export function computeReservedHeight(
+  bboxWidth: number,
+  bboxHeight: number,
+  containerWidth: number,
+): number {
+  if (bboxWidth <= 0 || bboxHeight <= 0 || containerWidth <= 0) return bboxHeight;
+  const fitZoom = containerWidth / (bboxWidth * (1 + DAG_FIT_PADDING));
+  const zoom = Math.min(DAG_MAX_ZOOM, Math.max(DAG_MIN_ZOOM, fitZoom));
+  return bboxHeight * zoom;
 }
 
 export function getLayoutedElements(
@@ -428,13 +458,24 @@ export function getLayoutedElements(
   // fan-out is exactly as tall as its grid.
   let top = Infinity;
   let bottom = -Infinity;
+  let left = Infinity;
+  let right = -Infinity;
   for (const node of finalNodes) {
     top = Math.min(top, node.position.y);
     bottom = Math.max(bottom, node.position.y + estimateNodeHeight(node));
+    left = Math.min(left, node.position.x);
+    right = Math.max(right, node.position.x + NODE_WIDTH);
   }
   const height = finalNodes.length === 0 ? 0 : bottom - top + 2 * 24;
+  const width = finalNodes.length === 0 ? 0 : right - left + 2 * 28;
 
-  return { nodes: finalNodes, edges: markContinuationEdges(finalNodes, edges), height, ranks };
+  return {
+    nodes: finalNodes,
+    edges: markContinuationEdges(finalNodes, edges),
+    height,
+    width,
+    ranks,
+  };
 }
 
 export function useAutoLayout() {

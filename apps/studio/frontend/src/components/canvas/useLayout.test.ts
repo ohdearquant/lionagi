@@ -21,6 +21,9 @@ import {
   wrapWideRanks,
   foldWideGraph,
   markContinuationEdges,
+  DAG_MAX_ZOOM,
+  DAG_MIN_ZOOM,
+  computeReservedHeight,
 } from "./useLayout";
 import { transitiveReduceDisplay } from "@/lib/operationGraph";
 import { fitZoomFor, FIT_ZOOM_FLOOR, MIN_INTERACTIVE_ZOOM } from "./WorkerCanvas";
@@ -1207,5 +1210,99 @@ describe("getLayoutedElements — folding a mid-run branch+join stays edge-aware
     expect(height).toBeCloseTo(504, -1);
     expect(rawFit).toBeGreaterThan(0.55);
     expect(rawFit).toBeLessThan(0.75);
+  });
+});
+
+describe("getLayoutedElements — reports a bounding-box width alongside height", () => {
+  it("reports zero width for an empty graph", () => {
+    expect(getLayoutedElements([], [], "LR").width).toBe(0);
+  });
+
+  it("reports a positive width for a populated graph", () => {
+    const { width } = getLayoutedElements(
+      [full("a"), full("b")],
+      [{ id: "a-b", source: "a", target: "b" }],
+      "LR",
+    );
+    expect(width).toBeGreaterThan(0);
+  });
+});
+
+describe("computeReservedHeight — width-constrained rendered-height reservation", () => {
+  // The dead-height bug: getLayoutedElements reports the UNSCALED bbox
+  // height, but a wide graph renders width-constrained at a smaller zoom —
+  // so a container reserving the raw bbox height reserves far more than the
+  // graph ever draws. computeReservedHeight must report what will actually
+  // render, given the bbox and the real container width.
+
+  it("shrinks the reserved height for a width-constrained (very wide) graph", () => {
+    // 3000px-wide bbox into a 700px container is far below zoom 1.
+    const reserved = computeReservedHeight(3000, 600, 700);
+    expect(reserved).toBeLessThan(600);
+    expect(reserved).toBeGreaterThan(0);
+  });
+
+  it("matches the fit-zoom arithmetic exactly for a width-constrained graph", () => {
+    const bboxWidth = 3000;
+    const bboxHeight = 600;
+    const containerWidth = 700;
+    const expectedZoom = containerWidth / (bboxWidth * 1.15);
+    expect(computeReservedHeight(bboxWidth, bboxHeight, containerWidth)).toBeCloseTo(
+      bboxHeight * expectedZoom,
+      5,
+    );
+  });
+
+  it("reserves the full reported height for a graph that fits entirely (zoom would clamp to 1)", () => {
+    // A narrow, short bbox well inside the container never needs to shrink —
+    // fitView's maxZoom of 1 caps it there, not beyond.
+    const reserved = computeReservedHeight(200, 150, 1200);
+    expect(reserved).toBeCloseTo(150, 5);
+  });
+
+  it("is height-constrained (not width-constrained) for a tall narrow graph — full reported height, zoom 1", () => {
+    const reserved = computeReservedHeight(150, 900, 1200);
+    expect(reserved).toBeCloseTo(900, 5);
+  });
+
+  it("never scales below the readability zoom floor (DAG_MIN_ZOOM), however wide the graph", () => {
+    // An extremely wide graph into a narrow container: fitView cannot zoom
+    // out past DAG_MIN_ZOOM, so the panel must not reserve less than that.
+    const bboxWidth = 100_000;
+    const bboxHeight = 500;
+    const containerWidth = 400;
+    const reserved = computeReservedHeight(bboxWidth, bboxHeight, containerWidth);
+    expect(reserved).toBeCloseTo(bboxHeight * DAG_MIN_ZOOM, 5);
+  });
+
+  it("never scales above DAG_MAX_ZOOM even for a tiny bbox in a huge container", () => {
+    const reserved = computeReservedHeight(50, 40, 5000);
+    expect(reserved).toBeCloseTo(40 * DAG_MAX_ZOOM, 5);
+  });
+
+  it("degrades to the raw height rather than dividing by zero on a degenerate bbox/container", () => {
+    expect(computeReservedHeight(0, 500, 700)).toBe(500);
+    expect(computeReservedHeight(500, 0, 700)).toBe(0);
+    expect(computeReservedHeight(500, 500, 0)).toBe(500);
+  });
+
+  it("end-to-end: a real wrapped fan-out's reserved height is materially smaller than its raw height at a realistic panel width", () => {
+    const workers = Array.from({ length: 24 }, (_, i) => `w${i + 1}`);
+    const nodes: Node[] = [
+      { id: "root", position: { x: 0, y: 0 }, data: { label: "root", role: "analyst" } },
+      ...workers.map((id) => ({
+        id,
+        position: { x: 0, y: 0 },
+        data: { label: id, role: "analyst" },
+      })),
+      { id: "sink", position: { x: 0, y: 0 }, data: { label: "sink", role: "analyst" } },
+    ];
+    const edges: Edge[] = [
+      ...workers.map((w) => ({ id: `root-${w}`, source: "root", target: w })),
+      ...workers.map((w) => ({ id: `${w}-sink`, source: w, target: "sink" })),
+    ];
+    const { height, width } = getLayoutedElements(nodes, edges, "LR");
+    const reserved = computeReservedHeight(width, height, 711); // measured RunDetail panel width
+    expect(reserved).toBeLessThan(height);
   });
 });
