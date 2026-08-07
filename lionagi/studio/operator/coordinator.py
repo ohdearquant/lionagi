@@ -323,6 +323,10 @@ class OperatorCoordinator:
             selected_provider = conversation_row.get("provider")
             selected_model = conversation_row.get("providerModel")
             selected_effort = turn_row.get("effort")
+            # The conversation's own durable branch identity, claimed once and
+            # reused by every turn so the log groups them as one branch instead
+            # of a fresh one per turn (see OperatorStore.claim_branch_id).
+            branch_id = await self.store.claim_branch_id(conversation_id)
             engine_turn = OperatorEngineTurn(
                 conversation_id=conversation_id,
                 request_id=request_id,
@@ -334,6 +338,7 @@ class OperatorCoordinator:
                 # Filled in below, once the store has said whether the session
                 # still belongs to what this turn is about to run on.
                 provider_session_id=None,
+                branch_id=branch_id,
                 provider=selected_provider if isinstance(selected_provider, str) else None,
                 model=selected_model if isinstance(selected_model, str) else None,
                 effort=selected_effort if isinstance(selected_effort, str) else None,
