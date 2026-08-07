@@ -19,11 +19,13 @@ compared; their literal stdout is not.
 Waiver:
   W-02: the "agent status" / "doctor --machine" / "handshake --machine" /
     "runs --machine" cases carry live session, git-identity, and daemon
-    state that is non-deterministic across checkouts and wall clocks --
-    excluded below via _VOLATILE_ARGV / _VOLATILE_MACHINE_ARGV. Cases whose
-    captured stdout is itself host-specific (machine paths, run ids,
-    installed skill names) carry a redaction marker in the fixture instead
-    of the literal text -- see test_fixtures_carry_no_host_specific_state.
+    state that is non-deterministic across checkouts and wall clocks. These
+    -- and every other case captured by SPECIALIZED_CASES / MACHINE_CASES --
+    are redacted by default: only an argv listed in
+    _COMMITTABLE_SPECIALIZED_ARGV / _COMMITTABLE_MACHINE_ARGV, with a stated
+    reason, is compared byte-for-byte or committed as literal text below.
+    See test_new_case_defaults_closed_without_declaration for why this is a
+    population rule, not a list someone has to remember to grow.
 """
 
 from __future__ import annotations
@@ -39,23 +41,61 @@ from tests.contracts import _capture
 
 DATA_DIR = Path(__file__).parent / "data"
 
-# W-02 waiver (see delta_resolution.md): every argv below carries live
-# session/git/daemon state that varies across checkouts and wall clocks by
-# design, not because of a consolidation code change.
-_VOLATILE_ARGV = {
-    ("agent", "status"),
-    ("monitor", "--machine"),
-    ("agent", "--machine"),
-    ("doctor", "--machine"),  # reports a live timestamp and working-tree cleanliness
-    ("play", "list"),  # playbook names read from ~/.lionagi/playbooks/, host-specific
-    ("play", "nonexistent"),  # error text lists the same host-specific playbook names
-    ("skill", "list"),  # skill names read from ~/.lionagi/skills/, host-specific
+# Case-level allowlist: the ONLY way a case's literal captured stdout/stderr
+# may be committed to this public repository. Each entry states why that
+# argv's output is safe -- static argparse usage/help/error text, derived
+# from this repo's own source, carrying no session/host/run state. A case
+# captured by SPECIALIZED_CASES / MACHINE_CASES (tests/contracts/_capture.py)
+# with no entry here is untrusted BY DEFAULT: excluded from the byte-for-byte
+# comparison below, and its committed fixture entry must carry the
+# redaction marker (test_volatile_fixture_cases_are_fully_redacted enforces
+# this against the live population, not a fixed list -- see
+# test_new_case_defaults_closed_without_declaration). Making a new case's
+# output committable requires adding a reasoned entry here: a deliberate,
+# reviewable diff, not something that happens by omission.
+_COMMITTABLE_SPECIALIZED_ARGV: dict[tuple[str, ...], str] = {
+    ("--help",): "top-level argparse usage/help text",
+    ("wait",): "argparse usage + required-argument error",
+    ("monitor", "run"): "argparse usage + required-argument error",
+    ("bogus-unknown-command",): "argparse invalid-choice error, static command list",
+    ("play",): "static usage line, no NAME resolved yet",
+    ("play", "--help"): "static usage/flag text, no NAME resolved yet",
+    ("o", "flow", "--help"): "argparse usage/help text",
+    ("o", "fanout", "--help"): "argparse usage/help text",
+    ("o", "flow"): "static required-prompt error",
+    ("o", "fanout"): "static required-prompt error",
+    ("schedule", "--help"): "argparse usage/help text",
+    ("schedule",): "argparse required-subparser error",
+    ("schedule", "list", "--bogus"): "argparse unrecognized-argument error",
+    ("schedule", "create", "capture-test", "--every", "15m"): (
+        "argparse did-you-mean error, static synonym text"
+    ),
+    ("schedule", "create", "agent", "capture-test"): ("argparse usage + required-argument error"),
+    ("schedule", "create", "command", "capture-test", "--every", "15m"): (
+        "static validation error, no host state"
+    ),
 }
-_VOLATILE_MACHINE_ARGV = {
-    ("handshake", "--machine"),  # data.comparison_ref reads live git state
-    ("doctor", "--machine"),  # reports a live timestamp and working-tree cleanliness
-    ("runs", "--machine"),  # lists live run/artifact state on disk
+_COMMITTABLE_MACHINE_ARGV: dict[tuple[str, ...], str] = {
+    ("lifecycle", "--machine"): "static machine-envelope error, no live run/host state",
+    ("bogus-unknown-command", "--machine"): (
+        "argparse invalid-choice error inside the machine envelope"
+    ),
+    ("--machine",): "top-level machine-mode usage error",
 }
+
+
+def _volatile_argv_for(file_name: str) -> set[tuple[str, ...]]:
+    """Every argv captured for *file_name* that is NOT declared committable
+    above -- derived from the live capture-case population in _capture.py,
+    not a hand-maintained denylist. A case appended to SPECIALIZED_CASES /
+    MACHINE_CASES with no matching committable-allowlist entry is
+    automatically volatile: excluded from byte-for-byte comparison and
+    required to be redacted in the committed fixture."""
+    if file_name == "specialized":
+        return set(_capture.SPECIALIZED_CASES) - set(_COMMITTABLE_SPECIALIZED_ARGV)
+    if file_name == "machine":
+        return set(_capture.MACHINE_CASES) - set(_COMMITTABLE_MACHINE_ARGV)
+    return set()
 
 
 def _load(name: str):
@@ -133,9 +173,10 @@ def test_cli_specialized_paths_match_baseline():
     # Every frozen case must still be present and, modulo known volatility
     # (W-02, below), unchanged.
     assert set(expected) <= set(live), f"missing from live: {set(expected) - set(live)}"
+    volatile = _volatile_argv_for("specialized")
     for argv, exp in expected.items():
         got = live[argv]
-        if argv in _VOLATILE_ARGV:
+        if argv in volatile:
             continue
         assert got["exit_code"] == exp["exit_code"], f"exit code changed for {argv}"
         assert got["stdout"] == exp["stdout"], f"stdout changed for {argv}"
@@ -227,11 +268,12 @@ def test_machine_classification_matches_baseline():
     expected = {tuple(c["argv"]): c for c in _load("machine")}
     live = {tuple(c["argv"]): c for c in _capture.capture_machine()}
     assert set(live) == set(expected)
+    volatile = _volatile_argv_for("machine")
     for argv, exp in expected.items():
         got = live[argv]
         assert got["exit_code"] == exp["exit_code"], f"exit code changed for {argv}"
         assert got["envelope_ok"] == exp["envelope_ok"], f"envelope ok changed for {argv}"
-        if argv in _VOLATILE_ARGV or argv in _VOLATILE_MACHINE_ARGV:
+        if argv in volatile:
             continue
         assert got["stdout"] == exp["stdout"], f"stdout changed for {argv}"
 
@@ -391,24 +433,16 @@ def test_fixtures_carry_no_host_specific_state():
 # it says nothing about a captured field that leaks host state through some
 # other shape (a session id, a library version, a CVE posture, a directory
 # listing). The check below instead enumerates the *population* every
-# byte-for-byte comparison already excludes as volatile (the same
-# _VOLATILE_ARGV / _VOLATILE_MACHINE_ARGV sets test_cli_specialized_paths_
-# match_baseline and test_machine_classification_matches_baseline read) and
-# requires every captured stream of every case in that population to be
-# either empty or carry the redaction marker -- never literal captured text.
-# A case's content having no *currently visible* host-specific value is not
-# an exemption: if it is excluded from comparison, pinning its literal bytes
-# has no oracle value and is pure downside if the command ever starts
-# reporting live state through that field.
+# byte-for-byte comparison already excludes as volatile (_volatile_argv_for,
+# above -- derived from _COMMITTABLE_SPECIALIZED_ARGV / _COMMITTABLE_MACHINE_
+# ARGV, not a hand-written denylist) and requires every captured stream of
+# every case in that population to be either empty or carry the redaction
+# marker -- never literal captured text. A case's content having no
+# *currently visible* host-specific value is not an exemption: if it is
+# excluded from comparison, pinning its literal bytes has no oracle value
+# and is pure downside if the command ever starts reporting live state
+# through that field.
 _REDACTION_MARKER_RE = re.compile(r"^\[redacted: .+\]$", re.DOTALL)
-
-
-def _volatile_argv_for(file_name: str) -> set[tuple[str, ...]]:
-    if file_name == "specialized":
-        return set(_VOLATILE_ARGV)
-    if file_name == "machine":
-        return set(_VOLATILE_ARGV) | set(_VOLATILE_MACHINE_ARGV)
-    return set()
 
 
 def _unredacted_fields(file_name: str, cases: list) -> list[str]:
@@ -455,13 +489,39 @@ def test_redaction_check_flags_unredacted_volatile_stderr():
     assert _unredacted_fields("specialized", cases) == [f"specialized.json {argv} stderr"]
 
 
-def test_redaction_check_flags_a_newly_classified_volatile_case(monkeypatch):
-    """Mutation arm (c): growing the volatile classification with an
-    unredacted case turns the check red without any edit to this test file --
-    proving the check is derived from the live classification, not a
-    hand-written list of cases."""
+def test_new_case_defaults_closed_without_declaration(monkeypatch):
+    """Mutation arm (a): a brand-new case appended to the LIVE capture set
+    (_capture.SPECIALIZED_CASES) -- with no entry added to
+    _COMMITTABLE_SPECIALIZED_ARGV -- must be classified volatile purely
+    because it is absent from the allowlist, and a literal fixture entry for
+    it must turn the redaction check red. No edit to _VOLATILE_ARGV, to
+    _unredacted_fields, or to any other test is needed: the population is
+    read live from _capture.py, so this is a rule over the whole capture
+    set, not a list someone has to remember to extend."""
     new_argv = ("totally", "new", "specialized", "case")
-    assert new_argv not in _VOLATILE_ARGV
-    monkeypatch.setattr(sys.modules[__name__], "_VOLATILE_ARGV", _VOLATILE_ARGV | {new_argv})
+    assert new_argv not in _COMMITTABLE_SPECIALIZED_ARGV
+    monkeypatch.setattr(_capture, "SPECIALIZED_CASES", (*_capture.SPECIALIZED_CASES, new_argv))
+    assert new_argv in _volatile_argv_for("specialized")
     cases = [{"argv": list(new_argv), "stdout": "literal unredacted output", "stderr": ""}]
     assert _unredacted_fields("specialized", cases) == [f"specialized.json {new_argv} stdout"]
+
+
+def test_new_case_becomes_committable_only_via_declaration(monkeypatch):
+    """The complement of arm (a): the same new case, once given a reasoned
+    entry in _COMMITTABLE_SPECIALIZED_ARGV, drops out of the volatile
+    population and its literal fixture text is accepted -- proving
+    committing literal text is available, but only through the deliberate,
+    reviewable act of adding a reason, not by silence."""
+    new_argv = ("totally", "new", "specialized", "case")
+    monkeypatch.setattr(_capture, "SPECIALIZED_CASES", (*_capture.SPECIALIZED_CASES, new_argv))
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_COMMITTABLE_SPECIALIZED_ARGV",
+        {
+            **_COMMITTABLE_SPECIALIZED_ARGV,
+            new_argv: "test fixture: reviewed, static, no host state",
+        },
+    )
+    assert new_argv not in _volatile_argv_for("specialized")
+    cases = [{"argv": list(new_argv), "stdout": "literal reviewed output", "stderr": ""}]
+    assert _unredacted_fields("specialized", cases) == []
