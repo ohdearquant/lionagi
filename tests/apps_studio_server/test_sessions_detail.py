@@ -403,7 +403,10 @@ async def test_get_session_preserves_a_stored_terminal_verdict(patched_sessions_
     result = await svc.get_session("sess-recorded-verdict")
 
     assert result is not None
-    assert result["artifact_verification_json"] == verdict
+    resolved = result["artifact_verification_json"]
+    assert {k: v for k, v in resolved.items() if k != "staleness_check"} == verdict
+    # No artifacts_path was seeded, so staleness cannot be checked against disk.
+    assert resolved["staleness_check"] == "unknown"
 
 
 async def test_get_session_keeps_verification_null_when_no_contract_exists(patched_sessions_db):
@@ -678,7 +681,10 @@ async def test_list_sessions_preserves_a_stored_verdict(patched_sessions_db):
 
     rows = await svc.list_sessions()
 
-    assert rows[0]["artifact_verification_json"] == stored
+    resolved = rows[0]["artifact_verification_json"]
+    assert {k: v for k, v in resolved.items() if k != "staleness_check"} == stored
+    # `stored` has no checked_at/produced, so staleness cannot be derived.
+    assert resolved["staleness_check"] == "unknown"
 
 
 async def test_list_sessions_does_not_read_the_artifacts_directory(patched_sessions_db, tmp_path):
