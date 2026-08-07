@@ -475,7 +475,8 @@
       "health": "trạng thái hệ thống",
       "maintenance": "bảo trì",
       "settings": "cài đặt",
-      "adminEvents": "Sự kiện quản trị"
+      "adminEvents": "Sự kiện quản trị",
+      "data": "Dữ liệu"
     },
     "health": {
       "stateDb": "State DB",
@@ -555,6 +556,9 @@
       "action": "Hành động",
       "target": "Mục tiêu",
       "actor": "Người thực hiện"
+    },
+    "data": {
+      "engineRuns": "Lượt chạy engine"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "đã cập nhật",
       "branchesTitle": "nhánh ({count})",
       "noBranches": "không có nhánh.",
-      "msgs": " tin nhắn"
+      "msgs": " tin nhắn",
+      "engineRuns": "Lượt chạy engine"
     },
     "split": {
       "master": "danh sách phiên",
@@ -1152,6 +1157,33 @@
       "created": "Đã tạo",
       "messages": "Tin nhắn ({count})",
       "noMessages": "Chưa có tin nhắn nào."
+    }
+  },
+  "engineRuns": {
+    "title": "Lượt chạy engine",
+    "subtitle": "Các lượt gọi engine riêng lẻ bên dưới các phiên điều phối",
+    "filterKind": "Lọc theo loại",
+    "filterStatus": "Lọc theo trạng thái",
+    "filterStatusAll": "Tất cả trạng thái",
+    "filterSession": "Lọc theo ID phiên",
+    "filterApply": "Lọc",
+    "loadError": "Không thể tải lượt chạy engine.",
+    "emptyTitle": "Không tìm thấy lượt chạy engine nào",
+    "emptyBody": "Lượt chạy engine sẽ xuất hiện ở đây khi một engine (ví dụ `li engine`) ghi lại một lượt gọi.",
+    "table": {
+      "kind": "Loại",
+      "status": "Trạng thái",
+      "started": "Bắt đầu",
+      "session": "Phiên"
+    },
+    "detail": {
+      "close": "Đóng",
+      "notFound": "Không tìm thấy lượt chạy engine.",
+      "started": "Bắt đầu",
+      "ended": "Kết thúc",
+      "exportDir": "Thư mục xuất",
+      "error": "Lỗi",
+      "spec": "Đặc tả"
     }
   }
 }

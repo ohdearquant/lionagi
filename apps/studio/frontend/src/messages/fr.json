@@ -475,7 +475,8 @@
       "health": "Santé",
       "maintenance": "Maintenance",
       "settings": "Paramètres",
-      "adminEvents": "Événements d'administration"
+      "adminEvents": "Événements d'administration",
+      "data": "Données"
     },
     "health": {
       "stateDb": "DB d’état",
@@ -555,6 +556,9 @@
       "action": "Action",
       "target": "Cible",
       "actor": "Acteur"
+    },
+    "data": {
+      "engineRuns": "Exécutions moteur"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "Mis à jour",
       "branchesTitle": "Branches ({count})",
       "noBranches": "Aucune branche.",
-      "msgs": " messages"
+      "msgs": " messages",
+      "engineRuns": "Exécutions moteur"
     },
     "split": {
       "master": "Liste des sessions",
@@ -1152,6 +1157,33 @@
       "created": "Créé le",
       "messages": "Messages ({count})",
       "noMessages": "Aucun message pour l'instant."
+    }
+  },
+  "engineRuns": {
+    "title": "Exécutions moteur",
+    "subtitle": "Invocations individuelles du moteur sous les sessions d'orchestration",
+    "filterKind": "Filtrer par type",
+    "filterStatus": "Filtrer par statut",
+    "filterStatusAll": "Tous les statuts",
+    "filterSession": "Filtrer par ID de session",
+    "filterApply": "Filtrer",
+    "loadError": "Échec du chargement des exécutions moteur.",
+    "emptyTitle": "Aucune exécution moteur trouvée",
+    "emptyBody": "Les exécutions moteur apparaissent ici dès qu'un moteur (ex. `li engine`) enregistre une invocation.",
+    "table": {
+      "kind": "Type",
+      "status": "Statut",
+      "started": "Démarré",
+      "session": "Session"
+    },
+    "detail": {
+      "close": "Fermer",
+      "notFound": "Exécution moteur introuvable.",
+      "started": "Démarré",
+      "ended": "Terminé",
+      "exportDir": "Répertoire d'export",
+      "error": "Erreur",
+      "spec": "Spécification"
     }
   }
 }

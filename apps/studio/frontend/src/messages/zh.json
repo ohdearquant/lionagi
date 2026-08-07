@@ -475,7 +475,8 @@
       "health": "健康状态",
       "maintenance": "维护",
       "settings": "设置",
-      "adminEvents": "管理员事件"
+      "adminEvents": "管理员事件",
+      "data": "数据"
     },
     "health": {
       "stateDb": "状态数据库",
@@ -555,6 +556,9 @@
       "action": "操作",
       "target": "目标",
       "actor": "操作者"
+    },
+    "data": {
+      "engineRuns": "引擎运行"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "更新时间",
       "branchesTitle": "分支（{count}）",
       "noBranches": "暂无分支。",
-      "msgs": " 条消息"
+      "msgs": " 条消息",
+      "engineRuns": "引擎运行"
     },
     "split": {
       "master": "会话列表",
@@ -1152,6 +1157,33 @@
       "created": "创建时间",
       "messages": "消息（{count}）",
       "noMessages": "暂无消息。"
+    }
+  },
+  "engineRuns": {
+    "title": "引擎运行",
+    "subtitle": "编排会话之下的单次引擎调用",
+    "filterKind": "按类型筛选",
+    "filterStatus": "按状态筛选",
+    "filterStatusAll": "全部状态",
+    "filterSession": "按会话 ID 筛选",
+    "filterApply": "筛选",
+    "loadError": "加载引擎运行失败。",
+    "emptyTitle": "未找到引擎运行",
+    "emptyBody": "当引擎（例如 `li engine`）记录一次调用后，会在此处显示。",
+    "table": {
+      "kind": "类型",
+      "status": "状态",
+      "started": "开始时间",
+      "session": "会话"
+    },
+    "detail": {
+      "close": "关闭",
+      "notFound": "未找到该引擎运行。",
+      "started": "开始时间",
+      "ended": "结束时间",
+      "exportDir": "导出目录",
+      "error": "错误",
+      "spec": "规格"
     }
   }
 }

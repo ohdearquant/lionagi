@@ -475,7 +475,8 @@
       "health": "Zustand",
       "maintenance": "Wartung",
       "settings": "Einstellungen",
-      "adminEvents": "Admin-Ereignisse"
+      "adminEvents": "Admin-Ereignisse",
+      "data": "Daten"
     },
     "health": {
       "stateDb": "Status-DB",
@@ -555,6 +556,9 @@
       "action": "Aktion",
       "target": "Ziel",
       "actor": "Akteur"
+    },
+    "data": {
+      "engineRuns": "Engine-Läufe"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "Aktualisiert",
       "branchesTitle": "{count, plural, one {Branch (#)} other {Branches (#)}}",
       "noBranches": "Keine Branches.",
-      "msgs": " Nachrichten"
+      "msgs": " Nachrichten",
+      "engineRuns": "Engine-Läufe"
     },
     "split": {
       "master": "Sessionliste",
@@ -1152,6 +1157,33 @@
       "created": "Erstellt",
       "messages": "Nachrichten ({count})",
       "noMessages": "Noch keine Nachrichten."
+    }
+  },
+  "engineRuns": {
+    "title": "Engine-Läufe",
+    "subtitle": "Einzelne Engine-Aufrufe unterhalb von Orchestrierungs-Sitzungen",
+    "filterKind": "Nach Art filtern",
+    "filterStatus": "Nach Status filtern",
+    "filterStatusAll": "Alle Status",
+    "filterSession": "Nach Sitzungs-ID filtern",
+    "filterApply": "Filtern",
+    "loadError": "Engine-Läufe konnten nicht geladen werden.",
+    "emptyTitle": "Keine Engine-Läufe gefunden",
+    "emptyBody": "Engine-Läufe erscheinen hier, sobald eine Engine (z. B. `li engine`) einen Aufruf protokolliert.",
+    "table": {
+      "kind": "Art",
+      "status": "Status",
+      "started": "Gestartet",
+      "session": "Sitzung"
+    },
+    "detail": {
+      "close": "Schließen",
+      "notFound": "Engine-Lauf nicht gefunden.",
+      "started": "Gestartet",
+      "ended": "Beendet",
+      "exportDir": "Export-Verzeichnis",
+      "error": "Fehler",
+      "spec": "Spezifikation"
     }
   }
 }

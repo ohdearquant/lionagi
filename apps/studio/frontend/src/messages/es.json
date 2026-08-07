@@ -475,7 +475,8 @@
       "health": "Estado",
       "maintenance": "Mantenimiento",
       "settings": "Configuración",
-      "adminEvents": "Eventos de administración"
+      "adminEvents": "Eventos de administración",
+      "data": "Datos"
     },
     "health": {
       "stateDb": "DB de estado",
@@ -555,6 +556,9 @@
       "action": "Acción",
       "target": "Destino",
       "actor": "Actor"
+    },
+    "data": {
+      "engineRuns": "Ejecuciones de motor"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "Actualizado",
       "branchesTitle": "Ramas ({count})",
       "noBranches": "Sin ramas.",
-      "msgs": " mensajes"
+      "msgs": " mensajes",
+      "engineRuns": "Ejecuciones de motor"
     },
     "split": {
       "master": "Lista de sesiones",
@@ -1152,6 +1157,33 @@
       "created": "Creado",
       "messages": "Mensajes ({count})",
       "noMessages": "Aún no hay mensajes."
+    }
+  },
+  "engineRuns": {
+    "title": "Ejecuciones de motor",
+    "subtitle": "Invocaciones individuales del motor por debajo de las sesiones de orquestación",
+    "filterKind": "Filtrar por tipo",
+    "filterStatus": "Filtrar por estado",
+    "filterStatusAll": "Todos los estados",
+    "filterSession": "Filtrar por ID de sesión",
+    "filterApply": "Filtrar",
+    "loadError": "No se pudieron cargar las ejecuciones de motor.",
+    "emptyTitle": "No se encontraron ejecuciones de motor",
+    "emptyBody": "Las ejecuciones de motor aparecen aquí cuando un motor (p. ej. `li engine`) registra una invocación.",
+    "table": {
+      "kind": "Tipo",
+      "status": "Estado",
+      "started": "Inicio",
+      "session": "Sesión"
+    },
+    "detail": {
+      "close": "Cerrar",
+      "notFound": "Ejecución de motor no encontrada.",
+      "started": "Inicio",
+      "ended": "Fin",
+      "exportDir": "Directorio de exportación",
+      "error": "Error",
+      "spec": "Especificación"
     }
   }
 }

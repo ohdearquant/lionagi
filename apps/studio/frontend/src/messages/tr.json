@@ -475,7 +475,8 @@
       "health": "sağlık",
       "maintenance": "bakım",
       "settings": "ayarlar",
-      "adminEvents": "Yönetici olayları"
+      "adminEvents": "Yönetici olayları",
+      "data": "Veri"
     },
     "health": {
       "stateDb": "State DB",
@@ -555,6 +556,9 @@
       "action": "Eylem",
       "target": "Hedef",
       "actor": "Yürüten"
+    },
+    "data": {
+      "engineRuns": "Motor çalıştırmaları"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "güncellendi",
       "branchesTitle": "dallar ({count})",
       "noBranches": "dal yok.",
-      "msgs": " mesaj"
+      "msgs": " mesaj",
+      "engineRuns": "Motor çalıştırmaları"
     },
     "split": {
       "master": "oturum listesi",
@@ -1152,6 +1157,33 @@
       "created": "Oluşturulma",
       "messages": "Mesajlar ({count})",
       "noMessages": "Henüz mesaj yok."
+    }
+  },
+  "engineRuns": {
+    "title": "Motor çalıştırmaları",
+    "subtitle": "Orkestrasyon oturumlarının altındaki tekil motor çağrıları",
+    "filterKind": "Türe göre filtrele",
+    "filterStatus": "Duruma göre filtrele",
+    "filterStatusAll": "Tüm durumlar",
+    "filterSession": "Oturum ID'sine göre filtrele",
+    "filterApply": "Filtrele",
+    "loadError": "Motor çalıştırmaları yüklenemedi.",
+    "emptyTitle": "Motor çalıştırması bulunamadı",
+    "emptyBody": "Bir motor (ör. `li engine`) bir çağrı kaydettiğinde motor çalıştırmaları burada görünür.",
+    "table": {
+      "kind": "Tür",
+      "status": "Durum",
+      "started": "Başladı",
+      "session": "Oturum"
+    },
+    "detail": {
+      "close": "Kapat",
+      "notFound": "Motor çalıştırması bulunamadı.",
+      "started": "Başladı",
+      "ended": "Bitti",
+      "exportDir": "Dışa aktarma dizini",
+      "error": "Hata",
+      "spec": "Spesifikasyon"
     }
   }
 }

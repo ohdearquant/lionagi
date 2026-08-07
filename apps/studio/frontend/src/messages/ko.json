@@ -475,7 +475,8 @@
       "health": "상태",
       "maintenance": "유지 관리",
       "settings": "설정",
-      "adminEvents": "관리 이벤트"
+      "adminEvents": "관리 이벤트",
+      "data": "데이터"
     },
     "health": {
       "stateDb": "State DB",
@@ -555,6 +556,9 @@
       "action": "작업",
       "target": "대상",
       "actor": "실행자"
+    },
+    "data": {
+      "engineRuns": "엔진 실행"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "업데이트됨",
       "branchesTitle": "브랜치({count})",
       "noBranches": "브랜치 없음.",
-      "msgs": " 메시지"
+      "msgs": " 메시지",
+      "engineRuns": "엔진 실행"
     },
     "split": {
       "master": "세션 목록",
@@ -1152,6 +1157,33 @@
       "created": "생성됨",
       "messages": "메시지 ({count})",
       "noMessages": "아직 메시지가 없습니다."
+    }
+  },
+  "engineRuns": {
+    "title": "엔진 실행",
+    "subtitle": "오케스트레이션 세션 아래의 개별 엔진 호출",
+    "filterKind": "종류로 필터링",
+    "filterStatus": "상태로 필터링",
+    "filterStatusAll": "모든 상태",
+    "filterSession": "세션 ID로 필터링",
+    "filterApply": "필터",
+    "loadError": "엔진 실행을 불러오지 못했습니다.",
+    "emptyTitle": "엔진 실행을 찾을 수 없습니다",
+    "emptyBody": "엔진(예: `li engine`)이 호출을 기록하면 여기에 엔진 실행이 표시됩니다.",
+    "table": {
+      "kind": "종류",
+      "status": "상태",
+      "started": "시작됨",
+      "session": "세션"
+    },
+    "detail": {
+      "close": "닫기",
+      "notFound": "엔진 실행을 찾을 수 없습니다.",
+      "started": "시작됨",
+      "ended": "종료됨",
+      "exportDir": "내보내기 디렉터리",
+      "error": "오류",
+      "spec": "스펙"
     }
   }
 }

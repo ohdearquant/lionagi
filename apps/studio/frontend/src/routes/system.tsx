@@ -1,11 +1,11 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "use-intl";
 import Timestamp from "@/components/ui/Timestamp";
 import Button from "@/components/ui/Button";
 import { API_BASE, getAdminDoctor, getAdminEvents, runMaintenance } from "@/lib/api";
 import type { AdminDoctorResponse, AdminEvent, MaintenanceAction } from "@/lib/api";
-import { IconHealth, IconTool, IconSettings, IconLog } from "@/components/ui/icons";
+import { IconHealth, IconTool, IconSettings, IconLog, IconEngine } from "@/components/ui/icons";
 import { LOCALES } from "@/i18n/locales";
 import { applyTheme, getTheme, THEME_CHANGE_EVENT } from "@/lib/theme";
 
@@ -369,6 +369,25 @@ function AdminEventsSection() {
   );
 }
 
+// ─── Data section — links to browsing surfaces that don't fit inline ─────────
+
+function DataSection() {
+  const t = useTranslations("system");
+  const linkCls =
+    "flex items-center justify-between gap-2 rounded border border-edge bg-surface-raised px-3 py-2 text-body text-content-secondary transition-colors duration-100 hover:border-edge-strong hover:text-content-primary";
+  return (
+    <section className="flex flex-col gap-3">
+      <SectionHead icon={<IconEngine size={18} />} label={t("sections.data")} />
+      <div className="flex flex-col gap-2">
+        <Link to="/engine-runs" className={linkCls}>
+          <span>{t("data.engineRuns")}</span>
+          <span aria-hidden="true">→</span>
+        </Link>
+      </div>
+    </section>
+  );
+}
+
 // ─── Settings section ─────────────────────────────────────────────────────────
 
 function SettingsSection() {
@@ -530,6 +549,7 @@ function SystemPage() {
           )}
           <MaintenanceSection doctor={doctor} />
           <AdminEventsSection />
+          <DataSection />
         </div>
         <SettingsSection />
       </div>

@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { useTranslations } from "use-intl";
+import { Link } from "@tanstack/react-router";
 import RunDetail from "@/components/history/RunDetail";
 
 interface Props {
@@ -79,6 +80,16 @@ export default function SessionDetail({ runId, onBack, showBack = false }: Props
           </span>
         </button>
       )}
+
+      <div className="flex shrink-0 items-center justify-end border-b border-edge px-4 py-1.5">
+        <Link
+          to="/engine-runs"
+          search={{ session_id: runId }}
+          className="font-ui text-[length:var(--t-xs)] text-content-muted transition-colors duration-100 hover:text-content-primary"
+        >
+          {t("detail.engineRuns")} →
+        </Link>
+      </div>
 
       {/* Full run detail — same pane History renders, so Fleet selection shows
           the conversation, DAG, files, and signal events instead of bare meta. */}

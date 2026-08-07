@@ -475,7 +475,8 @@
       "health": "Integridade",
       "maintenance": "Manutenção",
       "settings": "Configurações",
-      "adminEvents": "Eventos administrativos"
+      "adminEvents": "Eventos administrativos",
+      "data": "Dados"
     },
     "health": {
       "stateDb": "DB de estado",
@@ -555,6 +556,9 @@
       "action": "Ação",
       "target": "Destino",
       "actor": "Autor"
+    },
+    "data": {
+      "engineRuns": "Execuções de engine"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "Atualizado",
       "branchesTitle": "{count, plural, one {Branch (#)} other {Branches (#)}}",
       "noBranches": "Nenhum branch.",
-      "msgs": " msgs"
+      "msgs": " msgs",
+      "engineRuns": "Execuções de engine"
     },
     "split": {
       "master": "Lista de sessões",
@@ -1152,6 +1157,33 @@
       "created": "Criado",
       "messages": "Mensagens ({count})",
       "noMessages": "Ainda não há mensagens."
+    }
+  },
+  "engineRuns": {
+    "title": "Execuções de engine",
+    "subtitle": "Invocações individuais do engine abaixo das sessões de orquestração",
+    "filterKind": "Filtrar por tipo",
+    "filterStatus": "Filtrar por status",
+    "filterStatusAll": "Todos os status",
+    "filterSession": "Filtrar por ID de sessão",
+    "filterApply": "Filtrar",
+    "loadError": "Falha ao carregar as execuções de engine.",
+    "emptyTitle": "Nenhuma execução de engine encontrada",
+    "emptyBody": "As execuções de engine aparecem aqui assim que um engine (ex.: `li engine`) registra uma invocação.",
+    "table": {
+      "kind": "Tipo",
+      "status": "Status",
+      "started": "Iniciado",
+      "session": "Sessão"
+    },
+    "detail": {
+      "close": "Fechar",
+      "notFound": "Execução de engine não encontrada.",
+      "started": "Iniciado",
+      "ended": "Finalizado",
+      "exportDir": "Diretório de exportação",
+      "error": "Erro",
+      "spec": "Especificação"
     }
   }
 }

@@ -475,7 +475,8 @@
       "health": "الصحة",
       "maintenance": "الصيانة",
       "settings": "الإعدادات",
-      "adminEvents": "أحداث الإدارة"
+      "adminEvents": "أحداث الإدارة",
+      "data": "البيانات"
     },
     "health": {
       "stateDb": "قاعدة بيانات الحالة",
@@ -555,6 +556,9 @@
       "action": "الإجراء",
       "target": "الهدف",
       "actor": "المنفّذ"
+    },
+    "data": {
+      "engineRuns": "عمليات تشغيل المحرك"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "آخر تحديث",
       "branchesTitle": "الفروع ({count})",
       "noBranches": "لا توجد فروع.",
-      "msgs": " رسائل"
+      "msgs": " رسائل",
+      "engineRuns": "عمليات تشغيل المحرك"
     },
     "split": {
       "master": "قائمة الجلسات",
@@ -1152,6 +1157,33 @@
       "created": "أُنشئ",
       "messages": "الرسائل ({count})",
       "noMessages": "لا توجد رسائل بعد."
+    }
+  },
+  "engineRuns": {
+    "title": "عمليات تشغيل المحرك",
+    "subtitle": "استدعاءات المحرك الفردية تحت جلسات التنسيق",
+    "filterKind": "تصفية حسب النوع",
+    "filterStatus": "تصفية حسب الحالة",
+    "filterStatusAll": "كل الحالات",
+    "filterSession": "تصفية حسب معرّف الجلسة",
+    "filterApply": "تصفية",
+    "loadError": "تعذّر تحميل عمليات تشغيل المحرك.",
+    "emptyTitle": "لم يتم العثور على عمليات تشغيل للمحرك",
+    "emptyBody": "تظهر عمليات تشغيل المحرك هنا بمجرد أن يسجّل محرك (مثل `li engine`) استدعاءً.",
+    "table": {
+      "kind": "النوع",
+      "status": "الحالة",
+      "started": "بدأ",
+      "session": "الجلسة"
+    },
+    "detail": {
+      "close": "إغلاق",
+      "notFound": "لم يتم العثور على عملية تشغيل المحرك.",
+      "started": "بدأ",
+      "ended": "انتهى",
+      "exportDir": "دليل التصدير",
+      "error": "خطأ",
+      "spec": "المواصفة"
     }
   }
 }

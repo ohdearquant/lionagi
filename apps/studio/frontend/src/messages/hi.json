@@ -475,7 +475,8 @@
       "health": "हेल्थ",
       "maintenance": "मेंटेनेंस",
       "settings": "सेटिंग्स",
-      "adminEvents": "एडमिन इवेंट"
+      "adminEvents": "एडमिन इवेंट",
+      "data": "डेटा"
     },
     "health": {
       "stateDb": "स्टेट DB",
@@ -555,6 +556,9 @@
       "action": "कार्रवाई",
       "target": "टारगेट",
       "actor": "करने वाला"
+    },
+    "data": {
+      "engineRuns": "इंजन रन"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "अपडेट हुआ",
       "branchesTitle": "ब्रांच ({count})",
       "noBranches": "कोई ब्रांच नहीं।",
-      "msgs": " मैसेज"
+      "msgs": " मैसेज",
+      "engineRuns": "इंजन रन"
     },
     "split": {
       "master": "सेशन सूची",
@@ -1152,6 +1157,33 @@
       "created": "बनाया गया",
       "messages": "संदेश ({count})",
       "noMessages": "अभी तक कोई संदेश नहीं."
+    }
+  },
+  "engineRuns": {
+    "title": "इंजन रन",
+    "subtitle": "ऑर्केस्ट्रेशन सत्रों के नीचे व्यक्तिगत इंजन इनवोकेशन",
+    "filterKind": "प्रकार से फ़िल्टर करें",
+    "filterStatus": "स्थिति से फ़िल्टर करें",
+    "filterStatusAll": "सभी स्थितियां",
+    "filterSession": "सत्र ID से फ़िल्टर करें",
+    "filterApply": "फ़िल्टर करें",
+    "loadError": "इंजन रन लोड करने में विफल.",
+    "emptyTitle": "कोई इंजन रन नहीं मिला",
+    "emptyBody": "जब कोई इंजन (जैसे `li engine`) इनवोकेशन दर्ज करता है, तो इंजन रन यहां दिखाई देते हैं.",
+    "table": {
+      "kind": "प्रकार",
+      "status": "स्थिति",
+      "started": "शुरू हुआ",
+      "session": "सत्र"
+    },
+    "detail": {
+      "close": "बंद करें",
+      "notFound": "इंजन रन नहीं मिला.",
+      "started": "शुरू हुआ",
+      "ended": "समाप्त हुआ",
+      "exportDir": "एक्सपोर्ट डायरेक्टरी",
+      "error": "त्रुटि",
+      "spec": "स्पेक"
     }
   }
 }

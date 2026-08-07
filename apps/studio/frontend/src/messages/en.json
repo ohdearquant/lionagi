@@ -475,7 +475,8 @@
       "health": "Health",
       "maintenance": "Maintenance",
       "settings": "Settings",
-      "adminEvents": "Admin events"
+      "adminEvents": "Admin events",
+      "data": "Data"
     },
     "health": {
       "stateDb": "State DB",
@@ -555,6 +556,9 @@
       "action": "Action",
       "target": "Target",
       "actor": "Actor"
+    },
+    "data": {
+      "engineRuns": "Engine runs"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "Updated",
       "branchesTitle": "Branches ({count})",
       "noBranches": "No branches.",
-      "msgs": " msgs"
+      "msgs": " msgs",
+      "engineRuns": "Engine runs"
     },
     "split": {
       "master": "Session list",
@@ -1152,6 +1157,33 @@
       "created": "Created",
       "messages": "Messages ({count})",
       "noMessages": "No messages yet."
+    }
+  },
+  "engineRuns": {
+    "title": "Engine runs",
+    "subtitle": "Individual engine invocations underneath orchestration sessions",
+    "filterKind": "Filter by kind",
+    "filterStatus": "Filter by status",
+    "filterStatusAll": "All statuses",
+    "filterSession": "Filter by session ID",
+    "filterApply": "Filter",
+    "loadError": "Failed to load engine runs.",
+    "emptyTitle": "No engine runs found",
+    "emptyBody": "Engine runs appear here once an engine (e.g. `li engine`) records an invocation.",
+    "table": {
+      "kind": "Kind",
+      "status": "Status",
+      "started": "Started",
+      "session": "Session"
+    },
+    "detail": {
+      "close": "Close",
+      "notFound": "Engine run not found.",
+      "started": "Started",
+      "ended": "Ended",
+      "exportDir": "Export dir",
+      "error": "Error",
+      "spec": "Spec"
     }
   }
 }

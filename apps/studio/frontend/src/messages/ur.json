@@ -475,7 +475,8 @@
       "health": "صحت",
       "maintenance": "مینٹیننس",
       "settings": "سیٹنگز",
-      "adminEvents": "ایڈمن ایونٹس"
+      "adminEvents": "ایڈمن ایونٹس",
+      "data": "ڈیٹا"
     },
     "health": {
       "stateDb": "State DB",
@@ -555,6 +556,9 @@
       "action": "عمل",
       "target": "ٹارگٹ",
       "actor": "کرنے والا"
+    },
+    "data": {
+      "engineRuns": "انجن رنز"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "اپ ڈیٹ شدہ",
       "branchesTitle": "برانچز (⁨{count}⁩)",
       "noBranches": "کوئی برانچ نہیں۔",
-      "msgs": " پیغامات"
+      "msgs": " پیغامات",
+      "engineRuns": "انجن رنز"
     },
     "split": {
       "master": "سیشن فہرست",
@@ -1152,6 +1157,33 @@
       "created": "بنائی گئی",
       "messages": "پیغامات ({count})",
       "noMessages": "ابھی تک کوئی پیغام نہیں۔"
+    }
+  },
+  "engineRuns": {
+    "title": "انجن رنز",
+    "subtitle": "آرکسٹریشن سیشنز کے نیچے انفرادی انجن انوکیشنز",
+    "filterKind": "قسم کے لحاظ سے فلٹر کریں",
+    "filterStatus": "حیثیت کے لحاظ سے فلٹر کریں",
+    "filterStatusAll": "تمام حیثیتیں",
+    "filterSession": "سیشن ID کے لحاظ سے فلٹر کریں",
+    "filterApply": "فلٹر کریں",
+    "loadError": "انجن رنز لوڈ کرنے میں ناکامی۔",
+    "emptyTitle": "کوئی انجن رن نہیں ملا",
+    "emptyBody": "جب کوئی انجن (مثلاً `li engine`) کوئی انوکیشن ریکارڈ کرے گا تو انجن رنز یہاں دکھائی دیں گے۔",
+    "table": {
+      "kind": "قسم",
+      "status": "حیثیت",
+      "started": "شروع ہوا",
+      "session": "سیشن"
+    },
+    "detail": {
+      "close": "بند کریں",
+      "notFound": "انجن رن نہیں ملا۔",
+      "started": "شروع ہوا",
+      "ended": "ختم ہوا",
+      "exportDir": "ایکسپورٹ ڈائریکٹری",
+      "error": "خرابی",
+      "spec": "اسپیک"
     }
   }
 }

@@ -475,7 +475,8 @@
       "health": "ヘルス",
       "maintenance": "メンテナンス",
       "settings": "設定",
-      "adminEvents": "管理イベント"
+      "adminEvents": "管理イベント",
+      "data": "データ"
     },
     "health": {
       "stateDb": "状態DB",
@@ -555,6 +556,9 @@
       "action": "アクション",
       "target": "ターゲット",
       "actor": "実行者"
+    },
+    "data": {
+      "engineRuns": "エンジン実行"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "更新",
       "branchesTitle": "ブランチ ({count})",
       "noBranches": "ブランチはありません。",
-      "msgs": " 件のメッセージ"
+      "msgs": " 件のメッセージ",
+      "engineRuns": "エンジン実行"
     },
     "split": {
       "master": "セッション一覧",
@@ -1152,6 +1157,33 @@
       "created": "作成日",
       "messages": "メッセージ（{count}）",
       "noMessages": "メッセージはまだありません。"
+    }
+  },
+  "engineRuns": {
+    "title": "エンジン実行",
+    "subtitle": "オーケストレーションセッション配下の個々のエンジン呼び出し",
+    "filterKind": "種類で絞り込む",
+    "filterStatus": "ステータスで絞り込む",
+    "filterStatusAll": "すべてのステータス",
+    "filterSession": "セッションIDで絞り込む",
+    "filterApply": "絞り込む",
+    "loadError": "エンジン実行の読み込みに失敗しました。",
+    "emptyTitle": "エンジン実行が見つかりません",
+    "emptyBody": "エンジン（例: `li engine`）が呼び出しを記録すると、ここにエンジン実行が表示されます。",
+    "table": {
+      "kind": "種類",
+      "status": "ステータス",
+      "started": "開始",
+      "session": "セッション"
+    },
+    "detail": {
+      "close": "閉じる",
+      "notFound": "エンジン実行が見つかりません。",
+      "started": "開始",
+      "ended": "終了",
+      "exportDir": "エクスポート先ディレクトリ",
+      "error": "エラー",
+      "spec": "スペック"
     }
   }
 }

@@ -475,7 +475,8 @@
       "health": "Kesehatan",
       "maintenance": "Pemeliharaan",
       "settings": "Pengaturan",
-      "adminEvents": "Peristiwa admin"
+      "adminEvents": "Peristiwa admin",
+      "data": "Data"
     },
     "health": {
       "stateDb": "DB state",
@@ -555,6 +556,9 @@
       "action": "Aksi",
       "target": "Target",
       "actor": "Pelaku"
+    },
+    "data": {
+      "engineRuns": "Proses engine"
     }
   },
   "schedules": {
@@ -820,7 +824,8 @@
       "updated": "Diperbarui",
       "branchesTitle": "{count, plural, other {Branch (#)}}",
       "noBranches": "Tidak ada branch.",
-      "msgs": " pesan"
+      "msgs": " pesan",
+      "engineRuns": "Proses engine"
     },
     "split": {
       "master": "Daftar sesi",
@@ -1152,6 +1157,33 @@
       "created": "Dibuat",
       "messages": "Pesan ({count})",
       "noMessages": "Belum ada pesan."
+    }
+  },
+  "engineRuns": {
+    "title": "Proses engine",
+    "subtitle": "Pemanggilan engine individual di bawah sesi orkestrasi",
+    "filterKind": "Filter berdasarkan jenis",
+    "filterStatus": "Filter berdasarkan status",
+    "filterStatusAll": "Semua status",
+    "filterSession": "Filter berdasarkan ID sesi",
+    "filterApply": "Filter",
+    "loadError": "Gagal memuat proses engine.",
+    "emptyTitle": "Tidak ada proses engine ditemukan",
+    "emptyBody": "Proses engine muncul di sini setelah sebuah engine (misalnya `li engine`) mencatat sebuah pemanggilan.",
+    "table": {
+      "kind": "Jenis",
+      "status": "Status",
+      "started": "Dimulai",
+      "session": "Sesi"
+    },
+    "detail": {
+      "close": "Tutup",
+      "notFound": "Proses engine tidak ditemukan.",
+      "started": "Dimulai",
+      "ended": "Berakhir",
+      "exportDir": "Direktori ekspor",
+      "error": "Error",
+      "spec": "Spesifikasi"
     }
   }
 }
