@@ -3202,7 +3202,134 @@ def test_a_marker_write_that_also_fails_still_reaches_the_caller_as_a_warning(
 
     assert not (d / jobs._RESERVATION_STRANDED_MARKER).exists()
     assert d.exists()
-    assert any("20260101T000000-666666" in record.message for record in caplog.records)
+    matching = [r.message for r in caplog.records if "20260101T000000-666666" in r.message]
+    assert matching
+    # The marker write itself refused, so the warning must not claim one landed.
+    assert not any("marked" in message for message in matching)
+
+
+def test_a_pre_record_submit_failure_reaches_the_caller_with_an_accurate_warning(
+    sandbox, monkeypatch, caplog
+):
+    """The regression this guards: reverting either `submit()` cleanup call
+    site back to bare `_discard_reservation(d)` must make this go red.
+
+    Both `submit()` cleanup call sites (the pre-record failure path here, and
+    the post-record one below) must reach a rollback through
+    `_discard_reservation_and_warn`, never through `_discard_reservation`
+    directly — the direct-helper tests above cover the wrapper's own
+    behaviour, but say nothing about whether either production caller still
+    uses it. An unlisted file is left in the reservation directory (something
+    `_discard_reservation` never writes or claims) so the directory survives
+    the giveback, and the marker write is refused too, so the only way to
+    learn what happened is the warning this asserts on.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-aaa999")
+
+    real_reserve = jobs._reserve_run_dir
+    reserved: dict = {}
+
+    def reserve_with_a_stray_file():
+        run_id, d = real_reserve()
+        # Not one of _RESERVATION_CONTENTS, so _discard_reservation cannot
+        # remove it and the directory is left behind rather than given back.
+        (d / "unexpected.leftover").write_bytes(b"stray\n")
+        reserved["run_id"] = run_id
+        reserved["d"] = d
+        return run_id, d
+
+    monkeypatch.setattr(jobs, "_reserve_run_dir", reserve_with_a_stray_file)
+
+    real_write_text = Path.write_text
+
+    def refuse_the_prompt_and_the_marker(self, *args, **kwargs):
+        if self.name in (jobs._PROMPT_FILENAME, jobs._RESERVATION_STRANDED_MARKER):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", refuse_the_prompt_and_the_marker)
+
+    with caplog.at_level(logging.WARNING, logger=jobs._log.name):
+        with pytest.raises(OSError) as exc_info:
+            jobs.submit("agent", [], prompt="x", label="pre-record-failure")
+
+    # The triggering exception, not something the failed cleanup replaced it with.
+    assert exc_info.value.errno == errno.ENOSPC
+
+    d = reserved["d"]
+    run_id = reserved["run_id"]
+    assert d.exists(), "the directory must survive: the stray file blocks rmdir"
+    assert (d / "unexpected.leftover").exists()
+    assert not (d / jobs._RESERVATION_STRANDED_MARKER).exists(), (
+        "the marker write was refused too; it must not appear to exist"
+    )
+    matching = [r.message for r in caplog.records if run_id in r.message]
+    assert matching, "the wrapper must warn even when the marker write also failed"
+    assert not any("marked" in message for message in matching), (
+        "the warning must not claim a marker was written when it was not"
+    )
+    assert jobs.list_jobs() == []
+
+
+def test_a_post_record_submit_failure_reaches_the_caller_with_an_accurate_warning(
+    sandbox, monkeypatch, caplog
+):
+    """The post-record twin of the test above: `job.json`'s own publish fails
+    after the prompt has already been written, driving the *second*
+    `_discard_reservation_and_warn` call site (the one guarding `_write_job`)
+    rather than the first.
+    """
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc(4242))
+    monkeypatch.setattr(jobs, "new_run_id", lambda: "20260101T000000-bbb888")
+
+    real_reserve = jobs._reserve_run_dir
+    reserved: dict = {}
+
+    def reserve_with_a_stray_file():
+        run_id, d = real_reserve()
+        (d / "unexpected.leftover").write_bytes(b"stray\n")
+        reserved["run_id"] = run_id
+        reserved["d"] = d
+        return run_id, d
+
+    monkeypatch.setattr(jobs, "_reserve_run_dir", reserve_with_a_stray_file)
+
+    real_replace = os.replace
+    real_write_text = Path.write_text
+
+    def refuse_to_publish(src, dst, *args, **kwargs):
+        if str(dst).endswith("job.json"):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst, *args, **kwargs)
+
+    def refuse_the_marker(self, *args, **kwargs):
+        if self.name == jobs._RESERVATION_STRANDED_MARKER:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", refuse_to_publish)
+    monkeypatch.setattr(Path, "write_text", refuse_the_marker)
+
+    with caplog.at_level(logging.WARNING, logger=jobs._log.name):
+        with pytest.raises(OSError) as exc_info:
+            jobs.submit("agent", [], prompt="x", label="post-record-failure")
+
+    assert exc_info.value.errno == errno.ENOSPC
+
+    d = reserved["d"]
+    run_id = reserved["run_id"]
+    assert d.exists(), "the directory must survive: the stray file blocks rmdir"
+    assert (d / "unexpected.leftover").exists()
+    assert not (d / jobs._RESERVATION_STRANDED_MARKER).exists(), (
+        "the marker write was refused too; it must not appear to exist"
+    )
+    matching = [r.message for r in caplog.records if run_id in r.message]
+    assert matching, "the wrapper must warn even when the marker write also failed"
+    assert not any("marked" in message for message in matching), (
+        "the warning must not claim a marker was written when it was not"
+    )
+    assert jobs.list_jobs() == []
 
 
 def test_a_lock_that_cannot_be_taken_says_so_even_when_the_descriptor_will_not_close(

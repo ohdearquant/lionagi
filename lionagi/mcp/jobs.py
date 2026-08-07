@@ -319,13 +319,29 @@ def _discard_reservation_and_warn(d: Path, run_id: str) -> None:
     signal available at the moment the failure actually happens, so every
     caller that discards a reservation on an error path must act on it here
     rather than let a `False` disappear along with the exception it rode in on.
+
+    The boolean says nothing about whether the marker write itself landed —
+    that write is best-effort and suppresses its own ``OSError`` — so this
+    checks the marker's actual presence afterward rather than assuming it from
+    the directory surviving. An operator reading the warning must not be sent
+    looking for a file that was never written.
     """
-    if not _discard_reservation(d):
+    if _discard_reservation(d):
+        return
+    marker = d / _RESERVATION_STRANDED_MARKER
+    if marker.exists():
         _log.warning(
             "reservation rollback for run %s could not remove %s; marked %s",
             run_id,
             d,
-            d / _RESERVATION_STRANDED_MARKER,
+            marker,
+        )
+    else:
+        _log.warning(
+            "reservation rollback for run %s could not remove %s; the "
+            "stranding marker could not be written either",
+            run_id,
+            d,
         )
 
 
