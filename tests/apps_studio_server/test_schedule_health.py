@@ -90,6 +90,58 @@ async def test_never_fired_enabled_schedule_with_zero_rows(temp_db_path):
     assert detail["health_state"] == "never-fired"
 
 
+async def test_no_evidence_when_watermark_survives_pruned_run_history(temp_db_path):
+    """schedules.last_fired_at is a retained per-schedule column, written by
+    the normal occurrence paths, that survives schedule_runs retention
+    pruning even after every run row for a schedule is gone. Zero recorded
+    rows must not read as never-fired when that watermark says the schedule
+    executed before its history was pruned."""
+    sid = await _make_schedule(interval_sec=300)
+    now = time.time()
+    async with StateDB() as db:
+        await db.update_schedule(sid, last_fired_at=now - 500_000)
+
+    row = await _list_row(sid)
+    assert row["health_state"] == "no-evidence"
+
+    detail = await get_schedule(sid)
+    assert detail["health_state"] == "no-evidence"
+
+
+async def test_never_fired_still_stands_with_no_watermark_and_no_rows(temp_db_path):
+    """Inverse of the pruned-history case above: with neither a recorded row
+    nor a surviving last_fired_at watermark, never-fired remains the honest
+    verdict -- both signals must agree nothing was recorded."""
+    sid = await _make_schedule()
+    row = await _list_row(sid)
+    assert row["health_state"] == "never-fired"
+    assert row["last_fired_at"] is None
+
+
+def test_compute_schedule_health_last_fired_at_watermark_beats_never_fired():
+    """Pins the pure-function contract: never-fired requires BOTH zero
+    recorded rows AND a null last_fired_at watermark."""
+    now = time.time()
+    row = {
+        "enabled": 1,
+        "trigger_type": "interval",
+        "interval_sec": 300,
+        "created_at": now - 1000,
+        "last_fired_at": now - 500_000,
+    }
+    evidence = {
+        "last_recorded_run_at": None,
+        "last_executed_run_at": None,
+        "last_executed_status": None,
+    }
+
+    with_watermark = compute_schedule_health(row, evidence, now=now)
+    assert with_watermark["health_state"] == "no-evidence"
+
+    without_watermark = compute_schedule_health({**row, "last_fired_at": None}, evidence, now=now)
+    assert without_watermark["health_state"] == "never-fired"
+
+
 async def test_no_evidence_when_only_skipped_rows_recorded(temp_db_path):
     """Skipped rows are recorded evidence but not executed evidence -- a
     skip-only history is a distinct, honest "cannot tell" state, not the

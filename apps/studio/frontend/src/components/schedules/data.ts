@@ -191,9 +191,25 @@ export type HealthBadgeState =
   | { kind: "never-fired"; sinceMs: number }
   | { kind: "no-evidence" };
 
+// The server-declared health_state union is a compile-time contract only --
+// a running server can still send a value this build predates or has never
+// heard of (mid-rollout skew, a state added and rolled back). Record lookups
+// keyed by the declared union (HEALTH_COLOR, HEALTH_LABEL_KEY) crash on
+// anything outside it, so unrecognized values must be caught here, before
+// they reach a badge, and fall back to hidden -- the same neutral no-badge
+// treatment "disabled" already gets.
+const KNOWN_HEALTH_STATES = new Set([
+  "healthy",
+  "failing",
+  "overdue",
+  "never-fired",
+  "no-evidence",
+  "disabled",
+]);
+
 export function scheduleHealthBadge(s: ScheduleSummary): HealthBadgeState {
   const state = s.health_state;
-  if (!state || state === "disabled") return { kind: "hidden" };
+  if (!state || !KNOWN_HEALTH_STATES.has(state) || state === "disabled") return { kind: "hidden" };
   if (state === "never-fired") {
     return { kind: "never-fired", sinceMs: toMs(s.health_since ?? 0) };
   }

@@ -97,6 +97,13 @@ describe("scheduleHealthBadge", () => {
     });
   });
 
+  it("is hidden (not a crash) for a health_state the client doesn't recognize", () => {
+    const s = schedule({
+      health_state: "surprise-new-state" as unknown as ScheduleSummary["health_state"],
+    });
+    expect(scheduleHealthBadge(s)).toEqual({ kind: "hidden" });
+  });
+
   it("null outcome fields pass through as null rather than throwing", () => {
     const s = schedule({
       health_state: "healthy",

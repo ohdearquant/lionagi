@@ -438,24 +438,39 @@ def compute_schedule_health(
     """Derive a read-only health verdict for one schedule.
 
     States: disabled (not enabled), never-fired (enabled, zero schedule_runs
-    rows recorded at all -- the closest thing to a confident "never ran"
-    this table can support), no-evidence (enabled, rows are recorded but
-    none of them are execution evidence -- e.g. a skip/queue-only history,
-    or genuine evidence that retention has since pruned away; this table
-    cannot tell those apart, so it reports "cannot tell" rather than
-    guessing either way), overdue (enabled, cadence known, and no execution
-    evidence within grace of the expected cadence), failing (the single
-    latest executed run's outcome was failed/timed_out -- see
+    rows recorded at all AND no retained last_fired_at watermark -- the
+    closest thing to a confident "never ran" this table can support),
+    no-evidence (enabled, and either recorded rows exist with none of them
+    execution evidence -- e.g. a skip/queue-only history -- or zero rows are
+    recorded but schedules.last_fired_at shows the schedule executed before
+    its schedule_runs history was pruned by retention; this table cannot
+    distinguish those shapes from each other, so it reports "cannot tell"
+    rather than guessing either way), overdue (enabled, cadence known, and
+    no execution evidence within grace of the expected cadence), failing
+    (the single latest executed run's outcome was failed/timed_out -- see
     _HEALTH_FAILING_THRESHOLD), healthy (otherwise).
+
+    ``schedules.last_fired_at`` is a retained per-schedule column written by
+    the normal occurrence paths -- it survives schedule_runs retention
+    pruning even after every run row for a schedule is gone. never-fired is
+    the strongest claim this table can make ("nothing ever happened"), so it
+    must require BOTH signals to agree that nothing was recorded: zero rows
+    (last_recorded_run_at is None) AND no surviving watermark (last_fired_at
+    is None). Either one being non-null means the schedule executed at some
+    point and the honest verdict is "cannot tell" (no-evidence), not
+    "never-fired".
     """
     last_executed_at = evidence.get("last_executed_run_at")
     last_executed_status = evidence.get("last_executed_status")
     last_recorded_at = evidence.get("last_recorded_run_at")
+    last_fired_at = row.get("last_fired_at")
 
     if not row.get("enabled"):
         state = "disabled"
     elif last_executed_at is None:
-        state = "never-fired" if last_recorded_at is None else "no-evidence"
+        state = (
+            "never-fired" if last_recorded_at is None and last_fired_at is None else "no-evidence"
+        )
     else:
         cadence_seconds = _schedule_cadence_seconds(row)
         overdue = (
