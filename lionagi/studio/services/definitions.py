@@ -19,7 +19,7 @@ from lionagi.state.engine import mask_credentials
 
 from ..registry import studio_route
 from ._path_safety import validate_name_component
-from .agents import _is_protected_system
+from .agents import _canonicalize_casts, _is_protected_system
 from .redaction import (
     RedactedPayloadError,
     abbreviate_path,
@@ -323,8 +323,21 @@ async def save_definition(
     name: str,
     content: str,
     message: str | None = None,
+    *,
+    validate: bool = True,
 ) -> dict[str, Any]:
-    """Persist a definition version: DB write first, then disk (ADR-0077 D2); per-(kind, name) lock serialises concurrent saves."""
+    """Persist a definition version: DB write first, then disk (ADR-0077 D2); per-(kind, name) lock serialises concurrent saves.
+
+    ``validate`` gates the cast role/mode check below, not the system-agent
+    guard (which always runs). It defaults on for the direct save route --
+    the door a client posts arbitrary content through, and the one the agents
+    API's role/mode validation must also bind on (see ``_canonicalize_casts``
+    in ``agents.py``). ``rollback_definition`` and ``snapshot_current`` pass
+    ``validate=False``: they replay content that was already accepted once
+    (a stored version, a pre-existing disk file), and a validator tightened
+    after that content landed would make an old version un-rollback-able and
+    an existing file un-importable.
+    """
     # Validate at the service boundary — reject traversal sequences, path
     # separators, NUL, and glob metacharacters.
     validate_name_component(kind, label="kind")
@@ -344,6 +357,12 @@ async def save_definition(
     if kind == "agent":
         reject_if_redacted_payload(content)
 
+    from lionagi.libs.frontmatter import parse_frontmatter as _parse_fm
+
+    if kind == "agent" and validate:
+        new_fm, _ = _parse_fm(content)
+        _canonicalize_casts(dict(new_fm))
+
     from lionagi.state.db import StateDB
 
     lock = await _lock_for(kind, name)
@@ -358,8 +377,6 @@ async def save_definition(
             # hold here too, or it's a bypass. Read straight off disk_file rather than
             # calling into agents.py, since that module resolves its own _AGENTS_ROOT
             # independently of this module's (test-patchable) AGENTS_DIR/KIND_DIRS.
-            from lionagi.libs.frontmatter import parse_frontmatter as _parse_fm
-
             existing_text = await anyio.to_thread.run_sync(disk_file.read_text)
             existing_fm, _ = _parse_fm(existing_text)
             if _is_protected_system(existing_fm):
@@ -433,6 +450,7 @@ async def rollback_definition(kind: str, name: str, target_version: int) -> dict
         name,
         old["content"],
         message=f"rollback to v{target_version}",
+        validate=False,
     )
 
     return {
@@ -467,7 +485,9 @@ async def snapshot_current(kind: str | None = None) -> int:
             if latest and latest["content"] == content:
                 continue
 
-        await save_definition(d["kind"], d["name"], content, message="snapshot from disk")
+        await save_definition(
+            d["kind"], d["name"], content, message="snapshot from disk", validate=False
+        )
         count += 1
 
     return count
