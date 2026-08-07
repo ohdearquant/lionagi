@@ -410,6 +410,59 @@ def test_direct_order_mutator_coverage_keeps_members_consistent():
     assert p._members == set() == set(p.order)
 
 
+def test_progression_method_coverage_keeps_members_consistent_with_order():
+    # Companion to test_direct_order_mutator_coverage_keeps_members_consistent
+    # above, which drives `p.order` directly. This drives the same ground
+    # through Progression's OWN mutating methods instead — append/pop/
+    # popleft/insert/__setitem__/extend all delegate to a `self.order` that
+    # is, by then, a bound `_MembersDeque`, so the membership set is already
+    # correct once that delegation returns. Asserting `_members == set(order)`
+    # after each is what would catch the two layers drifting apart: a change
+    # to one side's discard rule that isn't mirrored on the other still
+    # passes a test that only checks `x in p`, since a set and a deque agree
+    # on simple presence long after they've diverged on exactly *which*
+    # duplicate survived.
+    p = Progression()
+    ids = [uuid4() for _ in range(8)]
+
+    p.append(ids[0])
+    assert p._members == set(p.order)
+
+    p.append(ids[1:3])
+    assert p._members == set(p.order)
+
+    p.insert(1, ids[3])
+    assert p._members == set(p.order)
+
+    p.extend(Progression(order=[ids[4], ids[5]]))
+    assert p._members == set(p.order)
+
+    replaced = p.order[0]
+    p[0] = ids[6]  # length-preserving __setitem__, fresh id, no duplicate
+    assert replaced not in p._members
+    assert p._members == set(p.order)
+
+    p[0] = ids[7]  # another length-preserving __setitem__, fresh id
+    assert p._members == set(p.order)
+
+    popped = p.pop()
+    assert popped not in p._members
+    assert p._members == set(p.order)
+
+    left = p.popleft()
+    assert left not in p._members
+    assert p._members == set(p.order)
+
+    # A duplicate id: popping one occurrence must not evict it from the set
+    # while the other survives.
+    dup = uuid4()
+    p.append(dup)
+    p.append(dup)
+    p.pop()
+    assert dup in p._members
+    assert p._members == set(p.order)
+
+
 # ---------------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------------
