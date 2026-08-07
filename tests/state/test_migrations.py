@@ -40,6 +40,19 @@ def _create_pre_cc_session_db(db_path: Path) -> None:
         conn.execute("ALTER TABLE sessions RENAME COLUMN cc_session_id TO legacy_cc_session_id")
 
 
+def _create_pre_branches_index_db(db_path: Path) -> None:
+    """Create a current schema whose branches table carries the single-column
+    index a real pre-migration deployment had (`idx_branches_session` on
+    `session_id` alone), not the composite `idx_branches_session_created`
+    schema.sql now declares directly."""
+    from lionagi.state.db import _SCHEMA_PATH
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+        conn.execute("DROP INDEX idx_branches_session_created")
+        conn.execute("CREATE INDEX idx_branches_session ON branches(session_id)")
+
+
 def _create_pre_claim_controls_db(db_path: Path) -> None:
     """Create a current schema whose session_controls table predates claimed_at."""
     from lionagi.state.db import _SCHEMA_PATH
@@ -400,24 +413,13 @@ async def test_statedb_upgrade_adds_cc_session_lookup_index(tmp_path: Path) -> N
     assert any("idx_sessions_cc_session" in detail for detail in details), details
 
 
-async def test_statedb_upgrade_adds_branches_session_created_index(tmp_path: Path) -> None:
-    """Existing databases gain the covering index for the session-detail branch
-    listing (ORDER BY created_at) after the index migration runs."""
-    from sqlalchemy import text
+_BRANCHES_LISTING_QUERY = (
+    "SELECT * FROM branches WHERE session_id = :session_id ORDER BY created_at"
+)
 
+
+async def _open_and_populate_branches_index_db(db_path: Path) -> None:
     from lionagi.state.db import StateDB
-
-    db_path = tmp_path / "pre-branches-index.db"
-    with sqlite3.connect(db_path) as conn:
-        from lionagi.state.db import _SCHEMA_PATH
-
-        # schema.sql now declares this index directly (provisioning matches
-        # the runtime MIGRATION_INDEXES definition), so this fresh
-        # executescript already carries the index; the migration path below
-        # re-runs it idempotently (CREATE INDEX IF NOT EXISTS) and this test
-        # still proves the upgrade path is a no-op-safe superset for
-        # databases provisioned before this alignment.
-        conn.executescript(_SCHEMA_PATH.read_text())
 
     state = StateDB(db_path)
     await state.open()
@@ -447,31 +449,71 @@ async def test_statedb_upgrade_adds_branches_session_created_index(tmp_path: Pat
                     "progression_id": "progression-idx",
                 },
             )
-        async with state._read() as conn:
-            indexes = (await conn.execute(text("PRAGMA index_list(branches)"))).mappings().all()
-            # Same query shape as the live branch listing (SELECT * ... ORDER BY
-            # created_at): the index's win is the equality seek plus sort
-            # elimination, not covering — SELECT * can never be index-only.
-            plan = (
-                (
-                    await conn.execute(
-                        text(
-                            "EXPLAIN QUERY PLAN SELECT * FROM branches "
-                            "WHERE session_id = :session_id ORDER BY created_at"
-                        ),
-                        {"session_id": "session-idx"},
-                    )
-                )
-                .mappings()
-                .all()
-            )
     finally:
         await state.close()
 
-    assert "idx_branches_session_created" in {row["name"] for row in indexes}
-    details = [row["detail"] for row in plan]
-    assert any("idx_branches_session_created" in detail for detail in details), details
-    assert not any("USE TEMP B-TREE" in detail for detail in details), details
+
+async def _branches_index_evidence(db_path: Path) -> tuple[list[str], list[str]]:
+    """Column list (ordered) of idx_branches_session_created plus the EXPLAIN
+    QUERY PLAN detail lines for the branch-listing query, read back through a
+    fresh connection so the evidence reflects what's on disk, not in-process
+    state left over from the StateDB session that populated it."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        columns = [
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM pragma_index_info('idx_branches_session_created') ORDER BY seqno"
+            )
+        ]
+        plan = [
+            row["detail"]
+            for row in conn.execute(
+                f"EXPLAIN QUERY PLAN {_BRANCHES_LISTING_QUERY}",
+                {"session_id": "session-idx"},
+            )
+        ]
+    return columns, plan
+
+
+async def test_statedb_upgrade_adds_branches_session_created_index(tmp_path: Path) -> None:
+    """A database provisioned before this migration — carrying the old
+    single-column `idx_branches_session(session_id)` a real deployment would
+    have — gains the composite `idx_branches_session_created(session_id,
+    created_at)` after StateDB.open() runs the runtime migration, with the
+    same name, column order, and query plan as a freshly provisioned
+    database. Without opening through the pre-index arm, a regression in
+    MIGRATION_INDEXES would leave real deployed databases on the old index
+    while fresh ones pass — this proves the upgrade path itself adds it."""
+    fresh_db_path = tmp_path / "fresh-branches-index.db"
+    pre_index_db_path = tmp_path / "pre-branches-index.db"
+
+    from lionagi.state.db import _SCHEMA_PATH
+
+    with sqlite3.connect(fresh_db_path) as conn:
+        conn.executescript(_SCHEMA_PATH.read_text())
+    _create_pre_branches_index_db(pre_index_db_path)
+
+    # Sanity check the fixture actually starts from the old shape, not a
+    # no-op-equivalent of the target.
+    with sqlite3.connect(pre_index_db_path) as conn:
+        pre_index_names = {row[1] for row in conn.execute("PRAGMA index_list(branches)")}
+    assert "idx_branches_session" in pre_index_names
+    assert "idx_branches_session_created" not in pre_index_names
+
+    await _open_and_populate_branches_index_db(fresh_db_path)
+    await _open_and_populate_branches_index_db(pre_index_db_path)
+
+    fresh_columns, fresh_plan = await _branches_index_evidence(fresh_db_path)
+    upgraded_columns, upgraded_plan = await _branches_index_evidence(pre_index_db_path)
+
+    assert fresh_columns == ["session_id", "created_at"]
+    assert upgraded_columns == fresh_columns
+
+    for plan in (fresh_plan, upgraded_plan):
+        assert any("idx_branches_session_created" in detail for detail in plan), plan
+        assert not any("USE TEMP B-TREE" in detail for detail in plan), plan
+    assert upgraded_plan == fresh_plan
 
 
 def test_concurrent_statedb_opens_reconcile_cc_session_column(tmp_path: Path) -> None:
