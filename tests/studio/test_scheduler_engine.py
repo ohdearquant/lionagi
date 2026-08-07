@@ -2218,6 +2218,16 @@ async def test_tick_does_not_await_worker_pass_before_evaluating_schedules(monke
         # because worker_may_finish is never set before the deadline.
         await asyncio.wait_for(engine._tick(), timeout=2.0)
 
+    # asyncio.wait_for() does not guarantee that the coroutine it awaits runs
+    # as a separately scheduled Task -- CPython >=3.12 drives a plain
+    # coroutine inline within the caller's own step when timeout > 0, so the
+    # worker task created inside _tick() may not get a scheduling turn
+    # before wait_for() returns. An explicit checkpoint gives the event loop
+    # one turn to run any already-scheduled callback, which is what actually
+    # proves the worker task was created and is runnable -- independent of
+    # whichever internal strategy wait_for() happens to use.
+    await asyncio.sleep(0)
+
     assert worker_started.is_set(), "worker pass never started"
     mock_fire.assert_awaited_once()
 
