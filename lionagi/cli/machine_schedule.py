@@ -262,6 +262,7 @@ def _limits(argv: list[str]) -> dict[str, Any]:
     _parse("limits", argv, unhonoured={})
     result = _studio("/limits") or {}
     cap = result.get("max_scheduled_concurrent")
+    adhoc_cap = result.get("max_adhoc_concurrent")
     return {
         # Both are reported because the cap alone is ambiguous: the CLI reads a
         # falsy cap as no cap at all, and a caller should not have to know
@@ -269,6 +270,13 @@ def _limits(argv: list[str]) -> dict[str, Any]:
         "max_scheduled_concurrent": cap,
         "unlimited": not cap,
         "current_inflight": result.get("current_inflight", 0),
+        # The ad-hoc task-worker lane draws from its own independent
+        # capacity pool (see MAX_ADHOC_CONCURRENT), additive to the
+        # scheduled cap above -- a caller provisioning for the scheduled cap
+        # alone would under-provision by this lane's own capacity.
+        "max_adhoc_concurrent": adhoc_cap,
+        "adhoc_unlimited": not adhoc_cap,
+        "current_adhoc_inflight": result.get("current_adhoc_inflight", 0),
     }
 
 

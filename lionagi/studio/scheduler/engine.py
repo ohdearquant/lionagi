@@ -17,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.ln.concurrency import ExceptionGroup
-from lionagi.state.db import TERMINAL_RUN_STATUSES
+from lionagi.state.db import SESSION_TERMINAL_STATUSES, TERMINAL_RUN_STATUSES
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS, RunTerminalEnvelope
 from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
 from lionagi.state.reasons import RunReasons, ScheduleReasons
@@ -50,6 +50,27 @@ _DEFERRED_RECORD_EVERY = 10
 # it's recorded terminal and the cursor moves past it, so one poison event
 # can't block the queue forever.
 _MAX_PREDISPATCH_REFUSALS = 3
+
+# schedule_runs has no 'completed_empty' or 'aborted' status (see
+# lionagi.state.lifecycle.policy's schedule_run_statuses) -- only
+# invocations/sessions distinguish those. _reconcile_dispatched_orphans()
+# maps resolve_invocation_terminal()'s invocation-vocabulary result onto the
+# nearest schedule_run status; the finer distinction still survives in the
+# written reason_code (COMPLETED_EMPTY_NO_EVIDENCE, ABORTED_USER, etc).
+# completed_empty maps to "failed", not "completed": a clean leader exit
+# with no completion evidence from the child is explicitly NOT success (see
+# resolve_invocation_terminal's own precedence comment), and the mapped
+# status is also what selects the schedule_run signal class in
+# build_schedule_run_signal() -- mapping it to "completed" would mint
+# ScheduleRunSucceeded for a run nothing confirms actually finished.
+_SCHEDULE_RUN_STATUS_FROM_INVOCATION: dict[str, str] = {
+    "completed": "completed",
+    "completed_empty": "failed",
+    "failed": "failed",
+    "timed_out": "timed_out",
+    "cancelled": "cancelled",
+    "aborted": "cancelled",
+}
 
 
 def _register_schedule_notify(
@@ -128,6 +149,30 @@ class _GlobalSlotClaim:
             return
         self._released = True
         self._engine._release_global_slot()
+
+
+class _AdhocSlotClaim:
+    """One-shot handle for an in-process ad-hoc task-worker concurrency slot.
+
+    Deliberately a separate pool from ``_GlobalSlotClaim``/
+    ``MAX_SCHEDULED_CONCURRENT``: sharing one counter between the scheduled
+    and ad-hoc lanes let a continuously replenished stream of scheduled
+    fires reacquire every freed slot before the worker pass got one,
+    starving ad-hoc work indefinitely. Same release-once-in-a-finally
+    lifecycle as ``_GlobalSlotClaim``.
+    """
+
+    __slots__ = ("_engine", "_released")
+
+    def __init__(self, engine: SchedulerEngine) -> None:
+        self._engine = engine
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._engine._release_adhoc_slot()
 
 
 class _RateLimitClaim:
@@ -390,6 +435,11 @@ class SchedulerEngine:
         self._svc = svc if svc is not None else default_scheduler_state
         self._signal_bus = signal_bus if signal_bus is not None else SchedulerSignalBus()
         self._task: asyncio.Task | None = None
+        # Single-flight tracked task for the ad-hoc task-worker pass (see
+        # _maybe_start_worker_pass): a hung/slow pass must not block schedule
+        # evaluation, and a new tick must never start a second overlapping
+        # pass while one is still in flight.
+        self._worker_task: asyncio.Task | None = None
         self._running: dict[str, str] = {}  # schedule_id -> run_id
         self._stopping = False
         self._fire_tasks: set[asyncio.Task] = set()
@@ -406,8 +456,16 @@ class SchedulerEngine:
         self._rate_limit_lock = asyncio.Lock()
         self._rate_limit_inflight: dict[str, dict[str, float]] = {}
         # global concurrent-fire cap (single-process; see _reserve_global_slot).
+        # Scoped to SCHEDULED fires only -- the ad-hoc task-worker lane has
+        # its own independent cap below (see _reserve_adhoc_slot) so the two
+        # lanes cannot starve each other.
         self._global_slot_lock = asyncio.Lock()
         self._global_inflight = 0
+        # ad-hoc task-worker concurrency cap (single-process; see
+        # _reserve_adhoc_slot). Independent of _global_inflight/
+        # MAX_SCHEDULED_CONCURRENT by design.
+        self._adhoc_slot_lock = asyncio.Lock()
+        self._adhoc_inflight = 0
         self._deferred_log_counts: dict[str, int] = {}  # schedule_id -> deferrals since last record
         # threshold-alert cooldown reservations (single-process; see
         # _ThresholdCooldownClaim). Membership means "a fire for this
@@ -667,6 +725,11 @@ class SchedulerEngine:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if self._worker_task is not None:
+            self._worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._worker_task
+            self._worker_task = None
         if self._fire_tasks:
             for ft in list(self._fire_tasks):
                 ft.cancel()
@@ -738,6 +801,7 @@ class SchedulerEngine:
 
     async def _tick_loop(self) -> None:
         await self._recover_undispatched_fires()
+        await self._reconcile_dispatched_orphans()
         await self._check_missed_fires()
         while not self._stopping:
             try:
@@ -827,11 +891,189 @@ class SchedulerEngine:
             # stale-run reaper) between the scan and here; already resolved.
             pass
 
+    async def _reconcile_dispatched_orphans(self) -> None:
+        """Startup-only reconciliation for schedule_runs rows that were
+        confirmed dispatched (an external process was launched) but never
+        reached a terminal status (see #2755).
+
+        Unlike ``_recover_undispatched_fires()`` (``dispatched_at IS NULL``,
+        safe to re-fire because nothing was ever launched), a row here may
+        have a genuinely live child still working -- re-firing would
+        double-execute it, and blindly terminalizing it would falsely mark
+        live work dead. Neither is safe from wall-clock alone.
+
+        This only acts where positive completion evidence already exists in
+        the DB without needing new process-identity capture: an action that
+        spawned its own session(s) (e.g. ``agent``/``play``) writes each
+        session's own terminal status from *inside* that child process, via
+        its own teardown -- entirely independent of whether the scheduler
+        that dispatched it survived to see the exit code. When every linked
+        session has independently reached a terminal status, the
+        schedule_run is finalized from that evidence via
+        ``resolve_invocation_terminal()`` (the same resolution the live
+        ``_fire()`` path uses for the invocation row). A row with no
+        sessions yet, or with any session still non-terminal, is left
+        untouched -- unknown liveness is never treated as death; it falls
+        through to the existing wall-clock stale reaper
+        (``reap_stale_schedule_runs``) unchanged.
+        """
+        try:
+            rows = await self._svc.list_dispatched_running_schedule_runs()
+        except Exception:
+            _log.exception("Failed to scan for dispatched-but-unterminated schedule_runs")
+            return
+
+        for row in rows:
+            run_id = row["id"]
+            sid = row.get("schedule_id")
+            inv_id = row.get("invocation_id")
+            if not inv_id:
+                continue
+            try:
+                sessions = await self._svc.list_sessions_for_invocation(inv_id)
+            except Exception:
+                _log.exception(
+                    "Failed to list sessions for invocation %s (schedule_run %s)", inv_id, run_id
+                )
+                continue
+            if not sessions:
+                continue
+            child_statuses = [str(s.get("status") or "") for s in sessions]
+            if any(s not in SESSION_TERMINAL_STATUSES for s in child_statuses):
+                continue  # at least one child still genuinely non-terminal
+
+            inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
+                self._svc, inv_id, fallback_status="completed"
+            )
+            run_status = _SCHEDULE_RUN_STATUS_FROM_INVOCATION.get(inv_status)
+            if run_status is None:
+                _log.warning(
+                    "Unmapped invocation status %r reconciling schedule_run %s; leaving as-is",
+                    inv_status,
+                    run_id,
+                )
+                continue
+
+            end_time = time.time()
+            chain_depth = row.get("chain_depth") or 0
+            trigger_context = row.get("trigger_context") or {}
+            action_kind = row.get("action_kind") or ""
+
+            # Guarded CAS below is the idempotency boundary against a race
+            # with another finalizer (the live _fire() path, the deadline
+            # reaper, or a concurrent reconciliation pass): losing it means
+            # someone else already owns finalizing this row's follow-on
+            # effects, so this pass does nothing further for it.
+            written = await self._guarded_terminal_status(
+                "schedule_run",
+                run_id,
+                new_status=run_status,
+                reason_code=inv_rc,
+                reason_summary=(
+                    f"{inv_rs} (reconciled at scheduler startup from child session "
+                    "evidence; the scheduler that dispatched this run did not "
+                    "record its outcome)."
+                ),
+                evidence_refs=inv_ev,
+                source="system",
+                actor="scheduler_startup_reconciliation",
+                metadata={"invocation_id": inv_id, "invocation_status": inv_status},
+                extra_fields={"ended_at": end_time},
+            )
+            if not written:
+                continue
+            _log.info(
+                "Reconciled dispatched-orphan schedule_run %s as %s from child "
+                "session evidence (invocation %s)",
+                run_id,
+                run_status,
+                inv_id,
+            )
+            await self._dispatch_signal(
+                build_schedule_run_signal(
+                    entity_id=run_id,
+                    new_status=run_status,
+                    reason_code=inv_rc,
+                    schedule_id=sid or "",
+                    action_kind=action_kind,
+                    chain_depth=chain_depth,
+                    trigger_context=trigger_context,
+                )
+            )
+
+            # Finalize the linked invocation too -- otherwise it stays
+            # "running" forever and every normal terminal-invocation side
+            # effect (telemetry flush, chain follow-on) never fires for a
+            # run this pass just marked completed/failed/etc.
+            inv_written = await self._guarded_terminal_status(
+                "invocation",
+                inv_id,
+                new_status=inv_status,
+                reason_code=inv_rc,
+                reason_summary=inv_rs,
+                evidence_refs=inv_ev,
+                source="system",
+                actor="scheduler_startup_reconciliation",
+                metadata=inv_meta,
+                extra_fields={"ended_at": end_time},
+            )
+            if inv_written:
+                await flush_run_telemetry(
+                    self._svc, self._signal_bus, run_id=run_id, invocation_id=inv_id
+                )
+            else:
+                self._signal_bus.pop_run_counters(run_id)
+
+            schedule = await self._svc.get_schedule(sid) if sid else None
+            if schedule is None:
+                continue
+            await self._check_max_runs(schedule, chain_depth)
+            if chain_depth < _MAX_CHAIN_DEPTH:
+                chain_action = None
+                if run_status == "completed" and schedule.get("on_success"):
+                    chain_action = schedule["on_success"]
+                elif run_status != "completed" and schedule.get("on_fail"):
+                    chain_action = schedule["on_fail"]
+
+                if chain_action:
+                    chain_schedule = {**schedule, **chain_action}
+                    chain_schedule["action_kind"] = chain_action.get(
+                        "kind", chain_action.get("action_kind", schedule["action_kind"])
+                    )
+                    if "model" in chain_action:
+                        chain_schedule["action_model"] = chain_action["model"]
+                    if "prompt" in chain_action:
+                        chain_schedule["action_prompt"] = chain_action["prompt"]
+                    if "agent" in chain_action:
+                        chain_schedule["action_agent"] = chain_action["agent"]
+                    if "playbook" in chain_action:
+                        chain_schedule["action_playbook"] = chain_action["playbook"]
+
+                    chain_ctx = {
+                        **trigger_context,
+                        "chain_from": run_id,
+                        "parent_status": run_status,
+                    }
+                    chain_run_id = uuid.uuid4().hex[:12]
+                    self._tracked_fire(
+                        chain_schedule,
+                        chain_run_id,
+                        trigger_context=chain_ctx,
+                        chain_parent_id=run_id,
+                        chain_depth=chain_depth + 1,
+                    )
+
     async def _check_missed_fires(self) -> None:
         try:
             schedules = await self._svc.list_schedules(enabled=True)
             now = time.time()
             for s in schedules:
+                if s.get("trigger_type") == "github_poll":
+                    # github_poll's cadence is last_fired_at + poll_interval_sec
+                    # (see _tick_github), not next_fire_at -- a stale or
+                    # legacy-persisted next_fire_at here is not a missed
+                    # scheduled occurrence.
+                    continue
                 next_fire_at = s.get("next_fire_at")
                 if next_fire_at is None or next_fire_at > now:
                     continue
@@ -998,10 +1240,7 @@ class SchedulerEngine:
         except Exception:
             _log.exception("Dispatch outbox delivery scan error")
 
-        try:
-            await self._run_task_worker_tick(now)
-        except Exception:
-            _log.exception("Task worker tick error")
+        self._maybe_start_worker_pass(now)
 
         schedules = await self._svc.list_schedules(enabled=True)
 
@@ -1038,18 +1277,60 @@ class SchedulerEngine:
         async with StateDB() as db:
             await deliver_due_dispatches(db, now=now)
 
+    def _maybe_start_worker_pass(self, now: float) -> None:
+        """Kick off the ad-hoc task-worker pass as a tracked, single-flight
+        background task instead of awaiting it inline.
+
+        A worker pass claims rows sequentially and each row waits on its
+        child process with no deadline (see ``spawn_and_wait``), so awaiting
+        it here would block schedule evaluation for the whole pass. If a
+        pass from a prior tick is still running, this tick starts no new one
+        — never more than one worker pass in flight, so this does not
+        increase the row-claiming throughput, only schedule-evaluation
+        latency.
+        """
+        if self._worker_task is not None and not self._worker_task.done():
+            return
+        self._worker_task = asyncio.create_task(self._run_task_worker_tick_guarded(now))
+
+    async def _run_task_worker_tick_guarded(self, now: float) -> None:
+        try:
+            await self._run_task_worker_tick(now)
+        except Exception:
+            _log.exception("Task worker tick error")
+
     async def _run_task_worker_tick(self, now: float) -> None:
         """ADR-0071 D4: reap lapsed leases and claim/execute eligible host
         task applications. Not interval-gated for the same reason as
         ``_deliver_due_dispatches`` — the 30s tick is the latency floor.
+
+        Each execution reserves one of this daemon's ad-hoc concurrency
+        slots (``_reserve_adhoc_slot``) so ad-hoc executions are bounded by
+        ``MAX_ADHOC_CONCURRENT`` — a pool deliberately independent of
+        ``MAX_SCHEDULED_CONCURRENT``/``_reserve_global_slot``: sharing one
+        counter between the two lanes let a continuously replenished stream
+        of scheduled fires reacquire every freed slot before this pass got
+        one, starving ad-hoc work indefinitely. Each lane now has its own
+        guaranteed capacity instead of competing for one shared pool.
         """
         from lionagi.state.db import StateDB
         from lionagi.studio.scheduler import worker as _worker
 
         if not _worker.TASK_WORKER_ENABLED:
             return
+
+        def _release(claim: Any) -> None:
+            if claim is not None:
+                claim.release()
+
         async with StateDB() as db:
-            await _worker.worker_tick(db, worker_id=self._task_worker_id, now=now)
+            await _worker.worker_tick(
+                db,
+                worker_id=self._task_worker_id,
+                now=now,
+                reserve_slot=self._reserve_adhoc_slot,
+                release_slot=_release,
+            )
 
     async def _tick_github(self, schedule: dict, now: float) -> None:
         poll_interval = resolve_schedule_cadence_seconds(schedule)
@@ -1486,6 +1767,28 @@ class SchedulerEngine:
 
     def _release_global_slot(self) -> None:
         self._global_inflight = max(0, self._global_inflight - 1)
+
+    async def _reserve_adhoc_slot(self) -> tuple[bool, _AdhocSlotClaim | None]:
+        """Atomically claim one ad-hoc task-worker concurrency slot.
+
+        Mirrors ``_reserve_global_slot()`` but draws from its own counter
+        (``_adhoc_inflight``/``MAX_ADHOC_CONCURRENT``), independent of the
+        scheduled-fire cap. This is the ad-hoc lane's dedicated capacity: it
+        is never refused because the scheduled lane happens to be saturated,
+        and vice versa, so neither lane can starve the other.
+        """
+        from lionagi.studio.config import MAX_ADHOC_CONCURRENT
+
+        if MAX_ADHOC_CONCURRENT <= 0:
+            return True, None
+        async with self._adhoc_slot_lock:
+            if self._adhoc_inflight >= MAX_ADHOC_CONCURRENT:
+                return False, None
+            self._adhoc_inflight += 1
+            return True, _AdhocSlotClaim(self)
+
+    def _release_adhoc_slot(self) -> None:
+        self._adhoc_inflight = max(0, self._adhoc_inflight - 1)
 
     async def _maybe_record_deferred(self, schedule: dict, now: float) -> None:
         """Emit a throttled skipped-run record for a capacity-deferred fire.
@@ -2425,13 +2728,29 @@ class SchedulerEngine:
             # earlier so a cancellation mid-run is classified the same way.
             dispatched = True
             end_time = time.time()
-            status = "completed" if exit_code == 0 else "failed"
-            if exit_code == 0:
+
+            # Resolved BEFORE the schedule_run write below, so that write --
+            # and the signal, telemetry, and chain decisions that follow --
+            # all agree with the invocation's own resolved outcome instead
+            # of trusting the leader's raw exit_code in isolation. A clean
+            # exit (exit_code == 0) with a child session that has not
+            # independently reached a terminal status resolves to
+            # "completed_empty", not "completed": this scheduler treats
+            # that as NOT success, so it cannot pick the same schedule_run
+            # status/reason, signal, or on_success chain action a genuine
+            # completion would.
+            exit_status = "completed" if exit_code == 0 else "failed"
+            inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
+                self._svc, inv_id, fallback_status=exit_status, exit_code=exit_code
+            )
+            success = inv_status == "completed"
+            status = _SCHEDULE_RUN_STATUS_FROM_INVOCATION.get(inv_status, exit_status)
+            if success:
                 reason_code = RunReasons.COMPLETED_OK
                 reason_summary = "Scheduled process completed successfully."
             else:
-                reason_code = RunReasons.FAILED_EXIT_NONZERO
-                reason_summary = f"Scheduled process exited non-zero: {exit_code}."
+                reason_code = inv_rc
+                reason_summary = inv_rs
 
             written = await self._guarded_terminal_status(
                 "schedule_run",
@@ -2442,7 +2761,7 @@ class SchedulerEngine:
                 evidence_refs=[{"kind": "invocation", "id": inv_id}],
                 source="executor",
                 actor=run_id,
-                metadata={"exit_code": exit_code},
+                metadata={"exit_code": exit_code, "invocation_status": inv_status},
                 extra_fields={
                     "exit_code": exit_code,
                     "ended_at": end_time,
@@ -2462,9 +2781,6 @@ class SchedulerEngine:
                         error_detail=stderr_tail if exit_code != 0 else "",
                     )
                 )
-            inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
-                self._svc, inv_id, fallback_status=status, exit_code=exit_code
-            )
             inv_written = await self._guarded_terminal_status(
                 "invocation",
                 inv_id,
@@ -2493,9 +2809,9 @@ class SchedulerEngine:
 
             if chain_depth < _MAX_CHAIN_DEPTH:
                 chain_action = None
-                if exit_code == 0 and schedule.get("on_success"):
+                if success and schedule.get("on_success"):
                     chain_action = schedule["on_success"]
-                elif exit_code != 0 and schedule.get("on_fail"):
+                elif not success and schedule.get("on_fail"):
                     chain_action = schedule["on_fail"]
 
                 if chain_action:

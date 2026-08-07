@@ -235,6 +235,32 @@ async def test_run_progress_failed_run(db_path):
     assert result["elapsedSeconds"] == pytest.approx(10.0)
 
 
+async def test_run_progress_completed_empty_branch_counts_as_failed(db_path):
+    """ADR-0064: completed_empty is terminal but unsuccessful -- a branch
+    that produced no trusted evidence must not be counted as an op success."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="failed", started_at=10.0, ended_at=20.0)
+    await seed_branch(
+        db_path,
+        branch_id=f"{sid}-br1",
+        session_id=sid,
+        name="worker",
+        status="completed_empty",
+        started_at=10.0,
+        ended_at=15.0,
+    )
+
+    result = await run_progress({"run": sid})
+
+    assert result["opsTotal"] == 1
+    assert result["opsCompleted"] == 0
+    assert result["opsFailed"] == 1
+    assert result["opsRunning"] == 0
+    assert result["opsPending"] == 0
+
+
 async def test_run_progress_hex_prefix_resolution(db_path):
     from lionagi.studio.operator.run_progress import run_progress
 

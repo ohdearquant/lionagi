@@ -841,8 +841,12 @@ def _cmd_limits(args: argparse.Namespace) -> int:
         return 1
     cap = result.get("max_scheduled_concurrent")
     cap_display = "unlimited" if not cap else str(cap)
-    print(f"Max concurrent fires: {cap_display}")
-    print(f"Current in-flight:    {result.get('current_inflight', 0)}")
+    print(f"Max concurrent fires:      {cap_display}")
+    print(f"Current in-flight:         {result.get('current_inflight', 0)}")
+    adhoc_cap = result.get("max_adhoc_concurrent")
+    adhoc_cap_display = "unlimited" if not adhoc_cap else str(adhoc_cap)
+    print(f"Max concurrent ad-hoc:     {adhoc_cap_display}")
+    print(f"Current ad-hoc in-flight:  {result.get('current_adhoc_inflight', 0)}")
     return 0
 
 

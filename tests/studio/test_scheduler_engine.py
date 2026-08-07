@@ -118,6 +118,48 @@ async def test_resolve_terminal_completed_empty_child_taints_invocation():
 
 
 @pytest.mark.asyncio
+async def test_resolve_terminal_nonterminal_child_not_trusted_as_completed():
+    """A leader process exiting 0 is not evidence that a still-running child
+    session's own work finished (see #2535 -- the terminal stamp today comes
+    from the leader's stderr pipe closing, not from the work ending). A
+    child session that has not reached ANY terminal status must not be
+    silently trusted via the fallback_status="completed" path -- it belongs
+    on completed_empty (no positive evidence), the same bucket a
+    known-empty child already uses."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.services.scheduler_state import resolve_invocation_terminal
+
+    svc = _make_svc()
+    svc.list_sessions_for_invocation.return_value = [
+        {"id": "s1", "status": "running"},
+    ]
+    status, rc, rs, refs, meta = await resolve_invocation_terminal(
+        svc, "inv-1", fallback_status="completed", exit_code=0
+    )
+    assert status == "completed_empty"
+    assert rc == RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_all_children_terminal_completed_still_trusted():
+    """Positive control for the above: when every child session has
+    genuinely reached a terminal 'completed' status, the invocation is
+    still trusted as 'completed' -- the new non-terminal-child guard must
+    not fire when there is nothing left running."""
+    from lionagi.studio.services.scheduler_state import resolve_invocation_terminal
+
+    svc = _make_svc()
+    svc.list_sessions_for_invocation.return_value = [
+        {"id": "s1", "status": "completed"},
+        {"id": "s2", "status": "completed"},
+    ]
+    status, rc, rs, refs, meta = await resolve_invocation_terminal(
+        svc, "inv-1", fallback_status="completed", exit_code=0
+    )
+    assert status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_resolve_terminal_failed_child():
     from lionagi.studio.services.scheduler_state import resolve_invocation_terminal
 
@@ -578,6 +620,87 @@ async def test_fire_on_success_chain_fires():
 
 
 @pytest.mark.asyncio
+async def test_fire_running_child_with_on_success_does_not_run_success_chain():
+    """A clean leader exit (exit_code=0) with a child session that has not
+    independently reached a terminal status resolves to "completed_empty",
+    not "completed" -- the leader's exit is not evidence the child's work
+    finished. completed_empty is NOT success for scheduling purposes: the
+    schedule_run row's status, reason_code, emitted signal class, and the
+    on_success chain decision must all independently agree with that
+    resolved outcome instead of the raw exit code."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.list_sessions_for_invocation = AsyncMock(
+        return_value=[{"id": "sess-1", "status": "running"}]
+    )
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(
+        on_success={"kind": "agent", "prompt": "chained prompt", "model": "gpt-4.1-mini"}
+    )
+
+    fire_calls: list[tuple] = []
+    original_fire = engine._fire
+
+    async def _patched_fire(sched, run_id, *, trigger_context, chain_parent_id=None, chain_depth=0):
+        fire_calls.append((sched["id"], chain_depth))
+        if chain_depth > 0:
+            return
+        return await original_fire(
+            sched,
+            run_id,
+            trigger_context=trigger_context,
+            chain_parent_id=chain_parent_id,
+            chain_depth=chain_depth,
+        )
+
+    engine._fire = _patched_fire  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await original_fire(schedule, "run-empty-success", trigger_context={}, chain_depth=0)
+
+    # Assertion 1: status. completed_empty must not be recorded as "completed".
+    terminal_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.args[:2] == ("schedule_run", "run-empty-success")
+        and c.kwargs.get("new_status") in ("completed", "failed")
+    ]
+    assert terminal_calls
+    (call,) = terminal_calls
+    assert call.kwargs["new_status"] == "failed"
+
+    # Assertion 2: reason. The finer completed_empty distinction must survive
+    # in the reason_code even though the coarse status is "failed".
+    assert call.kwargs["reason_code"] == RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
+
+    # Assertion 3: signal class. build_schedule_run_signal() derives the
+    # signal class from the same mapped status, so a completed_empty outcome
+    # must mint ScheduleRunFailed, never ScheduleRunSucceeded.
+    node_metadata_calls = [
+        c.kwargs["node_metadata"]
+        for c in svc.update_invocation.await_args_list
+        if "node_metadata" in c.kwargs
+    ]
+    assert len(node_metadata_calls) == 1
+    assert node_metadata_calls[0]["coordination"]["signals"]["emitted"] == {"ScheduleRunFailed": 1}
+
+    # Assertion 4: chaining. on_success must not fire for a no-evidence outcome.
+    chained = [c for c in fire_calls if c[1] == 1]
+    assert not chained, "on_success must not fire for a completed_empty (no-evidence) outcome"
+
+
+@pytest.mark.asyncio
 async def test_fire_invocation_finalization_cas_miss_is_checked_and_does_not_raise():
     """A concurrent finalizer (e.g. the deadline reaper) may already have
     moved the invocation to a terminal status by the time _fire() records its
@@ -620,10 +743,17 @@ async def test_fire_invocation_finalization_cas_miss_is_checked_and_does_not_rai
 
 
 @pytest.mark.asyncio
-async def test_fire_exception_after_terminal_schedule_run_does_not_rewrite_failed():
-    """A late exception after the schedule_run terminal write already
-    succeeded (e.g. resolve_invocation_terminal blowing up) must not attempt
-    an unguarded terminal rewrite from the broad-except handler."""
+async def test_fire_exception_during_invocation_resolution_marks_run_failed_once():
+    """resolve_invocation_terminal() is now consulted BEFORE the
+    schedule_run terminal write in the normal path -- its resolved outcome
+    must be used consistently for the schedule row's own status/reason, not
+    only the invocation row (a completed_empty invocation must not let the
+    schedule row or an on_success chain report success). A raise during
+    that resolution therefore skips the normal-path schedule_run write
+    entirely; the broad-except handler catches it, writes a single guarded
+    'failed' schedule_run terminal status, and still finalizes the
+    invocation via its own retried resolution call."""
+    from lionagi.state.reasons import RunReasons
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
     svc = _make_svc()
@@ -632,22 +762,16 @@ async def test_fire_exception_after_terminal_schedule_run_does_not_rewrite_faile
     async def _update_status(entity_type, entity_id, *, new_status, **kwargs):
         if entity_type == "schedule_run" and new_status in ("completed", "failed"):
             schedule_run_terminal_calls.append(kwargs)
-            if len(schedule_run_terminal_calls) > 1:
-                assert "expected_statuses" in kwargs, (
-                    "a second schedule_run terminal write from the broad-except "
-                    "handler must be guarded, not an unconditional overwrite"
-                )
-                return False
         return True
 
     svc.update_status = AsyncMock(side_effect=_update_status)
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule()
 
-    # resolve_invocation_terminal() raises on its first call (right after the
-    # schedule_run terminal write in the normal path), but the broad-except
-    # handler's own call to it must still succeed so the test can observe the
-    # handler's schedule_run rewrite attempt in isolation.
+    # resolve_invocation_terminal() raises on its first call (now the very
+    # first thing the normal path awaits after spawn_and_wait returns), but
+    # the broad-except handler's own retry call to it must still succeed so
+    # the test can observe the handler finalizing both rows in isolation.
     resolve_calls = {"n": 0}
 
     async def _resolve_invocation_terminal(*args, **kwargs):
@@ -672,7 +796,12 @@ async def test_fire_exception_after_terminal_schedule_run_does_not_rewrite_faile
     ):
         await engine._fire(schedule, "run-late-exc", trigger_context={"scheduled": True})
 
-    assert len(schedule_run_terminal_calls) == 2
+    assert resolve_calls["n"] == 2, "the broad-except handler must retry invocation resolution"
+    assert len(schedule_run_terminal_calls) == 1, (
+        "the schedule_run terminal write only happens once, from the except handler, "
+        "since resolving the invocation now gates the normal-path write itself"
+    )
+    assert schedule_run_terminal_calls[0]["reason_code"] == RunReasons.FAILED_EXCEPTION
 
 
 @pytest.mark.asyncio
@@ -2000,6 +2129,178 @@ async def test_recompute_armed_cron_schedules_unchanged_no_log(monkeypatch, capl
 
     svc.update_schedule.assert_not_awaited()
     assert not any("shifted" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_check_missed_fires_excludes_github_poll(monkeypatch):
+    """A stale github_poll next_fire_at is not a missed scheduled occurrence
+    -- that trigger's cadence is driven by last_fired_at/poll_interval_sec,
+    not next_fire_at (see _tick_github). _check_missed_fires() must leave it
+    alone. An interval schedule with the same stale next_fire_at is the
+    positive control: it must still record a missed-fire skip."""
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.state.reasons import ScheduleReasons
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fixed_now = time.time()
+    monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
+
+    github_schedule = _minimal_schedule(
+        id="sched-gh",
+        trigger_type="github_poll",
+        cron_expr=None,
+        next_fire_at=fixed_now - 3600,
+        missed_fire_policy="skip",
+    )
+    interval_schedule = _minimal_schedule(
+        id="sched-interval",
+        trigger_type="interval",
+        cron_expr=None,
+        interval_sec=60,
+        next_fire_at=fixed_now - 3600,
+        missed_fire_policy="skip",
+    )
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[github_schedule, interval_schedule])
+    engine = SchedulerEngine(svc=svc)
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        await engine._check_missed_fires()
+
+    mock_tracked.assert_not_called()
+    skip_calls = [
+        c
+        for c in svc.update_status.await_args_list
+        if c.kwargs.get("reason_code") == ScheduleReasons.SKIPPED_MISSED_FIRE
+    ]
+    skipped_run_schedule_ids = set()
+    for c in skip_calls:
+        for ref in c.kwargs.get("evidence_refs") or []:
+            if ref.get("kind") == "schedule":
+                skipped_run_schedule_ids.add(ref.get("id"))
+
+    assert "sched-gh" not in skipped_run_schedule_ids
+    assert "sched-interval" in skipped_run_schedule_ids
+
+
+@pytest.mark.asyncio
+async def test_tick_does_not_await_worker_pass_before_evaluating_schedules(monkeypatch, tmp_path):
+    """_tick() must not await the ad-hoc task-worker pass before loading and
+    evaluating due schedules -- a hung/slow worker pass would otherwise defer
+    every schedule's evaluation for the whole pass (see #2750). The worker
+    pass here never completes; _tick() must still return promptly and fire
+    the due schedule in the same cycle."""
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+
+    fixed_now = 1_000_000.0
+    monkeypatch.setattr(engine_mod.time, "time", lambda: fixed_now)
+
+    schedule = _minimal_schedule(
+        id="sched-due-mid-pass",
+        trigger_type="interval",
+        cron_expr=None,
+        interval_sec=60,
+        next_fire_at=fixed_now - 1,
+    )
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[schedule])
+    engine = SchedulerEngine(svc=svc)
+
+    worker_started = asyncio.Event()
+    worker_may_finish = asyncio.Event()
+
+    async def _hung_worker_tick(now):
+        worker_started.set()
+        await worker_may_finish.wait()
+
+    engine._run_task_worker_tick = _hung_worker_tick  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "lionagi.studio.services.lifecycle.run_periodic_reapers",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "lionagi.studio.services.db_maintenance.checkpoint_state_db",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(engine, "_maybe_fire", new=AsyncMock()) as mock_fire,
+    ):
+        # If _tick() still awaits the worker pass inline, this times out
+        # because worker_may_finish is never set before the deadline.
+        await asyncio.wait_for(engine._tick(), timeout=2.0)
+
+    # asyncio.wait_for() does not guarantee that the coroutine it awaits runs
+    # as a separately scheduled Task -- CPython >=3.12 drives a plain
+    # coroutine inline within the caller's own step when timeout > 0, so the
+    # worker task created inside _tick() may not get a scheduling turn
+    # before wait_for() returns. An explicit checkpoint gives the event loop
+    # one turn to run any already-scheduled callback, which is what actually
+    # proves the worker task was created and is runnable -- independent of
+    # whichever internal strategy wait_for() happens to use.
+    await asyncio.sleep(0)
+
+    assert worker_started.is_set(), "worker pass never started"
+    mock_fire.assert_awaited_once()
+
+    worker_may_finish.set()
+    if engine._worker_task is not None:
+        await asyncio.wait_for(engine._worker_task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_tick_worker_pass_is_single_flight(monkeypatch, tmp_path):
+    """A second _tick() must not start a second worker-pass task while the
+    first is still running -- single-flight, not an unguarded task per tick
+    (see #2750's fix-shape constraint)."""
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.scheduler.engine as engine_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    fake_db = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
+    monkeypatch.setattr(engine_mod.time, "time", lambda: 2_000_000.0)
+
+    svc = _make_svc()
+    svc.list_schedules = AsyncMock(return_value=[])
+    engine = SchedulerEngine(svc=svc)
+
+    start_count = 0
+    worker_may_finish = asyncio.Event()
+
+    async def _hung_worker_tick(now):
+        nonlocal start_count
+        start_count += 1
+        await worker_may_finish.wait()
+
+    engine._run_task_worker_tick = _hung_worker_tick  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "lionagi.studio.services.lifecycle.run_periodic_reapers",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "lionagi.studio.services.db_maintenance.checkpoint_state_db",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        await asyncio.wait_for(engine._tick(), timeout=2.0)
+        await asyncio.wait_for(engine._tick(), timeout=2.0)
+
+    assert start_count == 1, (
+        f"Expected exactly one worker-pass task started while the first is "
+        f"still in flight, got {start_count}"
+    )
+
+    worker_may_finish.set()
+    if engine._worker_task is not None:
+        await asyncio.wait_for(engine._worker_task, timeout=2.0)
 
 
 # ---------------------------------------------------------------------------

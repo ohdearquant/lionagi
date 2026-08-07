@@ -129,13 +129,19 @@ def test_schedule_limits_subcommand_registered():
 
 
 def test_schedule_limits_dispatches_to_api_and_prints_values(monkeypatch, capsys):
-    """run_schedule limits calls _api('/limits') and prints cap + inflight."""
+    """run_schedule limits calls _api('/limits') and prints cap + inflight
+    for both the scheduled and the ad-hoc lane."""
     import lionagi.studio.cli as sched_mod
 
     monkeypatch.setattr(
         sched_mod,
         "_api",
-        lambda path, **kw: {"max_scheduled_concurrent": 4, "current_inflight": 1},
+        lambda path, **kw: {
+            "max_scheduled_concurrent": 4,
+            "current_inflight": 1,
+            "max_adhoc_concurrent": 6,
+            "current_adhoc_inflight": 2,
+        },
     )
 
     from lionagi.studio.cli import add_schedule_subparser, run_schedule
@@ -150,6 +156,8 @@ def test_schedule_limits_dispatches_to_api_and_prints_values(monkeypatch, capsys
     out = capsys.readouterr().out
     assert "4" in out
     assert "1" in out
+    assert "6" in out
+    assert "2" in out
 
 
 def test_schedule_limits_unlimited_display(monkeypatch, capsys):

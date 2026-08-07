@@ -29,7 +29,11 @@ _ACTIVITY_WINDOWS: dict[str, tuple[int, int]] = {
 
 _BUCKET_STATUS_MAP: dict[str, str] = {
     "completed": "completed",
-    "completed_empty": "completed",
+    # ADR-0064: completed_empty is terminal but unsuccessful (no trusted
+    # evidence produced), so it folds into "failed" alongside timed_out --
+    # never into "completed", which the completion_rate denominator treats
+    # as a success.
+    "completed_empty": "failed",
     "failed": "failed",
     "timed_out": "failed",
     "aborted": "cancelled",

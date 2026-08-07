@@ -424,3 +424,146 @@ async def test_stale_worker_cannot_finalize_a_reclaimed_lease(db: StateDB) -> No
     assert row["status"] == "running"
     assert row["leased_by"] == "w2"
     assert row["lease_expires_at"] == t0 + 3600
+
+
+# ── Global slot reservation hook (#2751) ─────────────────────────────────
+
+
+async def test_worker_tick_respects_injected_global_slot_reservation(db: StateDB) -> None:
+    """The ad-hoc worker takes no global concurrency slot today, so real
+    top-level concurrency is the configured cap plus one. worker_tick/
+    claim_and_execute accept an optional reserve_slot/release_slot pair: a
+    refused reservation leaves the row queued and never calls execute (the
+    row is left for the next tick, same posture as every other admission
+    deferral); an allowed reservation executes normally and releases the
+    slot once the row reaches a terminal status."""
+    run_id = await _submit_host_task(db)
+
+    reserve_calls: list[int] = []
+
+    async def _refusing_reserve() -> tuple[bool, object | None]:
+        reserve_calls.append(1)
+        return False, None
+
+    counts = await worker_tick(
+        db, worker_id="w1", execute=_noop_execute, reserve_slot=_refusing_reserve
+    )
+    assert counts["claimed"] == 0
+    assert reserve_calls == [1]
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "queued"
+
+    release_calls: list[object] = []
+
+    async def _allowing_reserve() -> tuple[bool, object | None]:
+        return True, "token-a"
+
+    def _release(claim: object) -> None:
+        release_calls.append(claim)
+
+    counts = await worker_tick(
+        db,
+        worker_id="w1",
+        execute=_noop_execute,
+        reserve_slot=_allowing_reserve,
+        release_slot=_release,
+    )
+    assert counts["claimed"] == 1
+    assert release_calls == ["token-a"]
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "completed"
+
+
+async def test_worker_tick_releases_slot_when_execute_raises(db: StateDB) -> None:
+    """The reserved slot must be released even when execute() raises, or a
+    crashing action would permanently leak a global concurrency slot."""
+    run_id = await _submit_host_task(db)
+
+    async def _boom_execute(row: dict) -> tuple[int, str]:
+        raise RuntimeError("boom")
+
+    release_calls: list[object] = []
+
+    async def _allowing_reserve() -> tuple[bool, object | None]:
+        return True, "token-b"
+
+    counts = await worker_tick(
+        db,
+        worker_id="w1",
+        execute=_boom_execute,
+        reserve_slot=_allowing_reserve,
+        release_slot=release_calls.append,
+    )
+    assert counts["claimed"] == 1
+    assert release_calls == ["token-b"]
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "failed"
+
+
+async def test_worker_tick_releases_slot_when_queued_to_running_transition_raises(
+    db: StateDB, monkeypatch
+) -> None:
+    """The reserved slot must be released even when the queued->running
+    transition itself raises, not only when execute() raises. Before the
+    fix, the release `finally` started after this transition call, so a
+    raise here leaked the slot permanently while leaving the row `queued`."""
+    from lionagi.studio.scheduler import worker as worker_mod
+
+    run_id = await _submit_host_task(db)
+
+    release_calls: list[object] = []
+
+    async def _allowing_reserve() -> tuple[bool, object | None]:
+        return True, "token-c"
+
+    async def _boom_transition(*args, **kwargs):
+        raise RuntimeError("transition boom")
+
+    monkeypatch.setattr(worker_mod, "transition", _boom_transition)
+
+    with pytest.raises(RuntimeError, match="transition boom"):
+        await worker_tick(
+            db,
+            worker_id="w1",
+            execute=_noop_execute,
+            reserve_slot=_allowing_reserve,
+            release_slot=release_calls.append,
+        )
+
+    assert release_calls == ["token-c"], "reserved slot must be released when transition() raises"
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "queued"
+
+
+async def test_worker_tick_releases_slot_when_queued_to_running_transition_cancelled(
+    db: StateDB, monkeypatch
+) -> None:
+    """Same hazard as above but for asyncio.CancelledError specifically --
+    the reproduction shape from the review: reserve succeeds, then the
+    queued->running transition is cancelled before it can complete."""
+    from lionagi.studio.scheduler import worker as worker_mod
+
+    run_id = await _submit_host_task(db)
+
+    release_calls: list[object] = []
+
+    async def _allowing_reserve() -> tuple[bool, object | None]:
+        return True, "token-d"
+
+    async def _cancelled_transition(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(worker_mod, "transition", _cancelled_transition)
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker_tick(
+            db,
+            worker_id="w1",
+            execute=_noop_execute,
+            reserve_slot=_allowing_reserve,
+            release_slot=release_calls.append,
+        )
+
+    assert release_calls == ["token-d"], "reserved slot must be released on cancellation too"
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "queued"

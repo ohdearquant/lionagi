@@ -278,7 +278,10 @@ def _resolution_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-_COMPLETED_STATUSES = frozenset({"completed", "completed_empty"})
+# ADR-0064: completed_empty is terminal but unsuccessful (no trusted
+# evidence produced) -- it is not in this set, so it falls through to the
+# SESSION_TERMINAL_STATUSES branch below and counts as an op failure.
+_COMPLETED_STATUSES = frozenset({"completed"})
 
 # Per-node lifecycle lane, mirroring the ONLY existing "how far along is a DAG
 # run" projection this codebase has:
