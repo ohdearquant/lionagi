@@ -17,10 +17,13 @@ import {
   fitZoomFor,
   FIT_ZOOM_FLOOR,
   MIN_INTERACTIVE_ZOOM,
+  computeEffectiveNodeStatuses,
+  computeFollowCenter,
   panelClearanceShift,
   shouldShowMiniMap,
   shouldShowSidePanel,
 } from "./WorkerCanvas";
+import type { NodeExecStatus } from "./StepNode";
 
 describe("computeEdgeSourceCompleted", () => {
   it("uses the legacy completedMap when nodeStatuses is undefined", () => {
@@ -291,5 +294,194 @@ describe("WorkerCanvas.tsx — source contract for rank-distance edge data", () 
     // Layout-on-mount effect + handleAutoLayout (editable canvas).
     expect(calls.length).toBeGreaterThanOrEqual(2);
     expect(src).toMatch(/ranks,?\s*\}\s*=\s*getLayoutedElements/);
+  });
+});
+
+// ─── computeEffectiveNodeStatuses — legacy fallback + reconciliation ─────────
+// The single per-node status derivation WorkerCanvas feeds to both the flow
+// nodes' execStatus and the stage/follow-mode computations: nodeStatuses
+// (live) wins per node, absent nodes fall back to the legacy
+// execSteps/currentStep derivation, and the WHOLE resulting map is then run
+// through reconcileNodeStatuses so a node can never render "running" once a
+// descendant is terminal, and a terminal run never leaves a node looking
+// like live work just because no signal ever arrived for it.
+
+describe("computeEffectiveNodeStatuses", () => {
+  const ids = ["a", "b", "c"];
+  const edges = [
+    { source: "a", target: "b" },
+    { source: "b", target: "c" },
+  ];
+
+  it("nodeStatuses wins per node over the legacy fallback", () => {
+    const result = computeEffectiveNodeStatuses(
+      ids,
+      edges,
+      { a: "running", b: "pending", c: "pending" },
+      [],
+      null,
+      false,
+    );
+    expect(result.a).toBe("running");
+  });
+
+  it("falls back to currentStep, then execSteps completedMap, then pending", () => {
+    // b has no descendant terminal here (its only descendant is c, and c is
+    // not in edges from b) — use a disjoint pair so descendant-suppression
+    // doesn't interfere with proving the plain fallback precedence.
+    const disjointEdges = [{ source: "x", target: "y" }];
+    const result = computeEffectiveNodeStatuses(
+      ["a", "b", "c"],
+      disjointEdges,
+      undefined,
+      [{ step: "c", status: "completed" }],
+      "b",
+      false,
+    );
+    expect(result).toEqual({ a: "pending", b: "running", c: "completed" });
+  });
+
+  it("suppresses a stale 'running' ancestor once a descendant is terminal, live or not", () => {
+    const result = computeEffectiveNodeStatuses(
+      ids,
+      edges,
+      { a: "running", b: "running", c: "completed" },
+      [],
+      null,
+      false,
+    );
+    // b's descendant c is terminal → b can no longer read "running".
+    expect(result.b).toBe("completed");
+    // a's descendant chain (b→c) also reaches a terminal node.
+    expect(result.a).toBe("completed");
+  });
+
+  it("on a terminal run, a node with no signal at all reads as unknown (pending), not active", () => {
+    const result = computeEffectiveNodeStatuses(
+      ids,
+      edges,
+      { a: "completed" },
+      [],
+      null,
+      true, // done
+    );
+    // b and c never got a signal; the run is done, so they must not look
+    // like live work — they collapse to "pending" (absence of information).
+    expect(result.b).toBe("pending");
+    expect(result.c).toBe("pending");
+  });
+
+  it("on a terminal run, a node stuck 'queued'/'running' with no terminal signal collapses to pending", () => {
+    const result = computeEffectiveNodeStatuses(
+      ids,
+      edges,
+      { a: "completed", b: "running", c: "queued" },
+      [],
+      null,
+      true,
+    );
+    expect(result.b).toBe("pending");
+    expect(result.c).toBe("pending");
+  });
+
+  it("terminal statuses (completed/failed/escalated) pass through untouched on a done run", () => {
+    const result = computeEffectiveNodeStatuses(
+      ids,
+      edges,
+      { a: "completed", b: "failed", c: "escalated" },
+      [],
+      null,
+      true,
+    );
+    expect(result).toEqual({ a: "completed", b: "failed", c: "escalated" });
+  });
+});
+
+// ─── computeFollowCenter — viewport target for follow mode ───────────────────
+
+describe("computeFollowCenter", () => {
+  it("returns null when nothing is running", () => {
+    const nodes = [{ id: "a", position: { x: 0, y: 0 } }];
+    const statuses: Record<string, NodeExecStatus> = { a: "completed" };
+    expect(computeFollowCenter(nodes, statuses)).toBeNull();
+  });
+
+  it("centers on the single running node, accounting for its size", () => {
+    const nodes = [{ id: "a", position: { x: 100, y: 200 }, width: 210, height: 60 }];
+    const statuses: Record<string, NodeExecStatus> = { a: "running" };
+    expect(computeFollowCenter(nodes, statuses)).toEqual({ x: 100 + 105, y: 200 + 30 });
+  });
+
+  it("uses default dimensions when a node has no measured width/height yet", () => {
+    const nodes = [{ id: "a", position: { x: 0, y: 0 } }];
+    const statuses: Record<string, NodeExecStatus> = { a: "running" };
+    expect(computeFollowCenter(nodes, statuses)).toEqual({ x: 105, y: 30 });
+  });
+
+  it("averages the centroid across multiple running nodes", () => {
+    const nodes = [
+      { id: "a", position: { x: 0, y: 0 }, width: 200, height: 40 },
+      { id: "b", position: { x: 200, y: 0 }, width: 200, height: 40 },
+    ];
+    const statuses: Record<string, NodeExecStatus> = { a: "running", b: "running" };
+    const center = computeFollowCenter(nodes, statuses);
+    expect(center).toEqual({ x: (100 + 300) / 2, y: 20 });
+  });
+
+  it("ignores non-running nodes when computing the centroid", () => {
+    const nodes = [
+      { id: "a", position: { x: 0, y: 0 }, width: 200, height: 40 },
+      { id: "b", position: { x: 1000, y: 1000 }, width: 200, height: 40 },
+    ];
+    const statuses: Record<string, NodeExecStatus> = { a: "running", b: "completed" };
+    expect(computeFollowCenter(nodes, statuses)).toEqual({ x: 100, y: 20 });
+  });
+});
+
+// ─── Source contract — new behaviors wired into the component itself ────────
+// Mounting React Flow in vitest is heavy and not how this file tests
+// WorkerCanvas elsewhere (see the MiniMap source-contract test above); these
+// assert the component actually calls the primitives the behavior tests
+// above exercise in isolation, and exposes the props/controls the contract
+// requires.
+
+describe("WorkerCanvas.tsx — source contract for progress/follow/selection wiring", () => {
+  const CANVAS_DIR = path.resolve(__dirname);
+  const src = fs.readFileSync(path.join(CANVAS_DIR, "WorkerCanvas.tsx"), "utf-8");
+
+  it("declares live/done/onNodeSelect props", () => {
+    expect(src).toMatch(/live\?: boolean/);
+    expect(src).toMatch(/done\?: boolean/);
+    expect(src).toMatch(/onNodeSelect\?: \(nodeId: string\) => void/);
+  });
+
+  it("fires onNodeSelect from the node click handler", () => {
+    expect(src).toMatch(/onNodeSelect\?\.\(typedNode\.id\)/);
+  });
+
+  it("reserves layout height via computeReservedHeight, not the raw bbox height", () => {
+    expect(src).toMatch(/computeReservedHeight\(/);
+  });
+
+  it("wires the follow-mode reducer and shouldAutoCenter gate", () => {
+    expect(src).toMatch(
+      /useReducer\(\s*followModeReducer,\s*initialFollowModeState\(live, done\),?\s*\)/,
+    );
+    expect(src).toMatch(/shouldAutoCenter\(followState, live, done\)/);
+  });
+
+  it("dispatches manual_interaction on onMoveStart (react-flow's pan/zoom-start hook)", () => {
+    expect(src).toMatch(/onMoveStart=\{onMoveStart\}/);
+    expect(src).toMatch(/dispatchFollow\(\{ type: "manual_interaction" \}\)/);
+  });
+
+  it("renders a visible Follow toggle that survives a manual interruption", () => {
+    expect(src).toMatch(/dispatchFollow\(\{ type: "toggle" \}\)/);
+    expect(src).toMatch(/followState\.following \? "Following" : "Follow"/);
+  });
+
+  it("derives the stage badge from computeStagePosition over the authored edges", () => {
+    expect(src).toMatch(/computeStagePosition\(/);
+    expect(src).toMatch(/Rank \{stagePosition\.stage\} of \{stagePosition\.totalStages\}/);
   });
 });

@@ -464,7 +464,17 @@
       "graphNodeStatusPaused": "pausado",
       "graphNodeStatusDone": "concluído",
       "graphNodeStatusFailed": "falhou",
-      "graphNodeStatusEscalated": "escalado"
+      "graphNodeStatusEscalated": "escalado",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "Lista do histórico",
     "detailAria": "Detalhes do item"
