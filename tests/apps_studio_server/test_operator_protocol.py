@@ -39,6 +39,29 @@ class ScriptedEngine:
         return self._stream(turn)
 
 
+class MessageWritingEngine:
+    """Adds real messages to the turn's branch through the same hooked
+    async add-path `Branch.chat_and_record` uses, so persistence-layer
+    append/dedup behavior is actually exercised. `ScriptedEngine` never
+    touches the branch's messages at all, so it cannot stand in for a real
+    engine when a test cares about what got persisted."""
+
+    async def _stream(self, turn):
+        branch = turn.runtime_branch
+        await branch.msgs.a_add_message(
+            instruction=turn.instruction, sender=branch.user, recipient=branch.id
+        )
+        await branch.msgs.a_add_message(
+            assistant_response=f"ack: {turn.instruction}",
+            sender=branch.id,
+            recipient=branch.user,
+        )
+        yield OperatorEngineEvent("text", {"content": "ok", "format": "plain", "role": "assistant"})
+
+    def stream(self, turn):
+        return self._stream(turn)
+
+
 class FailingEngine:
     async def _stream(self, _turn):
         raise RuntimeError("engine exploded mid-turn")
@@ -157,6 +180,7 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
         "mcp__studio_operator__run_findings",
         "mcp__studio_operator__cancel_run",
         "mcp__studio_operator__resume_run",
+        "mcp__studio_operator__rename_session",
     }
     # The first turn of a conversation has nothing to resume.
     assert "resume" not in kwargs
@@ -183,6 +207,7 @@ _REQUIRED_OPERATOR_TOOLS = frozenset(
         "run_findings",
         "cancel_run",
         "resume_run",
+        "rename_session",
     }
 )
 
@@ -1016,6 +1041,75 @@ async def test_application_mcp_resume_run_delegates_flow_kind_to_checkpoint_repl
     await coordinator.shutdown()
 
 
+async def test_application_mcp_resume_run_rejects_instruction_for_flow_kind_before_proposal(
+    tmp_path, monkeypatch
+):
+    """A flow-kind run supplied an instruction must never produce an
+    approvable proposal describing a replay-with-instruction: the real
+    dispatcher (`run_resume.py::_dispatch_resume_by_kind`) rejects an
+    instruction for a checkpoint-replay kind, so offering that as an
+    approvable action would let a human approve something the executor was
+    always going to refuse. No proposal may be created at all -- the
+    mismatch must be caught before `store.create_proposal`, not surfaced as
+    a later execution failure."""
+    import uuid
+
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.resume_run import resume_run
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    run_id = str(uuid.uuid4())
+    async with StateDB() as db:
+        progression_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "progression_id": progression_id,
+                "status": "completed",
+                "started_at": time.time(),
+                "invocation_kind": "flow",
+                "project": "studio-test-project",
+            }
+        )
+
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="continue that run",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "studio-test-project",
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    result = await asyncio.wait_for(
+        resume_run({"run": run_id, "instruction": "keep going with step two"}), timeout=2
+    )
+
+    assert result["resumed"] is False
+    assert result["reason"] == "invalid_input"
+    assert result["id"] == run_id
+    assert "instruction" in result["message"]
+
+    proposals = await store.list_proposals_for_request(accepted["requestId"])
+    assert proposals == []
+
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+    await coordinator.shutdown()
+
+
 async def _noop() -> None:
     return None
 
@@ -1026,6 +1120,21 @@ async def _wait_done(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         frames = await store.list_frames(conversation_id)
+        if any(frame["type"] == "done" for frame in frames):
+            return frames
+        await asyncio.sleep(0.01)
+    raise TimeoutError("Operator turn did not finish")
+
+
+async def _wait_done_since(
+    store: OperatorStore, conversation_id: str, after_sequence: int, *, timeout: float = 5
+) -> list[dict]:
+    """Like `_wait_done`, scoped to frames after *after_sequence* -- needed
+    once a conversation has more than one turn, since `_wait_done` would
+    otherwise match the earlier turn's own "done" frame."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        frames = await store.list_frames(conversation_id, after_sequence=after_sequence)
         if any(frame["type"] == "done" for frame in frames):
             return frames
         await asyncio.sleep(0.01)
@@ -2881,3 +2990,386 @@ async def test_a_repeated_observation_timestamp_is_not_applied_twice(tmp_path):
 
     view, _ = await store.get_view(cid, "page-a")
     assert view["space"] == "library"
+
+
+# -- Part 1: one conversation is one branch -----------------------------
+
+
+def _run_link(frames: list[dict]) -> dict:
+    frame = next(
+        f
+        for f in frames
+        if f["type"] == "tool_result"
+        and isinstance(f["payload"].get("result"), dict)
+        and f["payload"]["result"].get("runId")
+    )
+    return frame["payload"]["result"]
+
+
+@pytest.mark.asyncio
+async def test_second_turn_on_a_conversation_reuses_the_same_branch_and_appends(
+    tmp_path, monkeypatch
+):
+    """A conversation of N turns must be ONE branch/session in the log
+    (asserted end to end, from the store through the actual sessions/
+    branches reader), and the second turn's messages must be appended to
+    the first turn's progression, never overwrite it."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services.runs import list_runs
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=MessageWritingEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation(title="Multi-turn"))["conversation"]["id"]
+
+    await coordinator.submit(
+        cid,
+        instruction="first turn",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    frames1 = await _wait_done(store, cid)
+    link1 = _run_link(frames1)
+    run_id1, branch_id1 = link1["runId"], link1["branchId"]
+
+    conv_after_turn1 = await store.get_conversation(cid)
+    assert conv_after_turn1["branchId"] == branch_id1
+
+    async with StateDB() as db:
+        branch_row = await db.get_branch(branch_id1)
+        msg_ids_after_turn1 = set(await db.get_progression(branch_row["progression_id"]))
+    assert msg_ids_after_turn1, "turn 1 must have written at least one message"
+
+    last_seq = frames1[-1]["sequence"]
+    await coordinator.submit(
+        cid,
+        instruction="second turn",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=last_seq,
+    )
+    frames2 = await _wait_done_since(store, cid, last_seq)
+    link2 = _run_link(frames2)
+    run_id2, branch_id2 = link2["runId"], link2["branchId"]
+
+    # The identity itself: both turns constructed their Branch against the
+    # same conversation-level id, and the CLI persistence layer's existing
+    # resume path folded the second turn into the same DB session row.
+    assert branch_id2 == branch_id1
+    assert run_id2 == run_id1
+
+    # From the store through to what the sessions/messages reader serves --
+    # not just that the id was written, but that the log actually shows one
+    # branch and one run for this conversation.
+    async with StateDB() as db:
+        db_branches = await db.list_branches(run_id1)
+        branch_row_after = await db.get_branch(branch_id1)
+        msg_ids_after_turn2 = set(await db.get_progression(branch_row_after["progression_id"]))
+    assert [row["id"] for row in db_branches] == [branch_id1]
+
+    runs = await list_runs(limit=50, offset=0)
+    matching_runs = [item for item in runs if item["id"] == run_id1]
+    assert len(matching_runs) == 1
+
+    # Append, not clobber: every message turn 1 wrote is still there, and
+    # turn 2 added strictly more.
+    assert msg_ids_after_turn1 <= msg_ids_after_turn2
+    assert len(msg_ids_after_turn2) > len(msg_ids_after_turn1)
+
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_conversation_with_no_stored_branch_id_adopts_one_lazily_on_first_turn(
+    tmp_path, monkeypatch
+):
+    """A conversation created before `branch_id` existed (or simply before
+    its first turn) has no stored identity. It must keep working: the rule
+    is adopt-on-next-turn, never a migration that rewrites history."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation(title="Legacy"))["conversation"]["id"]
+
+    assert (await store.get_conversation(cid))["branchId"] is None
+
+    await coordinator.submit(
+        cid,
+        instruction="first turn ever",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    frames = await _wait_done(store, cid)
+    link = _run_link(frames)
+
+    conv_after = await store.get_conversation(cid)
+    assert conv_after["branchId"] == link["branchId"]
+    assert conv_after["branchId"] is not None
+
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claim_branch_id_converges_on_one_id(tmp_path):
+    """Two turns racing to claim the first branch id for one conversation
+    must never leave it with two candidate ids to disagree about."""
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation(title="Race"))["id"]
+    assert (await store.get_conversation(cid))["branchId"] is None
+
+    claimed = await asyncio.gather(*(store.claim_branch_id(cid) for _ in range(8)))
+
+    assert len(set(claimed)) == 1
+    assert (await store.get_conversation(cid))["branchId"] == claimed[0]
+
+
+# -- Part 2: the rename_session Operator tool -----------------------------
+
+# Neutral, non-host-shaped project label for the rename_session tests below
+# -- unlike `_seed_running_session`'s own default, this deliberately avoids
+# looking like a machine path.
+_RENAME_TEST_PROJECT = "studio-test-project"
+
+
+@pytest.mark.asyncio
+async def test_application_mcp_rename_session_allow_executes_via_the_real_default_coordinator(
+    tmp_path, monkeypatch
+):
+    """Same real default `OperatorCoordinator` wiring as the cancel_run/
+    resume_run integration tests above: proves
+    `coordinator.py::_execute_application_command`'s `rename_session` branch
+    really dispatches to `rename_session.execute_rename_session_command`
+    end to end, and that the run's name is actually changed once a human
+    allows the proposal."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.rename_session import rename_session
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_running_session(db, project=_RENAME_TEST_PROJECT)
+
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="call that run 'nightly backfill'",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": _RENAME_TEST_PROJECT,
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    task = asyncio.create_task(rename_session({"run": run_id, "name": "nightly backfill"}))
+    proposal = await _wait_proposal(store, accepted["requestId"])
+    assert not task.done()
+    assert proposal["commandType"] == "rename_session"
+    assert proposal["command"] == {
+        "session_id": run_id,
+        "name": "nightly backfill",
+        "project": _RENAME_TEST_PROJECT,
+    }
+    assert proposal["risk"] == "mutate"
+
+    decision = await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=proposal["targetVersion"],
+    )
+    result = await asyncio.wait_for(task, timeout=2)
+
+    assert decision["status"] == "succeeded"
+    assert result == {
+        "renamed": True,
+        "status": "renamed",
+        "id": run_id,
+        "name": "nightly backfill",
+    }
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT name FROM sessions WHERE id = ?", (run_id,))
+        assert row["name"] == "nightly backfill"
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_application_mcp_rename_session_deny_leaves_run_untouched_via_real_coordinator(
+    tmp_path, monkeypatch
+):
+    """Same real default wiring as the allow-path test above, but denied:
+    the run's name must be left exactly as it was and
+    `execute_rename_session_command` must never run, regardless of which
+    command type a proposal names."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.rename_session import rename_session
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_running_session(db, project=_RENAME_TEST_PROJECT)
+
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="rename that run",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": _RENAME_TEST_PROJECT,
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    task = asyncio.create_task(rename_session({"run": run_id, "name": "should not land"}))
+    proposal = await _wait_proposal(store, accepted["requestId"])
+
+    decision = await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=False,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=proposal["targetVersion"],
+    )
+    result = await asyncio.wait_for(task, timeout=2)
+
+    assert decision["status"] == "failed"
+    assert decision["error"]["code"] == "denied"
+    assert result == {"renamed": False, "reason": "denied", "id": run_id}
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT name FROM sessions WHERE id = ?", (run_id,))
+        assert row["name"] is None
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+    await coordinator.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_rename_session_not_found_reports_reason_without_creating_a_proposal(
+    tmp_path, monkeypatch
+):
+    """An unresolvable run reference is a distinct reported outcome, not a
+    generic failure -- and critically, never reaches the proposal flow at
+    all, so nothing is ever offered to a human for approval."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.rename_session import rename_session
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        # Only to force the schema into existence; this run is never named.
+        await _seed_running_session(db)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="rename a run that doesn't exist",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": _RENAME_TEST_PROJECT,
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    result = await rename_session({"run": "not-a-real-run-id", "name": "ghost"})
+    assert result == {"renamed": False, "reason": "not_found"}
+    assert await store.list_proposals_for_request(accepted["requestId"]) == []
+
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+    await coordinator.shutdown()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("bad\nname", id="embedded-newline"),
+        pytest.param("bad\x00name", id="embedded-nul"),
+        pytest.param("bad‮name", id="bidi-control-rlo"),
+        pytest.param("bad name", id="line-separator"),
+        pytest.param("bad name", id="paragraph-separator"),
+        pytest.param("bad\x7fname", id="delete-control"),
+    ],
+)
+def test_rename_session_input_rejects_unicode_control_characters(name):
+    """`RenameSessionInput.name` must refuse Unicode `Cc`/`Cf`/`Zl`/`Zp`
+    characters before a proposal is ever created -- the value is copied
+    verbatim into the proposal command and reaches `db.update_session`,
+    which validates column names, not values. Category-based, not an
+    enumerated blocklist, so this covers control characters the author
+    never explicitly thought of."""
+    from pydantic import ValidationError
+
+    from lionagi.studio.operator.rename_session import RenameSessionInput
+
+    with pytest.raises(ValidationError):
+        RenameSessionInput.model_validate({"run": "some-run", "name": name})
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("café", id="accented-latin"),
+        pytest.param("日本語のセッション", id="cjk"),
+        pytest.param("nightly backfill 🎉", id="emoji"),
+        pytest.param("nightly backfill", id="internal-space"),
+    ],
+)
+def test_rename_session_input_keeps_non_ascii_names(name):
+    """The control-character check must not overshoot into rejecting
+    ordinary non-ASCII text: accented Latin, CJK, emoji, and an internal
+    space all name a run just as validly as plain ASCII does."""
+    from lionagi.studio.operator.rename_session import RenameSessionInput
+
+    args = RenameSessionInput.model_validate({"run": "some-run", "name": name})
+    assert args.name == name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("   ", id="whitespace-only"),
+        pytest.param("x" * 161, id="over-length"),
+    ],
+)
+def test_rename_session_input_still_rejects_empty_whitespace_and_over_length(name):
+    """The pre-existing length/whitespace rejections must keep working
+    alongside the new control-character check, not be silently dropped by
+    it."""
+    from pydantic import ValidationError
+
+    from lionagi.studio.operator.rename_session import RenameSessionInput
+
+    with pytest.raises(ValidationError):
+        RenameSessionInput.model_validate({"run": "some-run", "name": name})

@@ -1345,6 +1345,7 @@ export interface InvocationSummary {
   created_at: number;
   updated_at: number;
   node_metadata: Record<string, unknown> | null;
+  status_reason_summary?: string | null;
   // ADR-0026: project provenance from the most-recently updated child session.
   project?: string | null;
   project_source?: string | null;
@@ -1406,10 +1407,17 @@ export interface InvocationListResponse {
   limit: number;
   offset: number;
   has_next: boolean;
+  /** Real total matching the filters, not just this page's row count —
+   * `limit` caps at 200, so counting `invocations` instead plateaus there. */
+  total: number;
+  /** Total matching the filters with status == "completed" specifically,
+   * ignoring `params.status` — always a meaningful success-rate numerator. */
+  completed_total: number;
 }
 
 export interface InvocationListParams {
   skill?: string;
+  plugin?: string;
   status?: string;
   limit?: number;
   offset?: number;
@@ -1420,6 +1428,7 @@ export async function listInvocations(
 ): Promise<InvocationListResponse> {
   const query = new URLSearchParams();
   if (params?.skill) query.set("skill", params.skill);
+  if (params?.plugin) query.set("plugin", params.plugin);
   if (params?.status) query.set("status", params.status);
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset !== undefined) query.set("offset", String(params.offset));
@@ -1438,7 +1447,9 @@ export interface DefinitionSummary {
   name: string;
   path: string;
   disk_path: string;
-  has_versions: boolean;
+  // null when the version-history store could not be read for the listing
+  // (distinct from false, which means "never saved a version").
+  has_versions: boolean | null;
   version: number;
   updated_at: number;
 }
@@ -1455,8 +1466,11 @@ export interface DefinitionDetail {
   name: string;
   path: string;
   content: string;
-  version: number;
-  versions: DefinitionVersion[];
+  // version/versions are null when the version-history store could not be
+  // read; content/path are always disk-backed and always present.
+  version: number | null;
+  versions: DefinitionVersion[] | null;
+  history_available: boolean;
 }
 
 export async function listDefinitions(
@@ -1472,12 +1486,26 @@ export async function getDefinition(kind: string, name: string): Promise<Definit
   );
 }
 
+// A specific historical version's content -- distinct from DefinitionDetail
+// (the current definition): the backend's single-version read has nothing
+// to fall back on, so it either answers with a real version number and
+// content or refuses outright; it never returns the versions/history_available
+// fields DefinitionDetail carries.
+export interface DefinitionVersionDetail {
+  kind: string;
+  name: string;
+  version: number;
+  content: string;
+  created_at: number;
+  message: string | null;
+}
+
 export async function getDefinitionVersion(
   kind: string,
   name: string,
   version: number,
-): Promise<DefinitionDetail> {
-  return fetchJson<DefinitionDetail>(
+): Promise<DefinitionVersionDetail> {
+  return fetchJson<DefinitionVersionDetail>(
     `/api/definitions/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/versions/${version}`,
   );
 }
@@ -1559,6 +1587,19 @@ export async function listSkills(): Promise<{ skills: SkillSummary[] }> {
 
 export async function getSkill(name: string): Promise<SkillDetail> {
   return fetchJson<SkillDetail>(`/api/skills/${encodeURIComponent(name)}`);
+}
+
+export interface SkillValidationResult {
+  ok: boolean;
+  errors: string[] | null;
+}
+
+export async function validateSkill(name: string, content: string): Promise<SkillValidationResult> {
+  return fetchJson<SkillValidationResult>(`/api/skills/${encodeURIComponent(name)}/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
 }
 
 // ─── Plugins ──────────────────────────────────────────────────────────────────
@@ -1745,6 +1786,22 @@ export async function getPluginSkill(
 ): Promise<PluginSkillDetail> {
   return fetchJson<PluginSkillDetail>(
     `/api/plugins/${encodeURIComponent(pluginName)}/skills/${encodeURIComponent(skillName)}`,
+  );
+}
+
+export interface PluginAgentDetail {
+  name: string;
+  description: string;
+  path: string;
+  content: string;
+}
+
+export async function getPluginAgent(
+  pluginName: string,
+  agentName: string,
+): Promise<PluginAgentDetail> {
+  return fetchJson<PluginAgentDetail>(
+    `/api/plugins/${encodeURIComponent(pluginName)}/agents/${encodeURIComponent(agentName)}`,
   );
 }
 

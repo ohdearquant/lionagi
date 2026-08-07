@@ -235,7 +235,11 @@
       "filteredHint": "Prueba otro tipo o borra la búsqueda.",
       "createFirst": "Crea el primero",
       "createWorkflow": "Nuevo flujo de trabajo",
-      "createAgent": "Nuevo agente"
+      "createAgent": "Nuevo agente",
+      "allSkill": "No se encontraron skills.",
+      "allSkillHint": "Agrega un SKILL.md en ~/.lionagi/skills/<name>/ para verlo aquí.",
+      "allPlugin": "No se encontraron plugins.",
+      "allPluginHint": "Instala un plugin en ~/.claude/plugins/ para verlo aquí."
     },
     "table": {
       "kind": "Tipo",
@@ -296,7 +300,19 @@
       "lastUsed": "Último uso",
       "never": "nunca",
       "recentInvocations": "Invocaciones recientes",
-      "noInvocations": "Aún no hay invocaciones registradas."
+      "noInvocations": "Aún no hay invocaciones registradas.",
+      "skillValidationFailed": "La validación falló. Corrige los errores antes de guardar.",
+      "pluginOwnedSkillHint": "Incluido en un plugin — edita los archivos del plugin directamente para cambiarlo.",
+      "readOnly": "Solo lectura",
+      "skillTools": "Herramientas permitidas",
+      "skillInstructions": "Instrucciones",
+      "pluginHooks": "Hooks",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "Servidores MCP",
+      "pluginHooksSection": "Configuración de hooks",
+      "pluginReadmeSection": "README",
+      "yes": "Sí",
+      "no": "No"
     },
     "template": {
       "badge": "Integrado",
@@ -462,7 +478,17 @@
       "graphNodeStatusPaused": "pausado",
       "graphNodeStatusDone": "listo",
       "graphNodeStatusFailed": "fallido",
-      "graphNodeStatusEscalated": "escalado"
+      "graphNodeStatusEscalated": "escalado",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "Lista de historial",
     "detailAria": "Detalle del elemento"

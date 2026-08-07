@@ -235,7 +235,11 @@
       "filteredHint": "başka bir tür dene veya aramayı temizle.",
       "createFirst": "ilkini oluştur",
       "createWorkflow": "yeni iş akışı",
-      "createAgent": "yeni ajan"
+      "createAgent": "yeni ajan",
+      "allSkill": "Skill bulunamadı.",
+      "allSkillHint": "Burada görmek için ~/.lionagi/skills/<name>/ altına bir SKILL.md ekleyin.",
+      "allPlugin": "Eklenti bulunamadı.",
+      "allPluginHint": "Burada görmek için ~/.claude/plugins/ altına bir eklenti kurun."
     },
     "table": {
       "kind": "tür",
@@ -296,7 +300,19 @@
       "lastUsed": "son kullanım",
       "never": "hiçbir zaman",
       "recentInvocations": "son çağrılar",
-      "noInvocations": "henüz kayıtlı çağrı yok."
+      "noInvocations": "henüz kayıtlı çağrı yok.",
+      "skillValidationFailed": "Doğrulama başarısız oldu. Kaydetmeden önce aşağıdaki hataları düzeltin.",
+      "pluginOwnedSkillHint": "Bir eklentiyle birlikte gelir — değiştirmek için eklentinin dosyalarını doğrudan düzenleyin.",
+      "readOnly": "Salt okunur",
+      "skillTools": "İzin Verilen Araçlar",
+      "skillInstructions": "Talimatlar",
+      "pluginHooks": "Kancalar",
+      "pluginMcp": "MCP",
+      "pluginMcpServers": "MCP Sunucuları",
+      "pluginHooksSection": "Kanca Yapılandırması",
+      "pluginReadmeSection": "README",
+      "yes": "Evet",
+      "no": "Hayır"
     },
     "template": {
       "badge": "yerleşik",
@@ -462,7 +478,17 @@
       "graphNodeStatusPaused": "duraklatıldı",
       "graphNodeStatusDone": "tamamlandı",
       "graphNodeStatusFailed": "başarısız",
-      "graphNodeStatusEscalated": "yükseltildi"
+      "graphNodeStatusEscalated": "yükseltildi",
+      "progressTotal": "Total",
+      "progressCompleted": "Completed",
+      "progressRunning": "Running",
+      "progressFailed": "Failed",
+      "progressPending": "Pending",
+      "progressElapsed": "Elapsed",
+      "expandGraph": "Expand execution graph",
+      "collapseGraph": "Collapse execution graph",
+      "closeExpandedGraph": "Close",
+      "nodeNoBranch": "No branch found for “{node}” — this step has not started."
     },
     "masterAria": "geçmiş listesi",
     "detailAria": "öğe ayrıntısı"

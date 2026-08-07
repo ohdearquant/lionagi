@@ -58,6 +58,7 @@ def _invocation_health(
 async def list_invocations(
     *,
     skill: str | None = None,
+    plugin: str | None = None,
     status: str | None = None,
     limit: int = 50,
     offset: int = 0,
@@ -65,7 +66,9 @@ async def list_invocations(
     if state_db_known_absent():
         return []
     async with StateDB() as db:
-        rows = await db.list_invocations(skill=skill, status=status, limit=limit, offset=offset)
+        rows = await db.list_invocations(
+            skill=skill, plugin=plugin, status=status, limit=limit, offset=offset
+        )
         now = time.time()
         ps_snapshot: str | None = None
         out: list[dict[str, Any]] = []
@@ -115,6 +118,18 @@ async def list_invocations(
                 }
             )
     return out
+
+
+async def count_invocations(
+    *,
+    skill: str | None = None,
+    plugin: str | None = None,
+    status: str | None = None,
+) -> int:
+    if state_db_known_absent():
+        return 0
+    async with StateDB() as db:
+        return await db.count_invocations(skill=skill, plugin=plugin, status=status)
 
 
 async def get_invocation(invocation_id: str) -> dict[str, Any] | None:
@@ -226,17 +241,29 @@ async def get_artifact(artifact_id: str) -> dict[str, Any] | None:
 @studio_route("/invocations/", method="GET", area="invocations", name="list_invocations")
 async def list_invocations_route(
     skill: str | None = Query(default=None),
+    plugin: str | None = Query(default=None),
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    rows = await list_invocations(skill=skill, status=status, limit=limit, offset=offset)
+    rows = await list_invocations(
+        skill=skill, plugin=plugin, status=status, limit=limit, offset=offset
+    )
+    # Real totals, not a count of this page: `limit` caps at 200, so counting
+    # `rows` instead silently plateaus there with nothing distinguishing an
+    # exact count from a capped one. completed_total always means status ==
+    # "completed" specifically -- it ignores the caller's own `status` filter
+    # (which scopes `total`/`rows`) so success-rate math stays meaningful
+    # even when a caller has filtered the list by some other status.
+    total = await count_invocations(skill=skill, plugin=plugin, status=status)
+    completed_total = await count_invocations(skill=skill, plugin=plugin, status="completed")
     return {
         "invocations": rows,
         "limit": limit,
         "offset": offset,
-        # No separate total: pagination uses has_next instead of absolute totals.
         "has_next": len(rows) == limit,
+        "total": total,
+        "completed_total": completed_total,
     }
 
 

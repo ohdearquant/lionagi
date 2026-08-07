@@ -217,7 +217,13 @@ async def test_rollback_definition_succeeds_for_already_invalid_historical_versi
 
 @pytest.mark.asyncio
 async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
-    """save_definition() with an unknown kind must raise ValueError (not return success)."""
+    """save_definition() with an unknown kind must raise ValueError (not return success).
+
+    "skill" used to be this test's example of an unknown kind (pre-skill-editor
+    ADR-0077 exclusion); it is now a first-class editable kind with its own
+    dedicated path (see test_skills_service.py), so a genuinely unknown kind
+    stands in here instead.
+    """
     import lionagi.cli._runs as cli_runs_mod
     import lionagi.studio.services.definitions as defs_mod
 
@@ -232,7 +238,7 @@ async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
     )
 
     with pytest.raises(ValueError, match="Unknown kind"):
-        await defs_mod.save_definition("skill", "my-skill", "content")
+        await defs_mod.save_definition("widget", "my-widget", "content")
 
 
 # ---------------------------------------------------------------------------
