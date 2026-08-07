@@ -9,6 +9,7 @@ import type { FleetState } from "./fleetReducer";
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus } from "@/lib/runStatus";
+import { resolveRunLabel } from "@/lib/runLabel";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -171,6 +172,17 @@ describe("fleetReducer — invocation join", () => {
     expect(s.orgUnits).toHaveLength(1);
     expect(s.orgUnits[0].id).toBe("__direct__");
     expect(s.orgUnits[0].agents).toHaveLength(1);
+  });
+
+  it("an agent row's name matches the shared resolver, never a raw playbook/agent fallback", () => {
+    const run = makeRun({
+      run_id: "r1",
+      status: "running",
+      playbook_name: "pr-merge-review",
+      agent_name: "implementer",
+    });
+    const s = dispatchOk(initialFleetState(), [], [run]);
+    expect(s.orgUnits[0].agents[0].name).toBe(resolveRunLabel(run));
   });
 
   it("invocation without runs still appears when no scope is active", () => {
@@ -449,6 +461,18 @@ describe("terminalRecentRows", () => {
     expect(rows[0].id).toBe("r79");
     expect(rows[79].id).toBe("r0");
     expect(rows.some((r) => r.id === "live")).toBe(false);
+  });
+
+  it("a recent row's name matches the shared resolver, never a raw playbook/agent fallback", () => {
+    const run = makeRun({
+      run_id: "r1",
+      status: "completed",
+      ended_at: 1_000,
+      playbook_name: "pr-merge-review",
+      agent_name: "implementer",
+    });
+    const rows = terminalRecentRows([run]);
+    expect(rows[0].name).toBe(resolveRunLabel(run));
   });
 });
 
