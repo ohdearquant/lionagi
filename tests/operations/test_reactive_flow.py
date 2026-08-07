@@ -70,6 +70,51 @@ async def test_spawn_injects_node_into_running_graph():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_spawn_is_named_in_spawned_ids_roster():
+    """An accepted spawn whose EventStatus is already CANCELLED by the time
+    the executor gets to run it (e.g. a quiescence/budget cutoff mid-run)
+    produces no entry in operation_results, failed_operations, or
+    skipped_operations -- ``_execute_operation``'s terminal-status fast path
+    just marks the completion event and returns. ``spawned_operations`` (a
+    count) still reports it, but a caller reconciling outcomes needs to know
+    *which* node that was: ``spawned_ids`` is the accept-time roster that
+    answers that, independent of whatever terminal fate the node reached."""
+
+    async def spawner(**kw):
+        return SpawnRequest(instruction="follow-up", independent=True)
+
+    session = _session_with_ops(spawner=spawner)
+
+    def node_builder(req: SpawnRequest, emitter: Operation) -> Operation:
+        from lionagi.protocols.generic.event import EventStatus
+
+        child = create_operation("follow_up", parameters={})
+        # Simulate the child already having reached a terminal CANCELLED
+        # status before the executor's own dependency wait/dispatch runs.
+        child.execution.status = EventStatus.CANCELLED
+        return child
+
+    builder = OperationGraphBuilder()
+    builder.add_operation("spawner")
+    graph = builder.get_graph()
+
+    result = await flow(session, graph, reactive=True, node_builder=node_builder)
+
+    assert result["spawned_operations"] == 1
+    assert len(result["spawned_ids"]) == 1
+    cancelled_id = result["spawned_ids"][0]
+
+    # The false-success gap this fix closes: the cancelled child is in none
+    # of the outcome sets a naive reconciliation would check.
+    assert cancelled_id not in result["operation_results"]
+    assert cancelled_id not in result["failed_operations"]
+    assert cancelled_id not in result["skipped_operations"]
+    assert cancelled_id not in result["escalated_operations"]
+    # ...yet it is unambiguously present in the accept-time roster.
+    assert cancelled_id in result["spawned_ids"]
+
+
+@pytest.mark.asyncio
 async def test_recursive_spawn_until_condition():
     """A node can spawn a node that spawns again — the DAG grows transitively."""
     counter = {"n": 0}

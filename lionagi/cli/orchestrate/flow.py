@@ -1482,6 +1482,33 @@ async def _execute_dag(
         prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
         env._failed_operation_evidence = [*prior_failed_evidence, *lost_evidence]
 
+    # Lost-spawn evidence: mirrors the lost-node check above, but for the
+    # reactive surface. spawned_ids (when the executor reports it) is the
+    # roster of every node _accept_node actually accepted into the graph --
+    # spawned_operations is only a running count and can't answer "which
+    # nodes were accepted" on its own. An accepted spawn that reached a
+    # terminal EventStatus (e.g. CANCELLED) without ever producing a result
+    # is absent from operation_results, failed_operations, and
+    # skipped_operations alike; without this check it would also read as a
+    # clean completion. A spawn the executor refused to accept in the first
+    # place (dropped_spawns) never enters spawned_ids, so it stays excluded
+    # here exactly as dropped_spawns already is above.
+    spawned_ids = {str(x) for x in dag_result.get("spawned_ids", [])}
+    lost_spawn_ids = (
+        spawned_ids - observed_op_ids - skipped_op_ids - escalated_op_ids - failed_op_ids
+    )
+    lost_spawn_evidence = []
+    for spawned_nid in sorted(lost_spawn_ids):
+        graph_node = graph_nodes.get(spawned_nid)
+        spawn_id = graph_node.metadata.get("spawn_id") if graph_node is not None else None
+        evidence_id = spawn_id or spawned_nid
+        lost_spawn_evidence.append(
+            {"kind": "lost_operation", "id": evidence_id, "label": evidence_id}
+        )
+    if lost_spawn_evidence:
+        prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior_failed_evidence, *lost_spawn_evidence]
+
     agent_results: list[dict] = []
 
     def _record_result(result: dict) -> None:

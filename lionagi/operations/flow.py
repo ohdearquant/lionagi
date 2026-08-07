@@ -789,6 +789,13 @@ class ReactiveExecutor(DependencyAwareExecutor):
             "skipped_operations": list(self.skipped_operations),
             "failed_operations": list(self.failed_operations),
             "spawned_operations": self._spawn_count,
+            # The roster of every node _accept_node actually accepted into
+            # the graph -- distinct from spawned_operations, which is only a
+            # running count and can't tell a caller which ids to reconcile
+            # against its own outcome sets (a node that reached a terminal
+            # status like CANCELLED with no result is still in this roster
+            # even though it never lands in results/failed/skipped).
+            "spawned_ids": list(self._spawned_ids),
             "escalated_operations": list(self._escalated_ids),
             "dropped_spawns": self._dropped_spawns,
         }
