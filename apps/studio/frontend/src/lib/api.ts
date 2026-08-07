@@ -1348,6 +1348,12 @@ export interface InvocationSummary {
   // ADR-0026: project provenance from the most-recently updated child session.
   project?: string | null;
   project_source?: string | null;
+  // ADR-0057 health verdict (worst-of across child sessions) + the real
+  // last-activity timestamp behind it, "unknown" when the invocation has
+  // no child sessions yet (issue #2851) — same vocabulary runs use, plus
+  // "unknown" for a case runs never hit (a run always has itself).
+  health?: "healthy" | "idle" | "unresponsive" | "stale" | "orphaned" | "zombie" | "unknown" | null;
+  last_activity_at?: number | null;
 }
 
 export interface InvocationSession {

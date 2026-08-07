@@ -18,9 +18,11 @@ const TERMINAL_STATUSES = new Set([
   "timed_out",
 ]);
 
-// Process-dead-but-non-terminal health states: muted and static — a dead
-// process must never pulse as if alive.
-const STALE_STATUSES = new Set(["stale", "orphaned", "zombie", "unresponsive"]);
+// Process-dead-but-non-terminal health states, plus "unknown" (liveness
+// genuinely undetermined, e.g. no evidence has landed yet): muted and
+// static either way — neither a dead process nor an undetermined one may
+// pulse as if confirmed alive.
+const STALE_STATUSES = new Set(["stale", "orphaned", "zombie", "unresponsive", "unknown"]);
 
 function statusColor(status: string): string {
   const s = status.toLowerCase();

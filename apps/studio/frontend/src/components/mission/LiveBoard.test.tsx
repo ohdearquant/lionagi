@@ -45,7 +45,12 @@ vi.mock("@tanstack/react-router", () => ({
   ),
 }));
 
-const { default: LiveBoard, DEAD_HEALTH, isDeadHealth } = await import("./LiveBoard");
+const {
+  default: LiveBoard,
+  DEAD_HEALTH,
+  isDeadHealth,
+  isUnknownHealth,
+} = await import("./LiveBoard");
 
 describe("isDeadHealth", () => {
   it("is true for every DEAD_HEALTH member", () => {
@@ -145,6 +150,69 @@ function invocation(overrides: Partial<InvocationSummary> = {}): InvocationSumma
     ...overrides,
   };
 }
+
+describe("isUnknownHealth", () => {
+  it("is true only for the literal 'unknown' verdict", () => {
+    expect(isUnknownHealth("unknown")).toBe(true);
+    expect(isUnknownHealth("healthy")).toBe(false);
+    expect(isUnknownHealth("stale")).toBe(false);
+    expect(isUnknownHealth(null)).toBe(false);
+    expect(isUnknownHealth(undefined)).toBe(false);
+  });
+});
+
+describe("LiveBoard — InvocationCard health rendering (issue #2851)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    installLocalStorageStub();
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  function mount(invocations: InvocationSummary[]) {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    act(() => {
+      root = createRoot(container);
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <LiveBoard activeRuns={[]} activeInvocations={invocations} nowSec={100} />
+        </IntlProvider>,
+      );
+    });
+  }
+
+  it("renders a live pulsing dot with no stale label when health=healthy", () => {
+    mount([invocation({ health: "healthy" })]);
+    const dot = container.querySelector('[aria-hidden="true"].rounded-full');
+    expect(dot?.className).toContain("live-pulse-dot");
+    expect(container.textContent).not.toContain("quiet — check?");
+  });
+
+  it("never renders an unconditional 'running' pulsing dot when health=orphaned", () => {
+    mount([invocation({ health: "orphaned" })]);
+    const dot = container.querySelector('[aria-hidden="true"].rounded-full');
+    expect(dot).not.toBeNull();
+    expect(dot?.className).not.toContain("live-pulse-dot");
+    expect(container.textContent).toContain("quiet — check?");
+  });
+
+  it("renders a static, non-pulsing dot with no false stale/healthy claim when health=unknown", () => {
+    mount([invocation({ health: "unknown" })]);
+    const dot = container.querySelector('[aria-hidden="true"].rounded-full');
+    expect(dot).not.toBeNull();
+    expect(dot?.className).not.toContain("live-pulse-dot");
+    // Not the dead label either — "unknown" is not a confirmed-dead verdict.
+    expect(container.textContent).not.toContain("quiet — check?");
+  });
+});
 
 describe("LiveBoard — combined card order and view switching", () => {
   let container: HTMLDivElement;
