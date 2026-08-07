@@ -385,9 +385,9 @@ def test_pg_touch_activity_uses_greatest():
 
 
 def test_pg_merge_node_metadata_sql_never_strips_the_whole_document():
-    """Regression guard for PR #2898 round-4 Blocker: jsonb_strip_nulls over
-    the entire merged document deletes nulls that predate the patch. Cheap
-    and always-run (no live Postgres needed) so a reintroduction fails fast,
+    """jsonb_strip_nulls over the entire merged document deletes nulls that
+    predate the patch. Cheap and always-run (no live Postgres needed) so a
+    reintroduction fails fast,
     ahead of the live-Postgres parity test in test_merge_node_metadata_dialect_parity."""
     sql = StateDB._merge_node_metadata_sql("postgresql")
     assert "jsonb_strip_nulls" not in sql, sql
@@ -487,16 +487,16 @@ async def test_postgres_capability_claim(pg_url):
 
 
 # ── merge_session_node_metadata: dialect-parity table ─────────────────────────
-# Round 4 review of PR #2898 found that Postgres's jsonb_strip_nulls, applied to
-# the *entire* merged document, deletes nulls that predate the patch and were
-# never touched by it -- SQLite's json_patch never removes them. A real
-# NodeStarted flow segment (lionagi/cli/orchestrate/flow.py) carries
-# ended_at: None and last_heartbeat_at: None inside a "segments" array patch
-# value, so this was reachable from production, not hypothetical. The fix
-# computes the null-deletion set from the patch alone instead of stripping the
-# whole document; this table pins every case the round-4 review's live matrix
-# found, plus the SQL-NULL/JSON-null/non-object forensic arms, against both
-# backends and asserts they land on the identical value.
+# Postgres's jsonb_strip_nulls, applied to the *entire* merged document,
+# deletes nulls that predate the patch and were never touched by it --
+# SQLite's json_patch never removes them. A real NodeStarted flow segment
+# (lionagi/cli/orchestrate/flow.py) carries ended_at: None and
+# last_heartbeat_at: None inside a "segments" array patch value, so this was
+# reachable from production, not hypothetical. The fix computes the
+# null-deletion set from the patch alone instead of stripping the whole
+# document; this table pins every divergent case a live sqlite/postgres
+# comparison surfaces, plus the SQL-NULL/JSON-null/non-object forensic arms,
+# against both backends and asserts they land on the identical value.
 
 
 async def _seed_node_metadata(db: StateDB, session_id: str, value) -> None:
@@ -540,8 +540,8 @@ _MERGE_PARITY_CASES = [
     ),
     (
         # The production shape: a top-level array patch value whose elements
-        # carry nulls (flow.py's segment records). Reproduces the round-4
-        # Blocker directly rather than through a synthetic nested-object patch.
+        # carry nulls (flow.py's segment records), rather than a synthetic
+        # nested-object patch.
         "patch_array_with_nested_nulls_survives",
         {},
         {"segments": [{"op_id": "x", "ended_at": None, "last_heartbeat_at": None}]},
@@ -632,7 +632,7 @@ async def test_merge_node_metadata_rejects_nested_object_patch_on_both_dialects(
     """A patch value that is itself a dict is refused on every dialect,
     identically, before any SQL runs -- sqlite's json_patch would merge it
     recursively and Postgres's jsonb `||` would replace it shallowly, so
-    allowing it would persist different state per backend (round-4 Medium)."""
+    allowing it would persist different state per backend."""
     pg = StateDB(url=pg_url)
     await pg.open()
     try:
