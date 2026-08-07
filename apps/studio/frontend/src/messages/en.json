@@ -474,7 +474,8 @@
     "sections": {
       "health": "Health",
       "maintenance": "Maintenance",
-      "settings": "Settings"
+      "settings": "Settings",
+      "adminEvents": "Admin events"
     },
     "health": {
       "stateDb": "State DB",
@@ -543,6 +544,17 @@
       "switchToZh": "切换为中文",
       "english": "English",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Filter by action",
+      "targetPlaceholder": "Filter by target ID",
+      "filter": "Filter",
+      "loadError": "Failed to load admin events.",
+      "empty": "No admin events recorded yet.",
+      "when": "When",
+      "action": "Action",
+      "target": "Target",
+      "actor": "Actor"
     }
   },
   "schedules": {

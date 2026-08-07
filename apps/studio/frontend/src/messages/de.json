@@ -474,7 +474,8 @@
     "sections": {
       "health": "Zustand",
       "maintenance": "Wartung",
-      "settings": "Einstellungen"
+      "settings": "Einstellungen",
+      "adminEvents": "Admin-Ereignisse"
     },
     "health": {
       "stateDb": "Status-DB",
@@ -543,6 +544,17 @@
       "switchToZh": "切换为中文",
       "english": "Englisch",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Nach Aktion filtern",
+      "targetPlaceholder": "Nach Ziel-ID filtern",
+      "filter": "Filtern",
+      "loadError": "Admin-Ereignisse konnten nicht geladen werden.",
+      "empty": "Noch keine Admin-Ereignisse erfasst.",
+      "when": "Wann",
+      "action": "Aktion",
+      "target": "Ziel",
+      "actor": "Akteur"
     }
   },
   "schedules": {

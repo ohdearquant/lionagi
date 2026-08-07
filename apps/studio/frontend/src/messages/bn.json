@@ -474,7 +474,8 @@
     "sections": {
       "health": "সিস্টেমের অবস্থা",
       "maintenance": "মেইনটেন্যান্স",
-      "settings": "সেটিংস"
+      "settings": "সেটিংস",
+      "adminEvents": "অ্যাডমিন ইভেন্ট"
     },
     "health": {
       "stateDb": "স্টেট DB",
@@ -543,6 +544,17 @@
       "switchToZh": "切换为中文",
       "english": "ইংরেজি",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "কার্যক্রম দিয়ে ফিল্টার করুন",
+      "targetPlaceholder": "টার্গেট আইডি দিয়ে ফিল্টার করুন",
+      "filter": "ফিল্টার",
+      "loadError": "অ্যাডমিন ইভেন্ট লোড করা যায়নি।",
+      "empty": "এখনও কোনো অ্যাডমিন ইভেন্ট রেকর্ড হয়নি।",
+      "when": "কখন",
+      "action": "কার্যক্রম",
+      "target": "টার্গেট",
+      "actor": "সম্পাদনকারী"
     }
   },
   "schedules": {

@@ -474,7 +474,8 @@
     "sections": {
       "health": "Kesehatan",
       "maintenance": "Pemeliharaan",
-      "settings": "Pengaturan"
+      "settings": "Pengaturan",
+      "adminEvents": "Peristiwa admin"
     },
     "health": {
       "stateDb": "DB state",
@@ -543,6 +544,17 @@
       "switchToZh": "切换为中文",
       "english": "Inggris",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Filter berdasarkan aksi",
+      "targetPlaceholder": "Filter berdasarkan ID target",
+      "filter": "Filter",
+      "loadError": "Gagal memuat peristiwa admin.",
+      "empty": "Belum ada peristiwa admin yang tercatat.",
+      "when": "Waktu",
+      "action": "Aksi",
+      "target": "Target",
+      "actor": "Pelaku"
     }
   },
   "schedules": {

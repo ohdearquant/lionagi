@@ -474,7 +474,8 @@
     "sections": {
       "health": "صحت",
       "maintenance": "مینٹیننس",
-      "settings": "سیٹنگز"
+      "settings": "سیٹنگز",
+      "adminEvents": "ایڈمن ایونٹس"
     },
     "health": {
       "stateDb": "State DB",
@@ -543,6 +544,17 @@
       "switchToZh": "切换为中文",
       "english": "انگریزی",
       "chinese": "چینی"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "عمل کے لحاظ سے فلٹر کریں",
+      "targetPlaceholder": "ٹارگٹ ID کے لحاظ سے فلٹر کریں",
+      "filter": "فلٹر کریں",
+      "loadError": "ایڈمن ایونٹس لوڈ کرنے میں ناکامی۔",
+      "empty": "ابھی تک کوئی ایڈمن ایونٹ درج نہیں ہوا۔",
+      "when": "کب",
+      "action": "عمل",
+      "target": "ٹارگٹ",
+      "actor": "کرنے والا"
     }
   },
   "schedules": {

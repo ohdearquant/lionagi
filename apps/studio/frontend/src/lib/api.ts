@@ -1779,6 +1779,31 @@ export async function pruneAdmin(body: AdminPruneRequest): Promise<{ pruned: num
   });
 }
 
+export interface AdminEvent {
+  id: string;
+  created_at: number;
+  action: string;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+  actor: string;
+}
+
+export interface AdminEventListParams {
+  action?: string;
+  target_id?: string;
+  limit?: number;
+}
+
+export async function getAdminEvents(params?: AdminEventListParams): Promise<AdminEvent[]> {
+  const query = new URLSearchParams();
+  if (params?.action) query.set("action", params.action);
+  if (params?.target_id) query.set("target_id", params.target_id);
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  const res = await fetchJson<{ events: AdminEvent[] }>(`/api/admin/events${qs ? `?${qs}` : ""}`);
+  return res.events;
+}
+
 // ─── Admin maintenance (Phase C Move 3) ──────────────────────────────────────
 
 export type MaintenanceAction = "vacuum" | "checkpoint" | "prune";

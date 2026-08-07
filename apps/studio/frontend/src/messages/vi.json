@@ -474,7 +474,8 @@
     "sections": {
       "health": "trạng thái hệ thống",
       "maintenance": "bảo trì",
-      "settings": "cài đặt"
+      "settings": "cài đặt",
+      "adminEvents": "Sự kiện quản trị"
     },
     "health": {
       "stateDb": "State DB",
@@ -543,6 +544,17 @@
       "switchToZh": "chuyển sang tiếng Trung",
       "english": "tiếng Anh",
       "chinese": "tiếng Trung"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Lọc theo hành động",
+      "targetPlaceholder": "Lọc theo ID mục tiêu",
+      "filter": "Lọc",
+      "loadError": "Không thể tải sự kiện quản trị.",
+      "empty": "Chưa có sự kiện quản trị nào được ghi lại.",
+      "when": "Thời điểm",
+      "action": "Hành động",
+      "target": "Mục tiêu",
+      "actor": "Người thực hiện"
     }
   },
   "schedules": {

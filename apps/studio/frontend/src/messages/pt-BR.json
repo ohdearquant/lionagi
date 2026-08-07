@@ -474,7 +474,8 @@
     "sections": {
       "health": "Integridade",
       "maintenance": "Manutenção",
-      "settings": "Configurações"
+      "settings": "Configurações",
+      "adminEvents": "Eventos administrativos"
     },
     "health": {
       "stateDb": "DB de estado",
@@ -543,6 +544,17 @@
       "switchToZh": "切换为中文",
       "english": "Inglês",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Filtrar por ação",
+      "targetPlaceholder": "Filtrar por ID de destino",
+      "filter": "Filtrar",
+      "loadError": "Falha ao carregar os eventos administrativos.",
+      "empty": "Nenhum evento administrativo registrado ainda.",
+      "when": "Quando",
+      "action": "Ação",
+      "target": "Destino",
+      "actor": "Autor"
     }
   },
   "schedules": {

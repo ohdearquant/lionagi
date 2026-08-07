@@ -474,7 +474,8 @@
     "sections": {
       "health": "Состояние",
       "maintenance": "Обслуживание",
-      "settings": "Настройки"
+      "settings": "Настройки",
+      "adminEvents": "События администрирования"
     },
     "health": {
       "stateDb": "БД состояния",
@@ -543,6 +544,17 @@
       "switchToZh": "切换为中文",
       "english": "английский",
       "chinese": "китайский"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Фильтр по действию",
+      "targetPlaceholder": "Фильтр по ID цели",
+      "filter": "Фильтр",
+      "loadError": "Не удалось загрузить события администрирования.",
+      "empty": "Пока нет зарегистрированных событий администрирования.",
+      "when": "Когда",
+      "action": "Действие",
+      "target": "Цель",
+      "actor": "Исполнитель"
     }
   },
   "schedules": {

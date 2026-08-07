@@ -474,7 +474,8 @@
     "sections": {
       "health": "sağlık",
       "maintenance": "bakım",
-      "settings": "ayarlar"
+      "settings": "ayarlar",
+      "adminEvents": "Yönetici olayları"
     },
     "health": {
       "stateDb": "State DB",
@@ -543,6 +544,17 @@
       "switchToZh": "Çinceye geç",
       "english": "İngilizce",
       "chinese": "Çince"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Eyleme göre filtrele",
+      "targetPlaceholder": "Hedef ID'ye göre filtrele",
+      "filter": "Filtrele",
+      "loadError": "Yönetici olayları yüklenemedi.",
+      "empty": "Henüz kaydedilmiş yönetici olayı yok.",
+      "when": "Ne zaman",
+      "action": "Eylem",
+      "target": "Hedef",
+      "actor": "Yürüten"
     }
   },
   "schedules": {

@@ -474,7 +474,8 @@
     "sections": {
       "health": "ヘルス",
       "maintenance": "メンテナンス",
-      "settings": "設定"
+      "settings": "設定",
+      "adminEvents": "管理イベント"
     },
     "health": {
       "stateDb": "状態DB",
@@ -543,6 +544,17 @@
       "switchToZh": "中国語に切り替え",
       "english": "英語",
       "chinese": "中国語"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "アクションで絞り込む",
+      "targetPlaceholder": "ターゲットIDで絞り込む",
+      "filter": "絞り込む",
+      "loadError": "管理イベントの読み込みに失敗しました。",
+      "empty": "記録された管理イベントはまだありません。",
+      "when": "日時",
+      "action": "アクション",
+      "target": "ターゲット",
+      "actor": "実行者"
     }
   },
   "schedules": {

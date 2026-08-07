@@ -474,7 +474,8 @@
     "sections": {
       "health": "健康状态",
       "maintenance": "维护",
-      "settings": "设置"
+      "settings": "设置",
+      "adminEvents": "管理员事件"
     },
     "health": {
       "stateDb": "状态数据库",
@@ -543,6 +544,17 @@
       "switchToZh": "切换为中文",
       "english": "English",
       "chinese": "中文"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "按操作筛选",
+      "targetPlaceholder": "按目标 ID 筛选",
+      "filter": "筛选",
+      "loadError": "加载管理员事件失败。",
+      "empty": "尚未记录任何管理员事件。",
+      "when": "时间",
+      "action": "操作",
+      "target": "目标",
+      "actor": "操作者"
     }
   },
   "schedules": {

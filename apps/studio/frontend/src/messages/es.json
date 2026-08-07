@@ -474,7 +474,8 @@
     "sections": {
       "health": "Estado",
       "maintenance": "Mantenimiento",
-      "settings": "Configuración"
+      "settings": "Configuración",
+      "adminEvents": "Eventos de administración"
     },
     "health": {
       "stateDb": "DB de estado",
@@ -543,6 +544,17 @@
       "switchToZh": "Cambiar a chino",
       "english": "Inglés",
       "chinese": "Chino"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Filtrar por acción",
+      "targetPlaceholder": "Filtrar por ID de destino",
+      "filter": "Filtrar",
+      "loadError": "No se pudieron cargar los eventos de administración.",
+      "empty": "Aún no se registraron eventos de administración.",
+      "when": "Cuándo",
+      "action": "Acción",
+      "target": "Destino",
+      "actor": "Actor"
     }
   },
   "schedules": {

@@ -474,7 +474,8 @@
     "sections": {
       "health": "상태",
       "maintenance": "유지 관리",
-      "settings": "설정"
+      "settings": "설정",
+      "adminEvents": "관리 이벤트"
     },
     "health": {
       "stateDb": "State DB",
@@ -543,6 +544,17 @@
       "switchToZh": "중국어로 전환",
       "english": "영어",
       "chinese": "중국어"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "작업으로 필터링",
+      "targetPlaceholder": "대상 ID로 필터링",
+      "filter": "필터",
+      "loadError": "관리 이벤트를 불러오지 못했습니다.",
+      "empty": "아직 기록된 관리 이벤트가 없습니다.",
+      "when": "시각",
+      "action": "작업",
+      "target": "대상",
+      "actor": "실행자"
     }
   },
   "schedules": {

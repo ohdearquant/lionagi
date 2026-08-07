@@ -474,7 +474,8 @@
     "sections": {
       "health": "Santé",
       "maintenance": "Maintenance",
-      "settings": "Paramètres"
+      "settings": "Paramètres",
+      "adminEvents": "Événements d'administration"
     },
     "health": {
       "stateDb": "DB d’état",
@@ -543,6 +544,17 @@
       "switchToZh": "Passer au chinois",
       "english": "Anglais",
       "chinese": "Chinois"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "Filtrer par action",
+      "targetPlaceholder": "Filtrer par ID de cible",
+      "filter": "Filtrer",
+      "loadError": "Échec du chargement des événements d'administration.",
+      "empty": "Aucun événement d'administration enregistré pour l'instant.",
+      "when": "Quand",
+      "action": "Action",
+      "target": "Cible",
+      "actor": "Acteur"
     }
   },
   "schedules": {

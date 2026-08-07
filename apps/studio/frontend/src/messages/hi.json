@@ -474,7 +474,8 @@
     "sections": {
       "health": "हेल्थ",
       "maintenance": "मेंटेनेंस",
-      "settings": "सेटिंग्स"
+      "settings": "सेटिंग्स",
+      "adminEvents": "एडमिन इवेंट"
     },
     "health": {
       "stateDb": "स्टेट DB",
@@ -543,6 +544,17 @@
       "switchToZh": "चीनी पर स्विच करें",
       "english": "अंग्रेज़ी",
       "chinese": "चीनी"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "कार्रवाई से फ़िल्टर करें",
+      "targetPlaceholder": "टारगेट ID से फ़िल्टर करें",
+      "filter": "फ़िल्टर करें",
+      "loadError": "एडमिन इवेंट लोड करने में विफल.",
+      "empty": "अभी तक कोई एडमिन इवेंट दर्ज नहीं हुआ.",
+      "when": "कब",
+      "action": "कार्रवाई",
+      "target": "टारगेट",
+      "actor": "करने वाला"
     }
   },
   "schedules": {

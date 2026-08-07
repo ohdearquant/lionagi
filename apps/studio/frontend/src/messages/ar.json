@@ -474,7 +474,8 @@
     "sections": {
       "health": "الصحة",
       "maintenance": "الصيانة",
-      "settings": "الإعدادات"
+      "settings": "الإعدادات",
+      "adminEvents": "أحداث الإدارة"
     },
     "health": {
       "stateDb": "قاعدة بيانات الحالة",
@@ -543,6 +544,17 @@
       "switchToZh": "التبديل إلى الصينية",
       "english": "الإنجليزية",
       "chinese": "الصينية"
+    },
+    "adminEvents": {
+      "actionPlaceholder": "تصفية حسب الإجراء",
+      "targetPlaceholder": "تصفية حسب معرّف الهدف",
+      "filter": "تصفية",
+      "loadError": "تعذّر تحميل أحداث الإدارة.",
+      "empty": "لم يُسجَّل أي حدث إداري بعد.",
+      "when": "الوقت",
+      "action": "الإجراء",
+      "target": "الهدف",
+      "actor": "المنفّذ"
     }
   },
   "schedules": {
