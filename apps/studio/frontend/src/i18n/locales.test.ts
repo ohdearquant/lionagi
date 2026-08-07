@@ -217,6 +217,80 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   );
 });
 
+function getLeaf(obj: Record<string, unknown>, leafPath: string): unknown {
+  return leafPath.split(".").reduce<unknown>((node, segment) => {
+    if (node && typeof node === "object") return (node as Record<string, unknown>)[segment];
+    return undefined;
+  }, obj);
+}
+
+// The parity test above only compares key SETS — it cannot see a locale
+// whose value for a key is byte-identical to English (the exact shape of
+// the execution-graph regression this covers: 12 new keys shipped
+// untranslated in every non-English locale). This walks every leaf and
+// flags that case directly.
+//
+// A handful of values are legitimately identical across locales (a shared
+// symbol, a brand name, a genuine cognate) — those are allow-listed by
+// exact leaf path, individually, with a reason. This list must not grow to
+// mask a real missing translation; it exists to name known-fine cases, not
+// to make a failing check pass.
+const IDENTITY_ALLOWLIST: ReadonlySet<string> = new Set([
+  // "Total" is the correct native word in these languages too, not a
+  // missed translation.
+  "history.detail.progressTotal", // es, fr, id, pt-BR only — see below
+]);
+
+function findIdentityLeaks(code: string): string[] {
+  const messages = MESSAGES[code];
+  const flagged: string[] = [];
+  for (const key of EN_LEAVES) {
+    const enValue = getLeaf(en, key);
+    if (typeof enValue !== "string") continue;
+    const localeValue = getLeaf(messages, key);
+    if (localeValue !== enValue) continue;
+    if (IDENTITY_ALLOWLIST.has(key) && ["es", "fr", "id", "pt-BR"].includes(code)) continue;
+    flagged.push(key);
+  }
+  return flagged;
+}
+
+describe("messages — a locale value byte-identical to English is a missed translation", () => {
+  const EXECUTION_GRAPH_KEYS = [
+    "history.detail.progressTotal",
+    "history.detail.progressCompleted",
+    "history.detail.progressRunning",
+    "history.detail.progressFailed",
+    "history.detail.progressPending",
+    "history.detail.progressElapsed",
+    "history.detail.expandGraph",
+    "history.detail.collapseGraph",
+    "history.detail.closeExpandedGraph",
+    "history.detail.nodeNoBranch",
+    "history.detail.olderUnavailable",
+    "history.detail.reloadConversation",
+  ];
+
+  it.each(LOCALES.map((l) => l.code).filter((c) => c !== "en"))(
+    "%s: the execution-graph history.detail keys are translated, not copied from English",
+    (code) => {
+      const flagged = findIdentityLeaks(code).filter((k) => EXECUTION_GRAPH_KEYS.includes(k));
+      expect(flagged).toEqual([]);
+    },
+  );
+
+  // Pre-existing translation debt across the rest of the app, well outside
+  // this fix's scope (~3,100 leaves as of this check) — pinned so a further
+  // increase is caught, without gating this PR on fixing all of it. Lower
+  // this number by translating real strings, never by allow-listing them.
+  it("pre-existing identity-leak count across all locales does not grow past its pinned baseline", () => {
+    const total = LOCALES.map((l) => l.code)
+      .filter((c) => c !== "en")
+      .reduce((sum, code) => sum + findIdentityLeaks(code).length, 0);
+    expect(total).toBeLessThanOrEqual(3112);
+  });
+});
+
 describe("messages — every locale parses under a real ICU translator", () => {
   it.each(LOCALES.map((l) => l.code))("%s: every leaf key resolves with no ICU error", (code) => {
     const t = translatorFor(code);
