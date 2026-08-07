@@ -12,6 +12,11 @@ export interface FollowModeState {
    * flight — used to tell an auto-pan's own `onMoveEnd` apart from the
    * user's hands on the wheel. */
   isProgrammaticPan: boolean;
+  /** True once the viewer has deliberately turned follow off (manual
+   * pan/zoom, or toggling it off) — tracked separately from `following`
+   * so a false->live transition can tell "never turned on yet" apart from
+   * "the viewer turned it off" and only auto-enable in the former case. */
+  manuallyReleased: boolean;
 }
 
 export type FollowModeAction =
@@ -24,7 +29,7 @@ export type FollowModeAction =
 // Follow defaults on for a live, unfinished run and off otherwise — matching
 // the contract's "true by default when live && !done".
 export function initialFollowModeState(live: boolean, done: boolean): FollowModeState {
-  return { following: live && !done, isProgrammaticPan: false };
+  return { following: live && !done, isProgrammaticPan: false, manuallyReleased: false };
 }
 
 export function followModeReducer(
@@ -34,21 +39,32 @@ export function followModeReducer(
   switch (action.type) {
     case "run_state_changed":
       // A run reaching its terminal state always turns follow off — a
-      // finished run must never auto-move. Going live does not force
-      // following back on by itself: a fresh run re-initializes via
-      // initialFollowModeState instead, so a viewer's earlier manual
-      // interruption is never silently overridden mid-run.
-      return action.done ? { ...state, following: false } : state;
+      // finished run must never auto-move.
+      if (action.done) return { ...state, following: false };
+      // A run going live for the first time (mount always inits false/false,
+      // since getSession's initial fetch never marks an active run live —
+      // see RunDetail) is the normal path, not a resumed one: turn follow on
+      // unless the viewer has already released it this run, mirroring
+      // initialFollowModeState's own "true by default when live && !done".
+      if (action.live && !state.following && !state.manuallyReleased) {
+        return { ...state, following: true };
+      }
+      return state;
 
     case "manual_interaction":
       // A pan/zoom this state machine did not itself initiate is the
       // user's hands on the wheel — that always wins for the rest of the
       // run, until an explicit toggle or a fresh run re-initializes.
       if (state.isProgrammaticPan) return state;
-      return { ...state, following: false };
+      return { ...state, following: false, manuallyReleased: true };
 
-    case "toggle":
-      return { ...state, following: !state.following };
+    case "toggle": {
+      const following = !state.following;
+      // Toggling on is an activation, not a release: clear the flag so a
+      // later live transition isn't stuck off. Toggling off is a deliberate
+      // release, same as a manual pan.
+      return { ...state, following, manuallyReleased: following ? false : true };
+    }
 
     case "programmatic_pan_start":
       return { ...state, isProgrammaticPan: true };
