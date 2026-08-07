@@ -1,0 +1,2987 @@
+{
+  "available_paths": [
+    "agent",
+    "casts",
+    "dispatch",
+    "dispatch ack",
+    "dispatch ls",
+    "dispatch purge",
+    "dispatch retry",
+    "dispatch show",
+    "doctor",
+    "engine",
+    "engine run",
+    "handshake",
+    "hooks",
+    "hooks import",
+    "hooks trust",
+    "invoke",
+    "invoke end",
+    "invoke list",
+    "invoke start",
+    "kill",
+    "lifecycle",
+    "mcp",
+    "mirror",
+    "monitor",
+    "orchestrate",
+    "orchestrate ctl",
+    "orchestrate ctl msg",
+    "orchestrate ctl pause",
+    "orchestrate ctl resolve",
+    "orchestrate ctl resume",
+    "orchestrate ctl status",
+    "orchestrate fanout",
+    "orchestrate flow",
+    "plugin",
+    "plugin disable",
+    "plugin enable",
+    "plugin info",
+    "plugin list",
+    "plugin trust",
+    "runs",
+    "schedule",
+    "schedule apply",
+    "schedule create",
+    "schedule delete",
+    "schedule disable",
+    "schedule enable",
+    "schedule export",
+    "schedule get",
+    "schedule limits",
+    "schedule list",
+    "schedule run",
+    "schedule runs",
+    "schedule status",
+    "schedule trigger",
+    "schedule validate",
+    "state",
+    "state checkpoint",
+    "state doctor",
+    "state import",
+    "state import-teams",
+    "state ls",
+    "state null-content",
+    "state prune",
+    "state stats",
+    "state vacuum",
+    "stats",
+    "stats runs",
+    "studio",
+    "studio start",
+    "team",
+    "team create",
+    "team list",
+    "team receive",
+    "team send",
+    "team show"
+  ],
+  "available_path_count": 75,
+  "catalog": {
+    "verb_count": 70,
+    "available_count": 40,
+    "max_ops": 8,
+    "verb_names": [
+      "agent.submit",
+      "casts",
+      "dispatch.ack",
+      "dispatch.ls",
+      "dispatch.purge",
+      "dispatch.retry",
+      "dispatch.show",
+      "doctor",
+      "engine.run",
+      "fanout.submit",
+      "flow.submit",
+      "handshake",
+      "hooks.import",
+      "invoke.end",
+      "invoke.list",
+      "invoke.start",
+      "job.kill",
+      "job.list",
+      "job.output",
+      "job.status",
+      "job.wait",
+      "kill",
+      "lifecycle",
+      "mcp",
+      "mirror",
+      "monitor",
+      "orchestrate.ctl.msg",
+      "orchestrate.ctl.pause",
+      "orchestrate.ctl.resolve",
+      "orchestrate.ctl.resume",
+      "orchestrate.ctl.status",
+      "play.submit",
+      "plugin.disable",
+      "plugin.enable",
+      "plugin.info",
+      "plugin.list",
+      "profile.list",
+      "profile.show",
+      "runs",
+      "schedule.apply",
+      "schedule.create",
+      "schedule.delete",
+      "schedule.disable",
+      "schedule.enable",
+      "schedule.export",
+      "schedule.get",
+      "schedule.limits",
+      "schedule.list",
+      "schedule.run",
+      "schedule.runs",
+      "schedule.status",
+      "schedule.trigger",
+      "schedule.validate",
+      "server.info",
+      "state.checkpoint",
+      "state.doctor",
+      "state.import",
+      "state.import-teams",
+      "state.ls",
+      "state.null-content",
+      "state.prune",
+      "state.stats",
+      "state.vacuum",
+      "stats.runs",
+      "studio.start",
+      "team.create",
+      "team.list",
+      "team.receive",
+      "team.send",
+      "team.show"
+    ],
+    "available_verb_names": [
+      "agent.submit",
+      "dispatch.ack",
+      "dispatch.ls",
+      "dispatch.purge",
+      "dispatch.retry",
+      "dispatch.show",
+      "doctor",
+      "fanout.submit",
+      "flow.submit",
+      "handshake",
+      "invoke.list",
+      "job.kill",
+      "job.list",
+      "job.output",
+      "job.status",
+      "job.wait",
+      "lifecycle",
+      "monitor",
+      "play.submit",
+      "plugin.info",
+      "profile.list",
+      "profile.show",
+      "runs",
+      "schedule.create",
+      "schedule.delete",
+      "schedule.disable",
+      "schedule.enable",
+      "schedule.export",
+      "schedule.get",
+      "schedule.limits",
+      "schedule.list",
+      "schedule.runs",
+      "schedule.status",
+      "schedule.trigger",
+      "schedule.validate",
+      "server.info",
+      "state.ls",
+      "state.stats",
+      "stats.runs",
+      "team.list"
+    ]
+  },
+  "projections": {
+    "agent": {
+      "path": "agent",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "agent",
+        "properties": {
+          "query": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional model spec followed by the prompt. Model is one of 'claude', 'codex', 'gemini-code' (defaults), or a full spec like 'claude/opus'; omit it when -a / --resume / -c provides one. The prompt may instead be passed via --prompt or --prompt-file.",
+            "x-positional": true
+          },
+          "prompt_flag": {
+            "type": "string",
+            "description": "The instruction, as a flag instead of the positional PROMPT. Give it one way or the other, never both.",
+            "x-flag": "--prompt"
+          },
+          "prompt_file": {
+            "type": "string",
+            "description": "Read the instruction from a file; '-' reads stdin, which is heredoc-friendly. The file is read once at spawn, so editing it afterwards cannot change the run.",
+            "x-flag": "--prompt-file"
+          },
+          "agent": {
+            "type": "string",
+            "description": "Load agent profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, then a trusted+enabled plugin's declared profile ('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). Profile provides system prompt, default model, effort, yolo, timeout, resume_on_timeout. CLI flags override profile settings.",
+            "x-flag": "--agent",
+            "x-aliases": [
+              "-a"
+            ]
+          },
+          "list_profiles": {
+            "type": "boolean",
+            "description": "Print every agent profile -a would resolve, as JSON, and exit without running anything. Use it to find out what names are available here.",
+            "default": false,
+            "x-flag": "--list-profiles"
+          },
+          "resume": {
+            "type": "string",
+            "description": "Continue a previous run by its branch id, keeping that conversation's history. Cannot be combined with --context-from, which is for starting fresh.",
+            "x-flag": "--resume",
+            "x-aliases": [
+              "-r"
+            ]
+          },
+          "continue_last": {
+            "type": "boolean",
+            "description": "Continue the most recently used branch, keeping its history, without having to look up its id.",
+            "default": false,
+            "x-flag": "--continue-last",
+            "x-aliases": [
+              "-c"
+            ]
+          },
+          "preset": {
+            "type": "string",
+            "enum": [
+              "coding"
+            ],
+            "description": "Apply a built-in agent configuration preset. Supported values: coding. 'coding' wires CodingToolkit with path-guard hooks and a coding system prompt; cwd defaults to the invocation directory.",
+            "x-flag": "--preset"
+          },
+          "form": {
+            "type": "string",
+            "description": "Path to a YAML or JSON work-form spec file. The spec declares typed fields and values; validation runs BEFORE any LLM call. Exits rc=1 on validation error. Validated values are injected into the prompt as structured context.",
+            "x-flag": "--form"
+          },
+          "image": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Attach an image file to the prompt (repeatable, e.g. --image a.png --image b.jpg). Supported extensions: .gif, .jpeg, .jpg, .png, .webp. Each file is read, base64-encoded, and attached as an image content part on the user message.",
+            "x-flag": "--image"
+          },
+          "context_from": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Inject distilled context from a prior session id, branch id, run id, or file path into this new branch's first instruction, above the prompt. Repeatable (concatenated in argv order); the total budget (see --context-budget) is shared across all refs. Rejected in combination with -r / --resume or -c / --continue-last.",
+            "x-flag": "--context-from"
+          },
+          "context_budget": {
+            "type": "integer",
+            "description": "Total token budget for --context-from content (default 8000; ~4 chars/token).",
+            "x-flag": "--context-budget"
+          },
+          "mcp_config": {
+            "type": "string",
+            "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from --cwd. The file is read once at spawn.",
+            "x-flag": "--mcp-config"
+          },
+          "no_mcp_config": {
+            "type": "boolean",
+            "description": "Hand the leg no MCP servers, and say so deliberately instead of arriving there by an empty search.",
+            "default": false,
+            "x-flag": "--no-mcp-config"
+          },
+          "yolo": {
+            "type": "boolean",
+            "description": "Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
+            "default": false,
+            "x-flag": "--yolo"
+          },
+          "bypass": {
+            "type": "boolean",
+            "description": "Bypass all codex approvals and sandbox (for cloud/codespace environments).",
+            "default": false,
+            "x-flag": "--bypass"
+          },
+          "fast": {
+            "type": "boolean",
+            "description": "Route codex requests through OpenAI's priority service tier (lower latency; requires account eligibility). Does not change model or reasoning effort.",
+            "default": false,
+            "x-flag": "--fast"
+          },
+          "verbose": {
+            "type": "boolean",
+            "description": "Stream the agent's output as it is produced instead of printing only the final result, and silence the progress lines that would interleave with it.",
+            "default": false,
+            "x-flag": "--verbose",
+            "x-aliases": [
+              "-v"
+            ]
+          },
+          "theme": {
+            "type": "string",
+            "enum": [
+              "light",
+              "dark"
+            ],
+            "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
+            "x-flag": "--theme"
+          },
+          "effort": {
+            "type": "string",
+            "description": "Override effort (overrides spec suffix). claude: low|medium|high|xhigh|max. codex: none|minimal|low|medium|high|xhigh|max|ultra (max/ultra clamp per model support). gemini-code/gemini-cli: folded into --model as Low|Medium|High (Gemini 3.1 Pro has no Medium).",
+            "x-flag": "--effort"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
+            "x-flag": "--cwd"
+          },
+          "timeout": {
+            "type": "integer",
+            "description": "Hard wall-clock timeout in seconds. When set, a [DEADLINE] preamble is injected into the agent's prompt so the agent knows its time budget and can pace reasoning accordingly.",
+            "x-flag": "--timeout"
+          },
+          "invocation": {
+            "type": "string",
+            "description": "Parent invocation id (from `li invoke start`). Groups this session under a skill orchestration record. Optional.",
+            "x-flag": "--invocation"
+          },
+          "project": {
+            "type": "string",
+            "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
+            "x-flag": "--project"
+          },
+          "resume_on_timeout": {
+            "type": "boolean",
+            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+            "default": false,
+            "x-flag": "--resume-on-timeout"
+          },
+          "notify": {
+            "type": "string",
+            "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
+            "x-flag": "--notify"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Spawn a single subagent and wait for its final response. Flags may appear anywhere relative to the positionals. Use -r / -c to continue a previous conversation. Use -a to load a profile from .lionagi/agents/. Use --preset to apply a built-in agent configuration. Use --form to load and validate structured inputs before invoking. Use --context-from to hand a new agent distilled context from a prior session/branch/run/file.",
+        "x-required-unenforced": [
+          "query"
+        ],
+        "x-positional-order": [
+          "query"
+        ]
+      }
+    },
+    "casts": {
+      "path": "casts",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "casts",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Role or mode to print in full, including its prompt body. Looked up in both catalogs, so you need not know which it is. Omit it to list names only.",
+            "x-positional": true
+          },
+          "modes": {
+            "type": "boolean",
+            "description": "List the behavior overlays (modes) instead of the personas (roles). Only affects the bare listing; ignored when a name is given.",
+            "default": false,
+            "x-flag": "--modes"
+          }
+        },
+        "additionalProperties": false,
+        "x-positional-order": [
+          "name"
+        ]
+      }
+    },
+    "dispatch ack": {
+      "path": "dispatch ack",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "dispatch ack",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the dispatch to acknowledge, as listed by `li dispatch ls`.",
+            "x-positional": true
+          },
+          "token": {
+            "type": "string",
+            "description": "The ack_token this dispatch was delivered with, reported by `li dispatch show`. A mismatched token is refused, so an acknowledgement cannot be guessed.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "token"
+        ],
+        "x-positional-order": [
+          "id",
+          "token"
+        ]
+      }
+    },
+    "dispatch ls": {
+      "path": "dispatch ls",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "dispatch ls",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Show only rows in this status: pending, delivering, delivered, acked, dead_letter or expired. Omit to list every status.",
+            "x-flag": "--status"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum rows to print, newest first (default 50).",
+            "default": 50,
+            "x-flag": "--limit"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "dispatch purge": {
+      "path": "dispatch purge",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "dispatch purge",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of a single dispatch to delete, whatever its status. Omit it to bulk-delete by --status/--before instead; one of the two is then required.",
+            "x-positional": true
+          },
+          "status": {
+            "type": "string",
+            "description": "Bulk purge: match this status exactly, including pending/delivering (explicit status is deliberate operator intent).",
+            "x-flag": "--status"
+          },
+          "before": {
+            "type": "number",
+            "description": "Bulk purge: match rows with updated_at <= this epoch-seconds value. Without --status, this is scoped to terminal statuses only (delivered/acked/dead_letter/expired) and never sweeps pending/delivering rows.",
+            "x-flag": "--before"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Report what would be deleted without deleting (single-row and bulk).",
+            "default": false,
+            "x-flag": "--dry-run"
+          }
+        },
+        "additionalProperties": false,
+        "description": "With ID: delete that one row (any status), auditable via admin_events action=dispatch_purge. Without ID: bulk-delete by --status/--before (at least one required, so a bare `purge` cannot mass-delete); --dry-run reports counts without deleting. An explicit --status is honored exactly as given, including pending/delivering (naming an in-flight status is deliberate operator intent). A bare --before with no --status is scoped to terminal statuses only (delivered/acked/dead_letter/expired) and never touches pending/delivering rows.",
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "dispatch retry": {
+      "path": "dispatch retry",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "dispatch retry",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the dispatch to re-queue for delivery.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "dispatch show": {
+      "path": "dispatch show",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "dispatch show",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the dispatch row to show, as listed by `li dispatch ls`.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "doctor": {
+      "path": "doctor",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "doctor",
+        "properties": {
+          "json": {
+            "type": "boolean",
+            "description": "Emit a JSON object of check name -> {status, detail} instead of plain text.",
+            "default": false,
+            "x-flag": "--json"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Environment preflight: install location + editability, Python/venv, the import chain `li --version` traverses, core dependency importability, Studio daemon reachability, and ~/.lionagi writability."
+      }
+    },
+    "engine run": {
+      "path": "engine run",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "engine run",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "research",
+              "review",
+              "coding",
+              "hypothesis",
+              "planning"
+            ],
+            "description": "Engine kind to run. One of: coding, hypothesis, planning, research, review.",
+            "x-positional": true
+          },
+          "spec": {
+            "type": "string",
+            "description": "Main input for the engine (topic / artifact / spec / findings / prompt).",
+            "x-positional": true
+          },
+          "test_cmd": {
+            "type": "string",
+            "description": "Test command to validate generated code (required for 'coding' kind). May be a shell string or a quoted list.",
+            "x-flag": "--test-cmd"
+          },
+          "export_dir": {
+            "type": "string",
+            "description": "Directory to save engine outputs to (optional; supported by 'coding' and 'hypothesis' kinds).",
+            "x-flag": "--export-dir"
+          },
+          "dedup_repo": {
+            "type": "string",
+            "description": "GitHub repo to check findings against before extraction ('hypothesis' kind only). Findings whose mechanism an existing open or closed issue already covers are recorded and not expanded; certified-new findings land in the export's filing queue. The engine never files issues itself.",
+            "x-flag": "--dedup-repo"
+          },
+          "dedup_cwd": {
+            "type": "string",
+            "description": "Checkout of the dedup repo so the novelty check can source-confirm a finding's cite ('hypothesis' kind only; optional).",
+            "x-flag": "--dedup-cwd"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model to use (provider/name, e.g. claude/sonnet; an effort suffix like codex/gpt-5.6-luna-high is honored). Overrides per-stage defaults. Uses engine defaults if omitted.",
+            "x-flag": "--model"
+          },
+          "effort": {
+            "type": "string",
+            "description": "Reasoning effort for all stages (e.g. low, medium, high, xhigh). Overrides per-stage defaults; a per-stage default applies otherwise.",
+            "x-flag": "--effort"
+          },
+          "max_depth": {
+            "type": "integer",
+            "description": "Maximum recursion/expansion depth for the engine (kind-specific default).",
+            "x-flag": "--max-depth"
+          },
+          "max_agents": {
+            "type": "integer",
+            "description": "Maximum number of sub-agents the engine may spawn.",
+            "x-flag": "--max-agents"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Associate this engine run with an existing session in StateDB (written to engine_runs.session_id).",
+            "x-flag": "--session-id"
+          },
+          "no_persist": {
+            "type": "boolean",
+            "description": "Skip writing the engine run record to StateDB.",
+            "default": false,
+            "x-flag": "--no-persist"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Run a lionagi engine of a specific kind.\n\nAvailable kinds: coding, hypothesis, planning, research, review\n\nProgress events are written to stderr as human-readable lines.\nThe final result is written as JSON to stdout.",
+        "required": [
+          "kind",
+          "spec"
+        ],
+        "x-positional-order": [
+          "kind",
+          "spec"
+        ]
+      }
+    },
+    "handshake": {
+      "path": "handshake",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "handshake",
+        "properties": {
+          "machine": {
+            "type": "boolean",
+            "description": "Emit the machine-result envelope.",
+            "default": false,
+            "x-flag": "--machine"
+          }
+        },
+        "additionalProperties": false,
+        "description": "The version a machine consumer negotiates against at registration. Add --machine for the contract envelope on stdout."
+      }
+    },
+    "hooks import": {
+      "path": "hooks import",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "hooks import",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ],
+            "description": "Which harness wrote the config being imported: 'claude' for Claude Code's settings.json shape, 'codex' for the Codex hooks.json shape.",
+            "x-positional": true
+          },
+          "path": {
+            "type": "string",
+            "description": "Config file to read. Defaults to .claude/settings.json or .codex/hooks.json under the project directory, matching the source given.",
+            "x-positional": true
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Project whose .lionagi/settings.yaml receives the imported hooks, and where the default config path is looked up (defaults to the current directory).",
+            "x-flag": "--cwd"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "source"
+        ],
+        "x-positional-order": [
+          "source",
+          "path"
+        ]
+      }
+    },
+    "hooks trust": {
+      "path": "hooks trust",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "hooks trust",
+        "properties": {
+          "cwd": {
+            "type": "string",
+            "description": "Project whose imported hook commands are listed and approved (defaults to the current directory).",
+            "x-flag": "--cwd"
+          },
+          "yes": {
+            "type": "boolean",
+            "description": "Record trust without an interactive confirmation prompt.",
+            "default": false,
+            "x-flag": "--yes"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "invoke end": {
+      "path": "invoke end",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "invoke end",
+        "properties": {
+          "invocation_id": {
+            "type": "string",
+            "description": "The id printed by `li invoke start`. An invocation never closed stays 'running' forever.",
+            "x-positional": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed",
+              "timed_out",
+              "aborted",
+              "cancelled"
+            ],
+            "description": "How the work ended, which also fixes the reason stored with it: 'completed' for success, 'failed' for an exception, 'timed_out' for a deadline, 'aborted' for a user interrupt, 'cancelled' for a system cancellation. Later listings and dashboards filter on this, so leaving the default on work that did not succeed records it as a success.",
+            "default": "completed",
+            "x-flag": "--status"
+          },
+          "metadata": {
+            "type": "string",
+            "description": "JSON merged key-by-key into the invocation's existing metadata, so anything written during the run survives unless this overwrites that key.",
+            "x-flag": "--metadata"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "invocation_id"
+        ],
+        "x-positional-order": [
+          "invocation_id"
+        ]
+      }
+    },
+    "invoke list": {
+      "path": "invoke list",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "invoke list",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Show only invocations of this skill name, matched exactly.",
+            "x-flag": "--skill"
+          },
+          "status": {
+            "type": "string",
+            "description": "Show only invocations in this status: running, completed, failed, timed_out, aborted or cancelled.",
+            "x-flag": "--status"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum rows to print, newest first (default 20).",
+            "default": 20,
+            "x-flag": "--limit"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "invoke start": {
+      "path": "invoke start",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "invoke start",
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "Name of the orchestration being recorded, e.g. 'show', 'codex-pr-review' or 'reprompt'. Every session spawned under this id groups by it.",
+            "x-flag": "--skill"
+          },
+          "plugin": {
+            "type": "string",
+            "description": "Marketplace plugin packaging that skill, when the skill came from one.",
+            "x-flag": "--plugin"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "The request that triggered this work, stored as free text for later reading.",
+            "x-flag": "--prompt"
+          },
+          "metadata": {
+            "type": "string",
+            "description": "Skill-specific JSON to attach (e.g. show plan, review rounds). Stored verbatim; rendered as-is on the invocation detail page.",
+            "x-flag": "--metadata"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "skill"
+        ]
+      }
+    },
+    "kill": {
+      "path": "kill",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "kill",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Entity id to kill: run_id / session_id / invocation_id / play_id / show_id. Accepts a full UUID, or an id prefix (resolved to the first matching row).",
+            "x-positional": true
+          },
+          "reason": {
+            "type": "string",
+            "description": "Optional human-readable reason recorded in status_transitions.",
+            "default": "",
+            "x-flag": "--reason"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "Also kill direct child entities (e.g. invocations spawned by a session). Has no effect on a play kill, which already reaps whatever worker chain the row records, or on a show kill, which cannot reach one -- kill the session ids directly to stop a show's workers.",
+            "default": false,
+            "x-flag": "--recursive"
+          },
+          "all_stale": {
+            "type": "boolean",
+            "description": "Sweep stale sessions and invocations with dead PIDs older than --threshold. A play older than --threshold whose recorded worker session has gone terminal is marked 'blocked'; a play that records no worker session is left running, because age alone cannot tell it apart from one still working. A show is marked 'aborted' only once it is older than --threshold and ALL of its plays are terminal.",
+            "default": false,
+            "x-flag": "--all-stale"
+          },
+          "threshold": {
+            "type": "integer",
+            "description": "Stale threshold in seconds (default 3600 = 1h). Only entities started more than this many seconds ago are swept.",
+            "default": 3600,
+            "x-flag": "--threshold"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Print what would be killed/cancelled without making any changes.",
+            "default": false,
+            "x-flag": "--dry-run"
+          },
+          "grace": {
+            "type": "number",
+            "description": "Seconds to wait after SIGTERM before escalating to SIGKILL (default 5).",
+            "default": 5.0,
+            "x-flag": "--grace"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Kill a running lionagi entity by id, or sweep all stale running entities whose underlying OS process is dead.\n\nThe entity's status is set to 'cancelled' (sessions/invocations), 'blocked' (plays), or 'aborted' (shows) with reason tracking per ADR-0028.\n\nRecursion boundary: --recursive kills a session's or invocation's direct children, which are the PID-bearing workers. A PLAY kill reaches the play's worker chain only when the row records the session it started; a play created by a live run does not, so that kill marks the row terminal and exits non-zero to say no worker was stopped. A SHOW kill only marks the show row terminal. To stop work either one cannot reach, kill the session ids directly; --all-stale marks a play 'blocked' only when the row records a worker session that has gone terminal, and leaves an unlinked play running.\n\nExamples:\n  li kill abc123                        # kill by id prefix\n  li kill <session-id>                  # stop a worker process\n  li kill abc123 --reason 'stuck'\n  li kill abc123 --recursive            # kill + direct children\n  li kill --all-stale                   # sweep dead-PID rows\n  li kill --all-stale --threshold 3600  # only rows older than 1h\n  li kill --all-stale --dry-run",
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "lifecycle": {
+      "path": "lifecycle",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "lifecycle",
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "description": "The run id to report on.",
+            "x-positional": true
+          },
+          "machine": {
+            "type": "boolean",
+            "description": "Emit the machine-result envelope.",
+            "default": false,
+            "x-flag": "--machine"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Read-only: what the lifecycle store records about one run id \u2014 whether a session was ever recorded for it, whether every one of them has ended, and with what outcome. A run stopped by `li kill` reads as cancelled here. Add --machine for the contract envelope on stdout.",
+        "required": [
+          "run_id"
+        ],
+        "x-positional-order": [
+          "run_id"
+        ]
+      }
+    },
+    "mcp": {
+      "path": "mcp",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "mcp",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "serve"
+            ],
+            "description": "What to do: 'serve' (the default and only value) runs the server on stdin/stdout until the client disconnects.",
+            "default": "serve",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "description": "Serve the lionagi MCP server over stdio. It advertises one tool, request(ops=[{op, args}], help?), with every operation behind it as a namespaced verb: agent.submit, flow.submit, fanout.submit and play.submit start detached background runs, job.status, job.output, job.list, job.wait and job.kill follow them. Call request(help=true) for the verb catalog and request(help=\"<verb>\") for one verb's parameters, generated from this CLI's own parsers. Requires the 'mcp' extra: pip install 'lionagi[mcp]'.",
+        "x-positional-order": [
+          "action"
+        ]
+      }
+    },
+    "monitor": {
+      "path": "monitor",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "monitor",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Run, session, play or show to open in the detail view \u2014 full id, or an unambiguous prefix. Omit it for the table of everything in flight.",
+            "x-positional": true
+          },
+          "watch": {
+            "type": "boolean",
+            "description": "Redraw the view every --refresh seconds until interrupted, instead of printing one snapshot and exiting.",
+            "default": false,
+            "x-flag": "--watch",
+            "x-aliases": [
+              "-w"
+            ]
+          },
+          "refresh": {
+            "type": "integer",
+            "description": "Seconds between redraws under --watch (default 2). Ignored without it.",
+            "default": 2,
+            "x-flag": "--refresh"
+          },
+          "since": {
+            "type": "string",
+            "description": "Only show entities updated within this time window. Format: 30m, 1h, 2d (minutes/hours/days). Default: all running.",
+            "x-flag": "--since"
+          },
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "session",
+              "invocation",
+              "show",
+              "play"
+            ],
+            "description": "Narrow the table to one kind of entity: session, invocation, show or play.",
+            "x-flag": "--type",
+            "x-aliases": [
+              "-t"
+            ]
+          },
+          "project": {
+            "type": "string",
+            "description": "Filter sessions and plays to one project name, matched exactly \u2014 the same name the table's project column shows.",
+            "x-flag": "--project",
+            "x-aliases": [
+              "-p"
+            ]
+          },
+          "run_ids": {
+            "type": "string",
+            "description": "Wait for one or more schedule_run IDs to reach a terminal state, then exit (scripting primitive; see `li monitor run --help` for the positional form). Follows scheduler on_success/on_fail chain children by default (see --no-chain). Ignores id/--watch/--since/--type/--project.",
+            "x-flag": "--run"
+          },
+          "interval": {
+            "type": "number",
+            "description": "Seconds between state.db polls in --run mode (default 3). Independent of --refresh, which paces the table redraw.",
+            "default": 3.0,
+            "x-flag": "--interval"
+          },
+          "follow": {
+            "type": "boolean",
+            "description": "With --run: keep discovering schedule_runs created after the initial set drains, instead of exiting once it is empty. Never ends on its own \u2014 pair with --max-wait.",
+            "default": false,
+            "x-flag": "--follow"
+          },
+          "chain": {
+            "type": "boolean",
+            "description": "With --run: watch only the literal id(s) given, instead of following scheduler on_success/on_fail chain children by default.",
+            "default": true,
+            "x-flag": "--no-chain"
+          },
+          "max_wait": {
+            "type": "number",
+            "description": "With --run: give up waiting after this many seconds and exit EXIT_RUNNING for whatever is still pending, instead of blocking forever on a stuck session or run. Default: 900s. Pass 0 for unlimited.",
+            "x-flag": "--max-wait"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Show all running entities (sessions, invocations, shows, plays) in a compact table, or drill into one entity by ID. Use --watch for live refresh.",
+        "x-positional-order": [
+          "id"
+        ]
+      },
+      "aliases": [
+        "mon"
+      ]
+    },
+    "orchestrate ctl msg": {
+      "path": "orchestrate ctl msg",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "orchestrate ctl msg",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Running flow, playbook run, or agent leg to message, by session, invocation, play, or run id (full, or an unambiguous prefix).",
+            "x-positional": true
+          },
+          "text": {
+            "type": "string",
+            "description": "Message merged into the flow's workspace context. Ops already started will not see it; every op that has not started yet will.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "description": "Queues a message control row. A flow or playbook run's control poller deep-merges it into the workspace context, visible to any op not yet started (context mode only; --as-op is not supported by this command yet). A running `li agent` leg instead drains it at its next turn boundary, landing as a warm continuation turn rather than a context merge \u2014 check `li o ctl status` for which happened.",
+        "required": [
+          "id",
+          "text"
+        ],
+        "x-positional-order": [
+          "id",
+          "text"
+        ]
+      },
+      "aliases": [
+        "o ctl msg"
+      ]
+    },
+    "orchestrate ctl pause": {
+      "path": "orchestrate ctl pause",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "orchestrate ctl pause",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Running flow to pause, by session, invocation, play, or run id (full, or an unambiguous prefix). The pause lands at the next op boundary, not mid-op.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "description": "Queues a pause control row; the target flow's control poller applies it at the next op boundary (idempotent \u2014 safe to queue more than once).",
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      },
+      "aliases": [
+        "o ctl pause"
+      ]
+    },
+    "orchestrate ctl resolve": {
+      "path": "orchestrate ctl resolve",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "orchestrate ctl resolve",
+        "properties": {
+          "control_id": {
+            "type": "string",
+            "description": "The control id shown by `li o ctl status` (full, no prefix matching).",
+            "x-positional": true
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "abandoned"
+            ],
+            "description": "What you established actually happened: 'applied' if the message reached the run, 'abandoned' if it did not and will not.",
+            "x-flag": "--as"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who resolved it, recorded beside the claim. Defaults to the OS account running the command; pass this when that is not the person who found out.",
+            "x-flag": "--by"
+          }
+        },
+        "additionalProperties": false,
+        "description": "A `msg` control is delivered at most once, so a consumer claims it before attempting the delivery. If that consumer dies in between, nothing left behind can say whether the message reached the model, and the row is deliberately left standing rather than guessed at. `li o ctl status` shows who claimed it and when. Use this once you have found out which it was; the claim is preserved in the record.",
+        "required": [
+          "control_id",
+          "outcome"
+        ],
+        "x-positional-order": [
+          "control_id"
+        ]
+      },
+      "aliases": [
+        "o ctl resolve"
+      ]
+    },
+    "orchestrate ctl resume": {
+      "path": "orchestrate ctl resume",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "orchestrate ctl resume",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Paused flow to release, by session, invocation, play, or run id (full, or an unambiguous prefix).",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "description": "Queues a resume control row, releasing a pending pause gate.",
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      },
+      "aliases": [
+        "o ctl resume"
+      ]
+    },
+    "orchestrate ctl status": {
+      "path": "orchestrate ctl status",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "orchestrate ctl status",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Session, invocation, play, or run id to report on \u2014 full, or an unambiguous prefix. Required here: this command has no 'latest run' default.",
+            "x-positional": true
+          },
+          "as_json": {
+            "type": "boolean",
+            "description": "Print one JSON object with stable keys instead of the human table, for scripting.",
+            "default": false,
+            "x-flag": "--json"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Generic id-addressed status lookup \u2014 no agent/play kind scoping, so <id> is required (no 'latest run' default). Prefer `li agent status` / `li play status` when the kind is known.",
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      },
+      "aliases": [
+        "o ctl status"
+      ]
+    },
+    "orchestrate fanout": {
+      "path": "orchestrate fanout",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "orchestrate fanout",
+        "properties": {
+          "query": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Orchestrator model spec (provider/model-effort) followed by the task prompt. Model is also used as the default worker model unless --workers is set; omit it when -a/--agent provides one. A single positional is treated as the prompt.",
+            "x-positional": true
+          },
+          "agent": {
+            "type": "string",
+            "description": "Load orchestrator profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md. Profile provides system prompt, default model, effort, yolo. CLI flags and positional model override profile settings.",
+            "x-flag": "--agent",
+            "x-aliases": [
+              "-a"
+            ]
+          },
+          "num_workers": {
+            "type": "integer",
+            "description": "Maximum assignments the orchestrator generates (default 3). It may generate fewer if the task does not divide that far, and --workers specs beyond this cap go unused.",
+            "default": 3,
+            "x-flag": "--num-workers",
+            "x-aliases": [
+              "-n"
+            ]
+          },
+          "workers": {
+            "type": "string",
+            "description": "Comma-separated worker model specs, assigned round-robin (each may carry an effort suffix). This is how one fanout mixes cheap and expensive models across workers.",
+            "x-flag": "--workers"
+          },
+          "pack": {
+            "type": "string",
+            "description": "Path to a YAML routing pack. Provides per-role model/effort when --workers is absent. --workers overrides pack routing.",
+            "x-flag": "--pack"
+          },
+          "max_concurrent": {
+            "type": "integer",
+            "description": "Cap on workers running at the same time. 0, the default, runs them all at once \u2014 lower it to stay under a provider's rate limit.",
+            "default": 0,
+            "x-flag": "--max-concurrent"
+          },
+          "with_synthesis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "const": true
+              }
+            ],
+            "x-bare-value": true,
+            "description": "Run a final pass merging the workers' results into one answer. Bare flag uses the orchestrator model; with an argument, that model instead.",
+            "default": false,
+            "x-flag": "--with-synthesis"
+          },
+          "synthesis_prompt": {
+            "type": "string",
+            "description": "What the merged answer should be \u2014 a ranked list, a decision, a single patch. Implies synthesis.",
+            "x-flag": "--synthesis-prompt"
+          },
+          "output": {
+            "type": "string",
+            "enum": [
+              "text",
+              "json"
+            ],
+            "description": "Result format: 'text' (default) for reading, 'json' for a machine-readable run.",
+            "default": "text",
+            "x-flag": "--output"
+          },
+          "save": {
+            "type": "string",
+            "description": "Directory to write each worker's output and the run's artifacts into. Without it they land in the run's own artifacts directory.",
+            "x-flag": "--save"
+          },
+          "team_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "const": true
+              }
+            ],
+            "x-bare-value": "fanout",
+            "description": "Create a persistent team for this fanout. Workers get team context and results are posted as team messages. Bare flag uses 'fanout' as team name; with arg uses that name.",
+            "x-flag": "--team-mode"
+          },
+          "mcp_config": {
+            "type": "string",
+            "description": "Read this MCP config and hand its servers to every worker this run builds. By default the nearest .mcp.json at or above the directory this command was run in is used, so the workers' tools come from the submission rather than from --cwd. The file is read once, at startup.",
+            "x-flag": "--mcp-config"
+          },
+          "no_mcp_config": {
+            "type": "boolean",
+            "description": "Hand the workers no MCP servers, and say so deliberately instead of arriving there by an empty search.",
+            "default": false,
+            "x-flag": "--no-mcp-config"
+          },
+          "yolo": {
+            "type": "boolean",
+            "description": "Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
+            "default": false,
+            "x-flag": "--yolo"
+          },
+          "bypass": {
+            "type": "boolean",
+            "description": "Bypass all codex approvals and sandbox (for cloud/codespace environments).",
+            "default": false,
+            "x-flag": "--bypass"
+          },
+          "fast": {
+            "type": "boolean",
+            "description": "Route codex requests through OpenAI's priority service tier (lower latency; requires account eligibility). Does not change model or reasoning effort.",
+            "default": false,
+            "x-flag": "--fast"
+          },
+          "verbose": {
+            "type": "boolean",
+            "description": "Stream the agent's output as it is produced instead of printing only the final result, and silence the progress lines that would interleave with it.",
+            "default": false,
+            "x-flag": "--verbose",
+            "x-aliases": [
+              "-v"
+            ]
+          },
+          "theme": {
+            "type": "string",
+            "enum": [
+              "light",
+              "dark"
+            ],
+            "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
+            "x-flag": "--theme"
+          },
+          "effort": {
+            "type": "string",
+            "description": "Override effort (overrides spec suffix). claude: low|medium|high|xhigh|max. codex: none|minimal|low|medium|high|xhigh|max|ultra (max/ultra clamp per model support). gemini-code/gemini-cli: folded into --model as Low|Medium|High (Gemini 3.1 Pro has no Medium).",
+            "x-flag": "--effort"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
+            "x-flag": "--cwd"
+          },
+          "timeout": {
+            "type": "integer",
+            "description": "Hard wall-clock timeout in seconds. When set, a [DEADLINE] preamble is injected into the agent's prompt so the agent knows its time budget and can pace reasoning accordingly.",
+            "x-flag": "--timeout"
+          },
+          "invocation": {
+            "type": "string",
+            "description": "Parent invocation id (from `li invoke start`). Groups this session under a skill orchestration record. Optional.",
+            "x-flag": "--invocation"
+          },
+          "project": {
+            "type": "string",
+            "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
+            "x-flag": "--project"
+          },
+          "resume_on_timeout": {
+            "type": "boolean",
+            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+            "default": false,
+            "x-flag": "--resume-on-timeout"
+          },
+          "notify": {
+            "type": "string",
+            "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
+            "x-flag": "--notify"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Orchestrator decomposes task into N agent requests, fans out to workers, optionally synthesizes. Effort can be embedded in model spec: claude/opus-4-7-high. Flags may appear anywhere relative to the positionals.",
+        "x-required-unenforced": [
+          "query"
+        ],
+        "x-positional-order": [
+          "query"
+        ]
+      },
+      "aliases": [
+        "o fanout"
+      ]
+    },
+    "orchestrate flow": {
+      "path": "orchestrate flow",
+      "stage": "base",
+      "schema": {
+        "type": "object",
+        "title": "orchestrate flow",
+        "properties": {
+          "query": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Orchestrator model spec followed by the task prompt. Model is optional when -a/--agent provides one; a single positional is treated as the prompt. The prompt itself may instead come from -f/--file or -p/--playbook.",
+            "x-positional": true
+          },
+          "file": {
+            "type": "string",
+            "description": "Load flow spec from YAML or JSON file. File values serve as defaults; CLI flags override them. Prompt can come from the file (prompt: key) or as a positional argument.",
+            "x-flag": "--file",
+            "x-aliases": [
+              "-f"
+            ]
+          },
+          "playbook": {
+            "type": "string",
+            "description": "Load playbook from ~/.lionagi/playbooks/<NAME>.playbook.yaml. Playbooks may declare args: schema, artifacts: contracts, or argument-hint: placeholders for prompt template values.",
+            "x-flag": "--playbook",
+            "x-aliases": [
+              "-p"
+            ]
+          },
+          "agent": {
+            "type": "string",
+            "description": "Load orchestrator profile by name \u2014 resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md.",
+            "x-flag": "--agent",
+            "x-aliases": [
+              "-a"
+            ]
+          },
+          "with_synthesis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "const": true
+              }
+            ],
+            "x-bare-value": true,
+            "description": "Run a final pass merging the DAG's results into one answer. Bare flag uses the orchestrator model; with an argument, that model instead.",
+            "default": false,
+            "x-flag": "--with-synthesis"
+          },
+          "max_concurrent": {
+            "type": "integer",
+            "description": "Cap on agents running at the same time within one phase. 0, the default, runs the whole phase at once \u2014 lower it to stay under a provider's rate limit.",
+            "default": 0,
+            "x-flag": "--max-concurrent"
+          },
+          "output": {
+            "type": "string",
+            "enum": [
+              "text",
+              "json"
+            ],
+            "description": "Result format: 'text' (default) for reading, 'json' for a machine-readable run.",
+            "default": "text",
+            "x-flag": "--output"
+          },
+          "save": {
+            "type": "string",
+            "description": "Directory to write each agent's output and the run's artifacts into. Required by --background, which has nowhere else to report.",
+            "x-flag": "--save"
+          },
+          "team_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "const": true
+              }
+            ],
+            "x-bare-value": "flow",
+            "description": "Create a FRESH team for this flow (new UUID every invocation). Bare flag uses 'flow' as the name.",
+            "x-flag": "--team-mode"
+          },
+          "team_attach": {
+            "type": "string",
+            "description": "Attach to a team by NAME \u2014 upsert semantics: load existing team if found (preserving message history), else create fresh. Mutually exclusive with --team-mode.",
+            "x-flag": "--team-attach"
+          },
+          "team_max_rounds": {
+            "type": "integer",
+            "description": "In team mode (reactive), how many extra wakeup rounds the coordinator may run after all currently-running workers signal done, to deliver unread teammate messages before the run wraps up (default: 2).",
+            "default": 2,
+            "x-flag": "--team-max-rounds"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Plan the DAG but don't execute. Shows agents, deps, and model resolution.",
+            "default": false,
+            "x-flag": "--dry-run"
+          },
+          "show_graph": {
+            "type": "boolean",
+            "description": "Render DAG as matplotlib visualization. With --save, saves PNG to save dir.",
+            "default": false,
+            "x-flag": "--show-graph"
+          },
+          "background": {
+            "type": "boolean",
+            "description": "Run flow in background. Requires --save. Check output in save dir.",
+            "default": false,
+            "x-flag": "--background"
+          },
+          "bare": {
+            "type": "boolean",
+            "description": "Ignore agent profiles \u2014 all workers use the CLI model spec. Roles define behavioral focus only, no profile system prompts.",
+            "default": false,
+            "x-flag": "--bare"
+          },
+          "workers": {
+            "type": "string",
+            "description": "Comma-separated worker model specs (assignment i uses pool[i % len]). Overrides the per-role model while KEEPING each role's profile/system prompt \u2014 unlike --bare, which also drops profiles. Enables mixed-model flows (cheap roles + expensive roles).",
+            "x-flag": "--workers"
+          },
+          "pack": {
+            "type": "string",
+            "description": "Path to a YAML routing pack. Provides per-role model/effort when --workers is absent. --workers overrides pack routing.",
+            "x-flag": "--pack"
+          },
+          "max_ops": {
+            "type": "integer",
+            "description": "Cap total ops (nodes in the planned DAG). 0 = unlimited. `--max-agents` is a deprecated alias \u2014 prefer `--max-ops`.",
+            "default": 0,
+            "x-flag": "--max-ops",
+            "x-aliases": [
+              "--max-agents"
+            ]
+          },
+          "reactive": {
+            "type": "string",
+            "description": "Who may grow the live DAG by emitting a SpawnRequest: 'all' (default \u2014 every worker), 'off' (flat batch DAG, no spawning), or a comma-separated list of roles (e.g. 'critic,evaluator') that alone may spawn. Caps still apply via --max-ops.",
+            "x-flag": "--reactive"
+          },
+          "resume": {
+            "type": "string",
+            "description": "Resume a checkpointed flow from a prior process (by run id, or any session/invocation/play id backed by one). Replays the persisted plan verbatim \u2014 no planner call, no other flow flags read (model/prompt/playbook/etc. all come from the checkpoint). Distinct from `li o ctl resume`, which un-pauses a still-running session.",
+            "x-flag": "--resume"
+          },
+          "allow_degraded_context": {
+            "type": "boolean",
+            "description": "With --resume: proceed even when a pending op declared inherit_context \u2014 it runs against an empty branch instead of its predecessor's conversation history, which resume does not restore. Without this flag such ops refuse loudly, naming them.",
+            "default": false,
+            "x-flag": "--allow-degraded-context"
+          },
+          "mcp_config": {
+            "type": "string",
+            "description": "Read this MCP config and hand its servers to every worker this run builds. By default the nearest .mcp.json at or above the directory this command was run in is used, so the workers' tools come from the submission rather than from --cwd. The file is read once, at startup.",
+            "x-flag": "--mcp-config"
+          },
+          "no_mcp_config": {
+            "type": "boolean",
+            "description": "Hand the workers no MCP servers, and say so deliberately instead of arriving there by an empty search.",
+            "default": false,
+            "x-flag": "--no-mcp-config"
+          },
+          "yolo": {
+            "type": "boolean",
+            "description": "Auto-approve the agent's tool calls, so an unattended run is never left waiting.",
+            "default": false,
+            "x-flag": "--yolo"
+          },
+          "bypass": {
+            "type": "boolean",
+            "description": "Bypass all codex approvals and sandbox (for cloud/codespace environments).",
+            "default": false,
+            "x-flag": "--bypass"
+          },
+          "fast": {
+            "type": "boolean",
+            "description": "Route codex requests through OpenAI's priority service tier (lower latency; requires account eligibility). Does not change model or reasoning effort.",
+            "default": false,
+            "x-flag": "--fast"
+          },
+          "verbose": {
+            "type": "boolean",
+            "description": "Stream the agent's output as it is produced instead of printing only the final result, and silence the progress lines that would interleave with it.",
+            "default": false,
+            "x-flag": "--verbose",
+            "x-aliases": [
+              "-v"
+            ]
+          },
+          "theme": {
+            "type": "string",
+            "enum": [
+              "light",
+              "dark"
+            ],
+            "description": "Pick the colour scheme printed output is tuned for: 'light' or 'dark' terminal.",
+            "x-flag": "--theme"
+          },
+          "effort": {
+            "type": "string",
+            "description": "Override effort (overrides spec suffix). claude: low|medium|high|xhigh|max. codex: none|minimal|low|medium|high|xhigh|max|ultra (max/ultra clamp per model support). gemini-code/gemini-cli: folded into --model as Low|Medium|High (Gemini 3.1 Pro has no Medium).",
+            "x-flag": "--effort"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Directory the agent's process runs in \u2014 the repo or worktree it acts on. Defaults to the current directory.",
+            "x-flag": "--cwd"
+          },
+          "timeout": {
+            "type": "integer",
+            "description": "Hard wall-clock timeout in seconds. When set, a [DEADLINE] preamble is injected into the agent's prompt so the agent knows its time budget and can pace reasoning accordingly.",
+            "x-flag": "--timeout"
+          },
+          "invocation": {
+            "type": "string",
+            "description": "Parent invocation id (from `li invoke start`). Groups this session under a skill orchestration record. Optional.",
+            "x-flag": "--invocation"
+          },
+          "project": {
+            "type": "string",
+            "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
+            "x-flag": "--project"
+          },
+          "resume_on_timeout": {
+            "type": "boolean",
+            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+            "default": false,
+            "x-flag": "--resume-on-timeout"
+          },
+          "notify": {
+            "type": "string",
+            "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
+            "x-flag": "--notify"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Orchestrator analyzes the task, composes a DAG of agents with dependency edges, and executes with automatic parallelism where dependencies allow. Flags may appear anywhere relative to the positionals.",
+        "x-required-unenforced": [
+          "query"
+        ],
+        "x-positional-order": [
+          "query"
+        ],
+        "x-playbook-arguments": "This command accepts arguments declared by the playbook named in 'playbook'. Ask for this schema again with that playbook named to see them."
+      },
+      "aliases": [
+        "o flow"
+      ]
+    },
+    "plugin disable": {
+      "path": "plugin disable",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "plugin disable",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Plugin to leave installed and trusted but inert, as named by `li plugin list`. Re-enable it with `li plugin enable`.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "description": "A settings flag, not a file mutation \u2014 the bundle stays pristine.",
+        "required": [
+          "name"
+        ],
+        "x-positional-order": [
+          "name"
+        ]
+      }
+    },
+    "plugin enable": {
+      "path": "plugin enable",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "plugin enable",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Plugin to load again, as named by `li plugin list`. It must already be trusted.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "x-positional-order": [
+          "name"
+        ]
+      }
+    },
+    "plugin info": {
+      "path": "plugin info",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "plugin info",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Plugin to describe \u2014 its manifest `name:`, as listed by `li plugin list`.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "x-positional-order": [
+          "name"
+        ]
+      }
+    },
+    "plugin list": {
+      "path": "plugin list",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "plugin list",
+        "properties": {},
+        "additionalProperties": false,
+        "description": "State is one of: active, disabled, untrusted, changed, incompatible, collision, invalid. Also garbage-collects trust records whose bundle directory no longer exists, printing which ones were pruned and why."
+      }
+    },
+    "plugin trust": {
+      "path": "plugin trust",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "plugin trust",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Plugin to trust, as named by `li plugin list`.",
+            "x-positional": true
+          },
+          "yes": {
+            "type": "boolean",
+            "description": "Record trust without an interactive confirmation prompt.",
+            "default": false,
+            "x-flag": "--yes"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Renders the plugin's full inventory \u2014 every tool target, hook command argv, agent/playbook/pack file, and provider module \u2014 then records a sha256 of each in ~/.lionagi/settings.yaml. Any later change to any of these reverts the plugin to 'changed' until re-trusted. Use --yes to skip the confirmation prompt.",
+        "required": [
+          "name"
+        ],
+        "x-positional-order": [
+          "name"
+        ]
+      }
+    },
+    "runs": {
+      "path": "runs",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "runs",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "How many runs to list.",
+            "default": 20,
+            "x-flag": "--limit"
+          },
+          "machine": {
+            "type": "boolean",
+            "description": "Emit the machine-result envelope.",
+            "default": false,
+            "x-flag": "--machine"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Read-only listing of ~/.lionagi/runs, newest first."
+      }
+    },
+    "schedule apply": {
+      "path": "schedule apply",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule apply",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Path to a ScheduleSet YAML file.",
+            "x-positional": true
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Show the reconciliation plan with resolved values; no database writes.",
+            "default": false,
+            "x-flag": "--dry-run"
+          },
+          "adopt": {
+            "type": "boolean",
+            "description": "Migrate a same-named row owned by another set/quick-create into this set. Not yet supported.",
+            "default": false,
+            "x-flag": "--adopt"
+          },
+          "as_json": {
+            "type": "boolean",
+            "description": "Emit JSON.",
+            "default": false,
+            "x-flag": "--json"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "file"
+        ],
+        "x-positional-order": [
+          "file"
+        ]
+      }
+    },
+    "schedule create": {
+      "path": "schedule create",
+      "stage": "base",
+      "schema": {
+        "type": "object",
+        "title": "schedule create",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique name identifying this schedule. Reused as the display label in listings; a name already in use is rejected rather than overwritten.",
+            "x-positional": true
+          },
+          "trigger_type": {
+            "type": "string",
+            "enum": [
+              "cron",
+              "interval",
+              "github",
+              "github_poll"
+            ],
+            "description": "Trigger type (default: cron). 'github' is an alias for 'github_poll'.",
+            "default": "cron",
+            "x-flag": "--trigger-type"
+          },
+          "cron": {
+            "type": "string",
+            "description": "Cron expression, e.g. \"0 * * * *\". Required when --trigger-type is cron, which is the default; ignored for other trigger types.",
+            "x-flag": "--cron"
+          },
+          "interval": {
+            "type": "integer",
+            "description": "Seconds between fires. Required when --trigger-type is interval; ignored for other trigger types.",
+            "x-flag": "--interval"
+          },
+          "github_repo": {
+            "type": "string",
+            "description": "GitHub repository to poll (required for --trigger-type github/github_poll).",
+            "x-flag": "--github-repo"
+          },
+          "github_filter": {
+            "type": "string",
+            "description": "JSON object filtering which PRs fire the trigger, e.g. '{\"state\": \"open\", \"base\": \"main\"}'.",
+            "x-flag": "--github-filter"
+          },
+          "threshold_config": {
+            "type": "string",
+            "description": "Metric threshold alert config as a JSON object: {\"metric\": \"failed_sessions|total_cost_usd|p95_latency_ms|github_poll_healthy_age_minutes|github_poll_consecutive_401\", \"op\": \"gt|gte\", \"value\": N, \"window_minutes\": N}. When set, this schedule's own cron/interval cadence only evaluates the metric on each tick and fires the action only when the threshold is breached (cooldown = window_minutes). Full validation happens server-side, e.g. '{\"metric\": \"failed_sessions\", \"op\": \"gt\", \"value\": 5, \"window_minutes\": 60}'.",
+            "x-flag": "--threshold-config"
+          },
+          "poll_interval": {
+            "type": "integer",
+            "description": "How often to poll GitHub, in seconds (github_poll only).",
+            "x-flag": "--poll-interval"
+          },
+          "action_kind": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "command",
+              "engine",
+              "fanout",
+              "flow",
+              "flow_yaml",
+              "play",
+              "playbook"
+            ],
+            "description": "Stored action kind or accepted alias (default: agent).",
+            "default": "agent",
+            "x-flag": "--action-kind"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Instruction the scheduled agent runs at each fire. Required when --action-kind is agent, which is the default. A profile named by --agent supplies the model and settings, never this instruction, so a schedule created without it fires and fails.",
+            "x-flag": "--prompt"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model spec for agent action.",
+            "x-flag": "--model"
+          },
+          "agent": {
+            "type": "string",
+            "description": "Agent profile to run, resolved the same way `li agent --agent` resolves it. Supplies the system prompt, model and effort the fire runs with.",
+            "x-flag": "--agent"
+          },
+          "playbook": {
+            "type": "string",
+            "description": "Playbook name (for action-kind=play/playbook).",
+            "x-flag": "--playbook"
+          },
+          "flow_yaml": {
+            "type": "string",
+            "description": "Path to a YAML flow spec file (for action-kind=flow_yaml).",
+            "x-flag": "--flow-yaml"
+          },
+          "action_command": {
+            "type": "string",
+            "description": "Executable name to spawn directly, bypassing `li` (for action-kind=command). Must be a bare name (no path separators) and be a member of LIONAGI_SCHEDULER_COMMAND_ALLOWLIST; refused loudly at create time and re-checked at fire time.",
+            "x-flag": "--action-command"
+          },
+          "action_command_args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-json-encoded": true,
+            "description": "action-kind=command argv, as a JSON array of {{var}} templates rendered from trigger_context at fire time, e.g. '[\"review-pr\", \"--pr\", \"{{pr_number}}\"]'.",
+            "x-flag": "--action-command-args"
+          },
+          "project": {
+            "type": "string",
+            "description": "Project this schedule's runs are recorded under. Defaults to the project detected from the execution root.",
+            "x-flag": "--project"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Explicit execution root for this schedule's spawned process (must be an existing directory). Persisted at creation time so the schedule's spawn cwd never depends on where the Studio daemon is running from (default: --project's registered path, or this CLI's own working directory).",
+            "x-flag": "--cwd"
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable description.",
+            "x-flag": "--description"
+          },
+          "max_runs": {
+            "type": "integer",
+            "description": "Auto-disable this schedule once N total runs have fired (default: unlimited). Chained on_success/on_fail fires do not count toward N. Mutually exclusive with --once.",
+            "x-flag": "--max-runs"
+          },
+          "once": {
+            "type": "boolean",
+            "description": "Sugar for --max-runs 1 \u2014 fire once, then auto-disable.",
+            "default": false,
+            "x-flag": "--once"
+          },
+          "max_cost_usd": {
+            "type": "number",
+            "description": "Auto-disable this schedule once its cumulative session spend reaches USD (default: unlimited). Pre-fire cumulative gate: an in-flight run is not interrupted, so the schedule may overshoot by up to one run's cost before the next fire is refused.",
+            "x-flag": "--max-cost-usd"
+          },
+          "max_tokens": {
+            "type": "integer",
+            "description": "Auto-disable this schedule once its cumulative session token usage (input+output) reaches N (default: unlimited). Same pre-fire cumulative semantics as --max-cost-usd.",
+            "x-flag": "--max-tokens"
+          },
+          "on_success": {
+            "type": "string",
+            "description": "Chain action to fire when this run exits 0, as a JSON object (allowed keys: kind/action_kind, model, prompt, agent, playbook, on_success, on_fail). WARNING \u2014 shallow merge: the chain child is built as {**this_schedule, **on_success}, so any key you omit is INHERITED from this schedule, including on_success/on_fail themselves. A 2-level chain must set the inner level's own \"on_success\": null explicitly, or the chain keeps re-firing at each depth (capped, but rarely what you want). Example: --on-success '{\"prompt\": \"notify done\", \"on_success\": null}'.",
+            "x-flag": "--on-success"
+          },
+          "on_fail": {
+            "type": "string",
+            "description": "Chain action to fire when this run exits non-zero, as a JSON object (same allowed keys and shallow-merge caveat as --on-success \u2014 see above). Example: --on-fail '{\"prompt\": \"alert on-call\", \"on_fail\": null}'.",
+            "x-flag": "--on-fail"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "x-positional-order": [
+          "name"
+        ],
+        "x-playbook-arguments": "This command accepts arguments declared by the playbook named in 'playbook'. Ask for this schema again with that playbook named to see them."
+      }
+    },
+    "schedule delete": {
+      "path": "schedule delete",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule delete",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "schedule disable": {
+      "path": "schedule disable",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule disable",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "schedule enable": {
+      "path": "schedule enable",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule enable",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "schedule export": {
+      "path": "schedule export",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule export",
+        "properties": {
+          "legacy": {
+            "type": "boolean",
+            "description": "Convert chain-free legacy rows (managed_by is null, i.e. rows predating the declaration layer) instead of declaration/cli-managed rows. A row with on_success/on_fail is reported BLOCKED and omitted.",
+            "default": false,
+            "x-flag": "--legacy"
+          },
+          "output": {
+            "type": "string",
+            "description": "Write the ScheduleSet YAML here (default: stdout).",
+            "x-flag": "--output"
+          },
+          "report": {
+            "type": "string",
+            "description": "Write the human-readable conversion report here (default: stderr).",
+            "x-flag": "--report"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "schedule get": {
+      "path": "schedule get",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule get",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "schedule limits": {
+      "path": "schedule limits",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule limits",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "schedule list": {
+      "path": "schedule list",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule list",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "schedule run": {
+      "path": "schedule run",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule run",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Schedule run ID.",
+            "x-positional": true
+          },
+          "as_json": {
+            "type": "boolean",
+            "description": "Emit JSON.",
+            "default": false,
+            "x-flag": "--json"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "schedule runs": {
+      "path": "schedule runs",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule runs",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+            "x-positional": true
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max runs to return, 1-200 (default: 20).",
+            "default": 20,
+            "x-flag": "--limit"
+          },
+          "status": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Filter by run status; repeatable (e.g. --status failed --status timed_out).",
+            "x-flag": "--status"
+          },
+          "as_json": {
+            "type": "boolean",
+            "description": "Emit JSON.",
+            "default": false,
+            "x-flag": "--json"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "schedule status": {
+      "path": "schedule status",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule status",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+            "x-positional": true
+          },
+          "wait": {
+            "type": "boolean",
+            "description": "Wait for the latest in-flight run to finish first.",
+            "default": false,
+            "x-flag": "--wait"
+          },
+          "as_json": {
+            "type": "boolean",
+            "description": "Emit JSON.",
+            "default": false,
+            "x-flag": "--json"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "schedule trigger": {
+      "path": "schedule trigger",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule trigger",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
+            "x-positional": true
+          },
+          "wait": {
+            "type": "boolean",
+            "description": "Block until the fired occurrence reaches a terminal status (retries a short grace period first, since the occurrence row isn't durably written until just after this returns a run id), then print its outcome and exit non-zero on failure.",
+            "default": false,
+            "x-flag": "--wait"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "x-positional-order": [
+          "id"
+        ]
+      }
+    },
+    "schedule validate": {
+      "path": "schedule validate",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "schedule validate",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Path to a ScheduleSet YAML file.",
+            "x-positional": true
+          },
+          "as_json": {
+            "type": "boolean",
+            "description": "Emit JSON.",
+            "default": false,
+            "x-flag": "--json"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "file"
+        ],
+        "x-positional-order": [
+          "file"
+        ]
+      }
+    },
+    "state checkpoint": {
+      "path": "state checkpoint",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state checkpoint",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "PASSIVE",
+              "FULL",
+              "RESTART",
+              "TRUNCATE"
+            ],
+            "description": "How hard to push the WAL back into the database. TRUNCATE (default) frees the WAL file outright but needs no active readers; PASSIVE, FULL and RESTART give up completeness to avoid blocking. No run data is lost in any mode.",
+            "default": "TRUNCATE",
+            "x-flag": "--mode"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Run PRAGMA wal_checkpoint(TRUNCATE|PASSIVE|RESTART|FULL). Default is TRUNCATE \u2014 most aggressive, frees the WAL file if no readers are active."
+      }
+    },
+    "state doctor": {
+      "path": "state doctor",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state doctor",
+        "properties": {
+          "stale_hours": {
+            "type": "integer",
+            "description": "Threshold in hours since started_at (default 24).",
+            "default": 24,
+            "x-flag": "--stale-hours"
+          },
+          "new_status": {
+            "type": "string",
+            "enum": [
+              "aborted",
+              "failed"
+            ],
+            "description": "Status to assign swept sessions (default 'aborted').",
+            "default": "aborted",
+            "x-flag": "--new-status"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Print what WOULD be swept, but don't update rows.",
+            "default": false,
+            "x-flag": "--dry-run"
+          }
+        },
+        "additionalProperties": false,
+        "description": "A SIGKILL or unclean exit between session-open and teardown leaves the session row at status='running' forever. This command resets such rows (older than --stale-hours, default 24) to --new-status (default 'aborted'). Conservative: a session is swept only if its started_at is older than the threshold AND its recorded process is not running, so an actively-running CLI process is left alone even when the session it resumed started long ago. Use --dry-run first."
+      }
+    },
+    "state import": {
+      "path": "state import",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state import",
+        "properties": {},
+        "additionalProperties": false,
+        "description": "Scan ~/.lionagi/runs/ for run directories with run.json manifests and load their sessions, branches, and messages into state.db. Already-imported sessions are skipped (idempotent)."
+      }
+    },
+    "state import-teams": {
+      "path": "state import-teams",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state import-teams",
+        "properties": {},
+        "additionalProperties": false,
+        "description": "Scan ~/.lionagi/teams/*.json and INSERT each team + its messages into the `teams` and `team_messages` tables. Idempotent: existing rows (matched by team id) are left alone. Run once after upgrading; the runtime can keep using JSON until the dual-write path ships."
+      }
+    },
+    "state ls": {
+      "path": "state ls",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state ls",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum sessions to print, newest first (default 50).",
+            "default": 50,
+            "x-flag": "--limit"
+          },
+          "status": {
+            "type": "string",
+            "description": "Show only sessions in this status: running, completed, failed or aborted. Omit to list every status.",
+            "x-flag": "--status"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Print a table of sessions stored in state.db."
+      }
+    },
+    "state null-content": {
+      "path": "state null-content",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state null-content",
+        "properties": {
+          "older_than": {
+            "type": "integer",
+            "description": "Reclaim bodies older than N days. Required and deliberately has no default: there is no age that is safe to assume for an irreversible operation.",
+            "x-flag": "--older-than"
+          },
+          "role": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Limit to messages with this role; repeatable. Omitted means every role. Check `li state stats` first \u2014 the roles are not evenly sized, and one of them usually holds most of the bytes.",
+            "x-flag": "--role"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Perform the reclaim and roll it back, reporting what it measured.",
+            "default": false,
+            "x-flag": "--dry-run"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Reclaim the space held by message bodies older than --older-than days, keeping every row, id, role, timestamp and progression reference. THIS IS WHERE THE BYTES ARE, and prune cannot reach them: prune selects SESSIONS, and a message any surviving progression still names is kept whatever its age. A store can therefore be almost entirely message content, have every message inside a keep-window, and give a prune nothing to delete.\n\nA reclaimed body is not emptied. It is replaced with a marker recording that a body was there and how large it was, so it stays distinguishable from a turn that genuinely produced nothing. Reclaiming is not reversible: the text is gone.\n\nThe file does not shrink. Freed pages return to the database's own free list and the bytes on disk stay where they are until `li state vacuum` rebuilds the file.\n\n--dry-run is not a read. It performs the update and rolls it back, so its numbers measure the operation instead of estimating it, and it takes the same write lock for the same duration.",
+        "required": [
+          "older_than"
+        ]
+      }
+    },
+    "state prune": {
+      "path": "state prune",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state prune",
+        "properties": {
+          "keep_days": {
+            "type": "integer",
+            "description": "Keep sessions updated within the last N days (default 30).",
+            "default": 30,
+            "x-flag": "--keep-days"
+          },
+          "keep_n": {
+            "type": "integer",
+            "description": "Always keep the N most recent sessions (default 100).",
+            "default": 100,
+            "x-flag": "--keep-n"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Print what WOULD be deleted, but don't actually delete.",
+            "default": false,
+            "x-flag": "--dry-run"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Delete sessions older than --keep-days (default 30), keeping the most recent --keep-n (default 100). Foreign key cascades drop branches; messages are dropped if no other session references them via progression. Use --dry-run to preview.\n\nSESSIONS ARE THE AXIS, AND MESSAGES HOLD THE BYTES. A message a surviving progression still names is kept whatever its age, so a run can delete thousands of sessions and free no message rows. Read the message counts, not the session count, to judge whether this reclaimed space; `li state stats` shows both distributions.\n\n--dry-run is not a read. It runs the real deletes and rolls the transaction back, which is what makes its counts exact rather than estimated, and which means it takes the same write lock for the same duration as the real thing."
+      }
+    },
+    "state stats": {
+      "path": "state stats",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state stats",
+        "properties": {},
+        "additionalProperties": false,
+        "description": "Report state.db + state.db-wal sizes, per-table row counts, messages broken down by role and by age, session status distribution, and SQLite PRAGMAs (journal_mode, wal_autocheckpoint, busy_timeout). Use to spot growth and lock contention, and to check before pruning whether the keep-window can reach anything at all."
+      }
+    },
+    "state vacuum": {
+      "path": "state vacuum",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "state vacuum",
+        "properties": {},
+        "additionalProperties": false,
+        "description": "Run VACUUM \u2014 rebuilds the entire DB file, reclaiming pages freed by previous deletes. Holds an exclusive lock for the duration. Run after `li state prune`."
+      }
+    },
+    "stats runs": {
+      "path": "stats runs",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "stats runs",
+        "properties": {
+          "since": {
+            "type": "string",
+            "description": "Only include runs updated within this window. Format: 30m, 1h, 7d. Default: 7d.",
+            "default": "7d",
+            "x-flag": "--since"
+          },
+          "group_by": {
+            "type": "string",
+            "description": "Comma-separated group keys from {project, kind, agent, model, status}. Default: project,kind.",
+            "default": "project,kind",
+            "x-flag": "--group-by"
+          },
+          "json": {
+            "type": "boolean",
+            "description": "Emit a JSON array of row objects instead of an aligned table.",
+            "default": false,
+            "x-flag": "--json"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Aggregate sessions rows updated within --since into run_count, completed, and failed counts per group. Read-only: no writes, no schema changes, no PRAGMA mutations."
+      }
+    },
+    "studio start": {
+      "path": "studio start",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "studio start",
+        "properties": {
+          "port": {
+            "type": "integer",
+            "description": "Backend API port (default: LIONAGI_STUDIO_PORT env or 8765)",
+            "x-flag": "--port"
+          },
+          "host": {
+            "type": "string",
+            "description": "Host to bind (default: 127.0.0.1)",
+            "x-flag": "--host"
+          },
+          "frontend_port": {
+            "type": "integer",
+            "description": "Frontend port (default: 3000)",
+            "x-flag": "--frontend-port"
+          },
+          "no_open": {
+            "type": "boolean",
+            "description": "Don't open the hosted UI in a browser (--web only)",
+            "x-flag": "--no-open"
+          },
+          "no_docker": {
+            "type": "boolean",
+            "description": "==SUPPRESS==",
+            "x-flag": "--no-docker"
+          },
+          "web": {
+            "type": "boolean",
+            "description": "Start the backend only; frontend is the hosted UI (default)",
+            "x-flag": "--web"
+          },
+          "docker": {
+            "type": "boolean",
+            "description": "Run the bundled frontend + backend via Docker",
+            "x-flag": "--docker"
+          },
+          "no_frontend": {
+            "type": "boolean",
+            "description": "Only start the backend API server",
+            "x-flag": "--no-frontend"
+          },
+          "dev": {
+            "type": "boolean",
+            "description": "Run the in-repo frontend in dev mode (hot-reload, no build step)",
+            "x-flag": "--dev"
+          }
+        },
+        "additionalProperties": false,
+        "x-mutually-exclusive": [
+          {
+            "parameters": [
+              "web",
+              "docker",
+              "no_frontend",
+              "dev"
+            ],
+            "required": false
+          }
+        ]
+      }
+    },
+    "team create": {
+      "path": "team create",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "team create",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name for the new team. Every other team command accepts it in place of the team id.",
+            "x-positional": true
+          },
+          "members": {
+            "type": "string",
+            "description": "Comma-separated member names. Only these names can send or receive as themselves; a message from or to anyone else still goes through, with a warning.",
+            "x-flag": "--members",
+            "x-aliases": [
+              "-m"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "members"
+        ],
+        "x-positional-order": [
+          "name"
+        ]
+      }
+    },
+    "team list": {
+      "path": "team list",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "team list",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "team receive": {
+      "path": "team receive",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "team receive",
+        "properties": {
+          "team": {
+            "type": "string",
+            "description": "Team to read from \u2014 its id, its name, or an unambiguous id prefix.",
+            "x-flag": "--team",
+            "x-aliases": [
+              "-t"
+            ]
+          },
+          "member": {
+            "type": "string",
+            "description": "Read as this member: returns only their unread mail and marks it read. Omit it to dump every message and mark nothing read.",
+            "x-flag": "--as"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "team"
+        ]
+      }
+    },
+    "team send": {
+      "path": "team send",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "team send",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Message body, as the recipients will read it.",
+            "x-positional": true
+          },
+          "team": {
+            "type": "string",
+            "description": "Team to send into \u2014 its id, its name, or an unambiguous id prefix.",
+            "x-flag": "--team",
+            "x-aliases": [
+              "-t"
+            ]
+          },
+          "to": {
+            "type": "string",
+            "description": "Recipients: 'all' to broadcast to the whole team, or comma-separated member names.",
+            "x-flag": "--to"
+          },
+          "sender": {
+            "type": "string",
+            "description": "Name to send as, so recipients know who is asking (defaults to '_cli'). A name that is not a member still sends, and is reported as a warning.",
+            "x-flag": "--from"
+          },
+          "from_op": {
+            "type": "string",
+            "description": "The op id this message belongs to (e.g. 'o3'). Ties a coord signal to a specific invocation when the sender agent runs multiple ops on the same branch.",
+            "x-flag": "--from-op"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "message",
+              "done",
+              "finished",
+              "wakeup"
+            ],
+            "description": "Message kind (default: 'message'). Use 'done' when you've finished your part and may be revived later, 'finished' when you're permanently done \u2014 quiescence detection reads this.",
+            "x-flag": "--kind"
+          },
+          "artifacts": {
+            "type": "string",
+            "description": "Comma-separated artifact paths to attach (used with --kind done).",
+            "x-flag": "--artifacts"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "content",
+          "team",
+          "to"
+        ],
+        "x-positional-order": [
+          "content"
+        ]
+      }
+    },
+    "team show": {
+      "path": "team show",
+      "stage": "static",
+      "schema": {
+        "type": "object",
+        "title": "team show",
+        "properties": {
+          "team": {
+            "type": "string",
+            "description": "Team to show \u2014 its id, its name, or an unambiguous id prefix.",
+            "x-positional": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "team"
+        ],
+        "x-positional-order": [
+          "team"
+        ]
+      }
+    }
+  },
+  "projection_count": 62,
+  "projection_errors": {
+    "dispatch": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'dispatch' action 'dispatch_command': path stops at an unresolved subcommand; name one of ['ack', 'ls', 'purge', 'retry', 'show']"
+    },
+    "engine": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'engine' action 'engine_command': path stops at an unresolved subcommand; name one of ['run']"
+    },
+    "hooks": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'hooks' action 'hooks_command': path stops at an unresolved subcommand; name one of ['import', 'trust']"
+    },
+    "invoke": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'invoke' action 'invoke_command': path stops at an unresolved subcommand; name one of ['end', 'list', 'start']"
+    },
+    "mirror": {
+      "kind": "SchemaProjectionError",
+      "class": "unsupported_argparse_type",
+      "message": "cannot project 'mirror' action '--since': type=_since_window has no scalar JSON counterpart"
+    },
+    "orchestrate": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'orchestrate' action 'orch_command': path stops at an unresolved subcommand; name one of ['ctl', 'fanout', 'flow']"
+    },
+    "orchestrate ctl": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'orchestrate ctl' action 'ctl_command': path stops at an unresolved subcommand; name one of ['msg', 'pause', 'resolve', 'resume', 'status']"
+    },
+    "plugin": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'plugin' action 'plugin_command': path stops at an unresolved subcommand; name one of ['disable', 'enable', 'info', 'list', 'trust']"
+    },
+    "schedule": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'schedule' action 'schedule_action': path stops at an unresolved subcommand; name one of ['apply', 'create', 'delete', 'disable', 'enable', 'export', 'get', 'limits', 'list', 'run', 'runs', 'status', 'trigger', 'validate']"
+    },
+    "state": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'null-content', 'prune', 'stats', 'vacuum']"
+    },
+    "stats": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'stats' action 'stats_command': path stops at an unresolved subcommand; name one of ['runs']"
+    },
+    "studio": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'studio' action 'studio_action': path stops at an unresolved subcommand; name one of ['start']"
+    },
+    "team": {
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'team' action 'team_command': path stops at an unresolved subcommand; name one of ['create', 'list', 'ls', 'receive', 'recv', 'send', 'show']"
+    }
+  },
+  "projection_error_count": 13,
+  "absent_verbs": [
+    {
+      "name": "casts",
+      "summary": "The built-in roles and modes an agent can be composed from.",
+      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
+      "cli_path": "casts"
+    },
+    {
+      "name": "engine.run",
+      "summary": "Run a domain-specific multi-agent pipeline.",
+      "reason": "the spawn verbs return a job id because they go through this server's job records; this path spawns without one, so a caller would get a result it could not later ask about",
+      "cli_path": "engine run"
+    },
+    {
+      "name": "hooks.import",
+      "summary": "Importing hook commands from another tool's config.",
+      "reason": "it widens what this caller can reach \u2014 trusting a bundle, enabling a plugin or importing a hook command grants a right to the agent asking for it, so no machine seam would make it available here",
+      "cli_path": "hooks import"
+    },
+    {
+      "name": "invoke.end",
+      "summary": "Opening and closing a skill-level orchestration record.",
+      "reason": "the pair brackets a caller's own work, and this surface has no way to tell that the caller who opened a record is the one closing it; invoke.list reads what they wrote",
+      "cli_path": "invoke end"
+    },
+    {
+      "name": "invoke.start",
+      "summary": "Opening and closing a skill-level orchestration record.",
+      "reason": "the pair brackets a caller's own work, and this surface has no way to tell that the caller who opened a record is the one closing it; invoke.list reads what they wrote",
+      "cli_path": "invoke start"
+    },
+    {
+      "name": "kill",
+      "summary": "Terminate a run, session, play or show by id.",
+      "reason": "job.kill covers the jobs this server spawned, where the record carries the pid to correlate against; this path reaches entities this server never spawned and holds no identity for",
+      "cli_path": "kill"
+    },
+    {
+      "name": "mcp",
+      "summary": "Serve this surface over stdio.",
+      "reason": "it is this server: a call to it from here would serve a second copy of the surface the call arrived on",
+      "cli_path": "mcp"
+    },
+    {
+      "name": "mirror",
+      "summary": "Mirror Claude Code sessions into Studio, live.",
+      "reason": "it runs for as long as the process lives rather than returning a result, so it is a process to start, not a call to make",
+      "cli_path": "mirror"
+    },
+    {
+      "name": "orchestrate.ctl.msg",
+      "summary": "The running-flow control plane.",
+      "reason": "it steers a flow that is already running, and the effect lands on the flow rather than in a result; whether the flow honoured it is read from the flow's own state, not returned here",
+      "cli_path": "orchestrate ctl msg"
+    },
+    {
+      "name": "orchestrate.ctl.pause",
+      "summary": "The running-flow control plane.",
+      "reason": "it steers a flow that is already running, and the effect lands on the flow rather than in a result; whether the flow honoured it is read from the flow's own state, not returned here",
+      "cli_path": "orchestrate ctl pause"
+    },
+    {
+      "name": "orchestrate.ctl.resolve",
+      "summary": "Close a control whose consumer claimed it and never reported back.",
+      "reason": "it records what a human established about a delivery the system cannot determine; a machine caller would be asserting the fact the row is waiting for rather than reporting one",
+      "cli_path": "orchestrate ctl resolve"
+    },
+    {
+      "name": "orchestrate.ctl.resume",
+      "summary": "The running-flow control plane.",
+      "reason": "it steers a flow that is already running, and the effect lands on the flow rather than in a result; whether the flow honoured it is read from the flow's own state, not returned here",
+      "cli_path": "orchestrate ctl resume"
+    },
+    {
+      "name": "orchestrate.ctl.status",
+      "summary": "What a running flow's control plane reports about it.",
+      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
+      "cli_path": "orchestrate ctl status"
+    },
+    {
+      "name": "plugin.disable",
+      "summary": "Plugin bundle enablement.",
+      "reason": "it widens what this caller can reach \u2014 trusting a bundle, enabling a plugin or importing a hook command grants a right to the agent asking for it, so no machine seam would make it available here",
+      "cli_path": "plugin disable"
+    },
+    {
+      "name": "plugin.enable",
+      "summary": "Plugin bundle enablement.",
+      "reason": "it widens what this caller can reach \u2014 trusting a bundle, enabling a plugin or importing a hook command grants a right to the agent asking for it, so no machine seam would make it available here",
+      "cli_path": "plugin enable"
+    },
+    {
+      "name": "plugin.list",
+      "summary": "Installed plugin bundles and their trust state.",
+      "reason": "listing prunes trust records for plugins whose bundle directory is gone, so it writes to user settings on the trust surface; a listing that skipped the prune would not be this command",
+      "cli_path": "plugin list"
+    },
+    {
+      "name": "schedule.apply",
+      "summary": "Reconcile a whole ScheduleSet file into the store, atomically.",
+      "reason": "it writes a whole ScheduleSet atomically and reports a per-row plan; the plan's shape has not been decided as a machine result yet",
+      "cli_path": "schedule apply"
+    },
+    {
+      "name": "schedule.run",
+      "summary": "One schedule run.",
+      "reason": "it reports one schedule run, which schedule.runs already returns in a machine result",
+      "cli_path": "schedule run"
+    },
+    {
+      "name": "state.checkpoint",
+      "summary": "Writes against the lifecycle store.",
+      "reason": "it rewrites or removes rows in the lifecycle store that every read verb reports on, and nothing in a machine result tells a caller which of its own earlier answers the write invalidated",
+      "cli_path": "state checkpoint"
+    },
+    {
+      "name": "state.doctor",
+      "summary": "Read-only inspection of the lifecycle store.",
+      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
+      "cli_path": "state doctor"
+    },
+    {
+      "name": "state.import",
+      "summary": "Writes against the lifecycle store.",
+      "reason": "it rewrites or removes rows in the lifecycle store that every read verb reports on, and nothing in a machine result tells a caller which of its own earlier answers the write invalidated",
+      "cli_path": "state import"
+    },
+    {
+      "name": "state.import-teams",
+      "summary": "Writes against the lifecycle store.",
+      "reason": "it rewrites or removes rows in the lifecycle store that every read verb reports on, and nothing in a machine result tells a caller which of its own earlier answers the write invalidated",
+      "cli_path": "state import-teams"
+    },
+    {
+      "name": "state.null-content",
+      "summary": "Reclaiming the space held by old message bodies.",
+      "reason": "it destroys message content permanently \u2014 the rows and their references survive but the bodies do not, and nothing a machine result could say would give a caller back what its own call removed",
+      "cli_path": "state null-content"
+    },
+    {
+      "name": "state.prune",
+      "summary": "Writes against the lifecycle store.",
+      "reason": "it rewrites or removes rows in the lifecycle store that every read verb reports on, and nothing in a machine result tells a caller which of its own earlier answers the write invalidated",
+      "cli_path": "state prune"
+    },
+    {
+      "name": "state.vacuum",
+      "summary": "Writes against the lifecycle store.",
+      "reason": "it rewrites or removes rows in the lifecycle store that every read verb reports on, and nothing in a machine result tells a caller which of its own earlier answers the write invalidated",
+      "cli_path": "state vacuum"
+    },
+    {
+      "name": "studio.start",
+      "summary": "The Studio server.",
+      "reason": "it runs for as long as the process lives rather than returning a result, so it is a process to start, not a call to make",
+      "cli_path": "studio start"
+    },
+    {
+      "name": "team.create",
+      "summary": "Messaging between agents working as a team.",
+      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
+      "cli_path": "team create"
+    },
+    {
+      "name": "team.receive",
+      "summary": "Messaging between agents working as a team.",
+      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
+      "cli_path": "team receive"
+    },
+    {
+      "name": "team.send",
+      "summary": "Messaging between agents working as a team.",
+      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
+      "cli_path": "team send"
+    },
+    {
+      "name": "team.show",
+      "summary": "Messaging between agents working as a team.",
+      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
+      "cli_path": "team show"
+    }
+  ],
+  "absent_verb_count": 30,
+  "errors": [
+    {
+      "input": "",
+      "kind": "SchemaProjectionError",
+      "class": "empty_command_path",
+      "message": "cannot project '': empty command path"
+    },
+    {
+      "input": "nonexistent-command",
+      "kind": "SchemaProjectionError",
+      "class": "no_such_command",
+      "message": "cannot project 'nonexistent-command': no such command"
+    },
+    {
+      "input": "dispatch nonexistent-subcommand",
+      "kind": "SchemaProjectionError",
+      "class": "no_such_command_path",
+      "message": "cannot project 'dispatch nonexistent-subcommand': no such command path"
+    },
+    {
+      "input": "state",
+      "kind": "SchemaProjectionError",
+      "class": "unresolved_subcommand",
+      "message": "cannot project 'state' action 'state_command': path stops at an unresolved subcommand; name one of ['checkpoint', 'doctor', 'import', 'import-teams', 'ls', 'null-content', 'prune', 'stats', 'vacuum']"
+    },
+    {
+      "input": "mirror",
+      "kind": "SchemaProjectionError",
+      "class": "unsupported_argparse_type",
+      "message": "cannot project 'mirror' action '--since': type=_since_window has no scalar JSON counterpart"
+    }
+  ]
+}

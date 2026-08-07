@@ -1,0 +1,806 @@
+{
+  "root_all": [
+    "Adaptable",
+    "AdapterError",
+    "AdapterRegistry",
+    "AsyncAdaptable",
+    "AsyncAdapterRegistry",
+    "BaseModel",
+    "Branch",
+    "Broadcaster",
+    "Builder",
+    "ContextProvider",
+    "ContextProviderRegistry",
+    "CsvAdapter",
+    "DataClass",
+    "Edge",
+    "Element",
+    "Event",
+    "Field",
+    "FieldModel",
+    "Graph",
+    "HookRegistry",
+    "HookedEvent",
+    "InMemoryStore",
+    "InvalidConstructorError",
+    "JsonAdapter",
+    "LNDLError",
+    "LNDLOutput",
+    "MemoryItem",
+    "MemoryQuery",
+    "MemoryStore",
+    "Message",
+    "MissingFieldError",
+    "MissingLvarError",
+    "Node",
+    "Operable",
+    "OperableModel",
+    "Operation",
+    "Params",
+    "Pile",
+    "Progression",
+    "ProviderReport",
+    "Session",
+    "Spec",
+    "TomlAdapter",
+    "TypeMismatchError",
+    "Undefined",
+    "Unset",
+    "__version__",
+    "alcall",
+    "create_message",
+    "extract_lndl_blocks",
+    "get_lndl_system_prompt",
+    "iModel",
+    "json_dumps",
+    "lcall",
+    "ln",
+    "load_mcp_tools",
+    "logger",
+    "normalize_lndl_text",
+    "to_dict",
+    "to_list",
+    "types"
+  ],
+  "root_all_count": 61,
+  "symbols": {
+    "__version__": {
+      "type": "str",
+      "module": null,
+      "qualname": null
+    },
+    "Adaptable": {
+      "type": "type",
+      "module": "lionagi.adapters._base",
+      "qualname": "Adaptable"
+    },
+    "AdapterError": {
+      "type": "type",
+      "module": "lionagi.adapters._base",
+      "qualname": "AdapterError"
+    },
+    "AdapterRegistry": {
+      "type": "type",
+      "module": "lionagi.adapters._base",
+      "qualname": "AdapterRegistry"
+    },
+    "AsyncAdaptable": {
+      "type": "type",
+      "module": "lionagi.adapters._base",
+      "qualname": "AsyncAdaptable"
+    },
+    "AsyncAdapterRegistry": {
+      "type": "type",
+      "module": "lionagi.adapters._base",
+      "qualname": "AsyncAdapterRegistry"
+    },
+    "BaseModel": {
+      "type": "ModelMetaclass",
+      "module": "pydantic.main",
+      "qualname": "BaseModel"
+    },
+    "Branch": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.session.branch",
+      "qualname": "Branch"
+    },
+    "Broadcaster": {
+      "type": "type",
+      "module": "lionagi.service.broadcaster",
+      "qualname": "Broadcaster"
+    },
+    "Builder": {
+      "type": "type",
+      "module": "lionagi.operations.builder",
+      "qualname": "OperationGraphBuilder"
+    },
+    "ContextProvider": {
+      "type": "_ProtocolMeta",
+      "module": "lionagi.protocols.context_providers",
+      "qualname": "ContextProvider"
+    },
+    "ContextProviderRegistry": {
+      "type": "type",
+      "module": "lionagi.protocols.context_providers",
+      "qualname": "ContextProviderRegistry"
+    },
+    "CsvAdapter": {
+      "type": "_ProtocolMeta",
+      "module": "lionagi.adapters.csv_",
+      "qualname": "CsvAdapter"
+    },
+    "DataClass": {
+      "type": "type",
+      "module": "lionagi.ln.types.base",
+      "qualname": "DataClass"
+    },
+    "Edge": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.protocols.graph.edge",
+      "qualname": "Edge"
+    },
+    "Element": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.protocols.generic.element",
+      "qualname": "Element"
+    },
+    "Event": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.protocols.generic.event",
+      "qualname": "Event"
+    },
+    "Field": {
+      "type": "function",
+      "module": "pydantic.fields",
+      "qualname": "Field"
+    },
+    "FieldModel": {
+      "type": "type",
+      "module": "lionagi.models.field_model",
+      "qualname": "FieldModel"
+    },
+    "Graph": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.protocols.graph.graph",
+      "qualname": "Graph"
+    },
+    "HookRegistry": {
+      "type": "type",
+      "module": "lionagi.service.hooks.hook_registry",
+      "qualname": "HookRegistry"
+    },
+    "HookedEvent": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.service.hooks.hooked_event",
+      "qualname": "HookedEvent"
+    },
+    "InMemoryStore": {
+      "type": "type",
+      "module": "lionagi.protocols.memory",
+      "qualname": "InMemoryStore"
+    },
+    "InvalidConstructorError": {
+      "type": "type",
+      "module": "lionagi.lndl.errors",
+      "qualname": "InvalidConstructorError"
+    },
+    "JsonAdapter": {
+      "type": "_ProtocolMeta",
+      "module": "lionagi.adapters.json_",
+      "qualname": "JsonAdapter"
+    },
+    "LNDLError": {
+      "type": "type",
+      "module": "lionagi.lndl.errors",
+      "qualname": "LNDLError"
+    },
+    "LNDLOutput": {
+      "type": "type",
+      "module": "lionagi.lndl.types",
+      "qualname": "LNDLOutput"
+    },
+    "MemoryItem": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.protocols.memory",
+      "qualname": "MemoryItem"
+    },
+    "MemoryQuery": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.protocols.memory",
+      "qualname": "MemoryQuery"
+    },
+    "MemoryStore": {
+      "type": "_ProtocolMeta",
+      "module": "lionagi.protocols.memory",
+      "qualname": "MemoryStore"
+    },
+    "Message": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.protocols.messages.message",
+      "qualname": "Message"
+    },
+    "MissingFieldError": {
+      "type": "type",
+      "module": "lionagi.lndl.errors",
+      "qualname": "MissingFieldError"
+    },
+    "MissingLvarError": {
+      "type": "type",
+      "module": "lionagi.lndl.errors",
+      "qualname": "MissingLvarError"
+    },
+    "Node": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.protocols.graph.node",
+      "qualname": "Node"
+    },
+    "Operable": {
+      "type": "type",
+      "module": "lionagi.ln.types.operable",
+      "qualname": "Operable"
+    },
+    "OperableModel": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.models.operable_model",
+      "qualname": "OperableModel"
+    },
+    "Operation": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.operations.node",
+      "qualname": "Operation"
+    },
+    "Params": {
+      "type": "type",
+      "module": "lionagi.ln.types.base",
+      "qualname": "Params"
+    },
+    "Pile": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.protocols.generic.pile",
+      "qualname": "Pile"
+    },
+    "Progression": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.protocols.generic.progression",
+      "qualname": "Progression"
+    },
+    "ProviderReport": {
+      "type": "type",
+      "module": "lionagi.protocols.context_providers",
+      "qualname": "ProviderReport"
+    },
+    "Session": {
+      "type": "ModelMetaclass",
+      "module": "lionagi.session.session",
+      "qualname": "Session"
+    },
+    "Spec": {
+      "type": "type",
+      "module": "lionagi.ln.types.spec",
+      "qualname": "Spec"
+    },
+    "TomlAdapter": {
+      "type": "_ProtocolMeta",
+      "module": "lionagi.adapters.toml_",
+      "qualname": "TomlAdapter"
+    },
+    "TypeMismatchError": {
+      "type": "type",
+      "module": "lionagi.lndl.errors",
+      "qualname": "TypeMismatchError"
+    },
+    "Undefined": {
+      "type": "UndefinedType",
+      "module": "lionagi.ln.types._sentinel",
+      "qualname": null
+    },
+    "Unset": {
+      "type": "UnsetType",
+      "module": "lionagi.ln.types._sentinel",
+      "qualname": null
+    },
+    "alcall": {
+      "type": "function",
+      "module": "lionagi.ln._async_call",
+      "qualname": "alcall"
+    },
+    "create_message": {
+      "type": "function",
+      "module": "lionagi.protocols.messages.manager",
+      "qualname": "create_message"
+    },
+    "extract_lndl_blocks": {
+      "type": "function",
+      "module": "lionagi.lndl.extract",
+      "qualname": "extract_lndl_blocks"
+    },
+    "get_lndl_system_prompt": {
+      "type": "function",
+      "module": "lionagi.lndl.prompt",
+      "qualname": "get_lndl_system_prompt"
+    },
+    "iModel": {
+      "type": "type",
+      "module": "lionagi.service.imodel",
+      "qualname": "iModel"
+    },
+    "json_dumps": {
+      "type": "function",
+      "module": "lionagi.ln._json_dump",
+      "qualname": "json_dumps"
+    },
+    "lcall": {
+      "type": "function",
+      "module": "lionagi.ln._list_call",
+      "qualname": "lcall"
+    },
+    "ln": {
+      "type": "module",
+      "module": null,
+      "qualname": null
+    },
+    "load_mcp_tools": {
+      "type": "function",
+      "module": "lionagi.protocols.action.manager",
+      "qualname": "load_mcp_tools"
+    },
+    "logger": {
+      "type": "Logger",
+      "module": "logging",
+      "qualname": null
+    },
+    "normalize_lndl_text": {
+      "type": "function",
+      "module": "lionagi.lndl.normalize",
+      "qualname": "normalize_lndl_text"
+    },
+    "to_dict": {
+      "type": "function",
+      "module": "lionagi.ln.fuzzy._to_dict",
+      "qualname": "to_dict"
+    },
+    "to_list": {
+      "type": "function",
+      "module": "lionagi.ln._to_list",
+      "qualname": "to_list"
+    },
+    "types": {
+      "type": "module",
+      "module": null,
+      "qualname": null
+    }
+  },
+  "lazy_map_keys": [
+    "Adaptable",
+    "AdapterError",
+    "AdapterRegistry",
+    "AsyncAdaptable",
+    "AsyncAdapterRegistry",
+    "Branch",
+    "Broadcaster",
+    "Builder",
+    "ContextProvider",
+    "ContextProviderRegistry",
+    "CsvAdapter",
+    "Edge",
+    "Element",
+    "Event",
+    "FieldModel",
+    "Graph",
+    "HookRegistry",
+    "HookedEvent",
+    "InMemoryStore",
+    "InvalidConstructorError",
+    "JsonAdapter",
+    "LNDLError",
+    "LNDLOutput",
+    "MemoryItem",
+    "MemoryQuery",
+    "MemoryStore",
+    "Message",
+    "MissingFieldError",
+    "MissingLvarError",
+    "Node",
+    "OperableModel",
+    "Operation",
+    "Pile",
+    "Progression",
+    "ProviderReport",
+    "Session",
+    "TomlAdapter",
+    "TypeMismatchError",
+    "alcall",
+    "create_message",
+    "extract_lndl_blocks",
+    "get_lndl_system_prompt",
+    "iModel",
+    "json_dumps",
+    "lcall",
+    "load_mcp_tools",
+    "normalize_lndl_text",
+    "to_dict",
+    "to_list"
+  ],
+  "lazy_map_key_count": 49,
+  "compat_modules": {
+    "lionagi.protocols.types": {
+      "ok": true,
+      "dir": [
+        "ActionRequest",
+        "ActionResponse",
+        "AssistantResponse",
+        "Collective",
+        "Communicatable",
+        "Condition",
+        "DataLogger",
+        "DataLoggerConfig",
+        "Edge",
+        "EdgeCondition",
+        "Element",
+        "Event",
+        "EventStatus",
+        "Execution",
+        "Executor",
+        "Graph",
+        "ID",
+        "InMemoryStore",
+        "Instruction",
+        "Log",
+        "MESSAGE_FIELDS",
+        "Manager",
+        "MemoryItem",
+        "MemoryQuery",
+        "MemoryStore",
+        "Message",
+        "MessageField",
+        "MessageManager",
+        "MessageRole",
+        "Node",
+        "Observable",
+        "Observer",
+        "Ordering",
+        "Pile",
+        "Processor",
+        "Progression",
+        "Relational",
+        "RoledMessage",
+        "Sendable",
+        "SenderRecipient",
+        "System",
+        "canonical_id",
+        "prog",
+        "to_uuid",
+        "validate_order",
+        "validate_sender_recipient"
+      ],
+      "warning_categories": []
+    },
+    "lionagi.tools.types": {
+      "ok": true,
+      "dir": [
+        "BashTool",
+        "CodingToolkit",
+        "ContextTool",
+        "EditorTool",
+        "ReaderTool",
+        "SearchTool",
+        "chunk"
+      ],
+      "warning_categories": []
+    },
+    "lionagi.operations.parse": {
+      "ok": true,
+      "dir": [
+        "ExtractionError",
+        "ParseError",
+        "ParseFailureKind",
+        "SchemaRejectedError",
+        "UnparsedResponse"
+      ],
+      "warning_categories": []
+    },
+    "lionagi.service.connections.cli_endpoint": {
+      "ok": true,
+      "dir": [
+        "AgenticEndpoint",
+        "warnings"
+      ],
+      "warning_categories": []
+    },
+    "lionagi.dispatch.revival": {
+      "ok": true,
+      "dir": [
+        "Any",
+        "DEFAULT_MAX_ATTEMPTS",
+        "annotations",
+        "enqueue_dispatch",
+        "enqueue_revival_heartbeat"
+      ],
+      "warning_categories": []
+    }
+  },
+  "import_laziness": {
+    "seed_count": 21,
+    "seed_names": [
+      "orchestrate",
+      "agent",
+      "casts",
+      "engine",
+      "team",
+      "studio",
+      "schedule",
+      "state",
+      "invoke",
+      "kill",
+      "mirror",
+      "monitor",
+      "dispatch",
+      "doctor",
+      "stats",
+      "plugin",
+      "hooks",
+      "handshake",
+      "runs",
+      "lifecycle",
+      "mcp"
+    ],
+    "traces": {
+      "orchestrate": {
+        "seed": "orchestrate",
+        "module": "lionagi.cli.orchestrate",
+        "new_lionagi_module_count": 156,
+        "other_seed_modules_imported": [
+          "lionagi.cli.team"
+        ],
+        "other_seed_modules_imported_count": 1,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "orchestrate"
+        ]
+      },
+      "agent": {
+        "seed": "agent",
+        "module": "lionagi.cli.agent",
+        "new_lionagi_module_count": 126,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "agent"
+        ]
+      },
+      "casts": {
+        "seed": "casts",
+        "module": "lionagi.casts.surfaces",
+        "new_lionagi_module_count": 2,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "casts"
+        ]
+      },
+      "engine": {
+        "seed": "engine",
+        "module": "lionagi.cli.engine",
+        "new_lionagi_module_count": 3,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "engine"
+        ]
+      },
+      "team": {
+        "seed": "team",
+        "module": "lionagi.cli.team",
+        "new_lionagi_module_count": 17,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "team"
+        ]
+      },
+      "studio": {
+        "seed": "studio",
+        "module": "lionagi.studio.cli",
+        "new_lionagi_module_count": 31,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "studio"
+        ]
+      },
+      "schedule": {
+        "seed": "schedule",
+        "module": "lionagi.studio.cli",
+        "new_lionagi_module_count": 31,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "schedule"
+        ]
+      },
+      "state": {
+        "seed": "state",
+        "module": "lionagi.cli.state",
+        "new_lionagi_module_count": 25,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "state"
+        ]
+      },
+      "invoke": {
+        "seed": "invoke",
+        "module": "lionagi.cli.invoke",
+        "new_lionagi_module_count": 3,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "invoke"
+        ]
+      },
+      "kill": {
+        "seed": "kill",
+        "module": "lionagi.cli.kill",
+        "new_lionagi_module_count": 30,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "kill"
+        ]
+      },
+      "mirror": {
+        "seed": "mirror",
+        "module": "lionagi.cli.mirror",
+        "new_lionagi_module_count": 8,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "mirror"
+        ]
+      },
+      "monitor": {
+        "seed": "monitor",
+        "module": "lionagi.cli.monitor",
+        "new_lionagi_module_count": 25,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "monitor"
+        ]
+      },
+      "dispatch": {
+        "seed": "dispatch",
+        "module": "lionagi.cli.dispatch",
+        "new_lionagi_module_count": 2,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "dispatch"
+        ]
+      },
+      "doctor": {
+        "seed": "doctor",
+        "module": "lionagi.cli.doctor",
+        "new_lionagi_module_count": 2,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "doctor"
+        ]
+      },
+      "stats": {
+        "seed": "stats",
+        "module": "lionagi.cli.stats",
+        "new_lionagi_module_count": 26,
+        "other_seed_modules_imported": [
+          "lionagi.cli.monitor"
+        ],
+        "other_seed_modules_imported_count": 1,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "stats"
+        ]
+      },
+      "plugin": {
+        "seed": "plugin",
+        "module": "lionagi.cli.plugin",
+        "new_lionagi_module_count": 3,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "plugin"
+        ]
+      },
+      "hooks": {
+        "seed": "hooks",
+        "module": "lionagi.cli.hooks",
+        "new_lionagi_module_count": 3,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "hooks"
+        ]
+      },
+      "handshake": {
+        "seed": "handshake",
+        "module": "lionagi.cli.machine",
+        "new_lionagi_module_count": 2,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "handshake"
+        ]
+      },
+      "runs": {
+        "seed": "runs",
+        "module": "lionagi.cli.machine",
+        "new_lionagi_module_count": 2,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "runs"
+        ]
+      },
+      "lifecycle": {
+        "seed": "lifecycle",
+        "module": "lionagi.cli.machine",
+        "new_lionagi_module_count": 2,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "lifecycle"
+        ]
+      },
+      "mcp": {
+        "seed": "mcp",
+        "module": "lionagi.cli.mcp",
+        "new_lionagi_module_count": 4,
+        "other_seed_modules_imported": [],
+        "other_seed_modules_imported_count": 0,
+        "http_registry_realized": false,
+        "http_registry_count": 0,
+        "cli_realized_names": [
+          "mcp"
+        ]
+      }
+    }
+  }
+}

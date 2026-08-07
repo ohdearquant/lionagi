@@ -1,0 +1,81 @@
+[
+  {
+    "argv": [
+      "handshake",
+      "--machine"
+    ],
+    "stdout": "[redacted: this case's stdout reports live host state (home paths, run ids, artifact directories, host-installed skill names). It is excluded from byte-for-byte comparison, so the literal text serves no oracle purpose and is not committed.]",
+    "stderr": "",
+    "exit_code": 0,
+    "envelope_ok": true
+  },
+  {
+    "argv": [
+      "doctor",
+      "--machine"
+    ],
+    "stdout": "[redacted: this case's stdout reports live host state (home paths, run ids, artifact directories, host-installed skill names). It is excluded from byte-for-byte comparison, so the literal text serves no oracle purpose and is not committed.]",
+    "stderr": "",
+    "exit_code": 0,
+    "envelope_ok": true
+  },
+  {
+    "argv": [
+      "runs",
+      "--machine"
+    ],
+    "stdout": "[redacted: this case's stdout reports live host state (home paths, run ids, artifact directories, host-installed skill names). It is excluded from byte-for-byte comparison, so the literal text serves no oracle purpose and is not committed.]",
+    "stderr": "",
+    "exit_code": 0,
+    "envelope_ok": true
+  },
+  {
+    "argv": [
+      "lifecycle",
+      "--machine"
+    ],
+    "stdout": "{\"ok\": false, \"contract_version\": 1, \"data\": null, \"error\": {\"kind\": \"invalid_input\", \"message\": \"li lifecycle needs a run id\", \"detail\": null}}\n",
+    "stderr": "",
+    "exit_code": 0,
+    "envelope_ok": false
+  },
+  {
+    "argv": [
+      "monitor",
+      "--machine"
+    ],
+    "stdout": "[redacted: this case's stdout reports live host state (home paths, run ids, artifact directories, host-installed skill names). It is excluded from byte-for-byte comparison, so the literal text serves no oracle purpose and is not committed.]",
+    "stderr": "",
+    "exit_code": 0,
+    "envelope_ok": true
+  },
+  {
+    "argv": [
+      "agent",
+      "--machine"
+    ],
+    "stdout": "{\"ok\": false, \"contract_version\": 1, \"data\": null, \"error\": {\"kind\": \"unavailable\", \"message\": \"li agent has no machine-mode result in contract version 1; it is a human-facing command\", \"detail\": null}}\n",
+    "stderr": "",
+    "exit_code": 0,
+    "envelope_ok": false
+  },
+  {
+    "argv": [
+      "bogus-unknown-command",
+      "--machine"
+    ],
+    "stdout": "{\"ok\": false, \"contract_version\": 1, \"data\": null, \"error\": {\"kind\": \"invalid_input\", \"message\": \"no such command: bogus-unknown-command\", \"detail\": null}}\n",
+    "stderr": "",
+    "exit_code": 0,
+    "envelope_ok": false
+  },
+  {
+    "argv": [
+      "--machine"
+    ],
+    "stdout": "{\"ok\": false, \"contract_version\": 1, \"data\": null, \"error\": {\"kind\": \"invalid_input\", \"message\": \"no command given\", \"detail\": null}}\n",
+    "stderr": "",
+    "exit_code": 0,
+    "envelope_ok": false
+  }
+]
