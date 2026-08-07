@@ -132,6 +132,41 @@ async def test_busy_timeout_eventually_returns_locked_error(
         await db2.close()
 
 
+# ── fanout: reads must not queue behind a held writer lock ──────────────────
+
+
+async def test_many_concurrent_reads_survive_a_held_write_lock(db_path: Path):
+    """A pile of concurrent readers -- standing in for many `li` processes
+    checking session state during a wide fanout -- must all complete while a
+    separate connection holds the SQLite writer lock, instead of queuing
+    behind it and burning the busy-timeout budget one at a time."""
+    seed = StateDB(db_path)
+    await seed.open()
+    await seed.insert_message(_make_msg())
+    await seed.close()
+
+    db = StateDB(db_path)
+    await db.open()
+    try:
+        import sqlite3
+
+        blocker = sqlite3.connect(str(db_path), timeout=0)
+        blocker.execute("BEGIN IMMEDIATE")
+        try:
+            start = time.monotonic()
+            results = await asyncio.gather(
+                *(db.fetch_all("SELECT COUNT(*) AS n FROM messages") for _ in range(20))
+            )
+            elapsed = time.monotonic() - start
+        finally:
+            blocker.rollback()
+            blocker.close()
+        assert all(rows == [{"n": 1}] for rows in results)
+        assert elapsed < 1.0, f"20 concurrent reads took {elapsed}s behind a held write lock"
+    finally:
+        await db.close()
+
+
 # ── save_definition under contention ──────────────────────────────────────────
 
 
