@@ -451,7 +451,18 @@
       "noBranchErrorsPartial": "yüklenen mesajlarda hata yok.",
       "noFilesPartial": "yüklenen mesajlarda dosya işlemi algılanmadı.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count} kenar",
+      "graphImpliedHidden": "· {count} örtük gizli",
+      "graphHideImplied": "örtükleri gizle",
+      "graphShowImplied": "örtük kenarları göster",
+      "graphNodeStatusQueued": "sırada",
+      "graphNodeStatusRunning": "çalışıyor",
+      "graphNodeStatusApproval": "onay",
+      "graphNodeStatusPaused": "duraklatıldı",
+      "graphNodeStatusDone": "tamamlandı",
+      "graphNodeStatusFailed": "başarısız",
+      "graphNodeStatusEscalated": "yükseltildi"
     },
     "masterAria": "geçmiş listesi",
     "detailAria": "öğe ayrıntısı"

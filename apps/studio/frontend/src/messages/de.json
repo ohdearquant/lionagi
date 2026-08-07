@@ -451,7 +451,18 @@
       "noBranchErrorsPartial": "Keine Fehler in den geladenen Nachrichten.",
       "noFilesPartial": "Keine Dateioperationen in den geladenen Nachrichten erkannt.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count} Kanten",
+      "graphImpliedHidden": "· {count} implizite ausgeblendet",
+      "graphHideImplied": "implizite ausblenden",
+      "graphShowImplied": "implizite Kanten anzeigen",
+      "graphNodeStatusQueued": "wartend",
+      "graphNodeStatusRunning": "läuft",
+      "graphNodeStatusApproval": "Freigabe",
+      "graphNodeStatusPaused": "pausiert",
+      "graphNodeStatusDone": "fertig",
+      "graphNodeStatusFailed": "fehlgeschlagen",
+      "graphNodeStatusEscalated": "eskaliert"
     },
     "masterAria": "Verlaufsliste",
     "detailAria": "Elementdetails"

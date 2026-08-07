@@ -451,7 +451,18 @@
       "noBranchErrorsPartial": "로드된 메시지에 오류가 없습니다.",
       "noFilesPartial": "로드된 메시지에서 감지된 파일 작업이 없습니다.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "엣지 {count}개",
+      "graphImpliedHidden": "· 암시적 {count}개 숨김",
+      "graphHideImplied": "암시적 숨기기",
+      "graphShowImplied": "암시적 엣지 표시",
+      "graphNodeStatusQueued": "대기중",
+      "graphNodeStatusRunning": "실행중",
+      "graphNodeStatusApproval": "승인",
+      "graphNodeStatusPaused": "일시중지",
+      "graphNodeStatusDone": "완료",
+      "graphNodeStatusFailed": "실패",
+      "graphNodeStatusEscalated": "에스컬레이션"
     },
     "masterAria": "기록 목록",
     "detailAria": "항목 세부 정보"

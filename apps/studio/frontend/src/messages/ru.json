@@ -451,7 +451,18 @@
       "noBranchErrorsPartial": "В загруженных сообщениях ошибок нет.",
       "noFilesPartial": "В загруженных сообщениях операции с файлами не обнаружены.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "рёбер: {count}",
+      "graphImpliedHidden": "· скрыто неявных: {count}",
+      "graphHideImplied": "скрыть неявные",
+      "graphShowImplied": "показать неявные рёбра",
+      "graphNodeStatusQueued": "в очереди",
+      "graphNodeStatusRunning": "выполняется",
+      "graphNodeStatusApproval": "одобрение",
+      "graphNodeStatusPaused": "приостановлено",
+      "graphNodeStatusDone": "готово",
+      "graphNodeStatusFailed": "ошибка",
+      "graphNodeStatusEscalated": "эскалировано"
     },
     "masterAria": "Список истории",
     "detailAria": "Сведения об элементе"

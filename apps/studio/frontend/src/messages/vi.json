@@ -451,7 +451,18 @@
       "noBranchErrorsPartial": "không có lỗi trong các tin nhắn đã tải.",
       "noFilesPartial": "không phát hiện thao tác tệp trong các tin nhắn đã tải.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count} cạnh",
+      "graphImpliedHidden": "· ẩn {count} cạnh ngầm định",
+      "graphHideImplied": "ẩn cạnh ngầm định",
+      "graphShowImplied": "hiện cạnh ngầm định",
+      "graphNodeStatusQueued": "đang chờ",
+      "graphNodeStatusRunning": "đang chạy",
+      "graphNodeStatusApproval": "phê duyệt",
+      "graphNodeStatusPaused": "tạm dừng",
+      "graphNodeStatusDone": "xong",
+      "graphNodeStatusFailed": "thất bại",
+      "graphNodeStatusEscalated": "đã leo thang"
     },
     "masterAria": "danh sách lịch sử",
     "detailAria": "chi tiết mục"

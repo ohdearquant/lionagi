@@ -451,7 +451,18 @@
       "noBranchErrorsPartial": "লোড করা মেসেজে কোনো ত্রুটি নেই।",
       "noFilesPartial": "লোড করা মেসেজে কোনো ফাইল অপারেশন শনাক্ত হয়নি।",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count}টি প্রান্ত",
+      "graphImpliedHidden": "· {count}টি অন্তর্নিহিত লুকানো",
+      "graphHideImplied": "অন্তর্নিহিত লুকান",
+      "graphShowImplied": "অন্তর্নিহিত প্রান্ত দেখান",
+      "graphNodeStatusQueued": "সারিতে",
+      "graphNodeStatusRunning": "চলমান",
+      "graphNodeStatusApproval": "অনুমোদন",
+      "graphNodeStatusPaused": "স্থগিত",
+      "graphNodeStatusDone": "সম্পন্ন",
+      "graphNodeStatusFailed": "ব্যর্থ",
+      "graphNodeStatusEscalated": "এস্কেলেটেড"
     },
     "masterAria": "হিস্ট্রি তালিকা",
     "detailAria": "আইটেমের বিস্তারিত"

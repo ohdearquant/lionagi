@@ -3,7 +3,22 @@
 import { memo, useEffect, useState } from "react";
 import { Handle, Position } from "reactflow";
 import type { NodeProps } from "reactflow";
+import { useTranslations } from "use-intl";
 import { IconCheck, IconClose, IconPause, IconWarning } from "@/components/ui/icons";
+import { NODE_HEIGHT, NODE_WIDTH } from "./useLayout";
+
+// What the bottom-right corner says before there is a duration to put there.
+// "pending" has no lifecycle signal to report yet, so its placeholder is a
+// language-neutral dash rather than a translated word.
+const STATUS_WORD_KEY: Record<Exclude<NodeExecStatus, "pending">, string> = {
+  queued: "graphNodeStatusQueued",
+  running: "graphNodeStatusRunning",
+  awaiting_approval: "graphNodeStatusApproval",
+  paused: "graphNodeStatusPaused",
+  completed: "graphNodeStatusDone",
+  failed: "graphNodeStatusFailed",
+  escalated: "graphNodeStatusEscalated",
+};
 
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
@@ -59,6 +74,7 @@ export interface StepNodeData {
 }
 
 function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
+  const t = useTranslations("history.detail");
   // roleColor arrives as a data-driven CSS var string — keep inline
   const roleColor = ROLE_VAR[data.role] || "var(--content-muted)";
   const status = data.execStatus ?? "pending";
@@ -103,14 +119,25 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
             ? "var(--dag-warn-label)"
             : "var(--content-primary)";
 
+  // The bottom-right corner always says something. Elapsed time once there is
+  // any, the status word before that. A corner that can be empty makes the
+  // card change shape as a run progresses, and a reader who has to re-find a
+  // field has stopped reading the graph at a glance.
+  const magnitude =
+    data.durationSeconds != null && data.durationSeconds >= 0
+      ? formatStepDuration(data.durationSeconds)
+      : status === "pending"
+        ? "—"
+        : t(STATUS_WORD_KEY[status]);
+
   return (
     <div
-      className="relative rounded-md px-2.5 py-2"
+      className="relative flex flex-col justify-between rounded-md px-2.5 py-2"
       style={{
         background: bgColor,
         border: `${selected || status === "running" ? 2 : 1}px solid ${borderColor}`,
-        minWidth: 148,
-        maxWidth: 210,
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT,
         boxShadow:
           status === "running"
             ? "0 0 0 3px color-mix(in srgb, var(--dag-running-border) 18%, transparent)"
@@ -132,13 +159,19 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         }}
       />
 
-      <div className="flex items-center justify-between gap-1.5">
+      {/* Top row: what this step is, and what state it is in. */}
+      <div className="flex items-start justify-between gap-1.5">
         <span
-          className="truncate font-mono text-[length:var(--t-xs)] font-semibold leading-snug"
+          className="truncate font-mono text-[length:var(--t-sm)] font-semibold leading-snug"
           style={{ color: labelColor }}
         >
           {data.label}
         </span>
+        {(data.errorCount ?? 0) > 0 && (
+          <span className="shrink-0 font-mono text-[length:var(--t-xs)] tabular-nums leading-snug text-status-error">
+            {data.errorCount}
+          </span>
+        )}
         {status === "completed" && (
           <span className="flex shrink-0 items-center text-status-success">
             <IconCheck size={10} strokeWidth={2.5} />
@@ -172,37 +205,22 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         )}
       </div>
 
-      {data.role && (
+      {/* Bottom row: what kind of step it is, and how much of it there has
+          been so far. Both corners are fixed, so the same fact is always in
+          the same place on every card at every zoom. The assignment and the
+          tool-call count moved to the panel: they are what you read about one
+          node you have already picked, not what you scan a graph for. */}
+      <div className="flex items-end justify-between gap-1.5">
         <span
-          className="mt-1 inline-block rounded px-1.5 py-px font-mono text-[length:var(--t-xs)] leading-tight tracking-wide"
-          style={{
-            backgroundColor: `color-mix(in srgb, ${roleColor} 14%, transparent)`,
-            color: roleColor,
-          }}
+          className="truncate font-mono text-[length:var(--t-xs)] uppercase leading-tight tracking-wide"
+          style={{ color: data.role ? roleColor : "transparent" }}
         >
-          {data.role}
+          {data.role || "."}
         </span>
-      )}
-
-      {data.assignment && (
-        <div className="mt-0.5 truncate font-mono text-[length:var(--t-xs)] leading-snug text-content-muted">
-          {data.assignment}
-        </div>
-      )}
-
-      {(data.durationSeconds != null ||
-        (data.errorCount ?? 0) > 0 ||
-        (data.toolCallCount ?? 0) > 0) && (
-        <div className="mt-1 flex items-center gap-2 font-mono text-[length:var(--t-xs)] tabular-nums text-content-muted">
-          {data.durationSeconds != null && data.durationSeconds >= 0 ? (
-            <span>{formatStepDuration(data.durationSeconds)}</span>
-          ) : null}
-          {(data.errorCount ?? 0) > 0 ? (
-            <span className="text-status-error">{data.errorCount} err</span>
-          ) : null}
-          {(data.toolCallCount ?? 0) > 0 ? <span>{data.toolCallCount} calls</span> : null}
-        </div>
-      )}
+        <span className="shrink-0 font-mono text-[length:var(--t-xs)] tabular-nums leading-tight text-content-muted">
+          {magnitude}
+        </span>
+      </div>
 
       {status === "running" && (
         <div

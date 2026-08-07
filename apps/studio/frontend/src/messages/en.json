@@ -451,7 +451,18 @@
       "noBranchErrorsPartial": "No runtime errors in the loaded messages.",
       "noFilesPartial": "No file operations detected in the loaded messages.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
-      "reloadConversation": "Reload conversation"
+      "reloadConversation": "Reload conversation",
+      "graphEdgeCount": "{count} edges",
+      "graphImpliedHidden": "· {count} implied hidden",
+      "graphHideImplied": "hide implied",
+      "graphShowImplied": "show implied edges",
+      "graphNodeStatusQueued": "queued",
+      "graphNodeStatusRunning": "running",
+      "graphNodeStatusApproval": "approval",
+      "graphNodeStatusPaused": "paused",
+      "graphNodeStatusDone": "done",
+      "graphNodeStatusFailed": "failed",
+      "graphNodeStatusEscalated": "escalated"
     },
     "masterAria": "History list",
     "detailAria": "Item detail"

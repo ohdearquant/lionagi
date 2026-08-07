@@ -120,6 +120,130 @@ export function transitiveReduce<E extends { source: string; target: string }>(e
   });
 }
 
+// ── Display-time transitive reduction with semantic guard ──────────────────────
+
+// An authored WorkerGraph edge can carry semantics beyond structure — a
+// condition, a map, a handler, or mode="code" — matching the richness
+// criteria in resolveGraphEdges (RunDetail.tsx). Such an edge is information
+// the designer put there on purpose, not a redundant ancestor link, so it
+// must never be dropped even when another path already reaches its target.
+function defaultIsRich(e: {
+  condition?: unknown;
+  map?: unknown;
+  handler?: unknown;
+  mode?: unknown;
+}): boolean {
+  return Boolean(e.condition) || Boolean(e.map) || Boolean(e.handler) || e.mode === "code";
+}
+
+// Whole-graph directed-cycle check (3-color DFS). Unlike transitiveReduce's
+// per-node inProgress guard — which silently treats a cyclic node as
+// unreachable and can still drop edges around it — this is a guard for the
+// entire reduction: depends_on graphs are expected to be acyclic, but if a
+// cycle is found every edge in it may be load-bearing for the cycle itself,
+// so reduction must not run at all.
+export function hasCycle<E extends { source: string; target: string }>(edges: E[]): boolean {
+  const adj = new Map<string, string[]>();
+  for (const e of edges) {
+    (adj.get(e.source) ?? adj.set(e.source, []).get(e.source)!).push(e.target);
+  }
+
+  const WHITE = 0,
+    GRAY = 1,
+    BLACK = 2;
+  const color = new Map<string, number>();
+
+  const dfs = (node: string): boolean => {
+    const c = color.get(node) ?? WHITE;
+    if (c === GRAY) return true;
+    if (c === BLACK) return false;
+    color.set(node, GRAY);
+    for (const next of adj.get(node) ?? []) {
+      if (dfs(next)) return true;
+    }
+    color.set(node, BLACK);
+    return false;
+  };
+
+  for (const node of adj.keys()) {
+    if (color.get(node) === undefined && dfs(node)) return true;
+  }
+  return false;
+}
+
+// Display-time transitive reduction for an authored WorkerGraph's edges.
+// Drops edge (u→v) only when v is reachable from u via a path of length ≥2
+// where EVERY edge on that path is itself structurally plain and connects
+// two visible nodes. Three guards distinguish this from transitiveReduce
+// above:
+//   1. Whole-graph cycle detection — a cyclic graph is returned unchanged
+//      rather than reduced around the cycle.
+//   2. Semantically rich edges (see defaultIsRich) are never dropped, and
+//      never count as a step of an implying path — a condition/map/handler/
+//      code edge is not an unconditional implication, so it cannot stand in
+//      for the plain edge it might otherwise seem to make redundant.
+//   3. A path that passes through a node the caller says will not be
+//      rendered (options.visibleNodes) cannot justify hiding an edge either
+//      — a viewer can't confirm an implication they can't see resolve.
+// Never mutates or re-persists the input; this only affects what is
+// rendered.
+export function transitiveReduceDisplay<E extends { source: string; target: string }>(
+  edges: E[],
+  options?: { isRich?: (e: E) => boolean; visibleNodes?: Set<string> },
+): { kept: E[]; hidden: E[] } {
+  if (edges.length === 0) return { kept: [], hidden: [] };
+  if (hasCycle(edges)) return { kept: edges, hidden: [] };
+
+  const isRich = options?.isRich ?? defaultIsRich;
+  const visibleNodes = options?.visibleNodes;
+  const isVisible = (id: string) => !visibleNodes || visibleNodes.has(id);
+
+  const rich: E[] = [];
+  const plain: E[] = [];
+  for (const e of edges) {
+    (isRich(e) ? rich : plain).push(e);
+  }
+
+  // Only a plain edge between two visible nodes can be one step of an
+  // implying path — a rich edge's implication is conditional, and a step
+  // through a hidden node is not one the viewer can see resolve.
+  const plainOutEdges = new Map<string, E[]>();
+  for (const e of plain) {
+    if (!isVisible(e.source) || !isVisible(e.target)) continue;
+    (plainOutEdges.get(e.source) ?? plainOutEdges.set(e.source, []).get(e.source)!).push(e);
+  }
+
+  const reachableCache = new Map<string, Set<string>>();
+  const reachableFrom = (node: string): Set<string> => {
+    const cached = reachableCache.get(node);
+    if (cached) return cached;
+    const result = new Set<string>();
+    reachableCache.set(node, result); // seed before recursing; the graph is acyclic here
+    for (const e of plainOutEdges.get(node) ?? []) {
+      result.add(e.target);
+      for (const r of reachableFrom(e.target)) result.add(r);
+    }
+    return result;
+  };
+
+  const hidden: E[] = [];
+  const survivingPlain = plain.filter((e) => {
+    // An edge touching a hidden node can't be verified as implied by a
+    // visible path either — keep it rather than guess.
+    if (!isVisible(e.source) || !isVisible(e.target)) return true;
+    for (const alt of plainOutEdges.get(e.source) ?? []) {
+      if (alt === e || alt.target === e.target) continue;
+      if (reachableFrom(alt.target).has(e.target)) {
+        hidden.push(e);
+        return false;
+      }
+    }
+    return true;
+  });
+
+  return { kept: [...rich, ...survivingPlain], hidden };
+}
+
 // ── Graph builder ─────────────────────────────────────────────────────────────
 
 export function buildOperationGraph(events: SignalEvent[]): OperationGraphState {
