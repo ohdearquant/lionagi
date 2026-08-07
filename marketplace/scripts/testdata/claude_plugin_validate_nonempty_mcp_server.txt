@@ -1,0 +1,22 @@
+Captured output of the upstream `claude plugin validate` tool (Claude Code
+2.1.224), run against a plugin.json whose "mcpServers" block contains a
+single well-formed entry, for contrast with the empty-entry case in
+claude_plugin_validate_empty_mcp_server.txt:
+
+  {"mcpServers": {"server": {"command": "true", "args": []}}}
+
+Command: claude plugin validate <plugin-dir>
+
+Validating plugin manifest: <plugin-dir>/.claude-plugin/plugin.json
+
+⚠ Found 1 warning:
+
+  ❯ author: No author information provided. Consider adding author details for plugin attribution
+
+✔ Validation passed with warnings
+exit code: 0
+
+The warning is about the unrelated "author" field; the tool does not
+object to the mcpServers block itself when the entry is non-empty. The
+temp directory path in the original run has been replaced with
+<plugin-dir> above; nothing else was edited.

@@ -248,15 +248,15 @@ class Progression(Element, Ordering[T], Generic[T]):
         else:
             self._ensure_synced()
             try:
-                old = self.order[key]
+                # `self.order` is a bound `_MembersDeque` here (guaranteed by
+                # `_ensure_synced()` above), so its own `__setitem__` already
+                # applies the same duplicate-aware discard/add to `_members`
+                # — updating it again here would be a second, independently
+                # maintained copy of that rule, free to drift from the first.
                 self.order[key] = refs[0]
-                if old not in self.order:
-                    self._members.discard(old)
-                self._members.add(refs[0])
                 self._order_len = len(self.order)
             except IndexError:
                 self.order.insert(key, refs[0])
-                self._members.add(refs[0])
                 self._order_len = len(self.order)
 
     def __delitem__(self, key: int | slice) -> None:
@@ -316,15 +316,17 @@ class Progression(Element, Ordering[T], Generic[T]):
         return len(self.order) < before
 
     def append(self, item: Any, /) -> None:
+        # `self.order` is a bound `_MembersDeque` after `_ensure_synced()`, so
+        # `.append`/`.extend` already add to `_members` themselves — see the
+        # note in `__setitem__` above; the same applies to every method below
+        # that mutates `self.order` through it rather than replacing it.
         self._ensure_synced()
         if isinstance(item, Element):
             self.order.append(item.id)
-            self._members.add(item.id)
             self._order_len = len(self.order)
             return
         refs = validate_order(item)
         self.order.extend(refs)
-        self._members.update(refs)
         self._order_len = len(self.order)
 
     def pop(self, index: int = -1) -> UUID:
@@ -337,8 +339,6 @@ class Progression(Element, Ordering[T], Generic[T]):
             else:
                 uid = self.order[index]
                 del self.order[index]
-            if uid not in self.order:
-                self._members.discard(uid)
             self._order_len = len(self.order)
             return uid
         except Exception as e:
@@ -349,8 +349,6 @@ class Progression(Element, Ordering[T], Generic[T]):
             raise ItemNotFoundError("No items in progression.")
         self._ensure_synced()
         uid = self.order.popleft()
-        if uid not in self.order:
-            self._members.discard(uid)
         self._order_len = len(self.order)
         return uid
 
@@ -384,7 +382,6 @@ class Progression(Element, Ordering[T], Generic[T]):
             raise ValueError("Can only extend with another Progression.")
         self._ensure_synced()
         self.order.extend(other.order)
-        self._members.update(other.order)
         self._order_len = len(self.order)
 
     def __add__(self, other: Any) -> Progression[T]:
@@ -414,7 +411,6 @@ class Progression(Element, Ordering[T], Generic[T]):
         for i in reversed(item_):
             uid = ID.get_id(i)
             self.order.insert(index, uid)
-            self._members.add(uid)
         self._order_len = len(self.order)
 
     def _validate_index(self, index: int, allow_end: bool = False) -> int:

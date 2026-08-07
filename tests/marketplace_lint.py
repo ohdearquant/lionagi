@@ -1781,15 +1781,15 @@ def test_mcp_servers_gate_accepts_absent_and_empty() -> None:
     assert gate({}) == ({}, [])
 
 
-@pytest.mark.parametrize("bad", ["stub-server", ["lion"], 5, True], ids=type)
+@pytest.mark.parametrize("bad", [5, True], ids=type)
 def test_mcp_servers_gate_rejects_non_object_top_level(bad: object) -> None:
-    """A string, list, number or bool where mcpServers should be an object is
+    """A number or bool where mcpServers should be a string/array/object is
     reported by name and type, and nothing is left for the caller to iterate."""
     gate = _mcp_gate()
     usable, problems = gate(bad)
     assert usable == {}
     assert len(problems) == 1
-    assert "'mcpServers' must be an object" in problems[0]
+    assert "'mcpServers' must be a string, an array, or an object" in problems[0]
     assert type(bad).__name__ in problems[0]
 
 
@@ -1802,6 +1802,49 @@ def test_mcp_servers_gate_drops_non_object_entries_and_keeps_the_rest() -> None:
     assert len(problems) == 2
     assert any("mcpServers['bad']" in p and p.endswith("got str") for p in problems)
     assert any("mcpServers['worse']" in p and p.endswith("got list") for p in problems)
+
+
+def test_mcp_servers_gate_accepts_a_string_naming_an_external_config() -> None:
+    """Claude Code documents a bare string as a valid form: a path to an
+    external MCP config file. This validator used to reject it outright."""
+    gate = _mcp_gate()
+    assert gate("./mcp-config.json") == ({}, [])
+    assert gate("stub-server") == ({}, [])
+
+
+def test_mcp_servers_gate_accepts_an_array_of_config_paths() -> None:
+    """Claude Code also documents an array of those strings as valid."""
+    gate = _mcp_gate()
+    assert gate(["./mcp-config.json"]) == ({}, [])
+    assert gate(["a.json", "b.json"]) == ({}, [])
+
+
+def test_mcp_servers_gate_rejects_a_non_string_array_element() -> None:
+    """The array form is an array of config-path strings; anything else inside
+    it is reported by index and type, the same shape as a bad object entry."""
+    gate = _mcp_gate()
+    usable, problems = gate(["ok.json", 5, {"nope": True}])
+    assert usable == {}
+    assert len(problems) == 2
+    assert any(p == "mcpServers[1] must be a string, got int" for p in problems)
+    assert any(p == "mcpServers[2] must be a string, got dict" for p in problems)
+
+
+def test_mcp_servers_gate_rejects_an_empty_inline_entry() -> None:
+    """`claude plugin validate` (2.1.220) refuses an inline entry with no
+    configuration in it; this validator used to accept it silently."""
+    gate = _mcp_gate()
+    usable, problems = gate({"empty": {}})
+    assert usable == {}
+    assert problems == ["mcpServers['empty'] must not be empty"]
+
+
+def test_mcp_servers_gate_keeps_a_well_formed_sibling_beside_an_empty_one() -> None:
+    """Rejecting the empty entry does not cost the entries beside it."""
+    gate = _mcp_gate()
+    usable, problems = gate({"lion": {"command": "uvx"}, "empty": {}})
+    assert usable == {"lion": {"command": "uvx"}}
+    assert problems == ["mcpServers['empty'] must not be empty"]
 
 
 def _write_marketplace_json(root: Path, plugins: list[dict]) -> None:
