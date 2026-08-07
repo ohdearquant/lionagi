@@ -22,11 +22,12 @@ import {
   foldWideGraph,
   markContinuationEdges,
   DAG_MAX_ZOOM,
-  DAG_MIN_ZOOM,
+  DAG_FIT_PADDING,
+  FIT_ZOOM_FLOOR,
   computeReservedHeight,
 } from "./useLayout";
 import { transitiveReduceDisplay } from "@/lib/operationGraph";
-import { fitZoomFor, FIT_ZOOM_FLOOR, MIN_INTERACTIVE_ZOOM } from "./WorkerCanvas";
+import { fitZoomFor, MIN_INTERACTIVE_ZOOM } from "./WorkerCanvas";
 
 const bare = (id: string): Node => ({
   id,
@@ -1243,9 +1244,12 @@ describe("computeReservedHeight — width-constrained rendered-height reservatio
   });
 
   it("matches the fit-zoom arithmetic exactly for a width-constrained graph", () => {
-    const bboxWidth = 3000;
+    // Numbers chosen so the unclamped fit zoom clears FIT_ZOOM_FLOOR (0.65)
+    // but stays below DAG_MAX_ZOOM (1) — genuinely width-constrained, not
+    // floor- or ceiling-clamped.
+    const bboxWidth = 1200;
     const bboxHeight = 600;
-    const containerWidth = 700;
+    const containerWidth = 1000;
     const expectedZoom = containerWidth / (bboxWidth * 1.15);
     expect(computeReservedHeight(bboxWidth, bboxHeight, containerWidth)).toBeCloseTo(
       bboxHeight * expectedZoom,
@@ -1265,14 +1269,25 @@ describe("computeReservedHeight — width-constrained rendered-height reservatio
     expect(reserved).toBeCloseTo(900, 5);
   });
 
-  it("never scales below the readability zoom floor (DAG_MIN_ZOOM), however wide the graph", () => {
+  it("never scales below the readability zoom floor the canvas actually clamps to (FIT_ZOOM_FLOOR), however wide the graph", () => {
     // An extremely wide graph into a narrow container: fitView cannot zoom
-    // out past DAG_MIN_ZOOM, so the panel must not reserve less than that.
+    // out past FIT_ZOOM_FLOOR (WorkerCanvas's own clamp), so the panel must
+    // not reserve less than that — reserving at a lower floor leaves most of
+    // what the canvas actually renders outside the panel.
     const bboxWidth = 100_000;
     const bboxHeight = 500;
     const containerWidth = 400;
     const reserved = computeReservedHeight(bboxWidth, bboxHeight, containerWidth);
-    expect(reserved).toBeCloseTo(bboxHeight * DAG_MIN_ZOOM, 5);
+    expect(reserved).toBeCloseTo(bboxHeight * FIT_ZOOM_FLOOR, 5);
+  });
+
+  it("matches the canvas's real fit height for an under-fit graph (10,000x10,000 in a 711px panel)", () => {
+    // Regression for the reservation/canvas floor divergence: the reservation
+    // must render the same height the canvas actually fits to, not a smaller
+    // one computed against a different, lower floor.
+    const reserved = computeReservedHeight(10_000, 10_000, 711);
+    const canvasZoom = fitZoomFor(10_000, 10_000, 711, Infinity, DAG_FIT_PADDING, DAG_MAX_ZOOM);
+    expect(reserved).toBeCloseTo(10_000 * canvasZoom, 5);
   });
 
   it("never scales above DAG_MAX_ZOOM even for a tiny bbox in a huge container", () => {

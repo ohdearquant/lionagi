@@ -379,11 +379,24 @@ export interface LayoutedGraph {
 // fitView is width-constrained for any graph wider than its container (true
 // of almost every real run graph), so the zoom actually applied is clamped
 // to what dagre's own container-fit contract already uses in WorkerCanvas:
-// padding 0.15, min 0.1 ("the readability zoom floor" — a wider graph never
-// renders smaller than this), max 1 (never zoomed in past 1:1 to fit).
+// padding 0.15, max 1 (never zoomed in past 1:1 to fit). The floor is
+// FIT_ZOOM_FLOOR below — defined here (not in WorkerCanvas.tsx, which
+// imports from this module) so the reservation arithmetic and the canvas's
+// actual fitView clamp can never diverge onto two different floors.
 export const DAG_FIT_PADDING = 0.15;
-export const DAG_MIN_ZOOM = 0.1;
 export const DAG_MAX_ZOOM = 1;
+
+// ─── Readability floor ───────────────────────────────────
+//
+// fitView shrinks the whole graph to fit the container, with no regard for
+// whether the result is still legible. StepNode's smallest text (label,
+// role, assignment, stats rows) all render at --t-xs (11px, theme.css) —
+// ConditionEdge's condition chip matches. Below a 7px screen size even
+// anti-aliased text stops being legible, so the floor is the zoom at which
+// an 11px glyph lands on 7px: 7 / 11 = 0.636, rounded up to 0.65 for a small
+// margin. Below the floor the canvas overflows its container instead of
+// shrinking further; ReactFlow's own pan/zoom-out takes over from there.
+export const FIT_ZOOM_FLOOR = 0.65;
 
 // getLayoutedElements (below) reports the graph's UNSCALED bounding-box
 // size. A container that reserves height at that value reserves for a shape
@@ -400,7 +413,7 @@ export function computeReservedHeight(
 ): number {
   if (bboxWidth <= 0 || bboxHeight <= 0 || containerWidth <= 0) return bboxHeight;
   const fitZoom = containerWidth / (bboxWidth * (1 + DAG_FIT_PADDING));
-  const zoom = Math.min(DAG_MAX_ZOOM, Math.max(DAG_MIN_ZOOM, fitZoom));
+  const zoom = Math.min(DAG_MAX_ZOOM, Math.max(FIT_ZOOM_FLOOR, fitZoom));
   return bboxHeight * zoom;
 }
 

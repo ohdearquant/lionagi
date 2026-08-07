@@ -25,7 +25,8 @@ import ConditionEdgeComponent from "./ConditionEdge";
 import type { ConditionEdgeData } from "./ConditionEdge";
 import SidePanel from "./SidePanel";
 import type { Selection } from "./SidePanel";
-import { getLayoutedElements, computeReservedHeight } from "./useLayout";
+import { getLayoutedElements, computeReservedHeight, FIT_ZOOM_FLOOR } from "./useLayout";
+export { FIT_ZOOM_FLOOR };
 import { followModeReducer, initialFollowModeState, shouldAutoCenter } from "./followMode";
 import { reconcileNodeStatuses, computeStagePosition } from "@/lib/execGraphProgress";
 import type { GraphEdge } from "@/lib/execGraphProgress";
@@ -38,17 +39,9 @@ import type {
   WorkerLinkEdge,
 } from "@/lib/types";
 
-// ─── Readability floor ───────────────────────────────────
-//
-// fitView shrinks the whole graph to fit the container, with no regard for
-// whether the result is still legible. StepNode's smallest text (label,
-// role, assignment, stats rows) all render at --t-xs (11px, theme.css) —
-// ConditionEdge's condition chip matches. Below a 7px screen size even
-// anti-aliased text stops being legible, so the floor is the zoom at which
-// an 11px glyph lands on 7px: 7 / 11 = 0.636, rounded up to 0.65 for a small
-// margin. Below the floor the canvas overflows its container instead of
-// shrinking further; ReactFlow's own pan/zoom-out takes over from there.
-export const FIT_ZOOM_FLOOR = 0.65;
+// FIT_ZOOM_FLOOR lives in useLayout.ts (imported and re-exported above) so
+// the reservation arithmetic there and the fitView clamp here share one
+// constant instead of drifting onto two different floors.
 
 // How far a user may deliberately zoom out, which is a different question from
 // how small the default fit may go. The floor above keeps the view we CHOOSE
