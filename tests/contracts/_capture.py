@@ -418,22 +418,33 @@ def capture_specialized() -> list[dict[str, Any]]:
 # A handful of the committable specialized-CLI cases capture argparse's own
 # rendered usage/help/error text verbatim (see _COMMITTABLE_SPECIALIZED_ARGV
 # in test_public_surfaces.py). That text depends on the interpreter's
-# HelpFormatter, which CPython changed twice across this project's CI matrix:
-# invalid-choice error text dropped quoting around each choice in 3.12
-# (e.g. "choose from 'a', 'b'" -> "choose from a, b"), and 3.13 collapsed a
-# repeated-per-option-string metavar into one shared metavar
-# (e.g. "-f PATH, --file PATH" -> "-f, --file PATH"), which also reflows the
-# surrounding wrapped usage lines. This is a real, declared difference in the
-# interpreter -- not an accident of import order or machine state, and not
-# something regex normalization should paper over, since that risks masking
-# an actual change in this CLI's own text. Each CI-tested minor version gets
-# its own pinned literal baseline instead.
+# HelpFormatter, which CPython has changed more than once across this
+# project's CI matrix. Two distinct changes are in play here, and only one of
+# them is stable enough to pin per minor version:
+#
+# - Invalid-choice quoting (e.g. "choose from 'a', 'b'" vs "choose from a,
+#   b") is NOT a stable per-minor-version property: it was dropped in 3.12,
+#   and CPython has since flipped it again *within* the 3.14 series (a local
+#   3.14.3 interpreter renders unquoted; CI's 3.14.6 renders quoted, for the
+#   same argparse call). A per-minor-version baseline key cannot represent a
+#   property that changes between patch releases of the same minor. This is
+#   handled by narrow, named normalization -- see
+#   ``normalize_argparse_choice_quoting`` below -- applied only to the
+#   "(choose from ...)" fragment, so the choice names themselves (this
+#   project's own subcommand list) still fail the comparison if they change.
+# - The 3.13 metavar collapse (a repeated per-option-string metavar folded
+#   into one shared metavar, e.g. "-f PATH, --file PATH" -> "-f, --file
+#   PATH") is a real, stable rendering change that also reflows the
+#   surrounding wrapped usage lines. It has not been observed to vary within
+#   a minor version, so it keeps its own pinned baseline rather than being
+#   normalized away -- normalizing it would risk masking an actual change in
+#   this CLI's own usage/help text.
 _SPECIALIZED_BASELINE_BY_PYVER: dict[tuple[int, int], str] = {
     (3, 10): "specialized",
-    (3, 11): "specialized",  # measured byte-identical to 3.10's capture
-    (3, 12): "specialized_py312",
-    (3, 13): "specialized_py314",  # measured byte-identical to 3.14's capture
-    (3, 14): "specialized_py314",
+    (3, 11): "specialized",  # measured byte-identical to 3.10's capture (mod. choice quoting)
+    (3, 12): "specialized",  # measured byte-identical to 3.10's capture (mod. choice quoting)
+    (3, 13): "specialized_py314",  # metavar collapse; measured byte-identical to 3.14's capture
+    (3, 14): "specialized_py314",  # metavar collapse
 }
 
 # Every Python minor CI actually runs, mirroring the full-matrix branch of
@@ -463,6 +474,33 @@ def specialized_baseline_name() -> str:
             "tests/contracts/data/specialized_pyXY.json baseline (see "
             "capture_specialized()) and add it to _SPECIALIZED_BASELINE_BY_PYVER"
         ) from None
+
+
+# Matches argparse's "(choose from ...)" fragment inside an invalid-choice
+# error, whether each choice name is quoted (e.g. "'a', 'b'") or bare (e.g.
+# "a, b") -- the one rendering detail this fixture's baseline comparison
+# tolerates. See ``normalize_argparse_choice_quoting`` below.
+_CHOOSE_FROM_RE = re.compile(r"\(choose from ((?:'[^']*'|[^,)]+)(?:, (?:'[^']*'|[^,)]+))*)\)")
+
+
+def normalize_argparse_choice_quoting(text: str) -> str:
+    """Strip the quote characters CPython's argparse ``HelpFormatter`` wraps
+    each choice name in inside a "(choose from ...)" invalid-choice error.
+
+    This targets exactly that fragment, not the surrounding text: the choice
+    *names* are this project's own subcommand list and remain fully
+    compared by the caller (a renamed, added, or removed choice still
+    produces a different normalized fragment and fails); only the
+    quote-or-not rendering argparse wraps them in -- which CPython has
+    flipped more than once within a single Python 3.14 patch series -- is
+    discarded.
+    """
+
+    def _sub(match: re.Match[str]) -> str:
+        choices = [c.strip().strip("'\"") for c in match.group(1).split(", ")]
+        return "(choose from " + ", ".join(choices) + ")"
+
+    return _CHOOSE_FROM_RE.sub(_sub, text)
 
 
 # ── MCP available paths / catalog / projections / errors ────────────────────

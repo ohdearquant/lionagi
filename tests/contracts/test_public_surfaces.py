@@ -34,6 +34,7 @@ import json
 import re
 import socket
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -194,6 +195,34 @@ def test_cli_surface_matches_baseline():
     assert _sorted_json(live) == _sorted_json(expected)
 
 
+def _assert_stderr_matches_baseline(
+    argv: tuple[str, ...], got_stderr: str, exp_stderr: str
+) -> None:
+    """Compare one case's live stderr against its frozen baseline, tolerating
+    only the argparse choice-quoting rendering difference (see
+    ``_capture.normalize_argparse_choice_quoting``) -- everything else,
+    including a changed/added/removed/renamed choice name, must still match
+    byte-for-byte.
+
+    A normalization that silently accepts a difference reads identically to
+    a byte-for-byte match that never needed it, so any case where
+    normalization was load-bearing announces itself via a pytest warning
+    (visible in the run's warnings summary even when the test passes)
+    instead of passing silently.
+    """
+    if got_stderr == exp_stderr:
+        return
+    norm_got = _capture.normalize_argparse_choice_quoting(got_stderr)
+    norm_exp = _capture.normalize_argparse_choice_quoting(exp_stderr)
+    assert norm_got == norm_exp, f"stderr changed for {argv}"
+    warnings.warn(
+        f"{argv}: stderr differed from the frozen baseline only in argparse "
+        "choice-name quoting -- normalized before comparing.\n"
+        f"  baseline: {exp_stderr!r}\n  live:     {got_stderr!r}",
+        stacklevel=2,
+    )
+
+
 def test_cli_specialized_paths_match_baseline():
     """Committable cases capture argparse's own rendered text verbatim, which
     CPython's HelpFormatter changed across this project's CI-tested Python
@@ -211,7 +240,68 @@ def test_cli_specialized_paths_match_baseline():
             continue
         assert got["exit_code"] == exp["exit_code"], f"exit code changed for {argv}"
         assert got["stdout"] == exp["stdout"], f"stdout changed for {argv}"
-        assert got["stderr"] == exp["stderr"], f"stderr changed for {argv}"
+        _assert_stderr_matches_baseline(argv, got["stderr"], exp["stderr"])
+
+
+def test_normalize_argparse_choice_quoting_is_quoting_agnostic():
+    """Property 1: the same choice list, quoted or bare, normalizes to the
+    same fragment. Uses this project's own frozen baselines rather than a
+    synthetic example: ``specialized.json`` (captured on 3.10, quoted) and
+    ``specialized_py312.json`` (captured on 3.12, bare) are, for
+    ``bogus-unknown-command``, identical in every other respect (both
+    predate the 3.13 usage-line-wrap/metavar-collapse change -- unlike
+    specialized_py314.json, which also differs in wrapping and would make
+    this comparison conflate two unrelated rendering changes) -- so this
+    pair isolates exactly the quoting difference the normalizer targets.
+    This is also why the version map collapses (3, 10)-(3, 12) onto one
+    baseline file above."""
+    quoted = {tuple(c["argv"]): c for c in _load("specialized")}[("bogus-unknown-command",)][
+        "stderr"
+    ]
+    bare = {tuple(c["argv"]): c for c in _load("specialized_py312")}[("bogus-unknown-command",)][
+        "stderr"
+    ]
+    assert quoted != bare, "fixture no longer exercises the quoting difference"
+    assert _capture.normalize_argparse_choice_quoting(
+        quoted
+    ) == _capture.normalize_argparse_choice_quoting(bare)
+
+
+def test_normalize_argparse_choice_quoting_still_flags_a_renamed_choice():
+    """Property 2 (mutation): renaming one choice name inside the baseline's
+    own "(choose from ...)" fragment must still fail after normalization --
+    proving the normalizer discards only quoting, never the choice list
+    itself. Expected red declared up front: the normalized mutant must NOT
+    equal the normalized original."""
+    original = {tuple(c["argv"]): c for c in _load("specialized")}[("bogus-unknown-command",)][
+        "stderr"
+    ]
+    assert "'orchestrate'" in original and "'orchestrated'" not in original
+    mutant = original.replace("'orchestrate'", "'orchestrated'", 1)
+    # Verify the mutation actually applied before trusting anything downstream.
+    assert mutant != original
+    assert "'orchestrated'" in mutant
+    assert _capture.normalize_argparse_choice_quoting(
+        original
+    ) != _capture.normalize_argparse_choice_quoting(mutant), (
+        "normalization swallowed a renamed subcommand choice -- this must fail"
+    )
+
+
+def test_stderr_baseline_comparison_still_fails_on_a_renamed_choice():
+    """Same mutation as above, run through the actual comparison helper
+    (``_assert_stderr_matches_baseline``) that
+    test_cli_specialized_paths_match_baseline uses -- not just the
+    normalizer in isolation -- so a normalizer wired in slightly wrong (e.g.
+    bypassing the choice-name check) cannot pass silently. Expected red
+    declared up front via ``pytest.raises``."""
+    original = {tuple(c["argv"]): c for c in _load("specialized")}[("bogus-unknown-command",)][
+        "stderr"
+    ]
+    mutant = original.replace("'orchestrate'", "'orchestrated'", 1)
+    assert mutant != original and "'orchestrated'" in mutant
+    with pytest.raises(AssertionError, match="stderr changed"):
+        _assert_stderr_matches_baseline(("bogus-unknown-command",), mutant, original)
 
 
 def test_specialized_baseline_covers_ci_matrix():
@@ -400,9 +490,9 @@ def test_schedule_quick_create_validates_before_any_network_call():
 
 
 # Cross-seed imports that are known, source-grounded, and pre-existing —
-# neither introduced by nor related to A0/C1D/C1X/C1's registry/dispatch
-# work, so the import-laziness oracle allowlists exactly these two instead of
-# asserting a blanket zero that would misreport them as regressions:
+# unrelated to this module's own registry/dispatch consolidation, so the
+# import-laziness oracle allowlists exactly these two instead of asserting a
+# blanket zero that would misreport them as regressions:
 #   - orchestrate: lionagi/cli/orchestrate/_common.py:14 does a *module-level*
 #     `from .. import team as _team_module` (team-mode support), so importing
 #     lionagi.cli.orchestrate always pulls in lionagi.cli.team.
@@ -436,8 +526,9 @@ def test_import_laziness_traces_all_21_seeds_cleanly():
 
 def test_import_laziness_casts_seed_stays_cli_only():
     """The one seed whose module declares both a CLI and an HTTP marker
-    (lionagi/casts/surfaces.py) — the exact boundary C1X's own result flagged
-    as the eager-import risk to watch (implementer-4/c1x_result.md:71-76)."""
+    (lionagi/casts/surfaces.py) — loading it as a CLI seed must not eagerly
+    realize the HTTP registry as a side effect, the risk a single module
+    serving both surfaces creates."""
     live = _capture.capture_imports()
     casts = live["import_laziness"]["traces"]["casts"]
     assert not casts.get("_error")
@@ -629,13 +720,20 @@ def _offending_fields(runs: list[dict]) -> list[str]:
 
 def _identity_hits(text: str, identity: frozenset[str]) -> list[str]:
     """Whole-word/whole-path occurrences of a known machine-identity value in
-    *text*. Word-bounded rather than a raw substring test: a short real
+    *text*, INCLUDING a path root appearing as a prefix of a longer path
+    (e.g. identity value ``/Users/lion`` must hit inside
+    ``/Users/lion/some/deeper/path``, not just an exact standalone
+    occurrence) -- a value under a redacted root is exactly as identifying as
+    the root itself. Only the trailing boundary allows a `/` continuation;
+    a following word character still must not match, so a same-prefixed but
+    distinct name (``/Users/lionx``) is not misreported as a hit. The
+    leading boundary is unchanged and still word-bounded: a short real
     username can legitimately be a substring of an unrelated CLI word (this
     repo's own real capture hit this -- the checkout's username is a
     substring of "lionagi", which appears throughout genuinely static help
     text), and a raw substring match would misreport that collision as a
     leak."""
-    return [v for v in identity if v and re.search(rf"(?<![\w/]){re.escape(v)}(?![\w/])", text)]
+    return [v for v in identity if v and re.search(rf"(?<![\w/]){re.escape(v)}(?!\w)", text)]
 
 
 def test_offending_fields_accepts_identical_runs():
@@ -650,12 +748,12 @@ def test_offending_fields_accepts_identical_runs():
 
 
 def test_offending_fields_flags_env_derived_variance():
-    """Mutation arm: reproduces Finding 1 (a username/hostname pair that a
-    vocabulary check would accept because both words are independently
-    public in this repo's own source) at the level that actually matters --
-    the value differs across two runs made under different simulated
-    identities, exactly what a real env-derived "Connected to
-    {user}@{host}" banner would do."""
+    """Mutation arm: reproduces a username/hostname pair that a vocabulary
+    check would accept because both words are independently public in this
+    repo's own source, at the level that actually matters -- the value
+    differs across two runs made under different simulated identities,
+    exactly what a real env-derived "Connected to {user}@{host}" banner
+    would do."""
     runs = [
         {"stdout": "Connected to admin@runner-1", "stderr": ""},
         {"stdout": "Connected to admin@runner-2", "stderr": ""},
@@ -664,11 +762,11 @@ def test_offending_fields_flags_env_derived_variance():
 
 
 def test_offending_fields_flags_clock_derived_variance():
-    """Mutation arm: reproduces Finding 2 (a timestamp / tmp-path shape the
-    old token check was structurally blind to, since it only scanned
-    alphabetic runs and three literal path prefixes). A clock- or
-    tmpdir-derived value necessarily differs between two wall-clock-
-    separated runs; this check needs no shape enumeration to catch it."""
+    """Mutation arm: reproduces a timestamp / tmp-path shape the old token
+    check was structurally blind to, since it only scanned alphabetic runs
+    and three literal path prefixes. A clock- or tmpdir-derived value
+    necessarily differs between two wall-clock-separated runs; this check
+    needs no shape enumeration to catch it."""
     runs = [
         {
             "stdout": "session 2026-08-07T12:34:56.123456 /private/tmp/run-0123456789",
@@ -704,12 +802,41 @@ def test_known_identity_check_flags_a_planted_hostname():
     """Mutation arm for the constant-identity gap: a hostname cannot vary
     between two runs on the same machine, so differential capture alone
     cannot catch it. Splice this machine's own real hostname into an
-    "admin@{host}"-shaped banner -- exactly Finding 1's scenario -- and
-    confirm the known-value check names it."""
+    "admin@{host}"-shaped banner -- the same env-derived-banner shape as
+    ``test_offending_fields_flags_env_derived_variance`` above, but constant
+    rather than varying -- and confirm the known-value check names it."""
     identity = _capture.known_machine_identity()
     hostname = socket.gethostname()
     text = f"Connected to admin@{hostname}"
     assert hostname in _identity_hits(text, identity)
+
+
+def test_identity_hits_matches_a_path_roots_descendant():
+    """Fix for a redaction-gap regression: a value found *underneath* a
+    redacted path root -- not just the root occurring verbatim -- must also
+    be caught. Before this fix, ``_identity_hits`` treated a trailing `/` as
+    disqualifying (the same boundary that rejects a mid-word continuation),
+    so a value like ``/Users/lion/some/deeper/path`` produced
+    ``predicate_hits=[]`` for identity value ``/Users/lion`` while
+    ``/Users/lion`` alone was caught -- the gate stayed green on exactly the
+    kind of leak it exists to catch."""
+    identity = frozenset({"/Users/lion"})
+    descendant = "wrote output to /Users/lion/some/deeper/path"
+    assert _identity_hits(descendant, identity) == ["/Users/lion"]
+    # A same-prefixed but distinct name must still not be misreported.
+    sibling = "wrote output to /Users/lionx/unrelated"
+    assert _identity_hits(sibling, identity) == []
+
+    # Point the control at the fix: no-op it (restore the pre-fix trailing
+    # boundary, which excluded a following `/`) and require this exact
+    # descendant case to go red.
+    def _pre_fix_identity_hits(text: str, identity: frozenset[str]) -> list[str]:
+        return [v for v in identity if v and re.search(rf"(?<![\w/]){re.escape(v)}(?![\w/])", text)]
+
+    assert _pre_fix_identity_hits(descendant, identity) == [], (
+        "control is not sensitive to the fix -- the pre-fix pattern should "
+        "have missed this descendant path"
+    )
 
 
 def test_committable_case_output_has_no_known_machine_identity():
