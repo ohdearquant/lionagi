@@ -37,10 +37,12 @@ it going" (status, op counts, elapsed time) and run_findings for "what did it
 find" (messages, tool calls, errors, artifacts); neither is a live feed, both
 say how fresh their answer is. cancel_run stops a running run through the same
 human-confirmed durable proposal launch_playbook uses — it is never automatic,
-and a denial leaves the run untouched. resume_run continues a run's
-conversation with a new instruction through the same human-confirmed proposal
-flow; it launches a new invocation rather than reopening the old run's
-status, and works on a run in any status, including a cancelled one.
+and a denial leaves the run untouched. resume_run continues a run through the
+same human-confirmed proposal flow: an agent run takes a new instruction, a
+play/flow/show-play run instead replays its persisted checkpoint and accepts
+no instruction. Either way it launches a new invocation rather than
+reopening the old run's status, and works on a run in any status, including
+a cancelled one.
 
 Every turn tells you which Studio view the human is on, including the route
 and any selection or filters, and get_current_view re-reads it on demand. Use
