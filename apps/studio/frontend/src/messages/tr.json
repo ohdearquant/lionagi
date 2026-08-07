@@ -10,7 +10,8 @@
       "toggleTheme": "temayı değiştir",
       "switchToZh": "Çinceye geç",
       "switchToEn": "İngilizceye geç",
-      "selectLanguage": "Dil seç"
+      "selectLanguage": "Dil seç",
+      "teams": "Takımlar"
     },
     "palette": {
       "ariaLabel": "komut paleti",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Takımlar",
+    "subtitle": "Paylaşılan bir gelen kutusu üzerinden koordine olan ajan ekipleri",
+    "loadError": "Takımlar yüklenemedi.",
+    "emptyTitle": "Henüz takım yok",
+    "emptyBody": "Takımlar `li team create` ile oluşturulur ve paylaşılan bir gelen kutusu üzerinden koordine olur.",
+    "table": {
+      "name": "Ad",
+      "members": "Üyeler",
+      "lastModified": "Son değişiklik",
+      "oneMember": "1 üye",
+      "memberCount": "{count} üye"
+    },
+    "loadMore": "Daha fazla yükle",
+    "loadingMore": "Yükleniyor…",
+    "detail": {
+      "close": "Kapat",
+      "members": "Üyeler",
+      "created": "Oluşturulma",
+      "messages": "Mesajlar ({count})",
+      "noMessages": "Henüz mesaj yok."
+    }
   }
 }

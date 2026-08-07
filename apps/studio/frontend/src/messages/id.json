@@ -10,7 +10,8 @@
       "toggleTheme": "Alihkan tema",
       "switchToZh": "Beralih ke bahasa Mandarin",
       "switchToEn": "Beralih ke bahasa Inggris",
-      "selectLanguage": "Pilih bahasa"
+      "selectLanguage": "Pilih bahasa",
+      "teams": "Tim"
     },
     "palette": {
       "ariaLabel": "Palet perintah",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Tim",
+    "subtitle": "Kru agen yang berkoordinasi lewat kotak masuk bersama",
+    "loadError": "Gagal memuat tim.",
+    "emptyTitle": "Belum ada tim",
+    "emptyBody": "Tim dibuat dengan `li team create` dan berkoordinasi lewat kotak masuk bersama.",
+    "table": {
+      "name": "Nama",
+      "members": "Anggota",
+      "lastModified": "Terakhir diubah",
+      "oneMember": "1 anggota",
+      "memberCount": "{count} anggota"
+    },
+    "loadMore": "Muat lebih banyak",
+    "loadingMore": "Memuat…",
+    "detail": {
+      "close": "Tutup",
+      "members": "Anggota",
+      "created": "Dibuat",
+      "messages": "Pesan ({count})",
+      "noMessages": "Belum ada pesan."
+    }
   }
 }

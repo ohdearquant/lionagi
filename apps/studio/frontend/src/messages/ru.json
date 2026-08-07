@@ -10,7 +10,8 @@
       "toggleTheme": "Сменить тему",
       "switchToZh": "Переключить на китайский",
       "switchToEn": "Переключить на английский",
-      "selectLanguage": "Выбрать язык"
+      "selectLanguage": "Выбрать язык",
+      "teams": "Команды"
     },
     "palette": {
       "ariaLabel": "Палитра команд",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Команды",
+    "subtitle": "Команды агентов, координирующихся через общий почтовый ящик",
+    "loadError": "Не удалось загрузить команды.",
+    "emptyTitle": "Пока нет команд",
+    "emptyBody": "Команды создаются командой `li team create` и координируются через общий почтовый ящик.",
+    "table": {
+      "name": "Название",
+      "members": "Участники",
+      "lastModified": "Последнее изменение",
+      "oneMember": "1 участник",
+      "memberCount": "{count} участников"
+    },
+    "loadMore": "Загрузить ещё",
+    "loadingMore": "Загрузка…",
+    "detail": {
+      "close": "Закрыть",
+      "members": "Участники",
+      "created": "Создано",
+      "messages": "Сообщения ({count})",
+      "noMessages": "Пока нет сообщений."
+    }
   }
 }

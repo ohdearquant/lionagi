@@ -10,7 +10,8 @@
       "toggleTheme": "테마 전환",
       "switchToZh": "중국어로 전환",
       "switchToEn": "영어로 전환",
-      "selectLanguage": "언어 선택"
+      "selectLanguage": "언어 선택",
+      "teams": "팀"
     },
     "palette": {
       "ariaLabel": "명령 팔레트",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "팀",
+    "subtitle": "공유 수신함으로 조율하는 에이전트 팀",
+    "loadError": "팀을 불러오지 못했습니다.",
+    "emptyTitle": "아직 팀이 없습니다",
+    "emptyBody": "팀은 `li team create`로 생성되며 공유 수신함을 통해 조율합니다.",
+    "table": {
+      "name": "이름",
+      "members": "구성원",
+      "lastModified": "최근 수정",
+      "oneMember": "멤버 1명",
+      "memberCount": "멤버 {count}명"
+    },
+    "loadMore": "더 보기",
+    "loadingMore": "로딩 중…",
+    "detail": {
+      "close": "닫기",
+      "members": "구성원",
+      "created": "생성됨",
+      "messages": "메시지 ({count})",
+      "noMessages": "아직 메시지가 없습니다."
+    }
   }
 }

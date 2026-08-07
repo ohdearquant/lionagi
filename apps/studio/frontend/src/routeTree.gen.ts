@@ -21,6 +21,7 @@ import { Route as DesignerRouteImport } from './routes/designer'
 import { Route as CanvasRouteImport } from './routes/canvas'
 import { Route as AgentsRouteImport } from './routes/agents'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as TeamsIndexRouteImport } from './routes/teams/index'
 import { Route as SkillsIndexRouteImport } from './routes/skills/index'
 import { Route as SchedulesIndexRouteImport } from './routes/schedules/index'
 import { Route as RunsIndexRouteImport } from './routes/runs/index'
@@ -97,6 +98,11 @@ const AgentsRoute = AgentsRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TeamsIndexRoute = TeamsIndexRouteImport.update({
+  id: '/teams/',
+  path: '/teams/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SkillsIndexRoute = SkillsIndexRouteImport.update({
@@ -210,6 +216,7 @@ export interface FileRoutesByFullPath {
   '/runs/': typeof RunsIndexRoute
   '/schedules/': typeof SchedulesIndexRoute
   '/skills/': typeof SkillsIndexRoute
+  '/teams/': typeof TeamsIndexRoute
   '/admin/health/': typeof AdminHealthIndexRoute
   '/admin/maintenance/': typeof AdminMaintenanceIndexRoute
   '/playbooks/$name/': typeof PlaybooksNameIndexRoute
@@ -241,6 +248,7 @@ export interface FileRoutesByTo {
   '/runs': typeof RunsIndexRoute
   '/schedules': typeof SchedulesIndexRoute
   '/skills': typeof SkillsIndexRoute
+  '/teams': typeof TeamsIndexRoute
   '/admin/health': typeof AdminHealthIndexRoute
   '/admin/maintenance': typeof AdminMaintenanceIndexRoute
   '/playbooks/$name': typeof PlaybooksNameIndexRoute
@@ -273,6 +281,7 @@ export interface FileRoutesById {
   '/runs/': typeof RunsIndexRoute
   '/schedules/': typeof SchedulesIndexRoute
   '/skills/': typeof SkillsIndexRoute
+  '/teams/': typeof TeamsIndexRoute
   '/admin/health/': typeof AdminHealthIndexRoute
   '/admin/maintenance/': typeof AdminMaintenanceIndexRoute
   '/playbooks/$name/': typeof PlaybooksNameIndexRoute
@@ -306,6 +315,7 @@ export interface FileRouteTypes {
     | '/runs/'
     | '/schedules/'
     | '/skills/'
+    | '/teams/'
     | '/admin/health/'
     | '/admin/maintenance/'
     | '/playbooks/$name/'
@@ -337,6 +347,7 @@ export interface FileRouteTypes {
     | '/runs'
     | '/schedules'
     | '/skills'
+    | '/teams'
     | '/admin/health'
     | '/admin/maintenance'
     | '/playbooks/$name'
@@ -368,6 +379,7 @@ export interface FileRouteTypes {
     | '/runs/'
     | '/schedules/'
     | '/skills/'
+    | '/teams/'
     | '/admin/health/'
     | '/admin/maintenance/'
     | '/playbooks/$name/'
@@ -400,6 +412,7 @@ export interface RootRouteChildren {
   RunsIndexRoute: typeof RunsIndexRoute
   SchedulesIndexRoute: typeof SchedulesIndexRoute
   SkillsIndexRoute: typeof SkillsIndexRoute
+  TeamsIndexRoute: typeof TeamsIndexRoute
   AdminHealthIndexRoute: typeof AdminHealthIndexRoute
   AdminMaintenanceIndexRoute: typeof AdminMaintenanceIndexRoute
   PlaybooksNameIndexRoute: typeof PlaybooksNameIndexRoute
@@ -491,6 +504,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/teams/': {
+      id: '/teams/'
+      path: '/teams'
+      fullPath: '/teams/'
+      preLoaderRoute: typeof TeamsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/skills/': {
@@ -640,6 +660,7 @@ const rootRouteChildren: RootRouteChildren = {
   RunsIndexRoute: RunsIndexRoute,
   SchedulesIndexRoute: SchedulesIndexRoute,
   SkillsIndexRoute: SkillsIndexRoute,
+  TeamsIndexRoute: TeamsIndexRoute,
   AdminHealthIndexRoute: AdminHealthIndexRoute,
   AdminMaintenanceIndexRoute: AdminMaintenanceIndexRoute,
   PlaybooksNameIndexRoute: PlaybooksNameIndexRoute,

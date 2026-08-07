@@ -10,7 +10,8 @@
       "toggleTheme": "থিম টগল করুন",
       "switchToZh": "চীনা ভাষায় যান",
       "switchToEn": "ইংরেজিতে যান",
-      "selectLanguage": "ভাষা নির্বাচন করুন"
+      "selectLanguage": "ভাষা নির্বাচন করুন",
+      "teams": "দল"
     },
     "palette": {
       "ariaLabel": "কমান্ড প্যালেট",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "দল",
+    "subtitle": "শেয়ার করা ইনবক্সের মাধ্যমে সমন্বিত এজেন্ট দল",
+    "loadError": "দল লোড করা যায়নি।",
+    "emptyTitle": "এখনও কোনো দল নেই",
+    "emptyBody": "`li team create` দিয়ে দল তৈরি হয় এবং তারা শেয়ার করা ইনবক্সের মাধ্যমে সমন্বয় করে।",
+    "table": {
+      "name": "নাম",
+      "members": "সদস্য",
+      "lastModified": "সর্বশেষ পরিবর্তিত",
+      "oneMember": "১ জন সদস্য",
+      "memberCount": "{count} জন সদস্য"
+    },
+    "loadMore": "আরও লোড করুন",
+    "loadingMore": "লোড হচ্ছে…",
+    "detail": {
+      "close": "বন্ধ করুন",
+      "members": "সদস্য",
+      "created": "তৈরি হয়েছে",
+      "messages": "বার্তা ({count})",
+      "noMessages": "এখনও কোনো বার্তা নেই।"
+    }
   }
 }

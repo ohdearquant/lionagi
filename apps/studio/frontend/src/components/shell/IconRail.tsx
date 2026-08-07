@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactElement } fr
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useLocale, useTranslations } from "use-intl";
 import { LOCALES } from "@/i18n/locales";
+import { IconTeam } from "@/components/ui/icons";
 
 interface Space {
   id: string;
@@ -164,6 +165,13 @@ const SPACES: Space[] = [
     labelKey: "rail.schedules",
     icon: <IconCalendar />,
     key: 3,
+  },
+  {
+    id: "teams",
+    href: "/teams",
+    labelKey: "rail.teams",
+    icon: <IconTeam size={20} />,
+    key: 4,
   },
 ];
 

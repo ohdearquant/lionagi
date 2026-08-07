@@ -10,7 +10,8 @@
       "toggleTheme": "切换主题",
       "switchToZh": "切换到中文",
       "switchToEn": "切换到英文",
-      "selectLanguage": "选择语言"
+      "selectLanguage": "选择语言",
+      "teams": "团队"
     },
     "palette": {
       "ariaLabel": "命令面板",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "团队",
+    "subtitle": "通过共享收件箱协作的智能体团队",
+    "loadError": "加载团队失败。",
+    "emptyTitle": "暂无团队",
+    "emptyBody": "使用 `li team create` 创建团队，团队通过共享收件箱协作。",
+    "table": {
+      "name": "名称",
+      "members": "成员",
+      "lastModified": "最后修改",
+      "oneMember": "1 名成员",
+      "memberCount": "{count} 名成员"
+    },
+    "loadMore": "加载更多",
+    "loadingMore": "加载中…",
+    "detail": {
+      "close": "关闭",
+      "members": "成员",
+      "created": "创建时间",
+      "messages": "消息（{count}）",
+      "noMessages": "暂无消息。"
+    }
   }
 }

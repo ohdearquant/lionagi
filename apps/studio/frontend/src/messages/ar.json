@@ -10,7 +10,8 @@
       "toggleTheme": "تبديل السمة",
       "switchToZh": "التبديل إلى الصينية",
       "switchToEn": "التبديل إلى الإنجليزية",
-      "selectLanguage": "اختر اللغة"
+      "selectLanguage": "اختر اللغة",
+      "teams": "الفرق"
     },
     "palette": {
       "ariaLabel": "لوحة الأوامر",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "الفرق",
+    "subtitle": "طواقم من الوكلاء تنسّق عبر صندوق وارد مشترك",
+    "loadError": "تعذّر تحميل الفرق.",
+    "emptyTitle": "لا توجد فرق بعد",
+    "emptyBody": "يتم إنشاء الفرق باستخدام `li team create` وتنسّق عبر صندوق وارد مشترك.",
+    "table": {
+      "name": "الاسم",
+      "members": "الأعضاء",
+      "lastModified": "آخر تعديل",
+      "oneMember": "عضو واحد",
+      "memberCount": "{count} أعضاء"
+    },
+    "loadMore": "تحميل المزيد",
+    "loadingMore": "جارٍ التحميل…",
+    "detail": {
+      "close": "إغلاق",
+      "members": "الأعضاء",
+      "created": "أُنشئ",
+      "messages": "الرسائل ({count})",
+      "noMessages": "لا توجد رسائل بعد."
+    }
   }
 }

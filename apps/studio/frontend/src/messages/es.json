@@ -10,7 +10,8 @@
       "toggleTheme": "Cambiar tema",
       "switchToZh": "Cambiar a chino",
       "switchToEn": "Cambiar a inglés",
-      "selectLanguage": "Seleccionar idioma"
+      "selectLanguage": "Seleccionar idioma",
+      "teams": "Equipos"
     },
     "palette": {
       "ariaLabel": "Paleta de comandos",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Equipos",
+    "subtitle": "Equipos de agentes que coordinan a través de una bandeja de entrada compartida",
+    "loadError": "No se pudieron cargar los equipos.",
+    "emptyTitle": "Aún no hay equipos",
+    "emptyBody": "Los equipos se crean con `li team create` y coordinan a través de una bandeja de entrada compartida.",
+    "table": {
+      "name": "Nombre",
+      "members": "Miembros",
+      "lastModified": "Última modificación",
+      "oneMember": "1 miembro",
+      "memberCount": "{count} miembros"
+    },
+    "loadMore": "Cargar más",
+    "loadingMore": "Cargando…",
+    "detail": {
+      "close": "Cerrar",
+      "members": "Miembros",
+      "created": "Creado",
+      "messages": "Mensajes ({count})",
+      "noMessages": "Aún no hay mensajes."
+    }
   }
 }

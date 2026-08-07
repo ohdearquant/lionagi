@@ -10,7 +10,8 @@
       "toggleTheme": "đổi giao diện",
       "switchToZh": "chuyển sang tiếng Trung",
       "switchToEn": "chuyển sang tiếng Anh",
-      "selectLanguage": "Chọn ngôn ngữ"
+      "selectLanguage": "Chọn ngôn ngữ",
+      "teams": "Nhóm"
     },
     "palette": {
       "ariaLabel": "bảng lệnh",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Nhóm",
+    "subtitle": "Các đội tác nhân phối hợp qua hộp thư đến dùng chung",
+    "loadError": "Không thể tải danh sách nhóm.",
+    "emptyTitle": "Chưa có nhóm nào",
+    "emptyBody": "Các nhóm được tạo bằng `li team create` và phối hợp qua hộp thư đến dùng chung.",
+    "table": {
+      "name": "Tên",
+      "members": "Thành viên",
+      "lastModified": "Sửa đổi lần cuối",
+      "oneMember": "1 thành viên",
+      "memberCount": "{count} thành viên"
+    },
+    "loadMore": "Tải thêm",
+    "loadingMore": "Đang tải…",
+    "detail": {
+      "close": "Đóng",
+      "members": "Thành viên",
+      "created": "Đã tạo",
+      "messages": "Tin nhắn ({count})",
+      "noMessages": "Chưa có tin nhắn nào."
+    }
   }
 }

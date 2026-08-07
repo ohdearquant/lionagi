@@ -10,7 +10,8 @@
       "toggleTheme": "Changer de thème",
       "switchToZh": "Passer au chinois",
       "switchToEn": "Passer à l’anglais",
-      "selectLanguage": "Choisir la langue"
+      "selectLanguage": "Choisir la langue",
+      "teams": "Équipes"
     },
     "palette": {
       "ariaLabel": "Palette de commandes",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Équipes",
+    "subtitle": "Équipes d'agents qui se coordonnent via une boîte de réception partagée",
+    "loadError": "Échec du chargement des équipes.",
+    "emptyTitle": "Aucune équipe pour l'instant",
+    "emptyBody": "Les équipes sont créées avec `li team create` et se coordonnent via une boîte de réception partagée.",
+    "table": {
+      "name": "Nom",
+      "members": "Membres",
+      "lastModified": "Dernière modification",
+      "oneMember": "1 membre",
+      "memberCount": "{count} membres"
+    },
+    "loadMore": "Charger plus",
+    "loadingMore": "Chargement…",
+    "detail": {
+      "close": "Fermer",
+      "members": "Membres",
+      "created": "Créé le",
+      "messages": "Messages ({count})",
+      "noMessages": "Aucun message pour l'instant."
+    }
   }
 }

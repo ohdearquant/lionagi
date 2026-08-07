@@ -1810,6 +1810,58 @@ export async function runMaintenance(action: MaintenanceAction): Promise<Mainten
   });
 }
 
+// ─── Teams (`li team` crews with a shared inbox) ──────────────────────────────
+
+export interface TeamSummary {
+  id: string;
+  name: string;
+  member_count: number;
+  last_modified: number;
+}
+
+export interface TeamListResponse {
+  teams: TeamSummary[];
+  limit: number;
+  offset: number;
+  total: number;
+  has_next: boolean;
+}
+
+export interface TeamMessage {
+  id: string;
+  from: string;
+  to: string | string[];
+  content: string;
+  timestamp: string;
+  read_by: Record<string, unknown>;
+  kind: string;
+  from_op?: string;
+  artifacts?: string[];
+}
+
+export interface TeamDetail {
+  id: string;
+  name: string;
+  members: string[];
+  messages: TeamMessage[];
+  created_at: string;
+}
+
+export async function listTeams(params?: {
+  limit?: number;
+  offset?: number;
+}): Promise<TeamListResponse> {
+  const query = new URLSearchParams();
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  if (params?.offset != null) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  return fetchJson<TeamListResponse>(`/api/teams/${qs ? `?${qs}` : ""}`);
+}
+
+export async function getTeam(teamId: string): Promise<TeamDetail> {
+  return fetchJson<TeamDetail>(`/api/teams/${encodeURIComponent(teamId)}`);
+}
+
 // ─── Projects (ADR-0026) ──────────────────────────────────────────────────────
 
 export interface ProjectListResponse {

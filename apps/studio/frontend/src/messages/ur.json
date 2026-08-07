@@ -10,7 +10,8 @@
       "toggleTheme": "تھیم بدلیں",
       "switchToZh": "چینی پر سوئچ کریں",
       "switchToEn": "انگریزی پر سوئچ کریں",
-      "selectLanguage": "زبان منتخب کریں"
+      "selectLanguage": "زبان منتخب کریں",
+      "teams": "ٹیمیں"
     },
     "palette": {
       "ariaLabel": "کمانڈ پیلیٹ",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "ٹیمیں",
+    "subtitle": "مشترکہ ان باکس کے ذریعے ہم آہنگی کرنے والے ایجنٹوں کے دستے",
+    "loadError": "ٹیمیں لوڈ کرنے میں ناکامی۔",
+    "emptyTitle": "ابھی تک کوئی ٹیم نہیں",
+    "emptyBody": "ٹیمیں `li team create` سے بنائی جاتی ہیں اور مشترکہ ان باکس کے ذریعے ہم آہنگی کرتی ہیں۔",
+    "table": {
+      "name": "نام",
+      "members": "اراکین",
+      "lastModified": "آخری ترمیم",
+      "oneMember": "1 رکن",
+      "memberCount": "{count} اراکین"
+    },
+    "loadMore": "مزید لوڈ کریں",
+    "loadingMore": "لوڈ ہو رہا ہے…",
+    "detail": {
+      "close": "بند کریں",
+      "members": "اراکین",
+      "created": "بنائی گئی",
+      "messages": "پیغامات ({count})",
+      "noMessages": "ابھی تک کوئی پیغام نہیں۔"
+    }
   }
 }

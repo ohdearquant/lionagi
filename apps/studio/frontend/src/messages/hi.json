@@ -10,7 +10,8 @@
       "toggleTheme": "थीम बदलें",
       "switchToZh": "चीनी पर स्विच करें",
       "switchToEn": "अंग्रेज़ी पर स्विच करें",
-      "selectLanguage": "भाषा चुनें"
+      "selectLanguage": "भाषा चुनें",
+      "teams": "टीमें"
     },
     "palette": {
       "ariaLabel": "कमांड पैलेट",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "टीमें",
+    "subtitle": "साझा इनबॉक्स के माध्यम से समन्वय करने वाले एजेंटों के दल",
+    "loadError": "टीमें लोड करने में विफल.",
+    "emptyTitle": "अभी तक कोई टीम नहीं",
+    "emptyBody": "टीमें `li team create` से बनाई जाती हैं और साझा इनबॉक्स से समन्वय करती हैं.",
+    "table": {
+      "name": "नाम",
+      "members": "सदस्य",
+      "lastModified": "अंतिम बार संशोधित",
+      "oneMember": "1 सदस्य",
+      "memberCount": "{count} सदस्य"
+    },
+    "loadMore": "और लोड करें",
+    "loadingMore": "लोड हो रहा है…",
+    "detail": {
+      "close": "बंद करें",
+      "members": "सदस्य",
+      "created": "बनाया गया",
+      "messages": "संदेश ({count})",
+      "noMessages": "अभी तक कोई संदेश नहीं."
+    }
   }
 }

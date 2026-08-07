@@ -10,7 +10,8 @@
       "toggleTheme": "Design umschalten",
       "switchToZh": "Zu Chinesisch wechseln",
       "switchToEn": "Zu Englisch wechseln",
-      "selectLanguage": "Sprache auswählen"
+      "selectLanguage": "Sprache auswählen",
+      "teams": "Teams"
     },
     "palette": {
       "ariaLabel": "Befehlspalette",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Teams",
+    "subtitle": "Agenten-Teams, die sich über einen gemeinsamen Posteingang koordinieren",
+    "loadError": "Teams konnten nicht geladen werden.",
+    "emptyTitle": "Noch keine Teams",
+    "emptyBody": "Teams werden mit `li team create` erstellt und koordinieren sich über einen gemeinsamen Posteingang.",
+    "table": {
+      "name": "Name",
+      "members": "Mitglieder",
+      "lastModified": "Zuletzt geändert",
+      "oneMember": "1 Mitglied",
+      "memberCount": "{count} Mitglieder"
+    },
+    "loadMore": "Mehr laden",
+    "loadingMore": "Wird geladen…",
+    "detail": {
+      "close": "Schließen",
+      "members": "Mitglieder",
+      "created": "Erstellt",
+      "messages": "Nachrichten ({count})",
+      "noMessages": "Noch keine Nachrichten."
+    }
   }
 }

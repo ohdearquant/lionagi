@@ -10,7 +10,8 @@
       "toggleTheme": "Toggle theme",
       "switchToZh": "Switch to Chinese",
       "switchToEn": "Switch to English",
-      "selectLanguage": "Select language"
+      "selectLanguage": "Select language",
+      "teams": "Teams"
     },
     "palette": {
       "ariaLabel": "Command palette",
@@ -1117,5 +1118,28 @@
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
+  },
+  "teams": {
+    "title": "Teams",
+    "subtitle": "Crews of agents coordinating through a shared inbox",
+    "loadError": "Failed to load teams.",
+    "emptyTitle": "No teams yet",
+    "emptyBody": "Teams are created with `li team create` and coordinate through a shared inbox.",
+    "table": {
+      "name": "Name",
+      "members": "Members",
+      "lastModified": "Last modified",
+      "oneMember": "1 member",
+      "memberCount": "{count} members"
+    },
+    "loadMore": "Load more",
+    "loadingMore": "Loading…",
+    "detail": {
+      "close": "Close",
+      "members": "Members",
+      "created": "Created",
+      "messages": "Messages ({count})",
+      "noMessages": "No messages yet."
+    }
   }
 }
