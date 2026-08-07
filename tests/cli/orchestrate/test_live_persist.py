@@ -722,6 +722,36 @@ async def test_stop_closes_db_even_if_bookmark_update_fails(
     assert _aiosqlite_thread_count() <= before
 
 
+async def test_stop_does_not_claim_a_terminal_status_the_db_never_recorded(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If a later write inside teardown raises after an earlier one already
+    committed, the returned status must reflect what is durably persisted
+    (still "running"), never the terminal status the caller asked for."""
+    env = _minimal_env()
+    await start_live_persist(env)
+    session_id = env._live_persist["session_id"]
+
+    async def boom(self, session_id, verification):
+        raise RuntimeError("simulated artifact verification write failure")
+
+    monkeypatch.setattr(StateDB, "update_artifact_verification", boom)
+
+    final_status = await stop_live_persist(env, status="completed")
+
+    assert final_status != "completed"
+
+    checker = StateDB(temp_db_path)
+    await checker.open()
+    try:
+        row = await checker.get_session(session_id)
+        assert row["status"] == "running"
+        assert final_status == row["status"]
+    finally:
+        await checker.close()
+
+
 async def test_stop_with_none_context_is_noop(temp_db_path: Path):
     """If start failed, env._live_persist is None and stop is a no-op."""
     env = _minimal_env()
