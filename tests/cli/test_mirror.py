@@ -1559,6 +1559,38 @@ async def test_codex_mirror_session_does_not_clobber_an_existing_artifacts_path(
     assert row["artifacts_path"] == "/work/first-guess"
 
 
+async def test_idle_codex_rollout_backfills_artifacts_path_from_header_cwd(tmp_path):
+    # An existing row (mirrored before cwd attribution existed, or by a process
+    # that crashed before this pass) has artifacts_path=NULL. A later process
+    # restarts with its offset already restored to EOF -- _read_new_events
+    # yields no records even though the header (re-read on this fresh
+    # _FileState) still carries cwd. Without an idle backfill this row's
+    # artifacts_path would never be set.
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000007"
+    path = tmp_path / "rollout-idle.jsonl"
+    contents = _codex_rollout_lines(uid, "Codex Desktop")
+    path.write_text(contents)
+
+    records = [json.loads(line) for line in contents.splitlines()]
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(db, rollout_uid=uid, records=records, tool_names={}, cwd=None)
+        before = await db.get_session(codex_sid(uid))
+        assert before is not None
+        assert before["artifacts_path"] is None
+
+        # Fresh state (as after a restart), offset restored to EOF.
+        state = _FileState(session_uid="", offset=len(contents.encode()))
+        written = await _mirror_one_codex(db, path, state, {})
+        assert written == 0
+
+        row = await db.get_session(codex_sid(uid))
+    assert row["artifacts_path"] == "/x"
+
+
 async def test_partial_header_defers_classification_instead_of_bypassing_it(tmp_path):
     """A rollout whose first line is still being written must not settle its
     classification: committing the head check on an unreadable header would let

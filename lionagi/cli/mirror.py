@@ -123,6 +123,11 @@ class _FileState:
     # session of its own. Derived from the head peek, so it is re-derived after
     # a restart rather than persisted.
     orchestrated: bool = False
+    # Whether an idle-Codex-session provenance backfill was attempted this
+    # process. A rollout already fully read (offset restored at EOF) recovers
+    # cwd from its header but never reaches mirror_session again, so without
+    # this the backfill would otherwise be retried every poll forever.
+    codex_provenance_peeked: bool = False
 
 
 @dataclass
@@ -422,6 +427,26 @@ async def _attribute_idle(db, state: _FileState, cwd: str) -> None:
         )
 
 
+async def _attribute_idle_codex(db, state: _FileState) -> None:
+    """Backfill artifacts_path for an already-read Codex rollout.
+
+    ``_mirror_one_codex`` recovers ``cwd`` from the rollout header on the
+    head-check pass, but if the file has no new records that same pass (its
+    offset was restored at EOF, e.g. after a restart), it returns before ever
+    calling ``mirror_session`` — the only place ``set_session_provenance``
+    normally runs for an existing row. Without this, such a row's
+    artifacts_path stays NULL forever, even though the header supplied it.
+    """
+    from lionagi.state.codex_mirror import session_db_id
+
+    if not state.session_uid or not state.cwd:
+        return
+    row = await db.get_session(session_db_id(state.session_uid))
+    if row is None or row.get("artifacts_path"):
+        return
+    await db.set_session_provenance(session_db_id(state.session_uid), artifacts_path=state.cwd)
+
+
 def _first_prompt(events: list[dict[str, Any]]) -> str | None:
     for e in events:
         if e.get("type") != "user" or e.get("isMeta"):
@@ -651,6 +676,9 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
     records, sources, new_offset, unreadable = _read_new_events(path, state)
     if not records:
         state.offset = new_offset
+        if state.cwd and not state.codex_provenance_peeked:
+            state.codex_provenance_peeked = True
+            await _attribute_idle_codex(db, state)
         return 0
 
     _derive_codex_metadata(state, records)
