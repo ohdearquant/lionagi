@@ -182,7 +182,9 @@ async def get_show(topic: str) -> dict[str, Any] | None:
 
     if db_plays:
         plays = []
+        known_play_names: set[str] = set()
         for p in db_plays:
+            known_play_names.add(p["name"])
             play_dir = show_dir / p["name"]
             plays.append(
                 {
@@ -215,6 +217,28 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                     else (p["depends_on"] or []),
                 }
             )
+        # The plays table is populated once by import_shows() and never
+        # resynced for a show already in the DB, so a play directory created
+        # on disk afterward (e.g. a new gate) has no DB row. Merge those in
+        # from the filesystem so a DB-backed show still reflects live state.
+        if dir_exists:
+            for play_dir in _play_dirs(show_dir):
+                if play_dir.name in known_play_names:
+                    continue
+                meta = _read_json(play_dir / "_meta.json") or {}
+                verdict = _read_json(play_dir / "_verdict.json")
+                try:
+                    updated_at = play_dir.stat().st_mtime
+                except OSError:
+                    updated_at = None
+                plays.append(
+                    {
+                        "name": play_dir.name,
+                        "meta": meta,
+                        "verdict": verdict,
+                        "updated_at": updated_at,
+                    }
+                )
     elif dir_exists:
         plays = []
         for play_dir in _play_dirs(show_dir):
@@ -251,14 +275,15 @@ async def get_show(topic: str) -> dict[str, Any] | None:
 
 async def list_gated_plays() -> list[dict[str, Any]]:
     """Every play, across every show, currently sitting in the ``gated``
-    lifecycle status — read live (DB-first per show, filesystem fallback),
-    the same precedence ``get_show()`` uses.
+    lifecycle status — read live (DB rows merged with any disk-only play
+    directories), the same merge ``get_show()`` performs.
 
     The ``plays`` table is populated once by ``import_shows()`` and never
     resynced afterward (a show already in the DB is skipped on re-import),
-    so it cannot be trusted as a live source on its own; a show never
-    imported has no DB row at all. Going through ``get_show()`` per show
-    gets the same fallback it already implements instead of duplicating it.
+    so it cannot be trusted as a live source on its own; a play directory
+    created after import has no DB row, and a show never imported has no DB
+    row at all. Going through ``get_show()`` per show gets the same merge it
+    already implements instead of duplicating it.
     """
     shows = await list_shows()
     out: list[dict[str, Any]] = []

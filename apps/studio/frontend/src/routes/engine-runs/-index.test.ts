@@ -13,8 +13,8 @@ describe("validateEngineRunsSearch", () => {
     ).toEqual({ kind: "coding", status: "failed", session_id: "sess-1", s: "run-1" });
   });
 
-  it("drops empty or non-string values", () => {
-    expect(validateEngineRunsSearch({ kind: "", status: 3, session_id: undefined })).toEqual({});
+  it("drops an empty or absent kind and session_id", () => {
+    expect(validateEngineRunsSearch({ kind: "", session_id: undefined })).toEqual({});
   });
 
   it("keeps every backend-recognized status", () => {
@@ -23,8 +23,12 @@ describe("validateEngineRunsSearch", () => {
     }
   });
 
-  it("rejects a status the backend never emits, rather than passing it through as an unfiltered request", () => {
-    expect(validateEngineRunsSearch({ status: "never-emitted" })).toEqual({});
+  it("rejects a non-string status instead of silently sending an unfiltered request", () => {
+    expect(() => validateEngineRunsSearch({ status: 3 })).toThrow();
+  });
+
+  it("rejects a status the backend never emits instead of silently sending an unfiltered request", () => {
+    expect(() => validateEngineRunsSearch({ status: "never-emitted" })).toThrow();
   });
 
   it("returns an empty object for no search", () => {

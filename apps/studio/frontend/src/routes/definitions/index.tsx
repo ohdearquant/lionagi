@@ -24,9 +24,16 @@ export interface DefinitionsRouteSearch {
 const KINDS = ["agent", "playbook"] as const;
 
 export function validateDefinitionsSearch(search: Record<string, unknown>): DefinitionsRouteSearch {
-  return typeof search.kind === "string" && (KINDS as readonly string[]).includes(search.kind)
-    ? { kind: search.kind as DefinitionsRouteSearch["kind"] }
-    : {};
+  if (search.kind === undefined || search.kind === "") {
+    return {};
+  }
+  // A present-but-invalid kind (wrong type, or a value the backend never
+  // emits) must not silently disappear into "no filter" — that would widen
+  // the request to every definition instead of rejecting the bad input.
+  if (typeof search.kind === "string" && (KINDS as readonly string[]).includes(search.kind)) {
+    return { kind: search.kind as DefinitionsRouteSearch["kind"] };
+  }
+  throw new Error(`invalid definition kind: ${JSON.stringify(search.kind)}`);
 }
 
 export const Route = createFileRoute("/definitions/")({

@@ -38,6 +38,16 @@ function engineStatus(v: unknown): (typeof STATUSES)[number] | undefined {
 }
 
 export function validateEngineRunsSearch(search: Record<string, unknown>): EngineRunsRouteSearch {
+  // A present-but-invalid status (wrong type, or a value the backend never
+  // emits) must not silently disappear into "no filter" — that would widen
+  // the request to every run instead of rejecting the bad input.
+  if (
+    search.status !== undefined &&
+    search.status !== "" &&
+    engineStatus(search.status) === undefined
+  ) {
+    throw new Error(`invalid engine run status: ${JSON.stringify(search.status)}`);
+  }
   return {
     ...(str(search.kind) ? { kind: str(search.kind) } : {}),
     ...(engineStatus(search.status) ? { status: engineStatus(search.status) } : {}),

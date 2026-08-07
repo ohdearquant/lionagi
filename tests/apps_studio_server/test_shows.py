@@ -166,6 +166,43 @@ def test_gated_plays_excludes_non_gated_plays(patched_app, show_with_play):
     assert r.json() == []
 
 
+def test_gated_plays_surfaces_a_gate_created_after_import(shows_root: Path, patched_app):
+    """import_shows() populates the plays table once; a play directory
+    created afterward has no DB row. The gated queue must still see it
+    rather than reading only the stale DB mirror.
+
+    Regression for: a show imported while play-0 is running, then the
+    external director creates play-1/_meta.json with status 'gated' — the
+    queue must not silently omit it.
+    """
+    import lionagi.studio.services.shows as shows_mod
+
+    from ._helpers import run_async
+
+    topic = "imported-show"
+    show_dir = shows_root / topic
+    play0 = show_dir / "play-0"
+    play0.mkdir(parents=True)
+    (show_dir / "_show.md").write_text(f"# Show: {topic}\n")
+    (play0 / "_meta.json").write_text(
+        json.dumps({"status": "running", "started_at": "2024-01-01T00:00:00Z"})
+    )
+
+    run_async(shows_mod.import_shows())
+
+    play1 = show_dir / "play-1"
+    play1.mkdir()
+    (play1 / "_meta.json").write_text(
+        json.dumps({"status": "gated", "started_at": "2024-01-02T00:00:00Z"})
+    )
+
+    r = patched_app.get("/api/shows/gated-plays")
+    assert r.status_code == 200
+    items = r.json()
+    play_names = {item["play_name"] for item in items}
+    assert "play-1" in play_names, f"gated play created after import missing from queue: {items!r}"
+
+
 # ---------------------------------------------------------------------------
 # Path traversal tests (Fix 1)
 # ---------------------------------------------------------------------------

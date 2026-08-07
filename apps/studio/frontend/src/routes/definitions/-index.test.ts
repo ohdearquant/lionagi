@@ -20,10 +20,13 @@ describe("validateDefinitionsSearch", () => {
     expect(validateDefinitionsSearch({ kind: "agent" })).toEqual({ kind: "agent" });
   });
 
-  it("drops an empty or non-string kind", () => {
+  it("drops an empty or absent kind", () => {
     expect(validateDefinitionsSearch({ kind: "" })).toEqual({});
-    expect(validateDefinitionsSearch({ kind: 1 })).toEqual({});
     expect(validateDefinitionsSearch({})).toEqual({});
+  });
+
+  it("rejects a non-string kind instead of silently sending an unfiltered request", () => {
+    expect(() => validateDefinitionsSearch({ kind: 1 })).toThrow();
   });
 
   it("keeps every backend-recognized kind", () => {
@@ -31,8 +34,8 @@ describe("validateDefinitionsSearch", () => {
     expect(validateDefinitionsSearch({ kind: "playbook" })).toEqual({ kind: "playbook" });
   });
 
-  it("rejects a kind the backend never emits, rather than passing it through as an unfiltered request", () => {
-    expect(validateDefinitionsSearch({ kind: "widget" })).toEqual({});
+  it("rejects a kind the backend never emits instead of silently sending an unfiltered request", () => {
+    expect(() => validateDefinitionsSearch({ kind: "widget" })).toThrow();
   });
 });
 
