@@ -77,6 +77,24 @@ def _normalize_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+_SCALAR_FRONTMATTER_TYPES = (str, int, float, bool, type(None))
+
+
+def _display_scalar(value: Any) -> Any:
+    """Return the display form of a scalar-shaped frontmatter value; a
+    mapping or list is returned unchanged, not ``str()``-coerced.
+
+    A ``str()`` call accepts any input, so coercing a nested mapping before
+    it reaches :func:`redaction.project_agent_fields` would turn it into a
+    plain string -- a shape the classification table's scalar check admits
+    verbatim, defeating the very check meant to catch it. Leaving a non-scalar
+    value's real shape intact lets that check see and drop it instead.
+    """
+    if isinstance(value, _SCALAR_FRONTMATTER_TYPES):
+        return str(value) if value not in (None, "") else ""
+    return value
+
+
 def _canonical_model(model: Any, provider: Any) -> str:
     model_s = str(model or "").strip()
     if not model_s:
@@ -101,8 +119,8 @@ def list_agents() -> list[dict[str, Any]]:
         entry: dict[str, Any] = {
             "name": path.stem,
             "path": public_path(path),
-            "provider": str(fm.get("provider") or ""),
-            "model": str(fm.get("model") or ""),
+            "provider": _display_scalar(fm.get("provider")),
+            "model": _display_scalar(fm.get("model")),
             "description": str(fm.get("description") or ""),
             **{k: v for k, v in fm.items() if k not in ("model", "description", "provider")},
         }
@@ -134,8 +152,8 @@ def get_agent(name: str) -> dict[str, Any] | None:
     result: dict[str, Any] = {
         "name": stem,
         "path": public_path(path),
-        "provider": str(fm.get("provider") or ""),
-        "model": str(fm.get("model") or ""),
+        "provider": _display_scalar(fm.get("provider")),
+        "model": _display_scalar(fm.get("model")),
         "system_prompt": fm.get("system_prompt") or (body if body else None),
         "guidance": fm.get("guidance") or None,
     }

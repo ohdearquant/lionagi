@@ -99,8 +99,18 @@ def abbreviate_path(value: Any) -> str:
     """Reduce a filesystem path to its bare filename -- shared by every route
     that carries a ``path``/``disk_path``/``symlink_target`` field, whether
     that field lives inside a profile record (:func:`project_agent_fields`)
-    or in a definitions-route envelope built around one."""
-    return Path(str(value)).name
+    or in a definitions-route envelope built around one.
+
+    Raises ``TypeError`` for anything that is not path-like -- a mapping or
+    list under one of these keys is not a path with an unusual shape, it is
+    unrecognized content wearing a path key's name, and ``str()``-serializing
+    it would carry that content through in the returned filename. Callers
+    that read these keys from owner-authored data (:func:`project_agent_fields`)
+    must treat the error as "drop this field", not fall back to serializing it.
+    """
+    if not isinstance(value, (str, os.PathLike)):
+        raise TypeError(f"abbreviate_path() requires a path-like value, got {type(value).__name__}")
+    return Path(value).name
 
 
 def project_agent_fields(entry: Mapping[str, Any], *, redact: bool) -> dict[str, Any]:
@@ -124,7 +134,10 @@ def project_agent_fields(entry: Mapping[str, Any], *, redact: bool) -> dict[str,
             # shape, not for whatever an owner-authored profile nested there.
         elif key in _PATH_KEYS:
             if value not in (None, ""):
-                out[key] = abbreviate_path(value)
+                try:
+                    out[key] = abbreviate_path(value)
+                except TypeError:
+                    pass  # malformed path value -- dropped, not abbreviated
         elif key in _TEXT_REDACT_KEYS:
             if value not in (None, ""):
                 out[key] = _placeholder(value)

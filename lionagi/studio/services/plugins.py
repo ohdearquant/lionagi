@@ -13,7 +13,7 @@ from lionagi.libs.path_safety import has_traversal
 from ..registry import studio_route
 from ._io import read_json_file as _read_json
 from ._path_safety import public_path, safe_path_join
-from .redaction import demo_mode_enabled, project_agent_fields
+from .redaction import abbreviate_path, demo_mode_enabled, project_agent_fields
 
 _THIS = Path(__file__).resolve()
 _REPO_ROOT = _THIS.parents[3]  # lionagi/studio/services/plugins.py → parents[3] = repo root
@@ -120,8 +120,17 @@ def _plugin_detail(
     name: str,
     description: str,
     source: str,
+    *,
+    redact: bool = False,
 ) -> dict[str, Any]:
-    """Build the full detail dict for get_plugin() from a plugin directory."""
+    """Build the full detail dict for get_plugin() from a plugin directory.
+
+    ``redact=True`` projects the embedded ``agents`` records and the
+    filesystem ``path`` through the same classification table the dedicated
+    ``/plugins/{plugin}/agents/{agent}`` route already applies -- this route
+    otherwise returns those agents' descriptions and the on-disk path
+    unfiltered, mirroring content a sibling route already redacts.
+    """
     summary = _plugin_summary(plugin_dir, name, description, source)
     skills = _scan_skills(plugin_dir)
     agents = _scan_agents(plugin_dir)
@@ -143,6 +152,12 @@ def _plugin_detail(
             readme = readme_path.read_text()
         except OSError:
             pass
+
+    if redact:
+        summary = dict(summary)
+        if summary.get("path"):
+            summary["path"] = abbreviate_path(summary["path"])
+        agents = [project_agent_fields(a, redact=True) for a in agents]
 
     return {
         **summary,
@@ -244,15 +259,15 @@ def list_plugins() -> list[dict[str, Any]]:
     return out
 
 
-def get_plugin(name: str) -> dict[str, Any] | None:
+def get_plugin(name: str, *, redact: bool = False) -> dict[str, Any] | None:
     """Full plugin detail including skills, agents, hooks, mcp, readme."""
     for plugin_dir, pname, desc in _iter_marketplace_plugins():
         if pname == name:
-            return _plugin_detail(plugin_dir, pname, desc, "marketplace")
+            return _plugin_detail(plugin_dir, pname, desc, "marketplace", redact=redact)
 
     for plugin_dir, pname, desc, mp_name in _iter_thirdparty_plugins():
         if pname == name:
-            return _plugin_detail(plugin_dir, pname, desc, mp_name)
+            return _plugin_detail(plugin_dir, pname, desc, mp_name, redact=redact)
 
     return None
 
@@ -331,7 +346,7 @@ async def list_plugins_endpoint() -> dict[str, Any]:
 
 @studio_route("/plugins/{name}", method="GET", area="plugins")
 async def get_plugin_endpoint(name: str) -> dict[str, Any]:
-    plugin = await anyio.to_thread.run_sync(partial(get_plugin, name))
+    plugin = await anyio.to_thread.run_sync(partial(get_plugin, name, redact=demo_mode_enabled()))
     if not plugin:
         raise HTTPException(status_code=404, detail=f"Plugin {name} not found")
     return plugin

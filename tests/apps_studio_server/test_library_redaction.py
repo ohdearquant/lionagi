@@ -521,6 +521,182 @@ def test_negative_control_projection_disabled_leaks_by_default(tmp_path, monkeyp
 
 
 # ---------------------------------------------------------------------------
+# /api/plugins/{name} embeds each agent's {name, description} and the
+# plugin's on-disk path directly -- it must project both through the same
+# table the dedicated /plugins/{plugin}/agents/{agent} route already applies,
+# not mirror them unfiltered one path segment over.
+# ---------------------------------------------------------------------------
+
+
+def test_plugin_detail_route_redacts_nested_agents_and_path(tmp_path, monkeypatch):
+    import lionagi.studio.services.plugins as plugins_mod
+
+    client, _agents_dir = _make_redaction_client(tmp_path, monkeypatch)
+
+    plugin_dir = tmp_path / "fakeplugin3"
+    plugin_agents_dir = plugin_dir / "agents"
+    plugin_agents_dir.mkdir(parents=True)
+    (plugin_agents_dir / "critic.md").write_text(
+        f"---\ndescription: {DESCRIPTION_SENTINEL}\n---\n\nbody\n"
+    )
+    monkeypatch.setattr(
+        plugins_mod,
+        "_iter_marketplace_plugins",
+        lambda: [(plugin_dir, "fakeplugin3", "a fake plugin")],
+    )
+    monkeypatch.setattr(plugins_mod, "_iter_thirdparty_plugins", lambda: [])
+    # A deterministic, multi-segment path so the redacted response is
+    # distinguishable from a bare plugin-directory name either way.
+    monkeypatch.setattr(plugins_mod, "public_path", lambda p, **kw: f"marketplace/{p.name}/nested")
+
+    # Must-MATCH arm: with the switch off, both the agent description and the
+    # full on-disk path are served as-is.
+    normal = client.get("/api/plugins/fakeplugin3")
+    assert normal.status_code == 200, normal.text
+    assert DESCRIPTION_SENTINEL in normal.text
+    assert normal.json()["path"] == "marketplace/fakeplugin3/nested"
+
+    # Must-NOT-match arm: with the switch on, the embedded agent's
+    # description is redacted and the path is abbreviated to a bare name.
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    redacted = client.get("/api/plugins/fakeplugin3")
+    assert redacted.status_code == 200, redacted.text
+    assert DESCRIPTION_SENTINEL not in redacted.text
+    body = redacted.json()
+    assert body["agents"][0]["name"] == "critic"
+    assert body["path"] == "nested"
+
+
+# ---------------------------------------------------------------------------
+# A scalar-shaped safe key's guard is only as good as the value it inspects.
+# list_agents()/get_agent() used to str()-coerce provider/model *before* the
+# classification table saw them, so a nested mapping smuggled in under
+# `provider` in real YAML frontmatter became a plain string the table's
+# scalar check waved through. This plants the nested value in an actual
+# on-disk agent file (not a monkeypatched, already-dict-shaped MCP row) so
+# the service layer's own coercion is what's under test.
+# ---------------------------------------------------------------------------
+
+
+def test_nested_provider_from_real_yaml_frontmatter_is_dropped(tmp_path, monkeypatch):
+    from lionagi.studio.operator import application_mcp
+
+    from ._helpers import run_async
+
+    client, agents_dir = _make_redaction_client(tmp_path, monkeypatch)
+    _write_agent_md(
+        agents_dir / "nestedprovider.md",
+        f"""\
+        ---
+        provider:
+          leaked: {NESTED_SECRET}
+        model: claude-sonnet-4-6
+        lion_system: false
+        ---
+
+        body text
+        """,
+    )
+
+    normal_list = client.get("/api/agents/")
+    assert NESTED_SECRET in normal_list.text
+
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    redacted_list = client.get("/api/agents/")
+    redacted_detail = client.get("/api/agents/nestedprovider")
+    assert redacted_list.status_code == 200, redacted_list.text
+    assert redacted_detail.status_code == 200, redacted_detail.text
+    assert NESTED_SECRET not in redacted_list.text
+    assert NESTED_SECRET not in redacted_detail.text
+
+    entry = next(a for a in redacted_list.json()["agents"] if a["name"] == "nestedprovider")
+    assert entry.get("provider") is None
+    assert redacted_detail.json().get("provider") is None
+
+    # Same real file, read through the Operator's MCP roster.
+    result = run_async(application_mcp.list_agents({"limit": 10}))
+    assert NESTED_SECRET not in str(result)
+    row = next(a for a in result["agents"] if a["name"] == "nestedprovider")
+    assert row["provider"] is None
+
+
+# ---------------------------------------------------------------------------
+# abbreviate_path() must refuse to str()-serialize a non-path-like value
+# rather than smuggle its content through as a "filename" -- a `path:` key
+# collides with the reserved field project_agent_fields adds for every
+# profile record.
+# ---------------------------------------------------------------------------
+
+
+def test_abbreviate_path_rejects_non_path_like_value():
+    from lionagi.studio.services.redaction import abbreviate_path
+
+    with pytest.raises(TypeError):
+        abbreviate_path({"leaked": "x"})
+    with pytest.raises(TypeError):
+        abbreviate_path(["x"])
+    assert abbreviate_path("some/dir/file.md") == "file.md"
+
+
+def test_malformed_path_frontmatter_value_is_dropped_not_serialized(tmp_path, monkeypatch):
+    client, agents_dir = _make_redaction_client(tmp_path, monkeypatch)
+    _write_agent_md(
+        agents_dir / "pathagent.md",
+        f"""\
+        ---
+        provider: claude
+        model: claude-sonnet-4-6
+        path:
+          leaked: {NESTED_SECRET}
+        lion_system: false
+        ---
+
+        body text
+        """,
+    )
+
+    # Must-MATCH arm: with the switch off, the raw file (including its
+    # colliding `path:` frontmatter key) is served as-is.
+    normal_definition = client.get("/api/definitions/agent/pathagent")
+    assert normal_definition.status_code == 200, normal_definition.text
+    assert NESTED_SECRET in normal_definition.text
+
+    # Must-NOT-match arm: with the switch on, the malformed path value is
+    # dropped rather than str()-serialized into the response.
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    redacted_definition = client.get("/api/definitions/agent/pathagent")
+    assert redacted_definition.status_code == 200, redacted_definition.text
+    assert NESTED_SECRET not in redacted_definition.text
+
+
+# ---------------------------------------------------------------------------
+# snapshot_current() re-saves any definition whose disk content differs from
+# its latest stored version. The internal equality check must compare
+# against the raw stored content, not get_version()'s redacted response text
+# -- otherwise an unchanged agent file in demo mode never matches its own
+# redacted-placeholder comparison and gets re-snapshotted on every call.
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_current_does_not_resnapshot_unchanged_agent_in_demo_mode(tmp_path, monkeypatch):
+    client, agents_dir = _make_redaction_client(tmp_path, monkeypatch)
+    _write_agent_md(agents_dir / "snapagent.md", FIXTURE_AGENT_MD)
+
+    first = client.post("/api/definitions/snapshot", params={"kind": "agent"})
+    assert first.status_code == 200, first.text
+    assert first.json()["snapshots_created"] == 1
+
+    monkeypatch.setenv("LIONAGI_STUDIO_DEMO_MODE", "true")
+    second = client.post("/api/definitions/snapshot", params={"kind": "agent"})
+    assert second.status_code == 200, second.text
+    assert second.json()["snapshots_created"] == 0
+
+    current = client.get("/api/definitions/agent/snapagent")
+    assert current.status_code == 200, current.text
+    assert current.json()["version"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Route-enumeration coverage: fails loudly when a new route is registered
 # under an area that reads agent-profile content without a redaction
 # decision having been made for it.

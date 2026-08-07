@@ -459,7 +459,11 @@ async def snapshot_current(kind: str | None = None) -> int:
         content = await anyio.to_thread.run_sync(disk_path.read_text)
 
         if d["has_versions"]:
-            latest = await get_version(d["kind"], d["name"], d["version"])
+            # Compare against the raw stored version, not get_version()'s
+            # response-facing (possibly redacted) content -- otherwise an
+            # unchanged agent file in demo mode never matches its own
+            # redacted-placeholder comparison and gets re-snapshotted every call.
+            latest = await _read_version_row(d["kind"], d["name"], d["version"])
             if latest and latest["content"] == content:
                 continue
 
