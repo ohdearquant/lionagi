@@ -429,6 +429,10 @@
       "noMessages": "chưa ghi nhận tin nhắn",
       "waitingEvents": "đang chờ sự kiện vòng đời…",
       "noEvents": "chưa ghi nhận sự kiện vòng đời",
+      "showOlderEvents": "Hiển thị {count, number} sự kiện cũ hơn",
+      "expandEventDetails": "Hiển thị chi tiết sự kiện",
+      "gateOutcome": "Cổng: {verdict} · {major} lớn, {minor} nhỏ",
+      "gateOutcomeSimple": "Cổng: {verdict}",
       "live": "trực tiếp",
       "noBranchErrors": "không phát hiện lỗi trên bất kỳ nhánh nào.",
       "noFiles": "không phát hiện thao tác tệp.",
@@ -980,6 +984,8 @@
     "roleUser": "người dùng",
     "roleThinking": "đang nghĩ",
     "roleResponse": "phản hồi",
+    "planAssignments": "{count, plural, other {# phân công}}",
+    "planDependsOn": "phụ thuộc vào:",
     "tabAria": "thẻ {label} {position}/{total}"
   },
   "workflow": {

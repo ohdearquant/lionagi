@@ -429,6 +429,10 @@
       "noMessages": "Tidak ada pesan tercatat",
       "waitingEvents": "Menunggu peristiwa siklus hidup…",
       "noEvents": "Tidak ada peristiwa siklus hidup tercatat",
+      "showOlderEvents": "Tampilkan {count, number} peristiwa yang lebih lama",
+      "expandEventDetails": "Tampilkan detail peristiwa",
+      "gateOutcome": "Gate: {verdict} · {major} besar, {minor} kecil",
+      "gateOutcomeSimple": "Gate: {verdict}",
       "live": "live",
       "noBranchErrors": "Tidak ada kesalahan terdeteksi di semua branch.",
       "noFiles": "Tidak ada operasi file terdeteksi.",
@@ -980,6 +984,8 @@
     "roleUser": "pengguna",
     "roleThinking": "berpikir",
     "roleResponse": "respons",
+    "planAssignments": "{count, plural, other {# penugasan}}",
+    "planDependsOn": "bergantung pada:",
     "tabAria": "tab {label} {position} dari {total}"
   },
   "workflow": {

@@ -1093,7 +1093,16 @@ async def stream_signals(session_id: str) -> Any:
                     if row["seq"] > after_seq:
                         after_seq = row["seq"]
                 last_heartbeat = time.monotonic()
-            elif time.monotonic() - last_heartbeat >= 5.0:
+                # get_signals_after is itself page-limited, so a non-empty
+                # batch does not mean the client is caught up to the tip —
+                # loop again immediately instead of falling through to the
+                # done-check below. Checking "done" here would let a
+                # long-completed session's first (oldest) page read as the
+                # whole stream and close the connection before the rest ever
+                # sends.
+                continue
+
+            if time.monotonic() - last_heartbeat >= 5.0:
                 yield 'data: {"type":"heartbeat"}\n\n'
                 last_heartbeat = time.monotonic()
 

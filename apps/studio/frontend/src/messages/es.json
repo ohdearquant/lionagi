@@ -429,6 +429,10 @@
       "noMessages": "No hay mensajes registrados",
       "waitingEvents": "Esperando eventos de ciclo de vida…",
       "noEvents": "No hay eventos de ciclo de vida registrados",
+      "showOlderEvents": "Mostrar {count, number} eventos anteriores",
+      "expandEventDetails": "Mostrar detalles del evento",
+      "gateOutcome": "Puerta: {verdict} · {major} mayores, {minor} menores",
+      "gateOutcomeSimple": "Puerta: {verdict}",
       "live": "en vivo",
       "noBranchErrors": "No se detectaron errores en ninguna rama.",
       "noFiles": "No se detectaron operaciones de archivo.",
@@ -980,6 +984,8 @@
     "roleUser": "usuario",
     "roleThinking": "pensando",
     "roleResponse": "respuesta",
+    "planAssignments": "{count, plural, one {# asignación} other {# asignaciones}}",
+    "planDependsOn": "depende de:",
     "tabAria": "pestaña {label} {position} de {total}"
   },
   "workflow": {
