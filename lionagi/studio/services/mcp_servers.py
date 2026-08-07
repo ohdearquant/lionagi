@@ -139,11 +139,13 @@ def _sync_mcp_json(servers: dict[str, dict[str, Any]]) -> None:
 # ---------------------------------------------------------------------------
 
 
-# Which fields belong to which transport. The shape check below reads a
-# config's stdio fields only when it has a command and its http fields only
-# when it has a url, so these are the sets a transport switch has to clear --
-# keep them in step with the two branches of _validate_shape. `timeout` and
-# `alwaysAllow` are deliberately in neither: they apply to both transports.
+# Which fields belong to which transport. `_merge_config` clears these -- the
+# ones the patch itself did not supply -- when a save declares the other
+# transport, so a stale command/args/env or url does not survive a switch.
+# `_validate_shape` checks `command`/`url` only for the transport that names
+# them, but `args`/`env` shape-check unconditionally regardless of transport.
+# `timeout` and `alwaysAllow` are deliberately in neither set: they apply to
+# both transports.
 _STDIO_ONLY_FIELDS = ("command", "args", "env")
 _HTTP_ONLY_FIELDS = ("url",)
 
@@ -170,17 +172,21 @@ def _validate_shape(name: str, config: dict[str, Any]) -> list[str]:
             "config must specify either 'command' (stdio transport) or 'url' (http transport)"
         )
 
-    if has_command:
-        if not isinstance(config.get("command"), str):
-            errors.append("'command' must be a string")
-        args = config.get("args", [])
-        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-            errors.append("'args' must be a list of strings")
-        env = config.get("env", {})
-        if not isinstance(env, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) for k, v in env.items()
-        ):
-            errors.append("'env' must be an object mapping string names to string values")
+    if has_command and not isinstance(config.get("command"), str):
+        errors.append("'command' must be a string")
+
+    # `args`/`env` are checked whenever either key is present in the config,
+    # not only for a stdio transport: a malformed value is malformed whether
+    # or not the selected transport happens to read it, and this validator
+    # is the only place that sees the config before it reaches disk.
+    args = config.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        errors.append("'args' must be a list of strings")
+    env = config.get("env", {})
+    if not isinstance(env, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+    ):
+        errors.append("'env' must be an object mapping string names to string values")
 
     if has_url:
         url = config.get("url")
@@ -360,12 +366,17 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
     any other wrong-typed value; the typed empty list is the actual way to
     clear it.
 
-    A transport switch drops every field belonging to the transport being
-    left, not just the one that names it. The shape check only requires
-    exactly one of ``command``/``url``, so an http entry that kept the old
-    ``args`` and ``env`` would still validate -- and the derived ``.mcp.json``
-    would then hand every reader a set of stdio arguments and secrets that
-    the chosen transport never uses.
+    A transport switch drops every *leftover* field belonging to the
+    transport being left, not just the one that names it. The shape check
+    only requires exactly one of ``command``/``url``, so an http entry that
+    kept the old ``args`` and ``env`` would still validate -- and the derived
+    ``.mcp.json`` would then hand every reader a set of stdio arguments and
+    secrets that the chosen transport never uses. This only clears fields the
+    patch itself did not touch: a field the caller explicitly supplied in the
+    same patch (well-formed or not) is left for `_validate_shape` to judge on
+    its own merits instead of being silently discarded before validation
+    ever sees it -- otherwise a malformed ``env`` sent alongside a fresh
+    ``url`` would vanish rather than being rejected.
     """
     merged = dict(existing)
     for key in ("command", "args", "url", "timeout", "alwaysAllow"):
@@ -398,10 +409,12 @@ def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
 
     if patch.get("url"):
         for key in _STDIO_ONLY_FIELDS:
-            merged.pop(key, None)
+            if key not in patch:
+                merged.pop(key, None)
     if patch.get("command"):
         for key in _HTTP_ONLY_FIELDS:
-            merged.pop(key, None)
+            if key not in patch:
+                merged.pop(key, None)
 
     return merged
 

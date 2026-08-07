@@ -794,6 +794,98 @@ def test_create_time_malformed_falsy_values_are_rejected_not_laundered(
     )
 
 
+# ---------------------------------------------------------------------------
+# URL-transport parity -- `_validate_shape` used to gate every args/env shape
+# check behind `has_command`, so a URL config (no `command` at all) skipped
+# them outright; `_merge_config` separately laundered a fresh url+malformed
+# patch by popping the stdio-only fields before `_validate_shape` ever saw
+# them. Both mechanisms are covered here, for both create-time (url and the
+# malformed field in the same request) and update-time (a patch that edits
+# only the malformed field on an already-registered url server, never
+# resending `url`) -- the two shapes each mechanism above was specific to.
+# ---------------------------------------------------------------------------
+
+_URL_MALFORMED_PATCH_CORPUS = [
+    ("env_list", {"env": []}),
+    ("env_empty_string", {"env": ""}),
+    ("env_int", {"env": 0}),
+    ("env_false", {"env": False}),
+    ("args_null", {"args": None}),
+    ("args_empty_string", {"args": ""}),
+    ("args_dict", {"args": {}}),
+]
+
+
+@pytest.mark.parametrize("case_name,patch", _URL_MALFORMED_PATCH_CORPUS)
+def test_url_transport_create_time_malformed_args_env_are_rejected(mcp_client, case_name, patch):
+    """`timeout` already rejected regardless of transport; this is the same
+    guarantee for `args`/`env` on a server that has no `command` at all."""
+    name = f"url-fresh-{case_name}"
+    body = {"name": name, **URL_CONFIG, **patch}
+
+    validate_resp = mcp_client.post(f"/api/mcp/servers/{name}/validate", json=body)
+    assert validate_resp.status_code == 200
+    assert validate_resp.json()["ok"] is False, f"{case_name}: validate accepted {patch!r}"
+    assert validate_resp.json()["errors"]
+
+    register_resp = mcp_client.post("/api/mcp/servers/", json=body)
+    assert register_resp.status_code == 400, (
+        f"{case_name}: register accepted {patch!r} ({register_resp.text})"
+    )
+    assert mcp_client.get("/api/mcp/servers/").json()["servers"] == []
+
+
+@pytest.mark.parametrize("case_name,patch", _URL_MALFORMED_PATCH_CORPUS)
+def test_url_transport_update_time_malformed_args_env_are_rejected(
+    mcp_client, tmp_path, case_name, patch
+):
+    """The shape the create-time corpus above cannot exercise: a save that
+    edits only `args`/`env` on an already-registered url server without
+    resending `url`, so `_merge_config`'s transport-switch pop (keyed on
+    `patch.get("url")`) never fires and the malformed value would otherwise
+    sit in `merged` unexamined by a `has_command`-gated check."""
+    mcp_client.post("/api/mcp/servers/", json={"name": "myserver", **URL_CONFIG})
+    registry_path = tmp_path / "mcp_servers.json"
+    before = json.loads(registry_path.read_text())
+
+    validate_resp = mcp_client.post(
+        "/api/mcp/servers/myserver/validate", json={"name": "myserver", **patch}
+    )
+    assert validate_resp.status_code == 200
+    assert validate_resp.json()["ok"] is False, f"{case_name}: validate accepted {patch!r}"
+
+    save_resp = mcp_client.put("/api/mcp/servers/myserver", json=patch)
+    assert save_resp.status_code == 400, f"{case_name}: save accepted {patch!r} ({save_resp.text})"
+
+    after = json.loads(registry_path.read_text())
+    assert after == before, f"{case_name}: registry bytes changed on a rejected save"
+
+
+def test_url_transport_well_formed_env_accepted_at_create_time(mcp_client):
+    """The pin for the inert-field question: a well-formed `env` on a URL
+    server is never read by the http transport, but it is not malformed --
+    the norm elsewhere in this service is to accept and store a well-formed
+    inert field rather than reject it, and this is that case for `env`."""
+    resp = mcp_client.post(
+        "/api/mcp/servers/",
+        json={"name": "myserver", **URL_CONFIG, "env": {"TOKEN": "value"}},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["env_keys"] == ["TOKEN"]
+
+
+def test_url_transport_well_formed_env_accepted_on_update_without_url(mcp_client):
+    """Same pin, but as a save that edits only `env` on an already-registered
+    url server without resending `url` -- the shape the transport-switch pop
+    in `_merge_config` must leave alone because the patch itself supplied it."""
+    mcp_client.post("/api/mcp/servers/", json={"name": "myserver", **URL_CONFIG})
+
+    resp = mcp_client.put("/api/mcp/servers/myserver", json={"env": {"TOKEN": "value"}})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["env_keys"] == ["TOKEN"]
+
+
 def test_update_env_empty_list_is_rejected_not_silently_ignored(tmp_path, monkeypatch):
     """Before this fix, `env: []` on an update was normalized to `{}` by
     `patch["env"] or {}` and merged as a no-op -- the existing env survived
