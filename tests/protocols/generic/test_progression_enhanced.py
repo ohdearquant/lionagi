@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -223,11 +224,21 @@ class TestContainsUsesMembers:
 class TestRebuildMembers:
     """_rebuild_members reconstructs _members from order."""
 
-    def test_rebuild_after_manual_order_mutation(self, prog, elems):
-        # Directly mutate order (bypassing normal API) to test _rebuild
+    def test_manual_order_mutation_updates_members_eagerly(self, prog, elems):
+        # order is wrapped in an owning deque (_MembersDeque) that keeps
+        # _members correct on every direct mutation, not just length-changing
+        # ones — see the design rationale in progression.py.
         new_id = uuid4()
         prog.order.append(new_id)
-        # _members is now stale
+        assert new_id in prog._members
+        assert prog._members == set(prog.order)
+
+    def test_rebuild_after_wholesale_order_reassignment(self, prog, elems):
+        # The one remaining staleness case: order replaced wholesale with a
+        # plain (unwrapped) deque bypasses the owning-deque's eager updates
+        # until the next _ensure_synced()-gated call or explicit rebuild.
+        new_id = uuid4()
+        prog.order = deque(list(prog.order) + [new_id])
         assert new_id not in prog._members
         prog._rebuild_members()
         assert new_id in prog._members

@@ -180,6 +180,49 @@ export function sortSchedulesForCards(schedules: ScheduleSummary[]): ScheduleSum
   });
 }
 
+// ─── Health badge derivation ───────────────────────────────────────────────
+// The backend computes health from cadence + recorded schedule_runs rows, so
+// this is a pure display mapping only -- it never re-derives the verdict, it
+// just turns the server's fields into what a badge needs to render.
+
+export type HealthBadgeState =
+  | { kind: "hidden" }
+  | { kind: "healthy" | "failing" | "overdue"; outcome: string | null; outcomeAtMs: number | null }
+  | { kind: "never-fired"; sinceMs: number }
+  | { kind: "no-evidence" };
+
+// The server-declared health_state union is a compile-time contract only --
+// a running server can still send a value this build predates or has never
+// heard of (mid-rollout skew, a state added and rolled back). Record lookups
+// keyed by the declared union (HEALTH_COLOR, HEALTH_LABEL_KEY) crash on
+// anything outside it, so unrecognized values must be caught here, before
+// they reach a badge, and fall back to hidden -- the same neutral no-badge
+// treatment "disabled" already gets.
+const KNOWN_HEALTH_STATES = new Set([
+  "healthy",
+  "failing",
+  "overdue",
+  "never-fired",
+  "no-evidence",
+  "disabled",
+]);
+
+export function scheduleHealthBadge(s: ScheduleSummary): HealthBadgeState {
+  const state = s.health_state;
+  if (!state || !KNOWN_HEALTH_STATES.has(state) || state === "disabled") return { kind: "hidden" };
+  if (state === "never-fired") {
+    return { kind: "never-fired", sinceMs: toMs(s.health_since ?? 0) };
+  }
+  if (state === "no-evidence") {
+    return { kind: "no-evidence" };
+  }
+  return {
+    kind: state,
+    outcome: s.health_last_outcome ?? null,
+    outcomeAtMs: s.health_last_outcome_at != null ? toMs(s.health_last_outcome_at) : null,
+  };
+}
+
 /** Most recent run per schedule, for the table's "last run" column. */
 export function latestRunBySchedule(runs: RunRow[]): Map<string, RunRow> {
   const map = new Map<string, RunRow>();

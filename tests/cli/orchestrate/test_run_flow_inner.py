@@ -161,6 +161,11 @@ def _assert_run_dag_contract(env, *, expected_max_concurrent: int = 2) -> None:
     assert graph is env.builder.get_graph()
     on_branch_created = kwargs.pop("on_branch_created")
     assert callable(on_branch_created)
+    # Always wired now (not just for team-mode runs) — it's also how an
+    # escalation child's CLI transcript gets linked back to this run; it no-ops
+    # for a plain (non-team, non-escalation) node.
+    on_op_complete = kwargs.pop("on_op_complete")
+    assert callable(on_op_complete)
     assert kwargs == {
         "reactive": False,
         "spawn_type": None,
@@ -171,7 +176,6 @@ def _assert_run_dag_contract(env, *, expected_max_concurrent: int = 2) -> None:
         "executor_ref": {},
         "context": None,
         "spawn_branch_setup": None,
-        "on_op_complete": None,
     }
 
 

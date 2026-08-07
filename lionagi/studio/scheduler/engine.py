@@ -225,6 +225,24 @@ def resolve_schedule_timezone(schedule: dict) -> ScheduleTimezone:
         return ScheduleTimezone("UTC", TZ_SOURCE_UTC_UNLOADABLE_NAME, ZoneInfo("UTC"))
 
 
+def resolve_schedule_cadence_seconds(schedule: dict) -> float | None:
+    """Fixed-period cadence *schedule* fires on, or ``None`` if it has none.
+
+    ``interval`` cadence is ``interval_sec`` as declared, with no fallback.
+    ``github_poll`` falls back to ``interval_sec`` and then a 300s default
+    when ``poll_interval_sec`` is unset -- this must stay the single source
+    of that fallback chain, since both the tick loop that decides whether a
+    poll is due and any reader estimating a schedule's health need the same
+    answer. ``cron``/``at`` have no fixed period and resolve to ``None``.
+    """
+    trigger_type = schedule.get("trigger_type")
+    if trigger_type == "interval":
+        return schedule.get("interval_sec")
+    if trigger_type == "github_poll":
+        return schedule.get("poll_interval_sec") or schedule.get("interval_sec") or 300
+    return None
+
+
 class SchedulerCwdInheritRefusedError(RuntimeError):
     """A schedule carrying an explicit execution root could not resolve any of
     its configured directories, so the resolver refused to inherit the
@@ -1034,7 +1052,7 @@ class SchedulerEngine:
             await _worker.worker_tick(db, worker_id=self._task_worker_id, now=now)
 
     async def _tick_github(self, schedule: dict, now: float) -> None:
-        poll_interval = schedule.get("poll_interval_sec") or schedule.get("interval_sec") or 300
+        poll_interval = resolve_schedule_cadence_seconds(schedule)
         last = schedule.get("last_fired_at") or 0
         if now - last < poll_interval:
             return
@@ -1509,12 +1527,32 @@ class SchedulerEngine:
         nothing to reserve or release -- both budget_usd and budget_tokens
         unset means unbounded (always False). Either configured bound
         tripping is sufficient to report exhausted.
+
+        ``spend["cost_usd"]`` is a sum of *reported* cost only -- a session
+        whose engine never priced itself contributes nothing to it, not a
+        confirmed $0. This deliberately does not force exhaustion just
+        because some sessions are unreported (that would turn a data gap
+        into an outage for schedules that are, as far as anyone can tell,
+        fine); it only makes the gap visible via a log line here and via
+        ``unreported_sessions`` in the schedule's spend rollup, so a near-
+        zero reading with many unreported sessions is legible as "unknown",
+        not silently trusted as "cheap".
         """
         budget_usd = schedule.get("budget_usd")
         budget_tokens = schedule.get("budget_tokens")
         if not budget_usd and not budget_tokens:
             return False
         spend = await self._svc.sum_schedule_spend(schedule["id"])
+        if spend.get("unreported_sessions"):
+            _log.warning(
+                "Schedule %s (%s) budget check: %d spawned session(s) never reported "
+                "cost; observed cost_usd=%.4f/tokens=%d may undercount actual spend.",
+                schedule.get("name"),
+                schedule["id"],
+                spend["unreported_sessions"],
+                spend["cost_usd"],
+                spend["tokens"],
+            )
         if budget_usd and spend["cost_usd"] >= budget_usd:
             return True
         if budget_tokens and spend["tokens"] >= budget_tokens:
@@ -1526,7 +1564,27 @@ class SchedulerEngine:
 
         Shared by the two tick-loop fire paths (_maybe_fire, _tick_github);
         fire_now() refuses instead of disabling (mirrors max_runs).
+
+        Re-reads the spend rollup (already read once by the ``_check_budget``
+        call that led here) purely to attach ``unreported_sessions`` to the
+        disable record -- a human reading why a schedule got disabled should
+        be able to tell "spend actually crossed the line" from "spend
+        crossed the line but part of it is unmeasured, so the true total may
+        be higher still". The reread is annotation only: if it fails, the
+        disable and the skip record must still land, with the count marked
+        unknown rather than the enforcement aborted.
         """
+        try:
+            spend = await self._svc.sum_schedule_spend(schedule["id"])
+        except Exception:
+            _log.warning(
+                "Could not re-read the spend rollup for schedule %s while "
+                "disabling it for budget exhaustion; recording the "
+                "unreported-session count as unknown",
+                schedule["id"],
+                exc_info=True,
+            )
+            spend = {}
         _log.info(
             "Schedule %s (%s) has exhausted its budget (budget_usd=%s, budget_tokens=%s); "
             "disabling instead of firing",
@@ -1550,6 +1608,7 @@ class SchedulerEngine:
             metadata={
                 "budget_usd": schedule.get("budget_usd"),
                 "budget_tokens": schedule.get("budget_tokens"),
+                "unreported_sessions": spend.get("unreported_sessions"),
             },
         )
         await self._svc.update_schedule(schedule["id"], enabled=0)
@@ -1558,11 +1617,13 @@ class SchedulerEngine:
         """Evaluate ``schedule["threshold_config"]`` against live metrics.
 
         Returns a breach dict (``metric``, ``op``, ``value`` = observed,
-        ``threshold`` = configured, ``window_minutes``) that renders into
-        ``{{metric}}``/``{{value}}``/``{{threshold}}`` action-prompt
-        templates (see ``_subprocess.render_action_prompt`` and the
-        github_poll precedent it already handles), or ``None`` when the
-        metric is within bounds.
+        ``threshold`` = configured, ``window_minutes``, plus
+        ``unreported_sessions``/``spend_is_partial`` when the metric is
+        ``total_cost_usd`` and some sessions in the window never reported
+        cost) that renders into ``{{metric}}``/``{{value}}``/``{{threshold}}``
+        action-prompt templates (see ``_subprocess.render_action_prompt``
+        and the github_poll precedent it already handles), or ``None`` when
+        the metric is within bounds.
         """
         config = schedule.get("threshold_config")
         if not config:
@@ -1575,13 +1636,22 @@ class SchedulerEngine:
         observed = await self._svc.metric_value(metric, window_start)
         if not _threshold.compare(op, observed, threshold_value):
             return None
-        return {
+        breach: dict[str, Any] = {
             "metric": metric,
             "op": op,
             "value": observed,
             "threshold": threshold_value,
             "window_minutes": window_minutes,
         }
+        # total_cost_usd's COALESCE(SUM(...), 0) reads an unreported session
+        # as $0 -- surface how many sessions in this same window carried no
+        # cost data at all, so a breach (or its absence) isn't mistaken for
+        # a complete reading. Every other metric has no such gap.
+        unreported = await self._svc.metric_unreported_sessions(metric, window_start)
+        if unreported:
+            breach["unreported_sessions"] = unreported
+            breach["spend_is_partial"] = True
+        return breach
 
     async def _advance_next_fire_only(self, schedule: dict, now: float) -> None:
         """Advance next_fire_at without firing the schedule's action.
@@ -2685,14 +2755,11 @@ class SchedulerEngine:
             except Exception:
                 _log.exception("Invalid cron expression: %s", expr)
                 return None
-        elif schedule["trigger_type"] == "interval":
-            interval = schedule.get("interval_sec")
-            if not interval:
+        elif schedule["trigger_type"] in ("interval", "github_poll"):
+            cadence = resolve_schedule_cadence_seconds(schedule)
+            if not cadence:
                 return None
-            return ref_time + interval
-        elif schedule["trigger_type"] == "github_poll":
-            poll = schedule.get("poll_interval_sec") or schedule.get("interval_sec") or 300
-            return ref_time + poll
+            return ref_time + cadence
         elif schedule["trigger_type"] == "at":
             # A point-in-time trigger fires exactly once -- there is no next
             # occurrence to compute. Callers use _next_fire_field() to turn

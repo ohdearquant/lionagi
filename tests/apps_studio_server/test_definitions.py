@@ -146,6 +146,75 @@ async def test_save_new_playbook_definition_lands_in_playbook_catalog(tmp_path, 
     assert any(entry["name"] == "new-one" for entry in catalog)
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_save_definition_rejects_unknown_role_by_default(tmp_path, monkeypatch):
+    """The direct save_definition() entry point validates role/mode by default --
+    the same guard the /definitions/agent/{name} route relies on."""
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    agents_dir = fake_home / "agents"
+    agents_dir.mkdir()
+    playbooks_dir = fake_home / "playbooks"
+    playbooks_dir.mkdir()
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    with pytest.raises(ValueError, match="Unknown cast role"):
+        await defs_mod.save_definition(
+            "agent",
+            "bogus",
+            "---\nrole: not-a-real-role\n---\n\nBody.\n",
+        )
+    assert not (agents_dir / "bogus.md").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_rollback_definition_succeeds_for_already_invalid_historical_version(
+    tmp_path, monkeypatch
+):
+    """A version saved before cast validation existed (or saved with
+    validate=False, e.g. by snapshot_current) must still be reachable by
+    rollback -- the validator added to guard the direct save door must not
+    make an already-malformed historical version un-restorable."""
+    import lionagi.cli._runs as cli_runs_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.definitions as defs_mod
+
+    fake_home = tmp_path / "lionagi_home"
+    fake_home.mkdir()
+    agents_dir = fake_home / "agents"
+    agents_dir.mkdir()
+    playbooks_dir = fake_home / "playbooks"
+    playbooks_dir.mkdir()
+
+    monkeypatch.setattr(cli_runs_mod, "LIONAGI_HOME", fake_home)
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(defs_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(defs_mod, "PLAYBOOKS_DIR", playbooks_dir)
+    monkeypatch.setattr(defs_mod, "KIND_DIRS", {"agent": agents_dir, "playbook": playbooks_dir})
+
+    invalid_content = "---\nrole: not-a-real-role\n---\n\nOld body.\n"
+    v1 = await defs_mod.save_definition("agent", "historical", invalid_content, validate=False)
+    assert v1["version"] == 1
+
+    await defs_mod.save_definition("agent", "historical", "# valid v2 body\n")
+
+    result = await defs_mod.rollback_definition("agent", "historical", target_version=1)
+
+    assert result is not None
+    assert agents_dir.joinpath("historical.md").read_text() == invalid_content
+
+
 @pytest.mark.asyncio
 async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
     """save_definition() with an unknown kind must raise ValueError (not return success)."""

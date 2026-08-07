@@ -1,8 +1,6 @@
 from collections.abc import Callable, Iterable
 from typing import Any, TypeVar
 
-from ._to_list import to_list
-
 R = TypeVar("R")
 T = TypeVar("T")
 
@@ -26,6 +24,8 @@ def lcall(
     **kwargs: Any,
 ) -> list[R]:
     """Sync map of func over input with optional input/output flatten/dropna/unique transforms."""
+    from ._to_list import to_list
+
     if not callable(func):
         try:
             func_list = list(func)

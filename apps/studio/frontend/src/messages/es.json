@@ -57,6 +57,11 @@
     "submitting": "Resuming…",
     "submit": "Resume",
     "shortcut": "⌘/Ctrl+Enter",
+    "checkingAvailability": "Comprobando si esta ejecución se puede reanudar…",
+    "availabilityFailed": "No se pudo determinar si esta ejecución se puede reanudar.",
+    "notResumable": "Esta ejecución no se puede reanudar.",
+    "continueDescription": "Reproduce el plan guardado desde donde se detuvo; sin nueva instrucción ni rama que elegir.",
+    "continueSubmit": "Continuar",
     "cli": {
       "title": "CLI escape hatch",
       "copy": "Copy",
@@ -429,6 +434,10 @@
       "noMessages": "No hay mensajes registrados",
       "waitingEvents": "Esperando eventos de ciclo de vida…",
       "noEvents": "No hay eventos de ciclo de vida registrados",
+      "showOlderEvents": "Mostrar {count, number} eventos anteriores",
+      "expandEventDetails": "Mostrar detalles del evento",
+      "gateOutcome": "Puerta: {verdict} · {major} mayores, {minor} menores",
+      "gateOutcomeSimple": "Puerta: {verdict}",
       "live": "en vivo",
       "noBranchErrors": "No se detectaron errores en ninguna rama.",
       "noFiles": "No se detectaron operaciones de archivo.",
@@ -551,6 +560,7 @@
       "triggering": "Activando...",
       "runStarted": "Ejecución iniciada: {id}",
       "triggerFailed": "No se pudo disparar",
+      "toggleFailed": "No se pudo cambiar",
       "every": "cada {interval}",
       "in": "en {delta}",
       "overdue": "retrasada hace {delta}",
@@ -558,7 +568,17 @@
       "last": "última",
       "never": "nunca ejecutada",
       "paused": "En pausa",
-      "notScheduled": "Sin programar"
+      "notScheduled": "Sin programar",
+      "health": {
+        "healthy": "Saludable",
+        "failing": "Con fallos",
+        "overdue": "Atrasada",
+        "neverFired": "Nunca se ejecutó",
+        "noEvidence": "Sin evidencia",
+        "lastOutcome": "última vez {outcome} hace {delta}",
+        "neverFiredSince": "nunca se ejecutó desde {date}",
+        "noEvidenceHint": "no se registró ninguna ejecución"
+      }
     },
     "run": {
       "elapsed": "{delta} transcurrido",
@@ -795,6 +815,8 @@
     },
     "history": {
       "label": "Historial de sesiones",
+      "sortRecent": "Reciente",
+      "sortCost": "Mayor costo",
       "all": "Todo",
       "completed": "Completadas",
       "failed": "Fallidas",
@@ -808,6 +830,14 @@
       "allProjects": "All projects",
       "noProject": "No project",
       "projectAria": "Filter by project",
+      "projectSearchPlaceholder": "Search projects…",
+      "projectSearchAria": "Search projects",
+      "groupRecent": "Recent",
+      "groupAll": "All projects",
+      "noMatches": "No projects match your search",
+      "loadError": "Failed to load projects",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
       "clear": "Clear filters"
     }
   },
@@ -831,7 +861,34 @@
       },
       "more": "+{count, plural, one {# más} other {# más}} — ver todo en Historial →",
       "digestLatest": "último: {name} · hace {age}",
-      "streakCount": "{count}× falló"
+      "streakCount": "{count}× falló",
+      "disposition": {
+        "acknowledged": "reconocido",
+        "resolved": "resuelto",
+        "expected": "esperado",
+        "snoozed": "pospuesto"
+      },
+      "action": {
+        "acknowledge": "Reconocer",
+        "acknowledgeAria": "Reconocer {name}",
+        "resolve": "Resolver",
+        "resolveAria": "Resolver {name}",
+        "snooze": "Posponer {duration}",
+        "snoozeAria": "Posponer {name} por {duration}",
+        "expected": "Esperado",
+        "expectedAria": "Marcar {name} como esperado",
+        "undo": "Deshacer",
+        "undoAria": "Deshacer el descargo de {name}",
+        "confirm": "Confirmar",
+        "cancel": "Cancelar",
+        "notePlaceholder": "¿Por qué es esperado?",
+        "noteRequired": "Se requiere una nota",
+        "saveFailed": "No guardado · {message}",
+        "expiryLabel": "Expira en"
+      },
+      "showDischarged": "Mostrar descargados",
+      "hideDischarged": "Ocultar descargados",
+      "dischargedEmpty": "No hay elementos descargados"
     },
     "liveBoard": {
       "title": "En ejecución ahora",
@@ -872,6 +929,15 @@
       "completionRate": "{rate}% completado",
       "noTerminalRuns": "No hay ejecuciones terminales en la ventana",
       "total": "{count, plural, one {# en total} other {# en total}}",
+      "staleHint": "mostrando último estado conocido · falló la actualización"
+    },
+    "spend": {
+      "title": "Gasto reportado",
+      "loading": "Cargando gasto…",
+      "error": "Gasto no disponible · {message}",
+      "unreachable": "API inaccesible",
+      "empty": "No hay ejecuciones en la ventana",
+      "coverage": "{reported} de {total} reportadas",
       "staleHint": "mostrando último estado conocido · falló la actualización"
     },
     "stale": {
@@ -969,6 +1035,8 @@
     "roleUser": "usuario",
     "roleThinking": "pensando",
     "roleResponse": "respuesta",
+    "planAssignments": "{count, plural, one {# asignación} other {# asignaciones}}",
+    "planDependsOn": "depende de:",
     "tabAria": "pestaña {label} {position} de {total}"
   },
   "workflow": {

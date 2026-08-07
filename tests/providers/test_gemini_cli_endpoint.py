@@ -102,6 +102,16 @@ class TestCmdArgs:
         with pytest.raises(ValueError, match="print_timeout"):
             request.as_cmd_args()
 
+    def test_explicit_print_timeout_accepts_subnanosecond_fraction_at_go_max(self):
+        """Go's time.ParseDuration truncates fractions smaller than a nanosecond,
+        so a `.1ns` excess sitting on top of int64's max is still parseable by
+        `agy` and must not be rejected here (#2689)."""
+        explicit = "9223372036854775807.1ns"
+        args = GeminiCodeRequest(prompt="hi", print_timeout=explicit).as_cmd_args()
+
+        i = args.index("--print-timeout")
+        assert args[i + 1] == explicit
+
     def test_endpoint_config_print_timeout_is_checked_at_argv_boundary(self):
         endpoint_kwargs = {"print_timeout": "0s"}
         request = GeminiCodeRequest(prompt="hi", **endpoint_kwargs)

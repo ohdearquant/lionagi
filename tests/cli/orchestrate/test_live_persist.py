@@ -103,6 +103,51 @@ async def test_start_creates_session_and_registers_hook_on_orc_branch(
     await stop_live_persist(env, status="completed")
 
 
+async def test_start_live_persist_stashes_resolved_project_not_raw_arg(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Round-2 regression: env._project must carry the RESOLVED project (what
+    the session row actually gets — explicit arg or detect_project()
+    fallback), not the caller's raw argument. The common case is a run whose
+    project came from detection rather than an explicit --project flag;
+    before this fix, anything reading env._project (e.g. the
+    escalation-mirror-link hook) would see the unresolved raw value —- None
+    here — instead of what the session row actually recorded."""
+    monkeypatch.setattr(
+        "lionagi.cli._project.detect_project",
+        lambda cwd=None: ("acme/widget", "git_remote"),
+    )
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", project=None)
+    try:
+        ctx = env._live_persist
+        assert ctx is not None
+        async with StateDB() as db:
+            s = await db.get_session(ctx["session_id"])
+        assert s["project"] == "acme/widget"
+        assert env._project == "acme/widget"
+    finally:
+        await stop_live_persist(env, status="completed")
+
+
+async def test_start_live_persist_stashes_explicit_project_verbatim(
+    temp_db_path: Path,
+):
+    """The explicit-argument path: env._project must match what was passed,
+    same as the session row — the resolved and raw values coincide here, but
+    the read must still go through the resolved value, not bypass it."""
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", project="explicit/proj")
+    try:
+        ctx = env._live_persist
+        assert ctx is not None
+        assert env._project == "explicit/proj"
+    finally:
+        await stop_live_persist(env, status="completed")
+
+
 async def test_orchestration_manifest_tracks_start_and_terminal_status(
     temp_db_path: Path, tmp_path: Path
 ):
@@ -1531,6 +1576,109 @@ async def test_stop_no_artifact_no_commits_flips_to_completed_empty(
     assert v is None
 
 
+async def test_stop_failed_operation_evidence_wins_over_completed_empty_demotion(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A run whose nodes all failed typically produces no commits, no dirty
+    tree, and no artifacts either -- the same shape as a legitimate no-op
+    leg. The node-failure backstop must see the failure evidence before the
+    completion-trust gate gets a chance to demote the run to
+    'completed_empty' and bury it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    env._failed_operation_evidence = [
+        {"kind": "failed_operation", "id": "last", "label": "reviewer"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed", "failure evidence must outrank the no-evidence demotion"
+    assert s["status_reason_code"] == "run.failed.exception"
+    assert "last" in (s["status_reason_summary"] or "")
+
+
+async def test_stop_escalated_evidence_wins_over_completed_empty_demotion(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Same masking hazard as the node-failure backstop above, but for a leg
+    that gave up via EscalationRequest: no commits, no dirty tree, no
+    artifacts -- the escalation backstop must see the evidence before the
+    completion-trust gate demotes the run to 'completed_empty'."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    env._escalated_evidence = [
+        {"kind": "escalated_operation", "id": "worker", "label": "cannot proceed"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed", "escalation evidence must outrank the no-evidence demotion"
+    assert s["status_reason_code"] == "run.failed.escalated"
+
+
+async def test_stop_gate_rejected_evidence_wins_over_completed_empty_demotion(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Same masking hazard as the node-failure and escalation backstops above,
+    but for a gate that rejected mid-DAG: the rejected subtree is
+    short-circuited and typically produces no commits, no dirty tree, no
+    artifacts. Unlike those two backstops, a gate rejection is a deliberate,
+    correct stop -- final status must stay 'completed' -- but its evidence
+    must survive; the completion-trust gate must not overwrite it with a
+    plain no-evidence 'completed_empty' verdict."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    env._gate_rejected_evidence = [
+        {"kind": "gate_rejected", "id": "reviewer", "label": "reviewer-gate"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed", "gate rejection is a deliberate stop, not a failure"
+    assert s["status_reason_code"] == "run.completed.gate_rejected"
+    assert "reviewer-gate" in (s["status_reason_summary"] or "")
+    refs = s["status_evidence_refs"] or []
+    assert any(r.get("id") == "reviewer" for r in refs), (
+        "gate-rejection evidence must survive the no-evidence demotion"
+    )
+
+
 async def test_stop_commits_ahead_of_base_stays_completed(
     temp_db_path: Path,
     tmp_path: Path,
@@ -1911,6 +2059,46 @@ async def test_missing_artifact_session_failure_propagates_to_invocation_status(
         inv_row = await db.get_invocation(invocation_id)
     assert inv_row is not None
     assert inv_row["status"] == "failed"
+
+
+async def test_gate_rejection_reason_survives_child_to_invocation_resolution(
+    temp_db_path: Path,
+):
+    """A child session that completed with a gate reject (status stays
+    "completed", status_reason_code=COMPLETED_GATE_REJECTED) must carry that
+    reason code through _resolve_invocation_terminal_flow's "all children
+    completed" branch. That branch previously only special-cased
+    COMPLETED_FINALIZE_ERROR and flattened every other completed reason to a
+    plain COMPLETED_OK, silently erasing the gate-reject distinction at the
+    invocation level -- the layer a status-reader (Studio, `li status`)
+    actually queries.
+    """
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-gate-reject"
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    env._gate_rejected_evidence = [
+        {"kind": "gate_rejected_operation", "id": "reviewer", "label": "reviewer"}
+    ]
+
+    assert await stop_live_persist(env, status="completed") == "completed"
+
+    async with StateDB() as db:
+        session = await db.get_session(ctx["session_id"])
+    assert session["status_reason_code"] == RunReasons.COMPLETED_GATE_REJECTED
+
+    _status, reason_code, _summary, evidence, _metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+    assert reason_code == RunReasons.COMPLETED_GATE_REJECTED
+    assert any(entry.get("id") == ctx["session_id"] for entry in evidence)
 
 
 async def test_all_legs_completed_resolves_invocation_completed(
@@ -2294,6 +2482,153 @@ async def test_execute_dag_escalation_without_artifact_declaration_fails_loud(
     assert any(e.get("id") == "worker" for e in evidence)
 
 
+async def test_execute_dag_gate_rejected_evidence_survives_uuid_node_ids(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """dag_state.node_ids holds real Operation UUIDs (not the plain strings
+    other _execute_dag tests stub in), and dag_result["gate_rejected_operations"]
+    holds their str() form -- exactly what the real executor/builder produce.
+    Comparing node_ids[i] to that string set directly is always False for a
+    UUID, so a planned gate's evidence entry was silently reclassified as a
+    "spawned" node and lost its agent label. This must not regress."""
+    from unittest.mock import MagicMock, patch
+    from uuid import uuid4
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    gate_node_id = uuid4()
+    assignments = [TaskAssignment(task="review the design", assignee="reviewer")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["reviewer"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[gate_node_id],
+        known_nodes={gate_node_id},
+        deps_by_node={gate_node_id: []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {gate_node_id: {"gate_verdict": "reject"}},
+            "spawned_operations": 0,
+            "gate_rejected_operations": [str(gate_node_id)],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    # The planned "reviewer" gate, not a synthesized "spawn-N" placeholder.
+    assert env._gate_rejected_evidence == [
+        {"kind": "gate_rejected_operation", "id": "reviewer", "label": "reviewer"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed"
+    assert s["status_reason_code"] == "run.completed.gate_rejected"
+
+
+async def test_execute_dag_escalation_evidence_survives_uuid_node_ids(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """Same shape as test_execute_dag_gate_rejected_evidence_survives_uuid_node_ids,
+    one screen up: dag_state.node_ids holds real Operation UUIDs, and
+    dag_result["escalated_operations"] holds their str() form. Comparing
+    node_ids[i] to that string set directly is always False for a UUID, so a
+    planned escalated worker's evidence entry was silently reclassified as a
+    "spawned" node and lost its agent label. This must not regress."""
+    from unittest.mock import MagicMock, patch
+    from uuid import uuid4
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    worker_node_id = uuid4()
+    assignments = [TaskAssignment(task="do the risky thing", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[worker_node_id],
+        known_nodes={worker_node_id},
+        deps_by_node={worker_node_id: []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {},
+            "spawned_operations": 0,
+            "escalated_operations": [str(worker_node_id)],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        exec_result = await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    # The planned "worker", not a synthesized UUID-as-label placeholder.
+    assert exec_result.escalated_agent_ids == ["worker"]
+    assert env._escalated_evidence == [
+        {"kind": "escalated_operation", "id": "worker", "label": "worker"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.escalated"
+
+    import json as _json
+
+    evidence = s["status_evidence_refs"]
+    evidence = _json.loads(evidence) if isinstance(evidence, str) else evidence
+    assert any(e.get("id") == "worker" for e in evidence)
+
+
 async def test_execute_dag_drains_inflight_branch_status_before_teardown(
     temp_db_path: Path,
     tmp_path: Path,
@@ -2369,6 +2704,497 @@ async def test_execute_dag_drains_inflight_branch_status_before_teardown(
 
     assert events.index("write-finished") < events.index("teardown-started")
     assert env._live_persist is None
+
+
+async def test_execute_dag_drains_escalation_link_retries_before_teardown(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Round-2 regression: the escalation-mirror-link retry loop used to fire
+    as an untracked task (bare ``_asyncio.ensure_future``, nothing awaited it)
+    — a retry still sleeping when ``_execute_dag`` returned could go on to
+    write into a db that ``stop_live_persist`` had already closed. It is now
+    tracked in ``_escalation_link_tasks`` and drained in the same shielded
+    finally block as ``_branch_status_tasks``/``_checkpoint_tasks``, so every
+    retry must finish before ``_execute_dag`` returns — never after."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate import flow as flow_module
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+    from lionagi.operations.node import create_operation
+
+    monkeypatch.setattr(flow_module, "_ESCALATION_LINK_RETRIES", 3)
+    monkeypatch.setattr(flow_module, "_ESCALATION_LINK_RETRY_INTERVAL", 0.02)
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    node = create_operation("operate", parameters={})
+    node.metadata["escalated_from"] = "parent-op-1"
+    node.metadata["escalated_from_name"] = "worker"
+    node._branch = SimpleNamespace(
+        chat_model=SimpleNamespace(provider_session_id="cli-session-xyz")
+    )
+
+    events: list[str] = []
+
+    async def _spy_link(*a, **k):
+        # The mirror row never appears — every retry must actually run.
+        events.append("link-attempt")
+        return False
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["test/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        on_op_complete = kwargs.get("on_op_complete")
+        if on_op_complete is not None:
+            on_op_complete(node)
+        return {"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with (
+        patch("lionagi.state.claude_mirror.link_escalation_session", _spy_link),
+        patch.object(PlanningEngine, "new_run", return_value=engine_run),
+    ):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+    events.append("execute-dag-returned")
+    await stop_live_persist(env, status="completed")
+    events.append("teardown-finished")
+
+    # All three retries ran to exhaustion, entirely before _execute_dag
+    # returned — none leaked past it into (or after) teardown.
+    assert events == [
+        "link-attempt",
+        "link-attempt",
+        "link-attempt",
+        "execute-dag-returned",
+        "teardown-finished",
+    ]
+
+
+async def test_execute_dag_bounds_escalation_link_drain_on_cancellation(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Round-3 regression: when ``_execute_dag`` itself is cancelled, the
+    shielded finally used to gather ``_escalation_link_tasks`` with no cancel
+    and no timeout — a link write that never returns (hung DB call, stuck
+    await) blocked teardown forever. The drain must now be bounded on the
+    cancellation path: give an in-flight link a short grace period, then
+    cancel it and confirm it actually unwinds before returning."""
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+    from lionagi.operations.node import create_operation
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    node = create_operation("operate", parameters={})
+    node.metadata["escalated_from"] = "parent-op-1"
+    node.metadata["escalated_from_name"] = "worker"
+    node._branch = SimpleNamespace(
+        chat_model=SimpleNamespace(provider_session_id="cli-session-xyz")
+    )
+
+    link_started = asyncio.Event()
+    link_cancelled = asyncio.Event()
+
+    async def _hanging_link(*a, **k):
+        link_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            link_cancelled.set()
+            raise
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["test/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        on_op_complete = kwargs.get("on_op_complete")
+        if on_op_complete is not None:
+            on_op_complete(node)
+        # Hangs until _execute_dag's own task is cancelled from outside.
+        await asyncio.Event().wait()
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with (
+        patch("lionagi.state.claude_mirror.link_escalation_session", _hanging_link),
+        patch.object(PlanningEngine, "new_run", return_value=engine_run),
+    ):
+        execute_task = asyncio.create_task(
+            _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+        )
+        await link_started.wait()
+        execute_task.cancel()
+
+        start = time.monotonic()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(execute_task, timeout=5)
+        elapsed = time.monotonic() - start
+
+    assert elapsed < 5, f"teardown took {elapsed}s — the escalation-link drain is unbounded again"
+    assert link_cancelled.is_set()
+    await stop_live_persist(env, status="completed")
+
+
+async def test_execute_dag_bounds_escalation_link_drain_on_late_cancellation(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A cancellation landing on ``_execute_dag`` itself after ``run_dag()``
+    already returned lands while the finally is inside its own drain
+    gather, where the except that sets ``_dag_cancelled`` never ran — so
+    that flag stays False, and this is the branch that must bound the
+    drain on its own, not just when cancellation lands mid-``run_dag()``.
+
+    A link task that responds to a *single* cancellation is not enough to
+    exercise this: ``asyncio.gather()``'s own cancellation only needs the
+    one child to unwind once, so a bare, unguarded gather already handles
+    it without any except/drain machinery. This link task instead swallows
+    the *first* cancellation it receives and only unwinds on a second one —
+    a bare gather with no except and no bounded drain genuinely hangs
+    forever on a single external cancel against a task like this, because
+    ``asyncio.gather()`` doesn't settle its own cancellation until every
+    child actually finishes, and a raw ``Task.cancel()`` only delivers once.
+    Verified by temporarily reverting the shield+drain handling below back
+    to that bare-gather shape and running this exact test: it timed out at
+    the 8s deadline instead of finishing at ~2s."""
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+    from lionagi.operations.node import create_operation
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    node = create_operation("operate", parameters={})
+    node.metadata["escalated_from"] = "parent-op-1"
+    node.metadata["escalated_from_name"] = "worker"
+    node._branch = SimpleNamespace(
+        chat_model=SimpleNamespace(provider_session_id="cli-session-xyz")
+    )
+
+    link_started = asyncio.Event()
+    link_cancelled = asyncio.Event()
+
+    async def _swallow_once_link(*a, **k):
+        link_started.set()
+        swallowed = False
+        while True:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if not swallowed:
+                    swallowed = True
+                    continue
+                link_cancelled.set()
+                raise
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["test/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        on_op_complete = kwargs.get("on_op_complete")
+        if on_op_complete is not None:
+            on_op_complete(node)
+        # Returns normally — unlike the round-3 test, cancellation has not
+        # landed yet, so the except that sets _dag_cancelled never fires.
+        return {"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with (
+        patch("lionagi.state.claude_mirror.link_escalation_session", _swallow_once_link),
+        patch.object(PlanningEngine, "new_run", return_value=engine_run),
+    ):
+        execute_task = asyncio.create_task(
+            _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+        )
+        # run_dag() has already returned by the time the link task starts
+        # (it's scheduled from the on_op_complete callback inside run_dag),
+        # so cancelling here lands inside the finally's own drain gather.
+        await link_started.wait()
+        execute_task.cancel()
+
+        start = time.monotonic()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(execute_task, timeout=8)
+        elapsed = time.monotonic() - start
+
+    assert elapsed < 6, (
+        f"teardown took {elapsed}s — a late-arriving cancellation still hangs the drain"
+    )
+    assert link_cancelled.is_set()
+    await stop_live_persist(env, status="completed")
+
+
+async def test_execute_dag_bounds_escalation_link_drain_survivor_await(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``_drain_escalation_links_bounded`` gives in-flight links a grace
+    period, then cancels whatever survived and awaits the survivors — that
+    second await used to have no bound at all, so a link task that never
+    responds to that cancellation would hang it forever, the same class of
+    bug the grace period was added to fix in the first place, just moved
+    one step later. The fix bounds that second await too (a second short
+    grace window) and abandons anything still alive after it, logging how
+    many.
+
+    Caveat verified while building this test: this specific link task
+    (needs two cancellation deliveries to unwind) exercises the full drain
+    sequence — grace-period gather, explicit cancel of survivors, second
+    bounded gather — end to end, and the whole thing stays comfortably
+    inside the hard deadline below. It does not, on its own, prove the
+    second window's *bound* is load-bearing for this exact shape: anyio's
+    cancel scope keeps re-delivering cancellation for as long as a task
+    keeps re-suspending on a fresh awaitable, so a finite swallow count
+    (however large) tends to resolve inside the *first* grace window rather
+    than surviving into the second. A link task that never responds to
+    cancellation at all defeats both grace windows identically (confirmed
+    empirically: neither the first nor the second `move_on_after` returns
+    control while such a task stays alive) — there is no way to construct a
+    task that reliably survives window one but is bounded by window two, so
+    this test cannot safely isolate that distinction. What it does verify:
+    the drain sequence introduced by this fix does not regress a link task
+    that needs more than a single cancellation to unwind, and the
+    abandonment logic
+    does not itself hang anything."""
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+    from lionagi.operations.node import create_operation
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    node = create_operation("operate", parameters={})
+    node.metadata["escalated_from"] = "parent-op-1"
+    node.metadata["escalated_from_name"] = "worker"
+    node._branch = SimpleNamespace(
+        chat_model=SimpleNamespace(provider_session_id="cli-session-xyz")
+    )
+
+    link_started = asyncio.Event()
+    link_cancelled = asyncio.Event()
+
+    async def _swallow_once_link(*a, **k):
+        link_started.set()
+        swallowed = False
+        while True:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if not swallowed:
+                    swallowed = True
+                    continue
+                link_cancelled.set()
+                raise
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["test/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        on_op_complete = kwargs.get("on_op_complete")
+        if on_op_complete is not None:
+            on_op_complete(node)
+        # Hangs until _execute_dag's own task is cancelled from outside —
+        # cancellation lands *during* run_dag(), so _dag_cancelled is True
+        # and the drain goes straight through _drain_escalation_links_bounded.
+        await asyncio.Event().wait()
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with (
+        patch("lionagi.state.claude_mirror.link_escalation_session", _swallow_once_link),
+        patch.object(PlanningEngine, "new_run", return_value=engine_run),
+    ):
+        execute_task = asyncio.create_task(
+            _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+        )
+        await link_started.wait()
+        execute_task.cancel()
+
+        start = time.monotonic()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(execute_task, timeout=8)
+        elapsed = time.monotonic() - start
+
+    assert elapsed < 6, (
+        f"teardown took {elapsed}s — the escalation-link survivor await is unbounded again"
+    )
+    assert link_cancelled.is_set()
+    await stop_live_persist(env, status="completed")
+
+
+async def test_execute_dag_late_cancellation_does_not_clobber_dag_exception(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The finally's escalation-link drain re-raises a ``CancelledError``
+    that lands during the drain itself. When ``run_dag()`` raised a real
+    exception (not a cancellation) and *that* exception is what's
+    propagating through the finally, a cancellation landing during the
+    drain must not silently replace it — the caller was waiting on the real
+    failure, not a teardown-time cancellation that has nothing to do with
+    why the run actually failed."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.engines import PlanningEngine
+    from lionagi.operations.node import create_operation
+
+    class _DagBoomError(RuntimeError):
+        pass
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    node = create_operation("operate", parameters={})
+    node.metadata["escalated_from"] = "parent-op-1"
+    node.metadata["escalated_from_name"] = "worker"
+    node._branch = SimpleNamespace(
+        chat_model=SimpleNamespace(provider_session_id="cli-session-xyz")
+    )
+
+    link_started = asyncio.Event()
+
+    async def _hanging_link(*a, **k):
+        link_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["test/model"],
+    )
+
+    async def run_dag(graph, **kwargs):
+        on_op_complete = kwargs.get("on_op_complete")
+        if on_op_complete is not None:
+            on_op_complete(node)
+        # A real dag failure, not a cancellation — _dag_cancelled stays
+        # False, so the finally's escalation-link drain takes the same
+        # "else" branch the late-cancellation tests above exercise.
+        raise _DagBoomError("worker failed for real")
+
+    engine_run = SimpleNamespace(run_dag=run_dag)
+    with (
+        patch("lionagi.state.claude_mirror.link_escalation_session", _hanging_link),
+        patch.object(PlanningEngine, "new_run", return_value=engine_run),
+    ):
+        execute_task = asyncio.create_task(
+            _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+        )
+        # _DagBoomError is already propagating through the finally by the
+        # time the link task gets scheduled to run (it's created from
+        # on_op_complete before run_dag raises); cancelling here lands
+        # while that exception is in flight through the drain.
+        await link_started.wait()
+        execute_task.cancel()
+
+        with pytest.raises(_DagBoomError):
+            await asyncio.wait_for(execute_task, timeout=8)
+
+    await stop_live_persist(env, status="completed")
 
 
 async def test_flow_timeout_shields_completed_branch_status_until_commit(
@@ -2553,3 +3379,630 @@ async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(
     assert s is not None
     assert s["status"] == "failed"
     assert s["status_reason_code"] == "run.failed.escalated"
+
+
+# ── Node-failure backstop ──────────────────────────────────────────────────────
+#
+# A flow whose final node died could still report succeeded: an operation's
+# invoke() raised, DependencyAwareExecutor caught it and set that node's own
+# status to FAILED, but the DAG-level result folded it into
+# completed_operations right alongside genuine completions and never rolled
+# the per-node failure up into the run's own status. These tests pin the
+# fix at both the _execute_dag plumbing layer and the teardown status flip.
+
+
+async def test_execute_dag_records_failed_operation_evidence(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A node's own invoke() failure (DependencyAwareExecutor's
+    failed_operations, distinct from completed_operations) must be named in
+    env._failed_operation_evidence so stop_live_persist can fail the run
+    loud instead of it reading as an ordinary clean completion."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    assignments = [
+        TaskAssignment(task="do first", assignee="worker"),
+        TaskAssignment(task="do last (dies)", assignee="reviewer"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first", "last"],
+        dep_indices=[[], [0]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0", "node-1"],
+        known_nodes={"node-0", "node-1"},
+        deps_by_node={"node-0": [], "node-1": ["node-0"]},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {
+                "node-0": "first ok",
+                "node-1": {
+                    "error": (
+                        "Failed to stream API call: CLI subprocess exited "
+                        "with code 1 and wrote nothing to stderr"
+                    )
+                },
+            },
+            "spawned_operations": 0,
+            "escalated_operations": [],
+            "failed_operations": ["node-1"],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert env._failed_operation_evidence == [
+        {"kind": "failed_operation", "id": "last", "label": "reviewer"}
+    ]
+    # An escalation-free, ordinary FAILED node must not also read as an
+    # escalation -- these are different failure modes with different reasons.
+    assert getattr(env, "_escalated_evidence", None) is None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed"
+    assert s["status_reason_code"] == "run.failed.exception"
+
+    import json as _json
+
+    evidence = s["status_evidence_refs"]
+    evidence = _json.loads(evidence) if isinstance(evidence, str) else evidence
+    assert any(e.get("id") == "last" for e in evidence)
+
+
+async def test_dead_terminal_node_flips_completed_to_failed_end_to_end(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """True end-to-end repro of a flow whose terminal node dies: a two-node
+    DAG (first -> last) run through the REAL DependencyAwareExecutor, where
+    the terminal node raises exactly the kind of error a dead CLI subprocess
+    produces. Before the fix, this session's own status ended 'completed'
+    even though its terminal node never produced a result -- indistinguishable
+    from a run that actually passed its gate."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.operations.flow import flow as _real_flow
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    async def first(**kw):
+        return "first ok"
+
+    async def last(**kw):
+        raise RuntimeError(
+            "Failed to stream API call: CLI subprocess exited with code 1 "
+            "and wrote nothing to stderr"
+        )
+
+    env.session.register_operation("first", first)
+    env.session.register_operation("last", last)
+
+    builder = OperationGraphBuilder()
+    first_id = builder.add_operation("first", depends_on=[])
+    last_id = builder.add_operation("last", depends_on=[first_id])
+    graph = builder.get_graph()
+
+    assignments = [
+        TaskAssignment(task="do first", assignee="worker"),
+        TaskAssignment(task="do last (dies)", assignee="reviewer"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first", "last"],
+        dep_indices=[[], [0]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[first_id, last_id],
+        known_nodes={first_id, last_id},
+        deps_by_node={first_id: [], last_id: ["first"]},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        # The real executor, not a hand-built dict -- proves the rollup
+        # itself end-to-end, not just the _execute_dag plumbing around it.
+        return await _real_flow(env.session, graph, parallel=False, verbose=False)
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert env._failed_operation_evidence == [
+        {"kind": "failed_operation", "id": "last", "label": "reviewer"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed", "a dead terminal node must not read as a clean completion"
+    assert s["status_reason_code"] == "run.failed.exception"
+
+
+# A planned node that never produced a result at all -- absent from
+# operation_results, not in failed_operations (no invoke() ever raised) and
+# not in skipped_operations (no edge condition short-circuited it) -- read as
+# an ordinary "(no response)" entry with the run's own status untouched.
+# These tests pin the reconciliation between the fixed initial plan
+# (dag_state.node_ids) and what the executor actually observed.
+
+
+async def test_execute_dag_records_lost_operation_evidence_for_missing_result(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A two-node plan where only node-0 shows up in operation_results (the
+    executor never produced a result -- completed, failed, or skipped -- for
+    node-1) must be named in env._failed_operation_evidence so the run fails
+    loud instead of reading as run.completed.ok."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    assignments = [
+        TaskAssignment(task="do first", assignee="worker"),
+        TaskAssignment(task="do last (never runs)", assignee="reviewer"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first", "last"],
+        dep_indices=[[], [0]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0", "node-1"],
+        known_nodes={"node-0", "node-1"},
+        deps_by_node={"node-0": [], "node-1": ["node-0"]},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {"node-0": "first ok"},
+            "spawned_operations": 0,
+            "escalated_operations": [],
+            "failed_operations": [],
+            "skipped_operations": [],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert env._failed_operation_evidence == [
+        {"kind": "lost_operation", "id": "last", "label": "reviewer"}
+    ]
+    assert getattr(env, "_escalated_evidence", None) is None
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed", "a missing planned node must not read as a clean completion"
+    assert s["status_reason_code"] == "run.failed.exception"
+
+
+async def test_execute_dag_skipped_node_does_not_trip_lost_operation_evidence(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """node-1 absent from operation_results is NOT a lost node when the
+    executor named it in skipped_operations -- an ordinary edge-condition
+    skip is a legitimate, non-failing outcome and must not fail the run."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+
+    assignments = [
+        TaskAssignment(task="do first", assignee="worker"),
+        TaskAssignment(task="skip me", assignee="reviewer"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first", "skipped"],
+        dep_indices=[[], [0]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0", "node-1"],
+        known_nodes={"node-0", "node-1"},
+        deps_by_node={"node-0": [], "node-1": ["node-0"]},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {"node-0": "first ok"},
+            "spawned_operations": 0,
+            "escalated_operations": [],
+            "failed_operations": [],
+            "skipped_operations": ["node-1"],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert not getattr(env, "_failed_operation_evidence", None)
+
+    await stop_live_persist(env, status="completed")
+
+
+async def test_execute_dag_dropped_spawn_does_not_trip_lost_operation_evidence(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A reactively spawned node that got dropped (budget/cycle refusal) was
+    never a planned node -- it must not surface as a lost planned node just
+    because its id shows up somewhere in the DAG result. Reconciliation is
+    scoped to dag_state.node_ids only."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+
+    assignments = [
+        TaskAssignment(task="do first", assignee="worker"),
+        TaskAssignment(task="do last", assignee="reviewer"),
+    ]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first", "last"],
+        dep_indices=[[], [0]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0", "node-1"],
+        known_nodes={"node-0", "node-1"},
+        deps_by_node={"node-0": [], "node-1": ["node-0"]},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5", "codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {"node-0": "first ok", "node-1": "last ok"},
+            "spawned_operations": 0,
+            "escalated_operations": [],
+            "failed_operations": [],
+            "skipped_operations": [],
+            "dropped_spawns": [
+                {"reason": "max_spawn_exceeded", "assignee": "reviewer", "op_id": "spawn-99"}
+            ],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert not getattr(env, "_failed_operation_evidence", None)
+
+    await stop_live_persist(env, status="completed")
+
+
+async def test_execute_dag_cancelled_spawn_records_lost_operation_evidence(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A reactively accepted spawn whose EventStatus reaches CANCELLED
+    before producing a result is absent from operation_results,
+    failed_operations, AND skipped_operations -- it was genuinely accepted
+    into the graph (unlike a dropped_spawns entry), so spawned_operations
+    (a count) reports it but none of the outcome sets do. Reconciling the
+    executor's spawned_ids roster -- the accept-time roster of every node
+    _accept_node actually let in, real ReactiveExecutor state rather than a
+    re-derived counter -- against operation_results/failed/skipped/escalated
+    must still name it as lost, closing the same false-success class as a
+    missing planned node."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.operations.node import create_operation
+    from lionagi.protocols.generic.event import EventStatus
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    # A real Graph carrying the accepted-then-cancelled spawn, exactly what
+    # env.builder.get_graph() would hold after a genuine ReactiveExecutor
+    # run accepted this node via _accept_node before it hit a terminal
+    # CANCELLED status with no response.
+    builder = OperationGraphBuilder()
+    cancelled_child = create_operation("follow_up", parameters={})
+    cancelled_child.execution.status = EventStatus.CANCELLED
+    cancelled_child.metadata["spawn_id"] = "spawn-1"
+    cancelled_child.metadata["assignee"] = "reviewer"
+    builder.graph.add_node(cancelled_child)
+    env.builder = builder
+    cancelled_id = str(cancelled_child.id)
+
+    assignments = [TaskAssignment(task="do first", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_result():
+        return {
+            "operation_results": {"node-0": "first ok"},
+            "spawned_operations": 1,
+            "spawned_ids": [cancelled_id],
+            "escalated_operations": [],
+            "failed_operations": [],
+            "skipped_operations": [],
+            "dropped_spawns": [],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert env._failed_operation_evidence == [
+        {"kind": "lost_operation", "id": "spawn-1", "label": "spawn-1"}
+    ]
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "failed", (
+        "a cancelled-but-accepted spawn must not read as a clean completion"
+    )
+    assert s["status_reason_code"] == "run.failed.exception"
+
+
+async def test_execute_dag_reinjected_initial_node_yields_one_lost_operation_entry(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """One level up from the executor-level regression: an on_op_complete
+    hook that re-injects the SAME already-cancelled initial node through the
+    public inject() API used to pollute spawned_ids with that node's own id
+    (_accept_node bumped the roster/counter even though the node was already
+    in the graph, not newly added). With that pollution, the lost node was
+    named twice -- once by the fixed-size planned-node check
+    (dag_state.node_ids, by plan index) and once by the spawned_ids check (by
+    id) -- since neither check excludes ids the other has already claimed.
+    Fixed at the source (_accept_node no longer counts a re-injected existing
+    node as a spawn), so only the planned-node check fires."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.operations.builder import OperationGraphBuilder
+    from lionagi.operations.flow import flow as _real_flow
+    from lionagi.protocols.generic.event import EventStatus
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+    ctx = env._live_persist
+    assert ctx is not None
+
+    async def spawner(**kw):
+        return "should not run"
+
+    env.session.register_operation("spawner", spawner)
+
+    builder = OperationGraphBuilder()
+    spawner_id = builder.add_operation("spawner", depends_on=[])
+    graph = builder.get_graph()
+    env.builder = builder
+    initial_op = next(iter(graph.internal_nodes.values()))
+    initial_op.execution.status = EventStatus.CANCELLED
+
+    assignments = [TaskAssignment(task="do it", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[spawner_id],
+        known_nodes={spawner_id},
+        deps_by_node={spawner_id: []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    executor_ref: dict = {}
+    injected_once = {"done": False}
+
+    def on_op_complete(node):
+        if injected_once["done"]:
+            return
+        injected_once["done"] = True
+        # Re-inject the SAME already-in-graph, already-cancelled initial
+        # node through the public inject() API.
+        executor_ref["executor"].inject(node, independent=True)
+
+    async def _run_dag_result():
+        # The real executor, not a hand-built dict -- proves the rollup
+        # against genuine ReactiveExecutor state, not just the reconciliation
+        # plumbing around it.
+        return await _real_flow(
+            env.session,
+            graph,
+            reactive=True,
+            executor_ref=executor_ref,
+            on_op_complete=on_op_complete,
+        )
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_result())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    lost_entries = [
+        e for e in (env._failed_operation_evidence or []) if e["kind"] == "lost_operation"
+    ]
+    assert len(lost_entries) == 1
+
+    await stop_live_persist(env, status="completed")
+
+
+async def test_execute_dag_run_level_cancellation_skips_reconciliation_entirely(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """A user-killed run (run_dag itself raises CancelledError, not a
+    per-node terminal status) must not additionally accrue lost-node/
+    lost-spawn evidence -- the whole evidence block, including both
+    reconciliation checks, sits after the awaited run_dag call and is never
+    reached when that call raises instead of returning."""
+    from unittest.mock import MagicMock, patch
+
+    from lionagi.casts.emission import TaskAssignment
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+
+    env = _minimal_env()
+    artifacts_dir = tmp_path / "artifacts"
+    await start_live_persist(env, invocation_kind="flow", artifacts_path=str(artifacts_dir))
+
+    assignments = [TaskAssignment(task="do first", assignee="worker")]
+    plan_result = _PlanResult(
+        assignments=assignments,
+        agent_ids=["first"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+
+    from lionagi.engines import PlanningEngine
+
+    async def _run_dag_raises():
+        raise asyncio.CancelledError()
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(return_value=_run_dag_raises())
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        with pytest.raises(asyncio.CancelledError):
+            await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+
+    assert not getattr(env, "_failed_operation_evidence", None)
+
+    await stop_live_persist(env, status="cancelled")

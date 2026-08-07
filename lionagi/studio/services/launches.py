@@ -239,6 +239,26 @@ async def shutdown_launches() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+_MAX_FAILURE_REASON_CHARS = 4000
+
+
+def _failure_reason_summary(status: str, output_tail: str) -> str:
+    """Prefer the subprocess's own diagnostic tail over a generic message.
+
+    A failed detached launch (e.g. a checkpoint resume refused for a
+    concrete reason) names that reason in its own output; discarding it
+    here would surface as an unexplained "Detached launch failed." Kept
+    short and tail-truncated — this lands in a DB column meant for a
+    summary, not a full traceback.
+    """
+    if status != "failed" or not output_tail.strip():
+        return f"Detached launch {status}."
+    tail = output_tail.strip()
+    if len(tail) > _MAX_FAILURE_REASON_CHARS:
+        tail = tail[-_MAX_FAILURE_REASON_CHARS:]
+    return tail
+
+
 async def _spawn_detached(
     argv: list[str], inv_id: str, *, tmp_path: str | None, action_kind: str | None = None
 ) -> None:
@@ -247,8 +267,9 @@ async def _spawn_detached(
 
     from ..scheduler.subprocess import spawn_and_wait
 
+    output_tail = ""
     try:
-        exit_code, _stderr = await spawn_and_wait(
+        exit_code, output_tail = await spawn_and_wait(
             argv, inv_id, tmp_path=tmp_path, action_kind=action_kind
         )
         if exit_code == 0:
@@ -294,7 +315,7 @@ async def _spawn_detached(
                 inv_id,
                 new_status=status,
                 reason_code=reason,
-                reason_summary=f"Detached launch {status}.",
+                reason_summary=_failure_reason_summary(status, output_tail),
                 evidence_refs=[],
                 source="executor",
                 actor=inv_id,

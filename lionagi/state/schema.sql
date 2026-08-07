@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 -- Must match SCHEMA_VERSION in db.py, which re-stamps this row on every open
 -- so a migrated database reports the shape it now has.
-INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '2');
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '3');
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
 
 -- ── Message types (int enum for lion_class) ───────────────────────────────
@@ -255,8 +255,8 @@ CREATE TABLE IF NOT EXISTS branches (
   ended_at        REAL
 );
 
-CREATE INDEX IF NOT EXISTS idx_branches_session
-  ON branches(session_id);
+CREATE INDEX IF NOT EXISTS idx_branches_session_created
+  ON branches(session_id, created_at);
 -- Child keys of messages(id) / progressions(id); see idx_sessions_first_msg_id.
 CREATE INDEX IF NOT EXISTS idx_branches_system_msg_id
   ON branches(system_msg_id);
@@ -968,3 +968,50 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_evidence_sequence
   ON approval_evidence(sequence);
 CREATE INDEX IF NOT EXISTS idx_approval_evidence_approval
   ON approval_evidence(approval_id);
+
+-- ── Attention dispositions (Studio needs-attention discharge lifecycle) ────
+-- One row per derived attention item (item_id == "run:<id>" | "inv:<id>" |
+-- "sched:<id>", the id boardReducer.buildAttentionItems already builds).
+-- Records what an operator decided about seeing a condition; the source
+-- run/invocation/schedule status is never written here. See attention.py.
+
+CREATE TABLE IF NOT EXISTS attention_dispositions (
+  item_id        TEXT    PRIMARY KEY,
+  state          TEXT    NOT NULL
+                 CHECK(state IN ('acknowledged', 'resolved', 'expected', 'snoozed')),
+  note           TEXT,
+  created_at     REAL    NOT NULL,
+  updated_at     REAL    NOT NULL,
+  expires_at     REAL,
+  actor          TEXT    NOT NULL,
+  source_status  TEXT    NOT NULL,
+  revision       INTEGER NOT NULL DEFAULT 1
+);
+
+-- ── Attention disposition revisions (per-item_id revision ledger) ──────────
+-- Survives a DELETE of the disposition row itself so a PUT that recreates
+-- item_id afterward can still be fenced against the last operation.
+
+CREATE TABLE IF NOT EXISTS attention_disposition_revisions (
+  item_id        TEXT    PRIMARY KEY,
+  revision       INTEGER NOT NULL
+);
+
+-- ── Attention disposition history (append-only discharge ledger) ──────────
+
+CREATE TABLE IF NOT EXISTS attention_disposition_history (
+  id             TEXT    PRIMARY KEY,
+  item_id        TEXT    NOT NULL,
+  sequence       INTEGER NOT NULL,
+  prior_state    TEXT,
+  new_state      TEXT    NOT NULL,
+  note           TEXT,
+  actor          TEXT    NOT NULL,
+  source_status  TEXT,
+  created_at     REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_attention_disposition_history_item
+  ON attention_disposition_history(item_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_attention_disposition_history_sequence
+  ON attention_disposition_history(sequence);

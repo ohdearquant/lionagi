@@ -318,18 +318,23 @@ async def list_schedules(arguments: dict[str, Any]) -> dict[str, Any]:
 async def list_agents(arguments: dict[str, Any]) -> dict[str, Any]:
     args = ListAgentsInput.model_validate(arguments)
     from lionagi.studio.services.agents import list_agents as _list_agents
+    from lionagi.studio.services.redaction import demo_mode_enabled, project_agent_fields
 
     rows = await anyio.to_thread.run_sync(_list_agents)
-    projected = [
-        {
-            "name": row.get("name"),
-            "provider": row.get("provider") or None,
-            "model": row.get("model") or None,
-            "description": (row.get("description") or "")[:500] or None,
-        }
-        for row in rows[: args.limit]
-        if isinstance(row.get("name"), str)
-    ]
+    redact = demo_mode_enabled()
+    projected = []
+    for row in rows[: args.limit]:
+        if not isinstance(row.get("name"), str):
+            continue
+        safe = project_agent_fields(row, redact=redact)
+        projected.append(
+            {
+                "name": row.get("name"),
+                "provider": safe.get("provider") or None,
+                "model": safe.get("model") or None,
+                "description": (safe.get("description") or "")[:500] or None,
+            }
+        )
     return {"agents": projected, "count": len(projected), "bounded": True}
 
 
