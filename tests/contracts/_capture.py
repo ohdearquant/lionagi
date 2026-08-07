@@ -13,10 +13,14 @@ calls them again and diffs the live result against the frozen one.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import os
 import re
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -262,6 +266,89 @@ def _run_cli(argv: list[str], timeout: float = 20.0) -> dict[str, Any]:
         "stderr": proc.stderr,
         "exit_code": proc.returncode,
     }
+
+
+def _run_cli_env(
+    argv: list[str],
+    env_overrides: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    """Same as :func:`_run_cli`, but lets the caller vary the subprocess's
+    environment and working directory -- used by the differential-capture
+    check below to prove a committable case's output does not depend on
+    either."""
+    env = {**os.environ, **(env_overrides or {})}
+    proc = subprocess.run(
+        [sys.executable, "-m", "lionagi.cli.main", *argv],
+        cwd=cwd or REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+    )
+    return {
+        "argv": argv,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+        "exit_code": proc.returncode,
+    }
+
+
+_DIFFERENTIAL_FAKE_HOME = "/tmp/lionagi-differential-fake-home"
+_DIFFERENTIAL_FAKE_TMPDIR = "/tmp/lionagi-differential-fake-tmp"
+_DIFFERENTIAL_FAKE_USER = "lionagi-differential-fake-user"
+
+
+def differential_capture(argv: list[str], timeout: float = 20.0) -> list[dict[str, Any]]:
+    """Capture *argv* three times: once under the ambient environment and
+    working directory, once under a deliberately different HOME / TMPDIR /
+    USER and a different working directory, and once more after a wall-clock
+    gap crossing a one-second boundary. A stream that reads anything from
+    the environment, the current directory, or the clock necessarily differs
+    across these runs; genuinely static argparse usage/error text does not.
+    This replaces guessing at what a leaked value looks like (a pattern list,
+    a vocabulary of "known-safe" words) with a check on the property that
+    actually matters: does the output depend on the machine at all."""
+    fake_cwd = Path(_DIFFERENTIAL_FAKE_TMPDIR)
+    fake_cwd.mkdir(parents=True, exist_ok=True)
+    runs = [
+        _run_cli_env(argv, timeout=timeout),
+        _run_cli_env(
+            argv,
+            env_overrides={
+                "HOME": _DIFFERENTIAL_FAKE_HOME,
+                "TMPDIR": _DIFFERENTIAL_FAKE_TMPDIR,
+                "USER": _DIFFERENTIAL_FAKE_USER,
+                "LOGNAME": _DIFFERENTIAL_FAKE_USER,
+                "USERNAME": _DIFFERENTIAL_FAKE_USER,
+            },
+            cwd=fake_cwd,
+            timeout=timeout,
+        ),
+    ]
+    time.sleep(1.05)
+    runs.append(_run_cli_env(argv, timeout=timeout))
+    return runs
+
+
+def known_machine_identity() -> frozenset[str]:
+    """Literal values that identify *this* machine or checkout: hostname,
+    real username, home directory, and this repo's own checkout path.
+
+    ``differential_capture`` above cannot catch a value that is constant on
+    this machine but still identifying -- a hostname baked into a banner
+    line does not vary between two runs on the same box. This closes that
+    gap by redacting known values rather than guessing at shapes: it is
+    redaction of an identified secret, not a pattern or vocabulary guess.
+    """
+    values = {
+        socket.gethostname(),
+        getpass.getuser(),
+        str(Path.home()),
+        str(REPO_ROOT),
+    }
+    return frozenset(v for v in values if v)
 
 
 SPECIALIZED_CASES: tuple[tuple[str, ...], ...] = (

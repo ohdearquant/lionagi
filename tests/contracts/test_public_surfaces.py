@@ -30,10 +30,9 @@ Waiver:
 
 from __future__ import annotations
 
-import argparse
-import ast
 import json
 import re
+import socket
 import sys
 from pathlib import Path
 
@@ -529,112 +528,134 @@ def test_new_case_becomes_committable_only_via_declaration(monkeypatch):
     assert _unredacted_fields("specialized", cases) == []
 
 
-# ── Token-level check on committable streams ─────────────────────────────
+# ── Differential check on committable streams ────────────────────────────
 #
 # A case-level committable declaration means a human read that command's
 # output once and judged it safe. That judgment decays: the SAME command can
-# grow a host-shaped token in its output later (a new flag whose default
-# reads an env var, a dependency bump that changes an error message) without
-# ever leaving the allowlist, so nothing above would catch it. This check
-# re-verifies every committable case's CURRENT captured content, token by
-# token, against a vocabulary derived from the repo's own CLI/MCP source
-# (plus the Python argparse stdlib, whose boilerplate -- "usage:", "show
-# this help message and exit" -- these commands' output is partly built
-# from) and a small closed-class set of English function words. A token
-# that cannot be traced to either source is rejected: that is exactly the
-# shape a leaked identifier, hostname, or internal label would take.
-_WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
-
-# Closed-class grammar words: articles, prepositions, conjunctions. This is
-# the only hand-typed piece of the token rule, deliberately small and
-# closed -- it does not grow with the CLI surface the way command/option
-# vocabulary does, so (unlike a hand-typed noun list) it does not rot.
-_ENGLISH_FUNCTION_WORDS = frozenset(
-    """
-    a an the this that these those is are was were be been being to of in
-    on at for and or nor not no if then else than as by from into onto
-    with without via before after above below over under between
-    """.split()
-)
+# grow env-, cwd-, or clock-derived content later (a new flag whose default
+# reads an env var, a banner that prints the working directory, a dependency
+# bump that starts stamping a timestamp) without ever leaving the allowlist.
+# A vocabulary/pattern check only catches shapes someone thought to list; it
+# also produces false accepts, since a real username or hostname can just
+# happen to collide with an ordinary CLI word already public in this repo's
+# own source (e.g. "admin", "runner").
+#
+# The property that actually matters: committable output must not depend on
+# the machine, the environment, or the clock at all. `differential_capture`
+# runs each committable case more than once under deliberately different
+# HOME/TMPDIR/USER/cwd and at two different wall-clock moments; anything
+# derived from any of those necessarily differs across the runs, and
+# genuinely static argparse usage/error text does not. A hostname is the one
+# thing that is identifying but constant on a given machine, so it cannot
+# show up as cross-run variance -- that gap is closed separately by
+# `known_machine_identity`, which redacts by known value rather than shape.
 
 
-def _repo_cli_vocabulary() -> frozenset[str]:
-    """Lowercased word-tokens from every string literal in: the Python
-    argparse stdlib module (the source of the "usage:" / "positional
-    arguments:" / "show this help message and exit" boilerplate every
-    argparse-backed case's output is partly made of), this repo's own
-    CLI/MCP/studio source tree, and this suite's own capture harness
-    (tests/contracts/_capture.py -- the source of literal argv values like
-    "bogus-unknown-command" and "capture-test" that get echoed back into
-    some error messages). Derived at test time from the current tree, not
-    pinned to a snapshot, so it tracks the CLI surface instead of rotting
-    against it -- this is the "repo's own tracked CLI vocabulary" the round
-    3 brief asks for, not a hand-typed word list.
-    """
-    roots = [
-        Path(argparse.__file__),
-        _capture.REPO_ROOT / "lionagi" / "cli",
-        _capture.REPO_ROOT / "lionagi" / "studio",
-        _capture.REPO_ROOT / "lionagi" / "mcp",
-        _capture.REPO_ROOT / "lionagi" / "casts" / "surfaces.py",
-        _capture.REPO_ROOT / "lionagi" / "_auto.py",
-        Path(__file__).resolve().parent / "_capture.py",
-    ]
-    files: set[Path] = set()
-    for root in roots:
-        if root.is_file():
-            files.add(root)
-        elif root.is_dir():
-            files.update(root.rglob("*.py"))
-
-    words: set[str] = set()
-    for path in files:
-        tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                words.update(m.group(0).lower() for m in _WORD_RE.finditer(node.value))
-    return frozenset(words)
-
-
-def _unrecognized_tokens(text: str, vocabulary: frozenset[str]) -> list[str]:
-    """Word-tokens (length >= 2) in *text* that are neither repo-tracked CLI
-    vocabulary nor a closed-class English function word. Tokens of length 1
-    (single option-letter fragments, duration-unit suffixes like the "m" in
-    "15m") and non-alphabetic runs (numbers, version strings, UUIDs, paths --
-    already covered by test_fixtures_carry_no_host_specific_state and the
-    _VOLATILE_ARGV redaction requirement) are out of scope for this check by
-    construction: _WORD_RE only matches letter runs."""
-    allowed = vocabulary | _ENGLISH_FUNCTION_WORDS
+def _offending_fields(runs: list[dict]) -> list[str]:
+    """Field names ("stdout"/"stderr") whose captured content is not
+    byte-identical across *runs* -- i.e. varies with environment, working
+    directory, or wall clock and therefore cannot be committed as literal
+    fixture text."""
     offenders = []
-    for match in _WORD_RE.finditer(text):
-        token = match.group(0).lower()
-        if len(token) < 2:
-            continue
-        if token not in allowed:
-            offenders.append(token)
+    for field in ("stdout", "stderr"):
+        values = {r.get(field, "") for r in runs}
+        if len(values) > 1:
+            offenders.append(field)
     return offenders
 
 
-def test_repo_cli_vocabulary_is_not_vacuous():
-    """Positive control: the vocabulary derivation actually finds words, and
-    finds ones we know must be there (both argparse-stdlib boilerplate and
-    this repo's own CLI vocabulary) -- so an empty offenders list from the
-    checks below means "nothing unrecognized", not "the scan is broken"."""
-    vocabulary = _repo_cli_vocabulary()
-    assert len(vocabulary) > 500
-    assert "usage" in vocabulary  # argparse stdlib boilerplate
-    assert "schedule" in vocabulary  # this repo's own CLI vocabulary
+def _identity_hits(text: str, identity: frozenset[str]) -> list[str]:
+    """Whole-word/whole-path occurrences of a known machine-identity value in
+    *text*. Word-bounded rather than a raw substring test: a short real
+    username can legitimately be a substring of an unrelated CLI word (this
+    repo's own real capture hit this -- the checkout's username is a
+    substring of "lionagi", which appears throughout genuinely static help
+    text), and a raw substring match would misreport that collision as a
+    leak."""
+    return [v for v in identity if v and re.search(rf"(?<![\w/]){re.escape(v)}(?![\w/])", text)]
 
 
-def test_committable_case_tokens_are_recognized_vocabulary():
-    """Every committable case's LIVE captured stdout/stderr -- checked fresh
-    each run, not just the frozen fixture -- must be built entirely from
-    tokens the repo's own CLI source (plus argparse's stdlib boilerplate and
-    a small closed-class grammar list) can account for. This is what catches
-    a declared-safe command's output growing a host-shaped token later: the
-    case-level declaration only asserts the command was safe when it was
+def test_offending_fields_accepts_identical_runs():
+    """Positive control: byte-identical runs (the shape every genuinely
+    static committable case must produce) report no offending fields."""
+    runs = [
+        {"stdout": "usage: li [-h]\n", "stderr": ""},
+        {"stdout": "usage: li [-h]\n", "stderr": ""},
+        {"stdout": "usage: li [-h]\n", "stderr": ""},
+    ]
+    assert _offending_fields(runs) == []
+
+
+def test_offending_fields_flags_env_derived_variance():
+    """Mutation arm: reproduces Finding 1 (a username/hostname pair that a
+    vocabulary check would accept because both words are independently
+    public in this repo's own source) at the level that actually matters --
+    the value differs across two runs made under different simulated
+    identities, exactly what a real env-derived "Connected to
+    {user}@{host}" banner would do."""
+    runs = [
+        {"stdout": "Connected to admin@runner-1", "stderr": ""},
+        {"stdout": "Connected to admin@runner-2", "stderr": ""},
+    ]
+    assert _offending_fields(runs) == ["stdout"]
+
+
+def test_offending_fields_flags_clock_derived_variance():
+    """Mutation arm: reproduces Finding 2 (a timestamp / tmp-path shape the
+    old token check was structurally blind to, since it only scanned
+    alphabetic runs and three literal path prefixes). A clock- or
+    tmpdir-derived value necessarily differs between two wall-clock-
+    separated runs; this check needs no shape enumeration to catch it."""
+    runs = [
+        {
+            "stdout": "session 2026-08-07T12:34:56.123456 /private/tmp/run-0123456789",
+            "stderr": "",
+        },
+        {
+            "stdout": "session 2026-08-07T12:34:57.654321 /private/tmp/run-9876543210",
+            "stderr": "",
+        },
+    ]
+    assert _offending_fields(runs) == ["stdout"]
+
+
+def test_committable_case_output_is_env_and_clock_invariant():
+    """Every committable case's LIVE output -- captured fresh under
+    deliberately varied HOME/TMPDIR/USER/cwd and across a wall-clock gap --
+    must be byte-identical across all runs. This is what catches a
+    declared-safe command's output starting to depend on the machine later:
+    the case-level declaration only asserts the command was safe when it was
     reviewed, not that it stays safe forever."""
-    vocabulary = _repo_cli_vocabulary()
+    offenders: dict[str, list[str]] = {}
+    for argv in (*_COMMITTABLE_SPECIALIZED_ARGV, *_COMMITTABLE_MACHINE_ARGV):
+        bad = _offending_fields(_capture.differential_capture(list(argv)))
+        if bad:
+            offenders[str(argv)] = bad
+    assert not offenders, (
+        "committable case output varies across environment/cwd/wall-clock "
+        f"runs -- carries machine-, env-, or clock-derived state: {offenders}"
+    )
+
+
+def test_known_identity_check_flags_a_planted_hostname():
+    """Mutation arm for the constant-identity gap: a hostname cannot vary
+    between two runs on the same machine, so differential capture alone
+    cannot catch it. Splice this machine's own real hostname into an
+    "admin@{host}"-shaped banner -- exactly Finding 1's scenario -- and
+    confirm the known-value check names it."""
+    identity = _capture.known_machine_identity()
+    hostname = socket.gethostname()
+    text = f"Connected to admin@{hostname}"
+    assert hostname in _identity_hits(text, identity)
+
+
+def test_committable_case_output_has_no_known_machine_identity():
+    """Every committable case's LIVE stdout/stderr must not contain this
+    machine's own hostname, real username, home directory, or repo checkout
+    path -- the one class of identifying value that is constant rather than
+    cross-run variant, and so invisible to
+    test_committable_case_output_is_env_and_clock_invariant above."""
+    identity = _capture.known_machine_identity()
     live_specialized = {tuple(c["argv"]): c for c in _capture.capture_specialized()}
     live_machine = {tuple(c["argv"]): c for c in _capture.capture_machine()}
 
@@ -642,30 +663,17 @@ def test_committable_case_tokens_are_recognized_vocabulary():
     for argv in _COMMITTABLE_SPECIALIZED_ARGV:
         case = live_specialized[argv]
         for field in ("stdout", "stderr"):
-            bad = _unrecognized_tokens(case.get(field, ""), vocabulary)
-            if bad:
-                offenders[f"specialized {argv} {field}"] = bad
+            hit = _identity_hits(case.get(field, ""), identity)
+            if hit:
+                offenders[f"specialized {argv} {field}"] = hit
     for argv in _COMMITTABLE_MACHINE_ARGV:
         case = live_machine[argv]
         for field in ("stdout", "stderr"):
-            bad = _unrecognized_tokens(case.get(field, ""), vocabulary)
-            if bad:
-                offenders[f"machine {argv} {field}"] = bad
+            hit = _identity_hits(case.get(field, ""), identity)
+            if hit:
+                offenders[f"machine {argv} {field}"] = hit
 
     assert not offenders, (
-        "committable case output contains tokens absent from the repo's own "
-        "tracked CLI vocabulary -- either a genuine leak, or the source root "
-        f"list in _repo_cli_vocabulary() needs to grow: {offenders}"
+        "committable case output contains this machine's own hostname, "
+        f"username, home directory, or checkout path: {offenders}"
     )
-
-
-def test_token_check_flags_a_host_shaped_token_in_a_committable_stream():
-    """Mutation arm (b): a committable case's declaration only vouches for
-    the text a human actually read. Splice a host-shaped token -- not a
-    UUID or a path, since test_fixtures_carry_no_host_specific_state already
-    catches those shapes; the point of this check is what that one does not
-    catch -- into an otherwise-real committable stream and confirm it goes
-    red, naming exactly the injected words."""
-    vocabulary = _repo_cli_vocabulary()
-    stream = "usage: li [-h] quixotic-fizzbuzz-workstation\n"
-    assert _unrecognized_tokens(stream, vocabulary) == ["quixotic", "fizzbuzz", "workstation"]
