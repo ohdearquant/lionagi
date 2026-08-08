@@ -336,66 +336,46 @@ command-specific ID and JSON options.
 
 ## Playbooks (`-f`, `-p`, `li play`)
 
-A **playbook** is a YAML file that declares a reusable, parametric flow
-invocation: model, agent, effort, prompt template, and typed CLI args. Bare
-names resolve project-local `.lionagi/playbooks/` first, then user-global
+A **playbook** is the declarative tier of orchestration: a reusable YAML input
+to the flow planner. It is not the plan itself. Each invocation combines the
+playbook with that run's input, the orchestrator produces a run-specific
+FlowPlan, and each plan assignment becomes a branch-bound FlowOp. Source:
+`lionagi/orchestration/patterns.py` and `cli/orchestrate/flow.py`.
+
+Bare names resolve project-local `.lionagi/playbooks/` first, then user-global
 `~/.lionagi/playbooks/`, then active trusted plugins. Use `<plugin>/<name>` to
 select a plugin playbook explicitly.
 
 ### Playbook YAML shape
 
 ```yaml
-name: audit
-description: Parametric audit pattern
-argument-hint: '[--mode MODE] [--workers N]'   # CC-compatible display string
-
 model: claude-code/opus-4-7
 agent: orchestrator
 effort: high
-
-args:                       # explicit, typed schema (preferred)
-  mode:
-    type: str               # str | int | float | bool
-    default: dry
-    help: "audit mode: dry | security | dead-code"
-  workers:
-    type: int
-    default: 8
-  strict:
-    type: bool
-    default: false
-
+max_ops: 6
+reactive: "off"
 prompt: |
-  Run a {mode} audit with {workers} parallel workers. Strict: {strict}.
-
-  Target: {input}
+  Audit {input}. Cite source evidence for every finding.
 ```
 
-All playbook fields map to `li o flow` flags. If both `args:` and
-`argument-hint:` are present, `args:` wins. If only `argument-hint:` is
-present, it's parsed as CC does — `[--flag VALUE]` → string arg, `[--flag]`
-→ bool arg, no type coercion.
-
-### Template interpolation
-
-Inside `prompt:`, three rules:
-
-1. `{input}` → the positional prompt text passed on the CLI.
-2. `{arg_name}` → a declared arg (CLI override > playbook default).
-3. If the template has **no** `{...}` placeholders, the positional text is
-   **appended** with a blank line — same convention as Claude Code slash
-   commands.
+The runtime field list is defined only by `_validate_spec_fields` in
+`cli/orchestrate/__init__.py`: `model`, `agent`, `effort`, `prompt`, `workers`,
+`max_ops`, deprecated `max_agents`, `with_synthesis`, `bare`, `dry_run`,
+`show_graph`, `save`, `team_mode`, `team_attach`, `reactive`, and `artifacts`.
+See the [orchestration guide](guides/orchestration.md#playbook-field-reference)
+for types, bounds, and runtime effects. Quote `reactive: "off"`; bare YAML
+`off` is a boolean, but the loader requires this field to be a string.
 
 ### Invocation
 
 ```bash
 # Long form
-li o flow -p audit --mode security "the auth service"
+li o flow -p audit "the auth service"
 
 # Sugar
-li play audit --mode security "the auth service"
+li play audit "the auth service"
 li play list                        # list all discovered playbooks
-li play audit --help                # show playbook description, args, and usage
+li play audit --help                # show playbook usage
 li play check audit                 # validate declared playbook artifacts/dependencies
 li play status [ID]                 # latest play/flow status, or one durable ID
 li play --resume ID                 # resume a checkpointed flow
@@ -410,39 +390,23 @@ entries are namespaced as `<plugin>/<name>`.
 li play list
 ```
 
-```text
-# output:
-audit        Parametric audit pattern              [--mode MODE] [--workers N]
-refactor     Multi-step refactor with review       [--scope SCOPE]
-```
-
 ### `li play NAME --help`
 
-Shows the playbook's `description`, its declared arguments with types and defaults, and a
-generated usage line. Does not execute the flow.
+Shows playbook usage without executing the flow.
 
 ```bash
 li play audit --help
 ```
 
-```text
-# output:
-audit — Parametric audit pattern
-
-Usage: li play audit [--mode MODE] [--workers N] [--strict] PROMPT
-
-Arguments:
-  --mode MODE    str    default: dry    audit mode: dry | security | dead-code
-  --workers N    int    default: 8
-  --strict       bool   default: false
-
-Prompt template:
-  Run a {mode} audit with {workers} parallel workers. Strict: {strict}.
-
-  Target: {input}
-```
-
 `--help` is checked before any flags are forwarded to `li o flow`, so it never starts execution.
+
+### Submission is not validation
+
+`play.submit` returns an allocated run ID after spawning the CLI child. The
+child then loads the playbook and calls `_validate_spec_fields`; a run ID is
+therefore a handle, not proof that the YAML is valid or that a result exists.
+Read it with `job.status` and `job.output`. Source: `lionagi/mcp/jobs.py` and
+`cli/orchestrate/__init__.py`.
 
 ### Ad-hoc specs (`-f`)
 
@@ -455,8 +419,8 @@ li o flow -f ./my-spec.yaml "target"
 `-f` takes an absolute or relative path. `-p` takes a discovered bare name or
 an explicit `<plugin>/<name>` token. They are mutually exclusive.
 
-See the [playbook examples](https://github.com/ohdearquant/lionagi/tree/main/examples/playbooks)
-for ready-to-install playbooks with different shapes.
+The [orchestration guide](guides/orchestration.md#a-complete-example) follows one
+playbook through its FlowPlan and a single FlowOp.
 
 ---
 

@@ -17,6 +17,13 @@ needs its coordination or operational guarantees.
 | Typed or tool-aware work in code | `Branch.operate()` | Structured output and, with `actions=True`, tools |
 | An application-owned DAG | `Builder` + `Session.flow()` | Your code owns graph construction and execution |
 
+For the three orchestration rows, keep the objects separate: a **Playbook** is
+the saved declaration, a **FlowPlan** is the run-specific dependency plan the
+orchestrator produces, and a **FlowOp** is one branch invocation in that plan.
+A playbook is reusable input to planning; it is not a saved DAG. Source:
+`lionagi/orchestration/patterns.py`, `lionagi/cli/orchestrate/flow.py`, and
+`lionagi/cli/main.py`.
+
 ## A quick decision path
 
 1. If the task belongs inside your application, use Python. Choose
@@ -37,6 +44,14 @@ needs its coordination or operational guarantees.
 - A playbook improves repeatability, not first-run latency; it still uses the
   flow execution path.
 - Schedules require the Studio daemon to be running when a trigger fires.
+
+Prefer flat fan-out unless the work has real dependencies. Recorded runs show
+fan-outs completing far more reliably than saved-playbook runs; the dominant
+planned-run failure is a FlowPlan too large for its timeout window. Flow's
+timeout covers planning, execution, and synthesis, and its per-operation budget
+is divided by the initial assignment count. Preview the plan and reserve
+`max_ops` capacity for any reactive follow-ups. Source:
+`lionagi/cli/orchestrate/fanout.py` and `lionagi/cli/orchestrate/flow.py`.
 
 ## Common choices
 
