@@ -3803,6 +3803,80 @@ async def test_execute_dag_dropped_spawn_does_not_trip_lost_operation_evidence(
     await stop_live_persist(env, status="completed")
 
 
+async def test_unknown_spawn_assignee_reaches_terminal_failure(
+    temp_db_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import json as _json
+
+    from lionagi.casts.emission import SpawnRequest, TaskAssignment
+    from lionagi.cli.orchestrate import flow as flow_mod
+    from lionagi.cli.orchestrate.flow import _DagState, _execute_dag, _PlanResult
+    from lionagi.operations.builder import OperationGraphBuilder
+
+    branch = Branch(name="architect")
+    env = _minimal_env(branch)
+    env.run.agent_artifact_dir.side_effect = lambda agent_id: tmp_path / agent_id
+    env.builder = OperationGraphBuilder()
+    node_id = env.builder.add_operation("spawner", depends_on=[])
+
+    async def spawner(**_kwargs):
+        return SpawnRequest(instruction="missing work", assignee="ghost", independent=True)
+
+    env.session.register_operation("spawner", spawner)
+    await start_live_persist(
+        env,
+        invocation_kind="flow",
+        artifacts_path=str(tmp_path / "artifacts"),
+    )
+    ctx = env._live_persist
+    assert ctx is not None
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="spawn missing work", assignee="architect")],
+        agent_ids=["architect"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[node_id],
+        known_nodes={node_id},
+        deps_by_node={node_id: []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"architect": branch},
+        worker_models=["test/model"],
+    )
+    emitted: list[str] = []
+    monkeypatch.setattr(flow_mod, "progress", emitted.append)
+    expected_error = "SpawnRequest assignee 'ghost' is not a recognized role (known: ['architect'])"
+    expected_evidence = [{"kind": "unroutable_spawn", "id": "ghost", "label": expected_error}]
+
+    try:
+        result = await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=2)
+        assert result.n_spawned == 0
+        assert env._failed_operation_evidence == expected_evidence
+        assert any(
+            "SPAWN REJECTED" in line and "ghost" in line and expected_error in line
+            for line in emitted
+        )
+    finally:
+        final_status = await stop_live_persist(env, status="completed")
+
+    assert final_status == "failed"
+    async with StateDB() as db:
+        session_row = await db.get_session(ctx["session_id"])
+    assert session_row is not None
+    assert session_row["status"] == "failed"
+    assert session_row["status_reason_code"] == "run.failed.exception"
+    evidence_refs = session_row["status_evidence_refs"]
+    if isinstance(evidence_refs, str):
+        evidence_refs = _json.loads(evidence_refs)
+    assert evidence_refs == expected_evidence
+
+
 async def test_execute_dag_cancelled_spawn_records_lost_operation_evidence(
     temp_db_path: Path,
     tmp_path: Path,
