@@ -223,3 +223,79 @@ def test_react_analysis_optional_analysis_field():
     # Explicit analysis still works.
     b = ReActAnalysis.model_validate({"analysis": "reasoning here"})
     assert b.analysis == "reasoning here"
+
+
+def _react_kw(branch, **overrides):
+    """Build the first-round kwargs the way ReAct does, with no tools named by the caller."""
+    from lionagi.operations.ReAct.ReAct import prepare_react_kw
+
+    return prepare_react_kw(branch, {"instruction": "do the thing"}, **overrides)
+
+
+def test_first_round_gets_tools_when_the_branch_has_them():
+    """Regression: the first analysis round used to be sent with no tool schemas.
+
+    Schemas were attached only from the first extension round onward, but the first
+    round is where the model answers `extension_needed`. A model that looked for its
+    tools, found none, and answered False ended the loop before the round that would
+    have shown it any -- so whether it could act depended on it optimistically
+    assuming capabilities it had not been shown.
+    """
+    branch = Branch()
+    branch.acts.register_tool(multiply)
+
+    kw = _react_kw(branch)
+
+    assert kw["action_param"] is not None, (
+        "first round must carry an action param when the branch has tools; "
+        "operate resolves the schemas from it"
+    )
+    assert kw["action_param"].tools is True
+
+
+def test_first_round_has_no_action_param_when_the_branch_has_no_tools():
+    """Control: the condition must not be vacuously true.
+
+    Without this, the test above passes for a branch with no tools at all and so
+    says nothing about whether registered tools are what triggered it.
+    """
+    branch = Branch()
+    assert not branch.acts.registry
+
+    kw = _react_kw(branch)
+
+    assert kw["action_param"] is None
+
+
+def test_caller_supplied_tools_still_win():
+    """A caller naming tools explicitly keeps the behaviour it always had."""
+    branch = Branch()
+    branch.acts.register_tool(multiply)
+
+    kw = _react_kw(branch, tools=["multiply"])
+
+    assert kw["action_param"] is not None
+    assert kw["action_param"].tools == ["multiply"]
+
+
+@pytest.mark.asyncio
+async def test_first_operate_call_receives_the_action_param():
+    """The fix has to reach the actual first turn, not just the kwargs builder."""
+    from lionagi.operations.ReAct.utils import Analysis
+
+    branch = Branch()
+    branch.acts.register_tool(multiply)
+
+    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
+        mock_operate.side_effect = [
+            ReActAnalysis(analysis="no extension needed", extension_needed=False),
+            Analysis(answer="done"),
+        ]
+        await branch.ReAct(instruct={"instruction": "What is 5 times 3?"}, max_extensions=1)
+
+    assert mock_operate.call_count >= 1
+    first_call = mock_operate.call_args_list[0]
+    action_param = first_call.kwargs.get("action_param")
+    if action_param is None and len(first_call.args) > 3:
+        action_param = first_call.args[3]
+    assert action_param is not None, "the first turn was dispatched with no action param"
