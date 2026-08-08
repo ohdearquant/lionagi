@@ -1,6 +1,6 @@
 # ADR-0112: MCP tool registration naming and collision behavior
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Area**: actions-tools
 - **Date**: 2026-08-08
