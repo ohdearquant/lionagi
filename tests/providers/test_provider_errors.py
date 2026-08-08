@@ -127,6 +127,13 @@ def test_classify_unrelated_too_long_returns_base_error():
     assert type(err) is ProviderError
 
 
+def test_classify_terminal_truncation_returns_base_error():
+    err = classify_provider_error(
+        "Prompt is too long to display in the terminal; output was truncated."
+    )
+    assert type(err) is ProviderError
+
+
 def test_classify_context_case_insensitive():
     err = classify_provider_error("CONTEXT WINDOW EXCEEDED")
     assert isinstance(err, ProviderContextError)
