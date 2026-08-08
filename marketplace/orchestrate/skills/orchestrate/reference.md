@@ -278,7 +278,7 @@ li o flow -p security-audit "JWT middleware" --save ./out --yolo --bypass
 | `--show-graph` | false | Render DAG visualization |
 | `--background` | false | Fork into background subprocess (requires `--save`) |
 | `--bare` | false | Ignore agent profiles; all workers use CLI model |
-| `--max-ops N` | 0 (unlimited) | Cap total DAG nodes. `--max-agents` is deprecated alias |
+| `--max-ops N` | 0 (no shared ceiling) | Cap planned and reactive ops together; at 0, reactive spawns retain a separate cap of 20. `--max-agents` is deprecated alias |
 | `--output text\|json` | text | Output format |
 
 Plus all common flags (`--yolo`, `--bypass`, `--effort`, `--cwd`, `--timeout`, `--invocation`, `--project`).

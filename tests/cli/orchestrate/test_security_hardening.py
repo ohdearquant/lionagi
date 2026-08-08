@@ -61,6 +61,13 @@ class TestSpecValidationRejectsBadTypes:
         err = _validate_spec_fields({"max_agents": 51})
         assert err is not None
 
+    def test_max_ops_range_error_describes_planning_and_spawn_limits(self):
+        err = _validate_spec_fields({"max_ops": 51})
+        assert err == (
+            "spec field 'max_ops' must be in [0, 50] "
+            "(0 = no shared ceiling; reactive spawns are capped at 20), got 51"
+        )
+
     def test_effort_invalid_value(self):
         err = _validate_spec_fields({"effort": "extreme"})
         assert err is not None
@@ -173,6 +180,22 @@ class TestSpecValidationRejectsBadTypes:
         assert err is not None
 
 
+class TestSpecValidationRejectsUnknownFields:
+    def test_unknown_field_names_key_and_accepted_fields(self):
+        err = _validate_spec_fields({"reactve": "off"})
+        assert err == (
+            "unknown spec field 'reactve'; accepted fields: agent, args, argument-hint, "
+            "artifacts, bare, description, dry_run, effort, max_agents, max_ops, model, name, "
+            "pack, prompt, reactive, save, show_graph, team_attach, team_mode, with_synthesis, "
+            "workers"
+        )
+
+    def test_dead_critic_model_field_is_rejected(self):
+        err = _validate_spec_fields({"critic_model": "claude-code/opus-4-7"})
+        assert err is not None
+        assert "critic_model" in err
+
+
 class TestSpecValidationAcceptsValidFields:
     def test_empty_spec(self):
         assert _validate_spec_fields({}) is None
@@ -191,11 +214,26 @@ class TestSpecValidationAcceptsValidFields:
         assert _validate_spec_fields({"max_agents": 1}) is None
         assert _validate_spec_fields({"max_agents": 50}) is None
 
-    def test_max_ops_zero_means_unlimited(self):
-        # CLI help documents `--max-ops 0` (and `--max-agents 0`) as
-        # "unlimited" — spec validation must accept 0 to honor that contract.
+    def test_max_ops_zero_allows_uncapped_planning(self):
+        # Zero removes the shared planner/spawn ceiling while the executor
+        # retains its separate 20-spawn safety cap.
         assert _validate_spec_fields({"max_ops": 0}) is None
         assert _validate_spec_fields({"max_agents": 0}) is None
+
+    def test_args_field_remains_accepted(self):
+        assert _validate_spec_fields({"args": {"mode": {"type": "str"}}}) is None
+
+    def test_argument_hint_field_remains_accepted(self):
+        assert _validate_spec_fields({"argument-hint": "[--mode MODE]"}) is None
+
+    def test_description_field_remains_accepted(self):
+        assert _validate_spec_fields({"description": "Review a target"}) is None
+
+    def test_pack_field_remains_accepted(self):
+        assert _validate_spec_fields({"pack": "./routing.yaml"}) is None
+
+    def test_name_metadata_field_remains_accepted(self):
+        assert _validate_spec_fields({"name": "repo-review"}) is None
 
     def test_valid_effort_values(self):
         for effort in ("low", "medium", "high", "xhigh"):
