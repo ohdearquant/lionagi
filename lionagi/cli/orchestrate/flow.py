@@ -114,6 +114,21 @@ def _heartbeat_warning(
     return None
 
 
+def _surface_dropped_spawns(env: OrchestrationEnv, dropped_spawns: list[dict]) -> None:
+    rejected = [item for item in dropped_spawns if item.get("reason") == "builder_error"]
+    if not rejected:
+        return
+
+    evidence = []
+    for item in rejected:
+        assignee = item.get("assignee") or "unassigned"
+        error = item.get("error") or "spawn routing failed"
+        progress(f"  ⚠ SPAWN REJECTED: {assignee} — {error}")
+        evidence.append({"kind": "unroutable_spawn", "id": assignee, "label": error})
+    prior = getattr(env, "_failed_operation_evidence", None) or []
+    env._failed_operation_evidence = [*prior, *evidence]
+
+
 class FlowPlanError(LionError):
     """Orchestrator failed to produce a usable plan."""
 
@@ -1483,7 +1498,7 @@ async def _execute_dag(
     def _decorate_spawn_instruction(req: SpawnRequest, spawn_id: str) -> str:
         """Give a reactively spawned node the same artifact-dir + REQUIRED
         text a planned leg gets, mirroring the block _build_dag composes."""
-        role_defaults = dag_state.role_artifact_defaults.get(req.assignee) if req.assignee else None
+        role_defaults = _artifact_defaults_for_assignee(req.assignee)
         leg_expected = _leg_artifact_entries(spawn_id, role_defaults)
         note = _artifact_directive(env.run, spawn_id, leg_expected)
         # A node whose instruction has been composed is a worker this run
@@ -1536,6 +1551,7 @@ async def _execute_dag(
                 role_node_builder(
                     role_base,
                     decorate_instruction=_decorate_spawn_instruction,
+                    role_aliases=role_by_worker,
                     start=_spawn_seq_start,
                 )
                 if reactive
@@ -1685,6 +1701,7 @@ async def _execute_dag(
                         raise
     t_exec_elapsed = time.monotonic() - t_exec
 
+    _surface_dropped_spawns(env, list(dag_result.get("dropped_spawns") or []))
     op_results = dag_result.get("operation_results", {})
     # Includes restored spawns from a prior checkpoint generation, not just
     # this generation's — else a resume with zero NEW spawns would report

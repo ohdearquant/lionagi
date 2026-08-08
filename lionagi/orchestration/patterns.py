@@ -105,10 +105,14 @@ def role_node_builder(
     roles: dict[str, Branch],
     *,
     decorate_instruction: Callable[[SpawnRequest, str], str] | None = None,
+    role_aliases: dict[str, str] | None = None,
     start: int = 1,
 ):
     """Return a node_builder closure that routes SpawnRequests to role branches.
-    *decorate_instruction* customizes child instruction text (CLI artifact injection); *start* seeds spawn-id past prior-generation ordinals to avoid collisions on resume."""
+    *role_aliases* maps advertised names to role keys while exact role keys win.
+    *decorate_instruction* customizes child instruction text (CLI artifact injection);
+    *start* seeds spawn-id past prior-generation ordinals to avoid collisions on resume.
+    """
     # Closure-scoped monotonic sequence: must be allocated at construction
     # time, not at completion, or spawn_id is not a stable correlation key.
     _next_spawn_seq = itertools.count(start)
@@ -127,8 +131,12 @@ def role_node_builder(
             op = "operate"
 
         target = None
+        resolved_assignee = req.assignee
         if req.assignee:
             target = roles.get(req.assignee)
+            if target is None and role_aliases is not None:
+                resolved_assignee = role_aliases.get(req.assignee, req.assignee)
+                target = roles.get(resolved_assignee)
             if target is None:
                 raise ValueError(
                     f"SpawnRequest assignee {req.assignee!r} is not a "
@@ -140,7 +148,12 @@ def role_node_builder(
         spawn_id = f"spawn-{next(_next_spawn_seq)}"
         instruction = req.instruction
         if decorate_instruction is not None:
-            instruction = decorate_instruction(req, spawn_id)
+            routed_request = (
+                req
+                if resolved_assignee == req.assignee
+                else req.model_copy(update={"assignee": resolved_assignee})
+            )
+            instruction = decorate_instruction(routed_request, spawn_id)
 
         node = create_operation(
             op,
@@ -152,7 +165,7 @@ def role_node_builder(
         node.metadata["reference_id"] = spawn_id
         if target is not None:
             node.branch_id = target.id
-            node.metadata["assignee"] = req.assignee
+            node.metadata["assignee"] = resolved_assignee
         return node
 
     return build
