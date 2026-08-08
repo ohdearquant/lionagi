@@ -1660,13 +1660,13 @@ async def test_do_kill_play_leaves_workers_running_and_exits_non_zero(
     assert f"is marked {play_status}" in captured.err.replace("\n", " ")
 
 
-async def test_list_running_children_play_returns_worker_chain_deepest_first(
+async def test_list_running_children_play_returns_linked_session_only(
     temp_db_path: Path,
 ):
-    """A play with a recorded session resolves that session and its invocation.
+    """A play with a recorded session resolves that session, not its parent.
 
-    The invocation comes first: a child is signalled before the parent that
-    owns it, so terminating the session never leaves its invocation orphaned.
+    ``sessions.invocation_id`` points upward to the invocation that owns the
+    session. It is not another worker below the session.
     """
     async with StateDB() as db:
         invocation_id = await _seed_invocation(db, status="running", pid=43002)
@@ -1677,20 +1677,17 @@ async def test_list_running_children_play_returns_worker_chain_deepest_first(
 
         children = await _list_running_children(db, "play", play_id)
 
-    assert [(kind, row["id"]) for _, kind, row in children] == [
-        ("invocation", invocation_id),
-        ("session", worker_session_id),
-    ]
+    assert [(kind, row["id"]) for _, kind, row in children] == [("session", worker_session_id)]
 
 
-async def test_do_kill_play_with_recorded_session_reaps_the_worker_chain(
+async def test_do_kill_play_stops_linked_session_without_cancelling_parent(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    """A play whose row records its worker session has that chain terminated.
+    """A play whose row records its worker session stops only that session.
 
     This is the shape the Studio show importer writes: `plays.session_id` is
-    bound to the session it matched by name. Both worker pids are signalled,
-    both rows go terminal, and the kill exits 0 — it did stop the work.
+    bound to the session it matched by name. The invocation linked from that
+    session owns it, so the invocation is not a descendant of the play.
     """
     import lionagi.cli.kill as kill_mod
     from lionagi.cli._logging import configure_cli_logging
@@ -1717,7 +1714,7 @@ async def test_do_kill_play_with_recorded_session_reaps_the_worker_chain(
     captured = capsys.readouterr()
 
     assert rc == 0
-    assert signalled_pids == [44002, 44001]
+    assert signalled_pids == [44001]
     assert "no worker process was stopped" not in captured.err.replace("\n", " ")
     async with StateDB() as db:
         assert (
@@ -1725,16 +1722,16 @@ async def test_do_kill_play_with_recorded_session_reaps_the_worker_chain(
         )["status"] == "cancelled"
         assert (
             await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (invocation_id,))
-        )["status"] == "cancelled"
+        )["status"] == "running"
         assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
             "status"
         ] == "blocked"
 
 
-async def test_do_kill_play_reaps_worker_chain_without_recursive_flag(
+async def test_do_kill_play_stops_linked_session_without_recursive_flag(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The play's worker chain is not gated behind `--recursive`.
+    """The play's linked session is not gated behind `--recursive`.
 
     A play row carries no PID of its own, so resolving the sessions it started
     is the whole kill rather than an opt-in extra.
@@ -1915,25 +1912,73 @@ async def test_do_kill_play_emits_blocked_terminal_envelope(temp_db_path: Path):
     assert envelope.reason_code == RunReasons.CANCELLED_MANUAL_KILL
 
 
-async def test_do_kill_recursive_kills_child_invocations(
+async def test_do_kill_recursive_session_leaves_parent_and_sibling_running(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """--recursive: a session's linked invocation is also cancelled."""
-    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", lambda pid, **kw: "sigterm")
+    """A recursive session kill must not walk its parent invocation upward."""
+    signalled_pids: list[int] = []
+    monkeypatch.setattr(
+        "lionagi.cli.kill._terminate_pid",
+        lambda pid, **kw: (signalled_pids.append(pid), "sigterm")[1],
+    )
 
     async with StateDB() as db:
-        sid = await _seed_session(db, status="running")
-        # Create an invocation and link it to the session.
-        inv_id = await _seed_invocation(db, status="running")
-        await db.update_session(sid, invocation_id=inv_id)
+        invocation_id = await _seed_invocation(db, status="running", pid=46003)
+        target_session_id = await _seed_session(db, status="running", pid=46001)
+        sibling_session_id = await _seed_session(db, status="running", pid=46002)
+        await db.update_session(target_session_id, invocation_id=invocation_id)
+        await db.update_session(sibling_session_id, invocation_id=invocation_id)
 
-    rc = await _do_kill(sid, recursive=True)
-    assert rc == 0
+    assert await _do_kill(target_session_id, recursive=True) == 0
 
     async with StateDB() as db:
-        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
-            "status"
-        ] == "cancelled"
+        target = await db.fetch_one(
+            "SELECT status FROM sessions WHERE id = ?", (target_session_id,)
+        )
+        sibling = await db.fetch_one(
+            "SELECT status FROM sessions WHERE id = ?", (sibling_session_id,)
+        )
+        invocation = await db.fetch_one(
+            "SELECT status FROM invocations WHERE id = ?", (invocation_id,)
+        )
+
+    assert target is not None and target["status"] == "cancelled"
+    assert invocation is not None and invocation["status"] == "running", (
+        "recursive session kill must not cancel its parent invocation"
+    )
+    assert sibling is not None and sibling["status"] == "running", (
+        "recursive session kill must not cancel a sibling session"
+    )
+    assert signalled_pids == [46001], (
+        "recursive session kill must signal only the requested session"
+    )
+
+
+async def test_do_kill_recursive_invocation_cancels_child_sessions(temp_db_path: Path):
+    """The inverse schema edge remains the valid downward recursive step."""
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, status="running")
+        child_ids = [
+            await _seed_session(db, status="running"),
+            await _seed_session(db, status="running"),
+        ]
+        for child_id in child_ids:
+            await db.update_session(child_id, invocation_id=invocation_id)
+
+    assert await _do_kill(invocation_id, recursive=True) == 0
+
+    async with StateDB() as db:
+        invocation = await db.fetch_one(
+            "SELECT status FROM invocations WHERE id = ?", (invocation_id,)
+        )
+        children = await db.fetch_all(
+            "SELECT id, status FROM sessions WHERE invocation_id = ?", (invocation_id,)
+        )
+
+    assert invocation is not None and invocation["status"] == "cancelled"
+    assert {row["id"]: row["status"] for row in children} == {
+        child_id: "cancelled" for child_id in child_ids
+    }
 
 
 # ── CLI wiring smoke test ──────────────────────────────────────────────────────
@@ -2108,16 +2153,14 @@ async def test_do_kill_all_stale_does_NOT_touch_play_at_all(
         assert row["status"] == "running"
 
 
-async def test_do_kill_all_stale_reports_plays_it_could_not_assess(
+async def test_do_kill_all_stale_reports_unlinked_plays_were_not_swept(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    """A play with no recorded worker session is counted and named once.
+    """A play with no recorded worker session is named as not swept.
 
     The sweep has no way to tell whether such a play is abandoned, so it leaves
-    it alone. Saying so once per sweep, with a count in the closing line, keeps
-    the operator from reading silence as "nothing was stale". A per-row message
-    would read as an observation about that row rather than the structural fact
-    it is.
+    it alone. Saying plainly that it was not swept keeps the operator from
+    reading silence as "nothing was stale".
     """
     from lionagi.cli._logging import configure_cli_logging
 
@@ -2131,11 +2174,13 @@ async def test_do_kill_all_stale_reports_plays_it_could_not_assess(
         await db.execute("UPDATE plays SET started_at = ? WHERE id = ?", (old_start, play_id))
 
     capsys.readouterr()
-    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False, verbose=True) == 0
     captured = capsys.readouterr()
 
     assert "skipped_unlinked_plays=1" in captured.out
-    assert "records no worker session" in captured.err.replace("\n", " ")
+    operator_output = captured.err.replace("\n", " ")
+    assert "1 running play row(s) were not swept" in operator_output
+    assert "record no link to the sessions they started" in operator_output
 
     async with StateDB() as db:
         assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
