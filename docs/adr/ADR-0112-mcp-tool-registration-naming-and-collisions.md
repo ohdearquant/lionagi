@@ -125,8 +125,9 @@ already-approved tool definition after approval. HiddenLayer separately document
 tool-name typosquatting and duplicate-name replacement in MCP clients they tested — their
 results are specific to those clients and are not a claim about this one.
 
-What is measured here is lionagi's own behavior, and it runs in both directions depending
-on a caller-supplied flag:
+What is measured here is lionagi's own behavior. Three shapes were measured, two decided
+by a caller-supplied flag and one by the type of the argument. This is an enumeration of
+what was measured and not a proof that there is no fourth:
 
 - With `update=False` — the default, and what every in-package caller gets — the
   **first-registered** server keeps the name and a later server silently registers
@@ -135,15 +136,31 @@ on a caller-supplied flag:
   `load_mcp_tools` — `register_tool` skips its duplicate guard entirely and replaces the
   entry, so a **later-declared** server silently displaces an already-registered tool of
   the same name. Calls a caller believes are going to the first server go to the last one.
+- **With a one-entry MCP dict, regardless of the flag.** `ActionManager.__contains__`
+  (`manager.py:67-74`) has arms for `Tool`, `str` and callable and returns `False`
+  otherwise. A dict is a member of `FuncTool`, so `tool in self` at `:77` is `False` for
+  a dict even when that name is registered, the `update=False` guard passes, and `:106`
+  overwrites. The displacement is the same as the `update=True` case and it needs no
+  flag. ADR-0011 lines 330-332 record this behavior; it is re-verified at this head.
 
-The second is the shadowing shape, reachable through a documented public parameter. Both
-directions are decided by config ordering rather than by anything a caller expressed, and
-neither announces itself.
+The second and third are the shadowing shape. Both are reachable without any private API:
+`update=True` is documented on two public functions, and the dict form is reachable
+through `Branch.register_tools([{...}])` (`branch.py:586` → `:581`). All three are decided
+by config ordering or argument type rather than by anything a caller expressed, and none
+announces itself.
+
+**Scope of the third, stated honestly.** A caller grep across the package finds **zero**
+in-package call sites passing a dict to `register_tool` — the seven callers pass a
+variable bound to a `Tool` or a callable. So the dict shape is a latent property reachable
+through the public API rather than a live defect in current internal use. That is the same
+standing this document already grants the `update=True` shape.
 
 This ADR does not claim to make MCP tool loading secure — descriptions and schemas are
 still server-supplied text forwarded to a model, which is a separate problem this document
-does not touch. It removes one specific mechanism: after D1 no server can occupy a name
-another server needs, in either direction, because the names cannot coincide.
+does not touch. It removes one specific mechanism, and it does not remove all three shapes
+by the same means: D1 makes the names unable to coincide, which closes the first two, and
+the dict shape needs its own one-line fix because it is a hole in the duplicate guard
+rather than a naming collision (delta #8).
 
 ### Why this is not a niche configuration
 
@@ -191,10 +208,19 @@ dictionary — which ADR-0011 fixed as the registered, provider-visible function
 becomes the qualified name:
 
 ```python
-def mcp_tool_name(server_name: str, tool_name: str) -> str:
+def qualified_mcp_name(server_name: str, tool_name: str) -> str:
     """The registry/provider-visible name for a tool discovered on an MCP server."""
     return f"mcp__{server_name}__{tool_name}"
 ```
+
+The name matters and is not `mcp_tool_name`. That identifier is already bound to a `str`
+on this exact path — a local in `_validate_prebuilt_mcp_tool_admission`
+(`manager.py:114`, read at `:117` and `:132`) and a parameter of
+`is_synthetic_mcp_wrapper_schema` (`mcp_wrapper.py:1423`). A module-level function of that
+name would be shadowed inside the one function that most needs it, and a later call from
+there would raise `TypeError: 'str' object is not callable` at runtime and only at
+runtime, on the admission path. Rename the helper rather than the locals: the locals are
+correct, since what they hold really is the tool's name on the wire.
 
 Both construction paths use it — the discovery branch and the metadata-free
 `tool_names=` shortcut — so a caller who names tools explicitly and a caller who
@@ -284,10 +310,17 @@ actual_tool_name = mcp_config.get("_original_tool_name", tool_name)
 
 **Exact semantics.**
 
-- `_original_tool_name` is set on both construction paths today, unconditionally. It is
-  currently a no-op because it is always equal to the registry key.
-- After D1 the two differ, and the existing fallback (`, tool_name`) is never taken for
-  an MCP-derived tool. The fallback stays for hand-built `mcp_config` values.
+- `_original_tool_name` is set on both construction paths today, unconditionally
+  (`manager.py:361`, `:399`). It is currently a no-op because it is always equal to the
+  registry key.
+- It has **two** readers, not one. The invoker above (`mcp_wrapper.py:1840`) is the
+  routing reader. The second is `_validate_prebuilt_mcp_tool_admission`
+  (`manager.py:115`), on the security path, with its own fallback to the config key.
+  Its behavior under D1 is already correct — it prefers the wire name, which is what
+  admission should be checking — but a reader auditing that path should not have to
+  discover the field's second site for themselves.
+- After D1 the two names differ, and the existing fallback (`, tool_name`) is never taken
+  for an MCP-derived tool. The fallback stays for hand-built `mcp_config` values.
 - No change to the invoker, the connection pool, or any transport.
 
 **Why this way.** This is the fact that makes D1 a small change rather than a risky one.
@@ -418,7 +451,7 @@ reads the same key it was given.
 - A key matching no advertised tool is a caller error and is reported at registration
   rather than dropped, on the same principle as D3: options silently not applied are
   indistinguishable from options that had no effect.
-- The registered name is derived by `mcp_tool_name()` in exactly one place, and the
+- The registered name is derived by `qualified_mcp_name()` in exactly one place, and the
   options lookup uses the wire name in exactly one place. Neither is reconstructed by
   string-building at a second site.
 
@@ -487,15 +520,44 @@ populated branch and did not know it will start seeing errors. That is the corre
 direction, and it will look like a regression to anyone whose configuration has been
 quietly broken.
 
-**One name-occupancy mechanism closes in both directions.** After D1 no server can take a
-name another server needs, so neither the default `update=False` capability loss nor the
-`update=True` displacement in P8 remains reachable through tool naming. This is a
-narrowing, not a security property: server-supplied descriptions and schemas still reach
-the model unchanged, and D3's fail-closed behavior matters here — a partially registered
-server was previously indistinguishable from a fully registered one.
+**One name-occupancy mechanism closes for two of P8's three shapes.** After D1 no server
+can take a name another server needs, so neither the default `update=False` capability
+loss nor the `update=True` displacement remains reachable through tool naming. The dict
+shape is **not** closed by D1 and does not need to be closed by naming: it is a hole in
+the duplicate guard, where `__contains__` is annotated `FuncToolRef` (which includes
+`dict`) and silently answers `False` for one of the types its own signature admits.
+Delta #8 closes it with the missing arm. Leaving D1 to carry all three would have been
+the wrong mechanism for the third, and the ADR previously claimed a completeness it did
+not have.
+
+This is a narrowing, not a security property: server-supplied descriptions and schemas
+still reach the model unchanged, and D3's fail-closed behavior matters here — a partially
+registered server was previously indistinguishable from a fully registered one.
+
+**Relation to ADR-0011 delta #2, stated rather than left silent.** 0011 delta #2 moves MCP
+configuration, discovery, namespacing and pool lifecycle into a service-owned factory, and
+its acceptance has three clauses: `protocols.action` carries no service-layer import,
+remote identities are collision-free, and per-tool request models resolve by canonical
+identity without key mutation or silent fallback. The disposition of that delta under this
+ADR is **narrowed, not discharged**:
+
+- The identity clause is discharged by D1, at the registry layer.
+- The request-options clause is discharged by D5, at the registry layer.
+- The **dependency-direction clause is untouched and remains open in full**, and it is
+  larger than a single site. `manager.py` imports from
+  `lionagi.service.connections.mcp_wrapper` at **eight** places (`:10`, `:93`, `:109`,
+  `:325`, `:343`, `:377`, `:445`, `:489`) — one under `TYPE_CHECKING` and seven lazily
+  inside function bodies. The lazy form defers the import; it does not remove the
+  dependency, which is what 0011's clause is about. The service-factory design remains
+  the standing answer for that clause, and its cost is eight call sites rather than the
+  one this document's own reasoning would have suggested.
+
+D1 and D5 are not placeholders and should not be re-implemented in a service factory
+later. What a service factory would still buy is the import direction, and that is the
+part of 0011 delta #2 this document does not do.
 
 **Contributors must know one rule**: for an MCP-derived tool, the registry name and the
-wire name are different, the first comes from `mcp_tool_name()`, and the second lives in
+wire name are different, the first comes from `qualified_mcp_name()`, and the second lives in
 `_original_tool_name`. Any new code that reconstructs either by string-building has
 reintroduced P7.
 
@@ -511,7 +573,7 @@ D1. D5 is independent of the rest and worth keeping under any outcome.
 
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
-| 1 | Add `mcp_tool_name()` and use it for the `mcp_config` key on both construction paths in `register_mcp_server`; assert `_original_tool_name` carries the wire name. Acceptance: two servers each advertising `request` both register, and each routes to its own server. | S | #2921 |
+| 1 | Add `qualified_mcp_name()` and use it for the `mcp_config` key on both construction paths in `register_mcp_server`; assert `_original_tool_name` carries the wire name. Acceptance: two servers each advertising `request` both register, and each routes to its own server. | S | #2921 |
 | 2 | Add the advertised-vs-registered postcondition to `register_mcp_server`; stop recording a raising server as `[]` in `load_mcp_config`. Acceptance: a server advertising N tools that registers fewer raises and names the missing ones; a server advertising zero succeeds; and the raise reaches the **submitting** process — asserted by a caller that receives the error as a return, not by reading a child's console. | S | #2921 |
 | 2b | Assert the wire name is unchanged under qualification: one call where the name delivered to the server is bare `request` while the registry key is `mcp__{server}__request`. Acceptance: the test fails if `_original_tool_name` passthrough is removed or inverted. | XS | #2921 |
 | 3 | Move the two root-`logging` calls on this path to the module logger. Acceptance: a consumer configuring only `lionagi.*` sees the schema-extraction warning. | XS | #2921 |
@@ -519,6 +581,7 @@ D1. D5 is independent of the rest and worth keeping under any outcome.
 | 5 | Validate the qualified name against `^[a-zA-Z0-9_-]{1,64}$` at construction, with an error naming server, tool, length, and the alias remedy. Acceptance: an over-long server key fails at load, not at provider call. | XS | #2921 |
 | 6 | Regression test: a two-server configuration where both advertise the same tool name, asserting per-server registration and that each qualified name dispatches to its own server. Acceptance: the test fails on the pre-change code. | S | #2921 |
 | 7 | Make the hook-attachment loop in `agent/factory.py` loud when a returned name is absent from the registry, instead of skipping on `if tool is not None`. Acceptance: a name in the returned mapping that the registry does not hold raises rather than silently leaving that tool without its spec hooks. | XS | #2921 |
+| 8 | Add the missing `dict` arm to `ActionManager.__contains__`, so the duplicate guard covers every type its `FuncToolRef` annotation admits. This is P8's third shape and D1 does not close it. Acceptance: `register_tool({name: cfg}, update=False)` against an already-registered `name` raises instead of overwriting, and the same call with `update=True` still replaces — the second arm is what proves the fix did not simply make registration stricter for everyone. | XS | #2921 |
 
 ## Alternatives considered
 
