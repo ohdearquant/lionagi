@@ -8,6 +8,7 @@ import asyncio as _asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -66,6 +67,10 @@ logger = logging.getLogger(__name__)
 
 _DescendantCpuSample = tuple[dict[int, float], bool]
 
+# CPU totals commonly advance in 0.01s quanta. A 0.10s cutoff is more than
+# three times the observed 0.01-0.03s helper jitter at the 60s heartbeat cadence.
+_DESCENDANT_CPU_ACTIVITY_SECONDS = 0.10
+
 
 def _sample_descendant_cpu(pid: int) -> _DescendantCpuSample:
     try:
@@ -99,19 +104,35 @@ def _heartbeat_warning(
     current_cpu, current_complete = current
     if not previous_complete or not current_complete:
         return None
-    if not previous_cpu and not current_cpu:
+    if not current_cpu:
         return (
             f"  ⚠ NO DESCENDANTS: {segment['branch_name']} running {elapsed:.0f}s "
             "with no active descendants"
         )
-    if not current_cpu or current_cpu.keys() != previous_cpu.keys():
-        return None
-    if all(current_cpu[pid] == previous_cpu[pid] for pid in current_cpu):
+
+    surviving_pids = previous_cpu.keys() & current_cpu.keys()
+    if not surviving_pids:
         return (
-            f"  ⚠ IDLE STALL: {segment['branch_name']} running {elapsed:.0f}s; "
-            "descendants accumulated no CPU time since the previous heartbeat"
+            f"  ⚠ NO CPU OVERLAP: {segment['branch_name']} running {elapsed:.0f}s; "
+            "no descendants survived from the previous heartbeat"
         )
-    return None
+
+    deltas = [current_cpu[pid] - previous_cpu[pid] for pid in surviving_pids]
+    if any(not math.isfinite(delta) or delta < 0 for delta in deltas):
+        return None
+
+    max_delta = max(deltas)
+    if max_delta > _DESCENDANT_CPU_ACTIVITY_SECONDS or math.isclose(
+        max_delta,
+        _DESCENDANT_CPU_ACTIVITY_SECONDS,
+        abs_tol=1e-9,
+    ):
+        return None
+
+    return (
+        f"  ⚠ IDLE STALL: {segment['branch_name']} running {elapsed:.0f}s; "
+        "surviving descendants stayed below the 0.10s CPU activity cutoff"
+    )
 
 
 def _surface_dropped_spawns(env: OrchestrationEnv, dropped_spawns: list[dict]) -> None:

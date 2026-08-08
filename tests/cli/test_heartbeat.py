@@ -93,45 +93,17 @@ async def test_heartbeat_skips_completed_ops():
     assert emitted == []
 
 
-@pytest.mark.asyncio
-async def test_heartbeat_emits_idle_stall_warning_after_threshold():
-    """When elapsed > max_idle_seconds, heartbeat must emit a STALL warning."""
-    warnings = []
+def test_elapsed_threshold_requires_descendant_activity_signal():
+    now = time.time()
+    warning = flow_mod._heartbeat_warning(
+        _running_segment(now, 601),
+        now=now,
+        max_idle_seconds=600,
+        previous=({41: 8.0}, True),
+        current=({41: 8.2}, True),
+    )
 
-    max_idle = 5  # tiny threshold for testing
-    _op_segments = [
-        {
-            "op_id": "o1",
-            "branch_name": "implementer",
-            "status": "running",
-            "started_at": time.time() - (max_idle + 1),  # already past threshold
-            "ended_at": None,
-            "last_heartbeat_at": None,
-        }
-    ]
-
-    async def _heartbeat_loop(interval: float = 0.05) -> None:
-        while True:
-            await asyncio.sleep(interval)
-            _now = time.time()
-            for seg in _op_segments:
-                if seg["status"] != "running":
-                    continue
-                elapsed = _now - seg.get("started_at", _now)
-                seg["last_heartbeat_at"] = _now
-                if elapsed > max_idle:
-                    warnings.append(f"IDLE STALL: {seg['branch_name']}")
-
-    task = asyncio.ensure_future(_heartbeat_loop(interval=0.05))
-    await asyncio.sleep(0.12)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-    assert any("IDLE STALL" in w for w in warnings)
-    assert any("implementer" in w for w in warnings)
+    assert warning is None
 
 
 def _running_segment(now: float, age: float) -> dict:
@@ -200,7 +172,7 @@ def test_external_io_without_output_writes_suppresses_warning(monkeypatch, tmp_p
     with socket.create_connection(listener.getsockname(), timeout=5) as client:
         assert connected.wait(timeout=5), "loopback client did not connect"
         previous = flow_mod._sample_descendant_cpu(7)
-        payload = b"x" * 65536
+        payload = b"x" * 200000
         client.sendall(payload)
         received = bytearray()
         while len(received) < len(payload):
@@ -263,10 +235,9 @@ def test_incomplete_descendant_sample_suppresses_warning():
     ("previous", "current"),
     [
         (None, ({41: 8.0}, True)),
-        (({41: 8.0}, True), ({42: 1.0}, True)),
         (({41: 8.0}, True), ({41: 7.9}, True)),
     ],
-    ids=["first-sample", "descendant-set-change", "counter-regression"],
+    ids=["first-sample", "counter-regression"],
 )
 def test_unproven_descendant_delta_suppresses_warning(previous, current):
     now = time.time()
@@ -278,6 +249,21 @@ def test_unproven_descendant_delta_suppresses_warning(previous, current):
         current=current,
     )
     assert warning is None
+
+
+def test_nonoverlapping_descendants_emit_distinct_condition():
+    now = time.time()
+    warning = flow_mod._heartbeat_warning(
+        _running_segment(now, 601),
+        now=now,
+        max_idle_seconds=600,
+        previous=({41: 8.0}, True),
+        current=({42: 1.0}, True),
+    )
+
+    assert warning is not None
+    assert "NO CPU OVERLAP" in warning
+    assert "IDLE STALL" not in warning
 
 
 @pytest.mark.parametrize(
