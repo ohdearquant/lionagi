@@ -82,7 +82,11 @@ async def ReAct(  # noqa: N802  # public name is the ReAct acronym
     )
 
     action_param = None
-    if tools is not None or tool_schemas is not None:
+    # A branch with registered tools is given them on the first analysis too, not
+    # only on extension rounds. The first round is where the model answers
+    # `extension_needed`, so withholding schemas there lets it conclude it has no
+    # tools, answer False, and end the loop before the round that would show it any.
+    if tools is not None or tool_schemas is not None or branch.acts.registry:
         from ..act.act import _get_default_call_params
 
         action_param = ActionParam(
@@ -185,7 +189,11 @@ def prepare_react_kw(  # noqa: N802
     )
 
     action_param = None
-    if tools is not None or tool_schemas is not None:
+    # A branch with registered tools is given them on the first analysis too, not
+    # only on extension rounds. The first round is where the model answers
+    # `extension_needed`, so withholding schemas there lets it conclude it has no
+    # tools, answer False, and end the loop before the round that would show it any.
+    if tools is not None or tool_schemas is not None or branch.acts.registry:
         from ..act.act import _get_default_call_params
 
         action_param = ActionParam(
