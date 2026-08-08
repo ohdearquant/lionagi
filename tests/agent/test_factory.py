@@ -210,6 +210,26 @@ async def test_mcp_discovered_tool_composes_existing_preprocessor(tmp_path, monk
     assert calls == [{"action": "call", "foo": "bar"}]
 
 
+async def test_mcp_loader_rejects_returned_name_missing_from_registry(tmp_path, monkeypatch):
+    from lionagi.protocols.action.manager import ActionManager
+
+    mcp_file = tmp_path / "custom.mcp.json"
+    mcp_file.write_text('{"mcpServers": {"demo": {"command": "true"}}}')
+
+    async def fake_load_mcp_config(
+        self, config_path, server_names=None, update=False, mcp_security=None
+    ):
+        return {"demo": ["mcp__demo__request"]}
+
+    monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp_config)
+
+    config = AgentSpec.compose("implementer")
+    config.mcp_config_path = str(mcp_file)
+
+    with pytest.raises(RuntimeError, match="mcp__demo__request"):
+        await create_agent(config, load_settings=False)
+
+
 async def test_create_agent_coding_permissions_recheck_user_mutated_args(tmp_path):
     """User pre-hooks must not be able to rewrite safe args after permission checks."""
     from lionagi.agent.permissions import PermissionPolicy
@@ -778,9 +798,17 @@ async def test_load_mcp_breaks_at_lionagi_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_mcp_pool_state():
+def _isolate_mcp_pool_state(request, monkeypatch):
     """MCPConnectionPool accumulates configs process-globally; snapshot and restore its class-level state around tests that load real config files through create_agent, so loads don't leak into other test files on the same worker."""
+    from lionagi.protocols.action.manager import ActionManager
     from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+    if request.node.name.startswith("test_forward_mcp_"):
+
+        async def skip_native_registration(self, *args, **kwargs):
+            return {}
+
+        monkeypatch.setattr(ActionManager, "load_mcp_config", skip_native_registration)
 
     saved_configs = dict(MCPConnectionPool._configs)
     yield
