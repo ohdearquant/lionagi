@@ -37,8 +37,8 @@ def _warning(
 
 def test_floor_ticks_without_working_delta_emit_stall_warning():
     warning = _warning(
-        ({41: 8.0, 42: 3.0, 43: 5.0, 44: 2.0}, True),
-        ({41: 8.0, 42: 3.01, 43: 5.02, 44: 2.03}, True),
+        ({41: 8.0, 42: 3.0, 43: 5.0, 44: 2.0, 45: 4.0}, True),
+        ({41: 8.03, 42: 3.03, 43: 5.03, 44: 2.03, 45: 4.03}, True),
     )
 
     assert warning is not None
@@ -68,23 +68,35 @@ def test_busy_survivor_suppresses_warning_during_pid_churn():
 def test_quiet_survivor_emits_warning_during_pid_churn():
     warning = _warning(
         ({41: 8.0, 42: 3.0}, True),
-        ({41: 8.03, 43: 1.0}, True),
+        ({41: 8.03, 43: 0.01}, True),
     )
 
     assert warning is not None
     assert "IDLE STALL" in warning
 
 
-def test_empty_pid_intersection_emits_distinct_condition():
+def test_busy_new_pid_suppresses_warning_during_pid_churn():
+    assert (
+        _warning(
+            ({41: 8.0, 42: 3.0}, True),
+            ({42: 3.03, 43: 1.80}, True),
+        )
+        is None
+    )
+
+
+def test_floor_cpu_new_pids_emit_stall_warning():
     warning = _warning(
         ({41: 8.0}, True),
-        ({42: 1.0}, True),
+        ({42: 0.01, 43: 0.02, 44: 0.03}, True),
     )
 
     assert warning is not None
-    assert "NO CPU OVERLAP" in warning
-    assert "IDLE STALL" not in warning
-    assert "hung" not in warning.lower()
+    assert "IDLE STALL" in warning
+
+
+def test_busy_new_pid_suppresses_warning_without_overlap():
+    assert _warning(({41: 8.0}, True), ({42: 1.0}, True)) is None
 
 
 @pytest.mark.parametrize(

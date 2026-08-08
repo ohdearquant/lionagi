@@ -111,19 +111,18 @@ def _heartbeat_warning(
         )
 
     surviving_pids = previous_cpu.keys() & current_cpu.keys()
-    if not surviving_pids:
-        return (
-            f"  ⚠ NO CPU OVERLAP: {segment['branch_name']} running {elapsed:.0f}s; "
-            "no descendants survived from the previous heartbeat"
-        )
-
     deltas = [current_cpu[pid] - previous_cpu[pid] for pid in surviving_pids]
-    if any(not math.isfinite(delta) or delta < 0 for delta in deltas):
+    new_pids = current_cpu.keys() - previous_cpu.keys()
+    # A new PID has no baseline, but its accumulated CPU still proves activity.
+    # Keep the maximum so many helper floor ticks cannot manufacture work.
+    new_totals = [current_cpu[pid] for pid in new_pids]
+    activity = [*deltas, *new_totals]
+    if any(not math.isfinite(value) or value < 0 for value in activity):
         return None
 
-    max_delta = max(deltas)
-    if max_delta > _DESCENDANT_CPU_ACTIVITY_SECONDS or math.isclose(
-        max_delta,
+    max_activity = max(activity)
+    if max_activity > _DESCENDANT_CPU_ACTIVITY_SECONDS or math.isclose(
+        max_activity,
         _DESCENDANT_CPU_ACTIVITY_SECONDS,
         abs_tol=1e-9,
     ):
@@ -131,7 +130,7 @@ def _heartbeat_warning(
 
     return (
         f"  ⚠ IDLE STALL: {segment['branch_name']} running {elapsed:.0f}s; "
-        "surviving descendants stayed below the 0.10s CPU activity cutoff"
+        "descendants stayed below the 0.10s CPU activity cutoff"
     )
 
 

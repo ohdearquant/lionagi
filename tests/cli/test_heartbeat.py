@@ -251,7 +251,7 @@ def test_unproven_descendant_delta_suppresses_warning(previous, current):
     assert warning is None
 
 
-def test_nonoverlapping_descendants_emit_distinct_condition():
+def test_busy_new_descendant_suppresses_warning_without_overlap():
     now = time.time()
     warning = flow_mod._heartbeat_warning(
         _running_segment(now, 601),
@@ -261,9 +261,7 @@ def test_nonoverlapping_descendants_emit_distinct_condition():
         current=({42: 1.0}, True),
     )
 
-    assert warning is not None
-    assert "NO CPU OVERLAP" in warning
-    assert "IDLE STALL" not in warning
+    assert warning is None
 
 
 @pytest.mark.parametrize(
