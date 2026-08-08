@@ -9,7 +9,7 @@ const STATUS_BORDER: Record<OperationStatus, string> = {
   paused: "border-l-status-warning",
   succeeded: "border-l-status-success",
   failed: "border-l-status-error",
-  escalated: "border-l-status-error",
+  escalated: "border-l-status-warning",
 };
 
 const STATUS_DOT: Record<OperationStatus, string> = {
@@ -19,8 +19,14 @@ const STATUS_DOT: Record<OperationStatus, string> = {
   paused: "bg-status-warning",
   succeeded: "bg-status-success",
   failed: "bg-status-error",
-  escalated: "bg-status-error",
+  escalated: "bg-status-warning",
 };
+
+// Match the continuation treatment in ConditionEdge: finely dotted, faint,
+// thin, and without an arrowhead.
+const CONTINUATION_DASHARRAY = "2 6";
+const CONTINUATION_OPACITY = 0.35;
+const CONTINUATION_WIDTH = 1.25;
 
 // ── Node card ─────────────────────────────────────────────────────────────────
 
@@ -65,10 +71,12 @@ function NodeCard({ node, live }: { node: OperationNode; live: boolean }) {
 
 // ── Layer computation (longest-path layering over edges) ──────────────────────
 
-// Depth is the longest path from any root, computed over ALL edges — not just a
-// node's single causeOpId. Fan-in nodes (multiple predecessors, causeOpId null
-// because parent_id was absent) must land after every predecessor, else their
-// edges render backwards through the cards.
+// Depth is the longest path from any root, computed over every dependency edge
+// rather than a node's single causeOpId. Fan-in nodes (multiple predecessors,
+// causeOpId null because parent_id was absent) must land after every predecessor,
+// else their edges render backwards through the cards. Continuations are causal
+// annotations, not scheduling dependencies, so they stay visible without moving
+// either endpoint to a different layer.
 export function computeLayers(
   nodes: OperationNode[],
   edges: OperationGraphState["edges"],
@@ -78,6 +86,7 @@ export function computeLayers(
   const known = new Set(nodes.map((n) => n.opId));
   const predsByOp = new Map<string, string[]>();
   for (const e of edges) {
+    if (e.continuation) continue;
     if (!known.has(e.source) || !known.has(e.target)) continue;
     (predsByOp.get(e.target) ?? predsByOp.set(e.target, []).get(e.target)!).push(e.source);
   }
@@ -142,7 +151,7 @@ export default function OperationGraphSection({
   const colGap = 40;
   const cardHeight = 60;
   const rowGap = 8;
-  const totalWidth = layers.length * colWidth + Math.max(0, layers.length - 1) * colGap;
+  const contentWidth = layers.length * colWidth + Math.max(0, layers.length - 1) * colGap;
   const maxRows = Math.max(...layers.map((l) => l.length), 1);
   const totalHeight = maxRows * cardHeight + Math.max(0, maxRows - 1) * rowGap;
 
@@ -160,6 +169,18 @@ export default function OperationGraphSection({
     });
   });
 
+  // A continuation can point within or behind its source layer because it does
+  // not affect depth. Give those return paths an outer gutter so the dotted
+  // causal line is not hidden beneath opaque node cards.
+  const usesContinuationGutter = edges.some((edge) => {
+    if (!edge.continuation) return false;
+    const src = opToLayerCol.get(edge.source);
+    const tgt = opToLayerCol.get(edge.target);
+    return Boolean(src && tgt && tgt.col <= src.col);
+  });
+  const totalWidth = contentWidth + (usesContinuationGutter ? colGap : 0);
+  const continuationGutterX = contentWidth + colGap / 2;
+
   return (
     <div className="overflow-x-auto">
       <div className="relative inline-block" style={{ width: totalWidth, height: totalHeight }}>
@@ -176,20 +197,23 @@ export default function OperationGraphSection({
             const srcLayer = layers[src.col];
             const tgtLayer = layers[tgt.col];
             if (!srcLayer || !tgtLayer) return null;
+            const isContinuation = edge.continuation === true;
+            const usesOuterGutter = isContinuation && tgt.col <= src.col;
             const x1 = cardCenterX(src.col) + colWidth / 2;
             const y1 = cardCenterY(src.row, srcLayer.length);
-            const x2 = cardCenterX(tgt.col) - colWidth / 2;
+            const x2 = cardCenterX(tgt.col) + (usesOuterGutter ? colWidth / 2 : -colWidth / 2);
             const y2 = cardCenterY(tgt.row, tgtLayer.length);
-            const mx = (x1 + x2) / 2;
+            const mx = usesOuterGutter ? continuationGutterX : (x1 + x2) / 2;
             return (
               <path
                 key={`${edge.source}-${edge.target}`}
                 d={`M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`}
                 fill="none"
                 stroke="currentColor"
-                strokeWidth={1.5}
+                strokeWidth={isContinuation ? CONTINUATION_WIDTH : 1.5}
                 className="text-edge"
-                strokeOpacity={0.5}
+                strokeOpacity={isContinuation ? CONTINUATION_OPACITY : 0.5}
+                strokeDasharray={isContinuation ? CONTINUATION_DASHARRAY : undefined}
               />
             );
           })}

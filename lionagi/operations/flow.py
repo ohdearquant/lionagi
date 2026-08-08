@@ -1178,6 +1178,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
             # node it retries (e.g. mirroring a CLI engine's transcript) — cheaper to
             # carry now than to re-derive `name` from a stale emitter reference later.
             child.metadata["escalated_from_name"] = name
+            # Lifecycle signals prefer reference_id over the operation UUID,
+            # so the retry is readable before its branch has been assigned.
+            child.metadata["reference_id"] = f"{name} escalation retry"
             if self._accept_node(child, emitter_id=emitter_id, independent=True):
                 self._escalated_ids.add(emitter_id)
         elif route == "notify":

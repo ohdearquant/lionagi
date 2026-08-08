@@ -310,7 +310,10 @@ _NODE_STATE_BUCKET = {
     "paused": "running",
     "succeeded": "completed",
     "failed": "failed",
-    "escalated": "failed",
+    # The scalar API has four buckets that must sum to total. Keep the
+    # per-node "escalated" outcome distinct while its aggregate waits for
+    # follow-up in pending rather than inflating failure.
+    "escalated": "pending",
 }
 # Matches services.signals.get_signals_after's own default bound — this is
 # not a new cap invented for this tool.

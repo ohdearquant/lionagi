@@ -21,6 +21,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   // The card asks for the reduced-motion preference on mount; this environment
   // has no matchMedia. Answering "no preference" keeps the running animation on,
   // which is the arm these tests render under.
@@ -37,6 +38,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.unstubAllGlobals();
 });
 
 function renderNode(data: Partial<StepNodeData>) {
@@ -138,5 +140,17 @@ describe("StepNode — the card keeps its shape", () => {
     renderNode({ execStatus: "failed", errorCount: 3, durationSeconds: 12 });
     expect(rows()[0].textContent).toContain("3");
     expect(bottomRightText()).toBe("12s");
+  });
+
+  it("gives escalated a warning icon while failed keeps the error icon", () => {
+    renderNode({ execStatus: "escalated" });
+    const escalatedIcon = rows()[0].querySelector("span.flex.shrink-0.items-center");
+    expect(escalatedIcon?.className).toContain("text-status-warning");
+    expect(escalatedIcon?.className).not.toContain("text-status-error");
+
+    renderNode({ execStatus: "failed" });
+    const failedIcon = rows()[0].querySelector("span.flex.shrink-0.items-center");
+    expect(failedIcon?.className).toContain("text-status-error");
+    expect(failedIcon?.className).not.toContain("text-status-warning");
   });
 });

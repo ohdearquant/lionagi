@@ -500,6 +500,78 @@ async def test_run_progress_dag_progress_derives_from_graph_not_branches(db_path
     assert by_id["review"]["status"] == "unknown"
 
 
+async def test_run_progress_dag_keeps_escalated_distinct_from_failed(db_path):
+    """A hard escalation is pending follow-up, not a failed operation; a
+    genuine NodeFailed in the same recorded-state shape remains failed."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    escalated_op_id = "op-needs-help"
+    failed_op_id = "op-broken"
+    node_metadata = {
+        "early_graph": {
+            "nodes": [
+                {"id": "needs-help", "label": "needs-help"},
+                {"id": "broken", "label": "broken"},
+            ],
+            "edges": [],
+        }
+    }
+    async with StateDB(db_path) as db:
+        prog_id = f"{sid}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog_id,
+                "name": "escalation-run",
+                "status": "running",
+                "started_at": 1000.0,
+                "node_metadata": node_metadata,
+                "invocation_kind": "agent",
+                "source_kind": "live",
+                "updated_at": time.time(),
+            }
+        )
+        await db.insert_session_signal(
+            session_id=sid,
+            kind="NodeEscalated",
+            op_id=escalated_op_id,
+            ts=1001.0,
+            payload={"name": "needs-help", "route": "higher_tier"},
+        )
+        await db.insert_session_signal(
+            session_id=sid,
+            kind="NodeSpawned",
+            op_id="op-retry",
+            ts=1002.0,
+            payload={
+                "parent_id": escalated_op_id,
+                "independent": True,
+            },
+        )
+        await db.insert_session_signal(
+            session_id=sid,
+            kind="NodeFailed",
+            op_id=failed_op_id,
+            ts=1003.0,
+            payload={"name": "broken"},
+        )
+
+    result = await run_progress({"run": sid})
+
+    assert result["opsTotal"] == 2
+    assert result["opsFailed"] == 1
+    assert result["opsPending"] == 1
+
+    dag = result["dagProgress"]
+    assert dag["failed"] == 1
+    assert dag["pending"] == 1
+    by_id = {node["id"]: node for node in dag["nodes"]}
+    assert by_id["needs-help"]["status"] == "escalated"
+    assert by_id["broken"]["status"] == "failed"
+
+
 async def test_run_progress_no_graph_has_null_dag_progress(db_path):
     from lionagi.studio.operator.run_progress import run_progress
 
