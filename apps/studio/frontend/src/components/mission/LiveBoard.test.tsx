@@ -75,6 +75,7 @@ function run(overrides: Partial<RunSummary> = {}): RunSummary {
     run_id: "run-0000000000000001",
     status: "running",
     started_at: 0,
+    parent_run_id: null,
     ...overrides,
   };
 }

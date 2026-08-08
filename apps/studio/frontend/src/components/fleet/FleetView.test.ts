@@ -67,6 +67,7 @@ function makeRun(overrides: Partial<RunSummary> & { run_id: string; status: stri
     effective_health: null,
     last_message_at: null,
     invocation_id: null,
+    parent_run_id: null,
     started_at: null,
     ended_at: null,
     branch_count: 0,
@@ -144,6 +145,24 @@ describe("auto-select-first — firstAgentId logic", () => {
     // i1 is gated → sorts first; its agent is r-gated
     expect(s.orgUnits[0].id).toBe("i1");
     expect(firstAgentId(s.orgUnits)).toBe("r-gated");
+  });
+
+  it("selects a visible child from a same-page parent run group", () => {
+    const s = dispatchOk(
+      [],
+      [
+        makeRun({ run_id: "play-1", status: "running", invocation_kind: "play" }),
+        makeRun({
+          run_id: "child-1",
+          status: "running",
+          invocation_kind: "agent",
+          parent_run_id: "play-1",
+        }),
+      ],
+    );
+
+    expect(s.orgUnits[0].id).toBe("play-1");
+    expect(firstAgentId(s.orgUnits)).toBe("child-1");
   });
 });
 

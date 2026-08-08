@@ -1,10 +1,14 @@
 /**
  * Fleet view reducer.
  *
- * Join strategy: RunSummary.invocation_id → InvocationSummary.id.
- * Runs carry an optional invocation_id (set by `li invoke`). Active runs
- * with a matching invocation_id are grouped under that invocation as child
- * agent rows. Runs without a matching invocation_id land in a synthetic
+ * Join strategies, in order:
+ * 1. RunSummary.parent_run_id → RunSummary.run_id within the current page.
+ * 2. RunSummary.invocation_id → InvocationSummary.id.
+ *
+ * A same-page parent run becomes an orchestration group and its child runs
+ * become agent rows. An unresolved parent_run_id deliberately falls through
+ * to the existing invocation/direct grouping, so page boundaries never make
+ * a run disappear. Runs without either resolved relation land in a synthetic
  * "direct" group (id "__direct__"). Sessions are listed via
  * SessionSummary; they lack an invocation_id field in the list response,
  * so they are counted inside their parent invocation's session_count field
@@ -43,6 +47,7 @@ export interface AgentRow {
   message_count: number;
   kind: "run" | "invocation";
   invocation_id: string | null;
+  parent_run_id: string | null;
   // agent | play | flow | fanout | show-play (issue #2842) — the discriminator
   // that says whether this row is a single agent or the root of a multi-agent
   // execution. `agentName`/label text alone never establishes that.
@@ -162,6 +167,22 @@ function isScopeActive(project?: string, projectNull?: boolean, search?: string)
   return Boolean(project) || Boolean(projectNull) || Boolean(search);
 }
 
+function runToAgentRow(run: RunSummary, nowSec: number): AgentRow {
+  return {
+    id: run.run_id,
+    name: resolveRunLabel(run),
+    status: run.status,
+    effectiveHealth: run.effective_health ?? null,
+    elapsedSec: elapsedSec(run.started_at ?? null, nowSec),
+    branch_count: run.branch_count ?? 0,
+    message_count: run.message_count ?? 0,
+    kind: "run",
+    invocation_id: run.invocation_id ?? null,
+    parent_run_id: run.parent_run_id,
+    invocationKind: run.invocation_kind ?? null,
+  };
+}
+
 function buildOrgUnits(
   invocations: InvocationSummary[],
   runs: RunSummary[],
@@ -170,6 +191,7 @@ function buildOrgUnits(
   runsHasNext: boolean,
 ): OrgUnit[] {
   const activeInvocations = invocations.filter((inv) => isActive(inv));
+  const activeRuns = runs.filter((run) => isActive(run));
 
   // Build a lookup of invocation id → index in result array
   const invMap = new Map<string, OrgUnit>();
@@ -186,24 +208,42 @@ function buildOrgUnits(
     });
   }
 
+  // Parentage is page-local by contract: a child is claimed only after its
+  // parent resolves to another renderable run in this response. Missing or
+  // inactive parents leave the child on the ordinary invocation/direct path.
+  const activeRunsById = new Map(activeRuns.map((run) => [run.run_id, run]));
+  const parentUnits = new Map<string, OrgUnit>();
+  for (const child of activeRuns) {
+    const parentId = child.parent_run_id;
+    if (!parentId || parentId === child.run_id || parentUnits.has(parentId)) continue;
+    const parent = activeRunsById.get(parentId);
+    if (!parent) continue;
+    parentUnits.set(parentId, {
+      id: parent.run_id,
+      skill: resolveRunLabel(parent),
+      plugin: null,
+      status: parent.status,
+      elapsedSec: elapsedSec(parent.started_at ?? null, nowSec),
+      session_count: 0,
+      agents: [],
+      needsAttention: false,
+    });
+  }
+
   const directAgents: AgentRow[] = [];
 
-  for (const run of runs) {
-    if (!isActive(run)) continue;
+  for (const run of activeRuns) {
+    const row = runToAgentRow(run, nowSec);
 
-    const elapsed = elapsedSec(run.started_at ?? null, nowSec);
-    const row: AgentRow = {
-      id: run.run_id,
-      name: resolveRunLabel(run),
-      status: run.status,
-      effectiveHealth: run.effective_health ?? null,
-      elapsedSec: elapsed,
-      branch_count: run.branch_count ?? 0,
-      message_count: run.message_count ?? 0,
-      kind: "run",
-      invocation_id: run.invocation_id ?? null,
-      invocationKind: run.invocation_kind ?? null,
-    };
+    // The group header represents a same-page parent run, so it must not also
+    // appear as a top-level agent row.
+    if (parentUnits.has(run.run_id)) continue;
+
+    const runParent = run.parent_run_id ? parentUnits.get(run.parent_run_id) : undefined;
+    if (runParent) {
+      runParent.agents.push(row);
+      continue;
+    }
 
     const parent = run.invocation_id ? invMap.get(run.invocation_id) : undefined;
     if (parent) {
@@ -214,6 +254,15 @@ function buildOrgUnits(
   }
 
   const units: OrgUnit[] = [];
+
+  for (const [parentId, unit] of parentUnits) {
+    const parent = activeRunsById.get(parentId);
+    unit.session_count = unit.agents.length;
+    unit.needsAttention =
+      (parent != null && needsAttention(runToAgentRow(parent, nowSec))) ||
+      unit.agents.some((agent) => needsAttention(agent));
+    units.push(unit);
+  }
 
   // Absence from the runs page is only evidence of absence when the page is the
   // whole scoped set. The invocations request carries no scope of its own, so

@@ -23,6 +23,7 @@ function makeRun(overrides: Partial<RunSummary> & { run_id: string; status: stri
     effective_health: null,
     last_message_at: null,
     invocation_id: null,
+    parent_run_id: null,
     started_at: null,
     ended_at: null,
   };

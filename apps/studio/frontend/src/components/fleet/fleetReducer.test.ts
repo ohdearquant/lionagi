@@ -25,6 +25,7 @@ function makeRun(overrides: Partial<RunSummary> & { run_id: string; status: stri
     effective_health: null,
     last_message_at: null,
     invocation_id: null,
+    parent_run_id: null,
     started_at: null,
     ended_at: null,
     branch_count: 0,
@@ -226,6 +227,142 @@ describe("fleetReducer — invocation join", () => {
     const directUnit = s.orgUnits.find((u) => u.id === "__direct__");
     expect(invUnit?.agents).toHaveLength(1);
     expect(directUnit?.agents).toHaveLength(1);
+  });
+});
+
+// ─── Page-local parent run grouping ───────────────────────────────────────────────────
+
+describe("fleetReducer — page-local parent run grouping", () => {
+  it("nests same-page children under their parent without duplicate top-level child rows", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [
+        makeRun({
+          run_id: "play-1",
+          status: "running",
+          invocation_kind: "play",
+          playbook_name: "release-check",
+          started_at: 999_900,
+        }),
+        makeRun({
+          run_id: "child-1",
+          status: "running",
+          invocation_kind: "agent",
+          parent_run_id: "play-1",
+          started_at: 999_950,
+        }),
+        makeRun({
+          run_id: "child-2",
+          status: "running",
+          invocation_kind: "agent",
+          parent_run_id: "play-1",
+          started_at: 999_960,
+        }),
+        makeRun({ run_id: "flow-1", status: "running", invocation_kind: "flow" }),
+        makeRun({ run_id: "fanout-1", status: "running", invocation_kind: "fanout" }),
+        makeRun({ run_id: "standalone", status: "running", parent_run_id: null }),
+      ],
+    );
+
+    const playUnit = s.orgUnits.find((unit) => unit.id === "play-1");
+    const directUnit = s.orgUnits.find((unit) => unit.id === "__direct__");
+    expect(playUnit?.agents.map((agent) => agent.id)).toEqual(["child-1", "child-2"]);
+    expect(playUnit?.agents.map((agent) => agent.parent_run_id)).toEqual(["play-1", "play-1"]);
+    expect(playUnit?.session_count).toBe(2);
+    expect(directUnit?.agents.map((agent) => agent.id)).toEqual([
+      "flow-1",
+      "fanout-1",
+      "standalone",
+    ]);
+    expect(directUnit?.agents.some((agent) => agent.id.startsWith("child-"))).toBe(false);
+    expect(s.counts).toEqual({ orchestrations: 1, agents: 5, attention: 0 });
+  });
+
+  it("keeps an ordinary parentless run as a top-level direct row", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [makeRun({ run_id: "standalone", status: "running", parent_run_id: null })],
+    );
+
+    expect(s.orgUnits).toHaveLength(1);
+    expect(s.orgUnits[0].id).toBe("__direct__");
+    expect(s.orgUnits[0].agents.map((agent) => agent.id)).toEqual(["standalone"]);
+    expect(s.counts).toEqual({ orchestrations: 0, agents: 1, attention: 0 });
+  });
+
+  it("keeps a child top-level when its declared parent is absent from the page", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [
+        makeRun({
+          run_id: "off-page-child",
+          status: "running",
+          parent_run_id: "parent-on-another-page",
+        }),
+      ],
+    );
+
+    expect(s.orgUnits).toHaveLength(1);
+    expect(s.orgUnits[0].id).toBe("__direct__");
+    expect(s.orgUnits[0].agents.map((agent) => agent.id)).toEqual(["off-page-child"]);
+    expect(s.orgUnits[0].agents[0].parent_run_id).toBe("parent-on-another-page");
+    expect(s.counts).toEqual({ orchestrations: 0, agents: 1, attention: 0 });
+  });
+
+  it("does not create a phantom parent unit for a run whose parent_run_id names itself", () => {
+    // The parentUnits builder explicitly skips `parentId === child.run_id`
+    // (fleetReducer.ts). Without that guard a self-referencing run would be
+    // excluded from every row-building branch (it is its own "resolved
+    // parent") and render as an empty-agents orchestration header instead of
+    // the ordinary top-level row it actually is.
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [makeRun({ run_id: "self-1", status: "running", parent_run_id: "self-1" })],
+    );
+
+    expect(s.orgUnits).toHaveLength(1);
+    expect(s.orgUnits[0].id).toBe("__direct__");
+    expect(s.orgUnits[0].agents.map((agent) => agent.id)).toEqual(["self-1"]);
+    expect(s.counts).toEqual({ orchestrations: 0, agents: 1, attention: 0 });
+  });
+
+  it("flags a parent group when the parent run itself needs attention, with children healthy", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [
+        makeRun({ run_id: "play-1", status: "gated", invocation_kind: "play" }),
+        makeRun({ run_id: "child-1", status: "running", parent_run_id: "play-1" }),
+      ],
+    );
+
+    const playUnit = s.orgUnits.find((unit) => unit.id === "play-1");
+    expect(playUnit?.needsAttention).toBe(true);
+    expect(s.counts.attention).toBe(1);
+  });
+
+  it("flags a parent group when a nested child needs attention, with the parent healthy", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [
+        makeRun({ run_id: "play-1", status: "running", invocation_kind: "play" }),
+        makeRun({
+          run_id: "child-1",
+          status: "running",
+          parent_run_id: "play-1",
+          effective_health: "unresponsive",
+        }),
+      ],
+    );
+
+    const playUnit = s.orgUnits.find((unit) => unit.id === "play-1");
+    expect(playUnit?.needsAttention).toBe(true);
+    expect(s.counts.attention).toBe(1);
   });
 });
 

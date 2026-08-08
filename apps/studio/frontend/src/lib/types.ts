@@ -96,6 +96,9 @@ export interface RunSummary {
   last_message_at?: number | null;
   // ADR-0020: optional parent skill orchestration id (from `li invoke`).
   invocation_id?: string | null;
+  // Parent session expressed in the runs API vocabulary. The key is present
+  // on every run; null means the session was not spawned by another run.
+  parent_run_id: string | null;
   // ADR-0022: provenance disclosure. `model` is the resolved
   // "provider/name" spec, `provider` is the raw provider key, `effort`
   // is the run's effort level (low/medium/high/xhigh), `agent_hash` is
@@ -156,6 +159,7 @@ export interface RunStep {
 // long-term these should unify with the SQLite session fields.
 export interface RunDetail {
   run_id: string;
+  parent_run_id: string | null;
   state_root: string;
   artifact_root: string;
   // Filesystem run.json fields — distinct from SQLite session schema
