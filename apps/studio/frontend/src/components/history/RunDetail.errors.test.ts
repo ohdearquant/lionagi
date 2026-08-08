@@ -20,9 +20,17 @@ function branch(over: Partial<SessionBranch> & { id: string }): SessionBranch {
 
 describe("isFailedStatus", () => {
   it("accepts the state layer's terminal failure vocabulary", () => {
-    for (const s of ["failed", "timed_out", "aborted", "escalated"]) {
+    for (const s of ["failed", "timed_out", "aborted"]) {
       expect(isFailedStatus(s), s).toBe(true);
     }
+  });
+
+  // Both arms matter here. Dropping a status from the failure set is only
+  // correct if the genuine failures above still register, so these two tests
+  // have to pass together: a change that simply stops flagging things would
+  // satisfy this one alone.
+  it("does not treat an escalation as a failure", () => {
+    expect(isFailedStatus("escalated")).toBe(false);
   });
 
   it("is case- and whitespace-insensitive, since the status is a free string", () => {

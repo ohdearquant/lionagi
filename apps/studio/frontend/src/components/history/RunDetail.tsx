@@ -683,7 +683,10 @@ const BRANCH_FAILURE_KEY = "__branch_failure__";
 
 // Branch statuses that mean the branch did not do its job. Drawn from the
 // state layer's terminal vocabulary (failed / timed_out / aborted), plus the
-// spellings older manifests use. "cancelled" is deliberate and stays out.
+// spellings older manifests use. "cancelled" is deliberate and stays out, and
+// so is "escalated": a branch that stopped to ask for a decision has not
+// failed, it is waiting on someone. Listing it here put it in the Errors panel
+// and in the error counts, which reads as a fault the run does not have.
 const FAILED_BRANCH_STATUSES = new Set([
   "failed",
   "failure",
@@ -692,7 +695,6 @@ const FAILED_BRANCH_STATUSES = new Set([
   "timed_out",
   "timeout",
   "aborted",
-  "escalated",
 ]);
 
 export function isFailedStatus(status: string | null | undefined): boolean {
