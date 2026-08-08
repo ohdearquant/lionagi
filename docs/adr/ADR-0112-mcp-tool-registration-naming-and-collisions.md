@@ -8,6 +8,11 @@
 
 ## Context
 
+lionagi ships an MCP server whose entire surface is a single tool named `request`, and
+lionagi's own MCP client cannot register it alongside any peer that made the same choice.
+One of the two silently gets nothing. That is the shortest statement of the problem, and
+the rest of this section is how it happens.
+
 `ActionManager.register_mcp_server()` discovers the tools an MCP server advertises and
 registers each one as an ordinary `Tool` on the branch. ADR-0011 D3 fixed the registry
 as "keyed by provider-visible function name", and fixed that for an MCP tool the single
@@ -292,6 +297,20 @@ is shown, not to what a *server* is sent. Any design that could not preserve the
 name would have had to negotiate with every server, which is not a thing a client gets
 to do.
 
+**And that is exactly why it needs its own test.** "The indirection already exists" is a
+statement about shape, not about behavior: `_original_tool_name` has been written on every
+tool and read by the invoker while the two names were always equal, so the passthrough has
+never once been exercised with a value that differs. Code that has never run its
+interesting case is untested code wearing a reassuring shape.
+
+The failure it hides is also badly placed. A collision test proves the registry is fixed
+and says nothing about the wire. If D1 prefixes and D2's passthrough is subtly wrong, the
+server receives `mcp__alpha__request`, rejects it as an unknown tool, and the error surfaces
+as a fault in the *server* — the one place a reader will not look, because the client change
+is the thing that just landed. One assertion prevents that entire investigation: in a single
+call, the name arriving at the server equals the bare `request` while the registry key is the
+qualified form. Two different strings, one call, one test.
+
 ### D3 — Registration is complete or it fails
 
 **The contract.** `register_mcp_server` knows the advertised count — it is
@@ -331,6 +350,14 @@ D1 — is a parallel list, not the thing compared.
 - In `load_mcp_config`, a raising server is reported and re-raised rather than recorded
   as `[]`. Callers that want partial success ask for it explicitly rather than receiving
   it by default.
+- **The raise happens in the earliest process that can still return it to the caller.**
+  This is a placement requirement, not a detail. A predicate that raises correctly but
+  inside a spawned child process produces a submit that returns success while the child is
+  already dead, leaving the reason only in a console log — the caller sees a running job
+  with half its tools and no signal. Config loading happens in the submitting process, so
+  the check has a sound place to live and there is no reason to defer it. An acceptance
+  criterion of "the predicate raises" is satisfied by the broken arrangement; the criterion
+  is "the predicate raises where the caller can still receive it."
 
 **Why this way.** P3 is the reason this is a postcondition inside the function rather
 than advice to callers. The information needed to detect the failure — what the server
@@ -485,7 +512,8 @@ D1. D5 is independent of the rest and worth keeping under any outcome.
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
 | 1 | Add `mcp_tool_name()` and use it for the `mcp_config` key on both construction paths in `register_mcp_server`; assert `_original_tool_name` carries the wire name. Acceptance: two servers each advertising `request` both register, and each routes to its own server. | S | #2921 |
-| 2 | Add the advertised-vs-registered postcondition to `register_mcp_server`; stop recording a raising server as `[]` in `load_mcp_config`. Acceptance: a server advertising N tools that registers fewer raises and names the missing ones; a server advertising zero succeeds. | S | #2921 |
+| 2 | Add the advertised-vs-registered postcondition to `register_mcp_server`; stop recording a raising server as `[]` in `load_mcp_config`. Acceptance: a server advertising N tools that registers fewer raises and names the missing ones; a server advertising zero succeeds; and the raise reaches the **submitting** process — asserted by a caller that receives the error as a return, not by reading a child's console. | S | #2921 |
+| 2b | Assert the wire name is unchanged under qualification: one call where the name delivered to the server is bare `request` while the registry key is `mcp__{server}__request`. Acceptance: the test fails if `_original_tool_name` passthrough is removed or inverted. | XS | #2921 |
 | 3 | Move the two root-`logging` calls on this path to the module logger. Acceptance: a consumer configuring only `lionagi.*` sees the schema-extraction warning. | XS | #2921 |
 | 4 | Remove the `{server_name}_` re-keying of `request_options`; key the lookup by the advertised tool name; report keys matching no advertised tool. Acceptance: a caller-supplied `request_options` entry reaches the constructed `Tool`. | S | #2921 |
 | 5 | Validate the qualified name against `^[a-zA-Z0-9_-]{1,64}$` at construction, with an error naming server, tool, length, and the alias remedy. Acceptance: an over-long server key fails at load, not at provider call. | XS | #2921 |
