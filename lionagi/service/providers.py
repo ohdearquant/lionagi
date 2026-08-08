@@ -74,13 +74,29 @@ def _clamp_codex_effort(effort: str, model: str | None) -> str:
     return effort
 
 
-# Claude: only opus-4-7 accepts xhigh. All other models clamp to high.
-# Claude has no ultra tier at all: ultra clamps to max for every model.
-_CLAUDE_XHIGH_MODELS = frozenset({"opus", "opus-4-7", "claude-opus-4-7"})
+# Claude: the Opus line accepts xhigh from 4.7 onward. Everything else clamps
+# to high. Claude has no ultra tier at all: ultra clamps to max for every model.
+#
+# This is an allow-list of exact model strings, so a new Opus release is absent
+# until it is added here, and its absence costs it xhigh silently -- the request
+# still succeeds, one tier lower, with nothing in the result saying so. Add new
+# Opus identifiers in the same change that makes them routable, both the bare
+# alias and the claude- prefixed form, since callers pass either.
+_CLAUDE_XHIGH_MODELS = frozenset(
+    {
+        "opus",
+        "opus-4-7",
+        "claude-opus-4-7",
+        "opus-4-8",
+        "claude-opus-4-8",
+        "opus-5",
+        "claude-opus-5",
+    }
+)
 
 
 def _clamp_claude_effort(effort: str, model: str) -> str:
-    """Clamp ultra to max, and xhigh to high for non-opus-4-7 Claude models."""
+    """Clamp ultra to max, and xhigh to high for Claude models without an xhigh tier."""
     if effort == "ultra":
         return "max"
     if effort != "xhigh":
