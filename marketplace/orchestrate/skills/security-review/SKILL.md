@@ -51,7 +51,7 @@ HIGH vs MEDIUM — exploitable at attacker's expected access level? Yes = HIGH, 
 
 | Severity | Location | Description | Suggested fix | Confidence | Runtime-context caveats |
 |---|---|---|---|---|---|
-| HIGH | `file.py:112` | Path not containment-checked | resolve() + relative_to(root) | High | Requires malicious planner output |
+| HIGH | `file.py:112` | Path not containment-checked | Canonicalize, enforce containment, and use race-resistant access | High | Symlink and TOCTOU handling depends on the later file operation |
 
 Verdict at top: `APPROVE` | `REQUEST CHANGES` | `REJECT`.
 Cite `file:line`. Reference CWE where clear (CWE-22 path traversal, CWE-89 SQLi).

@@ -1,9 +1,9 @@
 # Standard Workflows
 
 Common patterns for using lionagi orchestration through the MCP tool
-`mcp__plugin_orchestrate_lion__request`. Every pattern below assumes `help=true` was
-already called once this session (see `SKILL.md`) so the `schema_fingerprint` values are
-in hand; they're omitted from the examples for readability but every real call needs one.
+`mcp__plugin_orchestrate_lion__request`. Every pattern below assumes `help=true` was already
+called and the relevant targeted help was used where a fingerprint varies by playbook (see
+`SKILL.md`). Fingerprint placeholders remain in the examples because every submit needs one.
 
 ---
 
@@ -15,6 +15,7 @@ Three independent workers, synthesized at the end.
 mcp__plugin_orchestrate_lion__request(ops=[
   {"op": "fanout.submit",
    "args": {
+     "query": ["claude"],
      "prompt": "What are the security risks in this codebase?",
      "num_workers": 3,
      "with_synthesis": true
@@ -36,6 +37,7 @@ Preview the DAG, then commit it.
 mcp__plugin_orchestrate_lion__request(ops=[
   {"op": "flow.submit",
    "args": {
+     "query": ["claude"],
      "prompt": "Audit auth.py, implement fixes, verify with tests",
      "effort": "high",
      "dry_run": true
@@ -47,6 +49,7 @@ mcp__plugin_orchestrate_lion__request(ops=[
 mcp__plugin_orchestrate_lion__request(ops=[
   {"op": "flow.submit",
    "args": {
+     "query": ["claude"],
      "prompt": "Audit auth.py, implement fixes, verify with tests",
      "effort": "high",
      "with_synthesis": true,
@@ -57,6 +60,10 @@ mcp__plugin_orchestrate_lion__request(ops=[
 ```
 
 Use when: you want to inspect the plan before committing compute.
+
+`max_ops` is shared by the initial plan and any reactive follow-up assignments. If reactive
+execution should be able to discover more work, leave capacity below the cap; an initial
+eight-assignment plan with `max_ops: 8` has no follow-up spawn budget.
 
 ---
 
@@ -69,21 +76,23 @@ the call returns. Poll or wait on the id instead of blocking on the submit call:
 ```
 run = mcp__plugin_orchestrate_lion__request(ops=[
   {"op": "flow.submit",
-   "args": {"prompt": "Full codebase migration to async"},
+   "args": {"query": ["claude"], "prompt": "Full codebase migration to async"},
    "schema_fingerprint": "<from help>"}
 ])
-# run.ops[0].result carries the run id
+# Check run.ops[0].ok; run.ops[0].result carries the run id
 
 mcp__plugin_orchestrate_lion__request(ops=[
   {"op": "job.wait", "args": {"run_ids": ["<run-id>"], "max_wait": 60}}
 ])
-# still running past the window? call job.wait again — it's not an error, just a
-# partial observation
+# Check ok and all_terminal. If still running past the window, call job.wait again.
+# A bounded partial observation is not an error.
 
 mcp__plugin_orchestrate_lion__request(ops=[
   {"op": "job.output", "args": {"run_id": "<run-id>", "tail_chars": 20000}}
 ])
 ```
+
+Call `job.output` after `all_terminal` is true when the final result is required.
 
 Use when: the task is long-running and you have other work — submit, then check back with
 `job.wait` or `job.status` on your own schedule.
@@ -125,17 +134,18 @@ Use when: you want a reusable, parametrized pipeline someone has already saved.
 
 ## 5. Graph visualization
 
-Preview the planned DAG as an image, from a `dry_run` flow.
+Render the DAG that actually executed. A dry run returns a textual plan and exits before the
+run graph exists, so `dry_run: true` and graph preview are not a supported combination.
 
 ```
 mcp__plugin_orchestrate_lion__request(ops=[
   {"op": "flow.submit",
-   "args": {"prompt": "Plan and implement feature X", "dry_run": true, "show_graph": true},
+   "args": {"query": ["claude"], "prompt": "Plan and implement feature X", "show_graph": true},
    "schema_fingerprint": "<from help>"}
 ])
 ```
 
-Then read the run's artifact list with `job.output` to find the rendered graph.
+After the run finishes, read its artifact list with `job.output` to find `flow_dag.png`.
 
 ---
 

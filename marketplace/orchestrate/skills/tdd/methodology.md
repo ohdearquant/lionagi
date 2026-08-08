@@ -27,8 +27,8 @@ fn test_feature_does_x() {
 **Gate**: Run the test — it MUST fail. If it passes immediately, it is not testing new behavior.
 
 ```bash
-# Python (always use uv run — never naked pytest or python)
-uv run pytest tests/test_feature.py::test_feature_does_x -v
+# lionagi Python
+scripts/ci.sh test-python tests/test_feature.py::test_feature_does_x
 
 # Rust
 cargo test test_feature_does_x -- --nocapture
@@ -42,8 +42,8 @@ the only goal is green.
 **Gate**: Run the same test — it MUST pass.
 
 ```bash
-# Python
-uv run pytest tests/test_feature.py::test_feature_does_x -v
+# lionagi Python
+scripts/ci.sh test-python tests/test_feature.py::test_feature_does_x
 
 # Rust
 cargo test test_feature_does_x
@@ -61,11 +61,11 @@ With the test passing, clean up the implementation:
 **Gate**: Run ALL tests — they MUST pass. Never refactor with failing tests.
 
 ```bash
-# Python — full suite
-uv run pytest
+# lionagi Python — full suite
+scripts/ci.sh test-python
 
-# Python — with coverage
-uv run pytest --cov=src --cov-report=term-missing
+# lionagi Python — with coverage
+scripts/ci.sh test-python-cov
 
 # Rust — full workspace
 cargo test --workspace
@@ -74,12 +74,15 @@ cargo test --workspace
 Then run lint:
 
 ```bash
-# Python
-uv run ruff check . && uv run mypy .
+# lionagi Python
+scripts/ci.sh lint-python
 
-# Or use the lionagi CI skill
-the project CI pipeline (fmt + lint + test)
+# Full configured pipeline
+scripts/ci.sh ci
 ```
+
+Use the repository's configured type checker as a separate gate. Lionagi configures Pyright,
+not mypy.
 
 ## Multi-Cycle Pattern
 
@@ -98,7 +101,7 @@ Cycle 3: Error handling
 Cycle 4: Integration
   RED → test_integration → GREEN → wire together → REFACTOR
 
-Final: Run full suite + lint to verify everything (the project CI pipeline (fmt + lint + test))
+Final: Run the full configured CI pipeline to verify everything
 ```
 
 ## Parallel Agent TDD
@@ -119,8 +122,10 @@ Then submit:
     {
       "op": "fanout.submit",
       "args": {
+        "query": ["claude"],
         "prompt": "Write failing tests for: [feature description]. Cover: happy path, edge cases, error paths.",
-        "num_workers": 2
+        "num_workers": 2,
+        "cwd": "/absolute/path/to/repository"
       },
       "schema_fingerprint": "<from the help call above>"
     }
@@ -128,33 +133,37 @@ Then submit:
 }
 ```
 
-The reply carries a `run_id` for the fan-out. Wait for it and read the results:
+The reply carries a `run_id` for the fan-out, not the results. Check the submit op's `ok`
+field, then wait for it:
 
 ```json
 {"ops": [{"op": "job.wait", "args": {"run_ids": ["<run_id>"]}}]}
+```
+
+`job.wait` is bounded. Check its op's `ok` field and the result's `all_terminal` field,
+repeating while the run remains pending. Then read the output:
+
+```json
 {"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
 ```
 
-**Checkout-local alternative.** Inside a lionagi checkout, `li o fanout -n 2 "..."` runs the
-same fan-out as a foreground call. The prompt is positional and `-n` is the worker count;
-`--workers` takes a comma-separated list of model specs instead.
+**Checkout-local alternative.** Inside a lionagi checkout,
+`li o fanout claude -n 2 "..." --cwd "$(pwd)"` runs the same fan-out as a foreground call.
+The model and prompt are positional, `-n` is the worker count, and `--workers` takes a
+comma-separated list of model specs instead.
 
 Then synthesize the test files and implement against the combined suite.
 
-## Coverage Gates (lionagi standard)
+## Coverage Gates
 
 After each cycle, check coverage trend:
 
 ```bash
-uv run pytest --cov=src --cov-report=term-missing
+scripts/ci.sh test-python-cov
 ```
 
-Target thresholds:
-- Business logic: ≥ 90%
-- API surface: ≥ 85%
-- Utilities: ≥ 80%
-
-If coverage drops below threshold, add missing cases before marking the cycle complete.
+Meet the repository's configured threshold. If coverage drops below it, add missing cases
+before marking the cycle complete.
 
 ## Anti-Patterns
 
@@ -162,6 +171,6 @@ If coverage drops below threshold, add missing cases before marking the cycle co
 - Test that passes immediately without any implementation (not testing new behavior)
 - Skipping the refactor phase (leaves messy GREEN code in production)
 - Large implementation changes without running tests between steps
-- Using naked `python` or `pytest` instead of `uv run`
+- Bypassing the repository's configured test runner
 - Treating the RED phase as optional ("I'll add the test later")
 - Writing multiple behaviors into one test

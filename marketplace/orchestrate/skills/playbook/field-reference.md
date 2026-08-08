@@ -12,7 +12,7 @@ a lionagi checkout.
 |---|---|---|---|
 | `name` | str | — | Descriptive identifier. Keep it equal to the filename stem: the CLI resolves a playbook by filename, and nothing validates the two against each other, so a mismatch is silent. |
 | `description` | str | — | Free text shown by `li play <name> --help`. `li play list` prints names only. |
-| `argument-hint` | str | — | CC-compatible display hint, e.g. `'[--mode MODE] [--strict]'`. Used in `--help` output only. |
+| `argument-hint` | str | — | CC-compatible display hint, e.g. `'[--mode MODE] [--strict]'`. Sets the `--help` usage line and, when no `args:` block exists, supplies a fallback argument schema. |
 | `model` | str | positional | Model spec: `claude-code/sonnet-4-6`, `codex/gpt-5.4`. |
 | `agent` | str | `-a/--agent` | Orchestrator agent profile from `~/.lionagi/agents/<name>/<name>.md`. |
 | `effort` | str | `--effort` | Accepted values depend on the provider: Claude `low \| medium \| high \| xhigh \| max`; Codex `none \| minimal \| low \| medium \| high \| xhigh \| max \| ultra`, where `max` and `ultra` clamp to what the model supports. Gemini folds effort into the model spec instead. Omit to use the profile default. |
@@ -23,14 +23,16 @@ a lionagi checkout.
 | `team_attach` | str | `--team-attach` | Upsert a team by name: attach if it exists, create if missing. |
 | `bare` | bool | `--bare` | Ignore agent profiles; all workers use the CLI model. |
 | `dry_run` | bool | `--dry-run` | Plan the DAG without executing it. |
-| `show_graph` | bool | `--show-graph` | Render a DAG visualisation after planning. |
+| `show_graph` | bool | `--show-graph` | Write a DAG visualisation after an executing flow finishes. |
+| `reactive` | str | `--reactive` | Who may request follow-up assignments: `all`, `off`, or a comma-separated role list. |
 | `save` | str | `--save` | Directory to write artifact output to. |
 | `prompt` | str | — | Template string. May contain `{input}` and `{arg_name}` placeholders. |
 | `args` | dict | dynamic flags | Typed argument schema. Each key becomes a CLI flag, or an `args` entry in the `play.submit` MCP call. |
 
-**Key normalization**: top-level keys accept both dash and underscore forms
-(`max-ops` and `max_ops` both work) on the CLI. The `args:` block is an exception — use
-only underscore keys there (see Pitfalls). Over MCP, always pass underscore keys.
+**Key normalization**: when a YAML or JSON playbook is loaded, top-level keys accept both
+dash and underscore forms (`max-ops` and `max_ops` both work). The `args:` block is an
+exception — use only underscore keys there (see Pitfalls). Over MCP, always pass underscore
+keys.
 
 **Precedence**: a playbook field fills in only when the corresponding CLI flag is still at its
 default, so a flag you pass explicitly wins. Two consequences of *how* that is implemented are
@@ -107,9 +109,9 @@ group stops you, and the further down the list a mistake sits, the more it looks
   and the flag becomes `--worker-count`. Run `li play <name> --help` after declaring an arg to
   see whether it actually appears.
 
-*Unchecked — nothing validates these, so the default is applied silently:*
-- `type` may be omitted, in which case it is `str`. Declare it whenever the value is not a
-  string, since the arg is otherwise passed through to the prompt as text
+*Defaults applied when fields are omitted:*
+- `type` defaults to `str`. Declare it whenever the value is not a string; a supplied invalid
+  type is rejected during spec validation
 - `default` may be omitted, in which case it is null. Supply one unless absence is meaningful
 - `help` may be omitted, in which case `--help` shows a generated line naming the argument and
   its type. Write one sentence with the allowed values if they matter
@@ -204,9 +206,10 @@ schema validation with "must be an alphanumeric identifier".
 `workers` maps to `--max-concurrent` (range 1–32). For unlimited ops, set
 `max_ops: 0` (which is the default). Do not conflate the two fields.
 
-**`show_graph: true` without `--save`**
-The graph renders to the screen via matplotlib. If `save` is set, it is written as
-a PNG to the save directory.
+**Expecting `show_graph` during a dry run**
+`dry_run: true` returns before the run graph is built. `show_graph: true` writes
+`flow_dag.png` to the run's artifact directory only after an executing flow finishes; over
+MCP, find it in the artifact list returned by `job.output`.
 
 **Unknown top-level keys are silently ignored**
 There is no schema validation error for unrecognized keys. A typo like `effrot: high`
@@ -218,8 +221,10 @@ per playbook.
 
 **`max_ops` range**
 Valid range is 0–50 (0 = unlimited). Values above 50 are rejected at spec validation.
-If you need large plans, leave `max_ops: 0` and rely on the 200-op hard cap in the
-engine.
+For a nonzero value, the initial plan and reactive follow-up assignments share the cap. A
+plan that fills `max_ops` leaves no room for follow-ups. With `max_ops: 0`, the initial plan
+has no caller-defined cap (the engine defensively truncates it at 200) and reactive execution
+allows up to 20 follow-up assignments.
 
 **CLI-only flags cannot be set in YAML**
 `yolo`, `bypass`, `output`, `background`, `fast`, `verbose`, and `theme` are CLI-only.

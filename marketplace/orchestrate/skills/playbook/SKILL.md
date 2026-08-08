@@ -69,18 +69,22 @@ from a template that declares `{input}` explicitly.
 - [ ] `name:` equals the filename stem — nothing validates the two against each other, and the
       CLI resolves by filename, so a mismatch is silent rather than an error
 - [ ] `description:` is one clear sentence
-- [ ] Either `model:` or `agent:` is set (both is allowed; `agent` provides the profile, `model` overrides the model)
+- [ ] Choose routing deliberately: `model:` and `agent:` are optional; when both are omitted,
+      flow uses its default orchestrator configuration. If `agent:` is set, verify that profile
+      exists on the machine running the MCP server
 - [ ] `prompt:` references only declared `args` keys and optional `{input}`
-- [ ] Every `args` entry declares `type`, `default`, and `help`. All three are optional and
-      unvalidated; omitting them silently yields a string, a null, and a generated help line
+- [ ] Every `args` entry declares `type`, `default`, and `help`. A supplied `type` is validated;
+      omitting these fields yields `str`, null, and a generated help line respectively
 - [ ] No dashed keys inside `args:`
 - [ ] `team_mode` and `team_attach` are not both set
 - [ ] `workers` is 1–32 if set; `max_ops` is 0–50 if set
+- [ ] If reactive follow-ups are enabled with a nonzero `max_ops`, leave room below the cap;
+      the initial plan and spawned assignments share the same budget
 - [ ] Dry-run check: `play.submit` with `dry_run: true` plans without executing (call
       `help=true` first to confirm the argument name for your published server version)
-- [ ] Help check (lionagi checkout only): `li play <name> --help` lists your custom
-      flags (if `argument-hint` is set) — the MCP catalog's `help=true` returns the
-      verb list, not a given playbook's own argument hints
+- [ ] Help check (lionagi checkout only): `li play <name> --help` always lists fields from
+      `args:`; `argument-hint` controls the usage line and can define fallback flags when no
+      `args:` block exists. Over MCP, qualified playbook help resolves the custom arguments
 
 ---
 

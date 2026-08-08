@@ -27,8 +27,8 @@ Full 9-section checklist for general-purpose code review.
 
 ## 3. Tests
 
-- Every new code path has a test? (Greenfield is an exception; bug fixes
-  should include regression tests.)
+- Every new behavior has a test when the project has a test framework?
+  Bug fixes should include regression tests; document justified exceptions.
 - Edge cases covered: empty input, None, boundary values, error paths?
 - Mocks: are they faithful to the real behavior, or could they hide bugs?
 - Test names describe WHAT is being tested, not HOW.
@@ -40,7 +40,7 @@ Full 9-section checklist for general-purpose code review.
 - Names: do variable / function / class names communicate intent? Avoid
   `data`, `result`, `helper`, `utils` unless truly generic.
 - Function length / complexity: too many responsibilities in one function?
-  Cyclomatic complexity > 10 is a smell.
+  Heuristic only: cyclomatic complexity > 10 is a smell, not an automatic defect.
 - Nesting depth: pyramid-of-doom indent levels?
 - Comments: do they explain *why*, not *what*? Redundant comments ("set
   x to 5" as a comment on `x = 5`) are noise.

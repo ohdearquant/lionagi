@@ -30,10 +30,10 @@ Orchestrate test-driven development: Red → Green → Refactor.
 ### Run commands
 
 ```bash
-# Python (always uv run — never naked pytest)
-uv run pytest tests/test_feature.py::test_name -v   # single test
-uv run pytest                                         # full suite
-uv run pytest --cov=src --cov-report=term-missing    # with coverage
+# lionagi Python
+scripts/ci.sh test-python tests/test_feature.py::test_name  # single test
+scripts/ci.sh test-python                                  # full suite
+scripts/ci.sh test-python-cov                              # with coverage
 
 # Rust
 cargo test test_name -- --nocapture   # single test
@@ -45,17 +45,16 @@ cargo test --workspace                 # full workspace
 - **Test must fail first**: A test that passes before implementation proves nothing
 - **Minimal implementation**: Don't over-engineer in the GREEN phase
 - **Refactor only when green**: Never refactor with failing tests
-- **Small cycles**: Keep each cycle short (5-15 minutes)
+- **Small cycles**: Keep each cycle focused on one behavior
 - **One behavior per test**: Each test verifies one specific behavior
-- **Never use naked python/pytest**: Always `uv run` for Python projects
+- **Use the project runner**: Follow the repository's configured test and CI entry points
 
-## Coverage Gates (lionagi standard)
+## Coverage Gates
 
-- Business logic: ≥ 90%
-- API surface: ≥ 85%
-- Utilities: ≥ 80%
+Meet the repository's configured coverage threshold. Do not substitute generic percentages
+for project policy.
 
-Check after each cycle: `uv run pytest --cov=src --cov-report=term-missing`
+For lionagi, check with `scripts/ci.sh test-python-cov`.
 
 See [methodology.md](methodology.md) for detailed cycle steps, multi-cycle patterns,
 parallel agent TDD through the plugin's MCP server (`fanout.submit`), anti-patterns, and
@@ -69,4 +68,5 @@ lint/quality commands.
   parallel workers
 - `lionagi/cli/agent.py` — `li agent`, the checkout-local equivalent for a single-agent
   implementation session
-- `pyproject.toml` — project test configuration and coverage settings
+- `docs/internals/ci.md` — documents the supported Python test, coverage, lint, and format entry point
+- `pyproject.toml` — project test and Pyright configuration

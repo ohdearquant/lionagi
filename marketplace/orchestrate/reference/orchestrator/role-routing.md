@@ -94,7 +94,7 @@ directory is yours, and installing this plugin puts nothing in it. Workers spawn
 lionagi reach skills this way, so a `li skill` directive resolves only for a skill already
 sitting in that directory.
 
-**The nine skills this plugin ships** become available to Claude through Claude Code once the
+**The twelve skills this plugin ships** become available to Claude through Claude Code once the
 plugin is enabled. They are listed with descriptions in the plugin README. They are *not*
 reachable with `li skill` unless you separately place a copy under `~/.lionagi/skills/`.
 
