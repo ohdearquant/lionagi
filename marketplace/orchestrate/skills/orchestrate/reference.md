@@ -22,7 +22,8 @@ The tool takes exactly two parameters:
 
 - `ops` — an **array of objects**, each `{"op": "<verb>", "args": {...}}`. Not a DSL string.
   Multiple ops in one call run in order; a batch is capped at 8 ops.
-- `help` — `true` for the full verb catalog, `"<verb>"` for that verb's parameter schema.
+- `help` — `true` for the full verb catalog, `"<verb>"` for that verb's parameter schema, or
+  `{"verb": "<verb>", "playbook": "<name>"}` to resolve a playbook's declared arguments.
   **`help` and `ops` cannot be combined in one call** — a catalog and a list of op results are
   different shapes, so ask for help in its own call first.
 
@@ -35,8 +36,9 @@ mcp__plugin_orchestrate_lion__request(help=true)
 ```
 
 Read the catalog before writing a call you're not sure of. It names every verb's required
-parameters and, for the four that need one, the `schema_fingerprint` to send with the call
-(see below) — often enough to write the call correctly with no second round-trip.
+parameters and either the `schema_fingerprint` to send or a marker that it varies with the
+named playbook (see below) — often enough to write the call correctly with no second
+round-trip.
 
 ## The verbs these skills use
 
@@ -55,7 +57,7 @@ The verbs the skills in this bundle actually call:
 | `agent.submit` | Run one agent on one task. | yes | yes |
 | `flow.submit` | Plan and run a DAG of agents with dependencies. | yes | yes |
 | `fanout.submit` | Run N agents on one task in parallel, optionally synthesized. | yes | yes |
-| `play.submit` | Run a saved playbook — a flow whose plan and prompt are already written down. | yes | yes |
+| `play.submit` | Load a saved prompt and defaults, then plan and run a flow. | yes | yes |
 | `job.status` | Current state of a run: liveness, job record. | no | no |
 | `job.output` | Console tail and artifact list of a run. | no | no |
 | `job.list` | Recent runs, newest first, optionally filtered by status. | no | no |
@@ -78,7 +80,7 @@ there is no blocking "wait for the final answer" call. Follow up with `job.statu
 `schema_fingerprint` as a **sibling of `args`**, not a member of it:
 
 ```
-{"op": "flow.submit", "args": {"prompt": "...", "agent": "orchestrator"}, "schema_fingerprint": "<from help>"}
+{"op": "flow.submit", "args": {"query": ["claude"], "prompt": "..."}, "schema_fingerprint": "<from help>"}
 ```
 
 For `agent.submit` and `fanout.submit`, take it from `help=true` (their catalog entry carries
@@ -87,45 +89,41 @@ it directly) or from `help="<verb>"`.
 `flow.submit` and `play.submit` are different, and getting this wrong is the one mistake here
 that costs a round-trip for a reason that is not obvious. Their schema depends on which
 `playbook` the call names, because the playbook's own declared arguments are resolved into it.
-So the fingerprint depends on it too: each verb has a base fingerprint plus a distinct one for
-every playbook it can be given. Two cases to write for:
+So the fingerprint depends on it too. An argument-free flow has its own fingerprint, while
+`play.submit` intentionally withholds one until a playbook is named. Two cases to write for:
 
 - **No `playbook` in `args`** — `help="flow.submit"` is the right source. Only `flow.submit`
   can be called this way; `play.submit` requires a playbook.
 - **A `playbook` in `args`** — the fingerprint must come from
-  `help={"verb": "<verb>", "playbook": "<the same name>"}`. The unqualified
-  `help="play.submit"` returns the base schema's fingerprint, and sending *that* with a named
-  playbook is refused with `stale_schema`: a correct-looking value from a real help call,
-  fetched from the wrong schema. Since `play.submit` always names a playbook, its unqualified
-  fingerprint is never the one to send.
+  `help={"verb": "<verb>", "playbook": "<the same name>"}`. Unqualified
+  `help="play.submit"` returns the verb's schema but intentionally omits a fingerprint,
+  because no successful `play.submit` call can use the argument-free schema. The catalog marks
+  both playbook-aware verbs with `schema_fingerprint_varies_with: ["playbook"]`.
 
 Omitting the fingerprint, or sending one from the wrong schema, is refused with the current
 fingerprint **for the schema your call actually resolved** and with the whole op spelled out.
-Take the value from the refusal rather than fetching it again. It already accounts for the
-playbook you named, because the call resolves that playbook's schema before it checks the
-fingerprint, so the value handed back is the qualified one.
-
-If you re-fetch anyway, re-qualify the help call yourself. The pointer in the refusal names the
-verb only and never repeats the playbook, so following it verbatim asks for the base schema,
-hands back the base fingerprint, and earns the same refusal a second time. Every `play.submit`
-example in this bundle names its playbook in the help call for that reason.
+For a playbook-aware call, the refusal's remedy repeats both the verb and playbook in its
+qualified `help` object. Use that value directly or re-fetch with the exact qualified help call.
 
 ## Calling each verb
 
 ### `agent.submit` — one agent, one task
 
 ```
-{"op": "agent.submit", "args": {"prompt": "Write unit tests for auth.py", "agent": "implementer"}, "schema_fingerprint": "<from help>"}
+{"op": "agent.submit", "args": {"query": ["claude"], "prompt": "Write unit tests for auth.py"}, "schema_fingerprint": "<from help>"}
 ```
 
-`args` mirrors the CLI's own flags (see below) with underscores in place of dashes —
-`model`, `agent`, `resume`, `continue_last`, `effort`, `cwd`, `timeout`, `project`. Ask
-`help="agent.submit"` for the exact set this build admits.
+`query` carries the CLI's positionals: an optional model followed by a prompt. When `prompt`
+is supplied separately as above, put only the model in `query`. Other arguments mirror CLI
+flags with underscores in place of dashes, including `agent`, `resume`, `continue_last`,
+`effort`, `cwd`, `timeout`, and `project`; there is no separate `model` key. Ask
+`help="agent.submit"` for the exact set this build admits, and call `profile.list` before using
+a named `agent` profile.
 
 ### `flow.submit` — DAG orchestration
 
 ```
-{"op": "flow.submit", "args": {"prompt": "Audit auth, implement fixes, verify with tests", "agent": "orchestrator", "with_synthesis": true, "dry_run": true}, "schema_fingerprint": "<from help>"}
+{"op": "flow.submit", "args": {"query": ["claude"], "prompt": "Audit auth, implement fixes, verify with tests", "with_synthesis": true, "dry_run": true}, "schema_fingerprint": "<from help>"}
 ```
 
 Runs a `dry_run` first to preview the planned DAG without executing it, then resend without
@@ -136,17 +134,17 @@ read it back with `job.status` / `job.wait` / `job.output`.
 ### `fanout.submit` — parallel workers
 
 ```
-{"op": "fanout.submit", "args": {"prompt": "Review this codebase for security issues", "num_workers": 4, "with_synthesis": true}, "schema_fingerprint": "<from help>"}
+{"op": "fanout.submit", "args": {"query": ["claude"], "prompt": "Review this codebase for security issues", "num_workers": 4, "with_synthesis": true}, "schema_fingerprint": "<from help>"}
 ```
 
 ### `play.submit` — a saved playbook
 
 ```
-{"op": "play.submit", "args": {"playbook": "security-audit", "prompt": "JWT middleware"}, "schema_fingerprint": "<from help={\"verb\": \"play.submit\", \"playbook\": \"security-audit\"}>"}
+{"op": "play.submit", "args": {"playbook": "feature", "prompt": "Add JWT middleware"}, "schema_fingerprint": "<from help={\"verb\": \"play.submit\", \"playbook\": \"feature\"}>"}
 ```
 
-`playbook` is required — this verb is `flow.submit` with the playbook mandatory instead of
-optional.
+`playbook` is required. Its stored prompt, defaults, and declared arguments feed the same
+planner and executor used by `flow.submit`.
 
 ### `job.status` / `job.output` / `job.kill` — one run
 
@@ -179,7 +177,7 @@ the result carries every observation made so far, and calling again is safe.
 
 ```
 {"op": "profile.list", "args": {}}
-{"op": "profile.show", "args": {"name": "orchestrator"}}
+{"op": "profile.show", "args": {"name": "<name returned by profile.list>"}}
 ```
 
 `profile.show` needs `name`; an unknown name is refused with the full list of names that do
@@ -191,8 +189,8 @@ exist, rather than an empty result.
 
 Available only inside a lionagi checkout with `li` on `PATH` — not through the plugin's MCP
 server, and not the path the worked examples above use. Kept here because a handful of things
-are genuinely easier from a terminal: piping `--show-graph` output straight into an image
-viewer, or scripting `li invoke start`/`li invoke end` and `li team` sessions, neither of
+are genuinely easier from a terminal: opening a completed run's `--show-graph` artifact, or
+scripting `li invoke start`/`li invoke end` and `li team` sessions, neither of
 which the MCP surface exposes today (see `teams-and-tracking.md`).
 
 ### `li agent [MODEL] PROMPT` — single agent
@@ -259,7 +257,7 @@ li o fanout claude/sonnet "Suggest API design approaches" -n 3 \
 li o flow claude "Audit and harden the authentication module" \
     --with-synthesis --save ./audit-out --yolo --bypass
 li o flow -f ./my-spec.yaml --yolo --bypass
-li o flow -p security-audit "JWT middleware" --save ./out --yolo --bypass
+li o flow -p feature "Add JWT middleware" --save ./out --yolo --bypass
 ```
 
 | Flag | Default | Description |
@@ -275,7 +273,7 @@ li o flow -p security-audit "JWT middleware" --save ./out --yolo --bypass
 | `--team-mode [NAME]` | — | Fresh team per invocation |
 | `--team-attach NAME` | — | Attach to existing team (mutually exclusive with `--team-mode`) |
 | `--dry-run` | false | Plan DAG without executing |
-| `--show-graph` | false | Render DAG visualization |
+| `--show-graph` | false | Write the executed DAG visualization after the run finishes |
 | `--background` | false | Fork into background subprocess (requires `--save`) |
 | `--bare` | false | Ignore agent profiles; all workers use CLI model |
 | `--max-ops N` | 0 (unlimited) | Cap total DAG nodes. `--max-agents` is deprecated alias |
@@ -286,9 +284,9 @@ Plus all common flags (`--yolo`, `--bypass`, `--effort`, `--cwd`, `--timeout`, `
 ### `li play NAME [PROMPT] [ARGS...]` — playbook sugar
 
 ```
-li play security-audit "Audit the JWT middleware"
+li play feature "Add JWT middleware"
 li play list                     # list available playbooks
-li play security-audit --help    # show playbook description and args
+li play feature --help           # show playbook description and args
 ```
 
 All `li o flow` flags work with `li play` (except `-p`).

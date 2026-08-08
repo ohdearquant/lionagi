@@ -23,7 +23,7 @@ claude /plugin install orchestrate@lionagi
 
 | Name | Skills | Agents | Description |
 |------|--------|--------|-------------|
-| `orchestrate` | orchestrate, show, playbook, pr-review, review, security-review, debug, summarize, tdd | orchestrator, critic | Multi-agent orchestration: DAG workflows, playbooks, shows with quality gates |
+| `orchestrate` | orchestrate, play, fanout, flow, show, playbook, pr-review, review, security-review, debug, summarize, tdd | orchestrator, critic | Multi-agent orchestration: DAG workflows, playbooks, shows with quality gates |
 
 ## Sample Playbooks
 
