@@ -107,6 +107,39 @@ currently reaches it. It is in this ADR because a naming decision that settles t
 key and leaves this half inconsistent has created a second, quieter version of the same
 bug.
 
+### P8 — Bare-name registration across servers is a known attack shape, not only a bug
+
+The MCP specification guarantees tool-name uniqueness **within** a server. It does not
+guarantee it across servers, and a client that merges several servers into one flat
+registry keyed on bare names is relying on a property the protocol never promised
+(`modelcontextprotocol/modelcontextprotocol`, server-tools page, commit `eb0c4e0`).
+
+Published security work treats the consequence as its own class. Invariant Labs described
+cross-server tool-name shadowing alongside the "rug pull", where a server changes an
+already-approved tool definition after approval. HiddenLayer separately documented
+tool-name typosquatting and duplicate-name replacement in MCP clients they tested — their
+results are specific to those clients and are not a claim about this one.
+
+What is measured here is lionagi's own behavior, and it runs in both directions depending
+on a caller-supplied flag:
+
+- With `update=False` — the default, and what every in-package caller gets — the
+  **first-registered** server keeps the name and a later server silently registers
+  nothing. That is P1.
+- With `update=True` — a public parameter on both `load_mcp_config` and
+  `load_mcp_tools` — `register_tool` skips its duplicate guard entirely and replaces the
+  entry, so a **later-declared** server silently displaces an already-registered tool of
+  the same name. Calls a caller believes are going to the first server go to the last one.
+
+The second is the shadowing shape, reachable through a documented public parameter. Both
+directions are decided by config ordering rather than by anything a caller expressed, and
+neither announces itself.
+
+This ADR does not claim to make MCP tool loading secure — descriptions and schemas are
+still server-supplied text forwarded to a model, which is a separate problem this document
+does not touch. It removes one specific mechanism: after D1 no server can occupy a name
+another server needs, in either direction, because the names cannot coincide.
+
 ### Why this is not a niche configuration
 
 lionagi itself ships an MCP server whose entire surface is one tool named `request`
@@ -140,6 +173,9 @@ This ADR does **not** decide:
   spellings are passed through by the caller. D1 makes the two vocabularies agree, which
   is the point, but nothing in the provider path is changed here.
 - Invocation, hooks, event lifecycle, or history ordering — ADR-0012.
+- The trust status of server-supplied tool descriptions and schemas. Those are forwarded
+  into model-visible metadata and are a separate problem with a separate remedy; D1
+  closes the name-occupancy mechanism in P8 and nothing else about it.
 
 ## Decision
 
@@ -203,7 +239,12 @@ client object; that is a wire name on a wire call and D2 leaves it exactly as it
   already occupying an `mcp__*__*` name. Both are genuine anomalies and are handled by
   D3 rather than skipped.
 
-**Why this way.** Three properties decided it.
+**Why this way.** Four properties decided it.
+
+*The protocol only ever guaranteed per-server uniqueness.* Qualifying by server is not a
+lionagi convention layered on top of MCP; it restores the scope the spec actually defines.
+A bare-name registry silently widens a per-server guarantee into a global one, and P8 is
+what that costs.
 
 *It is the convention that already exists.* MCP clients expose `mcp__{server}__{tool}`.
 Adopting it means one spelling works whether an instruction runs on the native loop or
@@ -418,6 +459,13 @@ is valid on both. This is the consequence that pays for the rename.
 populated branch and did not know it will start seeing errors. That is the correct
 direction, and it will look like a regression to anyone whose configuration has been
 quietly broken.
+
+**One name-occupancy mechanism closes in both directions.** After D1 no server can take a
+name another server needs, so neither the default `update=False` capability loss nor the
+`update=True` displacement in P8 remains reachable through tool naming. This is a
+narrowing, not a security property: server-supplied descriptions and schemas still reach
+the model unchanged, and D3's fail-closed behavior matters here — a partially registered
+server was previously indistinguishable from a fully registered one.
 
 **Contributors must know one rule**: for an MCP-derived tool, the registry name and the
 wire name are different, the first comes from `mcp_tool_name()`, and the second lives in
