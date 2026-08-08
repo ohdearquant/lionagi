@@ -32,6 +32,7 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
 
+from .. import team as _team_module
 from .._logging import hint, warn
 from .._providers import (
     AgentProfile,
@@ -864,9 +865,15 @@ async def build_worker_branch(
     env.worker_artifact_dirs[agent_id] = artifact_dir
     if is_cli:
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
-        w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
-        if project_root not in w_imodel.endpoint.config.kwargs["add_dir"]:
-            w_imodel.endpoint.config.kwargs["add_dir"].append(project_root)
+        add_dir = w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
+        if project_root not in add_dir:
+            add_dir.append(project_root)
+        if (
+            getattr(env, "team_data", None)
+            and w_imodel.endpoint.config.provider == "codex"
+            and (teams_dir := str(_team_module.TEAMS_DIR.resolve())) not in add_dir
+        ):
+            add_dir.append(teams_dir)
 
     if explicit_name is not None:
         env.register_name(explicit_name)
