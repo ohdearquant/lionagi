@@ -313,8 +313,9 @@ def test_build_imodel_from_spec_mixed_case_max_clamps_codex_to_xhigh(monkeypatch
 
 
 def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypatch):
-    """--effort XHigh on a non-opus-4-7 Claude model must clamp to 'high',
-    matching the lowercase 'xhigh' behavior (case must not bypass the clamp)."""
+    """--effort XHigh on a Claude model with no xhigh tier must clamp to
+    'high', matching the lowercase 'xhigh' behavior (case must not bypass the
+    clamp). Sonnet has no xhigh tier; the Opus line does."""
     import lionagi.cli._providers as pmod
     from lionagi.testing import IModelKwargCaptor
 
