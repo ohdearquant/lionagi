@@ -1,10 +1,16 @@
 """Coverage boost tests for ActionManager: MCP support, dict tool registration, edge cases."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from pydantic import BaseModel
 
-from lionagi.protocols.action.manager import ActionManager, load_mcp_tools
+from lionagi.protocols.action.manager import (
+    ActionManager,
+    load_mcp_tools,
+    qualified_mcp_name,
+)
 from lionagi.protocols.action.tool import Tool
 from lionagi.protocols.messages.action_request import ActionRequest
 
@@ -33,22 +39,13 @@ class TestActionManagerDictRegistration:
         manager = ActionManager()
 
         mcp_config = {"duplicate_tool": {"command": "python", "args": ["-m", "test"]}}
-
-        # First registration should succeed
         manager.register_tool(mcp_config)
-
-        # Due to __contains__ not handling dict inputs, dict tools don't trigger
-        # duplicate detection. This is a known limitation. Instead, test that
-        # the tool was registered correctly and we can detect duplicates by name.
-        assert "duplicate_tool" in manager.registry
-
-        # Test duplicate detection by registering with same name but different format
         mcp_config_same_name = {"duplicate_tool": {"command": "different_command"}}
 
-        # This will overwrite since dict duplicate detection doesn't work
-        # But we can verify the behavior is consistent
-        manager.register_tool(mcp_config_same_name, update=True)
-        assert "duplicate_tool" in manager.registry
+        with pytest.raises(ValueError, match="Tool duplicate_tool is already registered"):
+            manager.register_tool(mcp_config_same_name, update=False)
+
+        assert manager.registry["duplicate_tool"].mcp_config == mcp_config
 
     def test_register_tool_dict_with_update(self):
         manager = ActionManager()
@@ -80,7 +77,7 @@ class TestActionManagerDictRegistration:
 
         manager.register_tool(mcp_config)
 
-        # Test contains with string name
+        assert mcp_config in manager
         assert "dict_tool" in manager
         assert "nonexistent_tool" not in manager
 
@@ -219,6 +216,7 @@ class TestActionManagerMCPMethodStubs:
             mock_pool.get_client = AsyncMock(return_value=mock_client)
 
             server_config = {
+                "server": "test_server",
                 "command": "python",
                 "args": ["-m", "test_server"],
             }
@@ -249,6 +247,286 @@ class TestActionManagerMCPMethodStubs:
             assert isinstance(result, dict)
             assert "test_server" in result
             assert result["test_server"] == ["tool1", "tool2"]
+
+
+class TestActionManagerMCPNaming:
+    @staticmethod
+    def _tool(name: str):
+        return SimpleNamespace(
+            name=name,
+            description=f"Call {name}",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        )
+
+    def test_qualified_name_accepts_provider_limit(self):
+        server_name = "a" * 50
+
+        name = qualified_mcp_name(server_name, "request")
+
+        assert name == f"mcp__{server_name}__request"
+        assert len(name) == 64
+
+    def test_qualified_name_requires_server_alias(self):
+        with pytest.raises(ValueError, match="non-empty server alias"):
+            qualified_mcp_name("", "request")
+
+    @pytest.mark.asyncio
+    async def test_two_servers_keep_distinct_registry_names_and_routes(self):
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        manager = ActionManager()
+        clients = {"alpha": AsyncMock(), "beta": AsyncMock()}
+        for server_name, client in clients.items():
+            client.list_tools.return_value = [self._tool("request")]
+            client.call_tool.return_value = server_name
+
+        async def get_client(server_config, security=None):
+            return clients[server_config["server"]]
+
+        with (
+            patch.object(MCPConnectionPool, "load_config", return_value=["alpha", "beta"]),
+            patch.object(MCPConnectionPool, "get_client", side_effect=get_client),
+        ):
+            loaded = await manager.load_mcp_config("/fake/path.json")
+
+        assert loaded == {
+            "alpha": ["mcp__alpha__request"],
+            "beta": ["mcp__beta__request"],
+        }
+        assert set(manager.registry) == {"mcp__alpha__request", "mcp__beta__request"}
+
+        for server_name in clients:
+            registry_name = f"mcp__{server_name}__request"
+            tool = manager.registry[registry_name]
+            assert tool.function == registry_name
+            assert tool.tool_schema["function"]["name"] == registry_name
+            assert tool.mcp_config[registry_name]["_original_tool_name"] == "request"
+
+        async def reconnect(server_config, capability=None):
+            return clients[server_config["server"]]
+
+        with patch.object(MCPConnectionPool, "_get_reconnect_client", side_effect=reconnect):
+            await manager.registry["mcp__alpha__request"].func_callable()
+            await manager.registry["mcp__beta__request"].func_callable()
+
+        clients["alpha"].call_tool.assert_awaited_once_with("request", {})
+        clients["beta"].call_tool.assert_awaited_once_with("request", {})
+
+    @pytest.mark.asyncio
+    async def test_tool_names_shortcut_uses_qualified_registry_name(self):
+        manager = ActionManager()
+
+        names = await manager.register_mcp_server({"server": "alpha"}, tool_names=["request"])
+
+        assert names == ["mcp__alpha__request"]
+        assert "request" not in manager.registry
+        tool = manager.registry["mcp__alpha__request"]
+        assert tool.mcp_config["mcp__alpha__request"]["_original_tool_name"] == "request"
+
+    @pytest.mark.asyncio
+    async def test_nonempty_inline_config_requires_server_alias(self):
+        manager = ActionManager()
+
+        with pytest.raises(ValueError, match="non-empty server alias"):
+            await manager.register_mcp_server({"command": "python"}, tool_names=["request"])
+
+        assert manager.registry == {}
+
+    @pytest.mark.asyncio
+    async def test_registration_shortfall_names_missing_tools(self):
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        manager = ActionManager()
+
+        async def occupied():
+            return None
+
+        occupied.__name__ = "mcp__alpha__second"
+        manager.register_tool(occupied)
+
+        client = AsyncMock()
+        client.list_tools.return_value = [self._tool("first"), self._tool("second")]
+
+        with patch.object(MCPConnectionPool, "get_client", return_value=client):
+            with pytest.raises(RuntimeError) as exc_info:
+                await manager.register_mcp_server({"server": "alpha"})
+
+        message = str(exc_info.value)
+        assert "advertised 2 tool(s) but 1 registered" in message
+        assert "missing: ['second']" in message
+
+    @pytest.mark.asyncio
+    async def test_update_does_not_replace_local_qualified_tool(self):
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        manager = ActionManager()
+
+        async def occupied():
+            return None
+
+        occupied.__name__ = "mcp__alpha__request"
+        manager.register_tool(occupied)
+        original = manager.registry["mcp__alpha__request"]
+
+        client = AsyncMock()
+        client.list_tools.return_value = [self._tool("request")]
+
+        with patch.object(MCPConnectionPool, "get_client", return_value=client):
+            with pytest.raises(RuntimeError, match=r"missing: \['request'\]"):
+                await manager.register_mcp_server({"server": "alpha"}, update=True)
+
+        assert manager.registry["mcp__alpha__request"] is original
+
+    @pytest.mark.asyncio
+    async def test_tool_names_update_does_not_replace_local_qualified_tool(self):
+        manager = ActionManager()
+
+        async def occupied():
+            return None
+
+        occupied.__name__ = "mcp__alpha__request"
+        manager.register_tool(occupied)
+        original = manager.registry["mcp__alpha__request"]
+
+        with pytest.raises(ValueError, match="cannot replace an existing local tool"):
+            await manager.register_mcp_server(
+                {"server": "alpha"}, tool_names=["request"], update=True
+            )
+
+        assert manager.registry["mcp__alpha__request"] is original
+
+    @pytest.mark.asyncio
+    async def test_empty_server_tool_list_succeeds(self):
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        manager = ActionManager()
+        client = AsyncMock()
+        client.list_tools.return_value = []
+
+        with patch.object(MCPConnectionPool, "get_client", return_value=client):
+            names = await manager.register_mcp_server({"command": "unused"})
+
+        assert names == []
+        assert manager.registry == {}
+
+    @pytest.mark.asyncio
+    async def test_load_mcp_config_propagates_server_failure(self):
+        manager = ActionManager()
+        manager.register_mcp_server = AsyncMock(side_effect=RuntimeError("incomplete tools"))
+
+        with patch("lionagi.service.connections.mcp_wrapper.MCPConnectionPool") as mock_pool:
+            mock_pool.load_config.return_value = ["alpha"]
+            with pytest.raises(RuntimeError, match="incomplete tools"):
+                await manager.load_mcp_config("/fake/path.json")
+
+    @pytest.mark.asyncio
+    async def test_request_options_use_wire_name_keys(self):
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        class RequestOptions(BaseModel):
+            query: str
+
+        manager = ActionManager()
+        client = AsyncMock()
+        client.list_tools.return_value = [self._tool("request")]
+        options = {"request": RequestOptions}
+
+        with patch.object(MCPConnectionPool, "get_client", return_value=client):
+            await manager.register_mcp_server({"server": "alpha"}, request_options=options)
+
+        assert options == {"request": RequestOptions}
+        assert manager.registry["mcp__alpha__request"].request_options is RequestOptions
+
+    @pytest.mark.asyncio
+    async def test_unknown_request_options_raise_before_mutation(self):
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        manager = ActionManager()
+        client = AsyncMock()
+        client.list_tools.return_value = [self._tool("request")]
+
+        with patch.object(MCPConnectionPool, "get_client", return_value=client):
+            with pytest.raises(ValueError, match="unknown"):
+                await manager.register_mcp_server(
+                    {"server": "alpha"}, request_options={"unknown": BaseModel}
+                )
+
+        assert manager.registry == {}
+
+    @pytest.mark.asyncio
+    async def test_overlong_qualified_name_fails_during_load(self):
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        server_name = "a" * 58
+        manager = ActionManager()
+        client = AsyncMock()
+        client.list_tools.return_value = [self._tool("request")]
+
+        with (
+            patch.object(MCPConnectionPool, "load_config", return_value=[server_name]),
+            patch.object(MCPConnectionPool, "get_client", return_value=client),
+        ):
+            with pytest.raises(ValueError) as exc_info:
+                await manager.load_mcp_config("/fake/path.json")
+
+        message = str(exc_info.value)
+        assert server_name in message
+        assert "request" in message
+        assert "72" in message
+        assert "shorter alias" in message
+
+    @pytest.mark.asyncio
+    async def test_invalid_qualified_name_character_fails_registration(self):
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        manager = ActionManager()
+        client = AsyncMock()
+        client.list_tools.return_value = [self._tool("request")]
+
+        with patch.object(MCPConnectionPool, "get_client", return_value=client):
+            with pytest.raises(ValueError) as exc_info:
+                await manager.register_mcp_server({"server": "bad.alias"})
+
+        message = str(exc_info.value)
+        assert "bad.alias" in message
+        assert "request" in message
+        assert "23" in message
+        assert "shorter alias" in message
+
+    @pytest.mark.asyncio
+    async def test_schema_warning_uses_package_logger(self, caplog):
+        from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+        class Descriptor:
+            name = "request"
+            description = "Call request"
+            reads = 0
+
+            @property
+            def inputSchema(self):
+                self.reads += 1
+                if self.reads > 1:
+                    raise ValueError("schema unavailable")
+                return {"type": "object", "properties": {}}
+
+        manager = ActionManager()
+        client = AsyncMock()
+        client.list_tools.return_value = [Descriptor()]
+
+        caplog.set_level("WARNING", logger="lionagi.protocols.action.manager")
+        with patch.object(MCPConnectionPool, "get_client", return_value=client):
+            names = await manager.register_mcp_server({"server": "alpha"})
+
+        assert names == ["mcp__alpha__request"]
+        assert any(
+            record.name == "lionagi.protocols.action.manager"
+            and "Could not extract schema for request" in record.getMessage()
+            for record in caplog.records
+        )
 
 
 class TestActionManagerMCPAdmission:
@@ -299,10 +577,12 @@ class TestActionManagerMCPAdmission:
             mock_client.list_tools = AsyncMock(return_value=[mock_tool])
             mock_pool.get_client = AsyncMock(return_value=mock_client)
 
-            result = await manager.register_mcp_server({"command": "python", "args": ["-m", "srv"]})
+            result = await manager.register_mcp_server(
+                {"server": "srv", "command": "python", "args": ["-m", "srv"]}
+            )
 
-        assert result == ["run_tests"]
-        assert "run_tests" in manager.registry
+        assert result == ["mcp__srv__run_tests"]
+        assert "mcp__srv__run_tests" in manager.registry
 
     @pytest.mark.asyncio
     async def test_register_mcp_server_denial_error_is_actionable(self):
@@ -374,12 +654,12 @@ class TestActionManagerMCPAdmission:
         manager = ActionManager()
 
         result = await manager.register_mcp_server(
-            {"command": "python", "args": ["-m", "srv"]},
+            {"server": "srv", "command": "python", "args": ["-m", "srv"]},
             tool_names=["run_tests"],
         )
 
-        assert result == ["run_tests"]
-        assert "run_tests" in manager.registry
+        assert result == ["mcp__srv__run_tests"]
+        assert "mcp__srv__run_tests" in manager.registry
 
     def test_register_tool_denies_raw_dict_shell_executor(self):
         manager = ActionManager()
@@ -403,6 +683,22 @@ class TestActionManagerMCPAdmission:
 
         assert tool_name in str(exc_info.value)
         assert tool_name not in manager.registry
+
+    def test_qualified_tool_admission_checks_wire_name(self):
+        manager = ActionManager()
+        tool = Tool(
+            mcp_config={
+                "mcp__alpha__bash": {
+                    "server": "alpha",
+                    "_original_tool_name": "bash",
+                }
+            }
+        )
+
+        with pytest.raises(PermissionError, match="bash"):
+            manager.register_tool(tool)
+
+        assert "mcp__alpha__bash" not in manager.registry
 
     def test_register_tool_admits_prebuilt_tool_with_rich_bounded_descriptor(self):
         """A prebuilt `Tool` carrying a genuine, bounded remote descriptor
@@ -448,12 +744,12 @@ class TestActionManagerMCPAdmission:
         manager = ActionManager()
 
         result = await manager.register_mcp_server(
-            {"command": "python", "args": ["-m", "srv"]},
+            {"server": "srv", "command": "python", "args": ["-m", "srv"]},
             tool_names=["format_run_command"],
         )
 
-        assert result == ["format_run_command"]
-        assert "format_run_command" in manager.registry
+        assert result == ["mcp__srv__format_run_command"]
+        assert "mcp__srv__format_run_command" in manager.registry
 
     async def _discover_and_register(self, descriptor):
         """Helper: register a server whose discovery returns a single mock
@@ -468,7 +764,7 @@ class TestActionManagerMCPAdmission:
             mock_client.list_tools = AsyncMock(return_value=[mock_tool])
             mock_pool.get_client = AsyncMock(return_value=mock_client)
             return manager, await manager.register_mcp_server(
-                {"command": "python", "args": ["-m", "srv"]}
+                {"server": "srv", "command": "python", "args": ["-m", "srv"]}
             )
 
     async def _discover_and_expect_denial(self, descriptor):
@@ -585,8 +881,8 @@ class TestActionManagerMCPAdmission:
                 },
             }
         )
-        assert result == ["exec"]
-        assert "exec" in manager.registry
+        assert result == ["mcp__srv__exec"]
+        assert "mcp__srv__exec" in manager.registry
 
     @pytest.mark.asyncio
     async def test_register_mcp_server_admits_nested_config_without_command_fields(self):
@@ -608,8 +904,8 @@ class TestActionManagerMCPAdmission:
                 },
             }
         )
-        assert result == ["maintenance"]
-        assert "maintenance" in manager.registry
+        assert result == ["mcp__srv__maintenance"]
+        assert "mcp__srv__maintenance" in manager.registry
 
     @pytest.mark.asyncio
     async def test_register_mcp_server_denied_tool_leaves_registry_untouched_with_earlier_allowed(
@@ -885,6 +1181,9 @@ class TestLoadMCPToolsFunction:
 
     @pytest.mark.asyncio
     async def test_load_mcp_tools_with_server_names(self):
+        class RequestOptions(BaseModel):
+            query: str
+
         # Mock the ActionManager and its methods
         with patch("lionagi.protocols.action.manager.ActionManager") as mock_manager_class:
             mock_manager = Mock()
@@ -895,11 +1194,33 @@ class TestLoadMCPToolsFunction:
             mock_manager.register_mcp_server = AsyncMock(return_value=["tool1", "tool2"])
             mock_manager_class.return_value = mock_manager
 
-            result = await load_mcp_tools(server_names=["test_server"])
+            result = await load_mcp_tools(
+                server_names=["test_server"],
+                request_options_map={"test_server": {"request": RequestOptions}},
+            )
 
             # Should return list of Tool objects
             assert isinstance(result, list)
             assert len(result) == 2
+            mock_manager.register_mcp_server.assert_awaited_once_with(
+                {"server": "test_server"},
+                request_options={"request": RequestOptions},
+                update=False,
+                security=None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_load_mcp_tools_propagates_registration_error(self):
+        with patch("lionagi.protocols.action.manager.ActionManager") as manager_class:
+            manager = Mock()
+            manager.registry = {}
+            manager.register_mcp_server = AsyncMock(
+                side_effect=ValueError("unknown request options")
+            )
+            manager_class.return_value = manager
+
+            with pytest.raises(ValueError, match="unknown request options"):
+                await load_mcp_tools(server_names=["alpha"])
 
 
 class TestActionManagerValidation:
