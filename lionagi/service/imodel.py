@@ -92,25 +92,28 @@ class iModel:  # noqa: N801
 
             # Effort-suffixed model names ("gpt-5.6-luna-high") work at every
             # construction site: strip the suffix and route it to the
-            # provider's effort kwarg. Gated to providers with an effort kwarg
-            # so a real model name can never be mangled; an explicit effort
-            # kwarg always wins over the suffix.
+            # provider's effort kwarg. Gated twice so a real model name is not
+            # mangled — to providers that have an effort kwarg at all, and to
+            # names written in lionagi's own grammar rather than borrowed whole
+            # from another vendor's catalogue (see split_effort_suffix). An
+            # explicit effort kwarg always wins over the suffix.
             from .providers import (
                 _CLAUDE_PROVIDER_NAMES,
-                _EFFORT_SUFFIX_RE,
                 PROVIDER_EFFORT_KWARG,
                 _clamp_claude_effort,
                 normalize_effort,
+                split_effort_suffix,
             )
 
             _effort_kwarg = PROVIDER_EFFORT_KWARG.get(provider) if provider else None
             _model_name = kwargs.get("model")
             if _effort_kwarg and isinstance(_model_name, str):
-                _suffix = _EFFORT_SUFFIX_RE.match(_model_name)
-                if _suffix:
-                    kwargs["model"] = _suffix.group(1)
+                _split = split_effort_suffix(_model_name)
+                if _split is not None:
+                    _name, _raw_effort = _split
+                    kwargs["model"] = _name
                     if _effort_kwarg not in kwargs:
-                        _eff = normalize_effort(_suffix.group(2))
+                        _eff = normalize_effort(_raw_effort)
                         if provider in _CLAUDE_PROVIDER_NAMES:
                             _eff = _clamp_claude_effort(_eff, kwargs["model"])
                         kwargs[_effort_kwarg] = _eff
