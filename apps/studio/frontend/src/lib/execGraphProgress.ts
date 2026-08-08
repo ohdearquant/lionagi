@@ -25,7 +25,7 @@ export interface ProgressCounts {
   awaitingApproval: number;
   paused: number;
   completed: number;
-  /** failed + escalated, counted as one failure pool per the design brief. */
+  escalated: number;
   failed: number;
   hasFailure: boolean;
 }
@@ -39,6 +39,7 @@ function emptyCounts(total = 0): ProgressCounts {
     awaitingApproval: 0,
     paused: 0,
     completed: 0,
+    escalated: 0,
     failed: 0,
     hasFailure: false,
   };
@@ -76,8 +77,10 @@ export function deriveProgressCounts(
         counts.completed++;
         break;
       case "failed":
-      case "escalated":
         counts.failed++;
+        break;
+      case "escalated":
+        counts.escalated++;
         break;
     }
   }
