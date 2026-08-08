@@ -572,6 +572,111 @@ async def test_run_progress_dag_keeps_escalated_distinct_from_failed(db_path):
     assert by_id["broken"]["status"] == "failed"
 
 
+async def test_run_progress_escalated_count_separates_the_two_kinds_of_pending(db_path):
+    """The scalar buckets must sum to total, so an escalation folds into
+    pending — but a caller reading only the scalars still has to tell a node
+    that is merely waiting to start from one that has stopped and is asking
+    for a decision. The graph here makes those two different numbers: one
+    escalated node and one node with no lifecycle signal at all both land in
+    pending, and escalatedCount must name only the first."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    node_metadata = {
+        "early_graph": {
+            "nodes": [
+                {"id": "needs-help", "label": "needs-help"},
+                {"id": "broken", "label": "broken"},
+                {"id": "waiting", "label": "waiting"},
+            ],
+            "edges": [],
+        }
+    }
+    async with StateDB(db_path) as db:
+        prog_id = f"{sid}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog_id,
+                "name": "escalation-count-run",
+                "status": "running",
+                "started_at": 1000.0,
+                "node_metadata": node_metadata,
+                "invocation_kind": "agent",
+                "source_kind": "live",
+                "updated_at": time.time(),
+            }
+        )
+        await db.insert_session_signal(
+            session_id=sid,
+            kind="NodeEscalated",
+            op_id="op-needs-help",
+            ts=1001.0,
+            payload={"name": "needs-help", "route": "higher_tier"},
+        )
+        await db.insert_session_signal(
+            session_id=sid,
+            kind="NodeFailed",
+            op_id="op-broken",
+            ts=1002.0,
+            payload={"name": "broken"},
+        )
+        # "waiting" deliberately gets no signal, so it reaches pending by the
+        # other route and the two counts cannot be the same number.
+
+    dag = (await run_progress({"run": sid}))["dagProgress"]
+
+    assert dag["total"] == 3
+    assert dag["failed"] == 1
+    assert dag["pending"] == 2
+    assert dag["unknownCount"] == 1
+    assert dag["escalatedCount"] == 1
+    # The scalars still account for every node.
+    assert dag["completed"] + dag["running"] + dag["failed"] + dag["pending"] == dag["total"]
+
+
+async def test_run_progress_escalated_count_is_present_as_zero_when_nothing_escalated(
+    db_path,
+):
+    """Present on every response, including as zero. A count that appears only
+    when non-zero is the one callers never wire up, because every run they
+    develop against lacks it."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    node_metadata = {"early_graph": {"nodes": [{"id": "broken", "label": "broken"}], "edges": []}}
+    async with StateDB(db_path) as db:
+        prog_id = f"{sid}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog_id,
+                "name": "no-escalation-run",
+                "status": "running",
+                "started_at": 1000.0,
+                "node_metadata": node_metadata,
+                "invocation_kind": "agent",
+                "source_kind": "live",
+                "updated_at": time.time(),
+            }
+        )
+        await db.insert_session_signal(
+            session_id=sid,
+            kind="NodeFailed",
+            op_id="op-broken",
+            ts=1001.0,
+            payload={"name": "broken"},
+        )
+
+    dag = (await run_progress({"run": sid}))["dagProgress"]
+
+    assert "escalatedCount" in dag
+    assert dag["escalatedCount"] == 0
+    assert dag["failed"] == 1
+
+
 async def test_run_progress_no_graph_has_null_dag_progress(db_path):
     from lionagi.studio.operator.run_progress import run_progress
 

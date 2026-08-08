@@ -370,7 +370,7 @@ async def _dag_progress(session_id: str, graph: dict[str, Any]) -> dict[str, Any
     ]
     lanes = await _node_lanes_by_name(session_id)
 
-    completed = running = failed = pending = unknown = 0
+    completed = running = failed = pending = unknown = escalated = 0
     node_out: list[dict[str, Any]] = []
     for node in nodes:
         node_id = node["id"]
@@ -388,6 +388,13 @@ async def _dag_progress(session_id: str, graph: dict[str, Any]) -> dict[str, Any
                 failed += 1
             else:
                 pending += 1
+            # Counted alongside the buckets rather than inside them: an
+            # escalation folds into pending for the sum, but a caller reading
+            # only the scalars cannot otherwise tell a node that is queued
+            # from one that has stopped and is waiting on a human decision,
+            # and those ask for opposite responses.
+            if lane == "escalated":
+                escalated += 1
         node_out.append(
             {
                 "id": node_id,
@@ -407,6 +414,10 @@ async def _dag_progress(session_id: str, graph: dict[str, Any]) -> dict[str, Any
         # scalars must sum to "total", the per-node list stays honest.
         "pending": pending + unknown,
         "unknownCount": unknown,
+        # Always present, including as zero. A count that only appears when
+        # non-zero is the field callers never wire up, because every run they
+        # develop against lacks it.
+        "escalatedCount": escalated,
         "nodes": node_out,
     }
 
