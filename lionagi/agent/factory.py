@@ -147,7 +147,8 @@ async def create_agent(
     _apply_permissions(spec)
     _register_tools(branch, spec)
     _register_providers(branch, spec)
-    await _load_mcp(branch, spec, trust_project_settings=trust_project_settings)
+    if resolved_mcp_servers is Unset:
+        await _load_mcp(branch, spec, trust_project_settings=trust_project_settings)
     _forward_mcp_to_cli_request(
         branch,
         spec,

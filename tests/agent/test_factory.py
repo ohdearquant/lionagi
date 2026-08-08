@@ -824,6 +824,34 @@ def _write_mcp_config(tmp_path, servers: dict) -> str:
     return str(p)
 
 
+async def test_resolved_cli_mcp_set_rejects_ambient_server_before_connection(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
+
+    home_mcp_dir = tmp_path / "home" / ".lionagi"
+    home_mcp_dir.mkdir(parents=True)
+    _write_mcp_config(
+        home_mcp_dir,
+        {"decoy": {"command": "not-the-submitted-server"}},
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    connect = AsyncMock(side_effect=AssertionError("excluded ambient server must not be connected"))
+    monkeypatch.setattr(MCPConnectionPool, "get_client", connect)
+
+    submitted = {"khive": {"command": "kkernel", "args": ["serve"]}}
+    config = AgentSpec.compose("reviewer", model="claude_code/sonnet")
+
+    branch = await create_agent(
+        config,
+        load_settings=False,
+        resolved_mcp_servers=submitted,
+    )
+
+    assert branch.chat_model.endpoint.config.kwargs["mcp_servers"] == submitted
+
+
 async def test_forward_mcp_populates_claude_code_request_mcp_servers(tmp_path):
     """Test plan item 5: claude_code leg + mcp_config_path -> ClaudeCodeRequest
     carries the same servers, and --mcp-config shows up in as_cmd_args()."""
