@@ -361,17 +361,20 @@ The static result envelope is:
     "operation_results": dict[UUID, Any],
     "final_context": dict[str, Any],
     "skipped_operations": list[UUID],
+    "failed_operations": list[UUID],
 }
 ```
 
 Exact condition, context, and result semantics:
 
 - A node with no incoming edges has a valid path. With incoming edges, an edge whose predecessor was
-  skipped is ignored; the node runs when **at least one** remaining edge condition returns true.
-  An edge with no condition returns true. If no incoming path passes, the node is marked `SKIPPED`.
-- Condition checks wait on the predecessor's completion event before reading its result. A failed
-  predecessor contributes its error mapping and may still satisfy an unconditional edge; failure
-  does not automatically skip all dependents.
+  skipped or was already `FAILED` when execution began is ignored; the node runs when **at least
+  one** remaining edge condition returns true. An edge with no condition returns true. If no
+  incoming path passes, the node is marked `SKIPPED`.
+- Condition checks wait on the predecessor's completion event before reading its result. A failure
+  produced during the current execution contributes its error mapping and may still satisfy an
+  unconditional edge for compatibility. A restored, preterminal failure never contributes its
+  error mapping to a dependent.
 - `_wait_for_dependencies()` then waits for every graph predecessor. Aggregations also wait for each
   UUID string named in `aggregation_sources` when it matches a completion-event id.
 - Predecessor results are converted recursively to mappings except for string, integer, float, and
@@ -399,13 +402,14 @@ Exact condition, context, and result semantics:
   context, and can omit the ordinary completed progress callback.
 - Parallel operations can finish in either order. When their returned context mappings collide,
   there is no namespace or reducer; whichever deep merge executes later wins for that key.
-- An exception raised while checking a condition is caught as an executor-level error mapping and
-  releases the completion event, but the node's `EventStatus` is not explicitly set to `FAILED`.
-  Static results therefore include the error entry as settled, and D6's status projection can label
-  this defensive path `completed`. Invoked operation failures do set `FAILED` and project correctly.
-- `completed_operations` is computed as every id in `results` that is not skipped. Because failed
-  operations also receive error entries in `results`, the name includes failures. It means
-  “settled with a result entry and not skipped,” not `EventStatus.COMPLETED`.
+- An exception raised while checking a condition is caught as an executor-level error mapping,
+  added to `failed_operations`, and releases the completion event, but the node's `EventStatus` is
+  not explicitly set to `FAILED`. Static results still include this in `completed_operations`, and
+  D6's status projection can label this defensive path `completed`. Invoked operation failures do
+  set `FAILED` and project correctly.
+- `completed_operations` is computed as every id in `results` that is not skipped and was not
+  already `FAILED` when execution began. A failure produced during execution still appears in
+  `completed_operations` for compatibility; a restored preterminal failure does not.
 - `operation_results` is the authoritative per-id value/error mapping. `skipped_operations` is
   disjoint from `completed_operations`; `_validate_execution_results()` raises if the lists overlap.
 
@@ -600,10 +604,10 @@ documented above.
 - Live operator messages are rendered once as an instruction prefix and withheld from raw model
   context. The shared queue is mutated with consumption breadcrumbs, so callers treating their
   input context as immutable will observe otherwise.
-- `completed_operations` is a compatibility hazard because failures appear in it. Consumers needing
-  truth must inspect operation status and results together. `FlowEvent.status` improves ordinary
-  failure reporting but still labels defensive executor errors completed when no event failure was
-  set.
+- `completed_operations` is a compatibility hazard because failures produced during execution
+  appear in it, although restored preterminal failures do not. Consumers needing truth must inspect
+  operation status and results together. `FlowEvent.status` improves ordinary failure reporting but
+  still labels defensive executor errors completed when no event failure was set.
 - Reactive mutation is bounded and cycle-safe, but object-identity de-duplication does not provide
   durable or semantic idempotency across reconstruction, and reinjecting an existing operation UUID
   can schedule that node again without a fresh branch or completion event.
