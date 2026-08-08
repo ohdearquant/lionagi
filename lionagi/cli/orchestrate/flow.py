@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from lionagi._errors import EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
@@ -61,6 +63,55 @@ from ._orchestration import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DescendantCpuSample = tuple[dict[int, float], bool]
+
+
+def _sample_descendant_cpu(pid: int) -> _DescendantCpuSample:
+    try:
+        descendants = psutil.Process(pid).children(recursive=True)
+    except (psutil.Error, OSError):
+        return {}, False
+
+    totals: dict[int, float] = {}
+    for descendant in descendants:
+        try:
+            cpu_times = descendant.cpu_times()
+        except (psutil.Error, OSError):
+            return totals, False
+        totals[descendant.pid] = cpu_times.user + cpu_times.system
+    return totals, True
+
+
+def _heartbeat_warning(
+    segment: dict,
+    *,
+    now: float,
+    max_idle_seconds: float,
+    previous: _DescendantCpuSample | None,
+    current: _DescendantCpuSample,
+) -> str | None:
+    elapsed = now - segment.get("started_at", now)
+    if elapsed <= max_idle_seconds or previous is None:
+        return None
+
+    previous_cpu, previous_complete = previous
+    current_cpu, current_complete = current
+    if not previous_complete or not current_complete:
+        return None
+    if not previous_cpu and not current_cpu:
+        return (
+            f"  ⚠ NO DESCENDANTS: {segment['branch_name']} running {elapsed:.0f}s "
+            "with no active descendants"
+        )
+    if not current_cpu or current_cpu.keys() != previous_cpu.keys():
+        return None
+    if all(current_cpu[pid] == previous_cpu[pid] for pid in current_cpu):
+        return (
+            f"  ⚠ IDLE STALL: {segment['branch_name']} running {elapsed:.0f}s; "
+            "descendants accumulated no CPU time since the previous heartbeat"
+        )
+    return None
 
 
 class FlowPlanError(LionError):
@@ -1032,6 +1083,7 @@ async def _execute_dag(
 
     heartbeat_interval = 60
     max_idle_seconds = 600
+    heartbeat_pid = os.getpid()
 
     def _persist_segments():
         ctx = getattr(env, "_live_persist", None)
@@ -1186,20 +1238,27 @@ async def _execute_dag(
 
     # ADR-0034 §4: run_dag drives the session bus; observers above consume the signals.
     async def _heartbeat_loop() -> None:
+        previous_cpu_sample: _DescendantCpuSample | None = None
         while True:
             await _asyncio.sleep(heartbeat_interval)
             _now = time.time()
+            current_cpu_sample = _sample_descendant_cpu(heartbeat_pid)
             for _seg in _op_segments:
                 if _seg["status"] != "running":
                     continue
                 _elapsed = _now - _seg.get("started_at", _now)
                 _seg["last_heartbeat_at"] = _now
                 progress(f"  · {_seg['branch_name']} heartbeat {_elapsed / 60:.0f}m")
-                if _elapsed > max_idle_seconds:
-                    progress(
-                        f"  ⚠ IDLE STALL: {_seg['branch_name']} running {_elapsed:.0f}s "
-                        "with no completion — possible hung child process"
-                    )
+                warning = _heartbeat_warning(
+                    _seg,
+                    now=_now,
+                    max_idle_seconds=max_idle_seconds,
+                    previous=previous_cpu_sample,
+                    current=current_cpu_sample,
+                )
+                if warning is not None:
+                    progress(warning)
+            previous_cpu_sample = current_cpu_sample
 
     # ADR-0069 D1: control poller, the only consumer of session_controls rows.
     # _executor_ref is populated synchronously by DependencyAwareExecutor's
