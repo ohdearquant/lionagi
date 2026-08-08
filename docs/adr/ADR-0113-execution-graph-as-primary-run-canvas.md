@@ -113,7 +113,11 @@ live run means clicking around it rather than looking at it.
 ### P5 — A run's real shape cannot be saved
 
 A run's executed DAG is not its planned DAG: reactive spawning adds nodes during the run.
-Playbooks exist as `*.playbook.yaml` and the client has a YAML pane, but there is no path
+And there is nothing to save it *into*. A playbook is a prompt plus planner configuration
+with no field for nodes or edges, so it cannot express a graph at all; the client's own
+workflow editor authors an explicit `{nodes, edges}` spec that no engine path executes.
+Two representations, neither of which is an executable graph. Playbooks exist as
+`*.playbook.yaml` and the client has a YAML pane, but there is no path
 from "this run did something worth repeating" to a reusable definition. The interesting
 artifact — the graph that actually ran, including what it grew — is discarded at the end of
 every run.
@@ -130,7 +134,7 @@ because "make X the default" requests routinely delete Y.
 | Layer assignment | D2: Rank assignment moves in-house and becomes ASAP; dagre keeps within-rank ordering. |
 | Live node state | D3: Node cards carry the agent's latest response and activity, and every animation is driven by a real signal. |
 | Run control | D4: Surface pause, resume and steer from the existing control verbs, refusing pause for agent runs explicitly rather than hiding it. |
-| Reuse | D5: Export a run's executed graph as a playbook YAML. |
+| Reuse | D5: Export a run's executed graph as an executable flow definition (blocked on #2836). |
 | View parity | D6: Graph and list are switchable peers with shared, URL-addressable selection state. |
 
 This ADR does **not** decide:
@@ -285,11 +289,21 @@ decision left is how to present it, and the one judgment call is the agent-run r
 showing a disabled control with its reason teaches the model of the system, where hiding it
 leaves a user to conclude the feature is missing.
 
-### D5 — Export a run's executed graph as a playbook
+### D5 — Export a run's executed graph as an executable flow definition
 
-**The contract.** A run detail offers "save as flow", producing a `*.playbook.yaml`
-matching the existing playbook schema, built from the graph that **actually executed** —
-including reactively spawned nodes — not from the plan it started with.
+**The contract.** A run detail offers "save as flow", producing an **executable flow
+definition** built from the graph that **actually executed** — including reactively spawned
+nodes — not from the plan it started with.
+
+**The format does not exist yet, and this decision depends on it.** A playbook today is a
+prompt plus planner configuration (`name`, `model`, `agent`, `effort`, `args`, `prompt`)
+with no field for nodes or edges, so the structure of every run is cast by the planner at
+run time. A run's DAG therefore cannot be written into the existing playbook schema, and an
+earlier draft of this decision said it could. The target is the deterministic pipeline
+format tracked as #2836 — an authored spec of tasks and dependencies compiled straight to
+an operation graph — and D5 is **blocked on it** rather than independently implementable.
+The runtime half is already there: `DependencyAwareExecutor` executes any acyclic operation
+graph deterministically. What is missing is a front end, which is exactly what #2836 scopes.
 
 **Exact semantics.**
 
@@ -372,7 +386,7 @@ decorative animation looks harmless.
 | 7 | Signal-bound animation with viewport gating, a concurrency cap, a stall timeout, and a reduced-motion equivalent. Acceptance: a stalled node stops animating within the timeout and states that it stalled; reduced-motion carries the same information statically. | M | |
 | 8 | Pause/resume/steer controls wired to the existing verbs through ADR-0083's proposal path, with pause shown-and-disabled for agent runs and its reason stated. Acceptance: pausing a play gates it at the next operation boundary and the graph shows the gate; an agent run offers steer and explains the pause refusal. | M | |
 | 9 | Distinguish "pausing" from "paused" while in-flight operations finish. Acceptance: the state does not read paused while an operation is still running. | S | |
-| 10 | Export the executed graph as `*.playbook.yaml`, spawned nodes included and marked, escalation children and run-specific values excluded, with the exporter stating what it dropped. Acceptance: exporting a run that spawned a node yields a playbook containing it, and re-running the export reproduces the shape. | L | |
+| 10 | Export the executed graph as an executable flow definition, spawned nodes included and marked, escalation children and run-specific values excluded, with the exporter stating what it dropped. **Blocked on #2836** — the existing playbook schema has no nodes or edges and cannot carry a DAG. Acceptance: exporting a run that spawned a node yields a definition containing it, and re-running that definition reproduces the shape. | L | #2836 |
 
 ## Alternatives considered
 
