@@ -16,6 +16,20 @@ PRIVATE_PATH = "/Users/example/private/report.txt"
 STORE_URL = "postgresql+asyncpg://reader:password@db.example/data"
 
 
+@pytest.fixture(autouse=True)
+def readable_store(monkeypatch):
+    """Declare the premise these tests stand on: a store that could be opened.
+
+    They replace the carriers with fakes, which says what the store contains but
+    not that it was reachable. The list handlers refuse to answer at all when it
+    was not, so without this the fakes are never consulted and every read here
+    would report `known: False`. Tests for that path set it False explicitly.
+    """
+    from lionagi.studio.services import _db
+
+    monkeypatch.setattr(_db, "store_exists", lambda: True)
+
+
 def _assert_private_input_is_removed(result, source):
     source_text = json.dumps(source)
     result_text = json.dumps(result)
@@ -311,3 +325,125 @@ async def test_get_artifact_caps_and_redacts_content(monkeypatch):
     assert len(json.dumps(result["content"]).encode()) <= 2_000_000
     assert "file_path" not in result
     _assert_private_input_is_removed(result, source)
+
+
+# ---------------------------------------------------------------------------
+# An unreadable store must not answer like an empty one
+#
+# Each guard gets both arms. The unknown-arm alone would pass against a `known`
+# hardcoded to False, and the known-arm alone would pass against one hardcoded
+# True, so neither on its own shows the flag carries information.
+# ---------------------------------------------------------------------------
+
+
+async def test_list_sessions_reports_unknown_when_the_store_cannot_be_opened(monkeypatch):
+    from lionagi.studio.operator.application_mcp import list_sessions
+    from lionagi.studio.services import _db, runs
+
+    consulted = False
+
+    async def fake_list_runs(**_kwargs):
+        nonlocal consulted
+        consulted = True
+        return []
+
+    monkeypatch.setattr(runs, "list_runs", fake_list_runs)
+    monkeypatch.setattr(_db, "store_exists", lambda: False)
+
+    result = await list_sessions({"limit": 10})
+
+    assert result["known"] is False
+    assert "sessions" not in result
+    # Declining to answer is the behaviour under test: a carrier consulted here
+    # would return [], which is the empty answer this guard exists to withhold.
+    assert consulted is False
+
+
+async def test_list_sessions_reports_known_for_a_readable_but_empty_store(monkeypatch):
+    from lionagi.studio.operator.application_mcp import list_sessions
+    from lionagi.studio.services import runs, sessions
+
+    async def fake_list_runs(**_kwargs):
+        return []
+
+    async def fake_count_sessions(_where):
+        return 0
+
+    monkeypatch.setattr(runs, "list_runs", fake_list_runs)
+    monkeypatch.setattr(sessions, "count_sessions", fake_count_sessions)
+
+    result = await list_sessions({"limit": 10})
+
+    assert result["known"] is True
+    assert result["sessions"] == []
+
+
+async def test_session_signals_reports_unknown_when_the_store_cannot_be_opened(monkeypatch):
+    from lionagi.studio.operator.application_mcp import session_signals
+    from lionagi.studio.services import _db, signals
+
+    consulted = False
+
+    async def fake_get_signals_after(*_args, **_kwargs):
+        nonlocal consulted
+        consulted = True
+        return []
+
+    monkeypatch.setattr(signals, "get_signals_after", fake_get_signals_after)
+    monkeypatch.setattr(_db, "store_exists", lambda: False)
+
+    result = await session_signals({"session_id": "s", "after_seq": None, "limit": 10})
+
+    assert result["known"] is False
+    assert "signals" not in result
+    assert consulted is False
+
+
+async def test_session_signals_reports_known_for_a_session_with_no_signals(monkeypatch):
+    from lionagi.studio.operator.application_mcp import session_signals
+    from lionagi.studio.services import signals
+
+    async def fake_get_signals_after(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(signals, "get_signals_after", fake_get_signals_after)
+
+    result = await session_signals({"session_id": "s", "after_seq": None, "limit": 10})
+
+    assert result["known"] is True
+    assert result["signals"] == []
+
+
+async def test_list_artifacts_reports_unknown_when_read_only_open_is_unavailable(monkeypatch):
+    """A read-only open the store cannot provide is reported as an unavailable
+    read, never widened into an ordinary writable one -- which is exactly what
+    the availability helper hands back, and what a read-only tool must refuse."""
+    from lionagi.state import db as db_module
+    from lionagi.studio.operator.application_mcp import list_artifacts
+
+    def _must_not_open(*_args, **_kwargs):
+        raise AssertionError("the store must not be opened when read-only is unavailable")
+
+    monkeypatch.setattr(db_module, "state_db_known_absent", lambda: False)
+    monkeypatch.setattr(db_module, "read_only_open_supported", lambda: False)
+    monkeypatch.setattr(db_module, "StateDB", _must_not_open)
+
+    result = await list_artifacts({"session_id": "sess-1"})
+
+    assert result["known"] is False
+    assert "artifacts" not in result
+
+
+async def test_list_artifacts_reports_known_when_read_only_open_is_available(monkeypatch):
+    from lionagi.studio.operator import application_mcp as app
+    from lionagi.studio.operator.application_mcp import list_artifacts
+
+    async def fake_rows(**_kwargs):
+        return []
+
+    monkeypatch.setattr(app, "_artifact_rows", fake_rows)
+
+    result = await list_artifacts({"session_id": "sess-1"})
+
+    assert result["known"] is True
+    assert result["artifacts"] == []

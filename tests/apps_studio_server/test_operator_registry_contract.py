@@ -22,6 +22,18 @@ pytest.importorskip("fastapi")
 
 from lionagi.studio.operator import application_mcp
 
+
+@pytest.fixture(autouse=True)
+def readable_store(monkeypatch):
+    """The exercisers fake the carriers; this states the other half of the
+    premise, that the store was reachable at all. The list handlers decline to
+    answer when it was not, so without this they would short-circuit and the
+    read-only exercise would never reach the handler body it is testing."""
+    from lionagi.studio.services import _db
+
+    monkeypatch.setattr(_db, "store_exists", lambda: True)
+
+
 PRE_EXISTING_TOOL_NAMES = frozenset(
     {
         "list_recent_runs",

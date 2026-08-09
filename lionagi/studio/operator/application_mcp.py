@@ -539,6 +539,14 @@ async def list_sessions(arguments: dict[str, Any]) -> dict[str, Any]:
     args = ListSessionsInput.model_validate(arguments)
     from lionagi.studio.services import runs as runs_service
     from lionagi.studio.services import sessions as sessions_service
+    from lionagi.studio.services._db import store_exists
+
+    # The carrier answers an absent store with an empty list, so without this
+    # check a store that cannot be read is indistinguishable from a store with
+    # nothing in it. Those are different answers and a caller acts differently
+    # on each: "no runs" invites a conclusion, "I could not look" does not.
+    if not store_exists():
+        return {"known": False, "source": "unavailable"}
 
     if isinstance(args.status, str):
         status_filter: str | list[str] | None = args.status
@@ -572,6 +580,7 @@ async def list_sessions(arguments: dict[str, Any]) -> dict[str, Any]:
         content_truncated = content_truncated or row_truncated
         projected.append(safe)
     return {
+        "known": True,
         "sessions": projected,
         "total": total,
         "limit": args.limit,
@@ -628,6 +637,12 @@ async def session_detail(arguments: dict[str, Any]) -> dict[str, Any]:
 async def session_signals(arguments: dict[str, Any]) -> dict[str, Any]:
     args = SessionSignalsInput.model_validate(arguments)
     from lionagi.studio.services import signals as signals_service
+    from lionagi.studio.services._db import store_exists
+
+    # Same reason as list_sessions: the carrier returns an empty page both for a
+    # session with no signals and for a store it could not open.
+    if not store_exists():
+        return {"known": False, "source": "unavailable"}
 
     rows = await signals_service.get_signals_after(
         args.session_id,
@@ -692,13 +707,22 @@ async def get_invocation(arguments: dict[str, Any]) -> dict[str, Any]:
 
 async def _artifact_rows(
     *, session_id: str | None, invocation_id: str | None
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
+    """Artifact rows for one owner, or None when the store cannot be read safely.
+
+    ``read_only_open_supported()`` is for callers wanting read-only as an
+    optimisation: on the stores it reports False for, it hands back a *writable*
+    connection. These tools are read-only by contract, so passing it would ask
+    for a guarantee and silently accept its opposite. An unavailable read-only
+    open is therefore reported as an unavailable read, never widened into a
+    writable one.
+    """
     from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
     from lionagi.studio.services.invocations import _serialize_artifact
 
-    if state_db_known_absent():
-        return []
-    async with StateDB(readonly=read_only_open_supported()) as db:
+    if state_db_known_absent() or not read_only_open_supported():
+        return None
+    async with StateDB(readonly=True) as db:
         if session_id is not None:
             rows = await db.list_artifacts_for_session(session_id)
         else:
@@ -711,7 +735,10 @@ async def list_artifacts(arguments: dict[str, Any]) -> dict[str, Any]:
     if (args.session_id is None) == (args.invocation_id is None):
         raise ValueError("Provide exactly one of session_id or invocation_id")
     rows = await _artifact_rows(session_id=args.session_id, invocation_id=args.invocation_id)
+    if rows is None:
+        return {"known": False, "source": "unavailable"}
     return {
+        "known": True,
         "artifacts": [
             _safe_artifact(row, include_content=False)
             for row in rows[: args.limit]
