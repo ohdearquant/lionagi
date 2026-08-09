@@ -72,6 +72,57 @@ class TestRoleNodeBuilder:
         with pytest.raises(ValueError, match="not a recognized role"):
             nb(SpawnRequest(instruction="x", assignee="ghost"), None)
 
+    def test_advertised_instance_routes_to_first_role_branch(self):
+        session, roles = _roles("writer")
+        later = Branch(name="writer-2")
+        session.include_branches(later)
+        decorated: list[str | None] = []
+
+        def decorate(req: SpawnRequest, _spawn_id: str) -> str:
+            decorated.append(req.assignee)
+            return req.instruction
+
+        nb = role_node_builder(
+            roles,
+            decorate_instruction=decorate,
+            role_aliases={"writer-2": "writer"},
+        )
+
+        node = nb(SpawnRequest(instruction="x", assignee="writer-2"), None)
+
+        assert node.branch_id == roles["writer"].id
+        assert node.branch_id != later.id
+        assert node.metadata["assignee"] == "writer"
+        assert decorated == ["writer"]
+
+    def test_unadvertised_instance_remains_rejected(self):
+        session, roles = _roles("writer")
+        nb = role_node_builder(roles, role_aliases={"writer-2": "writer"})
+
+        with pytest.raises(ValueError, match="not a recognized role"):
+            nb(SpawnRequest(instruction="x", assignee="writer-3"), None)
+
+    def test_rejected_spawn_is_visible_in_run_state(self, monkeypatch):
+        from lionagi.cli.orchestrate import flow as flow_mod
+
+        emitted: list[str] = []
+        env = SimpleNamespace()
+        dropped = [
+            {
+                "reason": "builder_error",
+                "assignee": "missing",
+                "error": "not a recognized role",
+            }
+        ]
+        monkeypatch.setattr(flow_mod, "progress", emitted.append)
+
+        flow_mod._surface_dropped_spawns(env, dropped)
+
+        assert env._failed_operation_evidence == [
+            {"kind": "unroutable_spawn", "id": "missing", "label": "not a recognized role"}
+        ]
+        assert any("SPAWN REJECTED" in line and "missing" in line for line in emitted)
+
     def test_custom_operation_preserved(self):
         session, roles = _roles("researcher")
         nb = role_node_builder(roles)

@@ -159,6 +159,11 @@ _AUTH_PATTERNS: list[re.Pattern[str]] = [
 
 _CONTEXT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"context[\s._-]?(window|length)[\s._-]?(exceeded|too\s+long)", re.IGNORECASE),
+    re.compile(
+        r"prompt\s+is\s+too\s+long[\s\S]*?"
+        r"request\s+is\s+~?[\d,]+\s+tokens?\s+\(limit\s+~?[\d,]+\)",
+        re.IGNORECASE,
+    ),
     # "Codex ran out of room in the model's context window." never uses the
     # exceeded/too-long wording the pattern above expects.
     re.compile(r"ran\s+out\s+of\s+room.*context\s+window", re.IGNORECASE),
