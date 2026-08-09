@@ -23,6 +23,7 @@ from lionagi.ln.concurrency import CapacityLimiter
 from lionagi.operations.flow import DependencyAwareExecutor
 from lionagi.operations.node import Operation
 from lionagi.protocols.graph.graph import Graph
+from lionagi.protocols.types import EventStatus
 from lionagi.session.session import Session
 
 
@@ -645,3 +646,117 @@ async def test_gate_skipped_node_projects_to_the_skipped_lane_on_the_signal_bus(
         f"gated node reached the signal bus as {[type(s).__name__ for s in for_gated]}"
     )
     assert lane_for(for_gated) == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# an operation already terminal on arrival must still be answered
+# ---------------------------------------------------------------------------
+
+
+def _one_op_graph(status):
+    """A single-node graph whose only operation is already terminal on arrival.
+
+    This is the shape a resumed run replays: work an earlier attempt finished
+    arrives carrying its outcome, so the executor short-circuits it.
+    """
+    op = Operation(operation="work", parameters={})
+    op.execution.status = status
+    graph = Graph()
+    graph.add_node(op)
+    return graph, op
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (EventStatus.COMPLETED, "completed"),
+        (EventStatus.FAILED, "failed"),
+        (EventStatus.SKIPPED, "skipped"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_preterminal_op_is_announced_with_its_own_outcome(status, expected):
+    """An operation that is already terminal when the flow reaches it gets a
+    terminal announcement carrying the outcome it actually holds.
+
+    Every node is announced "queued" up front, so short-circuiting without an
+    announcement leaves the node announced and never answered — it reads as
+    still-pending work forever. That is a different defect from announcing the
+    wrong word, and it is not fixed by adding vocabulary, because the emitter
+    on this path was never reached at all.
+    """
+    from lionagi.operations.flow import flow
+
+    async def work(**kw):  # pragma: no cover - a terminal op must not re-execute
+        raise AssertionError("an already-terminal operation must not run again")
+
+    session = _session_with_ops(work=work)
+    graph, op = _one_op_graph(status)
+    log = _ProgressLog()
+
+    await flow(session, graph, parallel=False, verbose=False, on_progress=log)
+
+    statuses = log.statuses_for(str(op.id))
+    assert statuses == ["queued", expected], (
+        f"a pre-{expected} operation was announced {statuses}; it must be "
+        f'answered with "{expected}" rather than left sitting at "queued"'
+    )
+
+
+@pytest.mark.asyncio
+async def test_preterminal_cancelled_is_deliberately_left_unannounced():
+    """CANCELLED is terminal but has no lifecycle signal of its own.
+
+    Announcing it as "failed" would assert an outcome that did not happen, and
+    inventing a word here would pre-empt an open design question about whether
+    cancelled, skipped and aborted stay distinct. So it is deliberately silent,
+    and this test exists so that silence stays a decision: if a NodeCancelled
+    signal is ever added, this test fails and points at the choice.
+    """
+    from lionagi.operations.flow import flow
+
+    async def work(**kw):  # pragma: no cover - a terminal op must not re-execute
+        raise AssertionError("an already-terminal operation must not run again")
+
+    session = _session_with_ops(work=work)
+    graph, op = _one_op_graph(EventStatus.CANCELLED)
+    log = _ProgressLog()
+
+    await flow(session, graph, parallel=False, verbose=False, on_progress=log)
+
+    statuses = log.statuses_for(str(op.id))
+    assert statuses == ["queued"], (
+        f"cancelled must not borrow another outcome's word, got {statuses}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_preterminal_completed_reaches_the_signal_bus_and_leaves_the_queued_lane():
+    """End-to-end over the surface the execution graph renders.
+
+    Asserting only on the raw callback would pass while the canvas still showed
+    the node waiting, so this follows the same path a viewer sees: through
+    ``flow_progress_signals`` to ``lane_for``.
+    """
+    from lionagi.engines.flow_signals import flow_progress_signals
+    from lionagi.operations.flow import flow
+    from lionagi.session.signal import NodeCompleted, lane_for
+
+    async def work(**kw):  # pragma: no cover - a terminal op must not re-execute
+        raise AssertionError("an already-terminal operation must not run again")
+
+    session = _session_with_ops(work=work)
+    graph, op = _one_op_graph(EventStatus.COMPLETED)
+
+    seen: list[object] = []
+    session.observe(NodeCompleted, handler=lambda s, _: seen.append(s))
+
+    async with flow_progress_signals(session, graph) as on_progress:
+        await flow(session, graph, parallel=False, verbose=False, on_progress=on_progress)
+
+    op_id = str(op.id)
+    for_op = [s for s in seen if getattr(s, "op_id", None) == op_id]
+    assert for_op, "a pre-completed node reached no terminal signal on the bus"
+    assert lane_for(for_op) == "succeeded", (
+        f"pre-completed node projected to {lane_for(for_op)!r}, not the succeeded lane"
+    )
