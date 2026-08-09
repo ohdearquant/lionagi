@@ -10,6 +10,12 @@ from pathlib import Path
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi._flow_spec import (
+    FLOW_SPEC_FIELDS,
+    load_flow_spec,
+    validate_flow_args_schema,
+    validate_flow_spec_fields,
+)
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
@@ -23,38 +29,9 @@ from .flow import FlowPlanError, _resume_flow, _run_flow
 
 # ── flow-spec helpers ────────────────────────────────────────────────────────
 
-_FLOW_SPEC_FIELDS = frozenset(
-    {
-        "agent",
-        "argument-hint",
-        "args",
-        "artifacts",
-        "bare",
-        "description",
-        "dry_run",
-        "effort",
-        "max_agents",
-        "max_ops",
-        "model",
-        "name",
-        "pack",
-        "prompt",
-        "reactive",
-        "save",
-        "show_graph",
-        "team_attach",
-        "team_mode",
-        "with_synthesis",
-        "workers",
-    }
-    # Recognized but not applied: these appear in real playbooks in the field,
-    # and the loader has never read them — the run takes its value from the
-    # command-line flag instead. Accepting them keeps working playbooks working;
-    # rejecting them would break files whose only fault is naming a key that
-    # does nothing. Wiring them would silently change how those runs execute,
-    # which is a behavior decision, not a validation one.
-    | {"bypass", "permission_mode", "yolo"}
-)
+_FLOW_SPEC_FIELDS = FLOW_SPEC_FIELDS
+_validate_args_schema = validate_flow_args_schema
+_validate_spec_fields = validate_flow_spec_fields
 
 
 def _scan_argv_for_playbook_name(argv: list[str]) -> str | None:
@@ -342,21 +319,6 @@ def _parse_argument_hint(hint: str) -> dict:
     return schema
 
 
-def _validate_args_schema(args_schema) -> str | None:
-    if not isinstance(args_schema, dict):
-        return f"spec field 'args' must be a dict, got {type(args_schema).__name__}"
-    valid_types = {"str", "int", "float", "bool"}
-    for name, spec in args_schema.items():
-        if not isinstance(name, str) or not name.replace("_", "").isalnum():
-            return f"args key {name!r} must be an alphanumeric identifier"
-        if not isinstance(spec, dict):
-            return f"args[{name!r}] must be a dict, got {type(spec).__name__}"
-        type_str = spec.get("type", "str")
-        if type_str not in valid_types:
-            return f"args[{name!r}].type must be one of {sorted(valid_types)}, got {type_str!r}"
-    return None
-
-
 def _coerce_arg_value(name: str, value, type_str: str):
     if value is None:
         return None, None
@@ -378,141 +340,11 @@ def _coerce_arg_value(name: str, value, type_str: str):
 
 
 def _load_flow_spec(path: str) -> dict | None:
-    from pathlib import Path
-
-    p = Path(path).expanduser()
-    if not p.is_file():
-        log_error(f"spec file not found: {p}")
-        return None
-    text = p.read_text()
-    suffix = p.suffix.lower()
     try:
-        if suffix in (".yaml", ".yml"):
-            import yaml
-
-            data = yaml.safe_load(text) or {}
-        elif suffix == ".json":
-            import json
-
-            data = json.loads(text)
-        else:
-            import yaml
-
-            try:
-                data = yaml.safe_load(text) or {}
-            except Exception:
-                import json
-
-                data = json.loads(text)
-    except Exception as e:
-        log_error(f"failed to parse spec file {p}: {e}")
+        return load_flow_spec(path)
+    except ValueError as exc:
+        log_error(str(exc))
         return None
-
-    if not isinstance(data, dict):
-        log_error("spec file must contain a YAML/JSON object")
-        return None
-    preserve_dashed = {"argument-hint"}
-    normalized: dict = {}
-    for key, value in data.items():
-        if key in preserve_dashed or "-" not in key:
-            normalized[key] = value
-        else:
-            normalized[key.replace("-", "_")] = value
-    return normalized
-
-
-def _validate_spec_fields(spec: dict) -> str | None:
-    for key in spec:
-        if key not in _FLOW_SPEC_FIELDS:
-            accepted = ", ".join(sorted(_FLOW_SPEC_FIELDS))
-            return f"unknown spec field {key!r}; accepted fields: {accepted}"
-
-    if "workers" in spec:
-        workers = spec["workers"]
-        if not isinstance(workers, int) or isinstance(workers, bool):
-            return f"spec field 'workers' must be an integer, got {type(workers).__name__}"
-        if not (1 <= workers <= 32):
-            return f"spec field 'workers' must be in [1, 32], got {workers}"
-
-    for key in ("max_ops", "max_agents"):
-        if key not in spec:
-            continue
-        value = spec[key]
-        if not isinstance(value, int) or isinstance(value, bool):
-            return f"spec field {key!r} must be an integer, got {type(value).__name__}"
-        if not (0 <= value <= 50):
-            return (
-                f"spec field {key!r} must be in [0, 50] "
-                f"(0 = no shared ceiling; reactive spawns are capped at 20), got {value}"
-            )
-
-    effort = spec.get("effort")
-    if effort is not None:
-        from .._providers import EFFORT_LEVELS
-
-        if not isinstance(effort, str):
-            return f"spec field 'effort' must be a string, got {type(effort).__name__}"
-        if effort not in EFFORT_LEVELS:
-            allowed = sorted(EFFORT_LEVELS)
-            return f"spec field 'effort' must be one of {allowed}, got {effort!r}"
-
-    if "with_synthesis" in spec:
-        val = spec["with_synthesis"]
-        if not isinstance(val, bool | str):
-            return (
-                f"spec field 'with_synthesis' must be bool or str (model spec), "
-                f"got {type(val).__name__}"
-            )
-
-    for bool_field in ("bare", "dry_run", "show_graph"):
-        if bool_field in spec:
-            val = spec[bool_field]
-            if not isinstance(val, bool):
-                return f"spec field {bool_field!r} must be a bool, got {type(val).__name__}"
-
-    if "prompt" in spec:
-        prompt = spec["prompt"]
-        if not isinstance(prompt, str):
-            return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > MAX_SPEC_PROMPT_CHARS:
-            return (
-                f"spec field 'prompt' exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
-            )
-
-    if "save" in spec:
-        save = spec["save"]
-        if not isinstance(save, str):
-            return f"spec field 'save' must be a string, got {type(save).__name__}"
-
-    for str_field in ("model", "agent", "team_mode", "team_attach", "reactive"):
-        if str_field in spec:
-            val = spec[str_field]
-            if not isinstance(val, str):
-                return f"spec field {str_field!r} must be a string, got {type(val).__name__}"
-
-    if "artifacts" in spec:
-        artifacts = spec["artifacts"]
-        if artifacts is None:
-            return "spec field 'artifacts' must be a dict, got NoneType"
-        try:
-            from lionagi.state.artifact_verifier import (
-                validate_artifact_contract,
-                warn_unknown_artifact_keys,
-            )
-
-            validate_artifact_contract(artifacts)
-            import logging as _logging
-
-            _cli_log = _logging.getLogger("lionagi.cli")
-            warn_unknown_artifact_keys(
-                artifacts,
-                source="playbook",
-                emit=_cli_log.warning,
-            )
-        except Exception as exc:
-            return f"spec field 'artifacts' is invalid: {exc}"
-
-    return None
 
 
 def _interpolate_prompt(template: str, positional: str | None, playbook_args: dict) -> str:

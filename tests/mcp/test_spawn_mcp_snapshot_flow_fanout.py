@@ -215,9 +215,7 @@ def test_the_snapshot_is_reported_when_the_caller_says_nothing(
 
 _PLAYBOOK = """\
 name: probe
-nodes:
-  - id: n1
-    prompt: hello
+prompt: hello
 """
 
 

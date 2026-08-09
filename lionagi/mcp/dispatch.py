@@ -713,7 +713,25 @@ def _resolve_cwd(args: dict[str, Any]) -> str | None:
     return str(resolved)
 
 
+def _refuse_invalid_playbook_spec(schema: dict[str, Any]) -> None:
+    path = schema.get("x-playbook-path")
+    if path is None:
+        return
+
+    from lionagi._flow_spec import load_flow_spec, validate_flow_spec
+
+    name = schema.get("x-playbook")
+    try:
+        spec = load_flow_spec(path)
+    except ValueError as exc:
+        raise OpError("invalid_input", f"playbook {name!r} has an invalid spec: {exc}") from exc
+    error = validate_flow_spec(spec)
+    if error is not None:
+        raise OpError("invalid_input", f"playbook {name!r} has an invalid spec: {error}")
+
+
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    _refuse_invalid_playbook_spec(schema)
     prompt = _resolve_prompt(args)
     _refuse_too_many_positionals(verb, args, prompt)
     _refuse_without_model(verb, schema, args, prompt)

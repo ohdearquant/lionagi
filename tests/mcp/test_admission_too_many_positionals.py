@@ -28,7 +28,7 @@ def submit_dir(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     books = tmp_path / ".lionagi" / "playbooks"
     books.mkdir(parents=True)
-    (books / "probe.playbook.yaml").write_text("name: probe\nprompt: summarize this\nnodes:\n")
+    (books / "probe.playbook.yaml").write_text("name: probe\nprompt: summarize this\n")
     return tmp_path
 
 
