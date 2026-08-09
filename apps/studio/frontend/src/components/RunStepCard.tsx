@@ -204,9 +204,18 @@ function normalizeShellPath(path: string): string {
   return `${absolute ? "/" : ""}${normalized.join("/")}`;
 }
 
+/** Glob metacharacters and the leading `!` of an exclusion. A token carrying
+ * either names a SET of paths, or names paths to leave out — neither is a file
+ * this run touched. Without this the exclusion arguments of an ordinary search
+ * (`rg --glob '!*.lock' --glob '!/.git/**'`) land in the files list verbatim,
+ * because `!*.lock` has a dot in its basename and `!/.git/**` has a slash, which
+ * is all the heuristic below asks for. */
+const SHELL_GLOB_TOKEN = /[*?[\]{}]/;
+
 function shellFilePath(token: string): string | null {
   const path = token.replace(/[,:]+$/, "");
   if (!path || path.startsWith("-") || path.endsWith("/")) return null;
+  if (path.startsWith("!") || SHELL_GLOB_TOKEN.test(path)) return null;
   const normalized = normalizeShellPath(path);
   if (!normalized || normalized === "/") return null;
   const segments = normalized.split("/").filter(Boolean);

@@ -364,6 +364,30 @@ describe("pathFromArgs — shell-derived file paths", () => {
       pathFromArgs({ command: "cat /repo/src/a.py /repo/src/../src/a.py" }, "", "Bash"),
     ).toEqual(["/repo/src/a.py"]);
   });
+
+  it("does not read a search's exclusion patterns as files the run touched", () => {
+    // Every one of these used to survive and fill the files list: `!*.db` has a
+    // dot in its basename and `!/.git/**` has a slash, which is all the
+    // looks-like-a-file test asks for. The real operand in the same command has
+    // to still come through, or suppressing everything would pass this.
+    expect(
+      pathFromArgs(
+        {
+          command:
+            "rg --glob '!*.db' --glob '!*.jsonl' --glob '!*.lock' --glob '!*.sqlite*' " +
+            "--glob '!/.git/**' -n 'list_artifacts' /repo/src/state/db.py",
+        },
+        "",
+        "Bash",
+      ),
+    ).toEqual(["/repo/src/state/db.py"]);
+  });
+
+  it("drops a glob operand while keeping the plain paths beside it", () => {
+    expect(pathFromArgs({ command: "cp 'src/**/*.ts' dist/bundle.js" }, "", "Bash")).toEqual([
+      "dist/bundle.js",
+    ]);
+  });
 });
 
 describe("detectPlanPayload — orchestrator plan JSON structural detection", () => {
