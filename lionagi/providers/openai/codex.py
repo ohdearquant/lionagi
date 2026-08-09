@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import subprocess
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
@@ -134,6 +135,31 @@ def toml_override_value(value: Any) -> str:
     if isinstance(value, str | int | float | bool):
         return _toml_scalar(value)
     raise TypeError(f"Unsupported codex `-c` override value type: {type(value)!r}")
+
+
+def _linked_worktree_git_dir(cwd: Path) -> Path | None:
+    """Return a linked worktree's private Git directory, if *cwd* is in one."""
+    resolved_cwd = cwd.resolve()
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir", "--git-common-dir"],  # noqa: S607
+            cwd=resolved_cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    paths = result.stdout.splitlines()
+    if result.returncode != 0 or len(paths) != 2 or not all(paths):
+        return None
+
+    def _resolve(value: str) -> Path:
+        path = Path(value)
+        return path.resolve() if path.is_absolute() else (resolved_cwd / path).resolve()
+
+    git_dir, common_dir = map(_resolve, paths)
+    return git_dir if git_dir != common_dir else None
 
 
 # --------------------------------------------------------------------------- request model
@@ -521,8 +547,13 @@ class CodexCodeRequest(BaseModel):
     def as_cmd_args(self) -> list[str]:
         """Build argument list for ``codex exec`` subcommand."""
         args: list[str] = ["exec", "--json"]
+        cwd = self.cwd()
 
         args.extend(self._build_declarative_args())
+
+        linked_git_dir = _linked_worktree_git_dir(cwd)
+        if linked_git_dir is not None and str(linked_git_dir) not in (self.add_dir or []):
+            args.extend(["--add-dir", str(linked_git_dir)])
 
         # Approval & sandbox: mutually exclusive hierarchy
         if self.bypass_approvals:
@@ -572,7 +603,7 @@ class CodexCodeRequest(BaseModel):
             args.extend(["-c", f"{key}={toml_override_value(value)}"])
 
         # Working directory (always emit)
-        args.extend(["-C", str(self.cwd())])
+        args.extend(["-C", str(cwd)])
 
         # Prompt goes to stdin, not argv (a whole conversation can exceed the
         # OS arg-length limit). `-` is codex's stdin marker; it stays after

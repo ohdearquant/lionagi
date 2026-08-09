@@ -119,6 +119,8 @@ def _build_worker(
     profile=None,
     is_cli=True,
     system_prompt_override=None,
+    provider="claude_code",
+    team_data=None,
 ):
     """Run `build_worker_branch` with no model, no MCP, and no I/O.
 
@@ -137,7 +139,7 @@ def _build_worker(
 
     class _Endpoint:
         def __init__(self):
-            self.config = SimpleNamespace(kwargs={}, provider="claude_code")
+            self.config = SimpleNamespace(kwargs={}, provider=provider)
 
     class _IModel:
         def __init__(self):
@@ -172,6 +174,7 @@ def _build_worker(
         verbose=False,
         fast=False,
         cwd=str(tmp_path),
+        team_data=team_data,
     )
 
     mp = _pytest.MonkeyPatch()
@@ -199,6 +202,48 @@ def _build_worker(
         mp.undo()
 
     return env, imodel, built
+
+
+def _add_dir_values(args: list[str]) -> list[str]:
+    return [args[index + 1] for index, value in enumerate(args) if value == "--add-dir"]
+
+
+def _codex_worker_args(tmp_path, *, team_data=None) -> list[str]:
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    _env, imodel, _built = _build_worker(
+        tmp_path,
+        agent_id="worker-1",
+        role="worker",
+        provider="codex",
+        team_data=team_data,
+    )
+    request = CodexCodeRequest(prompt="work", **imodel.endpoint.config.kwargs)
+    return request.as_cmd_args()
+
+
+def test_codex_team_worker_grants_only_the_teams_directory(tmp_path, monkeypatch):
+    from lionagi.cli import team as team_module
+
+    teams_dir = tmp_path / "state" / "teams"
+    teams_dir.mkdir(parents=True)
+    monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
+
+    args = _codex_worker_args(tmp_path, team_data={"id": "team-1"})
+
+    assert _add_dir_values(args) == [str(tmp_path.resolve()), str(teams_dir.resolve())]
+
+
+def test_codex_worker_without_team_does_not_grant_the_teams_directory(tmp_path, monkeypatch):
+    from lionagi.cli import team as team_module
+
+    teams_dir = tmp_path / "state" / "teams"
+    teams_dir.mkdir(parents=True)
+    monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
+
+    args = _codex_worker_args(tmp_path)
+
+    assert _add_dir_values(args) == [str(tmp_path.resolve())]
 
 
 def test_worker_prompt_names_the_cwd_it_is_launched_with(tmp_path):

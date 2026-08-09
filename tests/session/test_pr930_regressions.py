@@ -109,10 +109,10 @@ class TestHookRegistryAliases:
         assert HookEventTypes.PreEventCreate in reg._hooks
 
 
-# ── max_ops/max_agents 0 = unlimited ────────────────────
+# ── max_ops/max_agents zero remains valid ───────────────
 
 
-class TestMaxOpsZeroUnlimited:
+class TestMaxOpsZeroAccepted:
     def test_max_ops_zero_accepted(self):
         assert _validate_spec_fields({"max_ops": 0}) is None
 

@@ -15,7 +15,7 @@ from lionagi._errors import LionError
 from lionagi._paths import RUNS_ROOT
 from lionagi.ln._json_dump import raise_if_non_finite
 
-from .._runs import RunDir
+from .._runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
 from .._util import AmbiguousIdError
 
 __all__ = (
@@ -186,6 +186,19 @@ def _find_run_dir_by_id(run_id: str) -> RunDir | None:
     return RunDir(run_id=match.name, state_root=match, artifact_root=match / "artifacts")
 
 
+def _raise_if_persistence_degraded(run_dir: RunDir) -> None:
+    """Explain a missing checkpoint using state that survived the failed database."""
+    try:
+        reason = run_dir.read_manifest().get(PERSISTENCE_DEGRADED_REASON_FIELD)
+    except (OSError, UnicodeError, json.JSONDecodeError, AttributeError):
+        return
+    if isinstance(reason, str) and reason:
+        raise FlowResumeError(
+            f"Cannot resume run {run_dir.run_id!r}: persistence was disabled "
+            f"for that run ({reason}); no checkpoint is available."
+        )
+
+
 async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]]:
     """Resolve a run_id, or a session/invocation/play id, to (RunDir, checkpoint dict).
 
@@ -195,8 +208,10 @@ async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]
     node_metadata carries the run_id every flow run stamps at startup.
     """
     run_dir = _find_run_dir_by_id(target)
-    if run_dir is not None and run_dir.checkpoint_path.exists():
-        return run_dir, load_checkpoint(run_dir.checkpoint_path)
+    if run_dir is not None:
+        if run_dir.checkpoint_path.exists():
+            return run_dir, load_checkpoint(run_dir.checkpoint_path)
+        _raise_if_persistence_degraded(run_dir)
 
     from lionagi.cli.status import _resolve_any_target, _resolve_primary_session
     from lionagi.state.db import StateDB
@@ -219,7 +234,12 @@ async def resolve_checkpoint_target(target: str) -> tuple[RunDir, dict[str, Any]
         )
 
     run_dir = _find_run_dir_by_id(run_id)
-    if run_dir is None or not run_dir.checkpoint_path.exists():
+    if run_dir is None:
+        raise FlowResumeError(
+            f"No checkpoint.json found for run {run_id!r} (resolved from {target!r})."
+        )
+    if not run_dir.checkpoint_path.exists():
+        _raise_if_persistence_degraded(run_dir)
         raise FlowResumeError(
             f"No checkpoint.json found for run {run_id!r} (resolved from {target!r})."
         )

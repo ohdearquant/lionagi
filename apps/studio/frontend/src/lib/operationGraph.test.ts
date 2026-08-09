@@ -374,6 +374,159 @@ describe("buildOperationGraph — cause edges", () => {
   });
 });
 
+describe("buildOperationGraph — escalation continuations", () => {
+  it("names and links a recorded-shape higher-tier retry without changing lifecycle counts", () => {
+    const parentId = "11111111-1111-4111-8111-111111111111";
+    const childId = "22222222-2222-4222-8222-222222222222";
+    const events = [
+      ev("1", "NodeStarted", parentId, { name: "worker" }, 1),
+      ev("2", "NodeEscalated", parentId, { name: "worker", route: "higher_tier" }, 2),
+      ev("3", "NodeSpawned", childId, { parent_id: parentId, independent: true }, 3),
+      ev("4", "NodeQueued", childId, { name: childId.slice(0, 8), depends_on: [] }, 4),
+      ev("5", "NodeFailed", "op-broken", { name: "broken" }, 5),
+    ];
+
+    const g = buildOperationGraph(events);
+    const parent = g.nodes.find((node) => node.opId === parentId)!;
+    const child = g.nodes.find((node) => node.opId === childId)!;
+    const broken = g.nodes.find((node) => node.opId === "op-broken")!;
+
+    expect(parent.status).toBe("escalated");
+    expect(broken.status).toBe("failed");
+    expect(child).toMatchObject({
+      name: "worker escalation retry",
+      status: "queued",
+      causeOpId: null,
+      eventCount: 1,
+    });
+    expect(g.edges).toContainEqual({
+      source: parentId,
+      target: childId,
+      continuation: true,
+    });
+  });
+
+  it("recognizes an out-of-order spawn after the full event fold", () => {
+    const events = [
+      ev("1", "NodeSpawned", "retry-op", { parent_id: "parent-op", independent: true }, 1),
+      ev("2", "NodeQueued", "retry-op", { name: "retry-op" }, 2),
+      ev("3", "NodeEscalated", "parent-op", { name: "planner", route: "higher_tier" }, 3),
+    ];
+
+    const g = buildOperationGraph(events);
+    expect(g.nodes.find((node) => node.opId === "retry-op")?.name).toBe("planner escalation retry");
+    expect(g.edges).toContainEqual({
+      source: "parent-op",
+      target: "retry-op",
+      continuation: true,
+    });
+  });
+
+  it("leaves a soft escalation and an ordinary independent spawn exactly as the signals described them", () => {
+    const events = [
+      ev("1", "NodeEscalated", "soft-parent", { name: "watcher", route: "notify" }, 1),
+      ev("2", "NodeSpawned", "soft-child", { parent_id: "soft-parent", independent: true }, 2),
+      ev(
+        "3",
+        "NodeQueued",
+        "soft-child",
+        { name: "child", parent_id: "soft-parent", depends_on: ["soft-parent"] },
+        3,
+      ),
+      ev("4", "NodeStarted", "plain-parent", { name: "plain" }, 4),
+      ev("5", "NodeSpawned", "plain-child", { parent_id: "plain-parent", independent: true }, 5),
+      ev(
+        "6",
+        "NodeQueued",
+        "plain-child",
+        { name: "plain-child", parent_id: "plain-parent", depends_on: ["plain-parent"] },
+        6,
+      ),
+    ];
+
+    // Two separate claims, and only the first is about spawn metadata. Neither
+    // of these is a higher-tier escalation, so no continuation may be invented
+    // for them. But their plain dependency edges were stated outright by
+    // NodeQueued's depends_on, and reclassifying a parent link belongs to
+    // escalation retries alone — an ordinary independent spawn that declares a
+    // dependency still has one.
+    const g = buildOperationGraph(events);
+    expect(g.edges.filter((e) => e.continuation)).toEqual([]);
+    expect(g.edges).toContainEqual({ source: "soft-parent", target: "soft-child" });
+    expect(g.edges).toContainEqual({ source: "plain-parent", target: "plain-child" });
+  });
+
+  it("keeps a continuation even when a plain dependency path reaches the retry child", () => {
+    const events = [
+      ev("1", "NodeEscalated", "parent", { name: "worker", route: "higher_tier" }, 1),
+      ev("2", "NodeQueued", "middle", { depends_on: ["parent"] }, 2),
+      ev("3", "NodeSpawned", "retry", { parent_id: "parent", independent: true }, 3),
+      ev("4", "NodeQueued", "retry", { name: "retry", depends_on: ["middle"] }, 4),
+    ];
+
+    const g = buildOperationGraph(events);
+    expect(g.edges).toContainEqual({ source: "parent", target: "middle" });
+    expect(g.edges).toContainEqual({ source: "middle", target: "retry" });
+    expect(g.edges).toContainEqual({
+      source: "parent",
+      target: "retry",
+      continuation: true,
+    });
+  });
+
+  it("does not use a continuation path to remove a plain dependency edge", () => {
+    const events = [
+      ev("1", "NodeEscalated", "parent", { name: "worker", route: "higher_tier" }, 1),
+      ev("2", "NodeSpawned", "retry", { parent_id: "parent", independent: true }, 2),
+      ev("3", "NodeQueued", "retry", { name: "retry" }, 3),
+      ev("4", "NodeQueued", "downstream", { depends_on: ["parent", "retry"] }, 4),
+    ];
+
+    const g = buildOperationGraph(events);
+    expect(g.edges).toContainEqual({ source: "parent", target: "downstream" });
+    expect(g.edges).toContainEqual({ source: "retry", target: "downstream" });
+    expect(g.edges).toContainEqual({
+      source: "parent",
+      target: "retry",
+      continuation: true,
+    });
+  });
+
+  it("keeps a non-independent spawn link as a plain dependency", () => {
+    const events = [
+      ev("1", "NodeStarted", "parent", { name: "worker" }, 1),
+      ev("2", "NodeSpawned", "child", { parent_id: "parent", independent: false }, 2),
+      ev("3", "NodeQueued", "child", { name: "child", parent_id: "parent" }, 3),
+    ];
+
+    expect(buildOperationGraph(events).edges).toEqual([{ source: "parent", target: "child" }]);
+  });
+
+  it("preserves a readable child name already supplied by a lifecycle signal", () => {
+    const events = [
+      ev("1", "NodeEscalated", "parent", { name: "worker", route: "higher_tier" }, 1),
+      ev("2", "NodeSpawned", "retry", { parent_id: "parent", independent: true }, 2),
+      ev("3", "NodeQueued", "retry", { name: "specialized worker" }, 3),
+    ];
+
+    expect(buildOperationGraph(events).nodes.find((node) => node.opId === "retry")?.name).toBe(
+      "specialized worker",
+    );
+  });
+
+  it("ignores invalid and self-referential spawn parents", () => {
+    const events = [
+      ev("1", "NodeEscalated", "parent", { name: "worker", route: "higher_tier" }, 1),
+      ev("2", "NodeSpawned", "child-a", { parent_id: 42, independent: true }, 2),
+      ev("3", "NodeSpawned", "child-b", { parent_id: "child-b", independent: true }, 3),
+      ev("4", "NodeQueued", "child-a", { name: "child-a" }, 4),
+      ev("5", "NodeQueued", "child-b", { name: "child-b" }, 5),
+    ];
+
+    expect(buildOperationGraph(events).edges).toEqual([]);
+  });
+});
+
 describe("buildOperationGraph — multiple operations", () => {
   it("handles multiple independent operations", () => {
     const events = [

@@ -1934,6 +1934,44 @@ async def test_do_kill_recursive_kills_child_invocations(
         assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
             "status"
         ] == "cancelled"
+        # The name of this test promises the invocation goes too, and until
+        # now nothing checked it: the traversal could have been dropped
+        # entirely and this stayed green.
+        assert (await db.fetch_one("SELECT status FROM invocations WHERE id = ?", (inv_id,)))[
+            "status"
+        ] == "cancelled"
+
+
+async def test_do_kill_recursive_invocation_cancels_child_sessions(temp_db_path: Path):
+    """The downward edge: an invocation's sessions are cancelled with it.
+
+    `sessions.invocation_id` is read in both directions — up from a session to
+    the invocation running it, and down from an invocation to the sessions it
+    owns. This pins the downward half, which the upward tests do not cover.
+    """
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, status="running")
+        child_ids = [
+            await _seed_session(db, status="running"),
+            await _seed_session(db, status="running"),
+        ]
+        for child_id in child_ids:
+            await db.update_session(child_id, invocation_id=invocation_id)
+
+    assert await _do_kill(invocation_id, recursive=True) == 0
+
+    async with StateDB() as db:
+        invocation = await db.fetch_one(
+            "SELECT status FROM invocations WHERE id = ?", (invocation_id,)
+        )
+        children = await db.fetch_all(
+            "SELECT id, status FROM sessions WHERE invocation_id = ?", (invocation_id,)
+        )
+
+    assert invocation is not None and invocation["status"] == "cancelled"
+    assert {row["id"]: row["status"] for row in children} == {
+        child_id: "cancelled" for child_id in child_ids
+    }
 
 
 # ── CLI wiring smoke test ──────────────────────────────────────────────────────
@@ -2135,7 +2173,9 @@ async def test_do_kill_all_stale_reports_plays_it_could_not_assess(
     captured = capsys.readouterr()
 
     assert "skipped_unlinked_plays=1" in captured.out
-    assert "records no worker session" in captured.err.replace("\n", " ")
+    operator_output = captured.err.replace("\n", " ")
+    assert "1 running play row(s) were not swept" in operator_output
+    assert "record no link to the sessions they started" in operator_output
 
     async with StateDB() as db:
         assert (await db.fetch_one("SELECT status FROM plays WHERE id = ?", (play_id,)))[
