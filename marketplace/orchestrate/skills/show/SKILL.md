@@ -5,7 +5,8 @@ description: >
   (each a play.submit run through the plugin's MCP server), gate each output
   for quality, adapt the plan based on results, and merge work into an
   integration branch. Shows are rows in Studio's state database, readable over
-  its /api/shows endpoints; there is no Studio page for them.
+  its /api/shows endpoints. Studio's retired /shows route redirects to Fleet;
+  there is no dedicated show page.
 allowed-tools: [Bash, Read, Write, Glob, Grep]
 ---
 
@@ -22,24 +23,24 @@ Everything about git — worktrees, branches, merges — is plain git and always
 runs as Bash; there is no MCP verb for it and none is needed. If you are
 working inside a lionagi checkout with `li` on PATH, `li play` and `li agent`
 fire the same work; `li wait` blocks until a run reaches a terminal state, the
-way `job.wait` does; and `li monitor`, `li runs` and `li kill` observe and stop
-it. Treat the CLI as a local convenience, not the primary path.
+way repeated `job.wait` calls do; and `li monitor`, `li runs` and `li kill`
+observe and stop it. Treat the CLI as a local convenience, not the primary path.
 
 ## Shows vs flows — pick the right tool
 
 | Dimension | `flow.submit` | show (this skill) |
 |---|---|---|
-| Duration | 5-30 min | 1-4 hours |
-| Unit of work | Single agent op | Full playbook run (`play.submit`) |
+| Execution | One dependency DAG | Multiple gated playbook runs |
+| Unit of work | Planned assignment | Full playbook run (`play.submit`) |
 | Branching | Single DAG | Each play gets its own worktree + branch |
 | Human gate | Optional critic node | Between every play |
-| Replanning | Control-node triggered | After every play based on verdict |
-| Studio surface | `/runs` page | `/api/shows` endpoints only; no page |
+| Replanning | Worker-triggered reactive spawn requests | After every play based on verdict |
+| Studio surface | Fleet | `/api/shows` endpoints; Fleet has no dedicated show page |
 
 Use a show when: the goal requires multiple independent bodies of work, each needing
 its own branch and quality gate, with a plan that adapts based on intermediate results.
 
-Use a flow when: a single orchestrator can plan and execute everything in one session.
+Use a flow when: one dependency-aware run can plan and execute the work as a DAG.
 
 ## The 8-step procedure
 
@@ -60,6 +61,7 @@ For the complete procedure with the exact MCP calls, see [procedure.md](procedur
 ❌ Creating a show for a task one flow can finish — overkill, use flow.submit
 ❌ Not checking each op's `ok` in the reply — a partial batch can carry a failed op silently
 ❌ Calling help and ops in the same request — the server refuses that; ask help first, separately
+❌ Treating one bounded job.wait call as completion — repeat until all_terminal is true
 ❌ Using git merge without --no-ff — loses play boundary in git history
 ❌ Skipping gate on attempt 2 — gate is mandatory before escalate decision
 ❌ Firing plays before integration branch exists — plays have nowhere to merge

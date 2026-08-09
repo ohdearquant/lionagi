@@ -51,8 +51,8 @@ internal code review, security sign-off, release gate.
 
 ## Related skills
 
-- `li skill security-review` — threat-model rubric for security dimension
-- `li skill review` — general correctness/quality rubric
+- `security-review` — threat-model rubric for the security dimension
+- `review` — general correctness and quality rubric
 
 See [specialist-guide.md](specialist-guide.md) for specialist dimensions,
 severity rubric, synthesis format, MCP and CLI examples, and source code reference.

@@ -212,6 +212,47 @@ STUDIO_PORT: int = int(os.environ.get("LIONAGI_STUDIO_PORT", "8765"))
 HOST: str = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
 SHOWS_ROOT: Path = Path(os.environ.get("LIONAGI_SHOWS_ROOT", "~/khive-work/shows")).expanduser()
 
+OPERATOR_CWD_ENV_VAR = "LIONAGI_STUDIO_OPERATOR_CWD"
+OPERATOR_CWD_DEFAULT: Path = Path.home().resolve()
+OPERATOR_CWD_RULE_ENV = f"env:{OPERATOR_CWD_ENV_VAR}"
+OPERATOR_CWD_RULE_DEFAULT = "daemon-config-default:user-home"
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorExecutionRootResolution:
+    root: Path | None
+    rule: str
+    configured_value: str
+
+
+def _usable_operator_execution_root(value: str | Path) -> Path | None:
+    path = Path(value)
+    if not path.is_absolute() or not path.is_dir():
+        return None
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def resolve_operator_execution_root_config() -> OperatorExecutionRootResolution:
+    """Freeze the daemon-wide Operator root choice and its provenance."""
+    configured = os.environ.get(OPERATOR_CWD_ENV_VAR)
+    if configured is not None:
+        return OperatorExecutionRootResolution(
+            root=_usable_operator_execution_root(configured),
+            rule=OPERATOR_CWD_RULE_ENV,
+            configured_value=configured,
+        )
+
+    default = str(OPERATOR_CWD_DEFAULT)
+    return OperatorExecutionRootResolution(
+        root=_usable_operator_execution_root(default),
+        rule=OPERATOR_CWD_RULE_DEFAULT,
+        configured_value=default,
+    )
+
+
 _raw_origins = os.environ.get("CORS_ORIGINS", "")
 CORS_ORIGINS: list[str] = (
     [o.strip() for o in _raw_origins.split(",") if o.strip()]

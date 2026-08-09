@@ -8,8 +8,8 @@ Full 10-section security checklist with CWE mapping.
 - Session token handling: storage, rotation, expiry, HttpOnly / Secure flags.
 - RBAC / capability checks: are they enforced on the server side, not just UI?
 - "Fail closed": if auth check errors, does access default to denied or allowed?
-- Multi-tenant: is `tenant_id` derived from authenticated caller, not from
-  user-supplied input? A caller-supplied tenant id is always a bug.
+- Multi-tenant: derive `tenant_id` from authenticated context unless explicit
+  tenant selection is required; otherwise authorize the supplied tenant id.
 
 CWE reference: CWE-285 (improper authorization), CWE-384 (session fixation), CWE-613 (insufficient session expiration).
 
@@ -19,10 +19,11 @@ CWE reference: CWE-285 (improper authorization), CWE-384 (session fixation), CWE
   is its type, range, length, and encoding validated?
 - Model-controlled strings that become filesystem paths, URLs, SQL, shell
   commands, or serialized data — are they escaped / parameterized / regex-constrained?
-- Regex validation: is it anchored (`^...$`)? Is input length capped before
-  regex runs (ReDoS)?
-- Structured data (JSON, YAML, TOML): does parsing allow arbitrary
-  code execution (pickle, `!!python/object`, TOML overrides)?
+- Regex validation: does it require a full-string match (for example,
+  `re.fullmatch` in Python)? Is input length capped before regex runs (ReDoS)?
+- Structured data: does parsing permit unsafe object construction or code
+  execution (`pickle`, unsafe YAML tags, `eval`, `exec`)? Can configuration
+  overrides select dangerous behavior even when parsing itself is safe?
 
 CWE reference: CWE-20 (improper input validation), CWE-1333 (ReDoS).
 
@@ -40,10 +41,10 @@ CWE reference: CWE-200 (information exposure), CWE-209 (error message informatio
 
 ## 4. Crypto & secrets
 
-- Hardcoded keys, tokens, credentials? Even in tests?
-- Secret material read from env / file: does it have a safe default
-  fallback? Does failure to load crash loudly (fail closed) or silently
-  fall back to an insecure path?
+- Hardcoded real keys, tokens, or credentials? Are test fixtures clearly
+  non-secret and scoped to tests?
+- Secret material read from env / file: does failure to load crash loudly
+  (fail closed) rather than silently fall back to an insecure path?
 - Cryptographic primitives: weak (MD5, SHA-1, DES, RC4), deprecated (TLS
   1.0/1.1), or home-rolled? Use standard libraries.
 - Random: `random` vs `secrets` / `os.urandom` for token generation?
@@ -63,8 +64,9 @@ CWE reference: CWE-89 (SQLi), CWE-78 (OS command injection), CWE-79 (XSS), CWE-9
 
 ## 6. File / path handling
 
-- Paths from model output or user input: containment checked with
-  `resolve()` + `relative_to(root)`?
+- Paths from model output or user input: canonicalized and verified to remain
+  inside the allowed root? That is only a check-time guarantee; for sensitive
+  access, does the later operation prevent symlink or TOCTOU substitution?
 - Zip / tar extraction: "zip-slip" — does it block `../` or absolute paths
   in archive entries?
 - Temp files: predictable names (`/tmp/foo`), or `mkstemp`?

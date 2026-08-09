@@ -16,7 +16,7 @@ Capture context, learnings, and progress without ending the session. Write a che
 
 - Significant milestone reached but more work ahead
 - Switching to a different topic within the same session
-- Context getting long (>100k tokens) — checkpoint before compaction
+- Context getting close to its limit — checkpoint before compaction
 - After completing a multi-step task, before starting the next
 - Patterns or decisions have emerged that should be recorded
 
@@ -50,7 +50,8 @@ file organization decisions, naming conventions.
 
 ## Key Principles
 
-- **Fast > thorough**: This is a checkpoint, not a dissertation. 2-5 minutes max.
+- **Fast > thorough**: This is a checkpoint, not a dissertation. Keep it brief enough to
+  preserve momentum.
 - **File-first**: Write to `./notes/checkpoints/` so checkpoints survive context resets.
 - **Continue after**: This skill does NOT end the session.
 - **Compound**: Multiple checkpoints per session is fine — they build a trail.
@@ -60,7 +61,7 @@ file organization decisions, naming conventions.
 ## Anti-Patterns
 
 - Writing a full session summary mid-session (use a full session summary)
-- Spending >5 minutes on the checkpoint
+- Spending longer on the checkpoint than the work needs
 - Only commenting in-line without writing a retrievable file
 - Generic summaries without specifics ("worked on stuff")
 - Over-capturing: not every line of code matters

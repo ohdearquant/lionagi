@@ -29,10 +29,8 @@ ${LIONAGI_SHOWS_ROOT}/<topic>/          # set this explicitly; see the note belo
     └── .log              # Local copy of the run's console tail (job.output)
 ```
 
-**Set `LIONAGI_SHOWS_ROOT` explicitly, in the environment Studio sees as well as your own.**
-The skill and Studio each fall back to a built-in default when it is unset, and relying on
-those matching is how a show ends up somewhere Studio never enumerates — it does not appear
-and nothing reports an error. Export it once for both.
+Set `LIONAGI_SHOWS_ROOT` explicitly before starting. Studio reads the same variable, so start
+it with that value rather than relying on an installation-specific fallback.
 
 Worktrees live at `$HOME/.lionagi/worktrees/<topic>-<play_name>[-attempt<N>]`. Nothing reads
 that path, so it is a convention this skill keeps rather than a setting.
@@ -78,9 +76,9 @@ structure so the four it does read are found:
 **`deps:` is not read by anything.** It records the ordering you intend, which is worth
 writing down and worth keeping accurate, but nothing parses it: the show importer extracts
 only goal, repo, base and integration from `_show.md`, and every play is imported with an
-empty `depends_on`. Nothing renders it either: there is no Studio show page and the `PlayDag`
-component in the source tree is imported by nothing. Sequencing is yours to enforce, by the
-order in which you fire plays and by the gate you apply between them.
+empty `depends_on`. Nothing renders it either: the retired `/shows` route redirects to Fleet,
+and the `PlayDag` component in the source tree is imported by nothing. Sequencing is yours to
+enforce, by the order in which you fire plays and by the gate you apply between them.
 
 ---
 
@@ -90,7 +88,8 @@ Write `_show.md` (use the format above). Create the integration branch:
 
 ```bash
 TOPIC="my-feature"
-SHOW_DIR="${LIONAGI_SHOWS_ROOT:-$HOME/.lionagi/shows}/$TOPIC"
+export LIONAGI_SHOWS_ROOT="${LIONAGI_SHOWS_ROOT:-$HOME/lionagi-shows}"
+SHOW_DIR="$LIONAGI_SHOWS_ROOT/$TOPIC"
 mkdir -p "$SHOW_DIR"
 
 # Create integration branch (rebased on latest main)
@@ -171,12 +170,11 @@ The reply carries the allocated `run_id` (never a bare success flag — check
 ```
 
 **Checkout-local alternative.** Inside a lionagi checkout, `li play <playbook> "<prompt>"
---yolo --bypass --save "$PLAY_DIR"` does the same thing as a foreground/backgrounded shell
-process instead of a server-tracked job; if you use it, note that `--invocation`-based
-grouping under Studio's `/invocations` page (`li invoke start`/`li invoke end`) is a CLI-only
-feature — there is no MCP verb for it, since the server has no caller identity to attach an
-invocation record to. `job.status`/`job.output`/`job.wait` do not need it: they key on
-`run_id`, not on an invocation.
+--cwd "$WORKTREE" --yolo --bypass --save "$PLAY_DIR"` runs the same work from the play's
+worktree as a foreground or backgrounded shell command. `--invocation`-based grouping with
+`li invoke start`/`li invoke end` is a CLI-only feature whose records are visible in Fleet;
+the retired `/invocations` route redirects there. There is no MCP verb for opening or closing
+an invocation. `job.status`/`job.output`/`job.wait` do not need one: they key on `run_id`.
 
 ## Step 5 — Gate
 
@@ -184,11 +182,14 @@ See [gate-protocol.md](gate-protocol.md) for the gate call and verdict schema.
 
 ## Step 6 — Decide
 
-Poll or block on the run, then read `_verdict.json` and branch:
+Observe the run, then read `_verdict.json` and branch:
 
 ```json
 {"ops": [{"op": "job.wait", "args": {"run_ids": ["<run_id>"]}}]}
 ```
+
+`job.wait` is bounded. Check the op's `ok` field and the result's `all_terminal` field. If
+`all_terminal` is false, repeat the call or inspect `job.status`; do not gate or merge yet.
 
 ```
 gate_passed = true            → merge to integration (Step 6a)
@@ -243,7 +244,7 @@ submit the final gate as an agent run. `agent.submit` is a spawn verb, so ask fo
     {
       "op": "agent.submit",
       "args": {
-        "agent": "reviewer",
+        "query": ["claude"],
         "cwd": "/absolute/path/to/<show_dir>",
         "prompt": "You are the final gate agent for show '<topic>'. Read _show.md for the original goal. For each play, read its _verdict.json and _meta.json. Determine: does the integration branch now satisfy the show goal? Output ONLY valid JSON: {\"show_passed\": true, \"summary\": \"...\", \"blockers\": []} or {\"show_passed\": false, \"summary\": \"...\", \"blockers\": [\"play_name: reason\"]}"
       },
@@ -253,7 +254,8 @@ submit the final gate as an agent run. `agent.submit` is a spawn verb, so ask fo
 }
 ```
 
-Wait for it and read its output:
+Wait for it and read its output. As with a play run, check `ok` and repeat the bounded wait
+until `all_terminal` is true before calling `job.output`:
 
 ```json
 {"ops": [{"op": "job.wait", "args": {"run_ids": ["<run_id>"]}}]}
@@ -275,12 +277,12 @@ blockers or escalate the whole show.
 // 1. Ask what play.submit takes for this playbook (schema_fingerprint depends on it)
 {"help": {"verb": "play.submit", "playbook": "<name>"}}
 
-// 2. Fire a play — the fingerprint comes from the playbook-qualified help call above,
-//    not from an unqualified help='play.submit', which returns a different schema's
+// 2. Fire a play — the fingerprint comes from the playbook-qualified help call above;
+//    unqualified help='play.submit' does not return a usable fingerprint
 {"ops": [{"op": "play.submit", "args": {"playbook": "<name>", "prompt": "<from _prompt.md>", "cwd": "/absolute/path/to/worktree"}, "schema_fingerprint": "<from the help call above>"}]}
 // -> record the returned run_id in _meta.json
 
-// 3. Wait for it, then read its output
+// 3. Wait for it; check ok and all_terminal, repeating if needed, then read its output
 {"ops": [{"op": "job.wait", "args": {"run_ids": ["<run_id>"]}}]}
 {"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
 

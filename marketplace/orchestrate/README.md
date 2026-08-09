@@ -1,6 +1,6 @@
 # orchestrate
 
-Claude Code plugin for lionagi's multi-agent orchestration. Nine skills and two agent profiles covering workflow planning, execution, quality gating, code review, debugging, and development methodology.
+Claude Code plugin for lionagi's multi-agent orchestration. Twelve skills and two agent profiles covering workflow planning, execution, quality gating, code review, debugging, and development methodology.
 
 Orchestration is reached through the MCP server this plugin ships — enabling the plugin is
 enough, there is nothing separate to install for it to work. A lionagi checkout with `li` on
@@ -14,8 +14,8 @@ where it applies, but the calls you'll actually make go through the server.
   `uv` is the only thing that needs to already be present; `uvx` resolves and caches lionagi
   itself on first use. Without it the plugin's tool fails visibly, naming the missing
   prerequisite, rather than silently doing nothing.
-- Optional, only if you want the CLI or Lion Studio locally inside a checkout:
-  `pip install lionagi` (or `uv pip install lionagi`), then `li studio` for the monitoring UI.
+- Optional, only if you want local commands: run `pip install lionagi` for the CLI, or
+  `pip install 'lionagi[studio]'` if you also want `li studio` for the monitoring UI.
 
 ## Install
 
@@ -32,6 +32,9 @@ nothing further to configure.
 | Skill | Description |
 |-------|-------------|
 | `orchestrate` | Plan and execute multi-agent workflows via the plugin's MCP server (`flow.submit`, `fanout.submit`, `play.submit`) |
+| `play` | Run an existing saved playbook and retrieve its background result |
+| `fanout` | Run independent workers in parallel, optionally with synthesis |
+| `flow` | Run a dependency DAG with dry-run planning and reactive capacity |
 | `show` | Orchestrate multi-play shows with quality gates and adaptive replanning |
 | `playbook` | Author `.playbook.yaml` files — reusable parametric workflow templates |
 | `pr-review` | Multi-perspective PR review with parallel specialist reviewers and critic synthesis |
@@ -77,21 +80,23 @@ current fingerprint.
 One wrinkle, worth knowing before it costs you a round-trip: when a call names a `playbook`,
 the schema includes that playbook's own declared arguments, so the fingerprint depends on it.
 For those calls the fingerprint has to come from `help={"verb": "<verb>", "playbook": "<the
-same name>"}`. The unqualified `help='play.submit'` returns a real fingerprint for a different
-schema, and sending it with a named playbook is refused. `play.submit` always names one:
+same name>"}`. Because `play.submit` requires a playbook, unqualified `help='play.submit'`
+does not return a usable fingerprint. `play.submit` always needs the qualified form:
 
-```json
+```text
 // Run a playbook — fingerprint from help={"verb": "play.submit", "playbook": "feature"}
-{"ops": [{"op": "play.submit", "args": {"playbook": "feature", "prompt": "add user authentication"}, "schema_fingerprint": "<from that playbook-qualified help call>"}]}
+{"ops": [{"op": "play.submit", "args": {"playbook": "feature", "prompt": "add user authentication", "cwd": "/absolute/path/to/repository"}, "schema_fingerprint": "<from that playbook-qualified help call>"}]}
 
 // Fan out parallel workers — no playbook, so help='fanout.submit' is the source
-{"ops": [{"op": "fanout.submit", "args": {"prompt": "audit this module for dead code", "num_workers": 4}, "schema_fingerprint": "<from help='fanout.submit'>"}]}
+{"ops": [{"op": "fanout.submit", "args": {"query": ["claude"], "prompt": "audit this module for dead code", "num_workers": 4, "cwd": "/absolute/path/to/repository"}, "schema_fingerprint": "<from help='fanout.submit'>"}]}
 
 // Plan and run a DAG flow — no playbook named, so help='flow.submit' is the source
-{"ops": [{"op": "flow.submit", "args": {"prompt": "refactor the auth module", "agent": "orchestrator"}, "schema_fingerprint": "<from help='flow.submit'>"}]}
+{"ops": [{"op": "flow.submit", "args": {"query": ["claude"], "prompt": "refactor the auth module", "cwd": "/absolute/path/to/repository"}, "schema_fingerprint": "<from help='flow.submit'>"}]}
 ```
 
-Each of these returns a `run_id`. Poll or block on it, and read what it wrote:
+Each of these returns a `run_id`. `job.wait` observes it for a bounded window; check the op's
+`ok` field and the result's `all_terminal` field, and repeat when the run is still pending.
+Only then read what it wrote:
 
 ```json
 {"ops": [{"op": "job.wait", "args": {"run_ids": ["<run_id>"]}}]}
@@ -103,9 +108,9 @@ verb reference, including `schema_fingerprint` details and the checkout-local `l
 each verb corresponds to.
 
 **Checkout-local alternative.** Inside a lionagi checkout with `li` on PATH, the same three
-operations run in the foreground as `li play feature "add user authentication"`,
-`li o fanout claude "audit this module for dead code" -n 4`, and
-`li o flow claude "refactor the auth module" --dry-run`. `li studio` starts Lion Studio for
+operations run in the foreground as `li play feature "add user authentication" --cwd "$(pwd)"`,
+`li o fanout claude "audit this module for dead code" -n 4 --cwd "$(pwd)"`, and
+`li o flow claude "refactor the auth module" --cwd "$(pwd)"`. `li studio` starts Lion Studio for
 monitoring — there is no MCP verb for the Studio server itself, since it is a long-lived
 process rather than a call that returns.
 
@@ -118,13 +123,15 @@ The `~/.lionagi/` directory is created on first use:
 ├── playbooks/          # .playbook.yaml files (play.submit and li play both read from here)
 ├── agents/             # Agent profiles (<name>/<name>.md or <name>.md)
 ├── runs/               # Run persistence (auto-managed)
-├── shows/              # Show workspaces (auto-managed)
-├── worktrees/          # Git worktrees for isolated play execution
 ├── teams/              # Team inbox files (auto-managed)
 ├── skills/             # CC-compatible skill files
 ├── settings.yaml       # Global settings (model defaults, hooks)
 └── state.db            # SQLite state database (sessions, shows, schedules)
 ```
+
+Set `LIONAGI_SHOWS_ROOT` to a directory you control before using the `show` skill, and start
+Studio with the same value. The skill uses `~/.lionagi/worktrees/` as a documented git
+worktree convention; that directory is not auto-managed by lionagi.
 
 ## Sample playbooks
 

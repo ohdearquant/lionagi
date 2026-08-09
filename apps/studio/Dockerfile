@@ -4,7 +4,7 @@
 #   docker build -f apps/studio/Dockerfile -t lion-studio .
 #
 # Run:
-#   docker run -p 8765:8765 -v ~/.lionagi:/root/.lionagi lion-studio
+#   docker run -p 8765:8765 -v ~/.lionagi:/root/.lionagi -v "$PWD:/workspace" lion-studio
 
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 FROM node:22-alpine AS frontend-build
@@ -39,10 +39,13 @@ COPY .claude-plugin/ ./.claude-plugin/
 # Copy built frontend dist — uvicorn serves this via the SPA mount in app.py.
 COPY --from=frontend-build /build/dist ./apps/studio/frontend/dist
 
-VOLUME /root/.lionagi
+RUN mkdir -p /workspace
+
+VOLUME ["/root/.lionagi", "/workspace"]
 
 EXPOSE 8765
 
-ENV LIONAGI_STUDIO_FRONTEND_DIST=/app/apps/studio/frontend/dist
+ENV LIONAGI_STUDIO_FRONTEND_DIST=/app/apps/studio/frontend/dist \
+    LIONAGI_STUDIO_OPERATOR_CWD=/workspace
 
 CMD ["uvicorn", "lionagi.studio.app:app", "--host", "0.0.0.0", "--port", "8765"]

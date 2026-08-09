@@ -24,7 +24,8 @@ a lionagi checkout.
 | `team_attach` | str | `--team-attach` | Upsert a team by name: attach if it exists, create if missing. |
 | `bare` | bool | `--bare` | Ignore agent profiles; all workers use the CLI model. |
 | `dry_run` | bool | `--dry-run` | Plan the DAG without executing it. |
-| `show_graph` | bool | `--show-graph` | Render a DAG visualisation after planning. |
+| `show_graph` | bool | `--show-graph` | Write a DAG visualisation after an executing flow finishes. |
+| `reactive` | str | `--reactive` | Who may request follow-up assignments: `all`, `off`, or a comma-separated role list. |
 | `save` | str | `--save` | Directory to write artifact output to. |
 | `pack` | str | `--pack` | YAML routing pack used when `workers` is absent. |
 | `reactive` | str | `--reactive` | Spawn policy: `all`, `off`, or a comma-separated role allowlist. |
@@ -32,9 +33,10 @@ a lionagi checkout.
 | `args` | dict | dynamic flags | Typed argument schema. Each key becomes a CLI flag, or an `args` entry in the `play.submit` MCP call. |
 | `artifacts` | dict | — | Expected artifact contract checked before and after the playbook run. |
 
-**Key normalization**: top-level keys accept both dash and underscore forms
-(`max-ops` and `max_ops` both work) on the CLI. The `args:` block is an exception — use
-only underscore keys there (see Pitfalls). Over MCP, always pass underscore keys.
+**Key normalization**: when a YAML or JSON playbook is loaded, top-level keys accept both
+dash and underscore forms (`max-ops` and `max_ops` both work). The `args:` block is an
+exception — use only underscore keys there (see Pitfalls). Over MCP, always pass underscore
+keys.
 
 **Precedence**: a playbook field fills in only when the corresponding CLI flag is still at its
 default, so a flag you pass explicitly wins. Two consequences of *how* that is implemented are
@@ -111,9 +113,9 @@ group stops you, and the further down the list a mistake sits, the more it looks
   and the flag becomes `--worker-count`. Run `li play <name> --help` after declaring an arg to
   see whether it actually appears.
 
-*Unchecked — nothing validates these, so the default is applied silently:*
-- `type` may be omitted, in which case it is `str`. Declare it whenever the value is not a
-  string, since the arg is otherwise passed through to the prompt as text
+*Defaults applied when fields are omitted:*
+- `type` defaults to `str`. Declare it whenever the value is not a string; a supplied invalid
+  type is rejected during spec validation
 - `default` may be omitted, in which case it is null. Supply one unless absence is meaningful
 - `help` may be omitted, in which case `--help` shows a generated line naming the argument and
   its type. Write one sentence with the allowed values if they matter
@@ -209,9 +211,10 @@ schema validation with "must be an alphanumeric identifier".
 `max_ops: 0` (which is the default); reactive spawning still stops at 20. Do not
 conflate the two fields.
 
-**`show_graph: true` without `--save`**
-The graph renders to the screen via matplotlib. If `save` is set, it is written as
-a PNG to the save directory.
+**Expecting `show_graph` during a dry run**
+`dry_run: true` returns before the run graph is built. `show_graph: true` writes
+`flow_dag.png` to the run's artifact directory only after an executing flow finishes; over
+MCP, find it in the artifact list returned by `job.output`.
 
 **Unknown top-level keys are rejected**
 An unrecognized key such as `effrot: high` fails validation. The error names the
@@ -222,12 +225,22 @@ The CLI rejects this at dispatch time with an error. Only one team strategy is a
 per playbook.
 
 **`max_ops` range**
-Valid range is 0–50. Zero removes the shared planning/spawn ceiling, while reactive
-spawns remain capped at 20. Values above 50 are rejected at spec validation.
+Valid range is 0–50 (0 = unlimited). Values above 50 are rejected at spec validation.
+For a nonzero value, the initial plan and reactive follow-up assignments share the cap. A
+plan that fills `max_ops` leaves no room for follow-ups. With `max_ops: 0`, the initial plan
+has no caller-defined cap (the engine defensively truncates it at 200) and reactive execution
+allows up to 20 follow-up assignments.
 
-**CLI-only flags cannot be set in YAML**
-`yolo`, `bypass`, `output`, `background`, `fast`, `verbose`, and `theme` are CLI-only.
-Specifying them in YAML is rejected as an unknown field — pass them on the command line.
+**Some flags belong to the command line, not the spec**
+`output`, `background`, `fast`, `verbose`, and `theme` are CLI-only, and naming one in YAML
+is rejected as an unknown field.
+
+`yolo`, `bypass`, and `permission_mode` are a separate case: the loader accepts them and does
+not read them. They appear in playbooks written in the field, so refusing them would break
+files whose only fault is naming a key that does nothing — but the run still takes its value
+from the command-line flag. A playbook that sets `yolo: true` is not running in that mode.
+Sandbox posture comes from the agent profile's frontmatter, which is the surface that is
+actually configured.
 
 ---
 
