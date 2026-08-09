@@ -219,7 +219,14 @@ const SHELL_GLOB_TOKEN = /[*?[\]{}]/;
  * filename. Rejecting these, and requiring every segment to look like a name,
  * is what separates a path from a script. */
 const SHELL_UNSAFE_IN_PATH = /[\\^$()|`"'#]/;
-const SHELL_PATH_SEGMENT = /^[A-Za-z0-9_.@+~-]+$/;
+// Letters, marks and digits from any script, not just ASCII. An ASCII-only
+// class rejects a real directory named 项目 or Café, and rejects it before the
+// rooted check below can vouch for it. Marks are in the set so a decomposed
+// accent (e + U+0301) is treated the same as its precomposed form. This class
+// is strictly wider than the ASCII one it replaces, so nothing that used to be
+// accepted can start being dropped; punctuation that is not part of a filename
+// (comma, equals, percent, colon) is still excluded.
+const SHELL_PATH_SEGMENT = /^[\p{L}\p{M}\p{N}_.@+~-]+$/u;
 
 /** Extensions that make a ROOTLESS token a filename rather than prose. A
  * rooted path needs no such evidence; a bare `word/word` does, because that
