@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import traceback
 import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -277,4 +278,18 @@ async def deliver_flow_notify_now(
     except Exception:  # noqa: BLE001 -- a notifier failure must never affect the run
         logger.warning(
             "direct-path notify.on_terminal delivery failed for run %s", run.run_id, exc_info=True
+        )
+        # The exec adapter records every failure mode onto the run -- timeout,
+        # spawn failure, nonzero exit -- because outcome recording is threaded
+        # into it. A python adapter is handed back as the imported callable
+        # with nothing wrapping it, so a raise reached only the log line above
+        # and left nothing to query. That made the durability of "did my
+        # terminal notification go out?" depend on which adapter type happened
+        # to be configured, which is not a distinction any caller can be
+        # expected to know about. The traceback goes to the same owner-only
+        # file the exec adapter's stderr does, and for the same reason: it is
+        # free text that can carry a credential, so it is referenced by path
+        # and never placed in the outcome record itself.
+        record_notify_outcome_to_run(
+            run, ok=False, exit_code=None, stderr_text=traceback.format_exc()
         )

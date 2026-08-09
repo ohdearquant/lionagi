@@ -29,6 +29,7 @@ from ._common import (
 from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     OrchestrationEnv,
+    attribute_worker_build_failure,
     available_roles,
     build_worker_branch,
     finalize_orchestration,
@@ -306,14 +307,18 @@ async def _run_fanout_inner(
     for i, ta in enumerate(assignments):
         model_override = pool[i % len(pool)] if pool else None
         wname = worker_names[i]
-        w_branch, w_model, _, messenger_bound = await build_worker_branch(
-            env,
-            agent_id=wname,
-            role=ta.assignee,
-            model_override=model_override,
-            explicit_name=wname,
-            modes=ta.modes or None,
-        )
+        try:
+            w_branch, w_model, _, messenger_bound = await build_worker_branch(
+                env,
+                agent_id=wname,
+                role=ta.assignee,
+                model_override=model_override,
+                explicit_name=wname,
+                modes=ta.modes or None,
+            )
+        except BaseException as exc:
+            attribute_worker_build_failure(exc, agent_id=wname, role=ta.assignee)
+            raise
         ctx = [{"overall_task": prompt}]
         # Attached-team history (if any) rides in operation context, not the
         # system prompt — see team_history_context's docstring for why.

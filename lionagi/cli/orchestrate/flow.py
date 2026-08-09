@@ -45,6 +45,7 @@ from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
+    attribute_worker_build_failure,
     available_roles,
     build_worker_branch,
     finalize_orchestration,
@@ -744,16 +745,20 @@ async def _build_dag(
         env.expect_worker(agent_id)
 
     for i, ta in enumerate(assignments):
-        w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
-            env,
-            agent_id=agent_ids[i],
-            role=ta.assignee,
-            model_override=pool[i % len(pool)] if pool else None,
-            explicit_name=agent_ids[i],
-            grant_spawn=_may_spawn(ta.assignee),
-            spawn_assignees=spawn_assignees,
-            modes=ta.modes or None,
-        )
+        try:
+            w_branch, w_model, w_profile, messenger_bound = await build_worker_branch(
+                env,
+                agent_id=agent_ids[i],
+                role=ta.assignee,
+                model_override=pool[i % len(pool)] if pool else None,
+                explicit_name=agent_ids[i],
+                grant_spawn=_may_spawn(ta.assignee),
+                spawn_assignees=spawn_assignees,
+                modes=ta.modes or None,
+            )
+        except BaseException as exc:
+            attribute_worker_build_failure(exc, agent_id=agent_ids[i], role=ta.assignee)
+            raise
         worker_branches[agent_ids[i]] = w_branch
         worker_messenger_bound[agent_ids[i]] = messenger_bound
         worker_models.append(w_model)
