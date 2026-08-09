@@ -189,8 +189,27 @@ def scrub_text(text: str, *, known_values: frozenset[str] | None = None) -> str:
     return text
 
 
+_FIELD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
+
+
+def fold_field_name(key: str) -> str:
+    """Reduce a field name to the spelling the secret markers are written in.
+
+    Separators do not change which field a name refers to. HTTP headers arrive
+    as X-API-Key, config files write api.key, and our own records write
+    api_key, so every marker containing an underscore would otherwise match
+    only the last of those. Folding any run of non-alphanumeric characters to a
+    single underscore makes all the spellings compare equal.
+
+    This lives here, and not beside either caller, because both redaction
+    layers have to agree about it. When they disagreed, the same credential was
+    withheld on one path and served on the other.
+    """
+    return _FIELD_SEPARATOR_RE.sub("_", key.lower())
+
+
 def _is_secret_key(key: str) -> bool:
-    lowered = key.lower()
+    lowered = fold_field_name(key)
     return any(marker in lowered for marker in _SECRET_KEY_MARKERS)
 
 

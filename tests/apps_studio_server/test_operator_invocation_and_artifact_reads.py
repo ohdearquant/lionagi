@@ -478,3 +478,90 @@ async def test_a_textual_secret_under_a_counter_shaped_name_is_still_redacted():
     projected = _safe_content({"token_count": UNSHAPED_SECRET})
 
     assert projected == {"token_count": "[redacted]"}
+
+
+# One name, written the several ways it actually arrives. Each entry is the
+# canonical spelling, whether that name names a secret, and the other spellings
+# of the same name. Non-secret rows are here so the agreement below cannot be
+# satisfied by a layer that simply answers False to everything.
+_ONE_NAME_MANY_SPELLINGS = [
+    ("api_key", True, ["api-key", "api.key", "api key", "API-KEY"]),
+    ("access_key", True, ["access-key", "access.key", "ACCESS KEY"]),
+    ("private_key", True, ["private-key", "private.key"]),
+    ("client_secret", True, ["client-secret", "client.secret"]),
+    ("db_password", True, ["db-password", "db password"]),
+    ("refresh_token", True, ["refresh-token", "refresh.token"]),
+    ("display_name", False, ["display-name", "display.name", "Display Name"]),
+    ("created_at", False, ["created-at", "created.at"]),
+]
+
+
+@pytest.mark.parametrize(
+    ("canonical", "alternative", "is_secret"),
+    [
+        (canonical, alternative, is_secret)
+        for canonical, is_secret, alternatives in _ONE_NAME_MANY_SPELLINGS
+        for alternative in alternatives
+    ],
+)
+async def test_both_field_name_rules_read_one_name_the_same_however_it_is_spelled(
+    canonical, alternative, is_secret
+):
+    """Two independent places decide whether a field name names a secret.
+
+    They are reached by different callers, so a name folded in one and not the
+    other means the same credential is withheld on one path and served on the
+    other. Pinning each rule separately cannot see that: both would be green
+    while they disagreed. This asserts the two answers together, for every
+    spelling, which is the property that actually has to hold.
+
+    The canonical spelling is asserted first so the agreement is not vacuous.
+    """
+    from lionagi.studio.operator import application_mcp, redact
+
+    assert redact._is_secret_key(canonical) is is_secret
+    assert application_mcp._secret_field(canonical) is is_secret
+
+    assert redact._is_secret_key(alternative) is is_secret
+    assert application_mcp._secret_field(alternative) is is_secret
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "url",
+        "uri",
+        "dsn",
+        "store_url",
+        "store-url",
+        "store.url",
+        "storeUrl",
+        "database_url",
+        "database-url",
+        "databaseUrl",
+        "db_url",
+        "db-url",
+        "dbUrl",
+        "connection_url",
+        "connection-url",
+        "connectionUrl",
+    ],
+)
+async def test_a_location_field_is_withheld_even_when_its_value_has_no_url_shape(key):
+    """Store locations are withheld by field name as well as by value shape.
+
+    Every other test that plants a store location also gives it a scheme, so
+    the pattern layer catches it and the name layer is never what makes the
+    assertion pass. Deleting the name check outright left the whole suite
+    green. A location that reaches us as bare text — a host, a path fragment,
+    an operator's note — has only this layer between it and the caller.
+    """
+    from lionagi.studio.operator.application_mcp import _safe_content
+
+    # Premise: this value survives under a name that matches nothing, so any
+    # redaction below is the work of the key and not of a pattern.
+    assert _safe_content({"note": UNSHAPED_SECRET}) == {"note": UNSHAPED_SECRET}
+
+    projected = _safe_content({key: UNSHAPED_SECRET})
+
+    assert projected == {key: "[redacted]"}
