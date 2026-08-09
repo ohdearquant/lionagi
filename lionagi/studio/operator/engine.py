@@ -86,6 +86,13 @@ class OperatorProviderUnavailableError(RuntimeError):
     """The configured local Operator CLI is not installed."""
 
 
+class OperatorExecutionRootError(ValueError):
+    """The Operator has no explicit, usable directory for provider execution."""
+
+
+_OPERATOR_CWD_ENV = "LIONAGI_STUDIO_OPERATOR_CWD"
+
+
 @dataclass(frozen=True, slots=True)
 class CompiledOperatorHistory:
     """A bounded, replayable history plus its durable compilation receipt."""
@@ -501,6 +508,44 @@ class BranchOperatorEngine:
                 await task
 
 
+async def resolve_operator_execution_root(project: str | None) -> Path:
+    """Resolve a stable Operator workspace without inheriting the daemon cwd."""
+    from lionagi.studio.scheduler.engine import _is_usable_execution_root
+
+    daemon_cwd = Path.cwd().resolve()
+    configured = os.environ.get(_OPERATOR_CWD_ENV)
+    if configured is not None:
+        if _is_usable_execution_root(configured):
+            return Path(configured).resolve()
+        raise OperatorExecutionRootError(
+            f"{_OPERATOR_CWD_ENV} is set to {configured!r}, which is not an "
+            "existing absolute directory. Refusing to run the Operator from "
+            f"the Studio daemon working directory {str(daemon_cwd)!r}."
+        )
+
+    project_path: str | None = None
+    if project:
+        from lionagi.studio.services.projects import get_project
+
+        project_row = await get_project(project)
+        if project_row is not None and isinstance(project_row.get("path"), str):
+            project_path = project_row["path"]
+        if project_path is not None and _is_usable_execution_root(project_path):
+            return Path(project_path).resolve()
+
+    project_detail = (
+        f"project {project!r} has no usable registered path"
+        if project
+        else "no project with a usable registered path was selected"
+    )
+    raise OperatorExecutionRootError(
+        f"Studio Operator execution root is unavailable: {project_detail}, and "
+        f"{_OPERATOR_CWD_ENV} is unset. Set {_OPERATOR_CWD_ENV} to an existing "
+        "absolute directory. Refusing to inherit the Studio daemon working "
+        f"directory {str(daemon_cwd)!r}."
+    )
+
+
 def resolve_operator_provider_model(turn: OperatorEngineTurn) -> tuple[str, str]:
     """Resolve (provider, model) for a turn.
 
@@ -548,7 +593,11 @@ def _apply_operator_effort(
     return model_name
 
 
-def build_operator_branch(turn: OperatorEngineTurn):
+def build_operator_branch(
+    turn: OperatorEngineTurn,
+    *,
+    execution_root: Path | None = None,
+):
     """Build the real, permission-gated Branch used by a canonical turn run."""
     from lionagi.service.manager import iModel
     from lionagi.session.branch import Branch
@@ -614,6 +663,12 @@ def build_operator_branch(turn: OperatorEngineTurn):
             "api_key": "dummy",
             **({"resume": turn.provider_session_id} if turn.provider_session_id else {}),
         }
+    if execution_root is not None:
+        from lionagi.service.providers import PROVIDER_REPO_KWARG
+
+        repo_kwarg = PROVIDER_REPO_KWARG.get(provider)
+        if repo_kwarg is not None:
+            model_kwargs[repo_kwarg] = execution_root
     model_name = _apply_operator_effort(provider, model_name, turn.effort, model_kwargs)
     chat_model = iModel(provider=provider, model=model_name, **model_kwargs)
     # The conversation's own durable identity, so this turn's branch/session

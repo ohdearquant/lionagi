@@ -15,9 +15,11 @@ from typing import Any
 from .catalog import OperatorSelectionError, resolve_selection
 from .engine import (
     BranchOperatorEngine,
+    OperatorExecutionRootError,
     OperatorProviderUnavailableError,
     build_operator_branch,
     compile_operator_history,
+    resolve_operator_execution_root,
     resolve_operator_provider_model,
     write_resumable_operator_snapshot,
 )
@@ -324,6 +326,15 @@ class OperatorCoordinator:
                     await asyncio.sleep(0.05)
 
             conversation_row = await self.store.get_conversation(conversation_id)
+            context_project = turn_row["context"].get("project")
+            project = (
+                context_project
+                if isinstance(context_project, str) and context_project
+                else conversation_row.get("project")
+            )
+            execution_root = await resolve_operator_execution_root(
+                project if isinstance(project, str) else None
+            )
             selected_provider = conversation_row.get("provider")
             selected_model = conversation_row.get("providerModel")
             selected_effort = turn_row.get("effort")
@@ -363,7 +374,7 @@ class OperatorCoordinator:
                     resumed_session_id if isinstance(resumed_session_id, str) else None
                 ),
             )
-            run_branch = build_operator_branch(engine_turn)
+            run_branch = build_operator_branch(engine_turn, execution_root=execution_root)
             engine_turn = replace(engine_turn, runtime_branch=run_branch)
             from lionagi.cli import _runs as cli_runs
 
@@ -499,6 +510,18 @@ class OperatorCoordinator:
                 outcome="failed",
                 error={
                     "code": "provider_unavailable",
+                    "message": str(exc),
+                    "retryable": False,
+                },
+            )
+        except OperatorExecutionRootError as exc:
+            terminal_status = "failed"
+            terminal_exc = exc
+            await self.store.finish_turn(
+                request_id,
+                outcome="failed",
+                error={
+                    "code": "service_failure",
                     "message": str(exc),
                     "retryable": False,
                 },

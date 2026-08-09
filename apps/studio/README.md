@@ -31,6 +31,7 @@ All variables are optional; defaults are shown.
 | `LIONAGI_STUDIO_PORT` | `8765` | FastAPI bind port |
 | `LIONAGI_STUDIO_AUTH_TOKEN` | *(unset)* | Bearer token for `/api/*` routes |
 | `LIONAGI_STUDIO_FRONTEND_DIST` | `apps/studio/frontend/dist` | Path to built SPA dist/ |
+| `LIONAGI_STUDIO_OPERATOR_CWD` | *(unset)* | Absolute execution root for Operator CLI providers |
 | `LIONAGI_HOME` | `~/.lionagi` | Base LionAGI data directory (holds `state.db`) |
 | `LIONAGI_SHOWS_ROOT` | `~/khive-work/shows` | Show artifact root |
 | `CORS_ORIGINS` | `localhost:5173,localhost:3000` | Comma-separated allowed browser origins |
@@ -67,6 +68,14 @@ li studio --no-frontend
 Operator uses the locally installed Claude Code CLI and its own authenticated
 session by default. The Studio extra does not install or sign in to Claude
 Code.
+
+Set `LIONAGI_STUDIO_OPERATOR_CWD` to an existing absolute directory to pin all
+Operator turns to one execution root. When it is unset, Operator uses the
+selected project's registered path. If neither path is usable, or if the
+explicit setting is invalid, the turn fails with a configuration error instead
+of inheriting whichever directory launched the Studio daemon. Browser-created
+conversations currently have no project selection, so configure this variable
+for normal Operator use in container deployments.
 
 On a fresh machine:
 
