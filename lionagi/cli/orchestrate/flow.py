@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import os
+import statistics
 import sys
 import time
 from dataclasses import dataclass, field
@@ -67,9 +68,11 @@ logger = logging.getLogger(__name__)
 
 _DescendantCpuSample = tuple[dict[int, float], bool]
 
-# CPU totals commonly advance in 0.01s quanta. A 0.10s cutoff is more than
-# three times the observed 0.01-0.03s helper jitter at the 60s heartbeat cadence.
-_DESCENDANT_CPU_ACTIVITY_SECONDS = 0.10
+# A working descendant must clear both the peer activity floor and a sublinear
+# CPU-quantum guard, without assuming healthy totals grow linearly with the window.
+_DESCENDANT_CPU_ACTIVITY_RATIO = 4.0
+_DESCENDANT_CPU_FALLBACK_SECONDS = 0.10
+_DESCENDANT_CPU_FALLBACK_INTERVAL_SECONDS = 60.0
 
 
 def _sample_descendant_cpu(pid: int) -> _DescendantCpuSample:
@@ -93,6 +96,7 @@ def _heartbeat_warning(
     *,
     now: float,
     max_idle_seconds: float,
+    sample_interval_seconds: float,
     previous: _DescendantCpuSample | None,
     current: _DescendantCpuSample,
 ) -> str | None:
@@ -119,18 +123,41 @@ def _heartbeat_warning(
     activity = [*deltas, *new_totals]
     if any(not math.isfinite(value) or value < 0 for value in activity):
         return None
+    if not math.isfinite(sample_interval_seconds) or sample_interval_seconds <= 0:
+        return None
 
-    max_activity = max(activity)
-    if max_activity > _DESCENDANT_CPU_ACTIVITY_SECONDS or math.isclose(
-        max_activity,
-        _DESCENDANT_CPU_ACTIVITY_SECONDS,
+    activity_rates = [value / sample_interval_seconds for value in activity]
+    max_activity_rate = max(activity_rates)
+    peer_rates = activity_rates.copy()
+    peer_rates.remove(max_activity_rate)
+    activity_floor = statistics.median(peer_rates) if peer_rates else 0.0
+    ratio_activity_cutoff = activity_floor * _DESCENDANT_CPU_ACTIVITY_RATIO
+    fallback_activity_seconds = _DESCENDANT_CPU_FALLBACK_SECONDS * math.sqrt(
+        sample_interval_seconds / _DESCENDANT_CPU_FALLBACK_INTERVAL_SECONDS
+    )
+    fallback_activity_cutoff = fallback_activity_seconds / sample_interval_seconds
+    activity_cutoff = max(ratio_activity_cutoff, fallback_activity_cutoff)
+    if max_activity_rate > activity_cutoff or math.isclose(
+        max_activity_rate,
+        activity_cutoff,
         abs_tol=1e-9,
     ):
         return None
 
+    if ratio_activity_cutoff >= fallback_activity_cutoff:
+        warning_detail = (
+            "no positive descendant CPU rate reached "
+            f"{_DESCENDANT_CPU_ACTIVITY_RATIO:g}x the median peer rate"
+        )
+    else:
+        warning_detail = (
+            "descendant CPU activity stayed below the "
+            f"{fallback_activity_seconds:.3g}s fallback cutoff"
+        )
+
     return (
         f"  ⚠ IDLE STALL: {segment['branch_name']} running {elapsed:.0f}s; "
-        "descendants stayed below the 0.10s CPU activity cutoff"
+        f"{warning_detail} during the {sample_interval_seconds:g}s sample"
     )
 
 
@@ -1288,6 +1315,7 @@ async def _execute_dag(
                     _seg,
                     now=_now,
                     max_idle_seconds=max_idle_seconds,
+                    sample_interval_seconds=heartbeat_interval,
                     previous=previous_cpu_sample,
                     current=current_cpu_sample,
                 )

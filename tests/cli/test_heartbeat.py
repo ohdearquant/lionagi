@@ -99,6 +99,7 @@ def test_elapsed_threshold_requires_descendant_activity_signal():
         _running_segment(now, 601),
         now=now,
         max_idle_seconds=600,
+        sample_interval_seconds=60,
         previous=({41: 8.0}, True),
         current=({41: 8.2}, True),
     )
@@ -120,6 +121,7 @@ def test_busy_descendants_suppress_idle_warning():
         _running_segment(now, 601),
         now=now,
         max_idle_seconds=600,
+        sample_interval_seconds=60,
         previous=({41: 8.0}, True),
         current=({41: 8.2}, True),
     )
@@ -132,6 +134,7 @@ def test_quiet_descendants_emit_idle_warning():
         _running_segment(now, 601),
         now=now,
         max_idle_seconds=600,
+        sample_interval_seconds=60,
         previous=({41: 8.0}, True),
         current=({41: 8.0}, True),
     )
@@ -189,6 +192,7 @@ def test_external_io_without_output_writes_suppresses_warning(monkeypatch, tmp_p
             _running_segment(now, 601),
             now=now,
             max_idle_seconds=600,
+            sample_interval_seconds=60,
             previous=previous,
             current=current,
         )
@@ -209,6 +213,7 @@ def test_empty_descendant_samples_emit_distinct_warning():
         _running_segment(now, 601),
         now=now,
         max_idle_seconds=600,
+        sample_interval_seconds=60,
         previous=({}, True),
         current=({}, True),
     )
@@ -224,6 +229,7 @@ def test_incomplete_descendant_sample_suppresses_warning():
             _running_segment(now, 601),
             now=now,
             max_idle_seconds=600,
+            sample_interval_seconds=60,
             previous=({41: 8.0}, True),
             current=({}, False),
         )
@@ -245,6 +251,7 @@ def test_unproven_descendant_delta_suppresses_warning(previous, current):
         _running_segment(now, 601),
         now=now,
         max_idle_seconds=600,
+        sample_interval_seconds=60,
         previous=previous,
         current=current,
     )
@@ -257,6 +264,7 @@ def test_busy_new_descendant_suppresses_warning_without_overlap():
         _running_segment(now, 601),
         now=now,
         max_idle_seconds=600,
+        sample_interval_seconds=60,
         previous=({41: 8.0}, True),
         current=({42: 1.0}, True),
     )
@@ -278,6 +286,7 @@ def test_under_threshold_never_emits_activity_warning(previous, current):
         _running_segment(now, 599),
         now=now,
         max_idle_seconds=600,
+        sample_interval_seconds=60,
         previous=previous,
         current=current,
     )
@@ -521,5 +530,8 @@ def test_op_segment_schema_includes_heartbeat_field():
     assert "_heartbeat_loop" in src, "flow.py must define _heartbeat_loop"
     assert "_hb_task" in src, "flow.py must create and cancel _hb_task"
     assert "heartbeat_interval" in src, "flow.py must define heartbeat_interval"
+    assert "sample_interval_seconds=heartbeat_interval" in src, (
+        "the stall predicate must receive the actual heartbeat interval"
+    )
     assert "max_idle_seconds" in src, "flow.py must define max_idle_seconds"
     assert "IDLE STALL" in src, "flow.py must emit an IDLE STALL warning"
