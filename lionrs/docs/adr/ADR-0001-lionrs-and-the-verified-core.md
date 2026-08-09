@@ -5,6 +5,12 @@
 - **Supersedes**: none
 - **Related**: lionagi ADR-0114 (executable flow definition and role capabilities)
 
+## Approval
+
+| Role | Decision | Date |
+|---|---|---|
+| Director | Approve | 2026-08-08 |
+
 ## Context
 
 lionagi is a Python package. This ADR opens a Rust tree inside the same repository and

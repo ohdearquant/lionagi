@@ -416,6 +416,7 @@ jobs:
       studio: ${{ steps.filter.outputs.studio }}
       adr: ${{ steps.filter.outputs.adr }}
       imports: ${{ steps.filter.outputs.imports }}
+      lionrs: ${{ steps.filter.outputs.lionrs }}
     steps:
     - uses: actions/checkout@v7
     - uses: dorny/paths-filter@v4
@@ -442,6 +443,9 @@ jobs:
             - 'lionagi/**'
             - 'pyproject.toml'
             - 'uv.lock'
+            - '.github/workflows/ci.yml'
+          lionrs:
+            - 'lionrs/**'
             - '.github/workflows/ci.yml'
 
   # Build the Studio image (Vite SPA + FastAPI single-origin) whenever its inputs
@@ -560,6 +564,26 @@ jobs:
           print(f"::notice::bare import loaded none of the {len(heavies)} guarded heavy modules")
           EOF
 
+  lionrs:
+    needs: changes
+    if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.lionrs == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lionrs/crates
+    steps:
+    - uses: actions/checkout@v7
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+    - name: Lint
+      run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    - name: Test
+      run: cargo test --workspace --all-features --locked
+
   vscode:
     runs-on: ubuntu-latest
     defaults:
@@ -595,13 +619,14 @@ jobs:
   # the event (PRs run a subset of Python versions) and a renamed leg would
   # strand PRs on a check that never reports. Fail-closed: every hard gate must
   # report success; a skipped, failed, or cancelled hard gate fails the aggregate.
-  # The conditional jobs (studio-docker, minimal-import, no-eager-heavies) may
+  # The conditional jobs (studio-docker, minimal-import, no-eager-heavies,
+  # lionrs) may
   # skip only when the changes path-filter job itself succeeded and reported
   # their inputs unchanged; any other skip, failure, or cancellation fails the
   # aggregate.
   ci-gate:
     if: ${{ always() }}
-    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, vscode, marketplace]
+    needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, lionrs, vscode, marketplace]
     runs-on: ubuntu-latest
     steps:
     - name: Check aggregate result
@@ -638,6 +663,7 @@ jobs:
             "studio-docker": "studio",
             "minimal-import": "imports",
             "no-eager-heavies": "imports",
+            "lionrs": "lionrs",
         }
         for job, flag in conditional_gates.items():
             changed = needs["changes"].get("outputs", {}).get(flag)
