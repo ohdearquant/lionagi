@@ -47,6 +47,7 @@ from .._runs import (
     RunDir,
     _make_message_handler,
     _open_shared_db,
+    _record_persistence_degraded,
     _resolve_project,
     allocate_run,
     save_last_branch_pointer,
@@ -1377,6 +1378,8 @@ _log_orch = logging.getLogger("lionagi.cli")
 async def setup_orchestration_persist(
     session: Any,
     *,
+    run: RunDir | None = None,
+    run_manifest: dict[str, Any] | None = None,
     invocation_kind: str | None = None,
     playbook_name: str | None = None,
     agent_name: str | None = None,
@@ -1466,10 +1469,11 @@ async def setup_orchestration_persist(
         return ctx
     except Exception as exc:
         _log_orch.warning(
-            "live persist setup failed (%s) — disabling persistence for this run",
+            "live persist setup failed (%r) — disabling persistence for this run",
             exc,
             exc_info=True,
         )
+        _record_persistence_degraded(exc, run=run, run_manifest=run_manifest)
         if db is not None:
             try:
                 await db.close()
@@ -1593,6 +1597,8 @@ async def start_live_persist(
     env.run.write_manifest(env._run_manifest)
     ctx = await setup_orchestration_persist(
         env.session,
+        run=env.run,
+        run_manifest=env._run_manifest,
         invocation_kind=invocation_kind,
         playbook_name=playbook_name,
         agent_name=agent_name,
