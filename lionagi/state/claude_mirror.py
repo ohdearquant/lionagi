@@ -15,7 +15,7 @@ from lionagi.protocols.messages.action_response import ActionResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponse
 from lionagi.protocols.messages.instruction import Instruction
 
-from ._mirror_common import SourceLine, bound_mirror_content
+from ._mirror_common import MIRROR_PROVIDER_ERROR_KEY, SourceLine, bound_mirror_content
 
 if TYPE_CHECKING:
     from lionagi.protocols.messages.message import RoledMessage
@@ -148,6 +148,14 @@ def messages_for_event(
     elif etype == "assistant":
         buf: list[str] = []
         flush_n = 0
+        metadata: dict[str, Any] = {}
+        if event.get("isApiErrorMessage") is True:
+            marker: dict[str, Any] = {}
+            if isinstance(event.get("error"), str) and event["error"]:
+                marker["error"] = event["error"]
+            if isinstance(event.get("apiErrorStatus"), int):
+                marker["status"] = event["apiErrorStatus"]
+            metadata[MIRROR_PROVIDER_ERROR_KEY] = marker
 
         def _flush() -> None:
             nonlocal flush_n
@@ -160,7 +168,10 @@ def messages_for_event(
                 (
                     mid,
                     lambda mid, ts, txt=txt: AssistantResponse(
-                        id=mid, created_at=ts, content={"assistant_response": txt}
+                        id=mid,
+                        created_at=ts,
+                        content={"assistant_response": txt},
+                        metadata=metadata,
                     ),
                 )
             )
