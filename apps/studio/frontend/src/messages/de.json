@@ -851,7 +851,7 @@
       "provider": "Anbieter",
       "effort": "Aufwand",
       "updated": "Aktualisiert",
-      "branchesTitle": "{count, plural, one {Branch (#)} other {Branches (#)}}",
+      "branchesTitle": "{count, plural, one {Zweig (#)} other {Zweige (#)}}",
       "noBranches": "Keine Branches.",
       "msgs": " Nachrichten",
       "engineRuns": "Engine-Läufe"
