@@ -21,7 +21,7 @@ from __future__ import annotations
 import yaml
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.cli.orchestrate import _validate_spec_fields
+from lionagi.cli.orchestrate import _FLOW_SPEC_FIELDS, _validate_spec_fields
 from lionagi.studio.services.playbooks import _check_spec_fields
 from lionagi.studio.services.schedules import _validate_flow_yaml_spec
 
@@ -36,6 +36,71 @@ ALL_SURFACES = (
     ("playbook", _check_spec_fields),
     ("schedule", _schedule_spec),
 )
+
+
+VALID_FIELD_VALUES = {
+    "agent": "test-profile",
+    "argument-hint": "[--mode MODE]",
+    "args": {"mode": {"type": "str"}},
+    "artifacts": {"expected": [{"id": "report", "path": "report.md"}]},
+    "bare": True,
+    "bypass": True,
+    "description": "Review a target",
+    "dry_run": False,
+    "effort": "high",
+    "links": [],
+    "max_agents": 0,
+    "max_ops": 0,
+    "model": "claude-code/opus-4-7",
+    "name": "repo-review",
+    "pack": "./routing.yaml",
+    "permission_mode": "acceptEdits",
+    "prompt": "Do the thing",
+    "reactive": "off",
+    "save": "./results",
+    "show_graph": True,
+    "steps": {},
+    "team_attach": "existing-team",
+    "team_mode": "new-team",
+    "with_synthesis": True,
+    "workers": 1,
+    "use": {"models": {}},
+    "yolo": True,
+}
+
+
+def test_every_declared_field_is_accepted_by_every_surface():
+    assert frozenset(VALID_FIELD_VALUES) == _FLOW_SPEC_FIELDS
+
+    for field, value in VALID_FIELD_VALUES.items():
+        errors = [validate({field: value}) for _, validate in ALL_SURFACES]
+        assert errors == [None] * len(ALL_SURFACES), (field, errors)
+
+
+def test_every_surface_rejects_an_unknown_field_with_the_same_error():
+    errors = [validate({"not_a_flow_field": True}) for _, validate in ALL_SURFACES]
+
+    assert all(error is not None for error in errors), errors
+    assert len(set(errors)) == 1, errors
+
+
+def test_every_surface_returns_the_same_field_error():
+    invalid_specs = (
+        {"workers": 33},
+        {"max_ops": 51},
+        {"effort": "impossible"},
+        {"with_synthesis": []},
+        {"bare": "true"},
+        {"prompt": 42},
+        {"save": 7},
+        {"model": 42},
+        {"artifacts": None},
+    )
+
+    for spec in invalid_specs:
+        errors = [validate(spec) for _, validate in ALL_SURFACES]
+        assert all(error is not None for error in errors), (spec, errors)
+        assert len(set(errors)) == 1, (spec, errors)
 
 
 def test_the_bound_is_far_from_anything_a_prompt_reaches():

@@ -246,7 +246,7 @@ def test_a_play_naming_only_a_playbook_reaches_the_spawn(spawned, submit_dir):
     is a complete submission."""
     books = submit_dir / ".lionagi" / "playbooks"
     books.mkdir(parents=True)
-    (books / "probe.playbook.yaml").write_text("name: probe\nprompt: summarize this\nnodes:\n")
+    (books / "probe.playbook.yaml").write_text("name: probe\nprompt: summarize this\n")
 
     answer = call(
         ops=[spawn_op("play.submit", {"playbook": "probe", "no_mcp_config": True}, "probe")]

@@ -455,6 +455,47 @@ def a_playbook(tmp_path, monkeypatch):
     return "remedy-fixture"
 
 
+@pytest.fixture
+def invalid_playbook(tmp_path, monkeypatch):
+    directory = tmp_path / ".lionagi" / "playbooks"
+    directory.mkdir(parents=True)
+    (directory / "invalid-spec.playbook.yaml").write_text(
+        json.dumps(
+            {
+                "name": "invalid-spec",
+                "model": "claude-code/opus-4-7",
+                "prompt": "do the work",
+                "max-ops": 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    return "invalid-spec"
+
+
+def test_play_submit_refuses_invalid_spec_before_job_creation(invalid_playbook, submitted):
+    qualified = call(help={"verb": "play.submit", "playbook": invalid_playbook})
+    answer = call(
+        ops=[
+            {
+                "op": "play.submit",
+                "args": {"playbook": invalid_playbook},
+                "schema_fingerprint": qualified["schema_fingerprint"],
+            }
+        ]
+    )
+
+    op = answer["ops"][0]
+    assert op["ok"] is False
+    assert op["error"]["kind"] == "invalid_input"
+    assert "max_ops" in op["error"]["message"]
+    assert "[0, 50]" in op["error"]["message"]
+    assert "64" in op["error"]["message"]
+    assert "run_id" not in op
+    assert submitted == {}
+
+
 def test_a_refused_playbook_call_is_told_to_ask_help_for_that_playbook(a_playbook, submitted):
     """The remedy has to name the playbook, or a caller who re-reads it loops.
 
