@@ -45,6 +45,10 @@ export default function StatusFooter() {
   }, [apiBase]);
 
   const dbSize = stats?.db?.size_bytes;
+  // The backend already decides this against one threshold; re-deriving it
+  // here would be a second opinion that can disagree with /api/stats.
+  const dbOverThreshold = stats?.db?.size_alert === true;
+  const dbThreshold = stats?.db?.size_threshold_bytes;
   const version = import.meta.env.VITE_APP_VERSION as string | undefined;
 
   return (
@@ -72,7 +76,16 @@ export default function StatusFooter() {
       {dbSize !== undefined ? (
         <>
           <span className="text-edge-strong">·</span>
-          <span className="tabular-nums">
+          <span
+            className={dbOverThreshold ? "tabular-nums text-status-warning" : "tabular-nums"}
+            // Numbers only, so the reason for the colour survives without a
+            // translated string in all sixteen locales.
+            title={
+              dbOverThreshold && dbThreshold !== undefined
+                ? `${formatBytes(dbSize)} / ${formatBytes(dbThreshold)}`
+                : undefined
+            }
+          >
             {t("footer.db")} {formatBytes(dbSize)}
           </span>
         </>

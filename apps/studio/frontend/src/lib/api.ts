@@ -1821,6 +1821,8 @@ export interface AdminDoctorResponse {
   db_health: {
     size_bytes: number;
     wal_bytes: number;
+    size_alert?: boolean;
+    size_threshold_bytes?: number;
   };
   diagnostic_run_at: string;
 }
@@ -2001,6 +2003,10 @@ export interface DbStats {
   path: string;
   size_bytes: number;
   wal_bytes: number;
+  /** True once size_bytes reaches size_threshold_bytes. Computed by the
+   * backend so every surface applies one threshold rather than its own. */
+  size_alert?: boolean;
+  size_threshold_bytes?: number;
   connections_active: number;
   last_checkpoint_at: string | null;
   tables?: Record<string, number>;

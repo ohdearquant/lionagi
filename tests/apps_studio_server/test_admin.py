@@ -116,14 +116,32 @@ def test_db_health_reports_only_numbers_it_can_actually_measure(tmp_path, monkey
     Pinning the whole key set, not just the absence of that one name, is
     deliberate: the defect was a duplicate, and the next duplicate will have a
     different name.
+
+    ``size_alert`` and ``size_threshold_bytes`` were added later and are named
+    here on purpose. The threshold is configuration, not a measurement, and it
+    is not derivable from anything else in the payload, so without it a reader
+    cannot say whether the store is over the limit at all. ``size_alert`` is
+    arithmetically derivable once the threshold is present, which is what makes
+    it worth stating anyway: the comparison is a policy the producer owns, and a
+    reader that re-implements it can drift from the server's own predicate
+    silently, in whichever direction the mistake runs. Both come from the same
+    helper ``/api/stats`` uses, so the two surfaces agree by construction rather
+    than by two consumers happening to compute the same thing.
+
+    The rule this test enforces is unchanged: no field that merely restates
+    another. A derived field earns its place only by carrying a decision, and
+    the reason has to be written down here.
     """
     from lionagi.studio.services.admin import db_health
 
     health = db_health()
 
-    assert set(health) == {"size_bytes", "wal_bytes"}, (
-        f"db_health grew a field; if it reports a real measurement, say so here: {health}"
-    )
+    assert set(health) == {
+        "size_bytes",
+        "wal_bytes",
+        "size_alert",
+        "size_threshold_bytes",
+    }, f"db_health grew a field; if it reports a real measurement, say so here: {health}"
 
 
 def test_admin_prune_selected_sessions(tmp_path, monkeypatch):

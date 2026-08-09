@@ -200,3 +200,59 @@ def test_invocation_list_bad_metadata_becomes_none(tmp_path, monkeypatch):
     assert matching[0]["node_metadata"] is None, (
         "parse failure on node_metadata must yield None in list endpoint"
     )
+
+
+# ---------------------------------------------------------------------------
+# the size alert is one decision, and both health surfaces report it
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_and_stats_agree_on_the_size_alert(tmp_path, monkeypatch):
+    """Both health surfaces must read the same threshold decision.
+
+    /api/stats already decided this. /api/admin/doctor reported the raw size
+    and nothing else, so the only way for a reader of the doctor payload to
+    know whether the store was over its limit was to re-derive the limit --
+    which is how a health view ends up unable to say "unhealthy" at all.
+    Asserting agreement rather than a fixed number is what keeps a second
+    copy of the threshold from being introduced later.
+    """
+    import lionagi.studio.config as studio_config
+
+    db_path = tmp_path / "state.db"
+    _run(_seed_two_sessions(db_path))
+    monkeypatch.setattr(studio_config, "DB_SIZE_ALERT_BYTES", 1)
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    stats_db = client.get("/api/stats").json()["db"]
+    doctor_db = client.get("/api/admin/doctor").json()["db_health"]
+
+    assert stats_db["size_alert"] is True
+    assert doctor_db["size_alert"] is True, (
+        "doctor must report the alert /api/stats already raised for the same store"
+    )
+    assert doctor_db["size_threshold_bytes"] == stats_db["size_threshold_bytes"]
+    assert doctor_db["size_bytes"] == stats_db["size_bytes"]
+
+
+def test_doctor_size_alert_is_false_below_the_threshold(tmp_path, monkeypatch):
+    """The other arm: a store under its limit must not be flagged.
+
+    Without this, an implementation that hardcodes the alert to True passes
+    the agreement test above -- and a hardcoded health signal is the exact
+    defect this pair exists to prevent.
+    """
+    import lionagi.studio.config as studio_config
+
+    db_path = tmp_path / "state.db"
+    _run(_seed_two_sessions(db_path))
+    monkeypatch.setattr(studio_config, "DB_SIZE_ALERT_BYTES", 10**12)
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    stats_db = client.get("/api/stats").json()["db"]
+    doctor_db = client.get("/api/admin/doctor").json()["db_health"]
+
+    assert doctor_db["size_bytes"] > 0, "the store must be non-empty for this to mean anything"
+    assert stats_db["size_alert"] is False
+    assert doctor_db["size_alert"] is False
+    assert doctor_db["size_threshold_bytes"] == 10**12
