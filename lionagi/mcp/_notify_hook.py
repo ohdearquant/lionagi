@@ -449,6 +449,11 @@ def main(argv: list[str] | None = None) -> int:
     if cause is not None:
         jobs.record_failure_cause(args.run_id, cause)
 
+    started = jobs.begin_notify_delivery(args.run_id)
+    if started.refused:
+        _note_persistence_failure(args.run_id, "delivery attempt")
+        return 1
+
     outcome = deliver_terminal_notice(
         args.run_id,
         terminal.record,

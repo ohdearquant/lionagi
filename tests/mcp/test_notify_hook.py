@@ -73,6 +73,7 @@ def test_marks_terminal_without_delivery(job, monkeypatch):
     assert rec["status"] == "completed"
     assert calls == []  # nothing delivered
     assert rec["notify_delivery"] == {"attempted": False}
+    assert jobs.status(job)["notify_delivery"] == {"attempted": False}
 
 
 def test_command_override_substitutes_and_delivers(job, monkeypatch):
@@ -115,6 +116,7 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
         # this was without keeping anything the command itself printed
         "command": "notify",
     }
+    assert jobs.status(job)["notify_delivery"]["ok"] is True
 
 
 def test_delivery_failure_is_recorded_not_silent(job, monkeypatch):
@@ -134,6 +136,7 @@ def test_delivery_failure_is_recorded_not_silent(job, monkeypatch):
         "failure_class": "unknown",
         "command": "notify",
     }
+    assert jobs.status(job)["notify_delivery"]["ok"] is False
 
 
 def test_delivery_spawn_error_is_recorded(job, monkeypatch):
@@ -625,6 +628,120 @@ subprocess.run(
 )
 sys.stdout.write("ordinary final output\\n")
 """
+
+
+_LI_SHIM_WITH_A_SHORT_OUTER_NOTIFY_BUDGET = """\
+import asyncio, json, os, sys, time
+from pathlib import Path
+
+from lionagi.cli.orchestrate._notify import register_flow_notify_scope
+from lionagi.mcp import config
+from lionagi.state.lifecycle.callbacks import (
+    EntityRef,
+    RunTerminalEnvelope,
+    TerminalCallbackRegistry,
+)
+
+
+async def main():
+    argv = sys.argv[1:]
+    template = argv[argv.index("--notify") + 1]
+    run_id = os.environ[config.RUN_ID_ENV_VAR]
+    run_dir = config.run_dir(run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest = run_dir / "run.json"
+    manifest.write_text(json.dumps({"status": "running"}))
+
+    registry = TerminalCallbackRegistry(budget_seconds=1.0)
+    register_flow_notify_scope(
+        registry,
+        override=template,
+        entity_kind="session",
+        entity_id="session-1",
+        invocation_id=None,
+        flow_kind="agent",
+        playbook=None,
+        save_dir=None,
+        cwd=os.getcwd(),
+        started_at=time.time(),
+    )
+    await registry.emit(
+        RunTerminalEnvelope(
+            event_id="event-1",
+            entity=EntityRef(kind="session", id="session-1"),
+            previous_status="running",
+            terminal_status="completed",
+            reason_code="run.completed.ok",
+            occurred_at=time.time(),
+        )
+    )
+    manifest.write_text(json.dumps({"status": "completed"}))
+    print("terminal manifest written", flush=True)
+
+
+asyncio.run(main())
+"""
+
+
+_DELIVERY_THAT_SIGNALS_THEN_HANGS = """\
+import sys, time
+from pathlib import Path
+
+Path(sys.argv[1]).write_text("delivered")
+time.sleep(5)
+"""
+
+
+def test_outer_notify_timeout_keeps_an_attempt_record_after_delivery(monkeypatch, tmp_path):
+    """A delivered notice cannot become null when the CLI times out its hook.
+
+    The CLI callback owns a shorter deadline than the hook's delivery command.
+    The delivery signals its externally visible side effect, then remains alive
+    until the outer callback cancels the hook process group. The CLI writes its
+    terminal manifest only after that callback returns, matching production
+    ordering rather than calling the two writers sequentially in the test.
+    """
+    monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "mcp" / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+
+    shim = tmp_path / "li_shim.py"
+    shim.write_text(_LI_SHIM_WITH_A_SHORT_OUTER_NOTIFY_BUDGET)
+    delivery = tmp_path / "delivery.py"
+    delivery.write_text(_DELIVERY_THAT_SIGNALS_THEN_HANGS)
+    delivered = tmp_path / "delivered"
+
+    def _li_command():
+        return [sys.executable, str(shim)]
+
+    monkeypatch.setattr(config, "li_command", _li_command)
+
+    handle = jobs.submit(
+        "agent",
+        [],
+        notify_command=json.dumps([sys.executable, str(delivery), str(delivered)]),
+        no_mcp_config=True,
+    )
+    run_id = handle["run_id"]
+    manifest = tmp_path / "runs" / run_id / "run.json"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if delivered.exists() and manifest.exists():
+            if json.loads(manifest.read_text()).get("status") == "completed":
+                break
+        time.sleep(0.05)
+    else:
+        raise AssertionError(f"the timeout race did not complete; log:\n{_console_log(run_id)}")
+
+    assert delivered.read_text() == "delivered"
+    status = jobs.status(run_id)
+    assert status["terminal_source"] == jobs.TERMINAL_SOURCE_HOOK
+    assert status["notify_delivery"]["attempted"] is True
+    assert status["notify_delivery"]["ok"] is None
+    assert status["notify_delivery"]["error"] == "delivery_outcome_unknown"
+    row = next(item for item in jobs.list_jobs() if item["run_id"] == run_id)
+    assert row["notify_delivery_state"] == "unknown"
 
 
 def test_the_failure_notice_survives_the_runs_own_remaining_output(monkeypatch, tmp_path):
