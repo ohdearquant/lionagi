@@ -689,3 +689,55 @@ def test_admin_transition_legacy_reason_backwards_compat(tmp_path, monkeypatch):
             assert row["status_reason_summary"] == "Legacy client cleanup"
 
     _run(_check())
+
+
+def test_admin_health_names_a_session_the_way_every_other_surface_does(tmp_path, monkeypatch):
+    """The health report must resolve a session's display name, not print the
+    stored column.
+
+    The `name` column can hold a raw prompt body. Every other surface reads it
+    through resolve_display_name, which ranks the play, playbook and agent-role
+    labels above it, so the API and the UI showed a clean label while this
+    endpoint published the prompt for the very same session.
+    """
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    prompt_as_name = (
+        "|- You are a scheduled DRAFT-ONLY worker for the re-enrichment "
+        "campaign. Do not write to the graph."
+    )
+
+    async def _seed() -> None:
+        async with StateDB(db_path) as db:
+            pid = str(uuid.uuid4())
+            await db.create_progression(pid)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": pid,
+                    "name": prompt_as_name,
+                    "status": "running",
+                    "started_at": time.time(),
+                }
+            )
+            await db.execute(
+                "UPDATE sessions SET agent_name = ? WHERE id = ?", ("claude-code", sid)
+            )
+
+    _run(_seed())
+
+    import lionagi.studio.services.admin as admin_mod
+
+    # No artifacts and no messages classify this ORPHANED, which is what puts
+    # it in the `unhealthy` list this test reads.
+    monkeypatch.setattr(admin_mod, "process_liveness", lambda *a, **k: False)
+
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    body = client.get("/api/admin/health").json()
+    rows = body["sessions"]["unhealthy"]
+    assert rows, "the seeded session never reached the unhealthy list"
+    row = next(r for r in rows if r["session_id"] == sid)
+
+    assert not row["name"].startswith("|-"), "the raw prompt body is being published"
+    assert "DRAFT-ONLY" not in row["name"]
+    assert row["name"].startswith("claude-code"), row["name"]

@@ -23,6 +23,7 @@ from lionagi.ln import now_utc
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, validate_reason_code
+from lionagi.state.session_naming import resolve_display_name
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
@@ -498,10 +499,13 @@ async def health_report() -> dict[str, Any]:
             unhealthy.append(
                 {
                     "session_id": row["id"],
-                    "name": sess.get("name")
-                    or sess.get("playbook_name")
-                    or sess.get("agent_name")
-                    or "",
+                    # The same resolver every other surface reads through. The
+                    # stored `name` column can hold a raw prompt body, which
+                    # resolve_display_name demotes below the play, playbook and
+                    # agent-role tiers; reading the column directly published
+                    # those prompts here while the API and UI showed a clean
+                    # label for the very same session.
+                    "name": resolve_display_name(sess),
                     "health": health.value,
                     "status": status,
                     "invocation_kind": sess.get("invocation_kind"),
