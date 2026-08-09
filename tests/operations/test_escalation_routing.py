@@ -22,7 +22,7 @@ from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.operations.node import create_operation
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
-from lionagi.session.signal import NodeEscalated
+from lionagi.session.signal import NodeEscalated, NodeSpawned
 
 
 def _session(**ops):
@@ -110,16 +110,32 @@ async def test_escalation_child_carries_readable_name_and_parent_pointer():
     the node it retries) needs the label without re-deriving it from a
     possibly-stale reference to the parent op."""
 
+    attempts = 0
+    spawned_signals: list[NodeSpawned] = []
+    progress_events: list[tuple[str, str, str]] = []
+
     async def cheap(**kw):
-        return EscalationRequest(reason="too hard", context={"route": "higher_tier"})
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return EscalationRequest(reason="too hard", context={"route": "higher_tier"})
+        return "completed after retry"
 
     session = _session(cheap=cheap)
+    session.observe(NodeSpawned, handler=lambda signal, _: spawned_signals.append(signal))
 
     builder = OperationGraphBuilder()
     parent_id = builder.add_operation("cheap", node_id="cheap")
     graph = builder.get_graph()
 
-    await flow(session, graph, reactive=True)
+    await flow(
+        session,
+        graph,
+        reactive=True,
+        on_progress=lambda op_id, name, status, _elapsed: progress_events.append(
+            (op_id, name, status)
+        ),
+    )
 
     child = next(
         n
@@ -127,6 +143,11 @@ async def test_escalation_child_carries_readable_name_and_parent_pointer():
         if isinstance(n, Operation) and n.metadata.get("escalated_from") == str(parent_id)
     )
     assert child.metadata["escalated_from_name"] == "cheap"
+    assert child.metadata["reference_id"] == "cheap escalation retry"
+    assert (str(child.id), "cheap escalation retry", "queued") in progress_events
+    assert len(spawned_signals) == 1
+    assert spawned_signals[0].parent_id == child.metadata["escalated_from"] == str(parent_id)
+    assert spawned_signals[0].independent is True
 
 
 # ---------------------------------------------------------------------------

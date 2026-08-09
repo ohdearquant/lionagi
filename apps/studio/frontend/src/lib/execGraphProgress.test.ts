@@ -38,8 +38,8 @@ describe("deriveProgressCounts — summary counts from the canonical status sour
     expect(counts.awaitingApproval).toBe(1);
     expect(counts.paused).toBe(1);
     expect(counts.completed).toBe(1);
-    // failed + escalated collapse into one failure pool
-    expect(counts.failed).toBe(2);
+    expect(counts.failed).toBe(1);
+    expect(counts.escalated).toBe(1);
     expect(counts.hasFailure).toBe(true);
   });
 
@@ -55,6 +55,7 @@ describe("deriveProgressCounts — summary counts from the canonical status sour
       counts.awaitingApproval +
       counts.paused +
       counts.completed +
+      counts.escalated +
       counts.failed;
     expect(sum).toBe(counts.total);
   });
@@ -69,6 +70,7 @@ describe("deriveProgressCounts — summary counts from the canonical status sour
       awaitingApproval: 0,
       paused: 0,
       completed: 0,
+      escalated: 0,
       failed: 0,
       hasFailure: false,
     });
@@ -86,10 +88,16 @@ describe("deriveProgressCounts — summary counts from the canonical status sour
     expect(counts.hasFailure).toBe(false);
   });
 
-  it("flags failure from escalated alone, not only failed", () => {
-    const counts = deriveProgressCounts(["a"], { a: "escalated" });
-    expect(counts.hasFailure).toBe(true);
-    expect(counts.failed).toBe(1);
+  it("counts escalated separately while genuine failed remains a failure", () => {
+    const paired = deriveProgressCounts(["a", "b"], { a: "escalated", b: "failed" });
+    expect(paired.escalated).toBe(1);
+    expect(paired.failed).toBe(1);
+    expect(paired.hasFailure).toBe(true);
+
+    const escalatedOnly = deriveProgressCounts(["a"], { a: "escalated" });
+    expect(escalatedOnly.escalated).toBe(1);
+    expect(escalatedOnly.failed).toBe(0);
+    expect(escalatedOnly.hasFailure).toBe(false);
   });
 });
 
