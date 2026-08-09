@@ -16,6 +16,7 @@ import {
   IconSearch,
   IconTerminal,
 } from "@/components/ui/icons";
+import { formatElapsed } from "@/lib/elapsed";
 import type { RunMessage, RunStep } from "@/lib/types";
 import type { FileResolutionContext } from "@/components/ui/Markdown";
 
@@ -502,13 +503,7 @@ function RunStepCard({
                 </span>
               )}
               <span>{t("countFiles", { count: summary.files.length })}</span>
-              {summary.durationSec != null && (
-                <span>
-                  {summary.durationSec < 60
-                    ? `${summary.durationSec}s`
-                    : `${Math.floor(summary.durationSec / 60)}m ${summary.durationSec % 60}s`}
-                </span>
-              )}
+              {summary.durationSec != null && <span>{formatElapsed(summary.durationSec)}</span>}
             </span>
           </div>
           {!expanded && lastAssistant && (
@@ -965,14 +960,7 @@ function OverviewPanel({
         />
         <StatCard label={t("statFilesTouched")} value={summary.files.length.toString()} />
         {summary.durationSec != null && (
-          <StatCard
-            label={t("statDuration")}
-            value={
-              summary.durationSec < 60
-                ? `${summary.durationSec}s`
-                : `${Math.floor(summary.durationSec / 60)}m ${summary.durationSec % 60}s`
-            }
-          />
+          <StatCard label={t("statDuration")} value={formatElapsed(summary.durationSec)} />
         )}
       </div>
       {summary.commands.length > 0 && (

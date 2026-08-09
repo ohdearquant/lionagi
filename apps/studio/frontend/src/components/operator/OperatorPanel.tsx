@@ -1520,45 +1520,13 @@ export default function OperatorPanel({ open, onClose }: Props) {
                   </div>
                 )}
               </div>
-              <select
-                aria-label={t("model.label")}
-                title={t("model.label")}
-                value={model}
-                onChange={(event) => {
-                  setModel(event.target.value);
-                  // A previous model's effort selection may not exist on the
-                  // new one; clear it explicitly rather than carrying a value
-                  // effortChoices no longer offers.
-                  setEffort("");
-                }}
-                className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
-              >
-                <option value="">{t("model.default")}</option>
-                {model && !modelCatalog.some((entry) => entry.id === model) && (
-                  <option value={model}>{t("model.unavailable", { model })}</option>
-                )}
-                {modelCatalog.map((entry) => (
-                  <option key={entry.id} value={entry.id}>
-                    {entry.label}
-                  </option>
-                ))}
-              </select>
-              {effortChoices.length > 0 && (
-                <select
-                  aria-label={t("effort.label")}
-                  title={t("effort.label")}
-                  value={effectiveEffort}
-                  onChange={(event) => setEffort(event.target.value as OperatorEffort)}
-                  className="shrink-0 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
-                >
-                  <option value="">{t("effort.default")}</option>
-                  {effortChoices.map((choice) => (
-                    <option key={choice} value={choice}>
-                      {choice}
-                    </option>
-                  ))}
-                </select>
-              )}
+              {/* Model and effort used to sit here. Four controls did not fit
+                  the 48px header: both selects are native, so they take their
+                  intrinsic width from the widest option and carried shrink-0,
+                  which let them overrun the conversation picker beside them
+                  instead of yielding — the connection state and the picker
+                  painted over each other at panel width. They now live in the
+                  composer row, which is also where they are changed. */}
             </div>
           </div>
           <button
@@ -1706,8 +1674,55 @@ export default function OperatorPanel({ open, onClose }: Props) {
               }
               className="block max-h-40 min-h-14 w-full resize-none bg-transparent px-3 py-2 text-body leading-relaxed text-content-primary outline-none placeholder:text-content-muted disabled:cursor-not-allowed disabled:opacity-60"
             />
-            <div className="flex items-center justify-between px-2 pb-2">
-              <span className="font-data text-meta text-content-muted">{t("composer.hint")}</span>
+            <div className="flex items-center justify-between gap-2 px-2 pb-2">
+              <span className="min-w-0 truncate font-data text-meta text-content-muted">
+                {t("composer.hint")}
+              </span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <select
+                  aria-label={t("model.label")}
+                  title={t("model.label")}
+                  value={model}
+                  onChange={(event) => {
+                    setModel(event.target.value);
+                    // A previous model's effort selection may not exist on the
+                    // new one; clear it explicitly rather than carrying a value
+                    // effortChoices no longer offers.
+                    setEffort("");
+                  }}
+                  className="max-w-32 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
+                >
+                  <option value="">{t("model.default")}</option>
+                  {model && !modelCatalog.some((entry) => entry.id === model) && (
+                    <option value={model}>{t("model.unavailable", { model })}</option>
+                  )}
+                  {modelCatalog.map((entry) => (
+                    <option key={entry.id} value={entry.id}>
+                      {entry.label}
+                    </option>
+                  ))}
+                </select>
+                {effortChoices.length > 0 && (
+                  // Effort is the first thing to go when the row gets tight. It
+                  // is the narrower choice of the two, and which model answered
+                  // is the question people actually ask of a reply, so model
+                  // stays visible at every width.
+                  <select
+                    aria-label={t("effort.label")}
+                    title={t("effort.label")}
+                    value={effectiveEffort}
+                    onChange={(event) => setEffort(event.target.value as OperatorEffort)}
+                    className="hidden max-w-24 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary sm:block"
+                  >
+                    <option value="">{t("effort.default")}</option>
+                    {effortChoices.map((choice) => (
+                      <option key={choice} value={choice}>
+                        {choice}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
               {state.activeRequestId ? (
                 // Send is disabled while a turn runs, so the same slot becomes
                 // Stop. Keeping it here rather than in the header puts the
