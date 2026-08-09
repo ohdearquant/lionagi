@@ -12,12 +12,13 @@ a lionagi checkout.
 |---|---|---|---|
 | `name` | str | — | Descriptive identifier. Keep it equal to the filename stem: the CLI resolves a playbook by filename, and nothing validates the two against each other, so a mismatch is silent. |
 | `description` | str | — | Free text shown by `li play <name> --help`. `li play list` prints names only. |
-| `argument-hint` | str | — | CC-compatible display hint, e.g. `'[--mode MODE] [--strict]'`. Used in `--help` output only. |
+| `argument-hint` | str | — | CC-compatible fallback argument schema, e.g. `'[--mode MODE] [--strict]'`, also shown in `--help`. Ignored when `args` is present. |
 | `model` | str | positional | Model spec: `claude-code/sonnet-4-6`, `codex/gpt-5.4`. |
 | `agent` | str | `-a/--agent` | Orchestrator agent profile from `~/.lionagi/agents/<name>/<name>.md`. |
 | `effort` | str | `--effort` | Accepted values depend on the provider: Claude `low \| medium \| high \| xhigh \| max`; Codex `none \| minimal \| low \| medium \| high \| xhigh \| max \| ultra`, where `max` and `ultra` clamp to what the model supports. Gemini folds effort into the model spec instead. Omit to use the profile default. |
 | `workers` | int | `--max-concurrent` | Max concurrent agents. Range: 1–32. |
-| `max_ops` | int | `--max-ops` | Cap on total DAG operations. `0` = unlimited. Range: 0–50. |
+| `max_ops` | int | `--max-ops` | Shared cap on planned and reactive operations. `0` removes the shared ceiling, but reactive spawns retain a separate cap of 20. Range: 0–50. |
+| `max_agents` | int | `--max-agents` | Deprecated alias for `max_ops`, with the same range and zero behavior. |
 | `with_synthesis` | bool or str | `--with-synthesis` | `true` uses the orchestrator model; a model spec string uses that model. |
 | `team_mode` | str | `--team-mode` | Create a fresh team (new UUID) each invocation. Value is the team name. |
 | `team_attach` | str | `--team-attach` | Upsert a team by name: attach if it exists, create if missing. |
@@ -25,8 +26,11 @@ a lionagi checkout.
 | `dry_run` | bool | `--dry-run` | Plan the DAG without executing it. |
 | `show_graph` | bool | `--show-graph` | Render a DAG visualisation after planning. |
 | `save` | str | `--save` | Directory to write artifact output to. |
+| `pack` | str | `--pack` | YAML routing pack used when `workers` is absent. |
+| `reactive` | str | `--reactive` | Spawn policy: `all`, `off`, or a comma-separated role allowlist. |
 | `prompt` | str | — | Template string. May contain `{input}` and `{arg_name}` placeholders. |
 | `args` | dict | dynamic flags | Typed argument schema. Each key becomes a CLI flag, or an `args` entry in the `play.submit` MCP call. |
+| `artifacts` | dict | — | Expected artifact contract checked before and after the playbook run. |
 
 **Key normalization**: top-level keys accept both dash and underscore forms
 (`max-ops` and `max_ops` both work) on the CLI. The `args:` block is an exception — use
@@ -41,10 +45,10 @@ worth knowing before they surprise you.
   negating flag. A playbook that sets one to `true` sets it for every invocation of that
   playbook, and no command line can undo it.
 - **`0` is both the default and a meaningful value for the two numeric caps.** `--max-ops 0`
-  means unlimited and `--max-concurrent 0` means run the whole phase at once, but `0` is also
-  what those flags hold when you do not pass them, so neither can be told apart from absence.
-  A playbook that sets `max_ops` or `workers` therefore overrides an explicit `0`, and the
-  uncapped run you asked for is capped without saying so. To actually run uncapped, remove the
+  leaves planning without a shared op ceiling but still limits reactive spawns to 20;
+  `--max-concurrent 0` means run the whole phase at once. Because `0` is also what those flags
+  hold when omitted, neither can be distinguished from absence. A playbook that sets `max_ops`
+  or `workers` therefore overrides an explicit `0`. To retain the zero behavior, remove the
   field from the playbook rather than passing `0`.
 
 ---
@@ -201,29 +205,29 @@ Top-level spec keys normalize dashes to underscores automatically. Keys inside
 schema validation with "must be an alphanumeric identifier".
 
 **`workers: 0` is invalid**
-`workers` maps to `--max-concurrent` (range 1–32). For unlimited ops, set
-`max_ops: 0` (which is the default). Do not conflate the two fields.
+`workers` maps to `--max-concurrent` (range 1–32). For uncapped planning, set
+`max_ops: 0` (which is the default); reactive spawning still stops at 20. Do not
+conflate the two fields.
 
 **`show_graph: true` without `--save`**
 The graph renders to the screen via matplotlib. If `save` is set, it is written as
 a PNG to the save directory.
 
-**Unknown top-level keys are silently ignored**
-There is no schema validation error for unrecognized keys. A typo like `effrot: high`
-takes no effect and produces no warning.
+**Unknown top-level keys are rejected**
+An unrecognized key such as `effrot: high` fails validation. The error names the
+offending key and lists the accepted fields.
 
 **`team_mode` and `team_attach` both set**
 The CLI rejects this at dispatch time with an error. Only one team strategy is allowed
 per playbook.
 
 **`max_ops` range**
-Valid range is 0–50 (0 = unlimited). Values above 50 are rejected at spec validation.
-If you need large plans, leave `max_ops: 0` and rely on the 200-op hard cap in the
-engine.
+Valid range is 0–50. Zero removes the shared planning/spawn ceiling, while reactive
+spawns remain capped at 20. Values above 50 are rejected at spec validation.
 
 **CLI-only flags cannot be set in YAML**
 `yolo`, `bypass`, `output`, `background`, `fast`, `verbose`, and `theme` are CLI-only.
-Specifying them in YAML has no effect — always pass them on the command line.
+Specifying them in YAML is rejected as an unknown field — pass them on the command line.
 
 ---
 

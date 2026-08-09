@@ -678,7 +678,7 @@
             "nargs": null,
             "default": 0,
             "choices": null,
-            "help": "Cap total ops (nodes in the planned DAG). 0 = unlimited. `--max-agents` is a deprecated alias \u2014 prefer `--max-ops`."
+            "help": "Cap total ops (nodes in the planned DAG). 0 = no shared ceiling; reactive spawns are capped at 20. `--max-agents` is a deprecated alias \u2014 prefer `--max-ops`."
           },
           {
             "option_strings": [

@@ -55,8 +55,9 @@ li o flow codex \
 Reactive expansion is shipped and defaults to `--reactive all`: workers may
 emit additional work while the graph is live. Use `--reactive off` to execute
 only the initial planned graph, or provide a comma-separated role allowlist
-such as `--reactive critic,evaluator`. `--max-ops` caps both initial and spawned
-operations.
+such as `--reactive critic,evaluator`. A positive `--max-ops` value caps initial
+and spawned operations together. Zero leaves planning uncapped while retaining
+the executor's separate 20-spawn safety cap.
 
 Team coordination is also shipped. Add `--team-mode NAME` when workers need a
 shared inbox during one flow, and use `--team-max-rounds N` to bound final

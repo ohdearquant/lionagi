@@ -23,6 +23,32 @@ from .flow import FlowPlanError, _resume_flow, _run_flow
 
 # ── flow-spec helpers ────────────────────────────────────────────────────────
 
+_FLOW_SPEC_FIELDS = frozenset(
+    {
+        "agent",
+        "argument-hint",
+        "args",
+        "artifacts",
+        "bare",
+        "description",
+        "dry_run",
+        "effort",
+        "max_agents",
+        "max_ops",
+        "model",
+        "name",
+        "pack",
+        "prompt",
+        "reactive",
+        "save",
+        "show_graph",
+        "team_attach",
+        "team_mode",
+        "with_synthesis",
+        "workers",
+    }
+)
+
 
 def _scan_argv_for_playbook_name(argv: list[str]) -> str | None:
     i = 0
@@ -389,6 +415,11 @@ def _load_flow_spec(path: str) -> dict | None:
 
 
 def _validate_spec_fields(spec: dict) -> str | None:
+    for key in spec:
+        if key not in _FLOW_SPEC_FIELDS:
+            accepted = ", ".join(sorted(_FLOW_SPEC_FIELDS))
+            return f"unknown spec field {key!r}; accepted fields: {accepted}"
+
     if "workers" in spec:
         workers = spec["workers"]
         if not isinstance(workers, int) or isinstance(workers, bool):
@@ -403,7 +434,10 @@ def _validate_spec_fields(spec: dict) -> str | None:
         if not isinstance(value, int) or isinstance(value, bool):
             return f"spec field {key!r} must be an integer, got {type(value).__name__}"
         if not (0 <= value <= 50):
-            return f"spec field {key!r} must be in [0, 50] (0 = unlimited), got {value}"
+            return (
+                f"spec field {key!r} must be in [0, 50] "
+                f"(0 = no shared ceiling; reactive spawns are capped at 20), got {value}"
+            )
 
     effort = spec.get("effort")
     if effort is not None:
@@ -858,7 +892,8 @@ def add_orchestrate_subparser(
         default=0,
         metavar="N",
         help=(
-            "Cap total ops (nodes in the planned DAG). 0 = unlimited. "
+            "Cap total ops (nodes in the planned DAG). 0 = no shared ceiling; "
+            "reactive spawns are capped at 20. "
             "`--max-agents` is a deprecated alias — prefer `--max-ops`."
         ),
     )
