@@ -33,7 +33,7 @@ FLOW_SPEC_FIELDS = frozenset(
         "with_synthesis",
         "workers",
     }
-    | {"bypass", "permission_mode", "yolo"}
+    | {"bypass", "links", "permission_mode", "steps", "use", "yolo"}
 )
 
 _PRESERVE_DASHED = frozenset({"argument-hint"})

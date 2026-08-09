@@ -48,6 +48,7 @@ VALID_FIELD_VALUES = {
     "description": "Review a target",
     "dry_run": False,
     "effort": "high",
+    "links": [],
     "max_agents": 0,
     "max_ops": 0,
     "model": "claude-code/opus-4-7",
@@ -58,10 +59,12 @@ VALID_FIELD_VALUES = {
     "reactive": "off",
     "save": "./results",
     "show_graph": True,
+    "steps": {},
     "team_attach": "existing-team",
     "team_mode": "new-team",
     "with_synthesis": True,
     "workers": 1,
+    "use": {"models": {}},
     "yolo": True,
 }
 
