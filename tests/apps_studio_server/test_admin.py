@@ -210,12 +210,18 @@ def test_stale_session_live_recorded_pid_not_reaped(tmp_path):
 
 
 def test_stale_lock_gated_on_staleness(tmp_path):
-    """A stale lock file only counts as zombie evidence once the session itself is stale."""
+    """A stale lock file only counts as zombie evidence once the session itself is stale.
+
+    The lock is named ``job.lock`` because that is a name lionagi actually
+    writes. This test used to use ``session.lock``, which nothing creates, so it
+    passed on the strength of the suffix alone and would have kept passing for
+    any file at all ending in ``.lock``.
+    """
     import lionagi.studio.services.admin as admin_svc
 
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir()
-    lock = artifacts_dir / "session.lock"
+    lock = artifacts_dir / "job.lock"
     lock.write_text("x")
     old_mtime = time.time() - 7200
     os.utime(lock, (old_mtime, old_mtime))
@@ -230,6 +236,95 @@ def test_stale_lock_gated_on_staleness(tmp_path):
         admin_svc._classify_phantom(fresh_row, now=now, stale_seconds=3600, ps_snapshot="") is None
     )
 
+    stale_row = {
+        "id": str(uuid.uuid4()),
+        "updated_at": now - 7200,
+        "artifacts_path": str(artifacts_dir),
+    }
+    assert (
+        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        == "stale_lock"
+    )
+
+
+def _aged(path, seconds_ago: float) -> None:
+    path.write_text("x")
+    when = time.time() - seconds_ago
+    os.utime(path, (when, when))
+
+
+def test_dependency_lockfile_is_not_evidence_of_a_dead_process(tmp_path):
+    """A stale ``uv.lock`` alone must classify as nothing.
+
+    This is the arm that separates the two rules, and it is the only one that
+    does. Under a ``**/*.lock`` suffix match this row is ``stale_lock``; under a
+    match on the names lionagi writes it is ``None``. Every other lock test here
+    scores the same under both rules, so none of them can catch a regression to
+    the suffix match.
+
+    It is not hypothetical. A run's ``artifacts_path`` is routinely a repository
+    root and the search is recursive, so one checked-in ``uv.lock`` classified
+    every completed session in that repository as a zombie.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    artifacts_dir = tmp_path / "repo"
+    artifacts_dir.mkdir()
+    _aged(artifacts_dir / "uv.lock", 7200)
+
+    now = time.time()
+    stale_row = {
+        "id": str(uuid.uuid4()),
+        "updated_at": now - 7200,
+        "artifacts_path": str(artifacts_dir),
+    }
+    assert (
+        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        != "stale_lock"
+    )
+
+
+def test_dependency_lockfile_does_not_mask_a_real_runtime_lock(tmp_path):
+    """A ``uv.lock`` sitting beside a genuine stale ``job.lock`` still classifies.
+
+    Without this, a fix could pass the arm above by giving up whenever a
+    dependency lockfile is present, which would suppress the true positives the
+    evidence exists to find.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    artifacts_dir = tmp_path / "repo"
+    artifacts_dir.mkdir()
+    _aged(artifacts_dir / "uv.lock", 7200)
+    _aged(artifacts_dir / "job.lock", 7200)
+
+    now = time.time()
+    stale_row = {
+        "id": str(uuid.uuid4()),
+        "updated_at": now - 7200,
+        "artifacts_path": str(artifacts_dir),
+    }
+    assert (
+        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        == "stale_lock"
+    )
+
+
+def test_finalize_lock_is_also_runtime_evidence(tmp_path):
+    """``finalize.lock`` is the other name lionagi writes under a run tree.
+
+    Named explicitly so a fix that hardcodes only ``job.lock`` fails here rather
+    than silently narrowing the evidence to one of the two real locks.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    artifacts_dir = tmp_path / "repo"
+    artifacts_dir.mkdir()
+    nested = artifacts_dir / "run-1"
+    nested.mkdir()
+    _aged(nested / "finalize.lock", 7200)
+
+    now = time.time()
     stale_row = {
         "id": str(uuid.uuid4()),
         "updated_at": now - 7200,

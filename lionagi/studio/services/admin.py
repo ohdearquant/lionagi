@@ -282,14 +282,32 @@ def _artifacts_path(row: Any) -> Path | None:
     return None
 
 
+# The lock files lionagi itself creates under a run's artifact tree. A stale one
+# of these means a process died still holding a claim, which is the only thing
+# this evidence is meant to detect.
+#
+# Matching by the ``.lock`` suffix instead reads dependency lockfiles -- uv.lock,
+# poetry.lock, Cargo.lock -- as dead runs. Since a run's artifacts_path is
+# routinely a repository root, and the search below is recursive, a single
+# checked-in uv.lock marked every completed session in that repository a zombie:
+# the classifier's most severe level, fired by a file that says nothing about any
+# process. Match the names we write, not the extension anyone may use.
+#
+# The resume lock (``{digest}.lock``) is deliberately absent: it lives in
+# ``resume-locks/`` beside the state DB, never under an artifact root, so it is
+# unreachable from here by construction.
+_RUNTIME_LOCK_NAMES: frozenset[str] = frozenset({"job.lock", "finalize.lock"})
+
+
 def _find_stale_lock(root: Path, *, cutoff: float) -> Path | None:
     try:
-        for lock in root.glob("**/*.lock"):
-            try:
-                if lock.stat().st_mtime < cutoff:
-                    return lock
-            except OSError:
-                pass
+        for name in _RUNTIME_LOCK_NAMES:
+            for lock in root.glob(f"**/{name}"):
+                try:
+                    if lock.stat().st_mtime < cutoff:
+                        return lock
+                except OSError:
+                    pass
     except OSError:
         pass
     return None
