@@ -2114,3 +2114,107 @@ async def test_schedule_run_status_write_rejects_an_unlisted_extra_field(db):
 
     row = await db.get_schedule_run(run_id)
     assert row["status"] == "running"
+
+
+async def test_the_imported_role_backfill_clears_only_imported_rows(tmp_path):
+    """Stopping the write fixes future imports; rows already stored keep the
+    engine label unless something clears them, and because the role tier sits
+    ahead of the prompt tier in the name resolver they would render the engine
+    forever while new imports rendered their prompt.
+
+    The control is the point of this test. A live session is given the SAME
+    `agent_name` value the imported rows carry, so a backfill scoped to the
+    label rather than to `source_kind` passes every other assertion here and
+    fails only this one.
+    """
+    path = tmp_path / "state.db"
+    url = f"sqlite+aiosqlite:///{path}"
+    prog = uid()
+    imported_id, live_id, branch_id = uid(), uid(), uid()
+
+    async with StateDB(url) as db:
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": imported_id,
+                "progression_id": prog,
+                "name": "imported",
+                "agent_name": "codex",
+                "invocation_kind": "agent",
+                "source_kind": "imported_codex",
+                "status": "completed",
+            }
+        )
+        await db.create_branch(
+            {
+                "id": branch_id,
+                "session_id": imported_id,
+                "progression_id": prog,
+                "agent_name": "codex",
+            }
+        )
+        # Control: a live row wearing the same label.
+        await db.create_session(
+            {
+                "id": live_id,
+                "progression_id": prog,
+                "name": "live",
+                "agent_name": "codex",
+                "invocation_kind": "agent",
+                "source_kind": "live",
+                "status": "completed",
+            }
+        )
+
+    # The first open already claimed the one-shot marker. Release it so the
+    # reopen below exercises the migration against rows that now exist -- which
+    # is the real upgrade order: rows first, migration after.
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("DELETE FROM schema_meta WHERE key = 'migration.imported_role_label_backfill'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    async with StateDB(url) as db:
+        imported = await db.get_session(imported_id)
+        live = await db.get_session(live_id)
+        branch = await db.get_branch(branch_id)
+
+    assert imported["agent_name"] is None, "imported session kept the engine label"
+    assert branch["agent_name"] is None, "imported session was cleared but its branch was not"
+    assert live["agent_name"] == "codex", (
+        "a LIVE row was cleared -- the backfill is selecting on the label instead of source_kind"
+    )
+
+
+async def test_the_imported_role_backfill_runs_only_once(tmp_path):
+    """A second open must not re-clear. The marker, not the data, is what makes
+    this one-shot: a row legitimately re-labelled after the migration would be
+    silently reverted on the next open if the guard were the data itself."""
+    path = tmp_path / "state.db"
+    url = f"sqlite+aiosqlite:///{path}"
+    prog, sid = uid(), uid()
+
+    async with StateDB(url) as db:
+        await db.create_progression(prog)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog,
+                "name": "imported",
+                "invocation_kind": "agent",
+                "source_kind": "imported_codex",
+                "status": "completed",
+            }
+        )
+
+    # Marker was claimed on the first open, so this label must survive.
+    async with StateDB(url) as db:
+        await db.update_session(sid, agent_name="re-labelled")
+
+    async with StateDB(url) as db:
+        again = await db.get_session(sid)
+    assert again["agent_name"] == "re-labelled", (
+        "the backfill ran a second time and reverted a post-migration write"
+    )

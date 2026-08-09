@@ -2873,3 +2873,43 @@ def test_grep_evidence_live_mirror_paths_call_bound_mirror_content() -> None:
         "cli/mirror.py does not thread the mirror bounding budget/source pointers "
         "into mirror_session()"
     )
+
+
+async def test_an_imported_rollout_leaves_the_role_field_empty(tmp_path):
+    """`agent_name` is a role field, and an imported desktop thread has no role.
+
+    Writing the engine name there was wrong at the definition site, and it had
+    a visible consequence: the role tier sits ahead of the prompt tier in
+    `resolve_display_name`, so every imported row rendered the engine and
+    shadowed the informative prompt-derived name the mirror had just computed.
+
+    Both rows are asserted. The session and the branch each carried the label,
+    so checking only the session would pass while the branch kept it.
+    """
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+    from lionagi.state.session_naming import resolve_display_name
+
+    uid = "0199cccc-0000-0000-0000-00000000000b"
+    path = tmp_path / "rollout-role.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "Codex Desktop"))
+    state = _FileState(session_uid="")
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) > 0
+        sid = codex_sid(uid)
+        session = await db.get_session(sid)
+        branches = await db.list_branches(sid)
+
+    assert session is not None
+    assert session["agent_name"] is None, (
+        f"session carries role {session['agent_name']!r}; the engine is in a role field"
+    )
+    assert branches, "no branch was mirrored, so the branch assertion below proves nothing"
+    for br in branches:
+        assert br["agent_name"] is None, (
+            f"branch carries role {br['agent_name']!r}; the session was cleared but its branch was not"
+        )
+
+    # The point of clearing the field: the prompt now reaches the display name.
+    assert resolve_display_name(dict(session)) == "q"
