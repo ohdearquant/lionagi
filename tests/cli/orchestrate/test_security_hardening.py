@@ -11,6 +11,7 @@ import yaml
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.cli.orchestrate import (
+    _load_flow_spec,
     _validate_spec_fields,
     add_orchestrate_subparser,
     run_orchestrate,
@@ -185,9 +186,9 @@ class TestSpecValidationRejectsUnknownFields:
         err = _validate_spec_fields({"reactve": "off"})
         assert err == (
             "unknown spec field 'reactve'; accepted fields: agent, args, argument-hint, "
-            "artifacts, bare, description, dry_run, effort, max_agents, max_ops, model, name, "
-            "pack, prompt, reactive, save, show_graph, team_attach, team_mode, with_synthesis, "
-            "workers"
+            "artifacts, bare, bypass, description, dry_run, effort, max_agents, max_ops, "
+            "model, name, pack, permission_mode, prompt, reactive, save, show_graph, "
+            "team_attach, team_mode, with_synthesis, workers, yolo"
         )
 
     def test_dead_critic_model_field_is_rejected(self):
@@ -235,6 +236,17 @@ class TestSpecValidationAcceptsValidFields:
     def test_name_metadata_field_remains_accepted(self):
         assert _validate_spec_fields({"name": "repo-review"}) is None
 
+    # Named one at a time on purpose. Looping over the implementation's own
+    # accepted set would pass no matter which key was dropped from it.
+    def test_yolo_field_remains_accepted(self):
+        assert _validate_spec_fields({"yolo": True}) is None
+
+    def test_bypass_field_remains_accepted(self):
+        assert _validate_spec_fields({"bypass": True}) is None
+
+    def test_permission_mode_field_remains_accepted(self):
+        assert _validate_spec_fields({"permission_mode": "acceptEdits"}) is None
+
     def test_valid_effort_values(self):
         for effort in ("low", "medium", "high", "xhigh"):
             assert _validate_spec_fields({"effort": effort}) is None
@@ -278,6 +290,30 @@ class TestSpecValidationAcceptsValidFields:
             "team_mode": "ws-terminal",
         }
         assert _validate_spec_fields(spec) is None
+
+    def test_every_playbook_this_repo_ships_validates(self):
+        """The accepted set has to cover the playbooks we ourselves ship.
+
+        Enumerating keys by hand is what lets a real, widely-used field go
+        missing: unit tests over hand-written dicts only ever check the keys
+        someone remembered. This walks the actual files through the same
+        loader the CLI uses, so a field that real playbooks depend on cannot
+        drop out of the accepted set unnoticed.
+        """
+        root = Path(__file__).resolve().parents[3]
+        playbooks = sorted(root.glob("examples/playbooks/*.playbook.yaml")) + sorted(
+            root.glob("lionagi/studio/builtin_playbooks/*.playbook.yaml")
+        )
+        assert playbooks, "found no shipped playbooks — the glob is wrong, not the repo"
+
+        rejected = {}
+        for path in playbooks:
+            spec = _load_flow_spec(str(path))
+            assert spec is not None, f"{path.name} failed to load"
+            error = _validate_spec_fields(spec)
+            if error is not None:
+                rejected[path.name] = error
+        assert not rejected, f"shipped playbooks rejected by the validator: {rejected}"
 
     def test_run_orchestrate_rejects_bad_spec(self, tmp_path, caplog):
         spec_file = tmp_path / "bad.yaml"

@@ -47,6 +47,13 @@ _FLOW_SPEC_FIELDS = frozenset(
         "with_synthesis",
         "workers",
     }
+    # Recognized but not applied: these appear in real playbooks in the field,
+    # and the loader has never read them — the run takes its value from the
+    # command-line flag instead. Accepting them keeps working playbooks working;
+    # rejecting them would break files whose only fault is naming a key that
+    # does nothing. Wiring them would silently change how those runs execute,
+    # which is a behavior decision, not a validation one.
+    | {"bypass", "permission_mode", "yolo"}
 )
 
 
