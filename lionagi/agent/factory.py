@@ -147,7 +147,8 @@ async def create_agent(
     _apply_permissions(spec)
     _register_tools(branch, spec)
     _register_providers(branch, spec)
-    await _load_mcp(branch, spec, trust_project_settings=trust_project_settings)
+    if resolved_mcp_servers is Unset:
+        await _load_mcp(branch, spec, trust_project_settings=trust_project_settings)
     _forward_mcp_to_cli_request(
         branch,
         spec,
@@ -560,14 +561,17 @@ async def _load_mcp(
         mcp_security=MCPSecurityConfig.trusted(),
     )
 
-    # MCP-discovered tools register after static ones and would otherwise
-    # keep their bare default pre/postprocessor; reuse _attach_hooks so both
-    # paths apply the same spec-derived hook chain.
-    for tool_names in loaded.values():
+    # MCP-discovered tools register after static ones; reuse _attach_hooks so
+    # both paths apply the same spec-derived hook chain.
+    for server_name, tool_names in loaded.items():
         for tool_name in tool_names:
             tool = branch.acts.registry.get(tool_name)
-            if tool is not None:
-                _attach_hooks(tool, spec, tool_name)
+            if tool is None:
+                raise RuntimeError(
+                    f"MCP server {server_name!r} returned registered tool "
+                    f"{tool_name!r}, but the branch registry does not contain it"
+                )
+            _attach_hooks(tool, spec, tool_name)
 
 
 _MCP_FORWARDING_PROVIDERS = frozenset({*_CLAUDE_PROVIDER_NAMES, "codex"})

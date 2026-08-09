@@ -8,12 +8,16 @@ import asyncio as _asyncio
 import contextlib
 import json
 import logging
+import math
 import os
+import statistics
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import psutil
 
 from lionagi._errors import EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
@@ -61,6 +65,115 @@ from ._orchestration import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DescendantCpuSample = tuple[dict[int, float], bool]
+
+# A working descendant must clear both the peer activity floor and a sublinear
+# CPU-quantum guard, without assuming healthy totals grow linearly with the window.
+_DESCENDANT_CPU_ACTIVITY_RATIO = 4.0
+_DESCENDANT_CPU_FALLBACK_SECONDS = 0.10
+_DESCENDANT_CPU_FALLBACK_INTERVAL_SECONDS = 60.0
+
+
+def _sample_descendant_cpu(pid: int) -> _DescendantCpuSample:
+    try:
+        descendants = psutil.Process(pid).children(recursive=True)
+    except (psutil.Error, OSError):
+        return {}, False
+
+    totals: dict[int, float] = {}
+    for descendant in descendants:
+        try:
+            cpu_times = descendant.cpu_times()
+        except (psutil.Error, OSError):
+            return totals, False
+        totals[descendant.pid] = cpu_times.user + cpu_times.system
+    return totals, True
+
+
+def _heartbeat_warning(
+    segment: dict,
+    *,
+    now: float,
+    max_idle_seconds: float,
+    sample_interval_seconds: float,
+    previous: _DescendantCpuSample | None,
+    current: _DescendantCpuSample,
+) -> str | None:
+    elapsed = now - segment.get("started_at", now)
+    if elapsed <= max_idle_seconds or previous is None:
+        return None
+
+    previous_cpu, previous_complete = previous
+    current_cpu, current_complete = current
+    if not previous_complete or not current_complete:
+        return None
+    if not current_cpu:
+        return (
+            f"  ⚠ NO DESCENDANTS: {segment['branch_name']} running {elapsed:.0f}s "
+            "with no active descendants"
+        )
+
+    surviving_pids = previous_cpu.keys() & current_cpu.keys()
+    deltas = [current_cpu[pid] - previous_cpu[pid] for pid in surviving_pids]
+    new_pids = current_cpu.keys() - previous_cpu.keys()
+    # A new PID has no baseline, but its accumulated CPU still proves activity.
+    # Keep the maximum so many helper floor ticks cannot manufacture work.
+    new_totals = [current_cpu[pid] for pid in new_pids]
+    activity = [*deltas, *new_totals]
+    if any(not math.isfinite(value) or value < 0 for value in activity):
+        return None
+    if not math.isfinite(sample_interval_seconds) or sample_interval_seconds <= 0:
+        return None
+
+    activity_rates = [value / sample_interval_seconds for value in activity]
+    max_activity_rate = max(activity_rates)
+    peer_rates = activity_rates.copy()
+    peer_rates.remove(max_activity_rate)
+    activity_floor = statistics.median(peer_rates) if peer_rates else 0.0
+    ratio_activity_cutoff = activity_floor * _DESCENDANT_CPU_ACTIVITY_RATIO
+    fallback_activity_seconds = _DESCENDANT_CPU_FALLBACK_SECONDS * math.sqrt(
+        sample_interval_seconds / _DESCENDANT_CPU_FALLBACK_INTERVAL_SECONDS
+    )
+    fallback_activity_cutoff = fallback_activity_seconds / sample_interval_seconds
+    activity_cutoff = max(ratio_activity_cutoff, fallback_activity_cutoff)
+    if max_activity_rate > activity_cutoff or math.isclose(
+        max_activity_rate,
+        activity_cutoff,
+        abs_tol=1e-9,
+    ):
+        return None
+
+    if ratio_activity_cutoff >= fallback_activity_cutoff:
+        warning_detail = (
+            "no positive descendant CPU rate reached "
+            f"{_DESCENDANT_CPU_ACTIVITY_RATIO:g}x the median peer rate"
+        )
+    else:
+        warning_detail = (
+            "descendant CPU activity stayed below the "
+            f"{fallback_activity_seconds:.3g}s fallback cutoff"
+        )
+
+    return (
+        f"  ⚠ IDLE STALL: {segment['branch_name']} running {elapsed:.0f}s; "
+        f"{warning_detail} during the {sample_interval_seconds:g}s sample"
+    )
+
+
+def _surface_dropped_spawns(env: OrchestrationEnv, dropped_spawns: list[dict]) -> None:
+    rejected = [item for item in dropped_spawns if item.get("reason") == "builder_error"]
+    if not rejected:
+        return
+
+    evidence = []
+    for item in rejected:
+        assignee = item.get("assignee") or "unassigned"
+        error = item.get("error") or "spawn routing failed"
+        progress(f"  ⚠ SPAWN REJECTED: {assignee} — {error}")
+        evidence.append({"kind": "unroutable_spawn", "id": assignee, "label": error})
+    prior = getattr(env, "_failed_operation_evidence", None) or []
+    env._failed_operation_evidence = [*prior, *evidence]
 
 
 class FlowPlanError(LionError):
@@ -1032,6 +1145,7 @@ async def _execute_dag(
 
     heartbeat_interval = 60
     max_idle_seconds = 600
+    heartbeat_pid = os.getpid()
 
     def _persist_segments():
         ctx = getattr(env, "_live_persist", None)
@@ -1186,20 +1300,28 @@ async def _execute_dag(
 
     # ADR-0034 §4: run_dag drives the session bus; observers above consume the signals.
     async def _heartbeat_loop() -> None:
+        previous_cpu_sample: _DescendantCpuSample | None = None
         while True:
             await _asyncio.sleep(heartbeat_interval)
             _now = time.time()
+            current_cpu_sample = _sample_descendant_cpu(heartbeat_pid)
             for _seg in _op_segments:
                 if _seg["status"] != "running":
                     continue
                 _elapsed = _now - _seg.get("started_at", _now)
                 _seg["last_heartbeat_at"] = _now
                 progress(f"  · {_seg['branch_name']} heartbeat {_elapsed / 60:.0f}m")
-                if _elapsed > max_idle_seconds:
-                    progress(
-                        f"  ⚠ IDLE STALL: {_seg['branch_name']} running {_elapsed:.0f}s "
-                        "with no completion — possible hung child process"
-                    )
+                warning = _heartbeat_warning(
+                    _seg,
+                    now=_now,
+                    max_idle_seconds=max_idle_seconds,
+                    sample_interval_seconds=heartbeat_interval,
+                    previous=previous_cpu_sample,
+                    current=current_cpu_sample,
+                )
+                if warning is not None:
+                    progress(warning)
+            previous_cpu_sample = current_cpu_sample
 
     # ADR-0069 D1: control poller, the only consumer of session_controls rows.
     # _executor_ref is populated synchronously by DependencyAwareExecutor's
@@ -1424,7 +1546,7 @@ async def _execute_dag(
     def _decorate_spawn_instruction(req: SpawnRequest, spawn_id: str) -> str:
         """Give a reactively spawned node the same artifact-dir + REQUIRED
         text a planned leg gets, mirroring the block _build_dag composes."""
-        role_defaults = dag_state.role_artifact_defaults.get(req.assignee) if req.assignee else None
+        role_defaults = _artifact_defaults_for_assignee(req.assignee)
         leg_expected = _leg_artifact_entries(spawn_id, role_defaults)
         note = _artifact_directive(env.run, spawn_id, leg_expected)
         # A node whose instruction has been composed is a worker this run
@@ -1477,6 +1599,7 @@ async def _execute_dag(
                 role_node_builder(
                     role_base,
                     decorate_instruction=_decorate_spawn_instruction,
+                    role_aliases=role_by_worker,
                     start=_spawn_seq_start,
                 )
                 if reactive
@@ -1626,6 +1749,7 @@ async def _execute_dag(
                         raise
     t_exec_elapsed = time.monotonic() - t_exec
 
+    _surface_dropped_spawns(env, list(dag_result.get("dropped_spawns") or []))
     op_results = dag_result.get("operation_results", {})
     # Includes restored spawns from a prior checkpoint generation, not just
     # this generation's — else a resume with zero NEW spawns would report

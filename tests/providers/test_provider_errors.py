@@ -112,6 +112,28 @@ def test_classify_context_length_too_long_returns_context_error():
     assert isinstance(err, ProviderContextError)
 
 
+def test_classify_prompt_too_long_returns_context_error():
+    err = classify_provider_error(
+        "Prompt is too long · the request is ~225306 tokens (limit 200000) but "
+        "this conversation is only ~163811 tokens — the rest is system prompt, "
+        "tool definitions, and attachment content. A single-exchange conversation "
+        "cannot be compacted; reduce attached files/tools or start with less context."
+    )
+    assert isinstance(err, ProviderContextError)
+
+
+def test_classify_unrelated_too_long_returns_base_error():
+    err = classify_provider_error("The tool output is too long to display.")
+    assert type(err) is ProviderError
+
+
+def test_classify_terminal_truncation_returns_base_error():
+    err = classify_provider_error(
+        "Prompt is too long to display in the terminal; output was truncated."
+    )
+    assert type(err) is ProviderError
+
+
 def test_classify_context_case_insensitive():
     err = classify_provider_error("CONTEXT WINDOW EXCEEDED")
     assert isinstance(err, ProviderContextError)

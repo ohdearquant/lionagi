@@ -263,6 +263,11 @@ Inconclusive (settle nothing about death):
   `lifecycle_cache` / `spawn_failure` / `mcp_orphan_reaper` / null for
   pre-field records); `terminal_evidence` carries bounded evidence for an end
   nobody reported.
+- `notify_delivery` is null only while `terminal` is false. A terminal run with
+  no configured notifier reports `{"attempted": false}`. Delivery writes an
+  attempted/unknown object before launching the notifier and replaces it with
+  success or failure afterward, so cancellation after an external side effect
+  cannot erase the fact that an attempt occurred.
 - `possibly_orphaned` flags a gone process with no end recorded whose loss
   wasn't conclusively established (unaskable pid, or an unpublishable
   transition) — advisory, never makes the run terminal.
@@ -281,13 +286,15 @@ Inconclusive (settle nothing about death):
 A caller who suspects nothing still needs to find the run whose terminal
 notice never arrived — by construction that run announced itself to nobody.
 `job.list` is that surface: every row carries `notify_delivery_state`
-(`none` / `delivered` / `delivered_unverified` / `failed`, collapsed from the
+(`none` / `delivered` / `delivered_unverified` / `failed` / `unknown`, collapsed from the
 full `notify_delivery` object `status()` reports for one-run detail), so the
-sweep is "list, act on `failed`" with no per-run reads. `none` covers both
+sweep is "list, act on `failed` or `unknown`" with no per-run reads. `none` covers both
 not-terminal-yet and no-notifier-configured — silence is the documented
 default there, never a failure — and `delivered_unverified` is deliberately
 not collapsed into either neighbor (a zero exit from a command shape whose
-zero exit doesn't prove a send supports neither claim).
+zero exit doesn't prove a send supports neither claim). `unknown` means the
+attempt began but the process ended before its final result could replace the
+write-ahead record; inspect or reconcile it rather than treating it as success.
 
 #### signal-leader-group-safety
 

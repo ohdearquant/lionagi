@@ -373,6 +373,11 @@ D1 — is a parallel list, not the thing compared.
   "registered > 0": a server that legitimately advertises no tools (a resources-only
   server) is not an error, and a non-empty check would fail it while still passing every
   case where a server advertises three tools and registers one.
+- Server-set selection precedes acquisition. When a caller supplies an already-resolved
+  set (including the explicit no-config case), that selection is authoritative:
+  factory-side native discovery is skipped, so a server outside the set never reaches
+  `MCPConnectionPool.get_client` and is neither connected nor recorded as an empty
+  registration. D3 applies only after a server has been selected for registration.
 - A server advertising zero tools registers zero and succeeds.
 - `PermissionError` continues to propagate unchanged — an admission denial is already
   fail-closed and is not a shortfall.

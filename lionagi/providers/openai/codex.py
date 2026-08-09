@@ -137,8 +137,8 @@ def toml_override_value(value: Any) -> str:
     raise TypeError(f"Unsupported codex `-c` override value type: {type(value)!r}")
 
 
-def _linked_worktree_git_dir(cwd: Path) -> Path | None:
-    """Return a linked worktree's private Git directory, if *cwd* is in one."""
+def _linked_worktree_git_writable_roots(cwd: Path) -> tuple[Path, ...]:
+    """Return the narrow Git write roots needed by a linked worktree."""
     resolved_cwd = cwd.resolve()
     try:
         result = subprocess.run(
@@ -149,17 +149,21 @@ def _linked_worktree_git_dir(cwd: Path) -> Path | None:
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return ()
     paths = result.stdout.splitlines()
     if result.returncode != 0 or len(paths) != 2 or not all(paths):
-        return None
+        return ()
 
     def _resolve(value: str) -> Path:
         path = Path(value)
         return path.resolve() if path.is_absolute() else (resolved_cwd / path).resolve()
 
     git_dir, common_dir = map(_resolve, paths)
-    return git_dir if git_dir != common_dir else None
+    if git_dir == common_dir:
+        return ()
+
+    common_roots = (common_dir / "objects", common_dir / "refs", common_dir / "logs")
+    return (git_dir, *(path for path in common_roots if path.is_dir()))
 
 
 # --------------------------------------------------------------------------- request model
@@ -551,9 +555,9 @@ class CodexCodeRequest(BaseModel):
 
         args.extend(self._build_declarative_args())
 
-        linked_git_dir = _linked_worktree_git_dir(cwd)
-        if linked_git_dir is not None and str(linked_git_dir) not in (self.add_dir or []):
-            args.extend(["--add-dir", str(linked_git_dir)])
+        for git_root in _linked_worktree_git_writable_roots(cwd):
+            if str(git_root) not in (self.add_dir or []):
+                args.extend(["--add-dir", str(git_root)])
 
         # Approval & sandbox: mutually exclusive hierarchy
         if self.bypass_approvals:

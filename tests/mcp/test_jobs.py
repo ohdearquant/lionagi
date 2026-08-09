@@ -2761,6 +2761,8 @@ def test_listing_does_not_read_an_absent_notifier_as_a_failure(sandbox):
     states = {j["run_id"]: j["notify_delivery_state"] for j in jobs.list_jobs()}
     assert states[nothing_configured] == "none"
     assert states[still_running] == "none"
+    assert jobs.status(nothing_configured)["notify_delivery"] == {"attempted": False}
+    assert jobs.status(still_running)["notify_delivery"] is None
     # the three outcomes a caller branches on are three different words
     assert len({states[nothing_configured], states[delivered], states[failed]}) == 3
 

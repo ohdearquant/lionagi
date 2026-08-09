@@ -1,0 +1,27 @@
+[package]
+name = "lion-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Lion microkernel — production types, state machine, and kernel API"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+
+[dependencies]
+hmac = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(extract)'] }
+
+[features]
+default = []
+serde = ["dep:serde"]

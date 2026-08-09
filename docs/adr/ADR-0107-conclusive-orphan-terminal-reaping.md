@@ -424,10 +424,13 @@ notification configuration path.
 
 Concurrent readers can race after the transition and before delivery. Only the
 reader whose guarded operation returns `won_transition=true` may initiate the
-delivery. Other readers return the durable terminal state. Crash after the
-terminal write but before delivery remains visible as absent
-`notify_delivery`; notification is best-effort, and ADR-0106 D9 still requires
-reconciliation by reading state.
+delivery. Other readers return the durable terminal state. The terminal
+transition writes `{"attempted": false}` and delivery replaces it with an
+attempted/unknown outcome before launching the notifier. A crash after the
+external side effect but before the final result therefore remains visible as
+an attempt whose outcome is unknown rather than absent `notify_delivery`;
+notification is still best-effort, and ADR-0106 D9 still requires reconciliation
+by reading state.
 
 This is tension with the ideal that a terminal transition and its wake-up are
 indivisible. They are not indivisible today either: the terminal hook records
