@@ -258,3 +258,37 @@ class TestForwardedMcpServersSurviveTheMerge:
         assert overrides["model_provider"] == "openrouter"
         # The forwarded server set is still present alongside it.
         assert any("mcp_servers" in str(k) for k in overrides), overrides
+
+
+class TestAProfilesVendorIdSurvivesEffortParsing:
+    """A profile's model is a literal vendor id, and one of the fleet's ends in
+    ``-max``. Parsed as a lionagi spec it became ``qwen/qwen3.8``, which
+    OpenRouter does not serve, so the leg died at the provider naming a model
+    nobody had asked for."""
+
+    def test_a_max_suffixed_vendor_id_reaches_the_endpoint_whole(self, codex_home):
+        _write(
+            codex_home,
+            "qwen-38",
+            'model_provider = "openrouter"\nmodel = "qwen/qwen3.8-max"\n',
+        )
+        im = build_imodel_from_spec("codex/qwen-38", yolo=True, effort_override="xhigh")
+
+        assert im.endpoint.config.kwargs["model"] == "qwen/qwen3.8-max"
+        # The effort the caller asked for still routes to codex's own kwarg.
+        assert im.endpoint.config.kwargs["reasoning_effort"] == "xhigh"
+
+    def test_build_chat_model_keeps_it_whole_too(self, codex_home):
+        """The other entry point. A fix applied to one builder and not the
+        other leaves half the fleet's legs still failing."""
+        _write(
+            codex_home,
+            "qwen-38",
+            'model_provider = "openrouter"\nmodel = "qwen/qwen3.8-max"\n',
+        )
+        out = build_chat_model(
+            provider="codex", model="qwen-38", yolo=True, verbose=False, theme=None, effort="high"
+        )
+
+        model = out if isinstance(out, str) else out.endpoint.config.kwargs["model"]
+        assert "qwen/qwen3.8-max" in model

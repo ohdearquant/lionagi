@@ -47,10 +47,15 @@ describe("computeNodeVisualStyle", () => {
     expect(completed.railColor).not.toBe("transparent");
   });
 
-  it("failed and escalated read as the same failure-pool visual", () => {
-    expect(computeNodeVisualStyle("failed", false)).toEqual(
-      computeNodeVisualStyle("escalated", false),
-    );
+  it("escalated uses the warning visual while failed keeps the failure visual", () => {
+    const escalated = computeNodeVisualStyle("escalated", false);
+    const failed = computeNodeVisualStyle("failed", false);
+    const warning = computeNodeVisualStyle("awaiting_approval", false);
+
+    expect(escalated).toEqual(warning);
+    expect(escalated).not.toEqual(failed);
+    expect(failed.borderColor).toBe("var(--dag-failed-border)");
+    expect(failed.railColor).toBe("var(--dag-failed-border)");
   });
 
   it("running, completed, and failed are all mutually distinguishable by color at any zoom", () => {

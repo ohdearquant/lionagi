@@ -163,6 +163,9 @@ class DependencyAwareExecutor:
         # caller can tell a dead node from a genuine completion without
         # inspecting every result value by hand.
         self.failed_operations = set()
+        # Operations that were already FAILED when execution began must not
+        # open dependency paths or contribute their restored error payloads.
+        self._preterminal_failed_operations = set()
         # Gate-reject bookkeeping (see the module-level contract comment).
         # ``_gate_rejections``: op_id of a completed ``is_gate`` node -> the
         # reason payload to attribute to anything downstream of it.
@@ -221,9 +224,7 @@ class DependencyAwareExecutor:
             finally:
                 self._tg = None
 
-        completed_ops = [
-            op_id for op_id in self.results.keys() if op_id not in self.skipped_operations
-        ]
+        completed_ops = self._completed_operation_ids()
 
         result = {
             "completed_operations": completed_ops,
@@ -237,6 +238,10 @@ class DependencyAwareExecutor:
         self._validate_execution_results(result)
 
         return result
+
+    def _completed_operation_ids(self) -> list[Any]:
+        excluded = self.skipped_operations | self._preterminal_failed_operations
+        return [op_id for op_id in self.results if op_id not in excluded]
 
     def _gate_result_fields(self) -> dict[str, Any]:
         """``gate_rejected_operations``: ``is_gate`` nodes whose result carried
@@ -473,6 +478,9 @@ class DependencyAwareExecutor:
 
     async def _execute_operation(self, operation: Operation, limiter: CapacityLimiter):
         if operation.execution.status in Event._TERMINAL_STATUSES:
+            if operation.execution.status == EventStatus.FAILED:
+                self.failed_operations.add(operation.id)
+                self._preterminal_failed_operations.add(operation.id)
             if self.verbose:
                 logger.debug(
                     "Skipping %s operation: %s",
@@ -696,7 +704,10 @@ class DependencyAwareExecutor:
                 gate_reason = gate_reason or upstream_reason
                 continue
 
-            if edge.head in self.skipped_operations:
+            if (
+                edge.head in self.skipped_operations
+                or edge.head in self._preterminal_failed_operations
+            ):
                 continue
 
             if has_valid_path:
@@ -755,7 +766,10 @@ class DependencyAwareExecutor:
         if predecessors:
             pred_ctx = Note()
             for pred in predecessors:
-                if pred.id in self.skipped_operations:
+                if (
+                    pred.id in self.skipped_operations
+                    or pred.id in self._preterminal_failed_operations
+                ):
                     continue
 
                 if pred.id in self.results:
@@ -998,9 +1012,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
             observer.unobserve(self._on_bus_spawn)
             observer.unobserve(self._on_bus_escalation)
 
-        completed_ops = [
-            op_id for op_id in self.results.keys() if op_id not in self.skipped_operations
-        ]
+        completed_ops = self._completed_operation_ids()
         result = {
             "completed_operations": completed_ops,
             "operation_results": self.results,
@@ -1178,6 +1190,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
             # node it retries (e.g. mirroring a CLI engine's transcript) — cheaper to
             # carry now than to re-derive `name` from a stale emitter reference later.
             child.metadata["escalated_from_name"] = name
+            # Lifecycle signals prefer reference_id over the operation UUID,
+            # so the retry is readable before its branch has been assigned.
+            child.metadata["reference_id"] = f"{name} escalation retry"
             if self._accept_node(child, emitter_id=emitter_id, independent=True):
                 self._escalated_ids.add(emitter_id)
         elif route == "notify":

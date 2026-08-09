@@ -50,6 +50,7 @@ __all__ = (
 _LEGACY_AGENTS_ROOT = LIONAGI_HOME / "logs" / "agents"
 _LAST_BRANCH_POINTER = LIONAGI_HOME / "last_branch.json"
 _RUN_ID_ENV_VAR = "LIONAGI_RUN_ID"
+PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
 
 
 def _new_run_id() -> str:
@@ -227,6 +228,44 @@ class RunDir:
 
     def ensure_artifact_root(self) -> None:
         ensure_lionagi_dir(self.artifact_root)
+
+
+def _record_persistence_degraded(
+    exc: BaseException,
+    *,
+    run: RunDir | None = None,
+    run_id: str | None = None,
+    run_manifest: dict[str, Any] | None = None,
+) -> str:
+    """Record why lifecycle persistence was disabled outside the failed store."""
+    reason = repr(exc)
+    if run_manifest is not None:
+        run_manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
+    resolved_id = run.run_id if run is not None else run_id
+    manifest_path = (
+        run.manifest_path
+        if run is not None
+        else (RUNS_ROOT / resolved_id / "run.json" if resolved_id else None)
+    )
+    if manifest_path is None:
+        _log.warning("could not record persistence degradation: no active run id")
+        return reason
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        if not isinstance(manifest, dict):
+            raise TypeError("run manifest is not a JSON object")
+        if run_manifest is not None:
+            manifest.update(run_manifest)
+        manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
+        _atomic_write_json(manifest_path, manifest)
+    except Exception as record_exc:  # noqa: BLE001 — degradation must not become a run failure
+        _log.warning(
+            "could not record persistence degradation for run %s: %r",
+            resolved_id,
+            record_exc,
+            exc_info=True,
+        )
+    return reason
 
 
 def allocate_run(
@@ -1294,6 +1333,7 @@ async def setup_agent_persist(
     effort: str | None = None,
     project: str | None = None,
     run_id: str | None = None,
+    run_manifest: dict[str, Any] | None = None,
     share_db: bool = True,
     drains_controls: bool = False,
 ) -> dict | None:
@@ -1534,10 +1574,11 @@ async def setup_agent_persist(
         return ctx
     except Exception as exc:
         _log.warning(
-            "live persist setup failed (%s) — disabling persistence for this run",
+            "live persist setup failed (%r) — disabling persistence for this run",
             exc,
             exc_info=True,
         )
+        _record_persistence_degraded(exc, run_id=run_id, run_manifest=run_manifest)
         # If the wrapper session already claimed the branch, release it so a
         # later setup (or retry) can wrap the same branch again.
         if session is not None:

@@ -313,8 +313,9 @@ def test_build_imodel_from_spec_mixed_case_max_clamps_codex_to_xhigh(monkeypatch
 
 
 def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypatch):
-    """--effort XHigh on a non-opus-4-7 Claude model must clamp to 'high',
-    matching the lowercase 'xhigh' behavior (case must not bypass the clamp)."""
+    """--effort XHigh on a Claude model with no xhigh tier must clamp to
+    'high', matching the lowercase 'xhigh' behavior (case must not bypass the
+    clamp). Sonnet has no xhigh tier; the Opus line does."""
     import lionagi.cli._providers as pmod
     from lionagi.testing import IModelKwargCaptor
 
@@ -509,3 +510,27 @@ def test_slash_profile_miss_includes_available_plugin_profiles(monkeypatch, tmp_
     message = str(exc_info.value)
     assert "Agent profile 'myplugin/reviewr' not found" in message
     assert "Available: myplugin/reviewer" in message
+
+
+# ── Vendor model ids are not lionagi specs ────────────────────────────────
+# The trailing-effort convention belongs to lionagi's own provider/model-effort
+# grammar. A model id borrowed whole from another vendor's catalogue — reached
+# through a codex config profile naming its own model_provider — ends in
+# whatever that vendor chose, and a trailing word that happens to spell an
+# effort level is part of the id.
+
+
+def test_parse_model_spec_keeps_a_trailing_effort_word_in_a_namespaced_vendor_id():
+    ms = parse_model_spec("codex/qwen/qwen3.8-max")
+
+    assert ms.model == "codex/qwen/qwen3.8-max"
+    assert ms.effort is None
+
+
+def test_parse_model_spec_still_splits_a_plain_model_name():
+    """The must-split arm. Deleting the split entirely would satisfy the test
+    above and quietly drop effort routing for every ordinary spec."""
+    ms = parse_model_spec("codex/gpt-5.4-max")
+
+    assert ms.model == "codex/gpt-5.4"
+    assert ms.effort == "max"

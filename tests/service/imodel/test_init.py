@@ -558,3 +558,50 @@ class TestiModel:
 
         assert isinstance(result, APICalling)
         assert result.status == EventStatus.COMPLETED
+
+
+class TestEffortSuffixIsNotStrippedFromVendorModelIds:
+    """iModel strips a trailing effort word off a model name and routes it to
+    the provider's effort kwarg, so ``codex/gpt-5.4-max`` means gpt-5.4 at max
+    effort. That convenience belongs to lionagi's own ``provider/model-effort``
+    grammar, which spends its single slash on the provider.
+
+    A model name that still contains a slash after the provider is known came
+    from another vendor's catalogue -- codex reaches OpenRouter models this way
+    -- and its trailing token is part of the id. Stripping it produced a model
+    id nobody serves, and the provider answered with a 400 naming a model that
+    was never requested.
+    """
+
+    def test_namespaced_vendor_id_keeps_a_trailing_effort_word(self):
+        m = iModel(
+            provider="codex",
+            model="qwen/qwen3.8-max",
+            endpoint="query_cli",
+            api_key="dummy",
+        )
+        assert m.endpoint.config.kwargs["model"] == "qwen/qwen3.8-max"
+        assert "reasoning_effort" not in m.endpoint.config.kwargs
+
+    def test_a_bare_model_name_still_gives_up_its_effort_suffix(self):
+        """The must-strip arm. Without it a fix that simply deletes the strip
+        passes the test above and silently drops effort routing everywhere."""
+        m = iModel(
+            provider="codex",
+            model="gpt-5.4-max",
+            endpoint="query_cli",
+            api_key="dummy",
+        )
+        assert m.endpoint.config.kwargs["model"] == "gpt-5.4"
+        assert m.endpoint.config.kwargs["reasoning_effort"] == "max"
+
+    def test_a_namespaced_id_with_no_effort_word_is_untouched_either_way(self):
+        """Control: the fleet's other OpenRouter ids never collided in the
+        first place, so they must read identically before and after."""
+        m = iModel(
+            provider="codex",
+            model="deepseek/deepseek-v4-flash-0731",
+            endpoint="query_cli",
+            api_key="dummy",
+        )
+        assert m.endpoint.config.kwargs["model"] == "deepseek/deepseek-v4-flash-0731"

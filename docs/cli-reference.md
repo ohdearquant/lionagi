@@ -273,7 +273,7 @@ li o flow [model] prompt [flags]
 | `-p, --playbook NAME` | none | Resolve a project-local, user-global, or trusted-plugin playbook. Declared args are injected as additional flags. |
 | `--with-synthesis [MODEL]` | false | Final synthesis after all ops |
 | `--max-concurrent N` | 0 | Max concurrent agents per phase (0 = all) |
-| `--max-agents N` | 0 | Cap total ops (0 = unlimited) |
+| `--max-agents N` | 0 | Shared cap for planned and reactive ops (`0` = no shared ceiling; reactive spawns are capped at 20) |
 | `--dry-run` | false | Plan DAG and print; no execution |
 | `--show-graph` | false | Render DAG as matplotlib PNG into `--save` dir |
 | `--bare` | false | Ignore agent profiles; all workers use CLI model |
@@ -285,7 +285,7 @@ li o flow [model] prompt [flags]
 | `--team-max-rounds N` | `2` | Extra reactive wake-up rounds for unread teammate messages after active workers finish |
 | `--workers M1,M2,...` | none | Mixed worker model pool; preserves each role's profile and overrides model routing |
 | `--pack PATH` | none | Per-role routing pack used when `--workers` is absent |
-| `--max-ops N` | `0` | Cap total graph nodes (`0` = unlimited); `--max-agents` is deprecated |
+| `--max-ops N` | `0` | Shared cap for planned and reactive ops (`0` = no shared ceiling; reactive spawns are capped at 20); `--max-agents` is deprecated |
 | `--reactive MODE` | `all` | Roles allowed to emit `SpawnRequest`: `all`, `off`, or a comma-separated role list |
 | `--resume ID` | none | Restart a checkpointed flow without re-planning; does not read other planning flags |
 | `--allow-degraded-context` | false | Permit resumed inherited-context operations to run with empty predecessor history |

@@ -602,6 +602,9 @@ function ProgressSummaryBar({
         {counts.hasFailure ? "⚠ " : ""}
         {t("progressFailed")} {counts.failed}
       </span>
+      <span className={counts.escalated > 0 ? "font-semibold text-status-warning" : undefined}>
+        {t("graphNodeStatusEscalated")} {counts.escalated}
+      </span>
       <span>
         {t("progressPending")} {pending}
       </span>
@@ -1058,7 +1061,7 @@ const KIND_BADGE: Record<string, { label: string; tone: string }> = {
   NodeCompleted: { label: "done", tone: "bg-status-success-bg text-status-success" },
   NodeFailed: { label: "failed", tone: "bg-status-error-bg text-status-error" },
   NodeAwaitingApproval: { label: "approval", tone: "bg-status-warning-bg text-status-warning" },
-  NodeEscalated: { label: "escalated", tone: "bg-status-error-bg text-status-error" },
+  NodeEscalated: { label: "escalated", tone: "bg-status-warning-bg text-status-warning" },
   GateDenied: { label: "gate-denied", tone: "bg-status-error-bg text-status-error" },
   RunStart: { label: "run-start", tone: "bg-status-running-bg text-status-running" },
   RunEnd: { label: "run-end", tone: "bg-status-success-bg text-status-success" },
@@ -1068,9 +1071,9 @@ const KIND_BADGE: Record<string, { label: string; tone: string }> = {
   StructuredOutput: { label: "output", tone: "bg-surface-overlay text-content-secondary" },
 };
 
-// A NodeEscalated with route="notify" is a soft ("fyi") help signal, not a
-// real escalation — badge it distinctly (warning tone, like an approval
-// request) instead of the unconditional error-toned "escalated" label.
+// A NodeEscalated with route="notify" is a soft ("fyi") help signal rather
+// than a terminal escalation. Both use the attention tone, while the soft
+// route keeps its distinct label because the node itself continues working.
 export function badgeForEvent(ev: SignalEvent): { label: string; tone: string } {
   if (ev.kind === "NodeEscalated" && ev.payload?.route === "notify") {
     return { label: "notify", tone: "bg-status-warning-bg text-status-warning" };
@@ -1087,7 +1090,7 @@ const LANE_TONE: Record<LaneState, string> = {
   paused: "bg-status-warning-bg text-status-warning",
   succeeded: "bg-status-success-bg text-status-success",
   failed: "bg-status-error-bg text-status-error",
-  escalated: "bg-status-error-bg text-status-error",
+  escalated: "bg-status-warning-bg text-status-warning",
 };
 
 interface LaneSummary {

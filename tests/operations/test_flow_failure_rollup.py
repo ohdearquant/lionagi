@@ -14,6 +14,7 @@ import pytest
 
 from lionagi.operations import flow
 from lionagi.operations.builder import OperationGraphBuilder
+from lionagi.protocols.types import EventStatus
 from lionagi.session.session import Session
 
 
@@ -48,6 +49,47 @@ def _make_ops(executed: list[str]):
         raise RuntimeError("CLI subprocess exited with code 1 and wrote nothing to stderr")
 
     return {"first": first, "last": last}
+
+
+@pytest.mark.asyncio
+async def test_preterminal_failed_op_is_not_completed_and_blocks_dependents_in_both_executors():
+    outcomes = {}
+
+    for reactive in (False, True):
+        executed = []
+
+        async def should_not_run(**_kwargs):
+            executed.append("ran")
+            return "unexpected"
+
+        session = _session_with_ops(failed_source=should_not_run, dependent=should_not_run)
+        builder = OperationGraphBuilder()
+        failed_id = builder.add_operation("failed_source", depends_on=[])
+        dependent_id = builder.add_operation("dependent", depends_on=[failed_id])
+        graph = builder.get_graph()
+        failed_node = graph.internal_nodes[failed_id]
+        failed_node.execution.status = EventStatus.FAILED
+        failed_node.execution.response = {"error": "boom"}
+
+        result = await flow(session, graph, reactive=reactive)
+        outcomes[reactive] = {
+            "failed_is_completed": failed_id in result["completed_operations"],
+            "failed_is_failed": failed_id in result["failed_operations"],
+            "dependent_is_completed": dependent_id in result["completed_operations"],
+            "dependent_is_skipped": dependent_id in result["skipped_operations"],
+            "executed": executed,
+            "failed_result": result["operation_results"].get(failed_id),
+        }
+
+    expected = {
+        "failed_is_completed": False,
+        "failed_is_failed": True,
+        "dependent_is_completed": False,
+        "dependent_is_skipped": True,
+        "executed": [],
+        "failed_result": {"error": "boom"},
+    }
+    assert outcomes == {False: expected, True: expected}
 
 
 @pytest.mark.asyncio
@@ -153,3 +195,52 @@ async def test_non_mapping_response_context_is_rolled_up_as_failed():
     assert ids["last"] in result["failed_operations"]
     assert ids["first"] not in result["failed_operations"]
     assert ids["last"] in result["completed_operations"]
+
+
+@pytest.mark.parametrize("reactive", [False, True])
+@pytest.mark.asyncio
+async def test_failed_predecessor_payload_does_not_reach_a_running_dependent(reactive):
+    """A dependent with two predecessors, one healthy and one carrying a
+    restored terminal failure, still runs -- the healthy edge gives it a
+    valid path. Context preparation iterates ALL predecessors, so without
+    the omission for a pre-terminal failure the dead predecessor's error
+    payload is handed to the dependent as though it were an input.
+
+    Shape::
+
+        good_source ---\\
+                        +--> dependent
+        failed_source --/    (restored FAILED, response={"error": ...})
+    """
+    seen: dict[str, object] = {}
+
+    async def good_source(**kw):
+        return "good"
+
+    async def failed_source(**kw):  # must never run
+        return "unexpected"
+
+    async def dependent(**kw):
+        seen["context"] = kw.get("context")
+        return "dependent ok"
+
+    session = _session_with_ops(
+        good_source=good_source, failed_source=failed_source, dependent=dependent
+    )
+    builder = OperationGraphBuilder()
+    good_id = builder.add_operation("good_source", depends_on=[])
+    failed_id = builder.add_operation("failed_source", depends_on=[])
+    dep_id = builder.add_operation("dependent", depends_on=[good_id, failed_id])
+    graph = builder.get_graph()
+    restored = graph.internal_nodes[failed_id]
+    restored.execution.status = EventStatus.FAILED
+    restored.execution.response = {"error": "boom"}
+
+    result = await flow(session, graph, reactive=reactive, verbose=False)
+
+    # Preconditions: without these the assertion below proves nothing.
+    assert dep_id in result["completed_operations"]
+    assert "context" in seen
+
+    blob = repr(seen["context"])
+    assert "boom" not in blob, f"failed predecessor payload leaked into dependent: {blob}"

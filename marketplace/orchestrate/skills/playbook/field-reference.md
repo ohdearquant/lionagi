@@ -12,12 +12,13 @@ a lionagi checkout.
 |---|---|---|---|
 | `name` | str | — | Descriptive identifier. Keep it equal to the filename stem: the CLI resolves a playbook by filename, and nothing validates the two against each other, so a mismatch is silent. |
 | `description` | str | — | Free text shown by `li play <name> --help`. `li play list` prints names only. |
-| `argument-hint` | str | — | CC-compatible display hint, e.g. `'[--mode MODE] [--strict]'`. Sets the `--help` usage line and, when no `args:` block exists, supplies a fallback argument schema. |
+| `argument-hint` | str | — | CC-compatible fallback argument schema, e.g. `'[--mode MODE] [--strict]'`, also shown in `--help`. Ignored when `args` is present. |
 | `model` | str | positional | Model spec: `claude-code/sonnet-4-6`, `codex/gpt-5.4`. |
 | `agent` | str | `-a/--agent` | Orchestrator agent profile from `~/.lionagi/agents/<name>/<name>.md`. |
 | `effort` | str | `--effort` | Accepted values depend on the provider: Claude `low \| medium \| high \| xhigh \| max`; Codex `none \| minimal \| low \| medium \| high \| xhigh \| max \| ultra`, where `max` and `ultra` clamp to what the model supports. Gemini folds effort into the model spec instead. Omit to use the profile default. |
 | `workers` | int | `--max-concurrent` | Max concurrent agents. Range: 1–32. |
-| `max_ops` | int | `--max-ops` | Cap on total DAG operations. `0` = unlimited. Range: 0–50. |
+| `max_ops` | int | `--max-ops` | Shared cap on planned and reactive operations. `0` removes the shared ceiling, but reactive spawns retain a separate cap of 20. Range: 0–50. |
+| `max_agents` | int | `--max-agents` | Deprecated alias for `max_ops`, with the same range and zero behavior. |
 | `with_synthesis` | bool or str | `--with-synthesis` | `true` uses the orchestrator model; a model spec string uses that model. |
 | `team_mode` | str | `--team-mode` | Create a fresh team (new UUID) each invocation. Value is the team name. |
 | `team_attach` | str | `--team-attach` | Upsert a team by name: attach if it exists, create if missing. |
@@ -26,8 +27,11 @@ a lionagi checkout.
 | `show_graph` | bool | `--show-graph` | Write a DAG visualisation after an executing flow finishes. |
 | `reactive` | str | `--reactive` | Who may request follow-up assignments: `all`, `off`, or a comma-separated role list. |
 | `save` | str | `--save` | Directory to write artifact output to. |
+| `pack` | str | `--pack` | YAML routing pack used when `workers` is absent. |
+| `reactive` | str | `--reactive` | Spawn policy: `all`, `off`, or a comma-separated role allowlist. |
 | `prompt` | str | — | Template string. May contain `{input}` and `{arg_name}` placeholders. |
 | `args` | dict | dynamic flags | Typed argument schema. Each key becomes a CLI flag, or an `args` entry in the `play.submit` MCP call. |
+| `artifacts` | dict | — | Expected artifact contract checked before and after the playbook run. |
 
 **Key normalization**: when a YAML or JSON playbook is loaded, top-level keys accept both
 dash and underscore forms (`max-ops` and `max_ops` both work). The `args:` block is an
@@ -43,10 +47,10 @@ worth knowing before they surprise you.
   negating flag. A playbook that sets one to `true` sets it for every invocation of that
   playbook, and no command line can undo it.
 - **`0` is both the default and a meaningful value for the two numeric caps.** `--max-ops 0`
-  means unlimited and `--max-concurrent 0` means run the whole phase at once, but `0` is also
-  what those flags hold when you do not pass them, so neither can be told apart from absence.
-  A playbook that sets `max_ops` or `workers` therefore overrides an explicit `0`, and the
-  uncapped run you asked for is capped without saying so. To actually run uncapped, remove the
+  leaves planning without a shared op ceiling but still limits reactive spawns to 20;
+  `--max-concurrent 0` means run the whole phase at once. Because `0` is also what those flags
+  hold when omitted, neither can be distinguished from absence. A playbook that sets `max_ops`
+  or `workers` therefore overrides an explicit `0`. To retain the zero behavior, remove the
   field from the playbook rather than passing `0`.
 
 ---
@@ -203,17 +207,18 @@ Top-level spec keys normalize dashes to underscores automatically. Keys inside
 schema validation with "must be an alphanumeric identifier".
 
 **`workers: 0` is invalid**
-`workers` maps to `--max-concurrent` (range 1–32). For unlimited ops, set
-`max_ops: 0` (which is the default). Do not conflate the two fields.
+`workers` maps to `--max-concurrent` (range 1–32). For uncapped planning, set
+`max_ops: 0` (which is the default); reactive spawning still stops at 20. Do not
+conflate the two fields.
 
 **Expecting `show_graph` during a dry run**
 `dry_run: true` returns before the run graph is built. `show_graph: true` writes
 `flow_dag.png` to the run's artifact directory only after an executing flow finishes; over
 MCP, find it in the artifact list returned by `job.output`.
 
-**Unknown top-level keys are silently ignored**
-There is no schema validation error for unrecognized keys. A typo like `effrot: high`
-takes no effect and produces no warning.
+**Unknown top-level keys are rejected**
+An unrecognized key such as `effrot: high` fails validation. The error names the
+offending key and lists the accepted fields.
 
 **`team_mode` and `team_attach` both set**
 The CLI rejects this at dispatch time with an error. Only one team strategy is allowed
@@ -226,9 +231,16 @@ plan that fills `max_ops` leaves no room for follow-ups. With `max_ops: 0`, the 
 has no caller-defined cap (the engine defensively truncates it at 200) and reactive execution
 allows up to 20 follow-up assignments.
 
-**CLI-only flags cannot be set in YAML**
-`yolo`, `bypass`, `output`, `background`, `fast`, `verbose`, and `theme` are CLI-only.
-Specifying them in YAML has no effect — always pass them on the command line.
+**Some flags belong to the command line, not the spec**
+`output`, `background`, `fast`, `verbose`, and `theme` are CLI-only, and naming one in YAML
+is rejected as an unknown field.
+
+`yolo`, `bypass`, and `permission_mode` are a separate case: the loader accepts them and does
+not read them. They appear in playbooks written in the field, so refusing them would break
+files whose only fault is naming a key that does nothing — but the run still takes its value
+from the command-line flag. A playbook that sets `yolo: true` is not running in that mode.
+Sandbox posture comes from the agent profile's frontmatter, which is the surface that is
+actually configured.
 
 ---
 

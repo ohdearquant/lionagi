@@ -928,55 +928,94 @@ describe("history/RunDetail.tsx — overview aggregates are lifetime totals", ()
   });
 });
 
-// ─── NodeEscalated route=notify badge ──────────────────────────────────────────
-// A soft ("fyi" urgency) EscalationRequest resolves to route="notify" and
-// fires NodeEscalated purely for observability — the node itself keeps
-// working. The per-event timeline badge must not label that "escalated"
-// (error tone) the same as a real, terminal escalation.
+// ─── NodeEscalated badge tone ─────────────────────────────────────────────────
+// Every escalation route is attention-worthy rather than failed. Soft notify
+// keeps its distinct label, while hard and legacy escalation shapes retain the
+// escalated label; a real NodeFailed remains the error-tone control.
 
-describe("history/RunDetail.tsx — badgeForEvent (NodeEscalated route=notify)", () => {
-  it("labels a route=notify NodeEscalated as notify, not escalated", async () => {
+describe("history/RunDetail.tsx — badgeForEvent escalation presentation", () => {
+  it("uses warning for every escalation shape while genuine failure stays error-toned", async () => {
     const { badgeForEvent } = await import("./RunDetail");
-    const badge = badgeForEvent({
-      id: "1",
-      session_id: "s1",
-      seq: 0,
-      kind: "NodeEscalated",
-      op_id: "op-a",
-      ts: 1,
-      payload: { route: "notify" },
-    });
-    expect(badge.label).toBe("notify");
-    expect(badge.tone).not.toMatch(/error/);
-  });
+    const escalationCases = [
+      [{ route: "notify" }, "notify"],
+      [{ route: "higher_tier" }, "escalated"],
+      [{}, "escalated"],
+    ] as const;
 
-  it("still labels a route=higher_tier NodeEscalated as escalated", async () => {
-    const { badgeForEvent } = await import("./RunDetail");
-    const badge = badgeForEvent({
-      id: "1",
-      session_id: "s1",
-      seq: 0,
-      kind: "NodeEscalated",
-      op_id: "op-a",
-      ts: 1,
-      payload: { route: "higher_tier" },
-    });
-    expect(badge.label).toBe("escalated");
-    expect(badge.tone).toMatch(/error/);
-  });
+    for (const [payload, label] of escalationCases) {
+      const badge = badgeForEvent({
+        id: `escalated-${label}`,
+        session_id: "s1",
+        seq: 0,
+        kind: "NodeEscalated",
+        op_id: "op-escalated",
+        ts: 1,
+        payload,
+      });
+      expect(badge.label).toBe(label);
+      expect(badge.tone).toMatch(/warning/);
+      expect(badge.tone).not.toMatch(/error/);
+    }
 
-  it("still labels a bare NodeEscalated (no route) as escalated — back-compat", async () => {
-    const { badgeForEvent } = await import("./RunDetail");
-    const badge = badgeForEvent({
-      id: "1",
+    const failed = badgeForEvent({
+      id: "failed",
       session_id: "s1",
-      seq: 0,
-      kind: "NodeEscalated",
-      op_id: "op-a",
-      ts: 1,
+      seq: 1,
+      kind: "NodeFailed",
+      op_id: "op-failed",
+      ts: 2,
       payload: {},
     });
-    expect(badge.label).toBe("escalated");
+    expect(failed.label).toBe("failed");
+    expect(failed.tone).toMatch(/error/);
+    expect(failed.tone).not.toMatch(/warning/);
+  });
+});
+
+describe("history/RunDetail.tsx — operation lane escalation presentation", () => {
+  it("uses a warning lane for escalated while a failed lane stays error-toned", async () => {
+    const { EventsSection } = await import("./RunDetail");
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    try {
+      act(() => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <EventsSection
+              live={false}
+              events={[
+                sig({
+                  id: "escalated",
+                  kind: "NodeEscalated",
+                  op_id: "op-escalated",
+                  payload: { route: "higher_tier" },
+                }),
+                sig({ id: "failed", kind: "NodeFailed", op_id: "op-failed", payload: {} }),
+              ]}
+            />
+          </IntlProvider>,
+        );
+      });
+
+      const laneSummary = Array.from(container.querySelectorAll("#run-events > div")).find((div) =>
+        div.className.includes("gap-1.5"),
+      );
+      const laneBadges = Array.from(laneSummary?.querySelectorAll("span") ?? []);
+      const escalated = laneBadges.find((span) => span.textContent === "escalated");
+      const failed = laneBadges.find((span) => span.textContent === "failed");
+
+      expect(escalated?.className).toContain("text-status-warning");
+      expect(escalated?.className).not.toMatch(/status-error/);
+      expect(failed?.className).toContain("text-status-error");
+      expect(failed?.className).not.toMatch(/status-warning/);
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -1627,13 +1666,18 @@ describe("history/RunDetail.tsx — computeReconciledNodeStatuses / computeProgr
     expect(counts?.hasFailure).toBe(false);
   });
 
-  it("hasFailure trips the unmissable-failure header tone when any node is failed or escalated", async () => {
+  it("counts escalated separately while genuine failed still trips the failure header", async () => {
     const { computeReconciledNodeStatuses, computeProgressCountsForGraph } =
       await import("./RunDetail");
-    const reconciled = computeReconciledNodeStatuses(graph, { a: "escalated" }, true);
-    const counts = computeProgressCountsForGraph(graph, reconciled);
-    expect(counts?.hasFailure).toBe(true);
-    expect(counts?.failed).toBe(1);
+    const reconciled = computeReconciledNodeStatuses(graph, { a: "escalated", b: "failed" }, true);
+    const pairedCounts = computeProgressCountsForGraph(graph, reconciled);
+    expect(pairedCounts).toMatchObject({ escalated: 1, failed: 1, hasFailure: true });
+
+    const escalatedOnly = computeProgressCountsForGraph(
+      { nodes: graph.nodes.slice(0, 1) },
+      { a: "escalated" },
+    );
+    expect(escalatedOnly).toMatchObject({ escalated: 1, failed: 0, hasFailure: false });
   });
 
   it("returns undefined/null gracefully when there is no run graph yet", async () => {
