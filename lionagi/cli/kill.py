@@ -304,13 +304,18 @@ async def _list_running_children(
         )
         for row in rows:
             session_row = db._row_to_dict(row)
-            # Deepest first: the session's own children are signalled before
-            # the session, so a worker is never orphaned by its parent going
+            # Deepest first: whatever the session reaches is signalled before
+            # the session, so no process is orphaned by its owner going
             # terminal ahead of it.
             children.extend(await _list_running_children(db, "session", session_row["id"]))
             children.append(("sessions", "session", session_row))
 
     if entity_type == "session":
+        # `sessions.invocation_id` points at the invocation that OWNS this
+        # session, so this walks up rather than down. It belongs here anyway:
+        # stopping a session has to stop the process running it, and that
+        # process is the owning invocation. Traversal order still holds, since
+        # the owner is signalled before the session that named it.
         rows = await db.fetch_all(
             "SELECT * FROM invocations "
             "WHERE status = 'running' AND id IN ("
@@ -913,9 +918,9 @@ async def _do_kill_all_stale(
         # never records the sessions it started, so this is a property of how
         # plays are written rather than an observation about these rows.
         warn(
-            f"{skipped_unlinked_plays} running play row(s) were not considered: "
-            "a play created by a live run records no worker session, so there is "
-            "nothing to test for staleness. Sweep the worker session ids instead "
+            f"{skipped_unlinked_plays} running play row(s) were not swept: "
+            "plays created by live runs record no link to the sessions they started, "
+            "so their worker state cannot be determined. Sweep the worker session ids instead "
             "(`li monitor` lists them)."
         )
     return 0
