@@ -70,29 +70,37 @@ def sanitize_prompt_name(raw: str | None, *, max_len: int = DISPLAY_NAME_MAX_LEN
     return text
 
 
-def agent_role_label(agent_name: str, started_at: float | None) -> str:
-    """Deterministic label for an agent-only session: the agent's name plus a
-    UTC HH:MM disambiguator from its own start time, so concurrent runs of the
-    same agent read as distinct cards ("implementer · 14:22") without a
-    lookup against sibling rows. Stable across re-reads (same started_at
-    always formats the same way) and computed from UTC so it does not depend
-    on the resolving machine's local timezone.
+def agent_role_label(agent_name: str, started_at: float | None, run_id: str | None = None) -> str:
+    """Deterministic label for an agent-only session: the agent's name, a short
+    slice of the row's own id, and a UTC HH:MM stamp from its start time
+    ("claude-code · 1167 · 14:22"). Every part is a pure function of the row,
+    so no lookup against sibling rows is needed and a re-read always formats
+    the same way. UTC rather than local time keeps the label independent of
+    the resolving machine's timezone.
 
-    Two same-agent runs started in the same minute still collide on this
-    label — that is accepted, by design, not a bug: the row's id remains the
-    real identity everywhere it matters (links, keys, API lookups), and this
-    label exists only to make a list of cards readable at a glance. Making
-    the label itself collision-proof (seconds, a counter, a suffix of the
-    id) would make the common case noisier to read to avoid an edge case
-    nothing actually depends on for correctness.
+    The id slice is what makes a list of these readable. Name and minute alone
+    were chosen first, on the reasoning that a same-name same-minute collision
+    is an edge case the row id already covers everywhere identity actually
+    matters. Watching the real surface refuted that: the common case is
+    several long-lived sessions of one engine, so a page of them reads as
+    "claude-code · 21:37", "claude-code · 21:49", "claude-code · 21:50" —
+    near-identical strings a viewer has to compare digit by digit. Four
+    characters of the id are stable, meaningless to an outsider, and turn a
+    row into something you can point at.
+
+    Each part is dropped when its input is missing rather than rendered
+    blank, so a row with only a name still returns that bare name.
     """
     label = agent_name.strip()
     if not label:
         return label
-    if started_at is None:
-        return label
-    stamp = time.strftime("%H:%M", time.gmtime(started_at))
-    return f"{label} · {stamp}"
+    parts = [label]
+    short = str(run_id).strip()[:4] if run_id else ""
+    if short:
+        parts.append(short)
+    if started_at is not None:
+        parts.append(time.strftime("%H:%M", time.gmtime(started_at)))
+    return " · ".join(parts)
 
 
 def _stripped(session_row: dict[str, Any], key: str) -> str:
@@ -127,7 +135,11 @@ def resolve_display_name(session_row: dict[str, Any]) -> str:
 
     agent_name = _stripped(session_row, "agent_name")
     if agent_name:
-        label = agent_role_label(agent_name, session_row.get("started_at"))
+        label = agent_role_label(
+            agent_name,
+            session_row.get("started_at"),
+            session_row.get("id") or session_row.get("run_id"),
+        )
         if label:
             return label
 
