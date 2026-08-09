@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "موقوف",
       "graphNodeStatusDone": "مکمل",
       "graphNodeStatusFailed": "ناکام",
+      "graphNodeStatusSkipped": "چھوڑ دیا گیا",
       "graphNodeStatusEscalated": "بڑھایا گیا",
       "progressTotal": "کل",
       "progressCompleted": "مکمل",

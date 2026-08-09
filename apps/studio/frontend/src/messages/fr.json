@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "en pause",
       "graphNodeStatusDone": "terminé",
       "graphNodeStatusFailed": "échoué",
+      "graphNodeStatusSkipped": "ignoré",
       "graphNodeStatusEscalated": "escaladé",
       "progressTotal": "Total",
       "progressCompleted": "Terminé",

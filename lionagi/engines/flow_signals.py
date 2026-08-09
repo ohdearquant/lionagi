@@ -15,6 +15,7 @@ from lionagi.session.signal import (
     NodeCompleted,
     NodeFailed,
     NodeQueued,
+    NodeSkipped,
     NodeSpawned,
     NodeStarted,
 )
@@ -103,6 +104,14 @@ async def flow_progress_signals(
             )
         elif status == "failed":
             sig = NodeFailed(
+                op_id=op_id,
+                name=sig_name,
+                elapsed=elapsed,
+                parent_id=parent_id,
+                depends_on=depends_on,
+            )
+        elif status == "skipped":
+            sig = NodeSkipped(
                 op_id=op_id,
                 name=sig_name,
                 elapsed=elapsed,

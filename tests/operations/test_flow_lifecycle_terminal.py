@@ -549,3 +549,99 @@ async def test_emit_terminal_once_is_idempotent_across_call_sites():
 
     op_id = str(op.id)
     assert log.statuses_for(op_id) == ["completed"]
+
+
+# ---------------------------------------------------------------------------
+# skipped is its own terminal outcome, not a failure
+# ---------------------------------------------------------------------------
+
+
+def _skip_graph():
+    """A two-node graph whose second node is gated off by a false edge condition."""
+    from lionagi.operations.node import Operation
+    from lionagi.protocols.graph.edge import Edge, EdgeCondition
+
+    class AlwaysFalseCondition(EdgeCondition):
+        async def apply(self, context: dict) -> bool:
+            return False
+
+    ran = Operation(operation="first", parameters={})
+    gated = Operation(operation="never", parameters={})
+    graph = Graph()
+    graph.add_node(ran)
+    graph.add_node(gated)
+    graph.add_edge(Edge(head=ran.id, tail=gated.id, condition=AlwaysFalseCondition()))
+    return graph, ran, gated
+
+
+@pytest.mark.asyncio
+async def test_gate_skipped_node_emits_skipped_not_failed_on_progress():
+    """The raw executor callback must announce a gated-off node as "skipped".
+
+    The rollup already told these apart (skipped_operations vs
+    failed_operations), but the on_progress stream did not: the skip path had
+    no "skipped" status to pass, so it passed "failed" and every consumer
+    reading the callback saw a deliberate skip as an error.
+    """
+    from lionagi.operations.flow import flow
+
+    async def first(**kw):
+        return "first ok"
+
+    async def never(**kw):  # pragma: no cover - the point is that it never runs
+        raise AssertionError("gated node must not execute")
+
+    session = _session_with_ops(first=first, never=never)
+    graph, _ran, gated = _skip_graph()
+    log = _ProgressLog()
+
+    result = await flow(session, graph, parallel=False, verbose=False, on_progress=log)
+
+    gated_id = str(gated.id)
+    statuses = log.statuses_for(gated_id)
+    assert "skipped" in statuses, f"gated node was never announced as skipped: {statuses}"
+    assert "failed" not in statuses, (
+        f"a node an edge condition passed over must not be announced as failed: {statuses}"
+    )
+    # The rollup and the callback must agree about the same node.
+    assert gated.id in result["skipped_operations"]
+    assert gated.id not in result["failed_operations"]
+
+
+@pytest.mark.asyncio
+async def test_gate_skipped_node_projects_to_the_skipped_lane_on_the_signal_bus():
+    """End-to-end over the surface the execution graph actually renders.
+
+    ``flow_progress_signals`` is the Studio-facing bridge, and ``lane_for`` is
+    the projection the canvas reads. A skipped node has to arrive as
+    NodeSkipped and project to the "skipped" lane -- asserting only on the
+    flow result would pass just as happily while the canvas painted the node
+    red, which is exactly how this defect survived.
+    """
+    from lionagi.engines.flow_signals import flow_progress_signals
+    from lionagi.operations.flow import flow
+    from lionagi.session.signal import NodeFailed, NodeSkipped, lane_for
+
+    async def first(**kw):
+        return "first ok"
+
+    async def never(**kw):  # pragma: no cover - the point is that it never runs
+        raise AssertionError("gated node must not execute")
+
+    session = _session_with_ops(first=first, never=never)
+    graph, _ran, gated = _skip_graph()
+
+    seen: list[object] = []
+    session.observe(NodeSkipped, handler=lambda s, _: seen.append(s))
+    session.observe(NodeFailed, handler=lambda s, _: seen.append(s))
+
+    async with flow_progress_signals(session, graph) as on_progress:
+        await flow(session, graph, parallel=False, verbose=False, on_progress=on_progress)
+
+    gated_id = str(gated.id)
+    for_gated = [s for s in seen if getattr(s, "op_id", None) == gated_id]
+    assert for_gated, "no terminal signal reached the bus for the gated node"
+    assert all(isinstance(s, NodeSkipped) for s in for_gated), (
+        f"gated node reached the signal bus as {[type(s).__name__ for s in for_gated]}"
+    )
+    assert lane_for(for_gated) == "skipped"

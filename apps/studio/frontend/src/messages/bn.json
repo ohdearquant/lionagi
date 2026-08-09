@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "স্থগিত",
       "graphNodeStatusDone": "সম্পন্ন",
       "graphNodeStatusFailed": "ব্যর্থ",
+      "graphNodeStatusSkipped": "এড়ানো",
       "graphNodeStatusEscalated": "এস্কেলেটেড",
       "progressTotal": "মোট",
       "progressCompleted": "সম্পন্ন",

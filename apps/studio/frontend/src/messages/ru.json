@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "приостановлено",
       "graphNodeStatusDone": "готово",
       "graphNodeStatusFailed": "ошибка",
+      "graphNodeStatusSkipped": "пропущено",
       "graphNodeStatusEscalated": "эскалировано",
       "progressTotal": "Всего",
       "progressCompleted": "Завершено",

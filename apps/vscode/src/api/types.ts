@@ -97,6 +97,7 @@ export type NodeLifecycleState =
   | "paused"
   | "succeeded"
   | "failed"
+  | "skipped"
   | "escalated";
 
 /**

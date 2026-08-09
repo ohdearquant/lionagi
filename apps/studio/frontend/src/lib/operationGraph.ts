@@ -9,6 +9,7 @@ export type OperationStatus =
   | "paused"
   | "succeeded"
   | "failed"
+  | "skipped"
   | "escalated";
 
 export interface OperationNode {
@@ -35,7 +36,7 @@ export interface OperationGraphState {
 
 // ── Status projection ─────────────────────────────────────────────────────────
 
-const TERMINAL = new Set<OperationStatus>(["succeeded", "failed", "escalated"]);
+const TERMINAL = new Set<OperationStatus>(["succeeded", "failed", "skipped", "escalated"]);
 
 const KIND_TO_STATE: Record<string, OperationStatus | undefined> = {
   NodeQueued: "queued",
@@ -44,6 +45,14 @@ const KIND_TO_STATE: Record<string, OperationStatus | undefined> = {
   NodePaused: "paused",
   NodeCompleted: "succeeded",
   NodeFailed: "failed",
+  // A node an edge condition passed over. Distinct from NodeFailed on
+  // purpose: it never ran, so presenting it as an error misreads a working
+  // gate as a broken step. Any kind missing from this map falls through the
+  // `if (!newState) continue` below and leaves the node at its initial
+  // "queued", so a backend signal added without a row here reads as a node
+  // that never finished -- which is why this mirrors _NODE_KIND_TO_STATE in
+  // lionagi/studio/operator/run_progress.py entry for entry.
+  NodeSkipped: "skipped",
   NodeEscalated: "escalated",
 };
 

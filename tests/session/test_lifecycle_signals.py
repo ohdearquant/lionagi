@@ -20,6 +20,7 @@ from lionagi.session.signal import (
     NodeFailed,
     NodePaused,
     NodeQueued,
+    NodeSkipped,
     NodeStarted,
     RunEnd,
     RunFailed,
@@ -444,11 +445,20 @@ async def test_reactive_injected_child_receives_node_queued():
 
 
 @pytest.mark.asyncio
-async def test_skipped_node_projects_to_failed_lane():
-    """A node skipped by an always-false edge condition emits NodeFailed → lane 'failed'.
+async def test_skipped_node_projects_to_skipped_lane():
+    """A node skipped by an always-false edge condition emits NodeSkipped → lane 'skipped'.
 
-    This is a regression guard: before the fix, the skip path did not call
-    on_progress, so the node stayed in 'queued' forever.
+    The guard this test has always carried is that the skip path reaches a
+    TERMINAL lane at all: before it existed, the skip path did not call
+    on_progress, so the node stayed in 'queued' forever. It originally asserted
+    'failed' because that was the only terminal value the signal vocabulary
+    offered, which made a working gate render as a broken step. NodeSkipped
+    gives the terminal outcome its own name; the original guard is unchanged
+    and stronger, since 'skipped' rules out both 'queued' and 'failed'.
+
+    Note the collector below must observe NodeSkipped explicitly. A consumer
+    that does not know the kind projects the node straight back to 'queued' --
+    the very failure this test was written to catch.
     """
     from lionagi.engines import Engine
     from lionagi.operations.node import Operation
@@ -476,7 +486,7 @@ async def test_skipped_node_projects_to_failed_lane():
         op_id = getattr(sig, "op_id", None) or "run"
         collected.setdefault(op_id, []).append(sig)
 
-    for sig_type in (NodeQueued, NodeStarted, NodeCompleted, NodeFailed):
+    for sig_type in (NodeQueued, NodeStarted, NodeCompleted, NodeFailed, NodeSkipped):
         session.observe(sig_type, handler=_capture)
 
     root = Operation(operation="root_op", parameters={})
@@ -497,8 +507,11 @@ async def test_skipped_node_projects_to_failed_lane():
     assert skipped_op_id in collected, (
         "No signals collected for the skipped op — on_progress was not called in the skip path"
     )
-    assert lane_for(collected[skipped_op_id]) == "failed", (
-        f"Skipped node must project to 'failed', got {lane_for(collected[skipped_op_id])}"
+    assert lane_for(collected[skipped_op_id]) == "skipped", (
+        f"Skipped node must project to 'skipped', got {lane_for(collected[skipped_op_id])}"
+    )
+    assert not any(isinstance(s, NodeFailed) for s in collected[skipped_op_id]), (
+        "a node an edge condition passed over must not emit NodeFailed"
     )
 
 
@@ -580,3 +593,25 @@ def test_session_package_exports_new_symbols():
         "lane_for",
     ):
         assert hasattr(sess, name), f"lionagi.session missing {name}"
+
+
+def test_lane_for_skipped():
+    """A gated-off node is terminal but not an error."""
+    assert (
+        lane_for([NodeQueued(op_id="a", name="a"), NodeSkipped(op_id="a", name="a")]) == "skipped"
+    )
+
+
+def test_lane_for_skipped_is_sticky():
+    """Terminal lanes are sticky: a stray later signal must not un-skip a node."""
+    assert (
+        lane_for([NodeSkipped(op_id="a", name="a"), NodeCompleted(op_id="a", name="a")])
+        == "skipped"
+    )
+
+
+def test_lane_for_skipped_resets_on_a_genuine_retry():
+    """...but an explicit re-queue/re-start does reset it, same as every other terminal."""
+    assert (
+        lane_for([NodeSkipped(op_id="a", name="a"), NodeStarted(op_id="a", name="a")]) == "running"
+    )

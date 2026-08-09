@@ -22,6 +22,7 @@ __all__ = (
     "NodeStarted",
     "NodeCompleted",
     "NodeFailed",
+    "NodeSkipped",
     "NodeQueued",
     "NodeAwaitingApproval",
     "NodeEscalated",
@@ -113,6 +114,23 @@ class NodeFailed(Signal):
     depends_on: list[str] = []
 
 
+class NodeSkipped(Signal):
+    """DAG node lifecycle: never ran, because an edge condition said not to.
+
+    A terminal outcome like NodeCompleted and NodeFailed, but not an error:
+    the node was deliberately passed over, so a reader must be able to tell it
+    apart from one that ran and raised. Why it was skipped is not carried here
+    -- the gate's reason code, id and name are already on the operation's
+    metadata and in its entry in the flow results.
+    """
+
+    op_id: str = ""
+    name: str = ""
+    elapsed: float = 0.0
+    parent_id: str | None = None
+    depends_on: list[str] = []
+
+
 class GateDenied(Signal):
     """Governance gate denied a proposed action."""
 
@@ -173,12 +191,22 @@ class NodePaused(Signal):
 
 # -- Lifecycle projection (ADR-0033) ------------------------------------------
 
-#: The seven canonical per-node lifecycle states.
+#: The eight canonical per-node lifecycle states.
 NodeLifecycleState = Literal[
-    "queued", "running", "awaiting_approval", "paused", "succeeded", "failed", "escalated"
+    "queued",
+    "running",
+    "awaiting_approval",
+    "paused",
+    "succeeded",
+    "failed",
+    "skipped",
+    "escalated",
 ]
 
-_TERMINAL: frozenset[str] = frozenset({"succeeded", "failed", "escalated"})
+#: Terminal lanes are sticky. "skipped" belongs here because a node passed over
+#: by an edge condition is finished, not waiting -- but it is deliberately kept
+#: distinct from "failed", which means the node ran and raised.
+_TERMINAL: frozenset[str] = frozenset({"succeeded", "failed", "skipped", "escalated"})
 
 
 def _signal_to_state(sig: Any) -> NodeLifecycleState | None:
@@ -195,6 +223,8 @@ def _signal_to_state(sig: Any) -> NodeLifecycleState | None:
         return "succeeded"
     if isinstance(sig, NodeFailed | RunFailed):
         return "failed"
+    if isinstance(sig, NodeSkipped):
+        return "skipped"
     if isinstance(sig, NodeEscalated):
         req = sig.escalation_request
         # Soft ("fyi") urgency is informational only, not terminal; only

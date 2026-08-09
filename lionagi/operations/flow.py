@@ -523,7 +523,7 @@ class DependencyAwareExecutor:
 
                 branch = self.operation_branches.get(operation.id, self.session.default_branch)
                 branch_name, name_is_fallback = self._branch_display_name(operation, branch)
-                self._emit_terminal_once(operation, branch_name, "failed", 0.0, name_is_fallback)
+                self._emit_terminal_once(operation, branch_name, "skipped", 0.0, name_is_fallback)
 
                 self.completion_events[operation.id].set()
                 return

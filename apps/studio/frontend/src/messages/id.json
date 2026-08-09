@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "dijeda",
       "graphNodeStatusDone": "selesai",
       "graphNodeStatusFailed": "gagal",
+      "graphNodeStatusSkipped": "dilewati",
       "graphNodeStatusEscalated": "dieskalasi",
       "progressTotal": "Total",
       "progressCompleted": "Selesai",

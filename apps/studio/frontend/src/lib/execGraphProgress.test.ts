@@ -10,7 +10,7 @@ import {
 import { transitiveReduce } from "./operationGraph";
 import type { NodeExecStatus } from "@/components/canvas/StepNode";
 
-const ALL_EIGHT_STATES: NodeExecStatus[] = [
+const ALL_NINE_STATES: NodeExecStatus[] = [
   "pending",
   "queued",
   "running",
@@ -18,20 +18,21 @@ const ALL_EIGHT_STATES: NodeExecStatus[] = [
   "paused",
   "completed",
   "failed",
+  "skipped",
   "escalated",
 ];
 
 // ── deriveProgressCounts ────────────────────────────────────────────────────
 
 describe("deriveProgressCounts — summary counts from the canonical status source", () => {
-  it("buckets a mixed graph carrying every one of the 8 states", () => {
-    const nodeIds = ALL_EIGHT_STATES.map((_, i) => `n${i}`);
+  it("buckets a mixed graph carrying every one of the 9 states", () => {
+    const nodeIds = ALL_NINE_STATES.map((_, i) => `n${i}`);
     const statuses: Record<string, NodeExecStatus> = {};
-    ALL_EIGHT_STATES.forEach((s, i) => (statuses[`n${i}`] = s));
+    ALL_NINE_STATES.forEach((s, i) => (statuses[`n${i}`] = s));
 
     const counts = deriveProgressCounts(nodeIds, statuses);
 
-    expect(counts.total).toBe(8);
+    expect(counts.total).toBe(9);
     expect(counts.pending).toBe(1);
     expect(counts.queued).toBe(1);
     expect(counts.running).toBe(1);
@@ -39,14 +40,15 @@ describe("deriveProgressCounts — summary counts from the canonical status sour
     expect(counts.paused).toBe(1);
     expect(counts.completed).toBe(1);
     expect(counts.failed).toBe(1);
+    expect(counts.skipped).toBe(1);
     expect(counts.escalated).toBe(1);
     expect(counts.hasFailure).toBe(true);
   });
 
   it("sums every bucket back to total on a mixed graph", () => {
-    const nodeIds = ALL_EIGHT_STATES.map((_, i) => `n${i}`);
+    const nodeIds = ALL_NINE_STATES.map((_, i) => `n${i}`);
     const statuses: Record<string, NodeExecStatus> = {};
-    ALL_EIGHT_STATES.forEach((s, i) => (statuses[`n${i}`] = s));
+    ALL_NINE_STATES.forEach((s, i) => (statuses[`n${i}`] = s));
     const counts = deriveProgressCounts(nodeIds, statuses);
     const sum =
       counts.pending +
@@ -55,6 +57,7 @@ describe("deriveProgressCounts — summary counts from the canonical status sour
       counts.awaitingApproval +
       counts.paused +
       counts.completed +
+      counts.skipped +
       counts.escalated +
       counts.failed;
     expect(sum).toBe(counts.total);
@@ -70,6 +73,7 @@ describe("deriveProgressCounts — summary counts from the canonical status sour
       awaitingApproval: 0,
       paused: 0,
       completed: 0,
+      skipped: 0,
       escalated: 0,
       failed: 0,
       hasFailure: false,
