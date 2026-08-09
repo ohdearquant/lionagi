@@ -434,8 +434,15 @@ async def health_report() -> dict[str, Any]:
             WITH page AS (
                 SELECT id AS page_id FROM sessions ORDER BY updated_at DESC LIMIT ?
             )
+            -- show_play_name sits ABOVE playbook_name in the display-name
+            -- chain, so omitting it here does not fall back gracefully: the
+            -- resolver reads None and answers with the tier below, and a play
+            -- session is named one way here and another way in the API and
+            -- UI. Selecting a column short of what the resolver reads is the
+            -- same two-names-for-one-session defect, one layer down.
             SELECT s.id, s.name, s.status, s.invocation_kind, s.agent_name,
-                   s.playbook_name, s.started_at, s.ended_at, s.updated_at,
+                   s.playbook_name, s.show_play_name, s.started_at, s.ended_at,
+                   s.updated_at,
                    s.last_message_at, s.artifacts_path, s.node_metadata,
                    COALESCE(SUM(json_array_length(p.collection)), 0) AS message_count
             FROM page
