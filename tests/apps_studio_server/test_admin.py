@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -14,6 +16,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from lionagi.state.db import StateDB  # noqa: E402
+from lionagi.state.reasons import SessionReasons  # noqa: E402
 
 
 def _run(coro):
@@ -936,15 +939,15 @@ def test_a_lock_inside_a_dependency_tree_is_not_searched(tmp_path):
     _aged(buried / "job.lock", 7200)
 
     now = time.time()
-    assert (
-        admin_svc._find_stale_lock(tmp_path / "repo", cutoff=now - 3600) is None
-    ), "a lock inside node_modules was searched; the subtree should be skipped"
+    assert admin_svc._find_stale_lock(tmp_path / "repo", cutoff=now - 3600).lock is None, (
+        "a lock inside node_modules was searched; the subtree should be skipped"
+    )
 
     reachable = tmp_path / "repo" / "run-1"
     reachable.mkdir()
     _aged(reachable / "job.lock", 7200)
     found = admin_svc._find_stale_lock(tmp_path / "repo", cutoff=now - 3600)
-    assert found is not None and found.name == "job.lock", (
+    assert found.lock is not None and found.lock.name == "job.lock", (
         "the skip list swallowed a lock outside any skipped directory"
     )
 
@@ -969,18 +972,242 @@ def test_one_scan_answers_once_per_artifact_root(tmp_path):
     now = time.time()
     cutoff = now - 3600
 
-    cache: dict[tuple[str, float], Path | None] = {}
-    assert admin_svc._find_stale_lock(root, cutoff=cutoff, cache=cache) is None
+    cache: dict[tuple[str, float], admin_svc._ScanResult] = {}
+    assert admin_svc._find_stale_lock(root, cutoff=cutoff, cache=cache).lock is None
     assert len(cache) == 1, "the answer was not recorded, so the next call re-walks"
 
     _aged(root / "run-1" / "job.lock", 7200)
 
-    assert admin_svc._find_stale_lock(root, cutoff=cutoff, cache=cache) is None, (
+    assert admin_svc._find_stale_lock(root, cutoff=cutoff, cache=cache).lock is None, (
         "the cache was not consulted: the tree was walked a second time"
     )
-    assert (
-        admin_svc._find_stale_lock(root, cutoff=cutoff, cache={}) is not None
-    ), "a fresh cache must see the lock, or the first assertion proves nothing"
-    assert (
-        admin_svc._find_stale_lock(root, cutoff=cutoff) is not None
-    ), "omitting the cache must always walk"
+    assert admin_svc._find_stale_lock(root, cutoff=cutoff, cache={}).lock is not None, (
+        "a fresh cache must see the lock, or the first assertion proves nothing"
+    )
+    assert admin_svc._find_stale_lock(root, cutoff=cutoff).lock is not None, (
+        "omitting the cache must always walk"
+    )
+
+
+# How long a deliberately-blocked walk is held, how often the probe below takes
+# the loop's pulse, and how long a stall has to be before it counts as the loop
+# having been held. The tolerance sits well above scheduling jitter at this tick
+# rate and well below the block, so neither a loaded machine nor a marginal
+# improvement can decide the verdict.
+_BLOCK_SECONDS = 0.5
+_TICK_SECONDS = 0.005
+_STALL_TOLERANCE = 0.2
+
+
+async def _max_loop_stall(coro) -> float:
+    """Run *coro*, returning the longest the loop went without giving a turn.
+
+    Counting turns is not enough, and the difference is not academic: a
+    coroutine that is slow for legitimate reasons accumulates plenty of turns
+    around its blocking section, so the count comes out healthy whether or not
+    the blocking work was offloaded. An earlier version of this helper counted,
+    and one of the two endpoints below passed under a deliberately reintroduced
+    defect because of it.
+
+    The longest gap does not dilute with the coroutine's total length. It is
+    also the number another in-flight request actually experiences, which is
+    what the property is about.
+    """
+    worst = 0.0
+    last = time.perf_counter()
+    task = asyncio.ensure_future(coro)
+    while not task.done():
+        await asyncio.sleep(_TICK_SECONDS)
+        now = time.perf_counter()
+        worst = max(worst, now - last)
+        last = now
+    await task
+    return worst
+
+
+@pytest.mark.parametrize(
+    "endpoint", ["list_phantom_sessions", "health_report", "transition_sessions"]
+)
+def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
+    tmp_path, monkeypatch, endpoint
+):
+    """The artifact walk runs off the event loop, so other requests keep moving.
+
+    This is the defect rather than a refinement of it. The walk is synchronous
+    filesystem work and the scan is a coroutine, so left inline it holds the
+    loop for the whole traversal and every other request queues behind it.
+    Measured on a running daemon before this change: a static health probe that
+    reads no session data timed out at five seconds while an admin scan was in
+    flight, and the scan itself ran past four minutes.
+
+    Two arms, because the passing one alone would prove nothing:
+
+    * the loop is never held for long while a walk is deliberately blocked, and
+    * a walk really ran. Without that, a scan that reached no row at all would
+      leave the loop idle and the first assertion would pass having measured an
+      empty population.
+
+    Every coroutine that walks is covered, rather than the one the defect was
+    first noticed in. They offload at separate call sites, so a guard on one of
+    them says nothing about the others, and an untested one is where a later
+    edit puts the walk back on the loop with everything still green.
+
+    The instrument's own sensitivity is established separately, by
+    ``test_the_tick_counter_would_have_caught_a_walk_left_on_the_loop``. A
+    counter that ticks whatever the subject does is not evidence.
+    """
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.admin as admin_svc
+
+    db_path = tmp_path / "state.db"
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    sid = str(uuid.uuid4())
+    # Stale and not observably alive, so classification gets as far as the walk.
+    _run(
+        _seed_running_session(
+            db_path,
+            sid,
+            artifacts_path=str(artifacts),
+            updated_at=time.time() - 7200,
+        )
+    )
+    # Two more fields, both needed to get the transition arm as far as its walk.
+    # ``last_message_at`` is stamped at creation and outranks ``updated_at`` in
+    # the health classifier, so a row aged only by ``updated_at`` still reads as
+    # active. And an unknown liveness classifies the result merely idle, which
+    # the transition endpoint refuses; a recorded pid that has already exited is
+    # what makes deadness conclusive.
+    exited = subprocess.Popen(["/usr/bin/true"])
+    exited.wait()
+
+    async def _age_and_record_dead_pid():
+        async with StateDB(db_path) as db:
+            await db.execute(
+                "UPDATE sessions SET last_message_at = ?, node_metadata = ? WHERE id = ?",
+                (time.time() - 7200, json.dumps({"pid": exited.pid}), sid),
+            )
+
+    _run(_age_and_record_dead_pid())
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    walked: list[Path] = []
+
+    def slow_walk(root, *, cutoff, budget=None):
+        walked.append(root)
+        time.sleep(_BLOCK_SECONDS)
+        return admin_svc._ScanResult(None, False)
+
+    monkeypatch.setattr(admin_svc, "_walk_for_stale_lock", slow_walk)
+
+    if endpoint == "transition_sessions":
+        subject = admin_svc.transition_sessions(
+            [sid],
+            target_status="failed",
+            reason_code=SessionReasons.HEALTH_PHANTOM_PROCESS_DEAD,
+        )
+    else:
+        subject = getattr(admin_svc, endpoint)()
+
+    stall = _run(_max_loop_stall(subject))
+
+    assert walked, (
+        "no walk ran, so the loop was free for reasons unrelated to this fix; "
+        "the stall below describes an empty population"
+    )
+    assert stall < _STALL_TOLERANCE, (
+        f"the loop was held for {stall:.3f}s during a {_BLOCK_SECONDS}s walk: "
+        "the scan is back on the event loop and other requests are queueing"
+    )
+
+
+def test_the_stall_probe_would_have_caught_a_walk_left_on_the_loop():
+    """The measurement above can fail, on a subject that has the defect.
+
+    A healthy subject looks the same under a working probe and a broken one, so
+    the passing test says something about the loop only if the same instrument
+    reports a stall on a coroutine that holds it. This is that subject: the
+    identical block, run inline.
+    """
+
+    async def holds_the_loop():
+        time.sleep(_BLOCK_SECONDS)
+
+    stall = _run(_max_loop_stall(holds_the_loop()))
+    assert stall >= _STALL_TOLERANCE, (
+        f"only {stall:.3f}s measured while the loop was deliberately held for "
+        f"{_BLOCK_SECONDS}s: the probe is not measuring loop availability"
+    )
+
+
+def test_a_scan_that_runs_out_of_time_says_so_instead_of_reporting_clean(tmp_path, monkeypatch):
+    """ "Out of budget" and "found nothing" are different answers.
+
+    Both carry ``lock=None``, so a caller reading only that field cannot tell
+    them apart and the one it would infer is "clean". That is the direction that
+    gets believed: a scan cut short would hand back a clean bill of health for a
+    tree it never finished reading.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    root = tmp_path / "repo"
+    (root / "run-1").mkdir(parents=True)
+    _aged(root / "run-1" / "job.lock", 7200)
+    cutoff = time.time() - 3600
+
+    # Check the budget on every directory, so the outcome does not depend on the
+    # order the filesystem happens to hand back.
+    monkeypatch.setattr(admin_svc, "_BUDGET_CHECK_INTERVAL", 1)
+
+    spent = admin_svc._ScanBudget(seconds=-1.0)
+    cut = admin_svc._walk_for_stale_lock(root, cutoff=cutoff, budget=spent)
+    assert cut == admin_svc._ScanResult(None, True)
+
+    # Control: the lock is there to be found, so the result above is about the
+    # budget rather than about an empty tree.
+    whole = admin_svc._walk_for_stale_lock(root, cutoff=cutoff, budget=admin_svc._ScanBudget())
+    assert whole.lock is not None and whole.truncated is False
+
+
+def test_health_counts_the_rows_whose_lock_scan_did_not_finish(tmp_path, monkeypatch):
+    """A truncated scan is reported, not folded into the clean answer.
+
+    Here truncation genuinely changes a verdict, which is why the health
+    classifier reports it where the phantom classifier absorbs it: a session
+    reaches the zombie bucket only when a stale lock is *found*, so an
+    unfinished search understates that bucket while looking exactly like a
+    finished one.
+
+    This is also where the ceiling is shown to bound the endpoint rather than
+    each row. Three rows on three distinct artifact roots -- distinct so the
+    per-scan cache cannot collapse them into one answer -- share a single spent
+    budget, and all three come back truncated. A per-row ceiling is not a bound
+    on the endpoint at all, because the row count is the thing that grows.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    db_path = tmp_path / "state.db"
+    for i in range(3):
+        root = tmp_path / f"artifacts-{i}"
+        root.mkdir()
+        _run(
+            _seed_running_session(
+                db_path,
+                str(uuid.uuid4()),
+                artifacts_path=str(root),
+                updated_at=time.time(),
+            )
+        )
+
+    monkeypatch.setattr(admin_svc, "_SCAN_BUDGET_SECONDS", -1.0)
+    monkeypatch.setattr(admin_svc, "_BUDGET_CHECK_INTERVAL", 1)
+
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    body = client.get("/api/admin/health").json()
+    sess = body["sessions"]
+
+    assert sess["total"] == 3, (
+        "the seeded population is not the one the scan saw; the count below "
+        "would be about some other set of rows"
+    )
+    assert sess["lock_scan_truncated"] == 3
