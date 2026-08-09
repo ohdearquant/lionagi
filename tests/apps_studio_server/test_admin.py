@@ -910,3 +910,77 @@ def test_admin_health_prefers_the_play_name_like_the_session_list_does(tmp_path,
         f"health report says {health_name!r}, session list says {list_name!r}"
     )
     assert health_name == "nightly-enrichment"
+
+
+def test_a_lock_inside_a_dependency_tree_is_not_searched(tmp_path):
+    """A runtime lock buried in ``node_modules`` must not be found, and the same
+    lock outside it must be.
+
+    Both halves are the test. Only the pair separates "the walk skips dependency
+    trees" from "the walk found nothing here anyway", and it is the second half
+    that fails if the skip list is ever widened until it excludes real ground.
+
+    The skip list is what makes matching by name affordable. Matching by suffix
+    was fast for the wrong reason: a repository root nearly always has a
+    dependency lockfile near the top, so the search hit one at once and stopped.
+    Searching for the names we write means the usual answer is "not here", and
+    reaching it costs a full traversal -- measured at 100 seconds for one
+    projects directory, against 3 milliseconds for the suffix match. Nothing
+    lionagi writes puts a run directory inside ``node_modules``, so the subtree
+    is cost with no evidence in it.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    buried = tmp_path / "repo" / "node_modules" / "pkg"
+    buried.mkdir(parents=True)
+    _aged(buried / "job.lock", 7200)
+
+    now = time.time()
+    assert (
+        admin_svc._find_stale_lock(tmp_path / "repo", cutoff=now - 3600) is None
+    ), "a lock inside node_modules was searched; the subtree should be skipped"
+
+    reachable = tmp_path / "repo" / "run-1"
+    reachable.mkdir()
+    _aged(reachable / "job.lock", 7200)
+    found = admin_svc._find_stale_lock(tmp_path / "repo", cutoff=now - 3600)
+    assert found is not None and found.name == "job.lock", (
+        "the skip list swallowed a lock outside any skipped directory"
+    )
+
+
+def test_one_scan_answers_once_per_artifact_root(tmp_path):
+    """Within a single scan, a root already answered is not walked again.
+
+    Proven by changing the filesystem between the two calls: a cache that is
+    genuinely consulted keeps returning the first answer, while a fresh cache
+    sees the new lock. Asserting only that two calls agree would pass whether or
+    not the cache is read, since without it both walks reach the same tree.
+
+    This is the difference that matters at scale rather than a micro-optimisation.
+    Sessions repeat their artifact roots heavily -- one root accounted for 152 of
+    500 recent sessions on one machine -- and uncached, that root is re-walked
+    152 times in one pass to produce one answer.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    root = tmp_path / "repo"
+    (root / "run-1").mkdir(parents=True)
+    now = time.time()
+    cutoff = now - 3600
+
+    cache: dict[tuple[str, float], Path | None] = {}
+    assert admin_svc._find_stale_lock(root, cutoff=cutoff, cache=cache) is None
+    assert len(cache) == 1, "the answer was not recorded, so the next call re-walks"
+
+    _aged(root / "run-1" / "job.lock", 7200)
+
+    assert admin_svc._find_stale_lock(root, cutoff=cutoff, cache=cache) is None, (
+        "the cache was not consulted: the tree was walked a second time"
+    )
+    assert (
+        admin_svc._find_stale_lock(root, cutoff=cutoff, cache={}) is not None
+    ), "a fresh cache must see the lock, or the first assertion proves nothing"
+    assert (
+        admin_svc._find_stale_lock(root, cutoff=cutoff) is not None
+    ), "omitting the cache must always walk"
