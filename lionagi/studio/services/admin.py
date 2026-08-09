@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 import time
@@ -311,11 +312,76 @@ def _artifacts_path(row: Any) -> Path | None:
 # unreachable from here by construction.
 _RUNTIME_LOCK_NAMES: frozenset[str] = frozenset({"job.lock", "finalize.lock"})
 
+# Directory names never on the path to a run directory, and routinely holding
+# more files than everything else in the tree combined.
+#
+# The cost of skipping them is what makes matching by name affordable. Matching
+# by suffix was fast for the wrong reason: a repository root almost always has a
+# dependency lockfile near the top, so the search hit one immediately and
+# stopped. Searching for names we write means the common answer is "not here",
+# and reaching that answer costs a complete traversal. Measured on one machine,
+# an unpruned walk of a projects directory took 100 seconds, against three
+# milliseconds for the suffix match it replaced.
+_UNSEARCHED_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        ".venv",
+        "venv",
+        "site-packages",
+        "target",
+        "dist",
+        "build",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".next",
+        ".turbo",
+        ".gradle",
+        "DerivedData",
+    }
+)
 
-def _find_stale_lock(root: Path, *, cutoff: float) -> Path | None:
+
+def _find_stale_lock(
+    root: Path,
+    *,
+    cutoff: float,
+    cache: dict[tuple[str, float], Path | None] | None = None,
+) -> Path | None:
+    """Find a stale runtime lock under *root*, or None.
+
+    Pass *cache* to share results across one scan. Sessions repeat their
+    artifact roots heavily -- one root accounted for 152 of 500 recent sessions
+    on one machine -- and without a cache each of those repeats re-walks the
+    same tree to reach the same answer. The cache is deliberately caller-owned
+    and per-scan rather than module-level: a scan is a snapshot taken at one
+    ``cutoff``, so results are consistent within it, while a process-lifetime
+    cache would keep answering with a filesystem that has since moved on.
+    """
+    key = (str(root), cutoff)
+    if cache is not None and key in cache:
+        return cache[key]
+    found = _walk_for_stale_lock(root, cutoff=cutoff)
+    if cache is not None:
+        cache[key] = found
+    return found
+
+
+def _walk_for_stale_lock(root: Path, *, cutoff: float) -> Path | None:
     try:
-        for name in _RUNTIME_LOCK_NAMES:
-            for lock in root.glob(f"**/{name}"):
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            # Prune in place, which is what stops os.walk descending. Assigning
+            # a new list to the name instead would be a no-op it cannot report.
+            dirnames[:] = [d for d in dirnames if d not in _UNSEARCHED_DIRS]
+            # One traversal answers for every name. A pass per name walks the
+            # whole tree once per name, and the miss case walks all of them.
+            for name in _RUNTIME_LOCK_NAMES & set(filenames):
+                lock = Path(dirpath) / name
                 try:
                     if lock.stat().st_mtime < cutoff:
                         return lock
@@ -332,6 +398,7 @@ def _classify_phantom(
     now: float,
     stale_seconds: float,
     ps_snapshot: str | None = None,
+    lock_cache: dict[tuple[str, float], Path | None] | None = None,
 ) -> PhantomReason | None:
     ap = _artifacts_path(row)
     node_metadata = row["node_metadata"] if "node_metadata" in row.keys() else None
@@ -346,7 +413,11 @@ def _classify_phantom(
         return None
     if ap and not ap.exists():
         return "missing_artifacts"
-    if ap and ap.exists() and _find_stale_lock(ap, cutoff=now - stale_seconds) is not None:
+    if (
+        ap
+        and ap.exists()
+        and _find_stale_lock(ap, cutoff=now - stale_seconds, cache=lock_cache) is not None
+    ):
         return "stale_lock"
     return "process_dead"
 
@@ -370,10 +441,19 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
         )
         rows = await cur.fetchall()
     snapshot: str | None = None
+    # One scan, one answer per artifact root: sessions repeat their roots
+    # heavily, and the walk is the expensive part.
+    lock_cache: dict[tuple[str, float], Path | None] = {}
     for row in rows:
         if snapshot is None:
             snapshot = _ps_snapshot()
-        reason = _classify_phantom(row, now=now, stale_seconds=stale_seconds, ps_snapshot=snapshot)
+        reason = _classify_phantom(
+            row,
+            now=now,
+            stale_seconds=stale_seconds,
+            ps_snapshot=snapshot,
+            lock_cache=lock_cache,
+        )
         if reason is not None:
             phantoms.append(
                 {
@@ -490,6 +570,9 @@ async def health_report() -> dict[str, Any]:
     by_health: Counter[str] = Counter()
     unhealthy: list[dict[str, Any]] = []
     snapshot: str | None = None
+    # One scan, one answer per artifact root: sessions repeat their roots
+    # heavily, and the walk is the expensive part.
+    lock_cache: dict[tuple[str, float], Path | None] = {}
 
     for row in rows:
         sess = {k: row[k] for k in row.keys()}
@@ -500,7 +583,9 @@ async def health_report() -> dict[str, Any]:
         has_stale_locks = False
         if artifacts is not None and artifacts.exists():
             cutoff = now - 3600
-            has_stale_locks = _find_stale_lock(artifacts, cutoff=cutoff) is not None
+            has_stale_locks = (
+                _find_stale_lock(artifacts, cutoff=cutoff, cache=lock_cache) is not None
+            )
 
         if status == "running":
             if snapshot is None:
@@ -639,6 +724,9 @@ async def transition_sessions(
     skipped: list[dict[str, str]] = []
     now = time.time()
     txn_snapshot: str | None = None
+    # One scan, one answer per artifact root: sessions repeat their roots
+    # heavily, and the walk is the expensive part.
+    lock_cache: dict[tuple[str, float], Path | None] = {}
 
     async with StateDB() as db:
         for sid in session_ids:
@@ -656,7 +744,7 @@ async def transition_sessions(
             artifacts = _artifacts_path(current)
             has_artifacts = artifacts is not None and artifacts.exists()
             has_stale_locks = (
-                _find_stale_lock(artifacts, cutoff=now - 3600) is not None
+                _find_stale_lock(artifacts, cutoff=now - 3600, cache=lock_cache) is not None
                 if artifacts is not None and artifacts.exists()
                 else False
             )
