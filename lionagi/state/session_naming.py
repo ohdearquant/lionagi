@@ -30,7 +30,18 @@ _LEADING_BANNER_RE = re.compile(
 )
 _LEADING_MARKDOWN_RE = re.compile(r"^(?:-{2,}|#{1,6})\s*")
 _LEADING_LABEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 _-]{0,24}:\s*")
-_STRIP_PATTERNS = (_LEADING_BANNER_RE, _LEADING_MARKDOWN_RE, _LEADING_LABEL_RE)
+# A prompt routed through a YAML document keeps the block-scalar indicator that
+# introduced it ("|" or "|-"), and it lands ahead of the banner, so it defeats
+# every pattern above and the whole banner survives into the display name.
+# Anchored to the indicator alone: a lone "|" is never the start of prose, but
+# text merely containing one often is.
+_LEADING_BLOCK_SCALAR_RE = re.compile(r"^\|[-+]?\s*")
+_STRIP_PATTERNS = (
+    _LEADING_BLOCK_SCALAR_RE,
+    _LEADING_BANNER_RE,
+    _LEADING_MARKDOWN_RE,
+    _LEADING_LABEL_RE,
+)
 _MAX_STRIP_PASSES = 6
 
 
