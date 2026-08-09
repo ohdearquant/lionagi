@@ -22,6 +22,7 @@ __all__ = (
     "PROVIDERS_NO_EFFORT",
     "normalize_effort",
     "parse_model_spec",
+    "split_effort_suffix",
 )
 
 # ── Effort levels (stripped from spec, mapped to provider kwarg) ──────────
@@ -283,6 +284,29 @@ _EFFORT_SUFFIX_RE = re.compile(
 )
 
 
+def split_effort_suffix(model: str) -> tuple[str, str] | None:
+    """Split a bare model name into ``(name, effort)``, or None when it carries none.
+
+    The trailing-effort convention belongs to lionagi's own ``provider/model-effort``
+    grammar, which spends its single slash on the provider. So a slash still present
+    in the model name means the name was not written in that grammar: it is a literal
+    id from another vendor's catalogue, reached for instance through a codex config
+    profile that names its own ``model_provider``. Those ids end in whatever the
+    vendor chose, and a trailing word that happens to spell an effort level is part
+    of the id. Splitting it produces a model nobody serves, and the provider rejects
+    a name the caller never asked for.
+
+    Used by both places that would otherwise strip a suffix, so the rule is stated
+    once rather than drifting between them.
+    """
+    if "/" in model:
+        return None
+    m = _EFFORT_SUFFIX_RE.match(model)
+    if m is None:
+        return None
+    return m.group(1), m.group(2)
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     """Parsed model spec: raw model string (for iModel) + extracted effort."""
@@ -331,18 +355,23 @@ def parse_model_spec(spec: str) -> ModelSpec:
     if spec in BACKENDS:
         return ModelSpec(model=BACKENDS[spec], effort=None)
 
-    provider_raw = spec.split("/")[0] if "/" in spec else spec
+    has_provider = "/" in spec
+    provider_raw = spec.split("/")[0] if has_provider else spec
+    # Match against the model part alone: the provider's own slash must not count
+    # against split_effort_suffix's namespaced-id test, or no spec would ever split.
+    model_part = spec.split("/", 1)[1] if has_provider else spec
 
-    m = _EFFORT_SUFFIX_RE.match(spec)
-    if m:
-        model_clean = m.group(1)
-        effort = normalize_effort(m.group(2))
+    split = split_effort_suffix(model_part)
+    if split is not None:
+        name, raw_effort = split
+        effort = normalize_effort(raw_effort)
 
         if provider_raw in PROVIDERS_NO_EFFORT:
             raise ValueError(
                 f"Provider '{provider_raw}' does not support effort levels. "
                 f"Remove '-{effort}' from '{spec}'."
             )
+        model_clean = f"{provider_raw}/{name}" if has_provider else name
         return ModelSpec(model=_normalize_model(model_clean, provider_raw), effort=effort)
 
     return ModelSpec(model=_normalize_model(spec, provider_raw), effort=None)
