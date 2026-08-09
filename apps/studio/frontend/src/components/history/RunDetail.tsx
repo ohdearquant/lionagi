@@ -1746,15 +1746,35 @@ export default function RunDetail({ id }: RunDetailProps) {
   // Scroll-up trigger: an always-mounted sentinel just above the message
   // list. handleLoadOlder no-ops without a cursor or mid-flight, so this can
   // fire freely as the sentinel scrolls in and out of view.
+  //
+  // It reads the handler through a ref so that scrolling stays the only thing
+  // that drives it. Depending on the handler directly made the observer
+  // re-arm itself: a completed page sets a new cursor, which is one of
+  // handleLoadOlder's dependencies, so the effect tore the observer down and
+  // re-observed the sentinel — and a freshly observed target always receives
+  // an immediate initial observation. While the sentinel sat on screen that
+  // observation requested the next page straight away, so the run walked its
+  // own history backwards without anyone scrolling.
+  const handleLoadOlderRef = useRef(handleLoadOlder);
+  useEffect(() => {
+    handleLoadOlderRef.current = handleLoadOlder;
+  }, [handleLoadOlder]);
+  // The sentinel renders below the loading branch's early return, so it is
+  // absent from the DOM on the first commit. This tracks the one transition
+  // that puts it there, which is what the observer has to wait for — an empty
+  // dependency list would run once against a null ref and never attach.
+  // Session polling keeps replacing `session` itself, so depending on the
+  // object rather than this boolean would re-arm on every refresh.
+  const sentinelMounted = session != null;
   useEffect(() => {
     const el = olderSentinelRef.current;
     if (!el || typeof IntersectionObserver === "undefined") return;
     const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) handleLoadOlder();
+      if (entries.some((e) => e.isIntersecting)) handleLoadOlderRef.current();
     });
     io.observe(el);
     return () => io.disconnect();
-  }, [handleLoadOlder]);
+  }, [sentinelMounted]);
 
   const handleResumed = useCallback(
     async (result: RunResumeResponse) => {
