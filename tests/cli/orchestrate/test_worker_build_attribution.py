@@ -15,7 +15,7 @@ import pytest
 
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.cli.orchestrate._orchestration import (
-    WorkerBuildFailed,
+    WorkerBuildError,
     attribute_worker_build_failure,
 )
 
@@ -23,7 +23,7 @@ from lionagi.cli.orchestrate._orchestration import (
 def test_a_build_failure_names_the_worker_and_its_role():
     original = RuntimeError("could not resolve model spec 'nope/nope'")
 
-    with pytest.raises(WorkerBuildFailed) as caught:
+    with pytest.raises(WorkerBuildError) as caught:
         attribute_worker_build_failure(original, agent_id="researcher-2", role="assessor")
 
     message = str(caught.value)
@@ -58,9 +58,9 @@ def test_an_exception_that_already_means_something_is_not_relabelled(exc):
     Returning without raising is the contract -- the caller re-raises the
     original itself, so the exception reaching the classifier is untouched.
     """
-    assert (
-        attribute_worker_build_failure(exc, agent_id="w-1", role="researcher") is None
-    ), f"{type(exc).__name__} was re-labelled; its terminal status would change"
+    assert attribute_worker_build_failure(exc, agent_id="w-1", role="researcher") is None, (
+        f"{type(exc).__name__} was re-labelled; its terminal status would change"
+    )
 
 
 def test_the_guard_tracks_the_classifier_rather_than_a_second_list():
@@ -77,7 +77,7 @@ def test_the_guard_tracks_the_classifier_rather_than_a_second_list():
         try:
             attribute_worker_build_failure(exc, agent_id="w", role="r")
             relabelled = False
-        except WorkerBuildFailed:
+        except WorkerBuildError:
             pass
         assert relabelled == (classify_exception(exc) == "failed"), (
             f"{type(exc).__name__} classifies as {classify_exception(exc)!r} "

@@ -63,7 +63,7 @@ __all__ = (
     "resolve_worker_spec",
     "setup_orchestration",
     "build_worker_branch",
-    "WorkerBuildFailed",
+    "WorkerBuildError",
     "attribute_worker_build_failure",
     "make_help_coordinator",
     "TeamLifecycleCoordinator",
@@ -814,7 +814,7 @@ def worker_is_cli(
     return bool(getattr(build_imodel_from_spec(w_model), "is_cli", False))
 
 
-class WorkerBuildFailed(RuntimeError):
+class WorkerBuildError(RuntimeError):
     """One worker could not be built, naming which one.
 
     Building a worker resolves a model spec, a profile, an artifact directory
@@ -827,14 +827,11 @@ class WorkerBuildFailed(RuntimeError):
         self.agent_id = agent_id
         self.role = role
         super().__init__(
-            f"worker {agent_id!r} (role {role!r}) failed to build: "
-            f"{type(cause).__name__}: {cause}"
+            f"worker {agent_id!r} (role {role!r}) failed to build: {type(cause).__name__}: {cause}"
         )
 
 
-def attribute_worker_build_failure(
-    exc: BaseException, *, agent_id: str, role: str
-) -> None:
+def attribute_worker_build_failure(exc: BaseException, *, agent_id: str, role: str) -> None:
     """Raise an attributed error for a worker build failure, or return.
 
     Returns without raising when the exception already carries a terminal
@@ -848,7 +845,7 @@ def attribute_worker_build_failure(
 
     if classify_exception(exc) != "failed":
         return
-    raise WorkerBuildFailed(agent_id=agent_id, role=role, cause=exc) from exc
+    raise WorkerBuildError(agent_id=agent_id, role=role, cause=exc) from exc
 
 
 async def build_worker_branch(
