@@ -63,6 +63,8 @@ __all__ = (
     "resolve_worker_spec",
     "setup_orchestration",
     "build_worker_branch",
+    "WorkerBuildFailed",
+    "attribute_worker_build_failure",
     "make_help_coordinator",
     "TeamLifecycleCoordinator",
     "make_team_lifecycle_coordinator",
@@ -810,6 +812,43 @@ def worker_is_cli(
     the per-worker build loop."""
     w_model, _, _ = _resolve_worker_model_spec(env, role, model_override)
     return bool(getattr(build_imodel_from_spec(w_model), "is_cli", False))
+
+
+class WorkerBuildFailed(RuntimeError):
+    """One worker could not be built, naming which one.
+
+    Building a worker resolves a model spec, a profile, an artifact directory
+    and any tool handoff, and any of those can fail for reasons specific to a
+    single role. Without attribution the whole orchestration ends on a generic
+    error and the operator is left to work out which of N workers it was about.
+    """
+
+    def __init__(self, *, agent_id: str, role: str, cause: BaseException) -> None:
+        self.agent_id = agent_id
+        self.role = role
+        super().__init__(
+            f"worker {agent_id!r} (role {role!r}) failed to build: "
+            f"{type(cause).__name__}: {cause}"
+        )
+
+
+def attribute_worker_build_failure(
+    exc: BaseException, *, agent_id: str, role: str
+) -> None:
+    """Raise an attributed error for a worker build failure, or return.
+
+    Returns without raising when the exception already carries a terminal
+    meaning of its own -- cancellation, timeout, interrupt -- so the caller's
+    bare ``raise`` propagates it untouched. Wrapping those would re-label them:
+    terminal status is decided by exception type, so an attributed cancellation
+    would be recorded as a failure, which is a worse trade than losing the
+    worker's name on a run that was deliberately stopped.
+    """
+    from .._util import classify_exception
+
+    if classify_exception(exc) != "failed":
+        return
+    raise WorkerBuildFailed(agent_id=agent_id, role=role, cause=exc) from exc
 
 
 async def build_worker_branch(
