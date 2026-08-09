@@ -241,6 +241,49 @@ async def test_run_detail_status_reason_summary_over_text_cap_is_truncated_and_r
     assert result2["statusReasonSummary"] == "short reason, no cap involved"
 
 
+async def test_run_detail_summary_flag_follows_the_capped_string_not_the_raw_one(db_path):
+    """The rule-separating arm for the truncation flag.
+
+    The over-cap row above cannot protect this: there the raw string and the
+    scrubbed string are BOTH over the cap, so a flag derived from either one
+    reports True and the test passes under either rule. It is green whichever
+    rule is in force, which makes it no guard at all against the flag drifting
+    back to the raw length.
+
+    This fixture makes the two rules disagree. The summary is a run of absolute
+    paths, so scrubbing collapses each to its leaf and carries the length back
+    across the cap: raw is over, scrubbed is well under. Nothing is cut, so the
+    honest answer is False -- and a raw-derived flag answers True, telling the
+    reader a complete string was clipped.
+    """
+    from lionagi.studio.operator.redact import PER_ITEM_TEXT_CAP, scrub_text
+    from lionagi.studio.operator.run_detail import run_detail
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="failed")
+
+    paths = " ".join(
+        f"/Users/someone/khive-work/worktrees/lane-alpha/state/branches/branch-{i:04d}.json"
+        for i in range(120)
+    )
+    raw_summary = f"run failed while reading {paths}"
+    await _set_status_reason(db_path, sid, "run_failed", raw_summary)
+
+    # The fixture separates the two rules: this is the assertion that makes the
+    # test meaningful, so state it rather than trusting the construction.
+    assert len(raw_summary) > PER_ITEM_TEXT_CAP > len(scrub_text(raw_summary))
+
+    result = await run_detail({"run_id": sid})
+
+    assert result["truncated"] is False
+    # Nothing was cut, and the proof is the whole scrubbed string coming back:
+    # both ends present, at exactly the scrubbed length.
+    assert result["statusReasonSummary"] == scrub_text(raw_summary)
+    assert result["statusReasonSummary"].startswith("run failed while reading branch-0000.json")
+    assert result["statusReasonSummary"].endswith("branch-0119.json")
+    assert "/Users/someone" not in result["statusReasonSummary"]
+
+
 # ── Cap 3 — project over public_project's 160-char clamp (silent) ───────────
 
 
