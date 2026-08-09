@@ -118,9 +118,7 @@ def test_quick_create_agent_prompt_file(temp_db_path, agent_profile):
 
 def test_quick_create_flow_cron_trigger(temp_db_path, agent_profile):
     flow_file = agent_profile / "flow.yaml"
-    flow_file.write_text(
-        "agents:\n  - id: a1\n    model: anthropic/claude-sonnet-5\n    prompt: hi\n"
-    )
+    flow_file.write_text("model: anthropic/claude-sonnet-5\nprompt: hi\n")
     rc = _run(
         "flow",
         [
@@ -139,7 +137,24 @@ def test_quick_create_flow_cron_trigger(temp_db_path, agent_profile):
     assert row["trigger_type"] == "cron"
     assert row["cron_expr"] == "0 2 * * *"
     assert row["resolved_timezone"] == "America/New_York"
-    assert "agents:" in row["action_flow_yaml"]
+    assert "prompt: hi" in row["action_flow_yaml"]
+
+
+def test_quick_create_flow_refuses_an_unknown_spec_field(temp_db_path, agent_profile):
+    """An invalid flow file is refused at creation, not at the first fire.
+
+    The companion above only shows a valid file is accepted, which a validator
+    that accepts everything would also pass. This is the arm that fails if the
+    field check stops running.
+    """
+    flow_file = agent_profile / "flow.yaml"
+    flow_file.write_text("agents:\n  - id: a1\n    prompt: hi\n")
+    rc = _run(
+        "flow",
+        ["broken-review", "--cron", "0 2 * * *", "--file", str(flow_file)],
+    )
+    assert rc != 0
+    assert asyncio.run(_get_or_none("broken-review")) is None
 
 
 def test_quick_create_playbook_every_trigger(temp_db_path, agent_profile):
