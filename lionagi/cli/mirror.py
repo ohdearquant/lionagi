@@ -632,7 +632,10 @@ def _first_codex_prompt(records: list[dict[str, Any]]) -> str | None:
 
     for r in records:
         for m in messages_for_record(r, "probe", {}):
-            text = (m.content or {}).get("instruction") if isinstance(m.content, dict) else None
+            # The instruction text is a field on the content model. A mapping
+            # is what goes in to build one, never what comes back out, so
+            # reading this as a dict finds nothing for every rollout there is.
+            text = getattr(m.content, "instruction", None)
             if text:
                 return " ".join(str(text).split())
     return None

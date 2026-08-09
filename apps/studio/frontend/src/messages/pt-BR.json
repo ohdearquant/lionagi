@@ -851,7 +851,7 @@
       "provider": "Provedor",
       "effort": "Esforço",
       "updated": "Atualizado",
-      "branchesTitle": "{count, plural, one {Branch (#)} other {Branches (#)}}",
+      "branchesTitle": "{count, plural, one {Ramificação (#)} other {Ramificações (#)}}",
       "noBranches": "Nenhum branch.",
       "msgs": " msgs",
       "engineRuns": "Execuções de engine"

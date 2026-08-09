@@ -851,7 +851,7 @@
       "provider": "Penyedia",
       "effort": "Upaya",
       "updated": "Diperbarui",
-      "branchesTitle": "{count, plural, other {Branch (#)}}",
+      "branchesTitle": "{count, plural, other {Cabang (#)}}",
       "noBranches": "Tidak ada branch.",
       "msgs": " pesan",
       "engineRuns": "Proses engine"

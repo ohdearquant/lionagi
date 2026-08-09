@@ -27,6 +27,7 @@ from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
 from .redact import MESSAGE_BYTE_CAP, PER_ITEM_TEXT_CAP, scrub_text
 from .rename_session import RENAME_SESSION_DESCRIPTION, RenameSessionInput, rename_session
 from .resume_run import RESUME_RUN_DESCRIPTION, ResumeRunInput, resume_run
+from .run_detail import RunDetailInput, run_detail
 from .run_findings import RunFindingsInput, run_findings
 from .run_progress import RunProgressInput, run_progress
 from .store import OperatorStore
@@ -168,6 +169,7 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "launch_playbook": LaunchPlaybookInput,
     "run_progress": RunProgressInput,
     "run_findings": RunFindingsInput,
+    "run_detail": RunDetailInput,
     "cancel_run": CancelRunInput,
     "resume_run": ResumeRunInput,
     "rename_session": RenameSessionInput,
@@ -245,6 +247,15 @@ _TOOL_DESCRIPTIONS = {
         "from a structured status field the run itself stores, so treat "
         "them as a best-effort read; any section too large to return in "
         "full is capped and says so via its own 'truncated' flag."
+    ),
+    "run_detail": (
+        "Report the full projection of one run: identity, playbook/agent "
+        "and model/provider fields, timing, health, cost and token totals, "
+        "and other detail fields as stored, bounded and redacted the same "
+        "way the other read tools are. Takes a bare run id (no id-prefix or "
+        "name-substring resolution). Returns 'known': false with a "
+        "'source' of 'unavailable' if the store could not be read, or "
+        "'store' if the store was read but no run matched."
     ),
     "cancel_run": CANCEL_RUN_DESCRIPTION,
     "resume_run": RESUME_RUN_DESCRIPTION,
@@ -1052,6 +1063,7 @@ _TOOL_HANDLERS = {
     "launch_playbook": launch_playbook,
     "run_progress": run_progress,
     "run_findings": run_findings,
+    "run_detail": run_detail,
     "cancel_run": cancel_run,
     "resume_run": resume_run,
     "rename_session": rename_session,

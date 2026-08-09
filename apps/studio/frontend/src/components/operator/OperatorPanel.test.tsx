@@ -869,6 +869,53 @@ describe("OperatorPanel", () => {
       });
     }
 
+    it("keeps the model and effort selects out of the header, beside Send", async () => {
+      pin(pinned);
+      api.fetchOperatorModelCatalog.mockResolvedValue({
+        models: [
+          { id: "gpt-5.4", label: "Codex (gpt-5.4)", provider: "codex", efforts: ["high", "low"] },
+        ],
+      });
+
+      await mount();
+
+      // Both selects are native, so each takes its intrinsic width from its
+      // widest option. In the header they also carried shrink-0, so instead of
+      // yielding to the conversation picker beside them they overran it and the
+      // two painted over each other. Asserting on ancestry rather than on class
+      // names means this fails for the layout being wrong, not for the styling
+      // being rewritten.
+      const header = container.querySelector("header");
+      const composer = container.querySelector("footer");
+      expect(header, "the panel header").not.toBeNull();
+      expect(composer, "the composer footer").not.toBeNull();
+
+      const model = modelSelect();
+      const effort = container.querySelector(
+        'select[aria-label="Effort"]',
+      ) as HTMLSelectElement | null;
+      expect(model, "the model select").not.toBeNull();
+      expect(effort, "the effort select").not.toBeNull();
+
+      expect(header!.contains(model)).toBe(false);
+      expect(composer!.contains(model)).toBe(true);
+      expect(header!.contains(effort!)).toBe(false);
+      expect(composer!.contains(effort!)).toBe(true);
+
+      // Beside Send specifically, not merely somewhere in the footer: the two
+      // share a parent, which is what keeps them reachable in one glance.
+      const send = [...composer!.querySelectorAll("button")].find((button) =>
+        button.textContent?.startsWith("Send"),
+      );
+      expect(send, "the Send button").toBeDefined();
+      expect(model.parentElement?.parentElement).toBe(send!.parentElement);
+
+      // The header still has to carry the conversation picker; a fix that
+      // emptied the row rather than moving two controls out of it would
+      // otherwise pass every assertion above.
+      expect(header!.querySelector("button[aria-expanded]")).not.toBeNull();
+    });
+
     it("shows the pinned model rather than reporting Default", async () => {
       pin(pinned);
       api.fetchOperatorModelCatalog.mockResolvedValue({

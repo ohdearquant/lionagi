@@ -50,9 +50,27 @@ const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function compactValue(v: unknown): string {
+/** A value whose entire content is one identifier, as a short id — or null for
+ * anything else. Deliberately narrow: only an object whose single key is `id`
+ * qualifies, so shortening can never drop a sibling field the reader would
+ * have wanted. Anything richer keeps its full rendering. */
+export function refShortId(v: unknown): string | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const keys = Object.keys(v as object);
+  if (keys.length !== 1 || keys[0] !== "id") return null;
+  const id = (v as { id: unknown }).id;
+  return typeof id === "string" && id ? id.slice(0, 8) : null;
+}
+
+export function compactValue(v: unknown): string {
   if (v == null) return "";
   if (typeof v === "object") {
+    // Ref-shaped values are the most common payload value in the event
+    // stream — every message row carries one. Dumped as JSON they spend the
+    // whole line restating the key name and then truncate the only part that
+    // separates one row from the next, so a page of them reads as identical.
+    const ref = refShortId(v);
+    if (ref) return ref;
     try {
       return JSON.stringify(v);
     } catch {
@@ -1728,15 +1746,35 @@ export default function RunDetail({ id }: RunDetailProps) {
   // Scroll-up trigger: an always-mounted sentinel just above the message
   // list. handleLoadOlder no-ops without a cursor or mid-flight, so this can
   // fire freely as the sentinel scrolls in and out of view.
+  //
+  // It reads the handler through a ref so that scrolling stays the only thing
+  // that drives it. Depending on the handler directly made the observer
+  // re-arm itself: a completed page sets a new cursor, which is one of
+  // handleLoadOlder's dependencies, so the effect tore the observer down and
+  // re-observed the sentinel — and a freshly observed target always receives
+  // an immediate initial observation. While the sentinel sat on screen that
+  // observation requested the next page straight away, so the run walked its
+  // own history backwards without anyone scrolling.
+  const handleLoadOlderRef = useRef(handleLoadOlder);
+  useEffect(() => {
+    handleLoadOlderRef.current = handleLoadOlder;
+  }, [handleLoadOlder]);
+  // The sentinel renders below the loading branch's early return, so it is
+  // absent from the DOM on the first commit. This tracks the one transition
+  // that puts it there, which is what the observer has to wait for — an empty
+  // dependency list would run once against a null ref and never attach.
+  // Session polling keeps replacing `session` itself, so depending on the
+  // object rather than this boolean would re-arm on every refresh.
+  const sentinelMounted = session != null;
   useEffect(() => {
     const el = olderSentinelRef.current;
     if (!el || typeof IntersectionObserver === "undefined") return;
     const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) handleLoadOlder();
+      if (entries.some((e) => e.isIntersecting)) handleLoadOlderRef.current();
     });
     io.observe(el);
     return () => io.disconnect();
-  }, [handleLoadOlder]);
+  }, [sentinelMounted]);
 
   const handleResumed = useCallback(
     async (result: RunResumeResponse) => {

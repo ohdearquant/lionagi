@@ -6,8 +6,9 @@
  * - applyDocumentLocale flips <html lang>/<html dir> for rtl vs ltr locales.
  * - Every messages/*.json file has the exact same leaf-key set as en.json.
  * - Every locale's messages parse under a real ICU translator with no
- *   FORMATTING_ERROR, including the true {count, plural, ...} strings and
- *   the pre-existing bare-{plural} anti-pattern in prunePhantoms.
+ *   FORMATTING_ERROR, including the true {count, plural, ...} strings, and
+ *   that prunePhantoms still resolves for a caller passing the `plural`
+ *   argument its old text used to interpolate.
  * - __root.tsx's own VALID_LOCALES/MESSAGES wiring covers every LOCALES
  *   code (fails if a locale is dropped or mismapped there, independent of
  *   the messages/*.json files themselves being fine).
@@ -235,10 +236,15 @@ function getLeaf(obj: Record<string, unknown>, leafPath: string): unknown {
 // exact leaf path, individually, with a reason. This list must not grow to
 // mask a real missing translation; it exists to name known-fine cases, not
 // to make a failing check pass.
-const IDENTITY_ALLOWLIST: ReadonlySet<string> = new Set([
+const IDENTITY_ALLOWLIST: ReadonlyMap<string, readonly string[]> = new Map([
   // "Total" is the correct native word in these languages too, not a
   // missed translation.
-  "history.detail.progressTotal", // es, fr, id, pt-BR only — see below
+  ["history.detail.progressTotal", ["es", "fr", "id", "pt-BR"]],
+  // "session" is a French word with the same plural, so the ICU form for
+  // this key comes out byte-identical to English. Every other locale here
+  // translates it, and French's own word for the neighbouring concepts is
+  // translated too — this one collides on the merits.
+  ["fleet.group.sessions", ["fr"]],
 ]);
 
 function findIdentityLeaks(code: string): string[] {
@@ -249,7 +255,7 @@ function findIdentityLeaks(code: string): string[] {
     if (typeof enValue !== "string") continue;
     const localeValue = getLeaf(messages, key);
     if (localeValue !== enValue) continue;
-    if (IDENTITY_ALLOWLIST.has(key) && ["es", "fr", "id", "pt-BR"].includes(code)) continue;
+    if (IDENTITY_ALLOWLIST.get(key)?.includes(code)) continue;
     flagged.push(key);
   }
   return flagged;
@@ -289,11 +295,22 @@ describe("messages — a locale value byte-identical to English is a missed tran
   // loanwords ("MCP", "Hooks", "README") that are legitimately identical to
   // English. Raise this number only for keys arriving from elsewhere, and only
   // after attributing every added leaf.
+  //
+  // Lowered from 3144 when the English count strings gained real ICU plurals.
+  // Worth recording because moving English moves this detector's reference
+  // point in BOTH directions, which is easy to mistake for translation work:
+  // three locales turned out to be holding the English text for
+  // fleet.detail.branchesTitle (de, pt-BR, and fr, whose copy the English
+  // change would otherwise have hidden by no longer matching it) and were
+  // translated from each file's own word in the neighbouring
+  // fleet.agentRow.branchesTitle; one French value became identical on the
+  // merits and is allow-listed above. A fourth, id, held the same English
+  // text without ever matching byte-for-byte, so this number never saw it.
   it("pre-existing identity-leak count across all locales does not grow past its pinned baseline", () => {
     const total = LOCALES.map((l) => l.code)
       .filter((c) => c !== "en")
       .reduce((sum, code) => sum + findIdentityLeaks(code).length, 0);
-    expect(total).toBeLessThanOrEqual(3144);
+    expect(total).toBeLessThanOrEqual(3143);
   });
 });
 
@@ -305,13 +322,39 @@ describe("messages — every locale parses under a real ICU translator", () => {
     }
   });
 
+  // The English text was once "Prune {count} phantom{plural}", so the caller
+  // passes a `plural` argument. An argument the string no longer reads must
+  // stay harmless, or fixing the text would break the caller at runtime
+  // rather than at build time.
   it.each(LOCALES.map((l) => l.code))(
-    "%s: system.maintenance.prunePhantoms (bare {plural} arg) resolves",
+    "%s: system.maintenance.prunePhantoms resolves for a caller still passing `plural`",
     (code) => {
       const t = translatorFor(code);
       expect(() => t("system.maintenance.prunePhantoms", { count: 3, plural: "s" })).not.toThrow();
     },
   );
+
+  // English now inflects on `count` alone, so the legacy argument changes
+  // nothing. Asserting on the rendered text rather than on the absence of a
+  // literal "{plural}": the argument IS supplied, so a string still
+  // interpolating it renders without braces and would pass that weaker check.
+  //
+  // Only English. Every other locale still keys this one string off the
+  // caller's argument rather than off the count, three different ways — tr
+  // and ur interpolate it as a suffix, bn/de/id branch on it with
+  // {plural, select, s {…} other {…}}, and es/fr/ja carry a vestigial empty
+  // select to consume it. That makes their singular/plural choice depend on
+  // English morphology, which is a real defect and a separate change.
+  it("en: prunePhantoms renders the same with and without the legacy `plural` argument", () => {
+    const t = translatorFor("en");
+    for (const count of [1, 3]) {
+      expect(t("system.maintenance.prunePhantoms", { count, plural: "s" })).toBe(
+        t("system.maintenance.prunePhantoms", { count }),
+      );
+    }
+    expect(t("system.maintenance.prunePhantoms", { count: 1 })).toBe("Prune 1 phantom");
+    expect(t("system.maintenance.prunePhantoms", { count: 3 })).toBe("Prune 3 phantoms");
+  });
 
   const REAL_PLURAL_KEYS = [
     "library.drawer.versionCount",

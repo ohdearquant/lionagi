@@ -211,11 +211,12 @@ def test_runs_list_search_matches_name_or_agent_name(tmp_path, monkeypatch):
     from lionagi.state.session_naming import agent_role_label
 
     started_at = 1767277320.0  # 2026-01-01T14:22:00Z
+    agent_session_id = str(uuid.uuid4())
     db_path = tmp_path / "state.db"
     sessions = [
         {"id": str(uuid.uuid4()), "name": "fix flaky login test"},
         {
-            "id": str(uuid.uuid4()),
+            "id": agent_session_id,
             "name": "unrelated",
             "agent_name": "flaky-hunter",
             "started_at": started_at,
@@ -230,7 +231,10 @@ def test_runs_list_search_matches_name_or_agent_name(tmp_path, monkeypatch):
     data = r.json()
     assert data["total"] == 2
     names = {run["name"] for run in data["runs"]}
-    assert names == {"fix flaky login test", agent_role_label("flaky-hunter", started_at)}
+    assert names == {
+        "fix flaky login test",
+        agent_role_label("flaky-hunter", started_at, agent_session_id),
+    }
 
 
 def test_runs_list_search_is_case_insensitive(tmp_path, monkeypatch):

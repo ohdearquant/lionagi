@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 import time
 import uuid
+from functools import partial
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import anyio
 from fastapi import HTTPException, Query
@@ -23,6 +25,7 @@ from lionagi.ln import now_utc
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, validate_reason_code
+from lionagi.state.session_naming import resolve_display_name
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
@@ -76,12 +79,24 @@ class TransitionBody(BaseModel):
     actor: str = Field(default="admin", max_length=64)
 
 
-def db_health() -> dict[str, int]:
+def db_health() -> dict[str, int | bool]:
+    from .db_maintenance import get_db_size_alert
+
     db_path = Path(store_path())
     size_bytes = db_path.stat().st_size if db_path.exists() else 0
     wal_path = db_path.parent / (db_path.name + "-wal")
     wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
-    return {"size_bytes": size_bytes, "wal_bytes": wal_bytes}
+    # The same threshold /api/stats applies, read through the same helper. A
+    # health payload that reports the size but not whether it is over the
+    # limit leaves every reader to re-derive the limit, and the health view
+    # that consumed this had no way to say "unhealthy" at all.
+    size_alert, size_threshold_bytes = get_db_size_alert(size_bytes)
+    return {
+        "size_bytes": size_bytes,
+        "wal_bytes": wal_bytes,
+        "size_alert": size_alert,
+        "size_threshold_bytes": size_threshold_bytes,
+    }
 
 
 # How long the store probe waits before calling the store slow. Well under any
@@ -282,17 +297,170 @@ def _artifacts_path(row: Any) -> Path | None:
     return None
 
 
-def _find_stale_lock(root: Path, *, cutoff: float) -> Path | None:
+# The lock files lionagi itself creates under a run's artifact tree. A stale one
+# of these means a process died still holding a claim, which is the only thing
+# this evidence is meant to detect.
+#
+# Matching by the ``.lock`` suffix instead reads dependency lockfiles -- uv.lock,
+# poetry.lock, Cargo.lock -- as dead runs. Since a run's artifacts_path is
+# routinely a repository root, and the search below is recursive, a single
+# checked-in uv.lock marked every completed session in that repository a zombie:
+# the classifier's most severe level, fired by a file that says nothing about any
+# process. Match the names we write, not the extension anyone may use.
+#
+# The resume lock (``{digest}.lock``) is deliberately absent: it lives in
+# ``resume-locks/`` beside the state DB, never under an artifact root, so it is
+# unreachable from here by construction.
+_RUNTIME_LOCK_NAMES: frozenset[str] = frozenset({"job.lock", "finalize.lock"})
+
+# Directory names never on the path to a run directory, and routinely holding
+# more files than everything else in the tree combined.
+#
+# The cost of skipping them is what makes matching by name affordable. Matching
+# by suffix was fast for the wrong reason: a repository root almost always has a
+# dependency lockfile near the top, so the search hit one immediately and
+# stopped. Searching for names we write means the common answer is "not here",
+# and reaching that answer costs a complete traversal. Measured on one machine,
+# an unpruned walk of a projects directory took 100 seconds, against three
+# milliseconds for the suffix match it replaced.
+_UNSEARCHED_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        ".venv",
+        "venv",
+        "site-packages",
+        "target",
+        "dist",
+        "build",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".next",
+        ".turbo",
+        ".gradle",
+        "DerivedData",
+    }
+)
+
+
+# How long all the walks in one scan may take, in total. Pruning lowered the
+# per-tree constant but nothing bounds the work: a session's artifacts_path is
+# routinely a whole project directory, and the tree under it is whatever the
+# user happens to keep there. Measured against the live store, a full pass over
+# the 3780 artifact roots that exist on disk took 76 seconds, of which four
+# roots -- each a top-level directory -- accounted for 70.
+#
+# A ceiling on the scan rather than on each root, because the cost is
+# concentrated: a per-root limit generous enough for a normal tree still admits
+# a hundred slow roots, while one shared ceiling is the number that actually
+# bounds the endpoint.
+_SCAN_BUDGET_SECONDS = 5.0
+
+# Directories walked between budget checks. The clock read is cheap but not
+# free, and checking every directory would spend a measurable fraction of the
+# budget measuring the budget.
+_BUDGET_CHECK_INTERVAL = 64
+
+
+class _ScanBudget:
+    """Wall-clock ceiling shared by every walk in a single scan.
+
+    Monotonic on purpose: a system clock adjustment mid-scan must not extend or
+    collapse the ceiling, and this deadline is never compared against the
+    ``cutoff`` timestamps, which are wall-clock by necessity.
+
+    The ceiling is read when a budget is built rather than defaulted in the
+    signature, so that retuning the module constant retunes the next scan. A
+    default argument would have bound the value at import and left the constant
+    looking like a knob that does nothing.
+    """
+
+    def __init__(self, seconds: float | None = None) -> None:
+        ceiling = _SCAN_BUDGET_SECONDS if seconds is None else seconds
+        self._deadline = time.monotonic() + ceiling
+        self.exhausted = False
+
+    def expired(self) -> bool:
+        if not self.exhausted and time.monotonic() >= self._deadline:
+            self.exhausted = True
+        return self.exhausted
+
+
+class _ScanResult(NamedTuple):
+    """What a lock scan found, and whether it finished looking.
+
+    ``truncated`` exists so that "did not finish" cannot be read as "found
+    nothing". Both states carry ``lock=None``, and collapsing them would make a
+    scan that ran out of budget report a clean bill of health -- the failure
+    biased toward looking safe, which is the direction that gets believed.
+    """
+
+    lock: Path | None
+    truncated: bool
+
+
+def _find_stale_lock(
+    root: Path,
+    *,
+    cutoff: float,
+    cache: dict[tuple[str, float], _ScanResult] | None = None,
+    budget: _ScanBudget | None = None,
+) -> _ScanResult:
+    """Find a stale runtime lock under *root*.
+
+    Pass *cache* to share results across one scan. Sessions repeat their
+    artifact roots heavily -- one root accounted for 152 of 500 recent sessions
+    on one machine -- and without a cache each of those repeats re-walks the
+    same tree to reach the same answer. The cache is deliberately caller-owned
+    and per-scan rather than module-level: a scan is a snapshot taken at one
+    ``cutoff``, so results are consistent within it, while a process-lifetime
+    cache would keep answering with a filesystem that has since moved on.
+
+    Pass *budget* to bound the whole scan. A truncated result is cached like any
+    other: within one scan the answer for a root does not improve by asking
+    again, and re-walking it would spend budget that is already gone.
+    """
+    key = (str(root), cutoff)
+    if cache is not None and key in cache:
+        return cache[key]
+    found = _walk_for_stale_lock(root, cutoff=cutoff, budget=budget)
+    if cache is not None:
+        cache[key] = found
+    return found
+
+
+def _walk_for_stale_lock(
+    root: Path, *, cutoff: float, budget: _ScanBudget | None = None
+) -> _ScanResult:
+    seen = 0
     try:
-        for lock in root.glob("**/*.lock"):
-            try:
-                if lock.stat().st_mtime < cutoff:
-                    return lock
-            except OSError:
-                pass
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            # Prune in place, which is what stops os.walk descending. Assigning
+            # a new list to the name instead would be a no-op it cannot report.
+            dirnames[:] = [d for d in dirnames if d not in _UNSEARCHED_DIRS]
+            seen += 1
+            if budget is not None and seen % _BUDGET_CHECK_INTERVAL == 0 and budget.expired():
+                return _ScanResult(None, True)
+            # One traversal answers for every name. A pass per name walks the
+            # whole tree once per name, and the miss case walks all of them.
+            for name in _RUNTIME_LOCK_NAMES & set(filenames):
+                lock = Path(dirpath) / name
+                try:
+                    if lock.stat().st_mtime < cutoff:
+                        return _ScanResult(lock, False)
+                except OSError:
+                    pass
     except OSError:
         pass
-    return None
+    # An OSError partway through is a tree we could not finish reading, but the
+    # caller already treats an unreadable root as its own condition, so it stays
+    # a completed scan here rather than acquiring a second meaning.
+    return _ScanResult(None, False)
 
 
 def _classify_phantom(
@@ -301,6 +469,8 @@ def _classify_phantom(
     now: float,
     stale_seconds: float,
     ps_snapshot: str | None = None,
+    lock_cache: dict[tuple[str, float], _ScanResult] | None = None,
+    lock_budget: _ScanBudget | None = None,
 ) -> PhantomReason | None:
     ap = _artifacts_path(row)
     node_metadata = row["node_metadata"] if "node_metadata" in row.keys() else None
@@ -315,8 +485,21 @@ def _classify_phantom(
         return None
     if ap and not ap.exists():
         return "missing_artifacts"
-    if ap and ap.exists() and _find_stale_lock(ap, cutoff=now - stale_seconds) is not None:
+    if (
+        ap
+        and ap.exists()
+        and _find_stale_lock(
+            ap, cutoff=now - stale_seconds, cache=lock_cache, budget=lock_budget
+        ).lock
+        is not None
+    ):
         return "stale_lock"
+    # A truncated scan lands here too, and that is deliberate rather than an
+    # oversight: every path to this point has already established the session is
+    # a phantom, so the unfinished walk costs the *reason* its precision, not the
+    # verdict its safety. Where truncation would change a verdict -- the health
+    # classifier, where "no stale lock" is what keeps a session out of ZOMBIE --
+    # it is reported instead of absorbed.
     return "process_dead"
 
 
@@ -339,10 +522,27 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
         )
         rows = await cur.fetchall()
     snapshot: str | None = None
+    # One scan, one answer per artifact root: sessions repeat their roots
+    # heavily, and the walk is the expensive part.
+    lock_cache: dict[tuple[str, float], _ScanResult] = {}
+    lock_budget = _ScanBudget()
     for row in rows:
         if snapshot is None:
             snapshot = _ps_snapshot()
-        reason = _classify_phantom(row, now=now, stale_seconds=stale_seconds, ps_snapshot=snapshot)
+        # Classification stats an artifact tree and may walk it. Both are
+        # synchronous filesystem work, and this coroutine is the one serving
+        # every other request while it runs.
+        reason = await anyio.to_thread.run_sync(
+            partial(
+                _classify_phantom,
+                row,
+                now=now,
+                stale_seconds=stale_seconds,
+                ps_snapshot=snapshot,
+                lock_cache=lock_cache,
+                lock_budget=lock_budget,
+            )
+        )
         if reason is not None:
             phantoms.append(
                 {
@@ -433,8 +633,15 @@ async def health_report() -> dict[str, Any]:
             WITH page AS (
                 SELECT id AS page_id FROM sessions ORDER BY updated_at DESC LIMIT ?
             )
+            -- show_play_name sits ABOVE playbook_name in the display-name
+            -- chain, so omitting it here does not fall back gracefully: the
+            -- resolver reads None and answers with the tier below, and a play
+            -- session is named one way here and another way in the API and
+            -- UI. Selecting a column short of what the resolver reads is the
+            -- same two-names-for-one-session defect, one layer down.
             SELECT s.id, s.name, s.status, s.invocation_kind, s.agent_name,
-                   s.playbook_name, s.started_at, s.ended_at, s.updated_at,
+                   s.playbook_name, s.show_play_name, s.started_at, s.ended_at,
+                   s.updated_at,
                    s.last_message_at, s.artifacts_path, s.node_metadata,
                    COALESCE(SUM(json_array_length(p.collection)), 0) AS message_count
             FROM page
@@ -452,6 +659,11 @@ async def health_report() -> dict[str, Any]:
     by_health: Counter[str] = Counter()
     unhealthy: list[dict[str, Any]] = []
     snapshot: str | None = None
+    # One scan, one answer per artifact root: sessions repeat their roots
+    # heavily, and the walk is the expensive part.
+    lock_cache: dict[tuple[str, float], _ScanResult] = {}
+    lock_budget = _ScanBudget()
+    lock_scan_truncated = 0
 
     for row in rows:
         sess = {k: row[k] for k in row.keys()}
@@ -462,7 +674,28 @@ async def health_report() -> dict[str, Any]:
         has_stale_locks = False
         if artifacts is not None and artifacts.exists():
             cutoff = now - 3600
-            has_stale_locks = _find_stale_lock(artifacts, cutoff=cutoff) is not None
+            key = (str(artifacts), cutoff)
+            if key in lock_cache:
+                # A repeat of a root already answered: no walk, so nothing to
+                # move off the loop. Most rows take this path.
+                scan = lock_cache[key]
+            else:
+                # The walk is synchronous filesystem work and this coroutine is
+                # the one serving every other request. Left inline it blocks the
+                # loop for as long as the traversal takes, which is how a static
+                # /health probe that touches nothing ended up timing out.
+                scan = await anyio.to_thread.run_sync(
+                    partial(
+                        _find_stale_lock,
+                        artifacts,
+                        cutoff=cutoff,
+                        cache=lock_cache,
+                        budget=lock_budget,
+                    )
+                )
+            has_stale_locks = scan.lock is not None
+            if scan.truncated:
+                lock_scan_truncated += 1
 
         if status == "running":
             if snapshot is None:
@@ -498,10 +731,13 @@ async def health_report() -> dict[str, Any]:
             unhealthy.append(
                 {
                     "session_id": row["id"],
-                    "name": sess.get("name")
-                    or sess.get("playbook_name")
-                    or sess.get("agent_name")
-                    or "",
+                    # The same resolver every other surface reads through. The
+                    # stored `name` column can hold a raw prompt body, which
+                    # resolve_display_name demotes below the play, playbook and
+                    # agent-role tiers; reading the column directly published
+                    # those prompts here while the API and UI showed a clean
+                    # label for the very same session.
+                    "name": resolve_display_name(sess),
                     "health": health.value,
                     "status": status,
                     "invocation_kind": sess.get("invocation_kind"),
@@ -520,6 +756,14 @@ async def health_report() -> dict[str, Any]:
             "total": total_sessions,
             "scanned": scanned,
             "truncated": scanned < total_sessions,
+            # Sessions whose artifact tree was too large to finish searching
+            # within the scan's shared budget. Named apart from "truncated"
+            # above, which is about how many rows were looked at rather than
+            # how completely each one was examined. Non-zero means some of the
+            # health verdicts below rest on an unfinished search: a session can
+            # only be counted ZOMBIE when a stale lock is FOUND, so an
+            # unfinished search can understate that bucket, never inflate it.
+            "lock_scan_truncated": lock_scan_truncated,
             "by_status": dict(by_status),
             "by_health": dict(by_health),
             "unhealthy": unhealthy,
@@ -598,6 +842,10 @@ async def transition_sessions(
     skipped: list[dict[str, str]] = []
     now = time.time()
     txn_snapshot: str | None = None
+    # One scan, one answer per artifact root: sessions repeat their roots
+    # heavily, and the walk is the expensive part.
+    lock_cache: dict[tuple[str, float], _ScanResult] = {}
+    lock_budget = _ScanBudget()
 
     async with StateDB() as db:
         for sid in session_ids:
@@ -614,11 +862,23 @@ async def transition_sessions(
             _snap_updated = current.get("updated_at")
             artifacts = _artifacts_path(current)
             has_artifacts = artifacts is not None and artifacts.exists()
-            has_stale_locks = (
-                _find_stale_lock(artifacts, cutoff=now - 3600) is not None
-                if artifacts is not None and artifacts.exists()
-                else False
-            )
+            has_stale_locks = False
+            if artifacts is not None and artifacts.exists():
+                # Offloaded for the same reason the other two scans are: this is
+                # a synchronous walk inside a coroutine that is also the daemon's
+                # only thread of service. The list of sessions is the caller's
+                # rather than the whole table, which bounds how many walks run
+                # but not how long any one of them holds the loop.
+                scan = await anyio.to_thread.run_sync(
+                    partial(
+                        _find_stale_lock,
+                        artifacts,
+                        cutoff=now - 3600,
+                        cache=lock_cache,
+                        budget=lock_budget,
+                    )
+                )
+                has_stale_locks = scan.lock is not None
             if txn_snapshot is None:
                 txn_snapshot = _ps_snapshot()
             process_alive = process_liveness(current, artifacts, txn_snapshot)
@@ -635,8 +895,21 @@ async def transition_sessions(
                     "Only unhealthy sessions may be force-transitioned."
                 )
 
-            phantom_reason = _classify_phantom(
-                current, now=now, stale_seconds=3600, ps_snapshot=txn_snapshot
+            # The second walk this session can provoke, and the one that used to
+            # escape every bound: without the cache it repeated the traversal
+            # just done above at the same cutoff, and without the budget it was
+            # not bounded at all. Passing both makes it a cache hit in the
+            # ordinary case; offloading covers the case where it is not.
+            phantom_reason = await anyio.to_thread.run_sync(
+                partial(
+                    _classify_phantom,
+                    current,
+                    now=now,
+                    stale_seconds=3600,
+                    ps_snapshot=txn_snapshot,
+                    lock_cache=lock_cache,
+                    lock_budget=lock_budget,
+                )
             )
             classifier_code = _resolve_session_health_reason_code(
                 phantom_reason=phantom_reason,

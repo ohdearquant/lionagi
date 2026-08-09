@@ -219,7 +219,7 @@ async def test_run_findings_zero_operations(db_path):
     result = await run_findings({"run": sid})
 
     assert result["found"] is True
-    assert result["messages"] == {"items": [], "truncated": False}
+    assert result["messages"] == {"items": [], "truncated": False, "returned": 0, "total": 0}
     assert result["toolCalls"] == {"items": [], "truncated": False}
     assert result["errors"] == {"items": [], "truncated": False}
     assert result["artifacts"] == {
@@ -779,3 +779,86 @@ async def test_run_findings_rejects_unknown_fields(db_path):
 
     with pytest.raises(ValidationError):
         RunFindingsInput.model_validate({"run": "x", "unexpected": True})
+
+
+async def test_run_findings_reports_the_message_window_it_did_not_load(db_path):
+    """A run bigger than the message window must say so.
+
+    The window is fifty messages; the byte cap the flag used to report is two
+    megabytes. Fifty messages never approach two megabytes, so the flag read
+    False on every response the window had trimmed -- and on this surface that
+    reads as "here is the run", not "here is the tail of it". Measured against
+    live data at the time this was written, 39% of branches were over the
+    window and the largest held 48,123 messages, of which the tool returned 50
+    and called the result complete.
+    """
+    from lionagi.studio.operator.redact import PER_KIND_ITEM_CAP
+    from lionagi.studio.operator.run_findings import run_findings
+
+    sid = str(uuid.uuid4())
+    bid = f"{sid}-b1"
+    await seed_session(db_path, session_id=sid, status="completed")
+    await seed_branch(db_path, branch_id=bid, session_id=sid, name="worker-1")
+
+    total_seeded = PER_KIND_ITEM_CAP + 10
+    for i in range(total_seeded):
+        await seed_text_message(
+            db_path,
+            branch_id=bid,
+            message_id=f"{bid}-m{i:03d}",
+            role="assistant",
+            content={"assistant_response": f"step {i}"},
+            timestamp=100.0 + i,
+        )
+
+    result = await run_findings({"run": sid})
+
+    messages = result["messages"]
+    assert messages["total"] == total_seeded
+    assert messages["returned"] == PER_KIND_ITEM_CAP
+    assert messages["truncated"] is True
+    # The counts are the point: "truncated" alone cannot tell a reader whether
+    # it is missing three messages or forty-eight thousand.
+    assert messages["returned"] < messages["total"]
+
+    # Everything derived from the same window inherits the incompleteness. An
+    # errors list is the dangerous one -- it reads as authoritative, and its
+    # tool-call half came from a fraction of the messages.
+    assert result["toolCalls"]["truncated"] is True
+    assert result["errors"]["truncated"] is True
+
+
+async def test_run_findings_does_not_claim_truncation_when_it_loaded_everything(db_path):
+    """Companion: the flag must stay False on a run that fits.
+
+    Without this the row above is satisfiable by hardcoding True, which is the
+    same defect in the other direction -- a surface that always warns tells a
+    reader nothing and gets ignored exactly when it matters.
+    """
+    from lionagi.studio.operator.run_findings import run_findings
+
+    sid = str(uuid.uuid4())
+    bid = f"{sid}-b1"
+    await seed_session(db_path, session_id=sid, status="completed")
+    await seed_branch(db_path, branch_id=bid, session_id=sid, name="worker-1")
+    for i in range(3):
+        await seed_text_message(
+            db_path,
+            branch_id=bid,
+            message_id=f"{bid}-m{i}",
+            role="assistant",
+            content={"assistant_response": f"step {i}"},
+            timestamp=100.0 + i,
+        )
+
+    result = await run_findings({"run": sid})
+
+    assert result["messages"] == {
+        "items": result["messages"]["items"],
+        "truncated": False,
+        "returned": 3,
+        "total": 3,
+    }
+    assert len(result["messages"]["items"]) == 3
+    assert result["toolCalls"]["truncated"] is False
+    assert result["errors"]["truncated"] is False

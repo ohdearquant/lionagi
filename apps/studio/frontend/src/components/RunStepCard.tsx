@@ -16,6 +16,7 @@ import {
   IconSearch,
   IconTerminal,
 } from "@/components/ui/icons";
+import { formatElapsed } from "@/lib/elapsed";
 import type { RunMessage, RunStep } from "@/lib/types";
 import type { FileResolutionContext } from "@/components/ui/Markdown";
 
@@ -203,9 +204,45 @@ function normalizeShellPath(path: string): string {
   return `${absolute ? "/" : ""}${normalized.join("/")}`;
 }
 
+/** Glob metacharacters and the leading `!` of an exclusion. A token carrying
+ * either names a SET of paths, or names paths to leave out — neither is a file
+ * this run touched. Without this the exclusion arguments of an ordinary search
+ * (`rg --glob '!*.lock' --glob '!/.git/**'`) land in the files list verbatim,
+ * because `!*.lock` has a dot in its basename and `!/.git/**` has a slash, which
+ * is all the heuristic below asks for. */
+const SHELL_GLOB_TOKEN = /[*?[\]{}]/;
+
+/** Characters no path we can render carries, but shell and regex fragments do.
+ * The tokenizer hands back the body of a quoted argument as ONE word, so a
+ * wrapped command (`/bin/zsh -lc '/usr/bin/find /Users/x -name y'`) arrives as
+ * a single token that begins with a slash and would otherwise be shown as a
+ * filename. Rejecting these, and requiring every segment to look like a name,
+ * is what separates a path from a script. */
+const SHELL_UNSAFE_IN_PATH = /[\\^$()|`"'#]/;
+// Letters, marks and digits from any script, not just ASCII. An ASCII-only
+// class rejects a real directory named 项目 or Café, and rejects it before the
+// rooted check below can vouch for it. Marks are in the set so a decomposed
+// accent (e + U+0301) is treated the same as its precomposed form. This class
+// is strictly wider than the ASCII one it replaces, so nothing that used to be
+// accepted can start being dropped; punctuation that is not part of a filename
+// (comma, equals, percent, colon) is still excluded.
+const SHELL_PATH_SEGMENT = /^[\p{L}\p{M}\p{N}_.@+~-]+$/u;
+
+/** Extensions that make a ROOTLESS token a filename rather than prose. A
+ * rooted path needs no such evidence; a bare `word/word` does, because that
+ * shape is overwhelmingly not a path. Kept deliberately broad — a miss costs
+ * one absent row, a false accept costs a wrong one on every run that mentions
+ * a ratio. */
+const KNOWN_FILE_EXTENSIONS = new Set(
+  `py js jsx ts tsx rs go java rb php sh bash zsh sql json yaml yml toml ini cfg
+   conf env md rst txt csv tsv log html css scss lock mjs cjs c h cpp hpp swift
+   kt lua r ipynb xml svg png jpg jpeg gif pdf`.split(/\s+/),
+);
+
 function shellFilePath(token: string): string | null {
   const path = token.replace(/[,:]+$/, "");
   if (!path || path.startsWith("-") || path.endsWith("/")) return null;
+  if (path.startsWith("!") || SHELL_GLOB_TOKEN.test(path)) return null;
   const normalized = normalizeShellPath(path);
   if (!normalized || normalized === "/") return null;
   const segments = normalized.split("/").filter(Boolean);
@@ -213,11 +250,17 @@ function shellFilePath(token: string): string | null {
   if (!basename || basename === "." || basename === "..") return null;
   if (SHELL_INTERPRETER_NAMES.has(basename.toLowerCase())) return null;
   if (/(?:^|\/)\.?venv\/bin\/[^/]+$/.test(normalized)) return null;
-  const looksLikeFile =
-    SHELL_FILE_NAMES.has(basename) ||
-    path.includes("/") ||
-    (basename.includes(".") && !basename.endsWith("."));
-  return looksLikeFile ? normalized : null;
+  if (SHELL_UNSAFE_IN_PATH.test(normalized)) return null;
+  if (!segments.every((segment) => SHELL_PATH_SEGMENT.test(segment))) return null;
+  // A slash alone is not evidence of a path. Command arguments are full of
+  // prose carrying one: DOIs (10.1145/502059.502057), rates (MB/s), ratios
+  // (15/20), and slash-separated lists of product names all parse as "has a
+  // slash, has a dot", which was the whole of the old test. A rooted path is
+  // self-evidently a path; a rootless one has to look like a filename.
+  if (normalized.startsWith("/") || /^(?:\.{1,2}|~)\//.test(path)) return normalized;
+  const extension = basename.includes(".") ? basename.split(".").at(-1)!.toLowerCase() : "";
+  if (SHELL_FILE_NAMES.has(basename) || KNOWN_FILE_EXTENSIONS.has(extension)) return normalized;
+  return null;
 }
 
 function shellFilePaths(command: string): string[] {
@@ -502,13 +545,7 @@ function RunStepCard({
                 </span>
               )}
               <span>{t("countFiles", { count: summary.files.length })}</span>
-              {summary.durationSec != null && (
-                <span>
-                  {summary.durationSec < 60
-                    ? `${summary.durationSec}s`
-                    : `${Math.floor(summary.durationSec / 60)}m ${summary.durationSec % 60}s`}
-                </span>
-              )}
+              {summary.durationSec != null && <span>{formatElapsed(summary.durationSec)}</span>}
             </span>
           </div>
           {!expanded && lastAssistant && (
@@ -965,14 +1002,7 @@ function OverviewPanel({
         />
         <StatCard label={t("statFilesTouched")} value={summary.files.length.toString()} />
         {summary.durationSec != null && (
-          <StatCard
-            label={t("statDuration")}
-            value={
-              summary.durationSec < 60
-                ? `${summary.durationSec}s`
-                : `${Math.floor(summary.durationSec / 60)}m ${summary.durationSec % 60}s`
-            }
-          />
+          <StatCard label={t("statDuration")} value={formatElapsed(summary.durationSec)} />
         )}
       </div>
       {summary.commands.length > 0 && (

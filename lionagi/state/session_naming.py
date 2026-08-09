@@ -30,7 +30,18 @@ _LEADING_BANNER_RE = re.compile(
 )
 _LEADING_MARKDOWN_RE = re.compile(r"^(?:-{2,}|#{1,6})\s*")
 _LEADING_LABEL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 _-]{0,24}:\s*")
-_STRIP_PATTERNS = (_LEADING_BANNER_RE, _LEADING_MARKDOWN_RE, _LEADING_LABEL_RE)
+# A prompt routed through a YAML document keeps the block-scalar indicator that
+# introduced it ("|" or "|-"), and it lands ahead of the banner, so it defeats
+# every pattern above and the whole banner survives into the display name.
+# Anchored to the indicator alone: a lone "|" is never the start of prose, but
+# text merely containing one often is.
+_LEADING_BLOCK_SCALAR_RE = re.compile(r"^\|[-+]?\s*")
+_STRIP_PATTERNS = (
+    _LEADING_BLOCK_SCALAR_RE,
+    _LEADING_BANNER_RE,
+    _LEADING_MARKDOWN_RE,
+    _LEADING_LABEL_RE,
+)
 _MAX_STRIP_PASSES = 6
 
 
@@ -70,29 +81,37 @@ def sanitize_prompt_name(raw: str | None, *, max_len: int = DISPLAY_NAME_MAX_LEN
     return text
 
 
-def agent_role_label(agent_name: str, started_at: float | None) -> str:
-    """Deterministic label for an agent-only session: the agent's name plus a
-    UTC HH:MM disambiguator from its own start time, so concurrent runs of the
-    same agent read as distinct cards ("implementer · 14:22") without a
-    lookup against sibling rows. Stable across re-reads (same started_at
-    always formats the same way) and computed from UTC so it does not depend
-    on the resolving machine's local timezone.
+def agent_role_label(agent_name: str, started_at: float | None, run_id: str | None = None) -> str:
+    """Deterministic label for an agent-only session: the agent's name, a short
+    slice of the row's own id, and a UTC HH:MM stamp from its start time
+    ("claude-code · 1167 · 14:22"). Every part is a pure function of the row,
+    so no lookup against sibling rows is needed and a re-read always formats
+    the same way. UTC rather than local time keeps the label independent of
+    the resolving machine's timezone.
 
-    Two same-agent runs started in the same minute still collide on this
-    label — that is accepted, by design, not a bug: the row's id remains the
-    real identity everywhere it matters (links, keys, API lookups), and this
-    label exists only to make a list of cards readable at a glance. Making
-    the label itself collision-proof (seconds, a counter, a suffix of the
-    id) would make the common case noisier to read to avoid an edge case
-    nothing actually depends on for correctness.
+    The id slice is what makes a list of these readable. Name and minute alone
+    were chosen first, on the reasoning that a same-name same-minute collision
+    is an edge case the row id already covers everywhere identity actually
+    matters. Watching the real surface refuted that: the common case is
+    several long-lived sessions of one engine, so a page of them reads as
+    "claude-code · 21:37", "claude-code · 21:49", "claude-code · 21:50" —
+    near-identical strings a viewer has to compare digit by digit. Four
+    characters of the id are stable, meaningless to an outsider, and turn a
+    row into something you can point at.
+
+    Each part is dropped when its input is missing rather than rendered
+    blank, so a row with only a name still returns that bare name.
     """
     label = agent_name.strip()
     if not label:
         return label
-    if started_at is None:
-        return label
-    stamp = time.strftime("%H:%M", time.gmtime(started_at))
-    return f"{label} · {stamp}"
+    parts = [label]
+    short = str(run_id).strip()[:4] if run_id else ""
+    if short:
+        parts.append(short)
+    if started_at is not None:
+        parts.append(time.strftime("%H:%M", time.gmtime(started_at)))
+    return " · ".join(parts)
 
 
 def _stripped(session_row: dict[str, Any], key: str) -> str:
@@ -100,6 +119,40 @@ def _stripped(session_row: dict[str, Any], key: str) -> str:
     blank column reads as absent instead of winning its tier with nothing."""
     value = session_row.get(key)
     return str(value).strip() if value else ""
+
+
+# Stored names that identify nothing. Each is a default written when the writer
+# had nothing better: "Codex session" is the codex mirror's fallback at its
+# create path, "agent" is lionagi's default branch name. "session" and "flow"
+# are here on the strength of the stored data rather than a located writer, and
+# that is the weaker grounding of the four -- said plainly so the next reader
+# knows which entries to re-derive rather than trusting the list wholesale.
+#
+# Counted in one store: agent 11851, codex session 917, session 600, flow 273.
+# A title tier that accepts these renders a page of identical cards, which is
+# the complaint this guards against.
+#
+# Matched by VALUE, deliberately, rather than by reordering the tiers. A reorder
+# would re-rank every row that has both a stored name and a derivable prompt --
+# including the mirrored Claude rows and the live codex rows whose stored names
+# are real -- so it would change populations that have nothing wrong with them.
+# Keying on the value leaves every one of those exactly where it was.
+#
+# Compared case-folded because these are written by several call sites and the
+# casing is not guaranteed to agree between them.
+_UNINFORMATIVE_STORED_NAMES: frozenset[str] = frozenset(
+    {
+        "agent",
+        "session",
+        "flow",
+        "codex session",
+    }
+)
+
+
+def _is_uninformative(raw_name: str) -> bool:
+    """Whether a stored name is a placeholder rather than a description."""
+    return raw_name.casefold() in _UNINFORMATIVE_STORED_NAMES
 
 
 def resolve_display_name(session_row: dict[str, Any]) -> str:
@@ -112,6 +165,11 @@ def resolve_display_name(session_row: dict[str, Any]) -> str:
     defensively via `.get()` so a future rename feature slots into the top of
     this chain without another reorder. Every other tier reads a field that
     is already computed or stored on the row.
+
+    The prompt-derived tier declines a stored name that is a known placeholder
+    (see `_UNINFORMATIVE_STORED_NAMES`) and falls through to the short id, so
+    that thousands of rows sharing one default value render as distinct cards
+    rather than as one repeated title. The order itself is unchanged.
     """
     user_label = _stripped(session_row, "user_label")
     if user_label:
@@ -127,12 +185,16 @@ def resolve_display_name(session_row: dict[str, Any]) -> str:
 
     agent_name = _stripped(session_row, "agent_name")
     if agent_name:
-        label = agent_role_label(agent_name, session_row.get("started_at"))
+        label = agent_role_label(
+            agent_name,
+            session_row.get("started_at"),
+            session_row.get("id") or session_row.get("run_id"),
+        )
         if label:
             return label
 
     raw_name = _stripped(session_row, "name")
-    if raw_name:
+    if raw_name and not _is_uninformative(raw_name):
         sanitized = sanitize_prompt_name(raw_name)
         if sanitized:
             return sanitized

@@ -88,6 +88,25 @@ def _matches_agent_filter(branch: dict[str, Any], needle: str) -> bool:
     )
 
 
+def _message_totals(branches: list[dict[str, Any]]) -> tuple[int, int]:
+    """``(loaded, total)`` messages across ``branches``.
+
+    ``total`` is the session's own full-progression count per branch, which is
+    what makes an honest window flag possible: the carrier is called with
+    ``message_limit=PER_KIND_ITEM_CAP``, so ``branch["messages"]`` is already a
+    tail window and its length says nothing about what exists. A branch that
+    predates ``message_total`` reports its window length, which makes the
+    comparison say "nothing dropped" rather than inventing a number.
+    """
+    loaded = total = 0
+    for branch in branches:
+        window = len(branch.get("messages") or [])
+        loaded += window
+        reported = branch.get("message_total")
+        total += reported if isinstance(reported, int) and reported >= window else window
+    return loaded, total
+
+
 def _collect_messages(branches: list[dict[str, Any]]) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     for branch in branches:
@@ -104,8 +123,20 @@ def _collect_messages(branches: list[dict[str, Any]]) -> dict[str, Any]:
                     "timestamp": message.get("timestamp"),
                 }
             )
-    kept, truncated = cap_by_bytes(items, MESSAGE_BYTE_CAP)
-    return {"items": kept, "truncated": truncated}
+    kept, byte_truncated = cap_by_bytes(items, MESSAGE_BYTE_CAP)
+    loaded, total = _message_totals(branches)
+    # `truncated` used to report only the byte cap. That is the cap that almost
+    # never fires here -- fifty messages against a two-megabyte budget -- while
+    # the window above it fires constantly, so the flag read False on responses
+    # that had dropped most of the run. Report both, and carry the counts: for
+    # a reader deciding whether it has enough to answer from, "the last 50 of
+    # 48,123" and "truncated" are not the same information.
+    return {
+        "items": kept,
+        "truncated": byte_truncated or len(kept) < total,
+        "returned": len(kept),
+        "total": total,
+    }
 
 
 def _short_class(lion_class: str) -> str:
@@ -114,9 +145,19 @@ def _short_class(lion_class: str) -> str:
     return _short_lion_class(lion_class or "")
 
 
-def _derive_tool_calls(branches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _derive_tool_calls(branches: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    """``(calls, clipped)``, where ``clipped`` means calls were dropped here.
+
+    Two things drop tool calls, and they compose: the message window this runs
+    over (a call in a message that was never loaded cannot be derived) and the
+    per-branch cap below. Neither has a knowable denominator -- counting the
+    calls in messages we do not have is not something this can do -- so this
+    reports whether, not how many, and the caller says so rather than
+    publishing a total it would have to invent.
+    """
     from lionagi.studio.services.runs import _detect_status
 
+    clipped = False
     out: list[dict[str, Any]] = []
     for branch in branches:
         name, agent_name = _branch_label(branch)
@@ -131,6 +172,7 @@ def _derive_tool_calls(branches: list[dict[str, Any]]) -> list[dict[str, Any]]:
             for message in messages
             if _short_class(message.get("lion_class") or "") == "ActionRequest"
         ]
+        clipped = clipped or len(calls) > PER_KIND_ITEM_CAP
         for message in calls[-PER_KIND_ITEM_CAP:]:
             content = message.get("content") if isinstance(message.get("content"), dict) else {}
             function = content.get("function") or ""
@@ -160,19 +202,27 @@ def _derive_tool_calls(branches: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "timestamp": message.get("timestamp"),
                 }
             )
-    return out
+    return out, clipped
 
 
-def _collect_tool_calls(tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
-    kept, truncated = cap_by_bytes(tool_calls, MESSAGE_BYTE_CAP)
-    return {"items": kept, "truncated": truncated}
+def _collect_tool_calls(tool_calls: list[dict[str, Any]], clipped: bool) -> dict[str, Any]:
+    kept, byte_truncated = cap_by_bytes(tool_calls, MESSAGE_BYTE_CAP)
+    return {"items": kept, "truncated": byte_truncated or clipped or len(kept) < len(tool_calls)}
 
 
 def _collect_errors(
     session: dict[str, Any],
     branches: list[dict[str, Any]],
     tool_calls: list[dict[str, Any]],
+    partial: bool,
 ) -> dict[str, Any]:
+    """``partial`` is whether the evidence underneath was already incomplete.
+
+    It matters most for this section. Branch and session status rows are read
+    whole, so an errors list can look authoritative while the tool-call half of
+    it was derived from a fraction of the messages -- which is the reading that
+    turns "no errors found" into "no errors happened".
+    """
     items: list[dict[str, Any]] = [
         {
             "branch": call["branch"],
@@ -210,8 +260,8 @@ def _collect_errors(
                 "timestamp": session.get("ended_at"),
             }
         )
-    kept, truncated = cap_by_bytes(items, MESSAGE_BYTE_CAP)
-    return {"items": kept, "truncated": truncated}
+    kept, byte_truncated = cap_by_bytes(items, MESSAGE_BYTE_CAP)
+    return {"items": kept, "truncated": byte_truncated or partial or len(kept) < len(items)}
 
 
 def _collect_artifacts(session: dict[str, Any]) -> dict[str, Any]:
@@ -270,15 +320,23 @@ async def run_findings(arguments: dict[str, Any]) -> dict[str, Any]:
     wanted = {args.kind} if args.kind else {"messages", "tool_calls", "errors", "artifacts"}
 
     tool_calls: list[dict[str, Any]] | None = None
+    calls_clipped = False
     if "tool_calls" in wanted or "errors" in wanted:
-        tool_calls = _derive_tool_calls(branches)
+        tool_calls, calls_clipped = _derive_tool_calls(branches)
+
+    # The message window bounds every section derived from messages, not just
+    # the messages section, so it is computed once here and passed down.
+    loaded, total = _message_totals(branches)
+    window_dropped = loaded < total
 
     if "messages" in wanted:
         result["messages"] = _collect_messages(branches)
     if "tool_calls" in wanted:
-        result["toolCalls"] = _collect_tool_calls(tool_calls or [])
+        result["toolCalls"] = _collect_tool_calls(tool_calls or [], calls_clipped or window_dropped)
     if "errors" in wanted:
-        result["errors"] = _collect_errors(session, branches, tool_calls or [])
+        result["errors"] = _collect_errors(
+            session, branches, tool_calls or [], calls_clipped or window_dropped
+        )
     if "artifacts" in wanted:
         result["artifacts"] = _collect_artifacts(session)
 

@@ -293,7 +293,7 @@ function matchesHistFilter(displayStatus: string, filter: HistFilter): boolean {
   return displayStatus === "completed";
 }
 
-function HistorySection({
+export function HistorySection({
   rows,
   filter,
   onFilter,
@@ -331,15 +331,29 @@ function HistorySection({
   // Lazy loading: the load-more button doubles as the sentinel — scrolling it
   // into view fetches the next slice without a click (click still works).
   const moreRef = useRef<HTMLButtonElement | null>(null);
+  // The observer reads the handler through a ref so that re-arming is driven
+  // only by the button appearing or disappearing. Depending on the handler
+  // itself made this self-re-arming: revealing rows changes `onLoadMore`'s
+  // identity, which tore the observer down and re-observed the button, and a
+  // newly observed target always gets an immediate initial observation. With
+  // the button still on screen that observation fired the handler again, so
+  // the page revealed and re-paged its way through the entire run history in
+  // one burst — fast enough for React to abort the render as a runaway
+  // update loop. Threshold crossings are what should drive this, and a
+  // stable observer reports each crossing exactly once.
+  const onLoadMoreRef = useRef(onLoadMore);
+  useEffect(() => {
+    onLoadMoreRef.current = onLoadMore;
+  }, [onLoadMore]);
   useEffect(() => {
     const el = moreRef.current;
     if (!el || typeof IntersectionObserver === "undefined") return;
     const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) onLoadMore();
+      if (entries.some((e) => e.isIntersecting)) onLoadMoreRef.current();
     });
     io.observe(el);
     return () => io.disconnect();
-  }, [onLoadMore, hasMore, loadingMore]);
+  }, [hasMore]);
   const chips: { key: HistFilter; label: string }[] = [
     { key: "all", label: t("history.all") },
     { key: "completed", label: t("history.completed") },
