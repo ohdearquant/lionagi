@@ -182,6 +182,12 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
         "mcp__studio_operator__cancel_run",
         "mcp__studio_operator__resume_run",
         "mcp__studio_operator__rename_session",
+        "mcp__studio_operator__list_sessions",
+        "mcp__studio_operator__session_detail",
+        "mcp__studio_operator__session_signals",
+        "mcp__studio_operator__get_invocation",
+        "mcp__studio_operator__list_artifacts",
+        "mcp__studio_operator__get_artifact",
     }
     # The first turn of a conversation has nothing to resume.
     assert "resume" not in kwargs
@@ -210,6 +216,12 @@ _REQUIRED_OPERATOR_TOOLS = frozenset(
         "cancel_run",
         "resume_run",
         "rename_session",
+        "list_sessions",
+        "session_detail",
+        "session_signals",
+        "get_invocation",
+        "list_artifacts",
+        "get_artifact",
     }
 )
 
