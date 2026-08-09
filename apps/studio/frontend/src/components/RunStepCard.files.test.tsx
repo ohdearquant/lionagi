@@ -78,6 +78,35 @@ describe("shell file extraction", () => {
     expect(paths(wrapped)).toEqual([]);
   });
 
+  it("keeps paths whose directories are named in a non-Latin script", () => {
+    // The segment check ran before the rooted check, so an ASCII-only class
+    // rejected these before the rooted rule could vouch for them — on a
+    // machine whose directories are routinely named in Chinese, that dropped
+    // real files. Rooted and rootless both, since widening the class fixes
+    // the rootless case too as long as the name still looks like a file.
+    expect(paths("cat /Users/lion/项目/main.py")).toEqual(["/Users/lion/项目/main.py"]);
+    expect(paths("cat /Users/lion/Café/notes.md")).toEqual(["/Users/lion/Café/notes.md"]);
+    expect(paths("cat 文档/报告.md")).toEqual(["文档/报告.md"]);
+  });
+
+  it("keeps the punctuation a filename is actually allowed to carry", () => {
+    // The charset edges, so a future tightening of the class fails here
+    // rather than silently dropping rows. Each of these characters is in the
+    // segment class on purpose.
+    expect(paths("cat /tmp/run-2026_08@v1.2+build~1/out.log")).toEqual([
+      "/tmp/run-2026_08@v1.2+build~1/out.log",
+    ]);
+  });
+
+  it("still rejects the punctuation that means the token is not a path", () => {
+    // The control for the two cases above: widening the class to every script
+    // must not dissolve it. Without this, replacing the class with something
+    // that matches anything passes both keep-arms.
+    for (const frag of ["run a=b/c.py", "echo 50%/hour", "note see p.12,/x.md"]) {
+      expect(paths(frag)).toEqual([]);
+    }
+  });
+
   it("rejects regex and shell fragments", () => {
     for (const frag of [
       `rg "\\.busy\\b" /Users/lion/projects`,
