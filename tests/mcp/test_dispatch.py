@@ -455,6 +455,47 @@ def a_playbook(tmp_path, monkeypatch):
     return "remedy-fixture"
 
 
+@pytest.fixture
+def invalid_playbook(tmp_path, monkeypatch):
+    directory = tmp_path / ".lionagi" / "playbooks"
+    directory.mkdir(parents=True)
+    (directory / "invalid-spec.playbook.yaml").write_text(
+        json.dumps(
+            {
+                "name": "invalid-spec",
+                "model": "claude-code/opus-4-7",
+                "prompt": "do the work",
+                "max-ops": 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    return "invalid-spec"
+
+
+def test_play_submit_refuses_invalid_spec_before_job_creation(invalid_playbook, submitted):
+    qualified = call(help={"verb": "play.submit", "playbook": invalid_playbook})
+    answer = call(
+        ops=[
+            {
+                "op": "play.submit",
+                "args": {"playbook": invalid_playbook},
+                "schema_fingerprint": qualified["schema_fingerprint"],
+            }
+        ]
+    )
+
+    op = answer["ops"][0]
+    assert op["ok"] is False
+    assert op["error"]["kind"] == "invalid_input"
+    assert "max_ops" in op["error"]["message"]
+    assert "[0, 50]" in op["error"]["message"]
+    assert "64" in op["error"]["message"]
+    assert "run_id" not in op
+    assert submitted == {}
+
+
 def test_a_refused_playbook_call_is_told_to_ask_help_for_that_playbook(a_playbook, submitted):
     """The remedy has to name the playbook, or a caller who re-reads it loops.
 
@@ -595,6 +636,45 @@ def test_a_machine_verb_returns_the_contract_envelope_it_was_given():
     result = answer["ops"][0]["result"]
     assert result["contract_version"] >= 1
     assert result["data"]["implementation"] == "lionagi"
+
+
+def test_team_send_and_receive_round_trip_through_the_dispatcher(tmp_path, monkeypatch):
+    # `team.send`/`team.receive` used to be `AbsentVerb`s with no machine seam;
+    # this is the round trip that seam now has to carry, through the same
+    # `request()` entry point every op goes through — not the CLI directly.
+    monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    created = call(ops=[{"op": "team.create", "args": {"name": "Squad", "members": "a,b"}}])
+    assert created["ops"][0]["ok"] is True
+    team_id = created["ops"][0]["result"]["data"]["id"]
+
+    sent = call(ops=[{"op": "team.send", "args": {"content": "hi", "team": team_id, "to": "all"}}])
+    assert sent["ops"][0]["ok"] is True
+    assert sent["ops"][0]["result"]["data"]["team_id"] == team_id
+
+    received = call(ops=[{"op": "team.receive", "args": {"team": team_id, "member": "a"}}])
+    assert received["ops"][0]["ok"] is True
+    assert [m["content"] for m in received["ops"][0]["result"]["data"]["messages"]] == ["hi"]
+
+
+def test_team_send_to_an_unknown_team_is_a_not_found_error_via_the_dispatcher(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    answer = call(
+        ops=[{"op": "team.send", "args": {"content": "hi", "team": "no-such-team", "to": "all"}}]
+    )
+    assert answer["ops"][0]["ok"] is False
+    assert answer["ops"][0]["error"]["kind"] == "not_found"
+
+
+def test_team_create_with_bad_input_is_refused_before_ever_spawning_the_cli(tmp_path, monkeypatch):
+    # Closed argument validation catches this before `_run_machine` spawns a
+    # subprocess at all — the schema admits only `name`/`members`.
+    monkeypatch.setenv("LIONAGI_HOME", str(tmp_path))
+    answer = call(ops=[{"op": "team.create", "args": {"name": "Squad"}}])
+    assert answer["ops"][0]["ok"] is False
+    assert answer["ops"][0]["error"]["kind"] == "invalid_input"
+    assert "missing required parameter 'members'" in answer["ops"][0]["error"]["message"]
 
 
 def test_a_machine_verb_that_writes_no_result_is_an_explicit_error(monkeypatch):

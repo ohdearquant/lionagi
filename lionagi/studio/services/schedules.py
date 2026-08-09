@@ -18,8 +18,7 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
+from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
 from ..registry import studio_route
@@ -31,8 +30,6 @@ _log = logging.getLogger(__name__)
 class NameConflictError(Exception):
     """Raised when a schedule name already exists."""
 
-
-_PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
 
 # schedules columns declared NOT NULL — a PATCH that explicitly sets one of
 # these to null must be rejected (400) rather than passed through to a DB
@@ -324,85 +321,7 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
         if not isinstance(key, str):
             return f"flow_yaml spec keys must be strings, got {type(key).__name__}"
 
-    # Normalize hyphenated keys (e.g. max-ops → max_ops) before field checks.
-    spec: dict[str, Any] = {}
-    for key, value in data.items():
-        if key in _PRESERVE_DASHED or "-" not in key:
-            spec[key] = value
-        else:
-            spec[key.replace("-", "_")] = value
-
-    if "workers" in spec:
-        workers = spec["workers"]
-        if not isinstance(workers, int) or isinstance(workers, bool):
-            return f"spec field 'workers' must be an integer, got {type(workers).__name__}"
-        if not (1 <= workers <= 32):
-            return f"spec field 'workers' must be in [1, 32], got {workers}"
-
-    for key in ("max_ops", "max_agents"):
-        if key not in spec:
-            continue
-        value = spec[key]
-        if not isinstance(value, int) or isinstance(value, bool):
-            return f"spec field {key!r} must be an integer, got {type(value).__name__}"
-        if not (0 <= value <= 50):
-            return f"spec field {key!r} must be in [0, 50] (0 = unlimited), got {value}"
-
-    effort = spec.get("effort")
-    if effort is not None:
-        if not isinstance(effort, str):
-            return f"spec field 'effort' must be a string, got {type(effort).__name__}"
-        if effort not in _VALID_EFFORT_LEVELS:
-            return (
-                f"spec field 'effort' must be one of {sorted(_VALID_EFFORT_LEVELS)}, got {effort!r}"
-            )
-
-    if "with_synthesis" in spec:
-        val = spec["with_synthesis"]
-        if not isinstance(val, bool | str):
-            return (
-                f"spec field 'with_synthesis' must be bool or str (model spec), "
-                f"got {type(val).__name__}"
-            )
-
-    for bool_field in ("bare", "dry_run", "show_graph"):
-        if bool_field in spec:
-            val = spec[bool_field]
-            if not isinstance(val, bool):
-                return f"spec field {bool_field!r} must be a bool, got {type(val).__name__}"
-
-    if "prompt" in spec:
-        prompt = spec["prompt"]
-        if not isinstance(prompt, str):
-            return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > MAX_SPEC_PROMPT_CHARS:
-            return (
-                f"spec field 'prompt' exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
-            )
-
-    if "save" in spec:
-        save = spec["save"]
-        if not isinstance(save, str):
-            return f"spec field 'save' must be a string, got {type(save).__name__}"
-
-    for str_field in ("model", "agent", "team_mode", "team_attach", "reactive"):
-        if str_field in spec:
-            val = spec[str_field]
-            if not isinstance(val, str):
-                return f"spec field {str_field!r} must be a string, got {type(val).__name__}"
-
-    if "artifacts" in spec:
-        artifacts = spec["artifacts"]
-        if artifacts is None:
-            return "spec field 'artifacts' must be a dict, got NoneType"
-        try:
-            from lionagi.state.artifact_verifier import validate_artifact_contract
-
-            validate_artifact_contract(artifacts)
-        except Exception as exc:
-            return f"spec field 'artifacts' is invalid: {exc}"
-
-    return None
+    return validate_flow_spec_fields(normalize_flow_spec_keys(data))
 
 
 # Health severity is computed from cadence + observed schedule_runs rows,

@@ -10,9 +10,13 @@ import anyio
 import yaml
 from fastapi import Body, HTTPException
 
+from lionagi._flow_spec import (
+    normalize_flow_spec_keys as _normalize_spec_keys,
+)
+from lionagi._flow_spec import (
+    validate_flow_spec_fields as _check_spec_fields,
+)
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
-from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.service.providers import EFFORT_LEVELS as _VALID_EFFORT_LEVELS
 
 from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join
@@ -22,95 +26,6 @@ _PLAYBOOKS_ROOT = LIONAGI_HOME / "playbooks"
 # Bundled read-only templates, shipped inside the installed package (see
 # builtin_playbooks/README.md) so they're available on a real deployment.
 _BUILTIN_PLAYBOOKS_ROOT = Path(__file__).resolve().parent.parent / "builtin_playbooks"
-
-# Keys that stay dashed per CLI convention (all others: hyphens → underscores).
-_PRESERVE_DASHED: frozenset[str] = frozenset({"argument-hint"})
-
-
-def _normalize_spec_keys(data: dict[str, Any]) -> dict[str, Any]:
-    """Convert hyphenated YAML keys to underscored, mirroring CLI normalization."""
-    out: dict[str, Any] = {}
-    for key, value in data.items():
-        if key in _PRESERVE_DASHED or "-" not in key:
-            out[key] = value
-        else:
-            out[key.replace("-", "_")] = value
-    return out
-
-
-def _check_spec_fields(spec: dict[str, Any]) -> str | None:
-    """Validate playbook spec fields; return an error string or None. Mirrors lionagi/cli/orchestrate/__init__.py::_validate_spec_fields() exactly -- keep the two in sync."""
-    if "workers" in spec:
-        workers = spec["workers"]
-        if not isinstance(workers, int) or isinstance(workers, bool):
-            return f"spec field 'workers' must be an integer, got {type(workers).__name__}"
-        if not (1 <= workers <= 32):
-            return f"spec field 'workers' must be in [1, 32], got {workers}"
-
-    for key in ("max_ops", "max_agents"):
-        if key not in spec:
-            continue
-        value = spec[key]
-        if not isinstance(value, int) or isinstance(value, bool):
-            return f"spec field {key!r} must be an integer, got {type(value).__name__}"
-        if not (0 <= value <= 50):
-            return f"spec field {key!r} must be in [0, 50] (0 = unlimited), got {value}"
-
-    effort = spec.get("effort")
-    if effort is not None:
-        if not isinstance(effort, str):
-            return f"spec field 'effort' must be a string, got {type(effort).__name__}"
-        if effort not in _VALID_EFFORT_LEVELS:
-            return (
-                f"spec field 'effort' must be one of {sorted(_VALID_EFFORT_LEVELS)}, got {effort!r}"
-            )
-
-    if "with_synthesis" in spec:
-        val = spec["with_synthesis"]
-        if not isinstance(val, bool | str):
-            return (
-                f"spec field 'with_synthesis' must be bool or str (model spec), "
-                f"got {type(val).__name__}"
-            )
-
-    for bool_field in ("bare", "dry_run", "show_graph"):
-        if bool_field in spec:
-            val = spec[bool_field]
-            if not isinstance(val, bool):
-                return f"spec field {bool_field!r} must be a bool, got {type(val).__name__}"
-
-    if "prompt" in spec:
-        prompt = spec["prompt"]
-        if not isinstance(prompt, str):
-            return f"spec field 'prompt' must be a string, got {type(prompt).__name__}"
-        if len(prompt) > MAX_SPEC_PROMPT_CHARS:
-            return (
-                f"spec field 'prompt' exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
-            )
-
-    if "save" in spec:
-        save = spec["save"]
-        if not isinstance(save, str):
-            return f"spec field 'save' must be a string, got {type(save).__name__}"
-
-    for str_field in ("model", "agent", "team_mode", "team_attach", "reactive"):
-        if str_field in spec:
-            val = spec[str_field]
-            if not isinstance(val, str):
-                return f"spec field {str_field!r} must be a string, got {type(val).__name__}"
-
-    if "artifacts" in spec:
-        artifacts = spec["artifacts"]
-        if artifacts is None:
-            return "spec field 'artifacts' must be a dict, got NoneType"
-        try:
-            from lionagi.state.artifact_verifier import validate_artifact_contract
-
-            validate_artifact_contract(artifacts)
-        except Exception as exc:
-            return f"spec field 'artifacts' is invalid: {exc}"
-
-    return None
 
 
 class _PlaybookDumper(yaml.SafeDumper):

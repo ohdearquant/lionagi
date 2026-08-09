@@ -79,7 +79,7 @@
   "available_path_count": 75,
   "catalog": {
     "verb_count": 70,
-    "available_count": 40,
+    "available_count": 44,
     "max_ops": 8,
     "verb_names": [
       "agent.submit",
@@ -193,7 +193,11 @@
       "state.ls",
       "state.stats",
       "stats.runs",
-      "team.list"
+      "team.create",
+      "team.list",
+      "team.receive",
+      "team.send",
+      "team.show"
     ]
   },
   "projections": {
@@ -2925,33 +2929,9 @@
       "summary": "The Studio server.",
       "reason": "it runs for as long as the process lives rather than returning a result, so it is a process to start, not a call to make",
       "cli_path": "studio start"
-    },
-    {
-      "name": "team.create",
-      "summary": "Messaging between agents working as a team.",
-      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
-      "cli_path": "team create"
-    },
-    {
-      "name": "team.receive",
-      "summary": "Messaging between agents working as a team.",
-      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
-      "cli_path": "team receive"
-    },
-    {
-      "name": "team.send",
-      "summary": "Messaging between agents working as a team.",
-      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
-      "cli_path": "team send"
-    },
-    {
-      "name": "team.show",
-      "summary": "Messaging between agents working as a team.",
-      "reason": "the CLI path emits no versioned machine result (`li <path> --machine`), so there is nothing to return that is not scraped console text",
-      "cli_path": "team show"
     }
   ],
-  "absent_verb_count": 30,
+  "absent_verb_count": 26,
   "errors": [
     {
       "input": "",

@@ -186,9 +186,9 @@ class TestSpecValidationRejectsUnknownFields:
         err = _validate_spec_fields({"reactve": "off"})
         assert err == (
             "unknown spec field 'reactve'; accepted fields: agent, args, argument-hint, "
-            "artifacts, bare, bypass, description, dry_run, effort, max_agents, max_ops, "
+            "artifacts, bare, bypass, description, dry_run, effort, links, max_agents, max_ops, "
             "model, name, pack, permission_mode, prompt, reactive, save, show_graph, "
-            "team_attach, team_mode, with_synthesis, workers, yolo"
+            "steps, team_attach, team_mode, use, with_synthesis, workers, yolo"
         )
 
     def test_dead_critic_model_field_is_rejected(self):

@@ -27,7 +27,7 @@ from lionagi.protocols.messages.action_response import ActionResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponse
 from lionagi.protocols.messages.instruction import Instruction
 
-from ._mirror_common import SourceLine, bound_mirror_content
+from ._mirror_common import MIRROR_PROVIDER_ERROR_KEY, SourceLine, bound_mirror_content
 
 if TYPE_CHECKING:
     from lionagi.protocols.messages.message import RoledMessage
@@ -440,6 +440,8 @@ async def mirror_session(
     mirrored: dict[str, int] = {}
     messages: list[RoledMessage] = []
     message_sources: list[SourceLine | None] = []
+    terminal_outcome_seen = False
+    terminal_provider_error: dict[str, Any] | None = None
     for idx, rec in enumerate(records):
         rtype = str(rec.get("type") or "<untyped>")
         seen[rtype] = seen.get(rtype, 0) + 1
@@ -447,6 +449,20 @@ async def mirror_session(
         if ctx is not None and turn is not None:
             turn.clear()
             turn.update(ctx)
+        payload = rec.get("payload")
+        if (
+            rec.get("type") == "event_msg"
+            and isinstance(payload, dict)
+            and payload.get("type") == "task_complete"
+        ):
+            terminal_outcome_seen = True
+            raw_error = payload.get("error")
+            terminal_provider_error = None
+            if isinstance(raw_error, dict):
+                error_kind = raw_error.get("codex_error_info")
+                terminal_provider_error = {
+                    "error": str(error_kind) if error_kind else "provider_error"
+                }
         produced = messages_for_record(rec, rollout_uid, tool_names, turn)
         if produced:
             mirrored[rtype] = mirrored.get(rtype, 0) + len(produced)
@@ -489,6 +505,8 @@ async def mirror_session(
     if existing is None:
         meta = dict(node_metadata or {})
         meta[_IMPORT_KEY] = _import_block(source_path, tally)
+        if terminal_provider_error is not None:
+            meta[MIRROR_PROVIDER_ERROR_KEY] = terminal_provider_error
         await db.create_session(
             {
                 "id": sid,
@@ -522,6 +540,11 @@ async def mirror_session(
         meta[_IMPORT_KEY] = _import_block(
             source_path, _carried_tally(meta.get(_IMPORT_KEY)).merged(tally)
         )
+        if terminal_outcome_seen:
+            if terminal_provider_error is None:
+                meta.pop(MIRROR_PROVIDER_ERROR_KEY, None)
+            else:
+                meta[MIRROR_PROVIDER_ERROR_KEY] = terminal_provider_error
         await db.set_session_provenance(
             sid,
             cc_session_id=cc_session_id,

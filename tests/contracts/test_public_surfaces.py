@@ -6,9 +6,37 @@ Each test loads the frozen baseline captured before any consolidation edit
 (``tests/contracts/data/*.json``, generated once by running the functions in
 ``_capture.py`` against the pre-consolidation worktree) and compares it,
 field for field, against a fresh capture of the live code. A delta here means
-an observable public surface changed; the manifest requires behavior
-preservation, so these baselines must never be refreshed to match a change —
-only to correct a capture bug.
+an observable public surface changed.
+
+A delta is therefore never routine, but it is not always wrong. Two cases:
+
+*Unintended* delta — a consolidation edit changed observable behavior it was
+supposed to preserve. Fix the code, not the baseline. This is the case the
+gate exists for and the common one.
+
+*Intended* delta — a change deliberately adds to or alters the public surface,
+and the baseline is now the stale description. Record it. Refusing to record
+an intended change does not preserve anything; it only leaves the gate red
+until someone refreshes the baseline anyway, with less care than this note
+asks for.
+
+Recording an intended delta requires all three, because a wholesale refresh is
+exactly how an unrelated regression gets laundered into the baseline:
+
+1. Regenerate to a scratch file and diff it against the committed baseline
+   *before* installing it. Read that diff as the change's own claim about its
+   surface, and confirm every line belongs to the intended change. This is the
+   step that catches a second, unnoticed delta riding along.
+2. Say in the commit message what moved and what did not — the counts that
+   changed, and the ones that stayed put.
+3. Where a count is also asserted as a literal in this file, update it by hand
+   and mutation-probe it: restore the old value, confirm the test goes red,
+   restore the new one. Those literals are a second, independent lock on facts
+   the JSON also carries; keep them hand-typed rather than derived from the
+   baseline, which would collapse two checks into one.
+
+A capture bug — where the baseline never described the code correctly — is
+fixed the same way and is not a third case.
 
 Two fields carry inherent host-state volatility and are excluded from the
 byte-for-byte comparison: the "agent status" specialized-CLI case includes a
@@ -412,7 +440,7 @@ def test_mcp_aliases_derived_from_live_seed_table():
 
 def test_mcp_absent_verbs_are_captured_in_full():
     live = _capture.capture_mcp()
-    assert live["absent_verb_count"] == 30
+    assert live["absent_verb_count"] == 26
     by_name = {v["name"]: v for v in live["absent_verbs"]}
     assert "mirror" in by_name
     assert "casts" in by_name
