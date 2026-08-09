@@ -851,7 +851,7 @@
       "provider": "Fournisseur",
       "effort": "Effort",
       "updated": "Mis à jour",
-      "branchesTitle": "Branches ({count})",
+      "branchesTitle": "{count, plural, one {Branche (#)} other {Branches (#)}}",
       "noBranches": "Aucune branche.",
       "msgs": " messages",
       "engineRuns": "Exécutions moteur"

@@ -99,6 +99,7 @@ export default function MissionControl() {
               <AttentionQueue
                 items={board.attentionItems}
                 dischargedItems={board.dischargedAttentionItems}
+                unacknowledgedCount={attentionCount}
                 nowSec={board.nowSec}
                 dataState={board.dataState}
               />

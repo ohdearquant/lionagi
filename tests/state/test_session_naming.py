@@ -102,6 +102,52 @@ def test_agent_role_label_falls_back_to_bare_name_without_started_at() -> None:
     assert agent_role_label("implementer", None) == "implementer"
 
 
+def test_agent_role_label_carries_a_short_slice_of_the_row_id() -> None:
+    started_at = 1767277320.0  # 14:22 UTC
+    label = agent_role_label("claude-code", started_at, "1167beca-3f2a-4d51-9c88-0e21a4b7d900")
+    assert label == "claude-code · 1167 · 14:22"
+
+
+def test_agent_role_label_separates_same_agent_runs_from_the_same_minute() -> None:
+    # The case the surface actually produces: several sessions of one engine,
+    # concurrent, so name and minute are identical across all of them. Without
+    # the id slice these three labels are one string repeated three times.
+    started_at = 1767277320.0
+    labels = {
+        agent_role_label("claude-code", started_at, run_id)
+        for run_id in (
+            "f3d1c5d8-1111-4444-8888-000000000001",
+            "74c89f95-2222-4444-8888-000000000002",
+            "0cd37251-3333-4444-8888-000000000003",
+        )
+    }
+    assert len(labels) == 3
+
+
+def test_agent_role_label_drops_missing_parts_rather_than_rendering_them_blank() -> None:
+    assert agent_role_label("implementer", None, "abc12345") == "implementer · abc1"
+    assert agent_role_label("implementer", 1767277320.0, None) == "implementer · 14:22"
+    assert agent_role_label("implementer", None, "") == "implementer"
+
+
+def test_resolve_display_name_feeds_the_row_id_into_the_agent_tier() -> None:
+    row = {
+        "agent_name": "explorer",
+        "started_at": 1767277320.0,
+        "id": "1167beca-3f2a-4d51-9c88-0e21a4b7d900",
+    }
+    assert resolve_display_name(row) == "explorer · 1167 · 14:22"
+
+
+def test_resolve_display_name_agent_tier_accepts_run_id_when_there_is_no_id() -> None:
+    row = {
+        "agent_name": "explorer",
+        "started_at": 1767277320.0,
+        "run_id": "9f0e1d2c-4444-4444-8888-000000000004",
+    }
+    assert resolve_display_name(row) == "explorer · 9f0e · 14:22"
+
+
 # ── resolve_display_name: priority chain ──────────────────────────────────
 
 
@@ -145,7 +191,7 @@ def test_priority_agent_role_descriptor_wins_over_raw_name() -> None:
         "started_at": 1767277320.0,
         "id": "abc123",
     }
-    assert resolve_display_name(row) == "implementer · 14:22"
+    assert resolve_display_name(row) == "implementer · abc1 · 14:22"
 
 
 def test_agent_only_collision_two_concurrent_runs_resolve_to_distinct_names() -> None:
