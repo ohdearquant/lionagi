@@ -161,10 +161,12 @@ Source: `lionagi/cli/orchestrate/__init__.py`, `lionagi/mcp/dispatch.py`, and
 
 ## Playbook field reference
 
-The accepted top-level runtime fields below come from
-`_validate_spec_fields` in `lionagi/cli/orchestrate/__init__.py`. Keys found in
-older examples but absent from that function are not part of this reference.
-CLI flags override file defaults.
+The runtime fields below are the ones `_validate_spec_fields` in
+`lionagi/cli/orchestrate/__init__.py` type-checks when they are present. That
+function is a type and bounds check, not a field list: it enumerates no closed
+set and rejects no unknown key, so its absence from that function does not make
+a key inert. The declaration fields are listed separately after the table
+because a different code path reads them. CLI flags override file defaults.
 
 | Field | Accepted value | Runtime effect |
 |-------|----------------|----------------|
@@ -188,6 +190,24 @@ CLI flags override file defaults.
 Each `artifacts.expected` entry requires an alphanumeric, `_`, or `-` `id` and
 a relative, non-glob `path`. `required` defaults to true; `description` is
 optional. Source: `lionagi/state/artifact_verifier.py`.
+
+### Declaration fields
+
+These describe the playbook's own command-line interface rather than the run,
+and they are read on a separate path from the table above.
+
+| Field | Accepted value | Effect |
+|-------|----------------|--------|
+| `description` | string | Printed by `li play NAME --help` |
+| `args` | mapping of name to `{type, default, help}` | Becomes real CLI flags; `type` is `str`, `int`, `float`, or `bool` |
+| `argument-hint` | string such as `'[--mode MODE] [--strict]'` | Parsed into the same schema shape, used only when `args` is absent |
+
+`args` is checked by `_validate_args_schema`, which fails the run on a
+malformed schema, and injected as parser flags by
+`inject_playbook_schema_into_parser`. `argument-hint` is parsed by
+`_parse_argument_hint`. A declared arg is substituted into `prompt` as
+`{arg_name}`, with a CLI value overriding the playbook default. Source:
+`lionagi/cli/orchestrate/__init__.py` and `lionagi/cli/main.py`.
 
 The loader currently runs `_validate_spec_fields` only after the child process
 has loaded the file. Submission resolving the playbook and returning a run ID

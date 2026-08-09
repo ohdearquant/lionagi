@@ -349,33 +349,63 @@ select a plugin playbook explicitly.
 ### Playbook YAML shape
 
 ```yaml
+description: Parametric audit pattern    # shown by `li play NAME --help`
+argument-hint: '[--mode MODE]'           # used only when `args:` is absent
+
 model: claude-code/opus-4-7
 agent: orchestrator
 effort: high
 max_ops: 6
 reactive: "off"
+
+args:                       # typed schema; becomes real CLI flags
+  mode:
+    type: str               # str | int | float | bool
+    default: dry
+    help: "audit mode: dry | security | dead-code"
+
 prompt: |
-  Audit {input}. Cite source evidence for every finding.
+  Run a {mode} audit of {input}. Cite source evidence for every finding.
 ```
 
-The runtime field list is defined only by `_validate_spec_fields` in
-`cli/orchestrate/__init__.py`: `model`, `agent`, `effort`, `prompt`, `workers`,
-`max_ops`, deprecated `max_agents`, `with_synthesis`, `bare`, `dry_run`,
-`show_graph`, `save`, `team_mode`, `team_attach`, `reactive`, and `artifacts`.
-See the [orchestration guide](guides/orchestration.md#playbook-field-reference)
+A playbook carries two kinds of key, read by different code.
+
+**Runtime fields** configure the flow: `model`, `agent`, `effort`, `prompt`,
+`workers`, `max_ops`, deprecated `max_agents`, `with_synthesis`, `bare`,
+`dry_run`, `show_graph`, `save`, `team_mode`, `team_attach`, `reactive`, and
+`artifacts`. `_validate_spec_fields` in `cli/orchestrate/__init__.py` checks
+the type and bounds of whichever of these are present. It is a type check, not
+a field list: it does not enumerate a closed set and does not reject unknown
+keys. See the [orchestration guide](guides/orchestration.md#playbook-field-reference)
 for types, bounds, and runtime effects. Quote `reactive: "off"`; bare YAML
 `off` is a boolean, but the loader requires this field to be a string.
+
+**Declaration fields** describe the playbook's own interface: `description`,
+`args`, and `argument-hint`. They are read on a separate path. `args` is
+checked by `_validate_args_schema`, which fails the run on a malformed schema,
+and is turned into parser flags by `inject_playbook_schema_into_parser`. When
+`args` is absent, `argument-hint` is parsed into the same schema shape by
+`_parse_argument_hint`. The discovered playbook name comes from the filename.
+
+### Template interpolation
+
+Inside `prompt:`, three rules:
+
+1. `{input}` → the positional prompt text passed on the CLI.
+2. `{arg_name}` → a declared arg (CLI override beats playbook default).
+3. If the template has no `{...}` placeholders, the positional text is
+   appended after a blank line.
 
 ### Invocation
 
 ```bash
 # Long form
-li o flow -p audit "the auth service"
+li o flow -p audit --mode security "the auth service"
 
 # Sugar
-li play audit "the auth service"
+li play audit --mode security "the auth service"
 li play list                        # list all discovered playbooks
-li play audit --help                # show playbook usage
+li play audit --help                # show description, declared args, and usage
 li play check audit                 # validate declared playbook artifacts/dependencies
 li play status [ID]                 # latest play/flow status, or one durable ID
 li play --resume ID                 # resume a checkpointed flow
@@ -392,7 +422,9 @@ li play list
 
 ### `li play NAME --help`
 
-Shows playbook usage without executing the flow.
+Prints the playbook's `description`, a usage line built from `argument-hint`
+when one is declared, and an `Arguments:` block listing each declared arg with
+its type and default.
 
 ```bash
 li play audit --help
