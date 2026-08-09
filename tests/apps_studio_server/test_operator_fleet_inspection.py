@@ -254,7 +254,7 @@ async def test_get_invocation_caps_children_and_artifact_content(monkeypatch):
         ],
     }
 
-    async def fake_get_invocation(_invocation_id):
+    async def fake_get_invocation(_invocation_id, **_kwargs):
         return source
 
     monkeypatch.setattr(invocations, "get_invocation", fake_get_invocation)
@@ -312,7 +312,7 @@ async def test_get_artifact_caps_and_redacts_content(monkeypatch):
         "content": {"token": SECRET, "path": PRIVATE_PATH, "body": "x" * 2_000_001},
     }
 
-    async def fake_get_artifact(_artifact_id):
+    async def fake_get_artifact(_artifact_id, **_kwargs):
         return source
 
     monkeypatch.setattr(invocations, "get_artifact", fake_get_artifact)

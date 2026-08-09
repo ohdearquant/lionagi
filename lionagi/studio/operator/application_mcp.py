@@ -669,9 +669,19 @@ async def session_signals(arguments: dict[str, Any]) -> dict[str, Any]:
 
 async def get_invocation(arguments: dict[str, Any]) -> dict[str, Any]:
     args = GetInvocationInput.model_validate(arguments)
+    from lionagi.state.db import read_only_open_supported
     from lionagi.studio.services import invocations as invocations_service
 
-    row = await invocations_service.get_invocation(args.invocation_id)
+    # This tool only reads, and an ordinary open applies schema on the way in —
+    # taking a write lock and possibly issuing one-time migration statements to
+    # serve a read. Ask for read-only where the store can give it. Unlike
+    # _artifact_rows, which refuses the read outright when read-only is
+    # unavailable, this degrades to the ordinary open: the tool's guarantee to
+    # its caller is the redaction layer, not the connection mode, so losing
+    # read-only on a server-backed store costs hygiene rather than safety.
+    row = await invocations_service.get_invocation(
+        args.invocation_id, readonly=read_only_open_supported()
+    )
     if row is None:
         return {"known": False}
     raw_sessions = row.get("sessions")
@@ -752,9 +762,14 @@ async def list_artifacts(arguments: dict[str, Any]) -> dict[str, Any]:
 
 async def get_artifact(arguments: dict[str, Any]) -> dict[str, Any]:
     args = GetArtifactInput.model_validate(arguments)
+    from lionagi.state.db import read_only_open_supported
     from lionagi.studio.services import invocations as invocations_service
 
-    row = await invocations_service.get_artifact(args.artifact_id)
+    # Read-only where the store supports it, for the reason given in
+    # get_invocation above.
+    row = await invocations_service.get_artifact(
+        args.artifact_id, readonly=read_only_open_supported()
+    )
     if row is None:
         return {"known": False}
     return {"known": True, "source": "store", **_safe_artifact(row, include_content=True)}

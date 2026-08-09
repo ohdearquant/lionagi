@@ -51,7 +51,7 @@ async def test_get_invocation_returns_projected_fields_for_known_id(monkeypatch)
         "artifacts": [{"id": "a-1", "kind": "result", "name": "result", "content": {"ok": True}}],
     }
 
-    async def fake_get_invocation(_invocation_id):
+    async def fake_get_invocation(_invocation_id, **_kwargs):
         return source
 
     monkeypatch.setattr(invocations, "get_invocation", fake_get_invocation)
@@ -79,7 +79,7 @@ async def test_get_invocation_caps_oversized_artifact_content_and_flags_truncati
         ],
     }
 
-    async def fake_get_invocation(_invocation_id):
+    async def fake_get_invocation(_invocation_id, **_kwargs):
         return source
 
     monkeypatch.setattr(invocations, "get_invocation", fake_get_invocation)
@@ -112,7 +112,7 @@ async def test_get_invocation_redacts_secret_url_and_path_from_all_content(monke
         ],
     }
 
-    async def fake_get_invocation(_invocation_id):
+    async def fake_get_invocation(_invocation_id, **_kwargs):
         return source
 
     monkeypatch.setattr(invocations, "get_invocation", fake_get_invocation)
@@ -125,7 +125,7 @@ async def test_get_invocation_reports_unknown_for_missing_invocation_id(monkeypa
     from lionagi.studio.operator.application_mcp import get_invocation
     from lionagi.studio.services import invocations
 
-    async def fake_get_invocation(_invocation_id):
+    async def fake_get_invocation(_invocation_id, **_kwargs):
         return None
 
     monkeypatch.setattr(invocations, "get_invocation", fake_get_invocation)
@@ -221,7 +221,7 @@ async def test_get_artifact_returns_full_projection_for_known_id(monkeypatch):
 
     source = {"id": "a-happy", "kind": "result", "name": "result", "content": {"ok": True}}
 
-    async def fake_get_artifact(_artifact_id):
+    async def fake_get_artifact(_artifact_id, **_kwargs):
         return source
 
     monkeypatch.setattr(invocations, "get_artifact", fake_get_artifact)
@@ -245,7 +245,7 @@ async def test_get_artifact_caps_oversized_content_and_flags_truncation(monkeypa
         "content": {"body": oversized_body},
     }
 
-    async def fake_get_artifact(_artifact_id):
+    async def fake_get_artifact(_artifact_id, **_kwargs):
         return source
 
     monkeypatch.setattr(invocations, "get_artifact", fake_get_artifact)
@@ -267,7 +267,7 @@ async def test_get_artifact_redacts_secret_url_and_path_from_content(monkeypatch
         "content": {"token": PLANTED_SECRET, "path": PLANTED_PATH, "url": PLANTED_STORE_URL},
     }
 
-    async def fake_get_artifact(_artifact_id):
+    async def fake_get_artifact(_artifact_id, **_kwargs):
         return source
 
     monkeypatch.setattr(invocations, "get_artifact", fake_get_artifact)
@@ -281,10 +281,110 @@ async def test_get_artifact_reports_unknown_for_missing_artifact_id(monkeypatch)
     from lionagi.studio.operator.application_mcp import get_artifact
     from lionagi.studio.services import invocations
 
-    async def fake_get_artifact(_artifact_id):
+    async def fake_get_artifact(_artifact_id, **_kwargs):
         return None
 
     monkeypatch.setattr(invocations, "get_artifact", fake_get_artifact)
     result = await get_artifact({"artifact_id": "does-not-exist"})
 
     assert result == {"known": False}
+
+
+# ---------------------------------------------------------------------------
+# connection mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "service_name", "arguments"),
+    [
+        ("get_invocation", "get_invocation", {"invocation_id": "inv-1"}),
+        ("get_artifact", "get_artifact", {"artifact_id": "a-1"}),
+    ],
+)
+async def test_the_read_tools_ask_for_a_read_only_open_where_the_store_offers_one(
+    monkeypatch, tool_name, service_name, arguments
+):
+    """These tools only read, so they must not take the ordinary open.
+
+    The ordinary open applies schema on the way in, which acquires a write lock
+    and can issue one-time migration statements — work a read has no business
+    doing. Both directions are asserted: read-only is requested when the store
+    can give it, and not requested when it cannot, since asking unconditionally
+    fails at open on a server-backed store rather than degrading.
+    """
+    import lionagi.state.db as state_db
+    from lionagi.studio.operator import application_mcp
+    from lionagi.studio.services import invocations
+
+    seen: list[bool] = []
+
+    async def recording_service(_id, **kwargs):
+        seen.append(kwargs.get("readonly"))
+        return None
+
+    monkeypatch.setattr(invocations, service_name, recording_service)
+    tool = getattr(application_mcp, tool_name)
+
+    monkeypatch.setattr(state_db, "read_only_open_supported", lambda: True)
+    await tool(arguments)
+
+    monkeypatch.setattr(state_db, "read_only_open_supported", lambda: False)
+    await tool(arguments)
+
+    assert seen == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# redaction: the key-marker layer
+# ---------------------------------------------------------------------------
+
+# Deliberately shapeless: no prefix, no separator, no key=value or bearer form,
+# so none of redact.py's pattern layers can claim it. Whatever redacts this can
+# only have done so by looking at the KEY.
+UNSHAPED_SECRET = "hunter2hunter2hunter2"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "secret",
+        "token",
+        "password",
+        "passwd",
+        "api_key",
+        "apikey",
+        "credential",
+        "authorization",
+        "access_key",
+        "private_key",
+        "client_secret",
+        "auth",
+        "authentication",
+        "bearer",
+        "REFRESH_TOKEN",
+        "db_password",
+    ],
+)
+async def test_a_secret_with_no_recognisable_shape_is_redacted_by_its_key(key):
+    """Every secret-marking key redacts its value even when the value itself
+    looks like nothing.
+
+    The shaped-secret tests cannot fail if this layer is removed — the pattern
+    layer catches their planted values anyway — so without this arm the key
+    markers are unpinned and dropping one is silent. Each marker gets its own
+    case so removing any single one reddens rather than being covered by a
+    sibling.
+    """
+    from lionagi.studio.operator.application_mcp import _safe_content
+    from lionagi.studio.operator.redact import scrub_text
+
+    # Premise, asserted rather than assumed: the pattern layer really does not
+    # recognise this value. If a future pattern starts catching it, this fails
+    # here and says so, instead of passing for a reason that is not the one
+    # under test.
+    assert scrub_text(UNSHAPED_SECRET) == UNSHAPED_SECRET
+
+    projected = _safe_content({key: UNSHAPED_SECRET})
+
+    assert projected == {key: "[redacted]"}
