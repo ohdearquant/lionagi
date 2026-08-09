@@ -574,6 +574,8 @@ async def test_non_escalation_transcript_gets_ordinary_cwd_attribution(
 
 @pytest.mark.asyncio
 async def test_reconcile_flips_running_to_completed_when_idle(temp_db_path: Path) -> None:
+    from lionagi.state.reasons import RunReasons
+
     async with StateDB() as db:
         await mirror_session(
             db, session_uid=SID, events=_conversation(), tool_names={}, status="running"
@@ -584,6 +586,36 @@ async def test_reconcile_flips_running_to_completed_when_idle(temp_db_path: Path
         after = await db.get_session(session_db_id(SID))
     assert before["status"] == "running"
     assert after["status"] == "completed"
+    assert after["status_reason_code"] == RunReasons.COMPLETED_OK
+
+
+@pytest.mark.asyncio
+async def test_reconcile_marks_idle_provider_refusal_failed(temp_db_path: Path) -> None:
+    from lionagi.state.reasons import RunReasons
+
+    refusal = (
+        "Prompt is too long · the request is ~225306 tokens (limit 200000). "
+        "A single-exchange conversation cannot be compacted; reduce attached "
+        "files/tools or start with less context."
+    )
+    events = [
+        _user_text("u1", "do the thing"),
+        _assistant("a1", [{"type": "text", "text": refusal}]),
+    ]
+    async with StateDB() as db:
+        await mirror_session(db, session_uid=SID, events=events, tool_names={}, status="running")
+        before = await db.get_session(session_db_id(SID))
+        await reconcile_session_status(
+            db,
+            SID,
+            now=before["last_message_at"] + 10_000,
+            live_window=300,
+        )
+        after = await db.get_session(session_db_id(SID))
+
+    assert after["status"] == "failed"
+    assert after["status_reason_code"] == RunReasons.FAILED_PROVIDER_NONRETRYABLE
+    assert after["status_reason_code"] != RunReasons.COMPLETED_OK
 
 
 @pytest.mark.asyncio

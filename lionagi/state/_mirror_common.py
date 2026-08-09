@@ -265,7 +265,7 @@ async def reconcile_status(
     live_window: float,
     actor: str,
 ) -> None:
-    """Align a mirrored session's status with its live/idle state, both directions.
+    """Align a mirrored session's status with its liveness and terminal outcome.
     Liveness keys off ``last_message_at``, never ``updated_at`` — see docs/internals/runtime.md."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
@@ -274,26 +274,45 @@ async def reconcile_status(
     if not existing:
         return
     live = (now - float(existing.get("last_message_at") or 0.0)) <= live_window
-    desired = "running" if live else "completed"
     previous = existing.get("status")
+    previous_terminal = previous in SESSION_TERMINAL_STATUSES
+    if previous_terminal and not live:
+        return
+
+    desired = "running" if live else "completed"
+    reason_code = RunReasons.STARTED_OK if live else RunReasons.COMPLETED_OK
+    reason_summary = "mirror session became idle"
+    if not live:
+        progression_id = existing.get("progression_id")
+        message_ids = await db.get_progression(progression_id) if progression_id else []
+        final_message = await db.get_message(message_ids[-1]) if message_ids else None
+        content = final_message.get("content") if final_message else None
+        response = content.get("assistant_response") if isinstance(content, dict) else None
+        if isinstance(response, str):
+            from lionagi.providers._provider_errors import ProviderError, classify_provider_error
+
+            provider_error = classify_provider_error(response)
+            if type(provider_error) is not ProviderError:
+                desired = "failed"
+                reason_code = (
+                    RunReasons.FAILED_PROVIDER_RETRYABLE
+                    if provider_error.retryable
+                    else RunReasons.FAILED_PROVIDER_NONRETRYABLE
+                )
+                reason_summary = f"{type(provider_error).__name__}: {provider_error}"
+
     if previous == desired:
         return
 
-    previous_terminal = previous in SESSION_TERMINAL_STATUSES
-    if previous_terminal and desired != "running":
-        return
-
     reactivating = previous_terminal and desired == "running"
+    if reactivating:
+        reason_summary = "mirror session reactivated because transcript resumed within live_window"
     await db.update_status(
         "session",
         sid,
         new_status=desired,
-        reason_code=RunReasons.STARTED_OK if desired == "running" else RunReasons.COMPLETED_OK,
-        reason_summary=(
-            "mirror session reactivated because transcript resumed within live_window"
-            if reactivating
-            else "mirror session became idle"
-        ),
+        reason_code=reason_code,
+        reason_summary=reason_summary,
         evidence_refs=[{"kind": "session", "id": sid}],
         source="system",
         actor=actor,

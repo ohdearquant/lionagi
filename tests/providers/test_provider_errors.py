@@ -128,6 +128,14 @@ def test_classify_codex_ran_out_of_room_returns_context_error():
     assert err.retryable is False
 
 
+def test_classify_prompt_is_too_long_returns_context_error():
+    err = classify_provider_error(
+        "Prompt is too long · the request is ~225306 tokens (limit 200000)."
+    )
+    assert isinstance(err, ProviderContextError)
+    assert err.retryable is False
+
+
 # ---------------------------------------------------------------------------
 # Quota — date-formatted retry time (real cohort gap: no digit after "at")
 # ---------------------------------------------------------------------------
