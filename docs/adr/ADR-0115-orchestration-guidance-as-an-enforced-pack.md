@@ -4,7 +4,7 @@
 - **Kind**: Aspirational
 - **Area**: cli-orchestration
 - **Date**: 2026-08-08
-- **Relations**: extends ADR-0011; touches the pack mechanism and the playbook spec loader
+- **Relations**: extends ADR-0043; touches the pack mechanism and the playbook spec loader
 
 ## Context
 
