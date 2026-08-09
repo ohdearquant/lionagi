@@ -360,6 +360,7 @@ _SECRET_FIELD_MARKERS = (
     "private_key",
     "client_secret",
 )
+_FIELD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 _URL_FIELD_NAMES = frozenset(
     {"url", "uri", "dsn", "store_url", "database_url", "db_url", "connection_url"}
 )
@@ -390,11 +391,14 @@ def _safe_text(value: str) -> str:
 
 
 def _secret_field(key: str) -> bool:
-    # Hyphens and underscores spell the same field. HTTP headers arrive as
-    # X-API-Key while our own records write api_key, and every marker below
-    # that contains an underscore would otherwise miss the hyphenated form
-    # entirely. Folding one into the other can only widen what we redact.
-    lowered = key.lower().replace("-", "_")
+    # Separators do not change which field a name refers to. HTTP headers
+    # arrive as X-API-Key, config files write api.key, and our own records
+    # write api_key; every marker below that contains an underscore would
+    # otherwise match only the last of those. Fold any run of non-alphanumeric
+    # characters to a single underscore so all the spellings compare equal.
+    # This can only widen what we redact, which is the safe direction for a
+    # rule whose job is to withhold.
+    lowered = _FIELD_SEPARATOR_RE.sub("_", key.lower())
     return lowered in {"auth", "authentication", "bearer"} or any(
         marker in lowered for marker in _SECRET_FIELD_MARKERS
     )

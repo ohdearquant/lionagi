@@ -393,6 +393,7 @@ async def test_a_secret_with_no_recognisable_shape_is_redacted_by_its_key(key):
 @pytest.mark.parametrize(
     "key",
     [
+        # hyphenated, the HTTP header spelling
         "X-API-Key",
         "api-key",
         "access-key",
@@ -400,15 +401,32 @@ async def test_a_secret_with_no_recognisable_shape_is_redacted_by_its_key(key):
         "client-secret",
         "x-auth-token",
         "API-KEY",
+        # dotted, the config-file spelling
+        "api.key",
+        "access.key",
+        "x.api.key",
+        # spaced and otherwise punctuated
+        "api key",
+        "API KEY",
+        "private key",
+        "api:key",
+        "api/key",
+        # camelCase, which already folded to apikey and must keep doing so
+        "apiKey",
     ],
 )
-async def test_a_hyphenated_field_name_redacts_like_its_underscored_spelling(key):
-    """The same field spelled with hyphens is the same field.
+async def test_a_field_name_redacts_whatever_separator_it_is_spelled_with(key):
+    """Separators do not change which field a name refers to.
 
-    Credentials reach us under HTTP header spellings such as X-API-Key while
-    our own records write api_key. Markers containing an underscore only ever
-    matched the underscored form, so the header spellings walked past the key
-    layer, and past the pattern layer too whenever the value had no shape.
+    Credentials reach us under HTTP header spellings such as X-API-Key and
+    config spellings such as api.key, while our own records write api_key.
+    Markers containing an underscore only ever matched the underscored form,
+    so the other spellings walked past the key layer, and past the pattern
+    layer too whenever the value had no shape.
+
+    Every separator gets its own case rather than one representative, because
+    the first version of this fix folded hyphens alone and left the dotted and
+    spaced spellings leaking exactly as before.
     """
     from lionagi.studio.operator.application_mcp import _safe_content
     from lionagi.studio.operator.redact import scrub_text
