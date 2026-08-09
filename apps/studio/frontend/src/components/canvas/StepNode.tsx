@@ -90,8 +90,8 @@ export interface NodeVisualStyle {
 }
 
 export function computeNodeVisualStyle(status: NodeExecStatus, selected: boolean): NodeVisualStyle {
-  const isTerminalError = status === "failed" || status === "escalated";
-  const isWarn = status === "awaiting_approval" || status === "paused";
+  const isTerminalError = status === "failed";
+  const isWarn = status === "awaiting_approval" || status === "paused" || status === "escalated";
 
   const borderColor =
     status === "running"
@@ -230,7 +230,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
           </span>
         )}
         {status === "escalated" && (
-          <span className="flex shrink-0 items-center text-status-error">
+          <span className="flex shrink-0 items-center text-status-warning">
             <IconWarning size={10} strokeWidth={2.5} />
           </span>
         )}

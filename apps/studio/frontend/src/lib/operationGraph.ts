@@ -22,9 +22,15 @@ export interface OperationNode {
   eventCount: number;
 }
 
+export interface OperationEdge {
+  source: string;
+  target: string;
+  continuation?: boolean;
+}
+
 export interface OperationGraphState {
   nodes: OperationNode[];
-  edges: { source: string; target: string }[];
+  edges: OperationEdge[];
 }
 
 // ── Status projection ─────────────────────────────────────────────────────────
@@ -255,10 +261,31 @@ export function buildOperationGraph(events: SignalEvent[]): OperationGraphState 
   const lastTsByOp = new Map<string, number>();
   const causeOpIdByOp = new Map<string, string | null>();
   const edgeSet = new Set<string>();
+  const independentSpawnOrigins = new Map<string, { source: string; target: string }>();
+  const higherTierEscalations = new Set<string>();
 
   for (const ev of events) {
     if (!ev.op_id) continue;
+
+    if (ev.kind === "NodeSpawned") {
+      const parentId = ev.payload?.parent_id;
+      if (
+        ev.payload?.independent === true &&
+        typeof parentId === "string" &&
+        parentId &&
+        parentId !== ev.op_id
+      ) {
+        const key = `${parentId}→${ev.op_id}`;
+        independentSpawnOrigins.set(key, { source: parentId, target: ev.op_id });
+      }
+      continue;
+    }
+
     if (!KIND_TO_STATE[ev.kind]) continue;
+
+    if (ev.kind === "NodeEscalated" && ev.payload?.route === "higher_tier") {
+      higherTierEscalations.add(ev.op_id);
+    }
 
     if (!kindsByOp.has(ev.op_id)) {
       kindsByOp.set(ev.op_id, []);
@@ -312,6 +339,30 @@ export function buildOperationGraph(events: SignalEvent[]): OperationGraphState 
     }
   }
 
+  const continuationEdges: OperationEdge[] = [];
+  for (const [key, origin] of independentSpawnOrigins) {
+    // Only an escalation retry gets its parent link reclassified. Everything
+    // else that spawns independently keeps whatever the lifecycle signals
+    // said about it, including a plain dependency edge repeating the parent.
+    if (!higherTierEscalations.has(origin.source)) continue;
+
+    // For a retry, the parent link is causal provenance rather than a
+    // scheduling dependency, so the repeated plain edge is removed and the
+    // cause cleared before the continuation replaces them.
+    edgeSet.delete(key);
+    causeOpIdByOp.set(origin.target, null);
+
+    continuationEdges.push({ ...origin, continuation: true });
+
+    const originName = nameByOp.get(origin.source);
+    const childName = nameByOp.get(origin.target);
+    const originHasReadableName = Boolean(originName) && originName !== origin.source.slice(0, 8);
+    const childHasFallbackName = !childName || childName === origin.target.slice(0, 8);
+    if (originHasReadableName && childHasFallbackName) {
+      nameByOp.set(origin.target, `${originName} escalation retry`);
+    }
+  }
+
   const nodes: OperationNode[] = order.map((opId) => ({
     opId,
     name: nameByOp.get(opId) ?? "",
@@ -323,12 +374,17 @@ export function buildOperationGraph(events: SignalEvent[]): OperationGraphState 
     eventCount: (kindsByOp.get(opId) ?? []).length,
   }));
 
-  const edges = transitiveReduce(
-    Array.from(edgeSet).map((key) => {
-      const [source, target] = key.split("→");
-      return { source: source!, target: target! };
-    }),
-  );
+  // Continuations are annotative provenance, so they neither participate in
+  // dependency reachability nor get removed as transitively redundant.
+  const edges: OperationEdge[] = [
+    ...transitiveReduce(
+      Array.from(edgeSet).map((key) => {
+        const [source, target] = key.split("→");
+        return { source: source!, target: target! };
+      }),
+    ),
+    ...continuationEdges,
+  ];
 
   return { nodes, edges };
 }

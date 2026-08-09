@@ -981,6 +981,8 @@ async def _run_agent(
         provider=provider,
         effort=effort,
         project=project,
+        run_id=run.run_id,
+        run_manifest=run_manifest,
         # This runner drains queued operator messages at turn end and
         # tombstones whatever it did not take, so controls aimed at it have a
         # consumer.
