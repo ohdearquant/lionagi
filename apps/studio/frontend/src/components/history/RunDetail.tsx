@@ -50,9 +50,27 @@ const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function compactValue(v: unknown): string {
+/** A value whose entire content is one identifier, as a short id — or null for
+ * anything else. Deliberately narrow: only an object whose single key is `id`
+ * qualifies, so shortening can never drop a sibling field the reader would
+ * have wanted. Anything richer keeps its full rendering. */
+export function refShortId(v: unknown): string | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const keys = Object.keys(v as object);
+  if (keys.length !== 1 || keys[0] !== "id") return null;
+  const id = (v as { id: unknown }).id;
+  return typeof id === "string" && id ? id.slice(0, 8) : null;
+}
+
+export function compactValue(v: unknown): string {
   if (v == null) return "";
   if (typeof v === "object") {
+    // Ref-shaped values are the most common payload value in the event
+    // stream — every message row carries one. Dumped as JSON they spend the
+    // whole line restating the key name and then truncate the only part that
+    // separates one row from the next, so a page of them reads as identical.
+    const ref = refShortId(v);
+    if (ref) return ref;
     try {
       return JSON.stringify(v);
     } catch {

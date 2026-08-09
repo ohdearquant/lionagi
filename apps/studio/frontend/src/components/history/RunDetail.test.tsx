@@ -1063,6 +1063,54 @@ describe("history/RunDetail.tsx — visibleEventPayloadEntries", () => {
   });
 });
 
+describe("history/RunDetail.tsx — refShortId", () => {
+  it("shortens a value whose whole content is one id", async () => {
+    const { refShortId } = await import("./RunDetail");
+    expect(refShortId({ id: "0618e931-21c5-4bee-897d-c58bfb273abc" })).toBe("0618e931");
+  });
+
+  it("leaves a value alone when shortening it would drop a sibling field", async () => {
+    const { refShortId } = await import("./RunDetail");
+    expect(refShortId({ id: "0618e931-21c5", role: "assistant" })).toBeNull();
+    expect(refShortId({ ref: "0618e931-21c5" })).toBeNull();
+  });
+
+  it("declines anything that is not a plain single-id object", async () => {
+    const { refShortId } = await import("./RunDetail");
+    expect(refShortId([{ id: "a" }])).toBeNull();
+    expect(refShortId({})).toBeNull();
+    expect(refShortId({ id: 42 })).toBeNull();
+    expect(refShortId({ id: "" })).toBeNull();
+    expect(refShortId(null)).toBeNull();
+    expect(refShortId("0618e931")).toBeNull();
+  });
+});
+
+describe("history/RunDetail.tsx — compactValue", () => {
+  it("renders a message row's ref as a short id instead of a JSON dump", async () => {
+    // The payload every MessageAdded row carries, and the only content it
+    // has: dumped as JSON it fills the line and truncates mid-id, so a page
+    // of these rows reads as one string repeated.
+    const { compactValue } = await import("./RunDetail");
+    expect(compactValue({ id: "0618e931-21c5-4bee-897d-c58bfb273abc" })).toBe("0618e931");
+  });
+
+  it("still dumps a value that carries more than an id", async () => {
+    const { compactValue } = await import("./RunDetail");
+    expect(compactValue({ session_id: "abc", point: "api.pre_call" })).toBe(
+      '{"session_id":"abc","point":"api.pre_call"}',
+    );
+  });
+
+  it("leaves scalars and nullish values as they were", async () => {
+    const { compactValue } = await import("./RunDetail");
+    expect(compactValue("api.stream_chunk")).toBe("api.stream_chunk");
+    expect(compactValue(42)).toBe("42");
+    expect(compactValue(null)).toBe("");
+    expect(compactValue(undefined)).toBe("");
+  });
+});
+
 describe("history/RunDetail.tsx — summarizeHookEvent", () => {
   it("summarizes a tool.pre hook as 'point · tool_name'", async () => {
     const { summarizeHookEvent } = await import("./RunDetail");
