@@ -13,10 +13,13 @@ from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .redact import redact_arguments
 from .types import OperatorEngineEvent, OperatorEngineTurn
+
+if TYPE_CHECKING:
+    from ..config import OperatorExecutionRootResolution
 
 _SYSTEM_PROMPT = """\
 You are the resident Operator for Lion Studio. Be concise and factual.
@@ -84,6 +87,10 @@ _CONTEXT_VALUE_BYTE_LIMIT = 2 * 1024
 
 class OperatorProviderUnavailableError(RuntimeError):
     """The configured local Operator CLI is not installed."""
+
+
+class OperatorExecutionRootError(ValueError):
+    """The Operator has no explicit, usable directory for provider execution."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -501,6 +508,73 @@ class BranchOperatorEngine:
                 await task
 
 
+async def resolve_operator_execution_root(
+    project: str | None,
+    daemon_resolution: OperatorExecutionRootResolution | None,
+) -> Path:
+    """Resolve a turn from the daemon's frozen root choice or its project."""
+    from lionagi.studio.config import (
+        OPERATOR_CWD_ENV_VAR,
+        OPERATOR_CWD_RULE_DEFAULT,
+        OPERATOR_CWD_RULE_ENV,
+    )
+    from lionagi.studio.scheduler.engine import _is_usable_execution_root
+
+    daemon_cwd = Path.cwd().resolve()
+    if daemon_resolution is None:
+        raise OperatorExecutionRootError(
+            "Studio Operator execution root was not resolved at daemon startup. "
+            "Refusing to resolve it from turn-time process state or to inherit "
+            f"the Studio daemon working directory {str(daemon_cwd)!r}."
+        )
+
+    if daemon_resolution.rule == OPERATOR_CWD_RULE_ENV:
+        if daemon_resolution.root is not None:
+            return daemon_resolution.root
+        raise OperatorExecutionRootError(
+            f"{OPERATOR_CWD_ENV_VAR} is set to "
+            f"{daemon_resolution.configured_value!r}, which is not an existing "
+            "absolute directory. Refusing to run the Operator from the Studio "
+            f"daemon working directory {str(daemon_cwd)!r}."
+        )
+
+    if daemon_resolution.rule != OPERATOR_CWD_RULE_DEFAULT:
+        raise OperatorExecutionRootError(
+            f"Studio Operator execution root startup rule "
+            f"{daemon_resolution.rule!r} is unknown. Refusing to inherit the "
+            f"Studio daemon working directory {str(daemon_cwd)!r}."
+        )
+
+    if project is not None:
+        from lionagi.studio.services.projects import get_project
+
+        project_row = await get_project(project)
+        project_path = (
+            project_row.get("path")
+            if project_row is not None and isinstance(project_row.get("path"), str)
+            else None
+        )
+        if project_path is not None and _is_usable_execution_root(project_path):
+            return Path(project_path).resolve()
+        raise OperatorExecutionRootError(
+            f"Studio Operator project {project!r} has no usable registered "
+            "execution root. Refusing to replace that selected project with "
+            f"the daemon default {str(daemon_resolution.root)!r} or working "
+            f"directory {str(daemon_cwd)!r}."
+        )
+
+    if daemon_resolution.root is not None:
+        return daemon_resolution.root
+
+    raise OperatorExecutionRootError(
+        "Studio Operator's shipped daemon-config default "
+        f"{daemon_resolution.configured_value!r} is not an existing absolute "
+        f"directory. Set {OPERATOR_CWD_ENV_VAR} to an existing absolute "
+        "directory. Refusing to inherit the Studio daemon working "
+        f"directory {str(daemon_cwd)!r}."
+    )
+
+
 def resolve_operator_provider_model(turn: OperatorEngineTurn) -> tuple[str, str]:
     """Resolve (provider, model) for a turn.
 
@@ -548,7 +622,11 @@ def _apply_operator_effort(
     return model_name
 
 
-def build_operator_branch(turn: OperatorEngineTurn):
+def build_operator_branch(
+    turn: OperatorEngineTurn,
+    *,
+    execution_root: Path | None = None,
+):
     """Build the real, permission-gated Branch used by a canonical turn run."""
     from lionagi.service.manager import iModel
     from lionagi.session.branch import Branch
@@ -614,6 +692,12 @@ def build_operator_branch(turn: OperatorEngineTurn):
             "api_key": "dummy",
             **({"resume": turn.provider_session_id} if turn.provider_session_id else {}),
         }
+    if execution_root is not None:
+        from lionagi.service.providers import PROVIDER_REPO_KWARG
+
+        repo_kwarg = PROVIDER_REPO_KWARG.get(provider)
+        if repo_kwarg is not None:
+            model_kwargs[repo_kwarg] = str(execution_root)
     model_name = _apply_operator_effort(provider, model_name, turn.effort, model_kwargs)
     chat_model = iModel(provider=provider, model=model_name, **model_kwargs)
     # The conversation's own durable identity, so this turn's branch/session

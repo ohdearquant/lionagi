@@ -12,12 +12,18 @@ from contextlib import suppress
 from dataclasses import replace
 from typing import Any
 
+from ..config import (
+    OperatorExecutionRootResolution,
+    resolve_operator_execution_root_config,
+)
 from .catalog import OperatorSelectionError, resolve_selection
 from .engine import (
     BranchOperatorEngine,
+    OperatorExecutionRootError,
     OperatorProviderUnavailableError,
     build_operator_branch,
     compile_operator_history,
+    resolve_operator_execution_root,
     resolve_operator_provider_model,
     write_resumable_operator_snapshot,
 )
@@ -145,8 +151,24 @@ class OperatorCoordinator:
         self.command_executor = command_executor or _execute_application_command
         self._tasks: dict[str, asyncio.Task] = {}
         self._started = False
+        self._execution_root_resolution: OperatorExecutionRootResolution | None = None
 
     async def startup(self) -> list[str]:
+        resolution = resolve_operator_execution_root_config()
+        self._execution_root_resolution = resolution
+        if resolution.root is None:
+            _log.error(
+                "Studio Operator execution root unresolved at startup: "
+                "configured_value=%r rule=%s; Operator turns will refuse",
+                resolution.configured_value,
+                resolution.rule,
+            )
+        else:
+            _log.warning(
+                "Studio Operator execution root resolved at startup: root=%s rule=%s",
+                resolution.root,
+                resolution.rule,
+            )
         await self.store.ensure_schema()
         recovered = await self.store.recover_interrupted_turns()
         self._started = True
@@ -184,6 +206,7 @@ class OperatorCoordinator:
             )
         self._tasks.clear()
         self._started = False
+        self._execution_root_resolution = None
 
     async def create_conversation(
         self, *, project: str | None = None, title: str | None = None
@@ -324,6 +347,16 @@ class OperatorCoordinator:
                     await asyncio.sleep(0.05)
 
             conversation_row = await self.store.get_conversation(conversation_id)
+            context_project = turn_row["context"].get("project")
+            project = (
+                context_project
+                if isinstance(context_project, str) and context_project
+                else conversation_row.get("project")
+            )
+            execution_root = await resolve_operator_execution_root(
+                project if isinstance(project, str) else None,
+                self._execution_root_resolution,
+            )
             selected_provider = conversation_row.get("provider")
             selected_model = conversation_row.get("providerModel")
             selected_effort = turn_row.get("effort")
@@ -363,7 +396,7 @@ class OperatorCoordinator:
                     resumed_session_id if isinstance(resumed_session_id, str) else None
                 ),
             )
-            run_branch = build_operator_branch(engine_turn)
+            run_branch = build_operator_branch(engine_turn, execution_root=execution_root)
             engine_turn = replace(engine_turn, runtime_branch=run_branch)
             from lionagi.cli import _runs as cli_runs
 
@@ -499,6 +532,18 @@ class OperatorCoordinator:
                 outcome="failed",
                 error={
                     "code": "provider_unavailable",
+                    "message": str(exc),
+                    "retryable": False,
+                },
+            )
+        except OperatorExecutionRootError as exc:
+            terminal_status = "failed"
+            terminal_exc = exc
+            await self.store.finish_turn(
+                request_id,
+                outcome="failed",
+                error={
+                    "code": "service_failure",
                     "message": str(exc),
                     "retryable": False,
                 },
