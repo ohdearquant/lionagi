@@ -339,8 +339,33 @@ export function createHistoryPager(
   };
 }
 
-function deriveCounts(units: OrgUnit[]): FleetCounts {
-  const orchestrations = units.filter((u) => u.id !== "__direct__").length;
+const ORCHESTRATION_KINDS = new Set(["play", "fanout", "flow"]);
+
+/**
+ * An orchestration is counted once, from whichever evidence exists for it.
+ *
+ * A group is the better evidence, but a group only forms when a run carries
+ * invocation_id, and that field is populated on the `li invoke` path alone. A
+ * play, fanout or flow never sets it, so it formed no group and was invisible
+ * here: the strip read zero orchestrations while one was visibly running in the
+ * list directly below it. Counting those runs closes that gap without inventing
+ * a parentage link that does not exist — it makes the number honest, not the
+ * tree. Their workers stay ungrouped, because rendering them as affiliated
+ * would be the same falsehood moved somewhere harder to notice.
+ *
+ * Runs already inside a group are excluded so this stays a union rather than a
+ * double count. Once real parentage exists, every orchestration forms a group,
+ * the second term goes to zero, and this reduces to the group count on its own.
+ */
+function deriveCounts(units: OrgUnit[], runs: RunSummary[]): FleetCounts {
+  const groups = units.filter((u) => u.id !== "__direct__");
+  const grouped = new Set(groups.flatMap((u) => u.agents.map((a) => a.id)));
+  const ungroupedOrchestrations = runs.filter(
+    (r) =>
+      isActive(r) && ORCHESTRATION_KINDS.has(r.invocation_kind ?? "") && !grouped.has(r.run_id),
+  ).length;
+
+  const orchestrations = groups.length + ungroupedOrchestrations;
   const agents = units.reduce((n, u) => n + u.agents.length, 0);
   const attention = units.reduce((n, u) => {
     if (u.id === "__direct__") return n + u.agents.filter((a) => needsAttention(a)).length;
@@ -375,7 +400,7 @@ export function fleetReducer(state: FleetState, action: FleetAction): FleetState
       const { invocations, runs, runsHasNext, nowSec, project, projectNull, search } = action;
       const scoped = isScopeActive(project, projectNull, search);
       const orgUnits = buildOrgUnits(invocations, runs, nowSec, scoped, runsHasNext);
-      const counts = deriveCounts(orgUnits);
+      const counts = deriveCounts(orgUnits, runs);
       return {
         ...state,
         nowSec,
