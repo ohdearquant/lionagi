@@ -706,11 +706,11 @@ class TestPerServerPolicyPersistence:
             # each Tool must still carry its own recovery capability for
             # first-invocation recovery, bound to this call's policy.
             await mgr.register_mcp_server(
-                {"command": "echo", "args": []},
+                {"server": "srv", "command": "echo", "args": []},
                 tool_names=["foo"],
                 security=policy,
             )
-            tool = mgr.registry["foo"]
+            tool = mgr.registry["mcp__srv__foo"]
             assert tool.mcp_capability is not None
             assert tool.mcp_capability.security is policy
             # The capability never appears in serialized state.

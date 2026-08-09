@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -25,6 +26,28 @@ from .tool_hooks import (
 )
 
 logger = logging.getLogger(__name__)
+
+_QUALIFIED_MCP_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def qualified_mcp_name(server_name: str, tool_name: str) -> str:
+    """Return the registry name for a tool discovered on an MCP server."""
+    if not isinstance(server_name, str) or not server_name:
+        raise ValueError(
+            f"MCP tool {tool_name!r} requires a non-empty server alias; "
+            "load the server under a shorter alias before registration."
+        )
+
+    qualified_name = f"mcp__{server_name}__{tool_name}"
+    if _QUALIFIED_MCP_NAME_PATTERN.fullmatch(qualified_name):
+        return qualified_name
+
+    raise ValueError(
+        f"Invalid qualified MCP tool name for server {server_name!r}, tool "
+        f"{tool_name!r}: {qualified_name!r} has length {len(qualified_name)}; "
+        "the name must match ^[a-zA-Z0-9_-]{1,64}$. Load the server under "
+        "a shorter alias using only letters, digits, underscores, or hyphens."
+    )
 
 
 class ActionManager(Manager):
@@ -69,6 +92,10 @@ class ActionManager(Manager):
             return tool.function in self.registry
         elif isinstance(tool, str):
             return tool in self.registry
+        elif isinstance(tool, dict):
+            if len(tool) == 1:
+                return next(iter(tool)) in self.registry
+            return False
         elif callable(tool):
             return tool.__name__ in self.registry
         return False
@@ -334,20 +361,42 @@ class ActionManager(Manager):
         if isinstance(server_config, dict) and "server" in server_config:
             server_name = server_config["server"]
 
-        if request_options:
-            for k in list(request_options.keys()):
-                if not k.startswith(f"{server_name}_"):
-                    request_options[f"{server_name}_{k}"] = request_options.pop(k)
+        def request_options_for(tool_name: str) -> type | None:
+            return request_options.get(tool_name) if request_options else None
+
+        def register_mcp_tool(tool: Tool, registry_name: str) -> None:
+            existing = self.registry.get(registry_name)
+            if existing is not None and existing.mcp_config is None:
+                raise ValueError(
+                    f"MCP tool {registry_name!r} cannot replace an existing local tool"
+                )
+            self.register_tool(tool, update=update)
 
         if tool_names:
             from lionagi.service.connections.mcp_wrapper import (
                 validate_mcp_tool_admission,
             )
 
+            advertised = set(tool_names)
+            if request_options:
+                unknown_options = sorted(set(request_options) - advertised)
+                if unknown_options:
+                    raise ValueError(
+                        f"Request options for MCP server {server_name!r} reference "
+                        f"unknown tool(s): {unknown_options}"
+                    )
+
             # Validate the whole list before registering any tool: a denial
             # anywhere must leave the registry unchanged, not partially populated.
             for tool_name in tool_names:
                 validate_mcp_tool_admission(tool_name, None, None)
+
+            if not isinstance(server_name, str) or not server_name:
+                raise ValueError(
+                    f"MCP tool {tool_names[0]!r} requires a non-empty server alias; "
+                    "load the server under a shorter alias before registration."
+                )
+            server_alias = server_name
 
             for tool_name in tool_names:
                 logger.warning(
@@ -360,19 +409,16 @@ class ActionManager(Manager):
                 config_with_metadata = dict(server_config)
                 config_with_metadata["_original_tool_name"] = tool_name
 
-                mcp_config = {tool_name: config_with_metadata}
-
-                tool_request_options = None
-                if request_options and tool_name in request_options:
-                    tool_request_options = request_options[tool_name]
+                registry_name = qualified_mcp_name(server_alias, tool_name)
+                mcp_config = {registry_name: config_with_metadata}
 
                 tool = Tool(
                     mcp_config=mcp_config,
-                    request_options=tool_request_options,
+                    request_options=request_options_for(tool_name),
                     mcp_capability=capability,
                 )
-                self.register_tool(tool, update=update)
-                registered_tools.append(tool_name)
+                register_mcp_tool(tool, registry_name)
+                registered_tools.append(registry_name)
         else:
             from lionagi.service.connections.mcp_wrapper import (
                 validate_mcp_tool_admission,
@@ -380,6 +426,17 @@ class ActionManager(Manager):
 
             client = await MCPConnectionPool.get_client(server_config, security=security)
             tools = await client.list_tools()
+            advertised = {tool.name for tool in tools}
+            registered_wire_names: set[str] = set()
+            registration_errors: dict[str, Exception] = {}
+
+            if request_options:
+                unknown_options = sorted(set(request_options) - advertised)
+                if unknown_options:
+                    raise ValueError(
+                        f"Request options for MCP server {server_name!r} reference "
+                        f"unknown tool(s): {unknown_options}"
+                    )
 
             # Validate every descriptor before mutating the registry: a
             # denial anywhere must leave the registry unchanged.
@@ -390,48 +447,65 @@ class ActionManager(Manager):
                     getattr(tool, "description", None),
                 )
 
+            if not isinstance(server_name, str) or not server_name:
+                if tools:
+                    raise ValueError(
+                        f"MCP tool {tools[0].name!r} requires a non-empty server alias; "
+                        "load the server under a shorter alias before registration."
+                    )
+                return registered_tools
+            server_alias = server_name
+
             for tool in tools:
                 tool_name = tool.name
-                input_schema = getattr(tool, "inputSchema", None)
-                description = getattr(tool, "description", None)
+                registry_name = qualified_mcp_name(server_alias, tool_name)
 
                 config_with_metadata = dict(server_config)
                 config_with_metadata["_original_tool_name"] = tool_name
 
-                mcp_config = {tool_name: config_with_metadata}
-
-                tool_request_options = None
-                if request_options and tool_name in request_options:
-                    tool_request_options = request_options[tool_name]
+                mcp_config = {registry_name: config_with_metadata}
 
                 tool_schema = None
                 try:
+                    input_schema = getattr(tool, "inputSchema", None)
+                    description = getattr(tool, "description", None)
                     if isinstance(input_schema, dict):
                         tool_schema = {
                             "type": "function",
                             "function": {
-                                "name": tool_name,
+                                "name": registry_name,
                                 "description": description,
                                 "parameters": input_schema,
                             },
                         }
                 except Exception as schema_error:
-                    logging.warning(f"Could not extract schema for {tool_name}: {schema_error}")
+                    logger.warning("Could not extract schema for %s: %s", tool_name, schema_error)
                     tool_schema = None
 
                 try:
                     tool_obj = Tool(
                         mcp_config=mcp_config,
-                        request_options=tool_request_options,
+                        request_options=request_options_for(tool_name),
                         tool_schema=tool_schema,
                         mcp_capability=capability,
                     )
-                    self.register_tool(tool_obj, update=update)
-                    registered_tools.append(tool_name)
+                    register_mcp_tool(tool_obj, registry_name)
+                    registered_tools.append(registry_name)
+                    registered_wire_names.add(tool_name)
                 except PermissionError:
                     raise
                 except Exception as e:
-                    logging.warning(f"Failed to register tool {tool_name}: {e}")
+                    registration_errors[tool_name] = e
+
+            if registered_wire_names != advertised:
+                missing = sorted(advertised - registered_wire_names)
+                error = RuntimeError(
+                    f"MCP server {server_name!r} advertised {len(advertised)} tool(s) "
+                    f"but {len(registered_wire_names)} registered; missing: {missing}"
+                )
+                if missing and missing[0] in registration_errors:
+                    raise error from registration_errors[missing[0]]
+                raise error
 
         return registered_tools
 
@@ -474,7 +548,7 @@ class ActionManager(Manager):
                 raise
             except Exception as e:
                 logger.warning("Failed to register server '%s': %s", server_name, e)
-                all_tools[server_name] = []
+                raise
 
         return all_tools
 
@@ -523,8 +597,9 @@ async def load_mcp_tools(
             raise
         except Exception as e:
             logger.warning("Failed to load server '%s': %s", server_name, e)
+            raise
 
     return list(manager.registry.values())
 
 
-__all__ = ["ActionManager", "load_mcp_tools"]
+__all__ = ["ActionManager", "load_mcp_tools", "qualified_mcp_name"]
