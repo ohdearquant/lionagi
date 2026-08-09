@@ -47,6 +47,7 @@ from lionagi.session.signal import (
     NodeLifecycleState,
     NodePaused,
     NodeQueued,
+    NodeSkipped,
     NodeSpawned,
     NodeStarted,
     RunEnd,
@@ -73,6 +74,7 @@ EXPECTED_SIGNAL_EXPORTS = (
     "NodeStarted",
     "NodeCompleted",
     "NodeFailed",
+    "NodeSkipped",
     "NodeQueued",
     "NodeAwaitingApproval",
     "NodeEscalated",
@@ -187,6 +189,19 @@ EXPECTED_SIGNAL_FIELDS: dict[str, tuple[str, ...]] = {
         "parent_id",
         "schema_version",
     ),
+    "NodeSkipped": (
+        "created_at",
+        "data",
+        "depends_on",
+        "elapsed",
+        "emitter_role",
+        "id",
+        "metadata",
+        "name",
+        "op_id",
+        "parent_id",
+        "schema_version",
+    ),
     "NodeQueued": (
         "created_at",
         "data",
@@ -262,6 +277,7 @@ _SIGNAL_CLASSES: dict[str, type[Signal]] = {
     "NodeStarted": NodeStarted,
     "NodeCompleted": NodeCompleted,
     "NodeFailed": NodeFailed,
+    "NodeSkipped": NodeSkipped,
     "NodeQueued": NodeQueued,
     "NodeAwaitingApproval": NodeAwaitingApproval,
     "NodeEscalated": NodeEscalated,
@@ -453,10 +469,11 @@ EXPECTED_NODE_LIFECYCLE_STATES = (
     "paused",
     "succeeded",
     "failed",
+    "skipped",
     "escalated",
 )
 
-EXPECTED_NODE_LIFECYCLE_TERMINAL = frozenset({"succeeded", "failed", "escalated"})
+EXPECTED_NODE_LIFECYCLE_TERMINAL = frozenset({"succeeded", "failed", "skipped", "escalated"})
 
 
 def test_node_lifecycle_state_vocabulary_golden():

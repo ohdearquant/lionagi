@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "tạm dừng",
       "graphNodeStatusDone": "xong",
       "graphNodeStatusFailed": "thất bại",
+      "graphNodeStatusSkipped": "đã bỏ qua",
       "graphNodeStatusEscalated": "đã leo thang",
       "progressTotal": "Tổng",
       "progressCompleted": "Hoàn tất",

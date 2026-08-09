@@ -17,6 +17,7 @@ const STATUS_WORD_KEY: Record<Exclude<NodeExecStatus, "pending">, string> = {
   paused: "graphNodeStatusPaused",
   completed: "graphNodeStatusDone",
   failed: "graphNodeStatusFailed",
+  skipped: "graphNodeStatusSkipped",
   escalated: "graphNodeStatusEscalated",
 };
 
@@ -55,6 +56,7 @@ export type NodeExecStatus =
   | "paused"
   | "completed"
   | "failed"
+  | "skipped"
   | "escalated";
 
 export interface StepNodeData {
@@ -79,8 +81,11 @@ export interface StepNodeData {
 // border, brightest rail), completed/failed/warn are moderate and mutually
 // distinguishable by color alone (2px, distinct rail hue), pending/queued
 // recede (1px, no rail) so they never compete with completed work for
-// attention. Exported so StepNode.test.ts can assert the precedence
-// contract without mounting React Flow.
+// attention. skipped recedes with them by design: the node never ran, so it
+// is neither an error nor an achievement, and giving it a rail would spend
+// the reader's attention on the one part of the graph that did nothing.
+// Exported so StepNode.test.ts can assert the precedence contract without
+// mounting React Flow.
 export interface NodeVisualStyle {
   borderWidth: number;
   borderColor: string;

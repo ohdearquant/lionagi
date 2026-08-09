@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "रुका हुआ",
       "graphNodeStatusDone": "पूर्ण",
       "graphNodeStatusFailed": "विफल",
+      "graphNodeStatusSkipped": "छोड़ा गया",
       "graphNodeStatusEscalated": "एस्केलेटेड",
       "progressTotal": "कुल",
       "progressCompleted": "पूर्ण",

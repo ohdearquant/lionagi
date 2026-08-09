@@ -46,12 +46,13 @@ export function createRunTreeState(): RunTreeState {
 const TERMINAL: ReadonlySet<NodeLifecycleState> = new Set([
   "succeeded",
   "failed",
+  "skipped",
   "escalated",
 ]);
 
 /**
  * Apply a single signal row to the state in-place (ascending seq order).
- * Mirrors lane_for() in lionagi/session/signal.py lines 183-219.
+ * Mirrors lane_for() and _signal_to_state() in lionagi/session/signal.py.
  */
 export function applySignalRow(state: RunTreeState, row: SignalRow): void {
   const kind = row.kind;
@@ -106,6 +107,12 @@ export function applySignalRow(state: RunTreeState, row: SignalRow): void {
       break;
     case "NodeFailed":
       newState = "failed";
+      break;
+    case "NodeSkipped":
+      // Terminal, but not an error: an edge condition passed the node over so
+      // it never ran. Without this case it falls to `default` and is dropped,
+      // leaving the node showing whatever it was before it was skipped.
+      newState = "skipped";
       break;
     case "NodeEscalated":
       // A soft ("fyi") help signal (route="notify") is informational only —

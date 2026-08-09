@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "一時停止",
       "graphNodeStatusDone": "完了",
       "graphNodeStatusFailed": "失敗",
+      "graphNodeStatusSkipped": "スキップ",
       "graphNodeStatusEscalated": "エスカレーション",
       "progressTotal": "合計",
       "progressCompleted": "完了",

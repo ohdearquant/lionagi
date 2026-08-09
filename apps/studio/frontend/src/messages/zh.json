@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "已暂停",
       "graphNodeStatusDone": "完成",
       "graphNodeStatusFailed": "失败",
+      "graphNodeStatusSkipped": "已跳过",
       "graphNodeStatusEscalated": "已升级",
       "progressTotal": "总计",
       "progressCompleted": "已完成",

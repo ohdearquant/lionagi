@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "متوقف مؤقتًا",
       "graphNodeStatusDone": "تم",
       "graphNodeStatusFailed": "فشل",
+      "graphNodeStatusSkipped": "تم التخطي",
       "graphNodeStatusEscalated": "تم التصعيد",
       "progressTotal": "الإجمالي",
       "progressCompleted": "مكتمل",

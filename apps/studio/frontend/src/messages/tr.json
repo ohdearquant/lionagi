@@ -480,6 +480,7 @@
       "graphNodeStatusPaused": "duraklatıldı",
       "graphNodeStatusDone": "tamamlandı",
       "graphNodeStatusFailed": "başarısız",
+      "graphNodeStatusSkipped": "atlandı",
       "graphNodeStatusEscalated": "yükseltildi",
       "progressTotal": "Toplam",
       "progressCompleted": "Tamamlandı",
