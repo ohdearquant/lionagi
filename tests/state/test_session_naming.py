@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lionagi.state.session_naming import (
     DISPLAY_NAME_MAX_LEN,
     agent_role_label,
@@ -237,3 +239,37 @@ def test_blank_fields_are_treated_as_absent() -> None:
         "id": "abc123",
     }
     assert resolve_display_name(row) == "reviewer's genuine short name"
+
+
+def test_a_yaml_block_indicator_does_not_shield_the_banner() -> None:
+    """A prompt routed through a YAML document keeps the block-scalar indicator
+    that introduced it, and it lands ahead of the banner. Every strip pattern is
+    anchored at the start, so one stray "|-" left the entire system-message
+    banner in the display name -- on most of the rows on this machine, not a
+    rare shape.
+    """
+    out = sanitize_prompt_name("|- LION_SYSTEM_MESSAGE --- # Welcome to LIONAGI We are")
+    assert out is not None
+    assert not out.startswith("|"), out
+    assert "LION_SYSTEM_MESSAGE" not in out, out
+    assert "Welcome to LIONAGI" in out, out
+
+
+def test_a_bare_pipe_indicator_is_stripped_too() -> None:
+    out = sanitize_prompt_name("| # TASK - grade two answers to one question")
+    assert out == "TASK - grade two answers to one question", out
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "fix the graph fold so a long chain renders",
+        "a || b is the guard we want here",
+        "use the | operator to union the two sets",
+    ],
+    ids=["no-pipe", "pipe-inside", "pipe-as-subject"],
+)
+def test_prose_is_left_alone(raw: str) -> None:
+    """The arm that keeps the strip from over-reaching. Only a leading indicator
+    is noise; a pipe anywhere else is the text the reader asked to see."""
+    assert sanitize_prompt_name(raw) == raw
