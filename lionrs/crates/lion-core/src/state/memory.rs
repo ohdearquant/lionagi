@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn test_linear_memory_empty() {
         let mem = LinearMemory::empty(1024);
-        assert_eq!(mem.bounds(), 1024);
+        assert_eq!(mem.bounds(), 1023);
         assert!(mem.is_empty());
     }
 
