@@ -412,7 +412,7 @@ def test_mcp_aliases_derived_from_live_seed_table():
 
 def test_mcp_absent_verbs_are_captured_in_full():
     live = _capture.capture_mcp()
-    assert live["absent_verb_count"] == 30
+    assert live["absent_verb_count"] == 26
     by_name = {v["name"]: v for v in live["absent_verbs"]}
     assert "mirror" in by_name
     assert "casts" in by_name

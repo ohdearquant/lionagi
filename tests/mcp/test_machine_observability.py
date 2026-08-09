@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 
 import pytest
@@ -111,6 +112,140 @@ def test_no_team_directory_at_all_is_a_definitive_zero(home):
     teams = run_op("team.list")["result"]["data"]["teams"]
     assert teams["available"] is True
     assert teams["value"] == []
+
+
+# ── team.create / show / send / receive, through the real subprocess ────────
+
+
+def test_team_create_show_send_receive_round_trip_through_the_real_command(home):
+    created = run_op("team.create", {"name": "Squad", "members": "alice,bob"})
+    assert created["ok"] is True
+    data = created["result"]["data"]
+    assert data["name"] == "Squad"
+    assert data["members"] == ["alice", "bob"]
+    team_id = data["id"]
+
+    sent = run_op("team.send", {"content": "hi", "team": team_id, "to": "bob", "sender": "alice"})
+    assert sent["ok"] is True
+    assert sent["result"]["data"]["team_id"] == team_id
+    assert sent["result"]["data"]["to"] == ["bob"]
+
+    received = run_op("team.receive", {"team": team_id, "member": "bob"})
+    assert received["ok"] is True
+    payload = received["result"]["data"]
+    assert payload["count"] == 1
+    assert [m["content"] for m in payload["messages"]] == ["hi"]
+
+    shown = run_op("team.show", {"team": team_id})
+    assert shown["ok"] is True
+    assert shown["result"]["data"]["team"]["id"] == team_id
+    assert len(shown["result"]["data"]["team"]["messages"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("verb", "args"),
+    [
+        ("team.show", {"team": "no-such-team"}),
+        ("team.send", {"content": "hi", "team": "no-such-team", "to": "all"}),
+        ("team.receive", {"team": "no-such-team"}),
+    ],
+)
+def test_a_team_verb_against_a_missing_team_is_not_found(home, verb, args):
+    op = run_op(verb, args)
+    assert op["ok"] is False
+    assert op["error"]["kind"] == "not_found"
+
+
+def test_team_create_with_no_members_is_invalid_input(home):
+    op = run_op("team.create", {"name": "Squad", "members": " , "})
+    assert op["ok"] is False
+    assert op["error"]["kind"] == "invalid_input"
+
+
+def test_team_create_missing_required_parameter_is_refused_before_the_subprocess_runs(home):
+    op = run_op("team.create", {"members": "alice"})
+    assert op["ok"] is False
+    assert op["error"]["kind"] == "invalid_input"
+    assert "missing required parameter 'name'" in op["error"]["message"]
+
+
+def test_every_team_envelope_matches_the_versioned_contract(home):
+    created = run_op("team.create", {"name": "Squad", "members": "alice,bob"})
+    assert created["result"]["contract_version"] == 1
+    team_id = created["result"]["data"]["id"]
+    for verb, args in (
+        ("team.show", {"team": team_id}),
+        ("team.send", {"content": "hi", "team": team_id, "to": "all"}),
+        ("team.receive", {"team": team_id}),
+    ):
+        op = run_op(verb, args)
+        assert op["ok"] is True, op
+        assert op["result"]["contract_version"] == 1
+
+
+# ── proof: MCP transport delivers when the caller has no direct FS access ───
+
+
+def test_mcp_transport_delivers_when_the_calling_process_denies_direct_filesystem_access(
+    home, tmp_path
+):
+    """The sandbox failure this MCP transport exists to fix, reproduced directly.
+
+    `denied_home` stands in for a sandboxed worker's own restricted view of
+    `~/.lionagi`: a `workspace-write`-style sandbox denies a process direct
+    filesystem access to a path outside its grant, which `chmod` reproduces
+    here — a subprocess pointed at `denied_home` cannot even create the
+    `teams/` directory. That subprocess is the same command a sandboxed
+    worker would shell out to directly (the original bug).
+
+    The MCP dispatcher path below never touches `denied_home` at all:
+    `dispatch.request()` runs in this test process, using the `home`
+    fixture's own `LIONAGI_HOME` — exactly as the real MCP server does, since
+    it is a separate, unsandboxed process from the worker and never inherits
+    the worker's sandbox. That process separation, not a shared filesystem
+    grant, is what lets the message through.
+    """
+    denied_home = tmp_path / "denied-home"
+    denied_home.mkdir()
+    denied_home.chmod(0o555)
+    try:
+        probe = denied_home / "probe"
+        try:
+            probe.mkdir()
+        except OSError:
+            pass
+        else:
+            probe.rmdir()
+            pytest.skip(
+                "this process can write under a mode-555 directory (likely running as "
+                "root), so denying direct access cannot be demonstrated here"
+            )
+
+        denied = subprocess.run(
+            [*config.li_command(), "team", "create", "T", "--members", "a,b", "--machine"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "LIONAGI_HOME": str(denied_home)},
+        )
+    finally:
+        denied_home.chmod(0o755)
+
+    envelope = json.loads(denied.stdout)
+    assert envelope["ok"] is False
+    assert envelope["error"]["kind"] == "internal"
+
+    created = run_op("team.create", {"name": "Squad", "members": "alice,bob"})
+    assert created["ok"] is True
+    team_id = created["result"]["data"]["id"]
+
+    sent = run_op("team.send", {"content": "hi", "team": team_id, "to": "all", "sender": "alice"})
+    assert sent["ok"] is True
+    assert sent["result"]["data"]["team_id"] == team_id
+
+    received = run_op("team.receive", {"team": team_id, "member": "bob"})
+    assert received["ok"] is True
+    assert [m["content"] for m in received["result"]["data"]["messages"]] == ["hi"]
 
 
 # ── the rows a seeded store actually holds ───────────────────────────────────
@@ -228,7 +363,7 @@ def test_the_listing_that_prunes_trust_never_runs_from_this_surface(home):
 
 @pytest.mark.parametrize(
     ("command", "sub"),
-    [("state", "prune"), ("team", "send"), ("invoke", "start")],
+    [("state", "prune"), ("state", "checkpoint"), ("invoke", "start")],
 )
 def test_a_subcommand_that_writes_says_so_instead_of_running(home, command, sub):
     done = li(command, sub, "--machine")
