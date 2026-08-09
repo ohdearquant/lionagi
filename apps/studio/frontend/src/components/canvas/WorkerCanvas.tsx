@@ -57,10 +57,13 @@ export const MIN_INTERACTIVE_ZOOM = 0.2;
 // width and height under a SINGLE padding term, then clamp to [minZoom,
 // maxZoom], take the smaller axis). Exported so layout fixtures can assert
 // "this graph's fit zoom would clear the floor" without mounting ReactFlow.
-// minZoom defaults to FIT_ZOOM_FLOOR because that is the clamp WorkerCanvas
-// actually wires into <ReactFlow minZoom>/fitViewOptions below — callers that
-// need the pre-clamp raw arithmetic (e.g. to demonstrate why the clamp is
-// needed) can pass 0 explicitly.
+// minZoom defaults to FIT_ZOOM_FLOOR because that is the clamp on FITTING:
+// it is what the fitView call and fitViewOptions below pass. The two floors go
+// to different places and are not interchangeable — <ReactFlow minZoom> below
+// gets MIN_INTERACTIVE_ZOOM instead, so a viewer can deliberately zoom well
+// past the fit floor even though no automatic fit ever will. Callers that need
+// the pre-clamp raw arithmetic (e.g. to demonstrate why the clamp is needed)
+// can pass 0 explicitly.
 export function fitZoomFor(
   graphWidth: number,
   graphHeight: number,
