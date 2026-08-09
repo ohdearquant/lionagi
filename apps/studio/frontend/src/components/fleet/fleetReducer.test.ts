@@ -375,6 +375,63 @@ describe("fleetReducer — counts strip", () => {
     expect(s.counts.agents).toBe(1);
   });
 
+  it("counts a running play that carries no invocation_id — it forms no group", () => {
+    // The regression this guards: plays, fanouts and flows never populate
+    // invocation_id, so they group under nothing and the strip read zero while
+    // the run was visibly listed as active underneath it.
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [makeRun({ run_id: "p1", status: "running", invocation_kind: "play" })],
+    );
+    expect(s.counts.orchestrations).toBe(1);
+  });
+
+  it.each(["play", "fanout", "flow"])("counts an ungrouped %s run", (kind) => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [makeRun({ run_id: "x1", status: "running", invocation_kind: kind })],
+    );
+    expect(s.counts.orchestrations).toBe(1);
+  });
+
+  it("does not double count a play that DID join an invocation group", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [makeInvocation({ id: "i1", status: "running", skill: "a" })],
+      [
+        makeRun({
+          run_id: "p1",
+          status: "running",
+          invocation_kind: "play",
+          invocation_id: "i1",
+        }),
+      ],
+    );
+    // One orchestration, evidenced twice. The group wins; the run is not added.
+    expect(s.counts.orchestrations).toBe(1);
+  });
+
+  it("does not count a terminal play run", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [makeRun({ run_id: "p1", status: "completed", invocation_kind: "play" })],
+    );
+    expect(s.counts.orchestrations).toBe(0);
+  });
+
+  it("counts an agent-kind run as an agent, never as an orchestration", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [makeRun({ run_id: "a1", status: "running", invocation_kind: "agent" })],
+    );
+    expect(s.counts.orchestrations).toBe(0);
+    expect(s.counts.agents).toBe(1);
+  });
+
   it("counts attention items — gated invocation (active, non-terminal)", () => {
     const nowSec = 2_000_000;
     const s = dispatchOk(
