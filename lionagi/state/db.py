@@ -132,6 +132,7 @@ SCHEMA_VERSION = "3"
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 _DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 _ATTENTION_DISPOSITIONS_BACKFILL_KEY = "migration.attention_dispositions_backfill"
+_IMPORTED_ROLE_LABEL_BACKFILL_KEY = "migration.imported_role_label_backfill"
 
 
 class SchemaTooNewError(RuntimeError):
@@ -997,6 +998,7 @@ class StateDB:
             await self._backfill_attention_dispositions_once(conn)
             await self._reconcile_indexes(conn)
             await self._backfill_dispatched_at_once(conn)
+            await self._backfill_imported_role_label_once(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
             # re-run on every open() because the rows are identity-stable.
             # The version row is the exception: the migrations above rewrite an
@@ -1122,6 +1124,48 @@ class StateDB:
                 "WHERE status = 'running' AND dispatched_at IS NULL "
                 "AND schedule_id IS NOT NULL"
             )
+        )
+
+    async def _backfill_imported_role_label_once(self, conn) -> None:
+        """Clear the engine label off imported rows' role field, exactly once."""
+        claimed = await conn.execute(
+            text(
+                "INSERT INTO schema_meta (key, value) VALUES (:key, '1') "
+                "ON CONFLICT (key) DO NOTHING"
+            ),
+            {"key": _IMPORTED_ROLE_LABEL_BACKFILL_KEY},
+        )
+        if claimed.rowcount:
+            await self._backfill_imported_role_label(conn)
+
+    async def _backfill_imported_role_label(self, conn) -> None:
+        """Null out ``agent_name`` on rows imported from a desktop transcript.
+
+        The mirror used to write the engine name into ``agent_name``, which is
+        a role field. Stopping that write only fixes imports from here on:
+        rows already in the store keep the engine label, and because the role
+        tier sits ahead of the prompt tier in ``resolve_display_name`` they
+        would keep rendering the engine forever while new imports rendered
+        their prompt. That split is worse than either state on its own,
+        because the surface looks fixed.
+
+        Scoped by ``source_kind``, not by the label's value. Selecting on
+        ``agent_name = 'codex'`` would be selecting on the symptom: a live
+        session legitimately running a role of that name would be caught by
+        it, whereas ``source_kind`` names the thing that actually makes the
+        field meaningless. Branch rows are reached through their session for
+        the same reason -- the branches table has no ``source_kind`` of its
+        own, so its rows are identified by the session they belong to rather
+        than by what they happen to contain.
+        """
+        await conn.execute(
+            text(
+                "UPDATE branches SET agent_name = NULL WHERE session_id IN "
+                "(SELECT id FROM sessions WHERE source_kind = 'imported_codex')"
+            )
+        )
+        await conn.execute(
+            text("UPDATE sessions SET agent_name = NULL WHERE source_kind = 'imported_codex'")
         )
 
     async def _backfill_attention_dispositions_once(self, conn) -> None:
