@@ -388,3 +388,75 @@ async def test_a_secret_with_no_recognisable_shape_is_redacted_by_its_key(key):
     projected = _safe_content({key: UNSHAPED_SECRET})
 
     assert projected == {key: "[redacted]"}
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "X-API-Key",
+        "api-key",
+        "access-key",
+        "private-key",
+        "client-secret",
+        "x-auth-token",
+        "API-KEY",
+    ],
+)
+async def test_a_hyphenated_field_name_redacts_like_its_underscored_spelling(key):
+    """The same field spelled with hyphens is the same field.
+
+    Credentials reach us under HTTP header spellings such as X-API-Key while
+    our own records write api_key. Markers containing an underscore only ever
+    matched the underscored form, so the header spellings walked past the key
+    layer, and past the pattern layer too whenever the value had no shape.
+    """
+    from lionagi.studio.operator.application_mcp import _safe_content
+    from lionagi.studio.operator.redact import scrub_text
+
+    # Same premise as the underscored arm: the pattern layer must not be what
+    # catches this, or the test would pass for the wrong reason.
+    assert scrub_text(UNSHAPED_SECRET) == UNSHAPED_SECRET
+
+    projected = _safe_content({key: UNSHAPED_SECRET})
+
+    assert projected == {key: "[redacted]"}
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("input_tokens", 1234),
+        ("output_tokens", 5678),
+        ("total_tokens", 6912),
+        ("cached_tokens", 40),
+        ("reasoning_tokens", 11),
+        ("token_count", 7),
+    ],
+)
+async def test_a_numeric_counter_survives_a_secret_marker_in_its_name(key, value):
+    """Usage counters keep their values even though their names say "token".
+
+    A number cannot carry a credential, so redacting one on the strength of its
+    field name destroys the reported figure and protects nothing. These are the
+    counters the cost and usage displays read, and a redacted counter is not a
+    safe counter, it is a missing one.
+    """
+    from lionagi.studio.operator.application_mcp import _safe_content
+
+    projected = _safe_content({key: value})
+
+    assert projected == {key: value}
+
+
+async def test_a_textual_secret_under_a_counter_shaped_name_is_still_redacted():
+    """The numeric exemption is about the value, not about the name.
+
+    Without this, "numbers are exempt" could be read as "anything whose name
+    looks like a counter is exempt", which would reopen the leak the marker
+    list exists to close.
+    """
+    from lionagi.studio.operator.application_mcp import _safe_content
+
+    projected = _safe_content({"token_count": UNSHAPED_SECRET})
+
+    assert projected == {"token_count": "[redacted]"}

@@ -390,7 +390,11 @@ def _safe_text(value: str) -> str:
 
 
 def _secret_field(key: str) -> bool:
-    lowered = key.lower()
+    # Hyphens and underscores spell the same field. HTTP headers arrive as
+    # X-API-Key while our own records write api_key, and every marker below
+    # that contains an underscore would otherwise miss the hyphenated form
+    # entirely. Folding one into the other can only widen what we redact.
+    lowered = key.lower().replace("-", "_")
     return lowered in {"auth", "authentication", "bearer"} or any(
         marker in lowered for marker in _SECRET_FIELD_MARKERS
     )
@@ -399,7 +403,14 @@ def _secret_field(key: str) -> bool:
 def _safe_content(value: Any, *, key: str = "") -> Any:
     """Recursively remove credentials, store URLs, and host filesystem layouts."""
     if key.lower() in _URL_FIELD_NAMES or _secret_field(key):
-        return "[redacted]"
+        # Judge by field name only where the value could carry text. A number
+        # is neither a credential nor a URL, and several counters we report
+        # carry a marker in their name — input_tokens, output_tokens — so
+        # redacting on the name alone deletes usage data to protect nothing.
+        # None stays redacted: that costs no information and keeps the
+        # null-handling of secret fields unchanged.
+        if not isinstance(value, (int, float, bool)):
+            return "[redacted]"
     if key.lower() in _PATH_FIELD_NAMES and isinstance(value, str):
         public_value = public_project(value)
         return _safe_text(public_value) if public_value is not None else None
