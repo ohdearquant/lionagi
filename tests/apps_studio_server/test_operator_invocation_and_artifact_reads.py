@@ -480,50 +480,91 @@ async def test_a_textual_secret_under_a_counter_shaped_name_is_still_redacted():
     assert projected == {"token_count": "[redacted]"}
 
 
-# One name, written the several ways it actually arrives. Each entry is the
-# canonical spelling, whether that name names a secret, and the other spellings
-# of the same name. Non-secret rows are here so the agreement below cannot be
-# satisfied by a layer that simply answers False to everything.
-_ONE_NAME_MANY_SPELLINGS = [
-    ("api_key", True, ["api-key", "api.key", "api key", "API-KEY"]),
-    ("access_key", True, ["access-key", "access.key", "ACCESS KEY"]),
-    ("private_key", True, ["private-key", "private.key"]),
-    ("client_secret", True, ["client-secret", "client.secret"]),
-    ("db_password", True, ["db-password", "db password"]),
-    ("refresh_token", True, ["refresh-token", "refresh.token"]),
-    ("display_name", False, ["display-name", "display.name", "Display Name"]),
-    ("created_at", False, ["created-at", "created.at"]),
+def _spellings(name: str) -> list[str]:
+    """The separator and case variants one field name arrives in."""
+    variants = [
+        name,
+        name.replace("_", "-"),
+        name.replace("_", "."),
+        name.replace("_", " "),
+        name.upper(),
+        name.title(),
+    ]
+    return list(dict.fromkeys(variants))
+
+
+def _every_name_the_secret_rule_knows() -> list[str]:
+    """Read the corpus out of the rule instead of writing it down again.
+
+    A hand-picked list can only hold names its author already believed both
+    layers agreed about. That is not a hypothetical: two layers disagreed about
+    `auth` while a test whose docstring claimed to assert their agreement was
+    green, because the name was in neither list the author had chosen. Deriving
+    the corpus means a name added to the vocabulary is covered by the same
+    commit that adds it.
+    """
+    from lionagi.studio.operator import redact
+
+    return sorted(set(redact._SECRET_KEY_MARKERS) | redact._EXACT_SECRET_FIELD_NAMES)
+
+
+# Names a caller legitimately reads that carry a secret marker as a substring.
+# `authors` is live on our own records, so withholding it deletes data rather
+# than protecting anything. This is the arm that fails a fix which closes a gap
+# by widening the substring markers instead of naming exact spellings.
+_NAMES_A_CALLER_NEEDS_TO_READ = [
+    "author",
+    "authors",
+    "author_name",
+    "authored_by",
+    "co_authors",
+    "oauth_client_id",
+    "unauthorized",
+    "authority",
+    "authorized_keys_count",
+    "display_name",
+    "created_at",
 ]
 
 
 @pytest.mark.parametrize(
-    ("canonical", "alternative", "is_secret"),
-    [
-        (canonical, alternative, is_secret)
-        for canonical, is_secret, alternatives in _ONE_NAME_MANY_SPELLINGS
-        for alternative in alternatives
-    ],
+    "spelling",
+    [spelling for name in _every_name_the_secret_rule_knows() for spelling in _spellings(name)],
 )
-async def test_both_field_name_rules_read_one_name_the_same_however_it_is_spelled(
-    canonical, alternative, is_secret
-):
-    """Two independent places decide whether a field name names a secret.
+async def test_every_name_the_secret_rule_knows_reads_the_same_on_both_paths(spelling):
+    """Two callers ask whether a field name names a secret, on different paths.
 
-    They are reached by different callers, so a name folded in one and not the
-    other means the same credential is withheld on one path and served on the
-    other. Pinning each rule separately cannot see that: both would be green
-    while they disagreed. This asserts the two answers together, for every
-    spelling, which is the property that actually has to hold.
+    A name one of them treats as a secret and the other does not means the same
+    credential is withheld on the session and artifact reads and served on the
+    tool-argument and manifest reads. Pinning each rule on its own cannot see
+    that — both stay green while they disagree — so this asserts the two answers
+    together, over every name the rule is written in and every spelling of each.
 
-    The canonical spelling is asserted first so the agreement is not vacuous.
+    The two now share one predicate, which makes the agreement structural rather
+    than coincidental. The assertion is still worth keeping: it is what reddens
+    if either caller grows its own copy of the rule again, which is how they
+    came apart the first time.
     """
     from lionagi.studio.operator import application_mcp, redact
 
-    assert redact._is_secret_key(canonical) is is_secret
-    assert application_mcp._secret_field(canonical) is is_secret
+    assert redact._is_secret_key(spelling) is True
+    assert application_mcp._secret_field(spelling) is True
 
-    assert redact._is_secret_key(alternative) is is_secret
-    assert application_mcp._secret_field(alternative) is is_secret
+
+@pytest.mark.parametrize("name", _NAMES_A_CALLER_NEEDS_TO_READ)
+async def test_a_name_that_merely_contains_a_marker_is_still_served(name):
+    """Withholding too much is a defect too, and a quieter one.
+
+    `auth` names a credential; `author` does not, and neither do `authors` or
+    `oauth_client_id`. A rule that closes the `auth` gap by searching for it as
+    a substring passes every test about credentials and silently empties fields
+    a caller reads, which is why the exact-match names are compared for equality
+    against the folded name rather than searched for inside it.
+    """
+    from lionagi.studio.operator import application_mcp, redact
+
+    assert redact._is_secret_key(name) is False
+    assert application_mcp._secret_field(name) is False
 
 
 @pytest.mark.parametrize(

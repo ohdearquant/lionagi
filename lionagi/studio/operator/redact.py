@@ -27,6 +27,8 @@ __all__ = (
     "ARTIFACT_BYTE_CAP",
     "public_project",
     "scrub_text",
+    "fold_field_name",
+    "is_secret_field_name",
     "known_secret_values",
     "redact_scalar",
     "redact_arguments",
@@ -208,9 +210,31 @@ def fold_field_name(key: str) -> str:
     return _FIELD_SEPARATOR_RE.sub("_", key.lower())
 
 
+# Names that mean a credential on their own but must not match as substrings.
+# "auth" inside "author" or "authorized_keys_count" is a different word, and
+# redacting those would delete data a caller legitimately reads, so these are
+# compared for equality against the folded name rather than searched for.
+_EXACT_SECRET_FIELD_NAMES = frozenset({"auth", "authentication", "bearer"})
+
+
+def is_secret_field_name(key: str) -> bool:
+    """Say whether a field name names a credential.
+
+    This is the whole rule, in one place, because two copies of it disagreed:
+    one carried the exact-match names above and the other did not, so a value
+    under an `auth` key was withheld on the session and artifact paths and
+    served on the tool-argument and manifest paths. Sharing the separator fold
+    alone was not enough — the vocabulary has to be shared too, or the same
+    class of gap simply moves to whichever name the two lists differ on.
+    """
+    folded = fold_field_name(key)
+    return folded in _EXACT_SECRET_FIELD_NAMES or any(
+        marker in folded for marker in _SECRET_KEY_MARKERS
+    )
+
+
 def _is_secret_key(key: str) -> bool:
-    lowered = fold_field_name(key)
-    return any(marker in lowered for marker in _SECRET_KEY_MARKERS)
+    return is_secret_field_name(key)
 
 
 def _looks_like_secret_value(value: str) -> bool:

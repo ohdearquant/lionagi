@@ -28,6 +28,7 @@ from .redact import (
     MESSAGE_BYTE_CAP,
     PER_ITEM_TEXT_CAP,
     fold_field_name,
+    is_secret_field_name,
     scrub_text,
 )
 from .rename_session import RENAME_SESSION_DESCRIPTION, RenameSessionInput, rename_session
@@ -352,19 +353,6 @@ _SESSION_DETAIL_DROP = frozenset(
 )
 _INVOCATION_DROP = frozenset({"node_metadata", "status_evidence_refs"})
 _ARTIFACT_DROP = frozenset({"file_path"})
-_SECRET_FIELD_MARKERS = (
-    "secret",
-    "token",
-    "password",
-    "passwd",
-    "api_key",
-    "apikey",
-    "credential",
-    "authorization",
-    "access_key",
-    "private_key",
-    "client_secret",
-)
 _URL_FIELD_NAMES = frozenset(
     {
         "url",
@@ -411,10 +399,7 @@ def _safe_text(value: str) -> str:
 
 
 def _secret_field(key: str) -> bool:
-    lowered = fold_field_name(key)
-    return lowered in {"auth", "authentication", "bearer"} or any(
-        marker in lowered for marker in _SECRET_FIELD_MARKERS
-    )
+    return is_secret_field_name(key)
 
 
 def _safe_content(value: Any, *, key: str = "") -> Any:
@@ -428,7 +413,7 @@ def _safe_content(value: Any, *, key: str = "") -> Any:
         # null-handling of secret fields unchanged.
         if not isinstance(value, (int, float, bool)):
             return "[redacted]"
-    if key.lower() in _PATH_FIELD_NAMES and isinstance(value, str):
+    if fold_field_name(key) in _PATH_FIELD_NAMES and isinstance(value, str):
         public_value = public_project(value)
         return _safe_text(public_value) if public_value is not None else None
     if isinstance(value, dict):
