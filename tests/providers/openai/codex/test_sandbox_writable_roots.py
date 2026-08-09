@@ -29,6 +29,11 @@ def _add_dir_values(args: list[str]) -> list[str]:
     return [args[index + 1] for index, value in enumerate(args) if value == "--add-dir"]
 
 
+def _is_reachable(path: Path, roots: list[Path]) -> bool:
+    resolved = path.resolve()
+    return any(resolved == root or resolved.is_relative_to(root) for root in roots)
+
+
 def _git_checkouts(tmp_path: Path) -> tuple[Path, Path]:
     ordinary = tmp_path / "ordinary"
     linked = tmp_path / "linked"
@@ -45,16 +50,19 @@ def _git_checkouts(tmp_path: Path) -> tuple[Path, Path]:
         "-qm",
         "initial",
     )
-    _git(ordinary, "worktree", "add", "--detach", "-q", str(linked))
+    _git(ordinary, "worktree", "add", "-b", "linked-worker", "-q", str(linked))
     return ordinary, linked
 
 
-def test_linked_worktree_grants_exact_per_worktree_git_directory(tmp_path):
+def test_linked_worktree_grants_git_mutation_paths_without_common_directory(tmp_path):
     ordinary, linked = _git_checkouts(tmp_path)
     configured_root = tmp_path / "configured-root"
     configured_root.mkdir()
     git_dir = _resolve_git_path(linked, _git(linked, "rev-parse", "--git-dir"))
     common_dir = _resolve_git_path(linked, _git(linked, "rev-parse", "--git-common-dir"))
+    object_store = common_dir / "objects"
+    refs = common_dir / "refs"
+    logs = common_dir / "logs"
 
     args = CodexCodeRequest(
         prompt="work",
@@ -66,7 +74,12 @@ def test_linked_worktree_grants_exact_per_worktree_git_directory(tmp_path):
     ).as_cmd_args()
 
     assert git_dir != common_dir
-    assert _add_dir_values(args) == [str(git_dir)]
+    grant_roots = [Path(value).resolve() for value in _add_dir_values(args)]
+    assert _is_reachable(object_store, grant_roots)
+    assert grant_roots == [git_dir, object_store, refs, logs]
+    assert not _is_reachable(common_dir / "config", grant_roots)
+    assert not _is_reachable(common_dir / "hooks", grant_roots)
+    assert not _is_reachable(common_dir / "packed-refs", grant_roots)
     configured_override = (
         "sandbox_workspace_write.writable_roots="
         f"{toml_override_value([str(configured_root.resolve())])}"
