@@ -40,6 +40,12 @@ interface Props {
   items: AttentionItem[];
   /** Discharged (resolved/expected/snoozed) items — hidden by default. */
   dischargedItems: AttentionItem[];
+  /** Items still awaiting a disposition. Passed in rather than derived here so
+   * that this heading and the page summary above it render the same number
+   * from the same computation — they used to disagree, because the heading
+   * counted every active item while the summary counted only unanswered ones,
+   * and the two sat a line apart under labels that both said "attention". */
+  unacknowledgedCount: number;
   nowSec: number;
   dataState: "loading" | "live" | "stale" | "error";
 }
@@ -97,7 +103,12 @@ function elapsedLabel(startedAt: number | null, nowSec: number): string {
   return formatElapsed(s, { showSeconds: false });
 }
 
-export default function AttentionQueue({ items, dischargedItems, nowSec }: Props) {
+export default function AttentionQueue({
+  items,
+  dischargedItems,
+  unacknowledgedCount,
+  nowSec,
+}: Props) {
   const t = useTranslations("mission");
   const [showDischarged, setShowDischarged] = useState(false);
 
@@ -123,7 +134,7 @@ export default function AttentionQueue({ items, dischargedItems, nowSec }: Props
                 color: "var(--accent)",
               }}
             >
-              {items.length}
+              {unacknowledgedCount}
             </span>
           }
         >
