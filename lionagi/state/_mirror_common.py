@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .db import StateDB
 
 __all__ = (
+    "MIRROR_PROVIDER_ERROR_KEY",
     "reconcile_status",
     "link_lineage",
     "MirrorKind",
@@ -41,6 +42,9 @@ __all__ = (
 MirrorKind = Literal["claude_jsonl", "codex_jsonl"]
 
 _POINTER_KIND = "mirror_jsonl_v1"
+MIRROR_PROVIDER_ERROR_KEY = "mirror_provider_error"
+
+_RETRYABLE_PROVIDER_ERROR_KINDS = frozenset({"rate_limit", "server_error"})
 
 # Function-name preview never exceeds this even when the char budget is larger.
 _FUNCTION_PREVIEW_CAP = 128
@@ -265,7 +269,7 @@ async def reconcile_status(
     live_window: float,
     actor: str,
 ) -> None:
-    """Align a mirrored session's status with its liveness and terminal outcome.
+    """Align a mirrored session's status with its liveness and attested provider errors.
     Liveness keys off ``last_message_at``, never ``updated_at`` — see docs/internals/runtime.md."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
@@ -283,23 +287,35 @@ async def reconcile_status(
     reason_code = RunReasons.STARTED_OK if live else RunReasons.COMPLETED_OK
     reason_summary = "mirror session became idle"
     if not live:
-        progression_id = existing.get("progression_id")
-        message_ids = await db.get_progression(progression_id) if progression_id else []
-        final_message = await db.get_message(message_ids[-1]) if message_ids else None
-        content = final_message.get("content") if final_message else None
-        response = content.get("assistant_response") if isinstance(content, dict) else None
-        if isinstance(response, str):
-            from lionagi.providers._provider_errors import ProviderError, classify_provider_error
-
-            provider_error = classify_provider_error(response)
-            if type(provider_error) is not ProviderError:
-                desired = "failed"
-                reason_code = (
-                    RunReasons.FAILED_PROVIDER_RETRYABLE
-                    if provider_error.retryable
-                    else RunReasons.FAILED_PROVIDER_NONRETRYABLE
-                )
-                reason_summary = f"{type(provider_error).__name__}: {provider_error}"
+        session_metadata = existing.get("node_metadata")
+        marker = (
+            session_metadata.get(MIRROR_PROVIDER_ERROR_KEY)
+            if isinstance(session_metadata, dict)
+            else None
+        )
+        if marker is None:
+            progression_id = existing.get("progression_id")
+            message_ids = await db.get_progression(progression_id) if progression_id else []
+            final_message = await db.get_message(message_ids[-1]) if message_ids else None
+            message_metadata = final_message.get("node_metadata") if final_message else None
+            marker = (
+                message_metadata.get(MIRROR_PROVIDER_ERROR_KEY)
+                if isinstance(message_metadata, dict)
+                else None
+            )
+        if isinstance(marker, dict):
+            error_kind = str(marker.get("error") or "provider_error")
+            status = marker.get("status")
+            retryable = error_kind in _RETRYABLE_PROVIDER_ERROR_KINDS or (
+                isinstance(status, int) and (status == 429 or status >= 500)
+            )
+            desired = "failed"
+            reason_code = (
+                RunReasons.FAILED_PROVIDER_RETRYABLE
+                if retryable
+                else RunReasons.FAILED_PROVIDER_NONRETRYABLE
+            )
+            reason_summary = f"mirror provider error: {error_kind}"
 
     if previous == desired:
         return

@@ -148,6 +148,25 @@ def test_thinking_block_is_skipped() -> None:
     assert [type(m).__name__ for m in out] == ["AssistantResponse"]
 
 
+def test_provider_error_marker_is_preserved_from_attested_event() -> None:
+    ev = _assistant("a1", [{"type": "text", "text": "Prompt is too long"}])
+    ev.update(
+        {
+            "isApiErrorMessage": True,
+            "error": "invalid_request",
+            "apiErrorStatus": 400,
+            "errorDetails": "Prompt is too long",
+        }
+    )
+
+    message = messages_for_event(ev, SID, {})[0].to_dict(mode="db")
+
+    assert message["node_metadata"]["mirror_provider_error"] == {
+        "error": "invalid_request",
+        "status": 400,
+    }
+
+
 def test_action_request_response_linkage() -> None:
     tool_names: dict[str, str] = {}
     req = messages_for_event(
@@ -598,10 +617,16 @@ async def test_reconcile_marks_idle_provider_refusal_failed(temp_db_path: Path) 
         "A single-exchange conversation cannot be compacted; reduce attached "
         "files/tools or start with less context."
     )
-    events = [
-        _user_text("u1", "do the thing"),
-        _assistant("a1", [{"type": "text", "text": refusal}]),
-    ]
+    provider_error = _assistant("a1", [{"type": "text", "text": refusal}])
+    provider_error.update(
+        {
+            "isApiErrorMessage": True,
+            "error": "invalid_request",
+            "apiErrorStatus": 400,
+            "errorDetails": refusal,
+        }
+    )
+    events = [_user_text("u1", "do the thing"), provider_error]
     async with StateDB() as db:
         await mirror_session(db, session_uid=SID, events=events, tool_names={}, status="running")
         before = await db.get_session(session_db_id(SID))
@@ -616,6 +641,40 @@ async def test_reconcile_marks_idle_provider_refusal_failed(temp_db_path: Path) 
     assert after["status"] == "failed"
     assert after["status_reason_code"] == RunReasons.FAILED_PROVIDER_NONRETRYABLE
     assert after["status_reason_code"] != RunReasons.COMPLETED_OK
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Done. If you are not logged in, gh will prompt for auth.",
+        "The retry helper backs off when a rate limit exceeded response comes back.",
+        "The root cause was an invalid api key in the test fixture; it is fixed now.",
+        "Deployment is scheduled; try again at 3pm when the quota resets.",
+    ],
+)
+@pytest.mark.asyncio
+async def test_reconcile_does_not_classify_successful_assistant_summary(
+    temp_db_path: Path, summary: str
+) -> None:
+    from lionagi.state.reasons import RunReasons
+
+    events = [
+        _user_text("u1", "do the thing"),
+        _assistant("a1", [{"type": "text", "text": summary}]),
+    ]
+    async with StateDB() as db:
+        await mirror_session(db, session_uid=SID, events=events, tool_names={}, status="running")
+        before = await db.get_session(session_db_id(SID))
+        await reconcile_session_status(
+            db,
+            SID,
+            now=before["last_message_at"] + 10_000,
+            live_window=300,
+        )
+        after = await db.get_session(session_db_id(SID))
+
+    assert after["status"] == "completed"
+    assert after["status_reason_code"] == RunReasons.COMPLETED_OK
 
 
 @pytest.mark.asyncio
@@ -1642,6 +1701,94 @@ async def test_codex_mirror_session_does_not_clobber_an_existing_artifacts_path(
         )
         row = await db.get_session(codex_sid(uid))
     assert row["artifacts_path"] == "/work/first-guess"
+
+
+@pytest.mark.asyncio
+async def test_codex_task_complete_provider_error_marks_idle_session_failed(tmp_path):
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import reconcile_session_status as codex_reconcile_status
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+    from lionagi.state.reasons import RunReasons
+
+    uid = "0199bbbb-0000-0000-0000-000000000020"
+    records = [
+        {
+            "type": "response_item",
+            "timestamp": "2026-07-29T21:20:00Z",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "id": "m1",
+                "content": [{"type": "input_text", "text": "do the thing"}],
+            },
+        },
+        {
+            "type": "event_msg",
+            "timestamp": "2026-07-29T21:21:44Z",
+            "payload": {
+                "type": "task_complete",
+                "error": {
+                    "codex_error_info": "cyber_policy",
+                    "message": "request rejected by provider policy",
+                },
+                "last_agent_message": None,
+            },
+        },
+    ]
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(db, rollout_uid=uid, records=records, tool_names={})
+        before = await db.get_session(codex_sid(uid))
+        assert before["node_metadata"]["mirror_provider_error"] == {"error": "cyber_policy"}
+        await codex_reconcile_status(
+            db,
+            uid,
+            now=before["last_message_at"] + 10_000,
+            live_window=300,
+        )
+        after = await db.get_session(codex_sid(uid))
+
+    assert after["status"] == "failed"
+    assert after["status_reason_code"] == RunReasons.FAILED_PROVIDER_NONRETRYABLE
+
+
+@pytest.mark.asyncio
+async def test_codex_successful_task_complete_clears_prior_provider_error(tmp_path):
+    from lionagi.state.codex_mirror import mirror_session as codex_mirror_session
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-000000000021"
+    user = {
+        "type": "response_item",
+        "timestamp": "2026-07-29T21:20:00Z",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "id": "m1",
+            "content": [{"type": "input_text", "text": "do the thing"}],
+        },
+    }
+    failed = {
+        "type": "event_msg",
+        "timestamp": "2026-07-29T21:21:44Z",
+        "payload": {
+            "type": "task_complete",
+            "error": {"codex_error_info": "cyber_policy", "message": "rejected"},
+        },
+    }
+    completed = {
+        "type": "event_msg",
+        "timestamp": "2026-07-29T21:22:44Z",
+        "payload": {"type": "task_complete", "last_agent_message": "done"},
+    }
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await codex_mirror_session(db, rollout_uid=uid, records=[user, failed], tool_names={})
+        failed_row = await db.get_session(codex_sid(uid))
+        assert "mirror_provider_error" in failed_row["node_metadata"]
+
+        await codex_mirror_session(db, rollout_uid=uid, records=[completed], tool_names={})
+        completed_row = await db.get_session(codex_sid(uid))
+
+    assert "mirror_provider_error" not in completed_row["node_metadata"]
 
 
 async def test_idle_codex_rollout_backfills_artifacts_path_from_header_cwd(tmp_path):
