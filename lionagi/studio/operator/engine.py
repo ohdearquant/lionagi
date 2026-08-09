@@ -76,6 +76,7 @@ _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__launch_playbook",
     "mcp__studio_operator__run_progress",
     "mcp__studio_operator__run_findings",
+    "mcp__studio_operator__run_detail",
     "mcp__studio_operator__cancel_run",
     "mcp__studio_operator__resume_run",
     "mcp__studio_operator__rename_session",
