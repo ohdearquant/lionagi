@@ -1565,6 +1565,7 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
                 "finished_at_precision": FINISHED_AT_UPPER_BOUND,
                 "terminal_source": TERMINAL_SOURCE_ORPHAN_REAPER,
                 "terminal_evidence": {"kind": EVIDENCE_PROCESS_GONE, "finding": finding},
+                "notify_delivery": {"attempted": False},
             }
         )
         return ReapResult(True, job, "reaped")
@@ -1595,17 +1596,20 @@ def _deliver_reap_notice(run_id: str, record: dict[str, Any]) -> dict[str, Any] 
 
     Best-effort and after the fact. The end is already durable when this runs,
     so nothing here can change how the run came out: a refusal, a non-zero exit
-    or a timeout is recorded as a delivery failure, and a delivery that never
-    gets to record anything leaves ``notify_delivery`` absent, which is what a
-    crash between the two writes looks like from outside.
+    or a timeout is recorded as a delivery failure. Before delivery starts, a
+    write-ahead outcome records that the attempt's result is unknown; a crash
+    before the final result therefore remains machine-readable.
 
     The guard is total for the same reason: this is called from a read path, and
     a notifier that comes apart in a way the hook does not classify must not
-    turn a status read of an already-ended run into a failed call. What is lost
-    is the delivery result, which is the same thing the crash gap loses.
+    turn a status read of an already-ended run into a failed call. What can be
+    lost is the final delivery result, while the attempted state stays durable.
     """
     from ._notify_hook import deliver_terminal_notice
 
+    started = begin_notify_delivery(run_id)
+    if started.refused:
+        return record
     try:
         outcome = deliver_terminal_notice(
             run_id,
@@ -1616,12 +1620,9 @@ def _deliver_reap_notice(run_id: str, record: dict[str, Any]) -> dict[str, Any] 
             sender=record.get("notify_sender"),
         )
     except Exception:  # noqa: BLE001 — the end is published; delivery may not undo it
-        return None
-    # A result that could not be recorded reads back the same way a crash
-    # between the two writes does: the end is durable and the delivery outcome
-    # is absent. Nothing here can be failed by that — this is a read path, and
-    # the end it reports is already published.
-    return record_notify_delivery(run_id, outcome).record
+        return started.record
+    recorded = record_notify_delivery(run_id, outcome)
+    return recorded.record or started.record
 
 
 def _reap_if_conclusively_gone(
@@ -1669,6 +1670,9 @@ def status(run_id: str) -> dict[str, Any]:
     job = _reap_if_conclusively_gone(run_id, job, liveness)
 
     derived = _derive(job, alive, lifecycle)
+    notify_delivery = (job or {}).get("notify_delivery")
+    if notify_delivery is None and derived["terminal"]:
+        notify_delivery = {"attempted": False}
     persistence_degraded_reason = (
         manifest.get(_PERSISTENCE_DEGRADED_REASON_FIELD) if isinstance(manifest, dict) else None
     )
@@ -1696,7 +1700,7 @@ def status(run_id: str) -> dict[str, Any]:
         # Whether finished_at is the end or only a bound on it. Null on records
         # written before the field existed, which is not the same as "observed".
         "finished_at_precision": (job or {}).get("finished_at_precision"),
-        "notify_delivery": (job or {}).get("notify_delivery"),
+        "notify_delivery": notify_delivery,
         "mcp_config": (job or {}).get("mcp_config"),
         "mcp_config_source": (job or {}).get("mcp_config_source"),
         "mcp_config_reason": (job or {}).get("mcp_config_reason"),
@@ -2155,10 +2159,13 @@ def _notify_delivery_state(outcome: Any) -> str:
     (refused, couldn't start, timed out, non-zero exit) — one fact to a caller
     waiting on it. ``"delivered_unverified"``: ran and exited zero, but for that
     command shape a zero exit doesn't mean the message was sent — collapsing it
-    into either neighbor would report a claim this can't support.
+    into either neighbor would report a claim this can't support. ``"unknown"``:
+    the attempt started but its final outcome could not be recorded.
     """
     if not isinstance(outcome, dict):
         return "none"
+    if outcome.get("attempted") and outcome.get("ok") is None:
+        return "unknown"
     if outcome.get("ok"):
         if outcome.get("delivery_verified") is False:
             return "delivered_unverified"
@@ -2400,7 +2407,10 @@ def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
     """
     with _locked_job(run_id) as guard:
         job = guard.record
-        if job is None or job.get("finished_at") is not None:
+        if job is None:
+            return WriteResult(job, guard.state)
+        job.setdefault("notify_delivery", {"attempted": False})
+        if job.get("finished_at") is not None:
             return WriteResult(job, guard.state)
         job["status"] = cli_status
         job["cli_status"] = cli_status
@@ -2426,6 +2436,25 @@ def record_notify_delivery(run_id: str, outcome: dict[str, Any]) -> WriteResult:
             return WriteResult(None, guard.state)
         job["notify_delivery"] = outcome
         return WriteResult(job, guard.state)
+
+
+def begin_notify_delivery(run_id: str) -> WriteResult:
+    """Write ahead that terminal delivery is about to be attempted.
+
+    The final result replaces this object. If the delivery process is cancelled
+    or crashes after its side effect but before that replacement, readers retain
+    an attempted outcome whose success is unknown instead of a false absence.
+    """
+    return record_notify_delivery(
+        run_id,
+        {
+            "attempted": True,
+            "ok": None,
+            "exit_code": None,
+            "error": "delivery_outcome_unknown",
+            "command": None,
+        },
+    )
 
 
 def record_failure_cause(run_id: str, cause: dict[str, Any]) -> WriteResult:

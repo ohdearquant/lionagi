@@ -461,14 +461,13 @@ def test_every_delivery_outcome_is_visible_and_none_of_them_changes_the_run(
     assert st["terminal"] is True
 
 
-def test_a_delivery_that_comes_apart_leaves_a_terminal_run_to_be_reconciled(sandbox, monkeypatch):
+def test_a_delivery_that_comes_apart_keeps_the_attempt_unknown(sandbox, monkeypatch):
     """The fault is injected after the end is durable and before the notice.
 
-    This is the crash gap the design accepts: the transition is published, the
-    delivery does not happen, and nothing records why. What must survive it is
-    the end itself — reconciliation is reading the state, so the state has to
-    say the run is over and how it came out, with the missing notice visible as
-    a missing notice rather than as a run still going.
+    The transition and its no-attempt outcome are published together, then an
+    attempted-with-unknown-outcome marker is written before delivery begins.
+    An unexpected exception therefore cannot make a terminal run look like it
+    never reached the notification path.
     """
 
     def _crash(*_a, **_k):
@@ -482,11 +481,19 @@ def test_a_delivery_that_comes_apart_leaves_a_terminal_run_to_be_reconciled(sand
 
     assert st["terminal"] is True
     assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
-    assert st["notify_delivery"] is None
+    expected = {
+        "attempted": True,
+        "ok": None,
+        "exit_code": None,
+        "error": "delivery_outcome_unknown",
+        "command": None,
+    }
+    assert st["notify_delivery"] == expected
 
     on_disk = jobs._read_job(rid)
     assert on_disk["finished_at"] == st["finished_at"]
     assert on_disk["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert on_disk["notify_delivery"] == expected
 
 
 def test_the_notice_is_the_one_the_run_configured(sandbox, monkeypatch):
@@ -616,14 +623,10 @@ def test_a_terminal_write_that_cannot_be_serialized_sends_no_notice(
     assert "could not record the terminal status" in _console(rid)
 
 
-def test_a_delivery_result_that_cannot_be_recorded_is_reported(sandbox, monkeypatch, no_delivery):
-    """The notice went out against a durable end; its result did not land.
-
-    A different case from the one above and reported the same way: the end is
-    on disk, so the notice was owed and was attempted, and what is missing is
-    the record of how it went. A hook that exits 0 here would say the run's
-    completion signal is accounted for when nothing on disk accounts for it.
-    """
+def test_an_attempt_marker_that_cannot_be_serialized_sends_no_notice(
+    sandbox, monkeypatch, no_delivery
+):
+    """No delivery starts unless its attempted state is already durable."""
     rid = _stranded()
     real_lock = jobs._lock_fd
     taken: list[int] = []
@@ -639,8 +642,44 @@ def test_a_delivery_result_that_cannot_be_recorded_is_reported(sandbox, monkeypa
     rc = _notify_hook.main(["--run-id", rid, "--status", "completed"])
 
     assert rc != 0
+    assert no_delivery == []
+    assert jobs._read_job(rid)["notify_delivery"] == {"attempted": False}
+    assert "could not record the delivery attempt" in _console(rid)
+
+
+def test_a_final_delivery_result_that_cannot_be_recorded_keeps_the_attempt(
+    sandbox, monkeypatch, no_delivery
+):
+    """The notice went out against a durable end; its result did not land.
+
+    A different case from the one above and reported the same way: the end is
+    on disk, so the notice was owed and was attempted, and what is missing is
+    the record of how it went. A hook that exits 0 here would say the run's
+    completion signal is accounted for when nothing on disk accounts for it.
+    """
+    rid = _stranded()
+    real_lock = jobs._lock_fd
+    taken: list[int] = []
+
+    def _refuse_after_the_second(fd):
+        taken.append(fd)
+        if len(taken) > 2:
+            raise OSError(11, "resource temporarily unavailable")
+        real_lock(fd)
+
+    monkeypatch.setattr(jobs, "_lock_fd", _refuse_after_the_second)
+
+    rc = _notify_hook.main(["--run-id", rid, "--status", "completed"])
+
+    assert rc != 0
     assert no_delivery == [rid]
-    assert jobs._read_job(rid).get("notify_delivery") is None
+    assert jobs._read_job(rid)["notify_delivery"] == {
+        "attempted": True,
+        "ok": None,
+        "exit_code": None,
+        "error": "delivery_outcome_unknown",
+        "command": None,
+    }
     assert "could not record the delivery result" in _console(rid)
 
 
