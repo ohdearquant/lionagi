@@ -429,6 +429,7 @@ class Progression(Element, Ordering[T], Generic[T]):
         return index
 
     def move(self, from_index: int, to_index: int) -> None:
+        self._ensure_synced()
         from_index = self._validate_index(from_index)
         to_index = self._validate_index(to_index, allow_end=True)
 
@@ -439,6 +440,7 @@ class Progression(Element, Ordering[T], Generic[T]):
         self.order.insert(to_index, item)
 
     def swap(self, index1: int, index2: int) -> None:
+        self._ensure_synced()
         index1 = self._validate_index(index1)
         index2 = self._validate_index(index2)
         self.order[index1], self.order[index2] = (
@@ -447,6 +449,7 @@ class Progression(Element, Ordering[T], Generic[T]):
         )
 
     def reverse(self) -> None:
+        self._ensure_synced()
         self.order.reverse()
 
     def __reversed__(self) -> Progression[T]:

@@ -311,6 +311,29 @@ def test_direct_order_reassignment_leaves_members_stale_until_synced():
     assert p._members == set(p.order)
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda p: p.__setitem__(0, uuid4()), id="setitem"),
+        pytest.param(lambda p: p.append(uuid4()), id="append"),
+        pytest.param(lambda p: p.pop(), id="pop"),
+        pytest.param(lambda p: p.popleft(), id="popleft"),
+        pytest.param(lambda p: p.extend(Progression(order=[uuid4()])), id="extend"),
+        pytest.param(lambda p: p.insert(1, uuid4()), id="insert"),
+        pytest.param(lambda p: p.move(0, 2), id="move"),
+        pytest.param(lambda p: p.swap(0, 1), id="swap"),
+        pytest.param(lambda p: p.reverse(), id="reverse"),
+    ],
+)
+def test_order_mutators_sync_membership_after_order_reassignment(mutate):
+    p = Progression(order=[uuid4()])
+    p.order = deque(uuid4() for _ in range(3))
+
+    mutate(p)
+
+    assert p._members == set(p.order)
+
+
 # ---------------------------------------------------------------------------
 # Length-preserving external mutation (the `_ensure_synced` length-only guard
 # cannot see these — the owning `_MembersDeque` must handle them directly).
