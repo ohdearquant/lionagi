@@ -167,6 +167,7 @@ LIFECYCLE_TIMEOUT_SECONDS = 20.0
 
 # The most the lifecycle command may write on its result channel.
 _LIFECYCLE_OUTPUT_LIMIT = 1_000_000
+_PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
 
 # Bounds for wait(). The maximum sits below ordinary MCP client timeouts so a
 # bounded observation returns partial results rather than being cut off mid-call.
@@ -1668,6 +1669,11 @@ def status(run_id: str) -> dict[str, Any]:
     job = _reap_if_conclusively_gone(run_id, job, liveness)
 
     derived = _derive(job, alive, lifecycle)
+    persistence_degraded_reason = (
+        manifest.get(_PERSISTENCE_DEGRADED_REASON_FIELD) if isinstance(manifest, dict) else None
+    )
+    if not isinstance(persistence_degraded_reason, str) or not persistence_degraded_reason:
+        persistence_degraded_reason = None
 
     return {
         "run_id": run_id,
@@ -1695,6 +1701,7 @@ def status(run_id: str) -> dict[str, Any]:
         "mcp_config_source": (job or {}).get("mcp_config_source"),
         "mcp_config_reason": (job or {}).get("mcp_config_reason"),
         "mcp_config_servers": (job or {}).get("mcp_config_servers"),
+        _PERSISTENCE_DEGRADED_REASON_FIELD: persistence_degraded_reason,
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
         "known": job is not None,
@@ -2210,6 +2217,7 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "finished_at_precision": st["finished_at_precision"],
                 "terminal_source": st["terminal_source"],
                 "record_state": st["record_state"],
+                _PERSISTENCE_DEGRADED_REASON_FIELD: st[_PERSISTENCE_DEGRADED_REASON_FIELD],
                 "notify_delivery_state": _notify_delivery_state(st["notify_delivery"]),
             }
         )
