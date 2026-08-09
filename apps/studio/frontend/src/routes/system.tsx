@@ -75,7 +75,20 @@ function HealthSection({ doctor }: { doctor: AdminDoctorResponse }) {
       </SectionHead>
       <div className="flex flex-wrap gap-x-6 gap-y-1 text-body text-content-secondary">
         <span>
-          <span className="font-mono text-content-primary">{formatBytes(h.size_bytes)}</span>{" "}
+          <span
+            className={
+              h.size_alert === true
+                ? "font-mono text-status-warning"
+                : "font-mono text-content-primary"
+            }
+            title={
+              h.size_alert === true && h.size_threshold_bytes !== undefined
+                ? `${formatBytes(h.size_bytes)} / ${formatBytes(h.size_threshold_bytes)}`
+                : undefined
+            }
+          >
+            {formatBytes(h.size_bytes)}
+          </span>{" "}
           {t("health.stateDbSuffix")}
         </span>
         <span>

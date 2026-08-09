@@ -76,12 +76,24 @@ class TransitionBody(BaseModel):
     actor: str = Field(default="admin", max_length=64)
 
 
-def db_health() -> dict[str, int]:
+def db_health() -> dict[str, int | bool]:
+    from .db_maintenance import get_db_size_alert
+
     db_path = Path(store_path())
     size_bytes = db_path.stat().st_size if db_path.exists() else 0
     wal_path = db_path.parent / (db_path.name + "-wal")
     wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
-    return {"size_bytes": size_bytes, "wal_bytes": wal_bytes}
+    # The same threshold /api/stats applies, read through the same helper. A
+    # health payload that reports the size but not whether it is over the
+    # limit leaves every reader to re-derive the limit, and the health view
+    # that consumed this had no way to say "unhealthy" at all.
+    size_alert, size_threshold_bytes = get_db_size_alert(size_bytes)
+    return {
+        "size_bytes": size_bytes,
+        "wal_bytes": wal_bytes,
+        "size_alert": size_alert,
+        "size_threshold_bytes": size_threshold_bytes,
+    }
 
 
 # How long the store probe waits before calling the store slow. Well under any
