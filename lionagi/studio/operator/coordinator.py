@@ -12,6 +12,10 @@ from contextlib import suppress
 from dataclasses import replace
 from typing import Any
 
+from ..config import (
+    OperatorExecutionRootResolution,
+    resolve_operator_execution_root_config,
+)
 from .catalog import OperatorSelectionError, resolve_selection
 from .engine import (
     BranchOperatorEngine,
@@ -147,8 +151,24 @@ class OperatorCoordinator:
         self.command_executor = command_executor or _execute_application_command
         self._tasks: dict[str, asyncio.Task] = {}
         self._started = False
+        self._execution_root_resolution: OperatorExecutionRootResolution | None = None
 
     async def startup(self) -> list[str]:
+        resolution = resolve_operator_execution_root_config()
+        self._execution_root_resolution = resolution
+        if resolution.root is None:
+            _log.error(
+                "Studio Operator execution root unresolved at startup: "
+                "configured_value=%r rule=%s; Operator turns will refuse",
+                resolution.configured_value,
+                resolution.rule,
+            )
+        else:
+            _log.warning(
+                "Studio Operator execution root resolved at startup: root=%s rule=%s",
+                resolution.root,
+                resolution.rule,
+            )
         await self.store.ensure_schema()
         recovered = await self.store.recover_interrupted_turns()
         self._started = True
@@ -186,6 +206,7 @@ class OperatorCoordinator:
             )
         self._tasks.clear()
         self._started = False
+        self._execution_root_resolution = None
 
     async def create_conversation(
         self, *, project: str | None = None, title: str | None = None
@@ -333,7 +354,8 @@ class OperatorCoordinator:
                 else conversation_row.get("project")
             )
             execution_root = await resolve_operator_execution_root(
-                project if isinstance(project, str) else None
+                project if isinstance(project, str) else None,
+                self._execution_root_resolution,
             )
             selected_provider = conversation_row.get("provider")
             selected_model = conversation_row.get("providerModel")

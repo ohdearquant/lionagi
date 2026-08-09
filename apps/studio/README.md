@@ -31,7 +31,7 @@ All variables are optional; defaults are shown.
 | `LIONAGI_STUDIO_PORT` | `8765` | FastAPI bind port |
 | `LIONAGI_STUDIO_AUTH_TOKEN` | *(unset)* | Bearer token for `/api/*` routes |
 | `LIONAGI_STUDIO_FRONTEND_DIST` | `apps/studio/frontend/dist` | Path to built SPA dist/ |
-| `LIONAGI_STUDIO_OPERATOR_CWD` | *(unset)* | Absolute execution root for Operator CLI providers |
+| `LIONAGI_STUDIO_OPERATOR_CWD` | user home (`/workspace` in Docker) | Absolute execution root for Operator CLI providers |
 | `LIONAGI_HOME` | `~/.lionagi` | Base LionAGI data directory (holds `state.db`) |
 | `LIONAGI_SHOWS_ROOT` | `~/khive-work/shows` | Show artifact root |
 | `CORS_ORIGINS` | `localhost:5173,localhost:3000` | Comma-separated allowed browser origins |
@@ -69,13 +69,19 @@ Operator uses the locally installed Claude Code CLI and its own authenticated
 session by default. The Studio extra does not install or sign in to Claude
 Code.
 
-Set `LIONAGI_STUDIO_OPERATOR_CWD` to an existing absolute directory to pin all
-Operator turns to one execution root. When it is unset, Operator uses the
-selected project's registered path. If neither path is usable, or if the
-explicit setting is invalid, the turn fails with a configuration error instead
-of inheriting whichever directory launched the Studio daemon. Browser-created
-conversations currently have no project selection, so configure this variable
-for normal Operator use in container deployments.
+The daemon freezes its Operator execution-root configuration at startup and
+logs both the resolved root and the rule that selected it. An explicit
+`LIONAGI_STUDIO_OPERATOR_CWD` wins; otherwise the shipped daemon-config default
+is the user's home directory. A project-bearing conversation uses that
+project's registered path when no environment override is set, while a normal
+browser-created conversation uses the frozen daemon default. An invalid
+explicit setting or selected project fails closed instead of falling through
+to another root or inheriting whichever directory launched the daemon.
+
+The Studio image explicitly sets the root to `/workspace`, not its application
+`WORKDIR /app`, and declares `/workspace` as a volume. Bind-mount the code the
+Operator should work on there, for example `-v "$PWD:/workspace"` when running
+the image directly.
 
 On a fresh machine:
 
