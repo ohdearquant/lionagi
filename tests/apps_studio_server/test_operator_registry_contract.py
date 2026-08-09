@@ -78,7 +78,23 @@ def test_newly_added_tools_are_all_registered():
 
 def test_registry_holds_no_unexpected_tool_names():
     expected = PRE_EXISTING_TOOL_NAMES | NEWLY_ADDED_TOOL_NAMES
-    assert set(application_mcp._TOOL_HANDLERS.keys()) == expected
+    registered = set(application_mcp._TOOL_HANDLERS.keys())
+
+    # Exact equality, deliberately. Tolerating extra names would give up the
+    # direction that matters most here, which is that nothing reaches the
+    # Operator's surface without someone naming it. The cost is that any
+    # branch adding a tool sees this fail while it is still correct, so the
+    # message says which case it is and what to do about it.
+    assert registered == expected, (
+        "The Operator tool registry no longer matches the names listed here.\n"
+        f"  registered but not listed: {sorted(registered - expected)}\n"
+        f"  listed but not registered: {sorted(expected - registered)}\n"
+        "A name in the first list means a tool was added. That is not a "
+        "failure on its own: confirm the tool is meant to be reachable, then "
+        "add its name to NEWLY_ADDED_TOOL_NAMES. A name in the second list "
+        "means a tool the Operator used to offer is gone, which withdraws a "
+        "capability and should be a decision rather than a side effect."
+    )
 
 
 class _WriteMethodTrap:
