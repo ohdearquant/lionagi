@@ -58,26 +58,41 @@ Then submit:
   "ops": [
     {
       "op": "agent.submit",
-      "args": {"prompt": "Summarize progress on [topic] in 5 bullet points", "agent": "commentator"},
+      "args": {
+        "query": ["claude"],
+        "cwd": "/absolute/path/to/repository",
+        "prompt": "Summarize this progress on [topic] in 5 bullet points: <decisions, changes, results, and next steps>"
+      },
       "schema_fingerprint": "<from the help call above>"
     }
   ]
 }
 ```
 
-The reply carries a `run_id`. Its transcript and artifacts land under
-`~/.lionagi/runs/{run_id}/artifacts/`; read them back with:
+The reply carries a `run_id`, not the summary. Check the submit op's `ok` field, then wait
+for the run in a separate call:
+
+```json
+{"ops": [{"op": "job.wait", "args": {"run_ids": ["<run_id>"]}}]}
+```
+
+`job.wait` is bounded. Check its op's `ok` field and the result's `all_terminal` field,
+repeating while the run is still pending. Then read the console and artifact list:
 
 ```json
 {"ops": [{"op": "job.output", "args": {"run_id": "<run_id>"}}]}
 ```
 
-**Checkout-local alternative.** Inside a lionagi checkout, `li agent --prompt "Summarize
-progress on [topic] in 5 bullet points"` does the same capture as a foreground call. It needs
-no flag to persist: the CLI writes every run under `~/.lionagi/runs/{run_id}/` on its own, so
-the difference from the MCP form is only that you read the result directly instead of doing a
-`run_id` round-trip. (`--save DIR` exists on `li o fanout` and `li o flow`, which write one
-artifact per worker, but not on `li agent`.)
+Run state is persisted under `~/.lionagi/runs/{run_id}/`; `job.output` reports the console,
+artifacts, and run directory separately.
+
+**Checkout-local alternative.** Inside a lionagi checkout,
+`li agent claude --cwd "$(pwd)" --prompt "Summarize progress on [topic] in 5 bullet points"`
+does the same capture as a foreground call. It needs no flag to persist: the CLI writes every
+run under `~/.lionagi/runs/{run_id}/` on its own, so the difference from the MCP form is only
+that you read the result directly instead of doing a `run_id` round-trip. (`--save DIR`
+exists on `li o fanout` and `li o flow`, which write one artifact per worker, but not on
+`li agent`.)
 
 ## Continue Working
 
@@ -139,7 +154,7 @@ Before you go — quick capture of this session:
 - [Key thing 1]
 - [Key thing 2]
 - [Decision made about X]
-Want me to write a checkpoint? (or run full /session-summarize)
+Want me to write a checkpoint or prepare a full session summary?
 ```
 
 ## Quality Guide
@@ -148,7 +163,7 @@ Want me to write a checkpoint? (or run full /session-summarize)
 - Concrete achievements with impact
 - Decisions with alternatives considered
 - Reusable patterns with "when to use"
-- File paths (always absolute)
+- Precise file paths; use absolute paths when passing them to tools
 - What's next
 
 **Skip**:

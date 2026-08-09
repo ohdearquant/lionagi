@@ -15,6 +15,8 @@ implementations:
 | `test-coverage.playbook.yaml` | Iterative coverage loop |
 | `resolve-issues.playbook.yaml` | GitHub issue resolution |
 | `doc-alignment.playbook.yaml` | Documentation generation and alignment |
+| `chatgpt-orchestrate.playbook.yaml` | ChatGPT-backed orchestration |
+| `persistent-chat.playbook.yaml` | Persistent team-attached conversation |
 
 ---
 
@@ -285,9 +287,10 @@ Inside a lionagi checkout, the same run with those flags set is:
 `li play pr-review --focus security --depth deep 123`
 
 Key points:
-- `show-graph: true` renders the DAG after planning — useful for auditing what
-  the orchestrator will spawn before spending tokens.
-- `max-ops: 25` bounds the plan to avoid runaway expansion on large diffs.
+- `show-graph: true` writes the graph that actually executed after the run finishes. Use a
+  separate dry run for a text-only plan preview.
+- `max-ops: 25` bounds the initial plan plus reactive follow-ups. If the initial plan uses all
+  25 assignments, no follow-up spawn capacity remains.
 - `with_synthesis` is not set because the critic sub-agent is written directly
   into the prompt instructions (Phase 2). Use `with_synthesis: true` when you
   want the engine to append a generic synthesis step automatically.

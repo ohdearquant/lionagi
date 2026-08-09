@@ -4,125 +4,115 @@ How the orchestrator plans and executes multi-agent workflows.
 
 ---
 
-## FlowPlan Data Model
+## TaskAssignment Data Model
 
-When a `flow.submit` (or `play.submit`) call runs, an orchestrator LLM produces a
-`FlowPlan` before execution. This is the same engine and the same data model whether the
-call arrives through the MCP tool or the `li o flow` CLI command underneath it — the plan
-shape below governs both.
+When `flow.submit` or `play.submit` runs, the planner emits a
+`list[TaskAssignment]`. There is no separate `FlowPlan`, agent registry, control node, or
+re-plan verdict in the current execution model. The assignment list and its dependencies are
+the DAG.
 
-**FlowPlan**
-
-```
-agents:     list[FlowAgent]   # who exists
-operations: list[FlowOp]      # what happens and in what order
-synthesis:  bool              # request a final consolidation pass
-```
-
-**FlowAgent**
+Each assignment has these fields:
 
 ```
-id:        str        # short unique id, e.g. "r1", "impl-1" (^[A-Za-z0-9_-]{1,64}$)
-role:      str        # from the available-agents roster
-model:     str|None   # optional model override
-guidance:  str|None   # default behavioral framing for all ops on this agent
+task:          str        # concrete objective for one worker
+assignee:      str        # role from the planner's available roster
+inputs:        list[str]  # artifacts or context needed to start
+exit_criteria: str|None   # observable condition that means the task is done
+depends_on:    list[str]  # 1-based numbers of earlier assignments whose output is consumed
+modes:         list[str]  # optional reasoning-mode overrides for this assignment
 ```
 
-**FlowOp**
+The planner must use roles from its supplied roster. Model and profile routing are resolved
+after planning; `assignee` is a role, not a model name.
 
-```
-id:         str         # short unique op id (same regex as agent id)
-agent_id:   str         # references a FlowAgent.id
-instruction: str        # concrete task text
-guidance:   str|None    # per-op override (replaces agent.guidance)
-depends_on: list[str]   # upstream FlowOp ids this op waits on
-control:    bool        # True = critic checkpoint
-```
-
-**FlowControlVerdict** (produced by `control=True` ops)
-
-```
-should_continue: bool   # False = flow ends; True = orchestrator re-plans
-reason:          str    # justification grounded in specific op outputs
-next_steps:      str    # specific gaps to address
-```
-
-Up to 3 re-plan rounds are allowed. Existing agents are reused (memory persists).
-
-Source: `lionagi/cli/orchestrate/flow.py`
+Source: `lionagi/casts/emission.py`, `lionagi/orchestration/prompts.py`, and
+`lionagi/cli/orchestrate/flow.py`.
 
 ---
 
 ## Decomposition Principles
 
-**Identify independence first.** Two ops are independent when neither needs the
-other's output. Independent ops run in the same phase (parallel). Dependent ops
-are sequential.
+**Identify real data dependencies first.** Two assignments are independent when neither
+consumes the other's output. Leave `depends_on` empty so they run concurrently. Add a
+dependency only when a downstream assignment needs an upstream result, not to express a
+preferred reading order or shared topic.
 
 ```
-Phase 1 (parallel): [research-1, research-2, context-fetch]
-Phase 2 (parallel): [implement]  ← depends on research-1, research-2
-Phase 3 (parallel): [write-tests] ← depends on implement
-Phase 4 (serial):   [critic] ← control op, runs last
+1. [researcher] Inspect authentication behavior              depends_on: []
+2. [tester]     Map current authentication test coverage     depends_on: []
+3. [implementer] Apply fixes using findings from 1 and 2     depends_on: ["1", "2"]
+4. [tester]     Verify the changes from 3                    depends_on: ["3"]
+5. [critic]     Review the implementation and test evidence  depends_on: ["3", "4"]
 ```
 
-**Agent reuse is cheaper than spawning.** An agent is a Branch with persistent
-memory. Reusing the same `agent_id` across ops means the agent remembers prior
-turns — no re-injection needed. Prefer 2-4 agents running multiple ops over
-8 agents with one op each.
+This creates a wide first phase, then joins only where outputs must combine.
 
-**Critic runs last, never parallel with producers.** Set `control=True` only on
-an op that reviews completed work. At most one control op per round. Must declare
-`depends_on` referencing all ops it reviews.
+**A critic is an ordinary assignment.** To review completed work, place it after every
+producer it evaluates with `depends_on`. There is no `control` field and no engine-level
+approve/re-plan loop. If a downstream assignment must act on a verdict, make that dependency
+explicit and state the expected behavior in its task.
 
-**Every non-root op must have `depends_on`.** Root ops (explorers, researchers
-sourcing external info) may have empty `depends_on`. Everything else must declare
-at least one upstream.
-
----
-
-## Role-to-Model Guidance
-
-| Role | Recommended tier |
-|---|---|
-| researcher, explorer, analyst, architect, reviewer | high-reasoning model, medium-high effort |
-| implementer, tester, coordinator | code-capable model, high effort |
-| critic (quality gate) | highest reasoning model, high-xhigh effort |
-| writer, documenter | mid-tier model, medium effort |
-
-Don't prescribe specific model names — let the user's agent profile or `--effort`
-flag handle routing.
+**Each assignment gets a separate branch.** Reusing the same `assignee` role on multiple
+steps reuses role configuration, not conversation memory. Never rely on an earlier assignment
+being remembered by a later one.
 
 ---
 
 ## Artifact Handoff
 
-Each agent writes outputs to `{save_dir}/{agent_id}/`. Op results are also
-persisted as `{op_id}.md`.
+Each assignment receives its own artifact directory. A dependent assignment also receives
+the exact directories for its upstream dependencies in execution context. Do not hard-code
+relative paths such as `../researcher/` and do not assume two assignments share a working
+conversation.
 
-Downstream ops (different agent) read from `../{dep_agent_id}/{filename}`.
-Same-agent deps need no file read — the branch already has memory.
+When a specific file is part of the contract, say what to write and name it consistently:
 
-**Instructions must specify**: WHERE to write, WHAT to name, WHERE to read upstream.
+- Producer task: `Write the findings to auth_findings.md.`
+- Consumer task: `Read auth_findings.md from the supplied upstream artifact directory.`
+- Exit criteria: `auth_findings.md exists and cites the inspected files.`
+
+---
+
+## Reactive Follow-Ups and `max_ops`
+
+Flows are reactive by default: eligible workers can request necessary follow-up assignments
+that were not visible during initial planning. `max_ops` is a shared budget for both the
+initial plan and these spawned follow-ups.
+
+```
+follow-up capacity = max_ops - initial assignment count
+```
+
+For example, an initial eight-assignment plan with `max_ops: 8` has no reactive capacity. If
+the workflow is expected to discover work, set a larger cap or ask for a tighter initial plan.
+With `max_ops: 0`, the initial plan is not caller-capped and reactive execution allows up to
+20 follow-up assignments. Use `reactive: off` when the DAG must remain flat.
 
 ---
 
-## DAG Sizing
+## Preview and Visualization
 
-| Complexity | Agents | Phases | Example |
-|---|---|---|---|
-| Simple | 2-4 | 2-3 | Bug fix: explorer → implementer → tester |
-| Medium | 4-8 | 3-4 | Feature: researcher + architect → implementer → tester + reviewer → critic |
-| Complex | 8-13 | 4-5 | Refactor: multiple explorers → analyst → multiple implementers → multiple testers → critic |
-| Max | 15 | 5 | Full audit: 6 parallel scanners → consolidator → fix implementers → verifiers → critic |
+`dry_run: true` returns a textual rendering of the planned assignments and declared
+dependencies. It exits before the run graph is built, so it cannot produce a graph image.
+
+`show_graph: true` writes `flow_dag.png` after an executing flow finishes. Use `job.output`
+to find the graph in the completed run's artifact list.
 
 ---
+
+## Sizing Guidance
+
+- Keep one assignment per distinct unit of work or dependency boundary.
+- Prefer a wide graph over a near-linear chain when work is independent.
+- Keep the initial plan below `max_ops` when reactive discovery is useful.
+- Use one agent for simple tasks instead of manufacturing a DAG.
 
 ## Anti-Patterns
 
-- **Over-decomposing** — 1 agent is fine for simple tasks. Don't plan a 5-agent DAG for a typo fix.
-- **Critic parallel with producers** — defeats the purpose. Critic reviews completed work.
-- **Vague instructions** — "review the code" is useless. Specify files, concerns, output format.
-- **Lost artifacts** — always specify where agents write and where downstream reads.
-- **Meta-delegation** — "orchestrate the team to build X" is circular. YOU plan the DAG.
-- **First-wave implementer** — analysis/research must come before implementation.
+- **False dependencies** — serializing independent work increases wall-clock time.
+- **Critic parallel with producers** — the critic cannot review outputs that do not exist yet.
+- **Assumed branch memory** — repeated roles still receive separate branches.
+- **Guessed artifact paths** — consume the exact upstream directories supplied at runtime.
+- **Full initial budget** — filling `max_ops` leaves no room for reactive follow-ups.
+- **Graph preview on dry run** — a dry run builds no executable graph.
+- **Vague objectives** — specify files, concerns, output format, and exit criteria.

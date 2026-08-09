@@ -21,7 +21,8 @@ plays table:
   created_at, updated_at
 ```
 
-Source: `lionagi/state/schema.sql` line ~218.
+Source: the `CREATE TABLE shows` and `CREATE TABLE plays` declarations in
+`lionagi/state/schema.sql`.
 
 ## Status enums
 
@@ -30,9 +31,9 @@ Source: `lionagi/state/schema.sql` line ~218.
 | Value | Meaning |
 |---|---|
 | `active` | Show is in progress — plays are running or pending |
-| `completed` | Final gate passed; integration PR opened |
+| `completed` | Final verdict passed, or every imported play is already merged |
 | `aborted` | Operator triggered abort; no more plays will launch |
-| `imported` | Show was imported from an external show directory |
+| `imported` | Legacy state value retained for previously imported records |
 
 ### Play status
 
@@ -55,14 +56,11 @@ Source: `lionagi/state/schema.sql` line ~218.
 Studio's backend serves shows over `/api/shows` — list, detail, import and an SSE watcher —
 and that is the interface to use.
 
-**There is no Studio page for shows.** The frontend has no `/shows` route, and while a
-`PlayDag` component exists in the source tree nothing imports it, so there is no dependency
-graph to look at. Do not plan a show around watching it in the UI. The `_show.md` file and the
-per-play `_meta.json` and `_verdict.json` are the readable state, and `job.status`,
-`job.output` and `job.wait` are how you follow a play that is running.
+**There is no dedicated Studio page for shows.** The retired `/shows` route redirects to
+Fleet, and while a `PlayDag` component exists in the source tree nothing imports it, so there
+is no show dependency graph to watch in the UI. The `_show.md` file and the per-play
+`_meta.json` and `_verdict.json` are the readable state, and `job.status`, `job.output` and
+`job.wait` are how you follow a play that is running.
 
-The show directory is controlled by `LIONAGI_SHOWS_ROOT`. **Set it explicitly, and set it for
-Studio too.** Both sides fall back to a built-in default when it is unset, and you should not
-rely on those agreeing: if the skill writes a show somewhere Studio does not enumerate, the
-show simply never appears and nothing reports an error. One variable, exported once, in the
-environment both the skill and the Studio process see.
+The show directory is controlled by `LIONAGI_SHOWS_ROOT`. Set it explicitly, and use the same
+value in both your shell and Studio's environment.

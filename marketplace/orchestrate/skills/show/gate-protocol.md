@@ -4,9 +4,16 @@ Gate agents, verdict format, decision logic, and abort/resume protocols.
 
 ## Per-play gate agent
 
-After the play's run reaches a terminal state (`job.wait` reports it done), submit a gate
-agent to evaluate its output. `agent.submit` is a spawn verb — its op needs the current
-`schema_fingerprint`, from `help='agent.submit'`:
+After the play's run reaches a terminal state (`job.wait` returns `all_terminal: true`), read
+its output first. Check every op's `ok` field:
+
+```json
+{"ops": [{"op": "job.output", "args": {"run_id": "<play_run_id>"}}]}
+```
+
+Then submit a gate agent with that output and the acceptance criteria in its prompt.
+`agent.submit` is a spawn verb, so its op needs the current `schema_fingerprint`, from
+`help='agent.submit'`:
 
 ```json
 {"help": "agent.submit"}
@@ -18,9 +25,9 @@ agent to evaluate its output. `agent.submit` is a spawn verb — its op needs th
     {
       "op": "agent.submit",
       "args": {
-        "agent": "reviewer",
+        "query": ["claude"],
         "cwd": "/absolute/path/to/<play_dir>",
-        "prompt": "You are the gate agent for play '<play>' of show '<topic>'. Read the play output (job.output for run_id <run_id>) and any artifacts saved to <play_dir>. Acceptance criteria from _intent.md: <contents of _intent.md>. Evaluate: did the play meet every acceptance criterion? Output ONLY valid JSON to stdout: {\"gate_passed\": true, \"feedback\": null, \"notes\": \"All criteria met.\"} or {\"gate_passed\": false, \"feedback\": \"Missing error handling for X.\", \"notes\": null}"
+        "prompt": "You are the gate agent for play '<play>' of show '<topic>'. Acceptance criteria from _intent.md: <contents of _intent.md>. Completed play output: <console and artifact summary from job.output>. Evaluate: did the play meet every acceptance criterion? Output ONLY valid JSON to stdout: {\"gate_passed\": true, \"feedback\": null, \"notes\": \"All criteria met.\"} or {\"gate_passed\": false, \"feedback\": \"Missing error handling for X.\", \"notes\": null}"
       },
       "schema_fingerprint": "<from the help call above>"
     }
@@ -28,7 +35,8 @@ agent to evaluate its output. `agent.submit` is a spawn verb — its op needs th
 }
 ```
 
-Wait for the gate run and read its result:
+Wait for the gate run and read its result. A wait is bounded, so check `ok` and
+`all_terminal`; repeat the wait while it remains pending:
 
 ```json
 {"ops": [{"op": "job.wait", "args": {"run_ids": ["<gate_run_id>"]}}]}
@@ -40,9 +48,10 @@ Wait for the gate run and read its result:
 
 Write the parsed result to `$PLAY_DIR/_verdict.json`.
 
-**Checkout-local alternative.** Inside a lionagi checkout, `li agent -a reviewer "<prompt>"`
-runs the same gate as a foreground call and prints the JSON verdict to stdout directly,
-without a `run_id` round-trip.
+**Checkout-local alternative.** Inside a lionagi checkout,
+`li agent claude --cwd "/absolute/path/to/<play_dir>" "<prompt>"` runs the same gate as a
+foreground call and prints the JSON verdict to stdout directly, without a `run_id`
+round-trip.
 
 ## Verdict JSON schema
 
@@ -78,19 +87,19 @@ Written to `$SHOW_DIR/_final_verdict.json`:
 
 ## Grouping runs under one show
 
-Studio's `/invocations` page can group a set of related sessions under one parent record via
-`li invoke start`/`li invoke end`. Opening and closing a record that way is CLI-only: the MCP
-catalog names `invoke.start` and `invoke.end` as verbs it declines, because the surface
-cannot tell that the caller who opened a record is the one closing it. Reading is available
-over MCP — `invoke.list` returns what the CLI wrote. If you fire plays through the `li` CLI
-directly inside a checkout, you can still open and close records:
+Invocation records can group related runs in Fleet through `li invoke start`/`li invoke end`.
+The retired `/invocations` route redirects to Fleet. Opening and closing a record is CLI-only:
+the MCP catalog names `invoke.start` and `invoke.end` as verbs it declines, because the
+surface cannot tell that the caller who opened a record is the one closing it. Reading is
+available over MCP — `invoke.list` returns what the CLI wrote. If you fire plays through the
+`li` CLI directly inside a checkout, you can still open and close records:
 
 ```bash
 # At show start
 INV_ID=$(li invoke start --skill show --prompt "$TOPIC" 2>/dev/null || echo "")
 
 # Each play (pass-through — li play forwards to a flow run)
-li play <name> "<prompt>" --yolo --bypass --invocation "$INV_ID"
+li play <name> "<prompt>" --cwd "$WORKTREE" --yolo --bypass --invocation "$INV_ID"
 
 # At show end
 [ -n "$INV_ID" ] && li invoke end "$INV_ID" --status completed

@@ -34,11 +34,14 @@ that carries `ops`:
 That catalog is the authority on what exists; the orchestration verbs used here are
 `agent.submit`, `flow.submit`, `fanout.submit`, `play.submit`, `job.status`, `job.output`,
 `job.list`, `job.wait`, `job.kill`, `profile.list` and `profile.show`. Submit the research
-task with `agent.submit`. Every call to the tool carries `ops` as an array of `{op, args}`
-objects, and every `*.submit` op additionally carries the `schema_fingerprint` its `help`
-reply returned, as a **sibling of `args`** rather than a key inside it. Without it the op is
-refused with `stale_schema` and no run starts; put it inside `args` and it is not read at
-all, so the same refusal repeats and the failure looks idempotent:
+task with `agent.submit`. Agent profile names are installation-specific, so call
+`profile.list` before setting `agent`, or identify a model through the positional `query`
+argument as this example does. Every call to the tool carries `ops` as an array of
+`{op, args}` objects, and every `*.submit` op additionally carries the
+`schema_fingerprint` its `help` reply returned, as a **sibling of `args`** rather than a key
+inside it. Without it the op is refused with `stale_schema` and no run starts; put it inside
+`args` and it is not read at all, so the same refusal repeats and the failure looks
+idempotent:
 
 ```json
 {
@@ -47,7 +50,7 @@ all, so the same refusal repeats and the failure looks idempotent:
       "op": "agent.submit",
       "args": {
         "prompt": "Research this error: [paste error]. Find root cause and solutions for [tool/library version].",
-        "agent": "researcher"
+        "query": ["claude"]
       },
       "schema_fingerprint": "<from help='agent.submit'>"
     }
@@ -58,7 +61,8 @@ all, so the same refusal repeats and the failure looks idempotent:
 If you're working inside a lionagi checkout, the CLI equivalent is:
 
 ```bash
-li agent --prompt "Research this error: [paste error]. Find root cause and solutions for [tool/library version]."
+li agent claude \
+  --prompt "Research this error: [paste error]. Find root cause and solutions for [tool/library version]."
 ```
 
 **Examples of good queries**:
@@ -84,6 +88,7 @@ If research doesn't yield a clear solution, spawn parallel diagnostic agents wit
     {
       "op": "fanout.submit",
       "args": {
+        "query": ["claude"],
         "prompt": "Diagnose: [error]. Codebase: [path]. Find root cause and propose fix.",
         "num_workers": 2
       },
@@ -102,7 +107,7 @@ Or spawn a single focused analyst with `agent.submit`:
       "op": "agent.submit",
       "args": {
         "prompt": "Context: [paste relevant error messages and code]\n\nResearch findings so far:\n- [finding 1]\n- [finding 2]\n\nAnalyze:\n1. What is the root cause?\n2. What are possible solutions?\n3. What are the tradeoffs?",
-        "agent": "analyst"
+        "query": ["claude"]
       },
       "schema_fingerprint": "<from help='agent.submit'>"
     }
@@ -110,18 +115,25 @@ Or spawn a single focused analyst with `agent.submit`:
 }
 ```
 
-Track a submitted job and read its result with `job.wait` / `job.output` (call `help=true`
-if you need the exact argument name a given job verb expects — `job.wait` takes a list):
+Track a submitted job with `job.wait` (call targeted help if you need a job verb's exact
+schema — `job.wait` takes a list):
 
 ```json
 {"ops": [{"op": "job.wait", "args": {"run_ids": ["<id returned by the submit call above>"]}}]}
+```
+
+Check the op's `ok` and the result's `all_terminal`; repeat while the run is pending. Then
+read the result with `job.output`:
+
+```json
+{"ops": [{"op": "job.output", "args": {"run_id": "<id returned by the submit call above>"}}]}
 ```
 
 If you're working inside a lionagi checkout, the CLI equivalents are `li o fanout` and
 `li agent`:
 
 ```bash
-li o fanout -n 2 \
+li o fanout claude -n 2 \
   "Diagnose: [error]. Codebase: [path]. Find root cause and propose fix."
 ```
 
@@ -129,7 +141,7 @@ The prompt is positional and `-n` sets the worker count. `--workers` is a differ
 takes a comma-separated list of model specs, so `--workers 2` would ask for a model named `2`.
 
 ```bash
-li agent --prompt "
+li agent claude --prompt "
 Context: [paste relevant error messages and code]
 
 Research findings so far:
@@ -145,13 +157,17 @@ Analyze:
 
 ### Agent Selection Table
 
-| Problem Type             | MCP call                                            | CLI equivalent (lionagi checkout only) |
-|--------------------------|------------------------------------------------------|-----------------------------------------|
-| Unknown error root cause | `agent.submit` with `agent: "analyst"`                | `li agent` with analyst role      |
-| Need more information    | `agent.submit` with `agent: "researcher"`             | `li agent` with researcher role   |
-| Parallel hypothesis test | `fanout.submit` with `num_workers: 2-3`               | `li o fanout` with 2-3 workers    |
-| Implementation approach  | `agent.submit` with `agent: "implementer"`            | `li agent` with implementer role  |
-| Verify proposed solution | `agent.submit` with `agent: "tester"` or `"critic"`   | `li agent` with tester/critic role|
+Use `profile.list` to discover which named profiles the server can resolve. If a suitable
+profile exists, pass its returned name as `agent`; otherwise pass a model as the first entry
+in `query`. Inside a checkout, the equivalent profile form is `li agent -a <profile-name>`.
+
+| Problem Type             | MCP call                                                   | CLI equivalent (lionagi checkout only) |
+|--------------------------|------------------------------------------------------------|-----------------------------------------|
+| Unknown error root cause | `agent.submit` with a discovered analysis profile or model | `li agent -a <profile-name>` or `li agent <model>` |
+| Need more information    | `agent.submit` with a discovered research profile or model | `li agent -a <profile-name>` or `li agent <model>` |
+| Parallel hypothesis test | `fanout.submit` with `num_workers: 2-3`                    | `li o fanout` with 2-3 workers |
+| Implementation approach  | `agent.submit` with a discovered coding profile or model   | `li agent -a <profile-name>` or `li agent <model>` |
+| Verify proposed solution | `agent.submit` with a discovered review profile or model   | `li agent -a <profile-name>` or `li agent <model>` |
 
 **Gate**: Agent must produce actionable insight, not just restate the problem.
 
@@ -204,6 +220,7 @@ cat >> ./notes/debug-log.md << 'EOF'
 EOF
 ```
 
-The run this fix came from is already recorded: `job.output` returns it by run id (see
-`help=true` for the exact argument name). Inside a lionagi checkout the same transcript also
-sits at `~/.lionagi/runs/{run_id}/` — no extra step needed either way.
+The run this fix came from is already recorded: `job.output` returns its console tail and
+artifact list by run id (see `help=true` for the exact argument name). Inside a lionagi
+checkout, the persisted run record and artifacts also sit under
+`~/.lionagi/runs/{run_id}/`.

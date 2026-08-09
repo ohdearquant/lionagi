@@ -77,8 +77,9 @@ prompt: |
 ```
 
 **When to use**: TDD loops, research-then-implement workflows, any task where
-ordering is mandatory. Use `show-graph: true` to confirm the DAG is sequential
-before spending tokens.
+ordering is mandatory. Use a dry run to inspect the textual plan before execution;
+`show-graph: true` writes the graph that actually ran after execution completes. Remember
+that `max-ops: 20` is shared by the initial plan and reactive follow-ups.
 
 ---
 
@@ -104,8 +105,9 @@ exclusive.
 
 ## 5. Gate Pattern
 
-Insert a critic checkpoint after parallel workers finish. The critic approves
-or rejects before the workflow proceeds to the output phase.
+Add a critic assignment after parallel workers finish, then make the implementation
+assignment consume its verdict. Dependencies enforce order, but there is no special control
+node that automatically halts or re-plans a flow.
 
 ```yaml
 name: gated-refactor
@@ -120,9 +122,11 @@ prompt: |
   PHASE 1 — PLAN: workers propose changes per sub-component. No code written.
   PHASE 2 — CRITIC GATE: one critic reviews all proposals. Must output
     APPROVED (proceed) or REJECTED (list blockers; halt if strict={strict}).
-  PHASE 3 — IMPLEMENT: apply approved proposals and run tests.
+  PHASE 3 — IMPLEMENT: if the critic returned APPROVED, apply the proposals and
+  run tests. If it returned REJECTED, report the blockers without changing code.
 ```
 
 **When to use**: high-stakes changes (migrations, security patches, public API
 changes) where a bad plan executed quickly causes more damage than a slow correct
-one. The critic runs after all planners return — never in parallel with them.
+one. The critic runs after all planners return — never in parallel with them. This is a
+prompt-level gate: the implementation assignment must read and obey the critic's verdict.
