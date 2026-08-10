@@ -415,9 +415,12 @@ def critical_path_depth(dep_indices: list[list[int]]) -> int:
 
     It is a lower bound on the flow's wall clock, not the bound. A concurrency
     cap serializes ops this function calls parallel, and under `--max-concurrent
-    1` it says 1 for a plan that runs strictly in sequence. Callers sizing a
-    budget want the larger of the two — see `op_budget_share`, which is the
-    reason this returns a chain length rather than a duration.
+    1` it says 1 for a plan that runs strictly in sequence.
+
+    Taking the larger of this and the cap's round count is *still* not the
+    answer, because the two interact — see `schedule_wave_count`, which is what
+    sizes a budget. This function is exact only when nothing caps concurrency,
+    which is the common case and why it is still worth computing directly.
 
     Dependencies point backwards (op i may only depend on ops before it), so a
     single forward pass is enough. Cycles are therefore not reachable here, and
@@ -434,6 +437,67 @@ def critical_path_depth(dep_indices: list[list[int]]) -> int:
     return max(depths)
 
 
+def schedule_wave_count(dep_indices: list[list[int]], num_ops: int, max_concurrent: int) -> int:
+    """How many ops actually end up running one after another.
+
+    Two things push ops into sequence — the dependency chain and the
+    concurrency cap — and it is tempting to take the larger of the two. That is
+    still wrong, because they interact: a dependency leaves capacity idle, and
+    the ops it blocks have to be picked up in some later pass. One root feeding
+    three dependents at `--max-concurrent 2` has a longest chain of 2 and needs
+    `ceil(4 / 2) = 2` full passes, so both bounds say 2. It runs in three: the
+    root alone, then two of its dependents, then the last one, which had
+    nowhere to go while the other two held both slots.
+
+    So walk the schedule instead of estimating it. Repeatedly take the ops
+    whose dependencies are all satisfied, admit up to `max_concurrent` of them,
+    and count the passes.
+
+    The executor admits ops one at a time as slots free rather than in strict
+    passes (`operations/flow.py` starts every op as a task against a shared
+    `CapacityLimiter`), so this counts passes that the real schedule can only
+    beat, never lose to, when ops take comparable time. For sizing a budget
+    that is the safe direction: an op told it has slightly less time finishes
+    inside the flow's deadline, while one told it has more overruns it.
+
+    `max_concurrent <= 0` means unbounded, matching how the executor reads it.
+    A plan whose dependency data does not describe its ops gets `num_ops`, the
+    assumption that nothing overlaps, since nothing can be said about what does.
+    """
+    if num_ops <= 0:
+        return 0
+    if len(dep_indices) != num_ops:
+        return num_ops
+    conc = max_concurrent if max_concurrent > 0 else num_ops
+
+    # Unbounded capacity admits every ready op, so each pass clears one level
+    # of the dependency graph and the pass count is exactly the longest chain.
+    # Worth taking directly: it is the common case and it is one linear scan.
+    if conc >= num_ops:
+        return critical_path_depth(dep_indices) or num_ops
+
+    done: set[int] = set()
+    waves = 0
+    while len(done) < num_ops:
+        ready = [
+            i
+            for i in range(num_ops)
+            if i not in done
+            # An index pointing outside the plan is ignored rather than treated
+            # as unsatisfiable, matching critical_path_depth: a malformed entry
+            # should not be able to stall a budget hint.
+            and all(d in done for d in dep_indices[i] if 0 <= d < num_ops)
+        ]
+        if not ready:
+            # Unreachable for well-formed plans, whose dependencies point
+            # backwards. Fall back to the no-overlap assumption rather than
+            # spinning.
+            return num_ops
+        done.update(ready[:conc])
+        waves += 1
+    return waves
+
+
 def op_budget_share(
     total_budget: int,
     dep_indices: list[list[int]],
@@ -442,24 +506,10 @@ def op_budget_share(
 ) -> int:
     """Seconds to offer one op out of the flow's total budget.
 
-    Two things force ops to run one after another, and the divisor has to
-    respect both. Dependencies are one: `critical_path_depth`. The concurrency
-    cap is the other, and it is easy to forget because it is usually not set —
-    with `--max-concurrent 1` the executor serializes four independent ops that
-    the dependency graph says could all run at once. Taking only the depth
-    there would hand every one of them the whole budget, and the flow's own
-    deadline would expire partway through.
-
-    So the divisor is the larger of the two lower bounds on how many ops must
-    run in sequence: the longest dependency chain, and the number of scheduling
-    rounds the cap imposes. `max_concurrent <= 0` means unbounded, matching how
-    the executor reads it, in which case the rounds bound is 1 and the depth
-    decides alone. `num_ops` is the fallback for a plan carrying no dependency
-    information, where nothing can be said about what overlaps.
+    Divided by how many ops run in sequence rather than how many there are —
+    see `schedule_wave_count`, which is where the subtlety lives.
     """
-    conc = max_concurrent if max_concurrent > 0 else num_ops
-    rounds = math.ceil(num_ops / conc) if conc > 0 else num_ops
-    divisor = max(critical_path_depth(dep_indices) or num_ops, rounds)
+    divisor = schedule_wave_count(dep_indices, num_ops, max_concurrent)
     if divisor <= 0:
         return total_budget
     return int(total_budget / divisor)

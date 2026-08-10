@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +17,7 @@ from lionagi.cli.orchestrate.flow import (
     _format_budget_preamble,
     critical_path_depth,
     op_budget_share,
+    schedule_wave_count,
 )
 
 # ── _format_budget_preamble ────────────────────────────────────────────────
@@ -160,6 +162,68 @@ def test_share_treats_a_non_positive_cap_as_unbounded():
     # keeps the default path honest: every caller that passes no cap lands here.
     assert op_budget_share(900, [[], [], [], [0, 1, 2]], 4, 0) == 450
     assert op_budget_share(900, [[], [], [], [0, 1, 2]], 4) == 450
+
+
+# ── Where the two bounds interact ───────────────────────────────────────────
+#
+# A dependency does not only lengthen the chain, it idles capacity while it is
+# unsatisfied, and the ops it blocks have to be picked up in some later pass.
+# Neither bound sees that, so neither does the larger of the two.
+
+
+def test_a_dependency_idles_capacity_so_neither_bound_sees_the_third_wave():
+    # One root, three dependents, two slots. The root runs alone (one slot idle
+    # because nothing else is ready), then two dependents, then the last.
+    deps = [[], [0], [0], [0]]
+    assert schedule_wave_count(deps, 4, 2) == 3
+    # Both bounds say 2, so max() of them cannot reach 3. This is the whole
+    # finding: the counterexample is invisible to either bound alone.
+    assert critical_path_depth(deps) == 2
+    assert math.ceil(4 / 2) == 2
+
+
+def test_the_share_for_that_schedule_fits_inside_the_deadline():
+    # The bug this replaces handed each op 450 of 900 seconds for a schedule
+    # that runs three deep, so a flow could spend 1350 against a 900 budget.
+    assert op_budget_share(900, [[], [0], [0], [0]], 4, 2) == 300
+
+
+def test_a_diamond_under_a_cap_counts_the_pass_its_join_needs():
+    # root → two middles → join. The join cannot start until both middles are
+    # done, so it gets a pass of its own however wide the cap is.
+    assert schedule_wave_count([[], [0], [0], [1, 2]], 4, 2) == 3
+
+
+def test_a_wide_layer_splits_across_passes_under_a_narrow_cap():
+    # A root feeding five dependents at a cap of 2: root, then three passes of
+    # two, two, one.
+    assert schedule_wave_count([[], [0], [0], [0], [0], [0]], 6, 2) == 4
+
+
+def test_an_uncapped_schedule_is_exactly_the_dependency_depth():
+    # With capacity for everyone each pass clears one level, which is the
+    # cheaper short-circuit the function takes.
+    deps = [[], [0], [1]]
+    assert schedule_wave_count(deps, 3, 0) == critical_path_depth(deps) == 3
+    assert schedule_wave_count([[], [], []], 3, 0) == 1
+
+
+def test_a_plan_whose_dependency_data_does_not_match_its_ops_assumes_no_overlap():
+    # Nothing can be said about what overlaps, so every op is assumed serial.
+    assert schedule_wave_count([[], [0]], 4, 2) == 4
+    assert schedule_wave_count([], 3, 2) == 3
+
+
+def test_a_dependency_pointing_outside_the_plan_does_not_stall_the_count():
+    # Matches critical_path_depth's tolerance: a malformed index is ignored
+    # rather than treated as a dependency that can never be satisfied. All four
+    # ops are ready immediately, so the cap alone decides — a stall would give
+    # the no-overlap fallback of 4 instead.
+    assert schedule_wave_count([[], [9], [-1], []], 4, 2) == 2
+
+
+def test_an_empty_plan_has_no_waves():
+    assert schedule_wave_count([], 0, 2) == 0
 
 
 # ── The share an op is actually told ────────────────────────────────────────
