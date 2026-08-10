@@ -400,6 +400,9 @@ budget is approximately {seconds} seconds (until {deadline_iso} UTC).
 - Prefer "good enough by the deadline" over "ideal but late".
 - If you find yourself >70% through your budget and still in research, \
 switch to writing the deliverable with what you have.
+- Recording what you learned is part of finishing, not research. Memory and \
+knowledge-base writes cost seconds, so the rule above is never a reason to \
+skip them.
 - You can check the current time: `date -Iseconds`.
 [/BUDGET]
 

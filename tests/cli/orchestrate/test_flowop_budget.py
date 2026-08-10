@@ -30,6 +30,30 @@ def test_format_budget_preamble_contains_expected_fields():
     assert "200 seconds" in text
 
 
+def test_format_budget_preamble_exempts_persistence_from_the_deadline_rule():
+    """Measured on a real run: legs read recording what they learned as research.
+
+    The preamble tells an op to switch from research to the deliverable once it
+    is 70% through its budget. Three of four workers in one flow cited the budget
+    as the reason they skipped their memory and knowledge-base writes entirely —
+    which is a permanent loss for seconds of work, and it does not get better by
+    handing them a larger budget, since the same rule bites at the same point.
+
+    So the exemption has to be stated where the rule is, and this asserts both
+    halves are present together: dropping the exemption while keeping the rule
+    reproduces the behaviour it was written to stop.
+    """
+    text = _format_budget_preamble(
+        op_index=1,
+        num_ops=3,
+        op_budget_seconds=450,
+        deadline_epoch=time.time() + 900,
+    )
+    assert "still in research" in text, "the deadline rule this exempts is missing"
+    assert "part of finishing, not research" in text
+    assert "never a reason to skip" in text
+
+
 def test_format_budget_preamble_deadline_iso_format():
     deadline = time.time() + 600
     text = _format_budget_preamble(
