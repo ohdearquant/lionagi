@@ -168,6 +168,7 @@ def _make_resume_env(tmp_path: Path) -> SimpleNamespace:
         bare=True,
         effort=None,
         total_budget=None,
+        budget_deadline_epoch=None,
         team_data=None,
         team_attach=None,
         pack=None,

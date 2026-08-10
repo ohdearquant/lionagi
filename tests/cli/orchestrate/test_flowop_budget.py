@@ -338,6 +338,105 @@ def test_the_flow_builds_its_preambles_through_the_shared_helper():
     )
 
 
+# ── the deadline instant is captured, not recomputed ───────────────────────
+
+
+def test_no_preambles_without_a_captured_deadline_instant():
+    """A missing instant means no preamble, never a substitute one.
+
+    The obvious fallback is `now + total_budget`, and it is wrong by however
+    long the run has already been going. It is also wrong permissively: every
+    op would be told it has more time than the flow will actually give it,
+    which is the direction that produces overruns rather than early finishes.
+    Saying nothing is the honest failure here.
+    """
+    assert _build_budget_preambles(600, [[], [0]], 2, 0, None) == {}
+
+
+def test_the_preamble_renders_the_instant_it_was_handed():
+    """A fixed instant renders as itself, so a recomputed one is visible."""
+    import datetime
+
+    captured = 1786380000.0
+    expected = datetime.datetime.fromtimestamp(captured, tz=datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S"
+    )
+    assert expected in _build_budget_preambles(600, [[], [0]], 2, 0, captured)[0]
+
+
+def test_the_flow_hands_over_the_stored_instant_instead_of_deriving_one():
+    """The call site must pass the recorded instant, not build one from now.
+
+    `_build_budget_preambles` cannot tell where its instant came from, so every
+    test above stays green if the call site goes back to `time.time() + budget`.
+    That is the defect exactly: the arithmetic was right and the moment it ran
+    was wrong, which no assertion about the arithmetic can see.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from lionagi.cli.orchestrate import flow as flow_mod
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(flow_mod._run_flow_inner)))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_build_budget_preambles"
+    ]
+    assert calls, "no call to _build_budget_preambles found — this test is looking at nothing"
+    for call in calls:
+        attrs = {n.attr for arg in call.args for n in ast.walk(arg) if isinstance(n, ast.Attribute)}
+        assert "budget_deadline_epoch" in attrs, (
+            "the deadline handed to the preamble builder must be the instant recorded "
+            "when the run's clock started, read off the environment"
+        )
+        assert "time" not in attrs, (
+            "the call site is deriving a deadline from the current time again, which "
+            "dates it from whenever planning happened to finish"
+        )
+
+
+def test_the_deadline_is_recorded_before_the_timeout_scope_opens():
+    """Where the instant is taken is the whole fix.
+
+    Taken after the scope opens, it is already late by everything that ran in
+    between, and what runs in between is the planning phase every flow pays
+    for before its first op exists.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from lionagi.cli.orchestrate import flow as flow_mod
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(flow_mod._run_flow)))
+    recorded = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Attribute) and target.attr == "budget_deadline_epoch"
+    ]
+    scope_opened = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "move_on_after"
+    ]
+    # Control: without this the ordering assertion below passes vacuously on a
+    # function that no longer has a timeout scope at all.
+    assert scope_opened, "no timeout scope in _run_flow — this test is aimed at the wrong function"
+    assert recorded, "_run_flow must record the instant its timeout clock starts counting from"
+    assert min(recorded) < min(scope_opened), (
+        "the deadline is recorded after the timeout scope opens, so it dates from "
+        "later than the clock it is supposed to describe"
+    )
+
+
 def test_no_budget_preamble_when_total_budget_none():
     """The total_budget None guard produces no preamble entries."""
     total_budget = None

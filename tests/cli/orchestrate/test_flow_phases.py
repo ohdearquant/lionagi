@@ -28,7 +28,15 @@ from lionagi.cli.orchestrate.flow import (
 # ── Shared stubs ──────────────────────────────────────────────────────────────
 
 
-def _make_env(tmp_path, *, bare=True, total_budget=None, team_data=None, live_persist=None):
+def _make_env(
+    tmp_path,
+    *,
+    bare=True,
+    total_budget=None,
+    budget_deadline_epoch=None,
+    team_data=None,
+    live_persist=None,
+):
     """Minimal OrchestrationEnv stub for phase tests."""
     name_counts: dict = {}
 
@@ -62,6 +70,7 @@ def _make_env(tmp_path, *, bare=True, total_budget=None, team_data=None, live_pe
         bare=bare,
         effort=None,
         total_budget=total_budget,
+        budget_deadline_epoch=budget_deadline_epoch,
         team_data=team_data,
         pack=None,
         verbose=False,
