@@ -359,3 +359,113 @@ describe("useLiveBoard — schedules degrade-to-null on fetch failure", () => {
     vi.useRealTimers();
   });
 });
+
+// ─── Poll overlap ─────────────────────────────────────────────────────────────
+// The board polls on a fixed interval. The interval says how often to *want*
+// fresh data, not how many requests may be open at once. When a fetch outlives
+// the interval, an unguarded poller opens another one on every tick while the
+// earlier ones are still outstanding, so the outstanding count grows for as
+// long as the slowness lasts and the first request never gets answered.
+
+describe("useLiveBoard — a poll slower than the interval does not stack", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let latestState: BoardState | null;
+
+  function Harness() {
+    latestState = useLiveBoard();
+    return null;
+  }
+
+  beforeEach(() => {
+    vi.mocked(listRuns).mockReset();
+    vi.mocked(listInvocations).mockReset();
+    vi.mocked(listSchedules).mockReset();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    latestState = null;
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.useRealTimers();
+  });
+
+  it("opens no second request while the first is still outstanding", async () => {
+    vi.useFakeTimers();
+    // Never settles, so the first poll is still in flight for the whole test.
+    vi.mocked(listRuns).mockReturnValue(new Promise<never>(() => {}));
+    vi.mocked(listInvocations).mockReturnValue(new Promise<never>(() => {}));
+    vi.mocked(listSchedules).mockReturnValue(new Promise<never>(() => {}));
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness));
+    });
+
+    expect(vi.mocked(listInvocations)).toHaveBeenCalledTimes(1);
+
+    // Five interval periods elapse with that first fetch still pending.
+    await act(async () => {
+      vi.advanceTimersByTime(5 * 3_000);
+    });
+
+    // Unguarded this is 6 — the opening poll plus one per tick — which is the
+    // defect: at a 50s fetch and a 3s interval the count climbs to ~17 and the
+    // board renders nothing at all.
+    expect(vi.mocked(listInvocations)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(listRuns)).toHaveBeenCalledTimes(1);
+  });
+
+  it("goes live on a fetch slower than the stale threshold", async () => {
+    vi.useFakeTimers();
+    // 8s per fetch: longer than the 5s watchdog, so every gap between
+    // successes trips "stale". That is an ordinary slow backend, not a fault,
+    // and the board still owes the operator the data it successfully fetched.
+    const slow = <T>(value: T) =>
+      new Promise<T>((resolve) => setTimeout(() => resolve(value), 8_000));
+
+    vi.mocked(listRuns).mockImplementation(() =>
+      slow({
+        runs: [],
+        page: 1,
+        per_page: 200,
+        total: 0,
+        total_pages: 1,
+        has_next: false,
+        has_prev: false,
+      }),
+    );
+    vi.mocked(listInvocations).mockImplementation(() =>
+      slow({
+        invocations: [],
+        limit: 100,
+        offset: 0,
+        has_next: false,
+        total: 0,
+        completed_total: 0,
+      }),
+    );
+    vi.mocked(listSchedules).mockImplementation(() => slow({ schedules: [] }));
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness));
+    });
+
+    // Four full fetch cycles. The watchdog fires ~3 times inside each one.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4 * 11_000);
+    });
+
+    // The hysteresis exists to stop a stale badge flapping, not to withhold
+    // data. Zeroing the success streak on every watchdog tick means a backend
+    // slower than the threshold can never accumulate the consecutive
+    // successes the gate asks for, so the board stays on its loading skeleton
+    // forever while fetch after fetch succeeds.
+    expect(latestState?.dataState).not.toBe("loading");
+  });
+});

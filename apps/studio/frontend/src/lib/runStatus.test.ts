@@ -4,6 +4,7 @@ import {
   deriveVerdict,
   isEffectivelyActive,
   isOrphanedReason,
+  isUnsuccessfulTerminal,
 } from "./runStatus";
 
 describe("deriveDisplayStatus", () => {
@@ -138,5 +139,36 @@ describe("isEffectivelyActive", () => {
   it("non-active display statuses are inactive", () => {
     expect(isEffectivelyActive({ status: "completed" })).toBe(false);
     expect(isEffectivelyActive({ status: "failed" })).toBe(false);
+  });
+});
+
+describe("isUnsuccessfulTerminal", () => {
+  // The case this predicate exists for. A run that blows its deadline arrives
+  // as `timed_out` and DISPLAYS as "cancelled", so anything keyed on
+  // `status === "failed"` drops its reason — which is how a timed-out run ends
+  // up showing a bare "cancelled" while the backend's own explanation goes
+  // unread.
+  it("covers a timed-out run, which is never spelled 'failed'", () => {
+    expect(isUnsuccessfulTerminal({ status: "timed_out" })).toBe(true);
+    expect(isUnsuccessfulTerminal({ status: "timeout" })).toBe(true);
+    expect(isUnsuccessfulTerminal({ status: "cancelled" })).toBe(true);
+    expect(isUnsuccessfulTerminal({ status: "aborted" })).toBe(true);
+  });
+
+  it("covers failed and orphaned terminals", () => {
+    expect(isUnsuccessfulTerminal({ status: "failed" })).toBe(true);
+    expect(isUnsuccessfulTerminal({ status: "error" })).toBe(true);
+    expect(
+      isUnsuccessfulTerminal({ status: "failed", status_reason_summary: "phantom_reaped" }),
+    ).toBe(true);
+  });
+
+  it("excludes success and anything still going", () => {
+    expect(isUnsuccessfulTerminal({ status: "completed" })).toBe(false);
+    expect(isUnsuccessfulTerminal({ status: "success" })).toBe(false);
+    expect(isUnsuccessfulTerminal({ status: "running" })).toBe(false);
+    expect(isUnsuccessfulTerminal({ status: "queued" })).toBe(false);
+    // An unrecognized status derives to "running", so it is not yet terminal.
+    expect(isUnsuccessfulTerminal({ status: "some-new-state" })).toBe(false);
   });
 });
