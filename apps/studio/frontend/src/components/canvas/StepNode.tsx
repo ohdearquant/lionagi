@@ -1,11 +1,13 @@
 "use client";
 
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Handle, Position } from "reactflow";
 import type { NodeProps } from "reactflow";
 import { useTranslations } from "use-intl";
 import { IconCheck, IconClose, IconPause, IconWarning } from "@/components/ui/icons";
 import { NODE_HEIGHT, NODE_WIDTH } from "./useLayout";
+import { isStalled, pulseDurationMs, STALL_TIMEOUT_MS } from "@/lib/nodeActivity";
+import type { NodeActivityKind } from "@/lib/nodeActivity";
 
 // What the bottom-right corner says before there is a duration to put there.
 // "pending" has no lifecycle signal to report yet, so its placeholder is a
@@ -33,6 +35,126 @@ function usePrefersReducedMotion(): boolean {
   }, []);
   return reduced;
 }
+
+// "Nothing animates outside the viewport" (ADR-0113 D3). No IntersectionObserver
+// (SSR, or a test environment that doesn't polyfill it) reads as visible —
+// the safe default is to animate, matching behavior before this hook existed,
+// rather than silently going static everywhere a test happens not to stub it.
+function useInViewport(ref: React.RefObject<Element | null>): boolean {
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined" || !ref.current) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[entries.length - 1];
+        if (entry) setVisible(entry.isIntersecting);
+      },
+      { threshold: 0 },
+    );
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [ref]);
+  return visible;
+}
+
+// Global concurrent-animation budget (ADR-0113 D3: "the number of
+// concurrently animating nodes is capped, with the excess falling back to
+// the static state" — a 30-node canvas must stay responsive). A module-level
+// registry rather than context/store plumbing: every StepNode instance
+// competes for one of a fixed number of slots, first-claimed-first-served,
+// released on unmount or whenever the node no longer wants to animate.
+//
+// The slot belongs to the card, not to the node it is showing. The run detail
+// keeps its inline canvas mounted while the expanded graph is open, so the
+// same run — and therefore the same node ID — is on screen twice at once.
+// Keyed by node ID, that arrangement breaks the budget in both directions: the
+// second card finds its ID already registered and animates without taking a
+// slot, so twice the cap moves while the registry counts the cap; and whichever
+// card unmounts first releases the entry the other is still animating on, after
+// which fresh nodes claim slots that are already in use. Keyed by card, the two
+// simply compete like any other pair.
+export const MAX_ANIMATING_NODES = 10;
+const animatingCards = new Set<symbol>();
+
+function useAnimationSlot(wantsToAnimate: boolean): boolean {
+  const [granted, setGranted] = useState(false);
+  // This card's identity in the registry: allocated once per mount, never
+  // shared, and never rendered. Lazily-initialized state rather than the node
+  // ID precisely because two live cards can carry the same node ID.
+  const [slot] = useState(() => Symbol("animation-slot"));
+  useEffect(() => {
+    if (!wantsToAnimate) {
+      animatingCards.delete(slot);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing local render state FROM the shared module-level slot registry (the external system here), not deriving it from props/state React already has
+      setGranted(false);
+      return;
+    }
+    const canClaim = animatingCards.size < MAX_ANIMATING_NODES;
+    if (canClaim) animatingCards.add(slot);
+    setGranted(canClaim);
+    return () => {
+      animatingCards.delete(slot);
+    };
+  }, [slot, wantsToAnimate]);
+  return granted;
+}
+
+// Returns to a static "stalled" reading STALL_TIMEOUT_MS after the last live
+// signal, rather than polling: a single timer fires exactly at the deadline
+// implied by `liveSignalAt`, so a node that keeps reporting work never stalls
+// (each new signal reschedules the timer) and one that stops gets caught the
+// instant its window closes — this is "a test, not a comment" per the ADR's
+// Consequences section, see StepNode.test.tsx.
+//
+// The input is `liveSignalAt`, not `lastEventAt`, and the difference is the
+// whole correctness of this hook. A null means the node has never reported
+// work at all, so there is no stream to have stopped and the honest answer is
+// "not stalled" — the same answer this returns for a node that is not running.
+function useStallState(liveSignalAt: number | null | undefined, isRunning: boolean): boolean {
+  const [stalled, setStalled] = useState(false);
+  useEffect(() => {
+    if (!isRunning || liveSignalAt == null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing to the external clock (Date.now()), which React has no other way to read
+      setStalled(false);
+      return;
+    }
+    setStalled(isStalled(liveSignalAt, Date.now()));
+    const remaining = liveSignalAt + STALL_TIMEOUT_MS - Date.now();
+    if (remaining <= 0) return;
+    const timer = setTimeout(() => setStalled(true), remaining);
+    return () => clearTimeout(timer);
+  }, [liveSignalAt, isRunning]);
+  return stalled;
+}
+
+// Pulse speed tracks the actual work rate rather than a fixed cadence — a
+// node emitting many events per second reads as busier than one emitting one
+// every few seconds. A sliding 5s window of observed `liveSignalAt` values,
+// entirely local to this node (no cross-node coordination needed).
+//
+// Same field as the stall clock and the presence gate, for the same reason:
+// lifecycle events bracket a node's work rather than report on it, so letting
+// them drive the speed would read a node's start as a burst of activity.
+function useEventRatePulse(liveSignalAt: number | null | undefined): number {
+  const windowRef = useRef<number[]>([]);
+  const [duration, setDuration] = useState(1500);
+  useEffect(() => {
+    if (liveSignalAt == null) return;
+    const seen = windowRef.current;
+    seen.push(liveSignalAt);
+    const cutoff = liveSignalAt - 5000;
+    while (seen.length && seen[0]! < cutoff) seen.shift();
+    setDuration(pulseDurationMs(seen.length));
+  }, [liveSignalAt]);
+  return duration;
+}
+
+const ACTIVITY_LABEL: Record<NodeActivityKind, string> = {
+  thinking: "thinking",
+  tool: "tool",
+  streaming: "streaming",
+  waiting: "waiting",
+};
 
 const ROLE_VAR: Record<string, string> = {
   researcher: "var(--role-researcher)",
@@ -73,6 +195,26 @@ export interface StepNodeData {
   durationSeconds?: number | null;
   errorCount?: number;
   toolCallCount?: number;
+  // Live-activity fields (ADR-0113 D3/row 6). All optional and independently
+  // absent-safe: a node with no live signal correlation yet (or a finished
+  // run loaded from history, which never streamed) renders with none of
+  // these set and looks exactly like the card did before this row existed.
+  /** What the node is doing right now, while running. */
+  activity?: NodeActivityKind | null;
+  /** Tool name when activity is "tool". */
+  activityDetail?: string | null;
+  /** Token or event counter, whichever the provider reports. */
+  counter?: number | null;
+  /** Epoch ms of the most recent signal of ANY kind for this node — the ONLY
+   *  input that drives whether/how fast this node's animation runs. Absent
+   *  means "no live stream correlation", which never animates regardless of
+   *  execStatus. */
+  lastEventAt?: number | null;
+  /** Epoch ms of the last signal that reported work in progress, as opposed
+   *  to a lifecycle transition. Drives the stall reading and nothing else.
+   *  Absent means no liveness signal exists for this node, which is not the
+   *  same as one that went quiet, and must not read as stalled. */
+  liveSignalAt?: number | null;
 }
 
 // Non-animation precedence cues (border weight + a left-edge status rail)
@@ -157,6 +299,38 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
   const status = data.execStatus ?? "pending";
   const reducedMotion = usePrefersReducedMotion();
 
+  const cardRef = useRef<HTMLDivElement>(null);
+  const inViewport = useInViewport(cardRef);
+  const stalled = useStallState(data.liveSignalAt, status === "running");
+  const pulseMs = useEventRatePulse(data.liveSignalAt);
+  // Every gate the live-node contract requires, all real signals: actually
+  // running, fresh work (not stalled), a live signal at all, on-screen, and
+  // not overridden by prefers-reduced-motion. The cap is applied last, via
+  // useAnimationSlot, so a node that already fails one of these gates never
+  // even competes for a slot.
+  //
+  // The presence gate reads `liveSignalAt`, not `lastEventAt`, and the two
+  // are not interchangeable here. `lastEventAt` advances on ANY event
+  // including the lifecycle ones that merely bracket a node's work, so a node
+  // fed only NodeStarted satisfies it for as long as it claims to be running
+  // — while `liveSignalAt` stays null, which makes the stall clock answer
+  // "not stalled" (correctly: no stream ever flowed, so none can have
+  // stopped). Gating on `lastEventAt` therefore combined a permanently-true
+  // presence test with a permanently-false stall test, and the pulse asserted
+  // a live stream for nodes that had never reported one. Reading the same
+  // field the stall clock reads keeps the two halves from disagreeing: a node
+  // only pulses while something is actually reporting work, and the moment
+  // that reporting stops the stall clock can end it.
+  //
+  // A running node with no live signal is not hidden by this — the running
+  // dot and the running border rail both draw on `status` alone. It simply
+  // holds still, which is the honest rendering of a node we know is running
+  // and know nothing else about.
+  const wantsToAnimate =
+    status === "running" && !stalled && !reducedMotion && inViewport && data.liveSignalAt != null;
+  const animationGranted = useAnimationSlot(wantsToAnimate);
+  const animating = wantsToAnimate && animationGranted;
+
   // These derive from status data (dag-* tokens) — keep inline
   const visual = computeNodeVisualStyle(status, !!selected);
   const borderWidth = selected ? Math.max(visual.borderWidth, 2) : visual.borderWidth;
@@ -172,8 +346,34 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         ? "—"
         : t(STATUS_WORD_KEY[status]);
 
+  // The activity row's header word — the "current activity" half of row 6,
+  // and where a stall becomes visible text rather than only an animation
+  // that quietly stops. Independent of reducedMotion/animating: this is the
+  // static-equivalent information those two must carry identically.
+  //
+  // A running node with no activity signal falls back to its status word, not
+  // to "waiting". Absence of a signal means we do not know what the node is
+  // doing; it does not mean the node is waiting, and a caption reading
+  // "waiting" beside a node that is visibly running is a false statement about
+  // the run. A queued node genuinely is waiting, so that branch keeps the word.
+  // The status word also keeps the row occupied, which the fixed-height
+  // contract above depends on.
+  const activityWord = stalled
+    ? "stalled"
+    : status === "running"
+      ? data.activity
+        ? data.activityDetail
+          ? `${ACTIVITY_LABEL[data.activity]}: ${data.activityDetail}`
+          : ACTIVITY_LABEL[data.activity]
+        : t(STATUS_WORD_KEY[status])
+      : status === "queued"
+        ? ACTIVITY_LABEL.waiting
+        : "";
+  const counterText = data.counter != null ? String(data.counter) : "";
+
   return (
     <div
+      ref={cardRef}
       className="relative flex flex-col justify-between rounded-md px-2.5 py-2"
       style={{
         background: visual.bgColor,
@@ -192,8 +392,8 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
       {/* Status rail — a left-edge color bar that survives the readability
           zoom floor even when the card is too small to read text or icons.
           A span, not a div: the card's rows() test selects direct div
-          children of this card as its two content rows, and the rail is
-          decorative chrome, not a third row. */}
+          children of this card as its content rows, and the rail is
+          decorative chrome, not one of them. */}
       <span
         className="pointer-events-none absolute inset-y-0 left-0 block rounded-l-md"
         style={{ width: 3, background: visual.railColor }}
@@ -251,7 +451,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         )}
         {status === "running" && (
           <span
-            className={`h-1.5 w-1.5 shrink-0 rounded-full${reducedMotion ? "" : " animate-pulse"}`}
+            className={`h-1.5 w-1.5 shrink-0 rounded-full${animating ? " animate-pulse" : ""}`}
             style={{ background: "var(--dag-running-border)" }}
           />
         )}
@@ -274,12 +474,28 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         </span>
       </div>
 
+      {/* Live-activity row: what the node is doing, and a counter beside it
+          where the provider reports one. Always rendered, so the row below the
+          role never moves as a run progresses.
+
+          This row used to sit above a two-line preview of the agent's latest
+          text. Nothing on the wire fills that, so it drew empty on every card
+          and has been removed until a signal carries per-node text — see the
+          note on NODE_HEIGHT. The word here and the animation state above are
+          two independent readouts of the same `stalled`/`activity` facts,
+          which is what keeps them from disagreeing under
+          prefers-reduced-motion. */}
+      <div className="mt-0.5 flex items-center justify-between gap-1.5 font-mono text-[length:var(--t-xs)] uppercase leading-tight tracking-wide text-content-muted">
+        <span className="truncate">{activityWord}</span>
+        {counterText && <span className="shrink-0 tabular-nums">{counterText}</span>}
+      </div>
+
       {status === "running" && (
         <div
           className="pointer-events-none absolute inset-0 rounded-md opacity-35"
           style={{
             border: "2px solid var(--dag-running-border)",
-            animation: reducedMotion ? "none" : "pulse 1.5s ease-in-out infinite",
+            animation: animating ? `pulse ${pulseMs}ms ease-in-out infinite` : "none",
           }}
         />
       )}

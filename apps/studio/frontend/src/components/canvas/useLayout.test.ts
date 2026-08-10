@@ -95,7 +95,7 @@ function assertNoOverlap(nodes: Node[]) {
 }
 
 describe("estimateNodeHeight", () => {
-  // The card is a fixed two-row box, so its height cannot depend on how far
+  // The card is a fixed-height box, so its height cannot depend on how far
   // along a run is. This is the invariant the whole layout leans on: two nodes
   // side by side are the same size whether or not either has finished, which is
   // what lets a rank line up. It used to grow a row at a time, and these tests
@@ -386,19 +386,26 @@ describe("computeNodeDepths / maxGraphDepth — longest-path rank index", () => 
 
 describe("enforceMinRankGap — minimum vertical gap within a rank", () => {
   it("is a no-op when nodes are already spaced beyond the floor", () => {
+    // Spaced off the node height rather than a literal: the floor is
+    // height + gap, so a hardcoded y stops clearing it the moment the card
+    // grows and this test starts asserting a push while still calling itself
+    // a no-op.
+    const clear = NODE_HEIGHT + 50;
     const nodes: Node[] = [
       { ...bare("a"), position: { x: 0, y: 0 } },
-      { ...bare("b"), position: { x: 0, y: 100 } },
+      { ...bare("b"), position: { x: 0, y: clear } },
     ];
     const out = enforceMinRankGap(nodes, 6);
     expect(out.find((n) => n.id === "a")!.position.y).toBe(0);
-    expect(out.find((n) => n.id === "b")!.position.y).toBe(100);
+    expect(out.find((n) => n.id === "b")!.position.y).toBe(clear);
   });
 
   it("pushes an overlapping node down until the gap floor is met", () => {
+    // Every node measures NODE_HEIGHT regardless of its own data (see
+    // estimateNodeHeight), so b at y=10 overlaps a by all but 10px of it.
     const nodes: Node[] = [
-      { ...bare("a"), position: { x: 0, y: 0 } }, // height 40
-      { ...bare("b"), position: { x: 0, y: 10 } }, // overlaps a by 30px
+      { ...bare("a"), position: { x: 0, y: 0 } },
+      { ...bare("b"), position: { x: 0, y: 10 } },
     ];
     const out = enforceMinRankGap(nodes, 6);
     const a = out.find((n) => n.id === "a")!;
@@ -1227,9 +1234,17 @@ describe("getLayoutedElements — folding a mid-run branch+join stays edge-aware
   it("the truly-sequential 30-node chain still folds into the previously-measured band", () => {
     // Pins the readability win survives the edge-aware rewrite: every
     // boundary in a pure chain is a safe (1-predecessor/1-successor) break,
-    // so this must fold exactly as before. Measured pre-fix band: ~1528x504,
-    // raw fit ~0.644 at a 1280x560 panel — small drift is fine, a strip
-    // (unfolded ~7692-wide) is the regression this guards against.
+    // so this must fold exactly as before, modulo the row height itself.
+    // Measured pre-fix band at NODE_HEIGHT=56: ~1528x504, raw fit ~0.644 at a
+    // 1280x560 panel. NODE_HEIGHT rose to 88 for the live-activity row (see
+    // useLayout.ts), which raises every row's height and so this band's too —
+    // remeasured then at ~1500x664. It rose again when NODE_HEIGHT stopped
+    // being a literal and became the sum of the rows the card draws, 11px
+    // taller than the literal had claimed: ~719. It then FELL by 30 a node,
+    // to ~569, when the card stopped reserving two lines for assistant text
+    // that no signal fills. Drift with the row height is expected and is why
+    // width and fit stay bands; a strip (unfolded ~7692-wide) is the
+    // regression this guards against.
     const c = chain(30);
     const { nodes } = getLayoutedElements(c.nodes(), c.edges, "LR");
     const left = Math.min(...nodes.map((n) => n.position.x));
@@ -1247,7 +1262,7 @@ describe("getLayoutedElements — folding a mid-run branch+join stays edge-aware
 
     expect(width).toBeGreaterThan(1300);
     expect(width).toBeLessThan(1700);
-    expect(height).toBeCloseTo(504, -1);
+    expect(height).toBeCloseTo(569, -1);
     expect(rawFit).toBeGreaterThan(0.55);
     expect(rawFit).toBeLessThan(0.75);
   });
