@@ -406,6 +406,44 @@ switch to writing the deliverable with what you have.
 """
 
 
+def critical_path_depth(dep_indices: list[list[int]]) -> int:
+    """Longest dependency chain in the plan, in ops.
+
+    This is the number of ops that must run one after another, which is what
+    bounds the flow's wall clock. It is not the op count: ops with no path
+    between them run at the same time, since the executor's default
+    concurrency is the whole assignment list and only dependencies hold an op
+    back.
+
+    Dependencies point backwards (op i may only depend on ops before it), so a
+    single forward pass is enough. Cycles are therefore not reachable here, and
+    an entry pointing outside the plan is ignored rather than raising: a bad
+    index should not be able to take down a run over a budget hint.
+    """
+    if not dep_indices:
+        return 0
+    depths = [1] * len(dep_indices)
+    for i, deps in enumerate(dep_indices):
+        for j in deps:
+            if 0 <= j < i:
+                depths[i] = max(depths[i], depths[j] + 1)
+    return max(depths)
+
+
+def op_budget_share(total_budget: int, dep_indices: list[list[int]], num_ops: int) -> int:
+    """Seconds to offer one op out of the flow's total budget.
+
+    The divisor is the critical-path depth rather than the op count, for the
+    reason given on `critical_path_depth`. `num_ops` is the fallback for a plan
+    with no dependency information at all, where nothing can be said about what
+    overlaps.
+    """
+    divisor = critical_path_depth(dep_indices) or num_ops
+    if divisor <= 0:
+        return total_budget
+    return int(total_budget / divisor)
+
+
 def _format_budget_preamble(
     op_index: int,
     num_ops: int,
@@ -2805,7 +2843,19 @@ async def _run_flow_inner(
 
     budget_preambles: dict[int, str] = {}
     if env.total_budget and assignments:
-        share = int(env.total_budget / len(assignments))
+        # Divide the budget by how many ops run *one after another*, not by how
+        # many there are. Independent ops run at the same time — the executor's
+        # default concurrency is the whole assignment list, so only
+        # dependencies serialize anything — and dividing by the op count told
+        # every op in a wide graph that it had a fraction of the wall clock it
+        # actually had. Ops then paced themselves against that smaller number
+        # and dropped whatever was not the deliverable, which in practice meant
+        # the parts that run last.
+        #
+        # For a straight chain the depth equals the op count and this changes
+        # nothing; it only ever widens the share for graphs that really do run
+        # work in parallel.
+        share = op_budget_share(env.total_budget, dep_indices, len(assignments))
         deadline = time.time() + env.total_budget
         for i in range(len(assignments)):
             budget_preambles[i] = _format_budget_preamble(

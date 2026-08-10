@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for flow budget propagation: _format_budget_preamble, equal-split arithmetic, and OrchestrationEnv.total_budget wiring."""
+"""Tests for flow budget propagation: _format_budget_preamble, the critical-path share arithmetic, and OrchestrationEnv.total_budget wiring."""
 
 from __future__ import annotations
 
@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lionagi.cli.orchestrate.flow import _format_budget_preamble
+from lionagi.cli.orchestrate.flow import (
+    _format_budget_preamble,
+    critical_path_depth,
+    op_budget_share,
+)
 
 # ── _format_budget_preamble ────────────────────────────────────────────────
 
@@ -56,20 +60,62 @@ def test_format_budget_preamble_index_and_count():
     assert "60 seconds" in text
 
 
-# ── Budget split (equal share across assignments) ──────────────────────────
+# ── Critical-path depth ────────────────────────────────────────────────────
+#
+# These call the shipped functions rather than a copy of their arithmetic. The
+# previous version of this section defined its own `_equal_split` helper and
+# asserted against that, so it agreed with itself no matter what the flow did.
 
 
-def _equal_split(n: int, total_budget: int) -> int:
-    """Replicate the per-assignment share from _run_flow_inner."""
-    return int(total_budget / n)
+def test_depth_of_a_straight_chain_is_the_op_count():
+    # 1 → 2 → 3: nothing overlaps, so every op is on the critical path.
+    assert critical_path_depth([[], [0], [1]]) == 3
 
 
-def test_equal_split_3_assignments():
-    assert _equal_split(3, 600) == 200
+def test_depth_of_independent_ops_is_one():
+    # No edges at all: the ops run together, so the chain is one op long.
+    assert critical_path_depth([[], [], [], []]) == 1
 
 
-def test_equal_split_rounds_down():
-    assert _equal_split(3, 700) == 233
+def test_depth_of_a_fan_in_counts_the_longest_chain_only():
+    # Three producers in parallel feeding one consumer — the shape the run
+    # canvas draws for a writer fan-in. Four ops, but only two run in sequence.
+    assert critical_path_depth([[], [], [], [0, 1, 2]]) == 2
+
+
+def test_depth_takes_the_longest_of_two_unequal_branches():
+    # 0 → 1 → 2 alongside a lone 3, both feeding 4.
+    assert critical_path_depth([[], [0], [1], [], [2, 3]]) == 4
+
+
+def test_depth_of_an_empty_plan_is_zero():
+    assert critical_path_depth([]) == 0
+
+
+def test_depth_ignores_a_dependency_pointing_outside_the_plan():
+    # A malformed index must not raise: this only sizes a hint in a prompt.
+    assert critical_path_depth([[], [7]]) == 1
+
+
+def test_share_divides_by_chain_length_not_op_count():
+    # The case that motivated the change: 4 ops, 900s, three of them parallel.
+    # By op count each op is told 225s; two of those four ops actually run in
+    # sequence, so the honest figure is 450s.
+    assert op_budget_share(900, [[], [], [], [0, 1, 2]], 4) == 450
+
+
+def test_share_is_unchanged_for_a_straight_chain():
+    # The no-op guarantee: where nothing overlaps, this must not hand out more
+    # time than dividing by the op count did.
+    assert op_budget_share(600, [[], [0], [1]], 3) == 200
+
+
+def test_share_rounds_down():
+    assert op_budget_share(700, [[], [0], [1]], 3) == 233
+
+
+def test_share_falls_back_to_the_op_count_without_dependency_data():
+    assert op_budget_share(600, [], 3) == 200
 
 
 def test_no_budget_preamble_when_total_budget_none():
