@@ -353,6 +353,29 @@ def test_no_preambles_without_a_captured_deadline_instant():
     assert _build_budget_preambles(600, [[], [0]], 2, 0, None) == {}
 
 
+def test_a_budgeted_run_without_an_instant_says_so(monkeypatch):
+    """Silent about the value, loud about the event.
+
+    Refusing to invent a deadline is right, but a budgeted run reaching this
+    point without one means the instant was never wired through, and the ops
+    are about to be held to a limit nobody told them about. That is worth a
+    line on stderr even though it is not worth a guess.
+    """
+    from lionagi.cli.orchestrate import flow as flow_mod
+
+    said: list[str] = []
+    monkeypatch.setattr(flow_mod, "_warn", lambda msg: said.append(msg))
+
+    assert flow_mod._build_budget_preambles(600, [[], [0]], 2, 0, None) == {}
+    assert said, "a budgeted run with no captured instant passed without a word"
+
+    # The quiet cases stay quiet: no budget means no budget guidance was ever
+    # owed, so warning there would train the reader to ignore the channel.
+    said.clear()
+    assert flow_mod._build_budget_preambles(None, [[], [0]], 2, 0, None) == {}
+    assert not said, f"warned about an unbudgeted run: {said}"
+
+
 def test_the_preamble_renders_the_instant_it_was_handed():
     """A fixed instant renders as itself, so a recomputed one is visible."""
     import datetime
@@ -397,6 +420,22 @@ def test_the_flow_hands_over_the_stored_instant_instead_of_deriving_one():
             "the call site is deriving a deadline from the current time again, which "
             "dates it from whenever planning happened to finish"
         )
+    # Reading the right field is not enough on its own: overwriting it here,
+    # after planning and just before the call, restores the defect while still
+    # satisfying every assertion above. Planning happens in this function, so
+    # the only safe number of writes to the field here is none.
+    rewritten = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Attribute) and target.attr == "budget_deadline_epoch"
+    ]
+    assert not rewritten, (
+        f"_run_flow_inner assigns budget_deadline_epoch at line(s) {rewritten}; the "
+        "instant belongs to the caller that opens the timeout scope, and re-dating "
+        "it here is the original defect wearing the fix's field name"
+    )
 
 
 def test_the_deadline_is_recorded_before_the_timeout_scope_opens():
@@ -431,7 +470,10 @@ def test_the_deadline_is_recorded_before_the_timeout_scope_opens():
     # function that no longer has a timeout scope at all.
     assert scope_opened, "no timeout scope in _run_flow — this test is aimed at the wrong function"
     assert recorded, "_run_flow must record the instant its timeout clock starts counting from"
-    assert min(recorded) < min(scope_opened), (
+    # Every write, not just the first: an early assignment followed by a later
+    # one leaves the earliest line where it was, so comparing minima would call
+    # a re-dated deadline correct.
+    assert max(recorded) < min(scope_opened), (
         "the deadline is recorded after the timeout scope opens, so it dates from "
         "later than the clock it is supposed to describe"
     )

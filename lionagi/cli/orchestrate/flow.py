@@ -537,6 +537,16 @@ def _build_budget_preambles(
     the instant therefore means no preamble at all, since telling an op
     nothing is the honest failure and telling it a late deadline is not.
     """
+    if total_budget and num_ops > 0 and deadline_epoch is None:
+        # A budgeted run that got this far without an instant is a wiring
+        # error rather than a configuration: the limit will still be enforced
+        # on these ops, they just will not be told about it. Staying silent is
+        # right about the value and wrong about the event, so name the event
+        # once and still refuse to invent the value.
+        _warn(
+            "flow has a total budget but no recorded deadline instant; "
+            "its ops will be given no budget guidance"
+        )
     if not total_budget or num_ops <= 0 or deadline_epoch is None:
         return {}
     share = op_budget_share(total_budget, dep_indices, num_ops, max_concurrent)
@@ -2629,11 +2639,16 @@ async def _run_flow(
     result: str = ""
     try:
         if timeout:
-            # Fix the deadline here, where the clock it belongs to starts, and
-            # carry the instant rather than the duration. Deriving it later
-            # measures from whenever "later" happens to be, so every second
-            # spent planning pushed the deadline every op was told a second
-            # further out than the one this scope will actually enforce.
+            # Fix the deadline immediately before the scope whose clock it
+            # describes, and carry the instant rather than the duration.
+            # Deriving it later measures from whenever "later" happens to be,
+            # so every second spent planning pushed the deadline every op was
+            # told a second further out than the one this scope will actually
+            # enforce. Reading the clock just before entry rather than inside
+            # the scope leaves a gap of one context-manager entry, which makes
+            # the advertised deadline very slightly early; that is the safe
+            # direction, since an op told it has less time than the scope will
+            # allow finishes early instead of being cancelled mid-work.
             env.budget_deadline_epoch = time.time() + timeout
             with move_on_after(timeout) as cancel_scope:
                 result = await _run_flow_inner(model_spec, prompt, **inner_kw)
