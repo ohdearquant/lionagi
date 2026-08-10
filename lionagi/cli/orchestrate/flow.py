@@ -449,16 +449,23 @@ def schedule_wave_count(dep_indices: list[list[int]], num_ops: int, max_concurre
     root alone, then two of its dependents, then the last one, which had
     nowhere to go while the other two held both slots.
 
-    So walk the schedule instead of estimating it. Repeatedly take the ops
-    whose dependencies are all satisfied, admit up to `max_concurrent` of them,
-    and count the passes.
+    So walk the schedule instead of estimating it. Keep a queue of ops whose
+    dependencies are satisfied, admit up to `max_concurrent` from the front of
+    it, and count the passes.
 
-    The executor admits ops one at a time as slots free rather than in strict
-    passes (`operations/flow.py` starts every op as a task against a shared
-    `CapacityLimiter`), so this counts passes that the real schedule can only
-    beat, never lose to, when ops take comparable time. For sizing a budget
-    that is the safe direction: an op told it has slightly less time finishes
-    inside the flow's deadline, while one told it has more overruns it.
+    The queue is the point, and it has to be a queue rather than a set. The
+    executor starts every op as a task that waits for its dependencies and
+    then queues for a shared `CapacityLimiter` (`operations/flow.py`), which
+    hands slots out in arrival order. An op that has just become ready
+    therefore waits behind ops that were already queued, and taking whichever
+    ops are ready — ignoring how long each has waited — counts a schedule the
+    executor cannot actually run, one pass short on shapes where a dependency
+    chain competes with independent work.
+
+    Getting that wrong has a direction. This number divides the flow's budget,
+    so counting too few passes hands every op more time than the flow can
+    afford and the flow overruns its deadline, while counting too many only
+    means an op is told it has slightly less time than it might have had.
 
     `max_concurrent <= 0` means unbounded, matching how the executor reads it.
     A plan whose dependency data does not describe its ops gets `num_ops`, the
@@ -476,25 +483,47 @@ def schedule_wave_count(dep_indices: list[list[int]], num_ops: int, max_concurre
     if conc >= num_ops:
         return critical_path_depth(dep_indices) or num_ops
 
+    def _plan_deps(i: int) -> list[int]:
+        # An index pointing outside the plan is ignored rather than treated as
+        # unsatisfiable, matching critical_path_depth: a malformed entry should
+        # not be able to stall a budget hint.
+        return [d for d in dep_indices[i] if 0 <= d < num_ops]
+
+    # Slots go out in arrival order. Every op is started as a task, waits for
+    # its dependencies, and only then queues for the shared limiter, so an op
+    # whose dependency has just cleared joins BEHIND ops that have been waiting
+    # for a slot all along and cannot overtake them.
+    #
+    # Admitting whichever ops are ready, ignoring how long each has waited,
+    # lets the dependency chain skip that backlog. Six ops at a cap of two — a
+    # chain of three beside three independent ops — comes out at three passes
+    # that way, where the executor runs four: the middle of the chain becomes
+    # ready while two independents are still queued, waits behind them, and
+    # pushes its own dependent a pass later. Undercounting is the one direction
+    # a budget divisor must not go, because it hands every op more time than
+    # the flow can afford and the flow overruns its deadline.
+    queued: set[int] = set()
+    queue: list[int] = []
+
+    def _enqueue_newly_ready(done: set[int]) -> None:
+        for i in range(num_ops):
+            if i not in queued and all(d in done for d in _plan_deps(i)):
+                queue.append(i)
+                queued.add(i)
+
     done: set[int] = set()
+    _enqueue_newly_ready(done)
     waves = 0
     while len(done) < num_ops:
-        ready = [
-            i
-            for i in range(num_ops)
-            if i not in done
-            # An index pointing outside the plan is ignored rather than treated
-            # as unsatisfiable, matching critical_path_depth: a malformed entry
-            # should not be able to stall a budget hint.
-            and all(d in done for d in dep_indices[i] if 0 <= d < num_ops)
-        ]
-        if not ready:
+        if not queue:
             # Unreachable for well-formed plans, whose dependencies point
             # backwards. Fall back to the no-overlap assumption rather than
             # spinning.
             return num_ops
-        done.update(ready[:conc])
+        done.update(queue[:conc])
+        del queue[:conc]
         waves += 1
+        _enqueue_newly_ready(done)
     return waves
 
 
