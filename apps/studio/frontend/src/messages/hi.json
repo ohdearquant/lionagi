@@ -487,6 +487,7 @@
       "progressRunning": "चल रहा है",
       "progressFailed": "विफल",
       "progressPending": "लंबित",
+      "progressEscalated": "एस्केलेटेड",
       "progressElapsed": "व्यतीत समय",
       "expandGraph": "निष्पादन ग्राफ विस्तृत करें",
       "collapseGraph": "निष्पादन ग्राफ संक्षिप्त करें",

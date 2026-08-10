@@ -487,6 +487,7 @@
       "progressRunning": "قيد التشغيل",
       "progressFailed": "فشل",
       "progressPending": "قيد الانتظار",
+      "progressEscalated": "تم التصعيد",
       "progressElapsed": "الوقت المنقضي",
       "expandGraph": "توسيع الرسم البياني للتنفيذ",
       "collapseGraph": "طي الرسم البياني للتنفيذ",

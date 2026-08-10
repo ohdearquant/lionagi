@@ -487,6 +487,7 @@
       "progressRunning": "Çalışıyor",
       "progressFailed": "Başarısız",
       "progressPending": "Beklemede",
+      "progressEscalated": "Yükseltildi",
       "progressElapsed": "Geçen süre",
       "expandGraph": "Yürütme grafiğini genişlet",
       "collapseGraph": "Yürütme grafiğini daralt",

@@ -487,6 +487,7 @@
       "progressRunning": "جاری",
       "progressFailed": "ناکام",
       "progressPending": "زیرِ التوا",
+      "progressEscalated": "بڑھایا گیا",
       "progressElapsed": "گزرا وقت",
       "expandGraph": "ایگزیکیوشن گراف پھیلائیں",
       "collapseGraph": "ایگزیکیوشن گراف سمیٹیں",

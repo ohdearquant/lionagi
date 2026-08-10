@@ -202,8 +202,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 1057 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1057);
+  it("en.json has 1058 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1058);
   });
 
   it.each(LOCALES.map((l) => l.code))(
@@ -268,6 +268,7 @@ describe("messages — a locale value byte-identical to English is a missed tran
     "history.detail.progressRunning",
     "history.detail.progressFailed",
     "history.detail.progressPending",
+    "history.detail.progressEscalated",
     "history.detail.progressElapsed",
     "history.detail.expandGraph",
     "history.detail.collapseGraph",

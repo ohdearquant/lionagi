@@ -487,6 +487,7 @@
       "progressRunning": "Выполняется",
       "progressFailed": "Ошибка",
       "progressPending": "Ожидание",
+      "progressEscalated": "Эскалировано",
       "progressElapsed": "Прошло времени",
       "expandGraph": "Развернуть граф выполнения",
       "collapseGraph": "Свернуть граф выполнения",

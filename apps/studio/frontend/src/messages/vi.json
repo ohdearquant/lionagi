@@ -487,6 +487,7 @@
       "progressRunning": "Đang chạy",
       "progressFailed": "Thất bại",
       "progressPending": "Đang chờ",
+      "progressEscalated": "Đã leo thang",
       "progressElapsed": "Thời gian trôi qua",
       "expandGraph": "Mở rộng biểu đồ thực thi",
       "collapseGraph": "Thu gọn biểu đồ thực thi",

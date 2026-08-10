@@ -487,6 +487,7 @@
       "progressRunning": "চলমান",
       "progressFailed": "ব্যর্থ",
       "progressPending": "মুলতুবি",
+      "progressEscalated": "এস্কেলেটেড",
       "progressElapsed": "অতিবাহিত সময়",
       "expandGraph": "এক্সিকিউশন গ্রাফ প্রসারিত করুন",
       "collapseGraph": "এক্সিকিউশন গ্রাফ সংকুচিত করুন",

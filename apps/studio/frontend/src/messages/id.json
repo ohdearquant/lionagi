@@ -487,6 +487,7 @@
       "progressRunning": "Berjalan",
       "progressFailed": "Gagal",
       "progressPending": "Tertunda",
+      "progressEscalated": "Dieskalasi",
       "progressElapsed": "Waktu berlalu",
       "expandGraph": "Perluas grafik eksekusi",
       "collapseGraph": "Ciutkan grafik eksekusi",
