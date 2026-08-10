@@ -182,14 +182,19 @@ describe("WorkerCanvas — live activity reaches the card it describes", () => {
     expect(cardTextFor("plan")).toContain("tool: grep");
   });
 
-  it("shows the assistant's latest text on the card", () => {
+  it("reads an assistant delta as streaming, without putting the text on the card", () => {
     const events = [
       rawEvent({ kind: "AssistantDelta", payload: { name: "plan", text: "reading the ADR" } }),
     ].map(normalizeSignalEvent);
 
     renderCanvas(buildNodeActivityByName(events));
 
-    expect(cardTextFor("plan")).toContain("reading the ADR");
+    // The fold still consumes the text — it is how a node is known to be
+    // streaming rather than thinking. The card reports that state and not the
+    // text itself: no signal in production carries per-node assistant text, so
+    // a card that made room for it drew an empty block on every run.
+    expect(cardTextFor("plan")).toContain("streaming");
+    expect(cardTextFor("plan")).not.toContain("reading the ADR");
   });
 
   it("leaves a node with no signal exactly as it was — no activity, not a blank", () => {

@@ -1197,13 +1197,14 @@ describe("getLayoutedElements — folding a mid-run branch+join stays edge-aware
     // boundary in a pure chain is a safe (1-predecessor/1-successor) break,
     // so this must fold exactly as before, modulo the row height itself.
     // Measured pre-fix band at NODE_HEIGHT=56: ~1528x504, raw fit ~0.644 at a
-    // 1280x560 panel. NODE_HEIGHT rose to 88 for the live-activity row (ADR-
-    // 0113 row 6, see useLayout.ts), which raises every row's height and so
-    // this band's too — remeasured then at ~1500x664. It rose again when
-    // NODE_HEIGHT stopped being a literal and became the sum of the rows the
-    // card draws, which came out 11px taller than the literal had claimed:
-    // remeasured at ~719 tall. Drift with the row height is expected and is
-    // why the width and fit stay bands; a strip (unfolded ~7692-wide) is the
+    // 1280x560 panel. NODE_HEIGHT rose to 88 for the live-activity row (see
+    // useLayout.ts), which raises every row's height and so this band's too —
+    // remeasured then at ~1500x664. It rose again when NODE_HEIGHT stopped
+    // being a literal and became the sum of the rows the card draws, 11px
+    // taller than the literal had claimed: ~719. It then FELL by 30 a node,
+    // to ~569, when the card stopped reserving two lines for assistant text
+    // that no signal fills. Drift with the row height is expected and is why
+    // width and fit stay bands; a strip (unfolded ~7692-wide) is the
     // regression this guards against.
     const c = chain(30);
     const { nodes } = getLayoutedElements(c.nodes(), c.edges, "LR");
@@ -1222,7 +1223,7 @@ describe("getLayoutedElements — folding a mid-run branch+join stays edge-aware
 
     expect(width).toBeGreaterThan(1300);
     expect(width).toBeLessThan(1700);
-    expect(height).toBeCloseTo(719, -1);
+    expect(height).toBeCloseTo(569, -1);
     expect(rawFit).toBeGreaterThan(0.55);
     expect(rawFit).toBeLessThan(0.75);
   });

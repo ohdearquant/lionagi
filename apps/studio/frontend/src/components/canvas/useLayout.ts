@@ -7,56 +7,48 @@ import type { Node, Edge } from "reactflow";
 // of them is edited.
 export const NODE_WIDTH = 210;
 
-// StepNode is a fixed three-row card: name and state on top, role and
-// elapsed second, and a live-activity row (agent's latest text, current
-// activity, event/token counter) along the bottom — all three rows always
-// rendered. So one constant describes it at every moment of a run, and dagre
-// reserves exactly what the node occupies.
+// StepNode is a fixed three-row card: name and state on top, role and elapsed
+// second, and an activity row along the bottom — all three always rendered. So
+// one constant describes it at every moment of a run, and dagre reserves
+// exactly what the node occupies.
 //
 // It used to grow a row at a time as a run filled its data in, which meant the
 // height depended on how far along the run was, ranks came out ragged, and this
 // function had to guess. Fixing the card removed the guess: two nodes side by
-// side are the same size whether or not either has finished, and — since the
-// live-activity row was added — whether or not either has produced any
-// assistant text yet.
+// side are the same size whether or not either has finished.
 //
 // The height below is ADDED UP from the rows the card draws rather than kept as
 // a literal, because a literal can only ever be checked against itself: a test
 // asserting the card's style height equals the constant passes whatever the
 // constant says, including when the content needs more room than it grants.
 // Carried as a literal it was 88 while the card drew 98 worth of rows, so a
-// running node — the widest border, and the only kind with live text to show —
-// overflowed its own border by the preview's second line.
+// running node — the widest border — overflowed its own border.
 //
-// The sum below comes to 99, one more than a browser measures, because the name
-// row is reserved from its type scale (ceil of 12px at 1.375 leading = 17) where
-// the browser lays it out at 16. Leave it: over-reserving costs a pixel of empty
-// card, under-reserving clips text, and the drawn height depends on font metrics
-// that are not the same on every platform.
+// The card also reserved two lines for the agent's latest text, and nothing on
+// the wire fills them. The one signal that carries assistant content is reduced
+// to a bare reference before it is stored, and that reference has no operation
+// id or step name to correlate it to a node, so every card drew an empty block.
+// The reservation is gone until a signal exists that can fill it. Removing it
+// also buys back the vertical space a wide graph needs to stay readable.
+//
+// The sum still runs one pixel over what a browser measures, because the name
+// row is reserved from its type scale (ceil of 12px at 1.375 leading = 17)
+// where the browser lays it out at 16. Leave it: over-reserving costs a pixel
+// of empty card, under-reserving clips text, and the drawn height depends on
+// font metrics that are not the same on every platform.
 
 // The type scale these rows are set in (theme.css --t-xs / --t-sm) and the two
 // Tailwind leading ratios used on them. Duplicated from CSS by necessity: the
 // layout has to know the card's height before the browser has laid anything
-// out. StepNode sets the preview's line-height from PREVIEW_LINE_HEIGHT below
-// so the reserved space and the drawn space cannot round apart.
+// out.
 const TYPE_XS = 11;
 const TYPE_SM = 12;
 const LEADING_TIGHT = 1.25;
 const LEADING_SNUG = 1.375;
 
-/** Lines of assistant text the card previews before clipping. */
-export const TEXT_PREVIEW_LINES = 2;
-
-export const PREVIEW_LINE_HEIGHT = Math.ceil(TYPE_XS * LEADING_TIGHT);
-
-/** Height the preview block always occupies, full or empty. StepNode applies
- *  it directly, which is what makes a card with no text yet the same shape as
- *  one with two lines rather than merely the same outer height. */
-export const TEXT_PREVIEW_HEIGHT = PREVIEW_LINE_HEIGHT * TEXT_PREVIEW_LINES;
-
 const CARD_PADDING_Y = 8; // py-2
 const CARD_BORDER_MAX = 3; // the running state's border, the widest drawn
-const CARD_ROW_GAP = 2; // mt-0.5 above the activity block, gap-0.5 inside it
+const CARD_ROW_GAP = 2; // mt-0.5 above the activity row
 
 const TOP_ROW_HEIGHT = Math.ceil(TYPE_SM * LEADING_SNUG);
 const SECOND_ROW_HEIGHT = Math.ceil(TYPE_XS * LEADING_TIGHT);
@@ -68,9 +60,7 @@ export const NODE_HEIGHT =
   TOP_ROW_HEIGHT +
   SECOND_ROW_HEIGHT +
   CARD_ROW_GAP +
-  ACTIVITY_HEADER_HEIGHT +
-  CARD_ROW_GAP +
-  TEXT_PREVIEW_HEIGHT;
+  ACTIVITY_HEADER_HEIGHT;
 
 /** The height of a rendered node. Constant by construction — see NODE_HEIGHT.
  *  Kept as a function because the layout passes call it per node and a future

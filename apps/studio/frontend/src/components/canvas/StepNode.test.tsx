@@ -10,12 +10,7 @@ import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
 import StepNode, { MAX_ANIMATING_NODES } from "./StepNode";
 import type { StepNodeData, NodeExecStatus } from "./StepNode";
-import {
-  NODE_HEIGHT,
-  PREVIEW_LINE_HEIGHT,
-  TEXT_PREVIEW_HEIGHT,
-  TEXT_PREVIEW_LINES,
-} from "./useLayout";
+import { NODE_HEIGHT } from "./useLayout";
 import { STALL_TIMEOUT_MS } from "@/lib/nodeActivity";
 
 // Handle needs a ReactFlow store; the card's own layout is what is under test.
@@ -199,34 +194,26 @@ describe("StepNode — the card keeps its shape", () => {
   });
 });
 
-describe("StepNode — fixed height regardless of live text (ADR-0113 row 6)", () => {
-  it("renders the assistant text but keeps the card's height constant, empty or full", () => {
-    renderNode({ lastText: null });
-    const emptyCard = container.firstElementChild as HTMLElement;
-    const emptyHeight = emptyCard.style.height;
-    expect(emptyHeight).toBe(`${NODE_HEIGHT}px`);
-
-    const longText = "one two three four five six seven eight nine ten eleven twelve thirteen";
-    renderNode({ lastText: longText });
-    const fullCard = container.firstElementChild as HTMLElement;
-    // The text must actually be on the card (row 6 exists), and the card's
-    // own reserved height must not have grown to fit it (that is the
-    // defect useLayout.ts's NODE_HEIGHT comment records fixing once already).
-    expect(fullCard.textContent).toContain("one two three");
-    expect(fullCard.style.height).toBe(emptyHeight);
-  });
-
+describe("StepNode — one height for every state of a run", () => {
   it("is the same height for two side-by-side nodes whether or not either has finished", () => {
+    // Compared against each other rather than against NODE_HEIGHT: the card
+    // sets its height FROM that constant, so asserting it equals the constant
+    // holds for any value and says nothing.
     renderNodes([
-      { id: "unfinished", data: { execStatus: "running", lastText: null } },
-      {
-        id: "finished",
-        data: { execStatus: "completed", lastText: "final answer, three lines of it, done" },
-      },
+      { id: "unfinished", data: { execStatus: "running", activity: "thinking" } },
+      { id: "finished", data: { execStatus: "completed" } },
     ]);
     const heights = cards().map((c) => (c as HTMLElement).style.height);
     expect(new Set(heights).size).toBe(1);
-    expect(heights[0]).toBe(`${NODE_HEIGHT}px`);
+  });
+
+  it("holds its height when a running node has an activity to report", () => {
+    renderNodes([
+      { id: "quiet", data: { execStatus: "running" } },
+      { id: "busy", data: { execStatus: "running", activity: "tool", activityDetail: "grep" } },
+    ]);
+    const heights = cards().map((c) => (c as HTMLElement).style.height);
+    expect(new Set(heights).size).toBe(1);
   });
 });
 
@@ -480,53 +467,32 @@ describe("StepNode — nothing animates outside the viewport", () => {
   });
 });
 
-/** The assistant-text preview: the second child of the live-activity row. */
-function previewEl(): HTMLElement {
-  const activityRow = rows()[2];
-  const preview = activityRow?.children[1] as HTMLElement | undefined;
-  if (!preview) throw new Error("no preview element under the activity row");
-  return preview;
-}
-
-describe("StepNode — the preview reserves its height instead of collapsing", () => {
-  it("occupies the same height with no text as with two full lines", () => {
-    // The invariant line-clamping alone cannot provide: a clamp caps how tall
-    // the block may get and says nothing about how short. An empty preview
-    // that collapses lets justify-between slide the rows above it downward,
-    // so the same fact stops being in the same place from card to card.
-    renderNode({ lastText: null });
-    const empty = previewEl().style.height;
-
-    renderNode({
-      lastText: "one two three four five six seven eight nine ten eleven twelve thirteen",
-    });
-    const full = previewEl().style.height;
-
-    expect(empty).toBe(`${TEXT_PREVIEW_HEIGHT}px`);
-    expect(full).toBe(empty);
+describe("StepNode — the card reserves exactly the rows it draws", () => {
+  it("reserves the chrome plus every row, and nothing for a row it does not draw", () => {
+    // NODE_HEIGHT is a sum of its terms rather than a literal, because a
+    // literal can only be checked against itself: the card sets its height
+    // from the constant, so a test comparing the two passes at any value —
+    // including 88, which it was while the card drew 98 worth of rows.
+    //
+    // Re-derived here from the type scale, so removing a row without
+    // shrinking the reservation (or adding one without growing it) fails.
+    const chrome = 8 * 2 + 3 * 2; // py-2 both sides, the running border both sides
+    const nameRow = Math.ceil(12 * 1.375);
+    const roleRow = Math.ceil(11 * 1.25);
+    const activityRow = Math.ceil(11 * 1.25);
+    const gapAboveActivity = 2;
+    expect(NODE_HEIGHT).toBe(chrome + nameRow + roleRow + gapAboveActivity + activityRow);
   });
 
-  it("draws exactly the lines it reserves room for", () => {
-    // Reservation and rendering are computed from one line height, so the
-    // clamped lines fill the reserved box exactly — no third line peeking
-    // past the clip, no dead band under a full preview.
-    renderNode({ lastText: "some text" });
-    expect(previewEl().style.lineHeight).toBe(`${PREVIEW_LINE_HEIGHT}px`);
-    expect(TEXT_PREVIEW_HEIGHT).toBe(PREVIEW_LINE_HEIGHT * TEXT_PREVIEW_LINES);
-  });
-
-  it("counts the whole preview inside the height the layout reserves", () => {
-    // The failure this replaces: the preview row was added to the card and
-    // NODE_HEIGHT stayed a hand-written literal that did not grow with it, so
-    // the card drew more than the layout had reserved. Now the card height is
-    // a sum with the preview as one of its terms — give the preview another
-    // line and NODE_HEIGHT follows, rather than silently overflowing.
-    expect(NODE_HEIGHT).toBeGreaterThan(TEXT_PREVIEW_HEIGHT);
-    // Chrome (padding 8 top and bottom, 3px border both sides) plus the two
-    // text rows above the activity block, which the card always draws.
-    const chrome = 8 * 2 + 3 * 2;
-    expect(NODE_HEIGHT - TEXT_PREVIEW_HEIGHT - chrome).toBeGreaterThanOrEqual(
-      PREVIEW_LINE_HEIGHT * 3,
+  it("draws no reserved-height block with nothing in it", () => {
+    // The card used to keep two lines for the agent's latest text. No signal
+    // carries per-node text, so that block rendered empty on every card of
+    // every run. This fails if a reservation returns before a producer does.
+    renderNode({ execStatus: "running", activity: "thinking" });
+    const card = container.firstElementChild as HTMLElement;
+    const emptyReservations = Array.from(card.querySelectorAll<HTMLElement>("*")).filter(
+      (el) => el.style.height !== "" && el.textContent === "",
     );
+    expect(emptyReservations).toEqual([]);
   });
 });

@@ -5,13 +5,7 @@ import { Handle, Position } from "reactflow";
 import type { NodeProps } from "reactflow";
 import { useTranslations } from "use-intl";
 import { IconCheck, IconClose, IconPause, IconWarning } from "@/components/ui/icons";
-import {
-  NODE_HEIGHT,
-  NODE_WIDTH,
-  PREVIEW_LINE_HEIGHT,
-  TEXT_PREVIEW_HEIGHT,
-  TEXT_PREVIEW_LINES,
-} from "./useLayout";
+import { NODE_HEIGHT, NODE_WIDTH } from "./useLayout";
 import { isStalled, pulseDurationMs, STALL_TIMEOUT_MS } from "@/lib/nodeActivity";
 import type { NodeActivityKind } from "@/lib/nodeActivity";
 
@@ -153,12 +147,6 @@ const ACTIVITY_LABEL: Record<NodeActivityKind, string> = {
   waiting: "waiting",
 };
 
-// The preview's line count and reserved height live in useLayout.ts, beside
-// the NODE_HEIGHT sum they are terms of — one home for the card's geometry, so
-// the space the layout reserves and the space the card draws cannot drift.
-// Re-exported here because the line count reads as a property of the card.
-export { TEXT_PREVIEW_LINES };
-
 const ROLE_VAR: Record<string, string> = {
   researcher: "var(--role-researcher)",
   implementer: "var(--role-implementer)",
@@ -202,9 +190,6 @@ export interface StepNodeData {
   // absent-safe: a node with no live signal correlation yet (or a finished
   // run loaded from history, which never streamed) renders with none of
   // these set and looks exactly like the card did before this row existed.
-  /** The agent's most recent assistant text; truncated for display to
-   *  TEXT_PREVIEW_LINES, never the caller's job. */
-  lastText?: string | null;
   /** What the node is doing right now, while running. */
   activity?: NodeActivityKind | null;
   /** Tool name when activity is "tool". */
@@ -458,35 +443,20 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
         </span>
       </div>
 
-      {/* Live-activity row (ADR-0113 D3/row 6): current activity + counter on
-          one line, the agent's latest text clipped to TEXT_PREVIEW_LINES on
-          the next. The preview HOLDS its height whether or not there is text
-          to put in it, which is what makes a card with nothing to say the same
-          shape as one mid-sentence — line-clamping alone caps how tall the
-          block can get and says nothing about how short, so an empty one used
-          to collapse and let justify-between slide the row below it upward.
-          Its line-height is set from the same constant the reservation is
-          computed from, so the two cannot round apart. The word here and the
-          animation state above are two independent readouts of the same
-          `stalled`/`activity` facts, which is what keeps them from ever
-          disagreeing under prefers-reduced-motion. */}
-      <div className="mt-0.5 flex flex-col gap-0.5">
-        <div className="flex items-center justify-between gap-1.5 font-mono text-[length:var(--t-xs)] uppercase leading-tight tracking-wide text-content-muted">
-          <span className="truncate">{activityWord}</span>
-          {counterText && <span className="shrink-0 tabular-nums">{counterText}</span>}
-        </div>
-        <div
-          className="overflow-hidden font-mono text-[length:var(--t-xs)] text-content-muted"
-          style={{
-            display: "-webkit-box",
-            WebkitLineClamp: TEXT_PREVIEW_LINES,
-            WebkitBoxOrient: "vertical",
-            height: TEXT_PREVIEW_HEIGHT,
-            lineHeight: `${PREVIEW_LINE_HEIGHT}px`,
-          }}
-        >
-          {data.lastText || ""}
-        </div>
+      {/* Live-activity row: what the node is doing, and a counter beside it
+          where the provider reports one. Always rendered, so the row below the
+          role never moves as a run progresses.
+
+          This row used to sit above a two-line preview of the agent's latest
+          text. Nothing on the wire fills that, so it drew empty on every card
+          and has been removed until a signal carries per-node text — see the
+          note on NODE_HEIGHT. The word here and the animation state above are
+          two independent readouts of the same `stalled`/`activity` facts,
+          which is what keeps them from disagreeing under
+          prefers-reduced-motion. */}
+      <div className="mt-0.5 flex items-center justify-between gap-1.5 font-mono text-[length:var(--t-xs)] uppercase leading-tight tracking-wide text-content-muted">
+        <span className="truncate">{activityWord}</span>
+        {counterText && <span className="shrink-0 tabular-nums">{counterText}</span>}
       </div>
 
       {status === "running" && (
