@@ -365,6 +365,66 @@ async def test_run_findings_artifacts_kind(db_path):
     assert artifacts["artifactsPath"] == "artifacts"
 
 
+async def test_a_secret_nested_under_a_credential_name_is_withheld_on_both_read_paths(
+    db_path, monkeypatch
+):
+    """A credential field name has to cover what is stored underneath it.
+
+    The two read layers share one rule about which field names name a secret,
+    and the point of sharing it is that a caller cannot be served on one path
+    what it is denied on the other. Asking that rule directly cannot see this
+    gap: both layers agree `auth` names a credential, and one of them still
+    served the object stored under it, because only one consulted the name
+    before descending into a container. So this asks both public tools for the
+    same payload and requires the same answer of them.
+
+    The planted value is deliberately shapeless -- it has spaces, no known
+    prefix, and no header or assignment form -- so nothing except the field
+    name can withhold it. A secret that looked like one would pass here
+    whether the name was consulted or not.
+    """
+    import json
+
+    from lionagi.studio.operator.application_mcp import get_artifact
+    from lionagi.studio.operator.run_findings import run_findings
+    from lionagi.studio.services import invocations
+
+    nested = "correct horse battery staple"
+    payload = {
+        "auth": {"value": nested},
+        "credentials": [nested],
+        "steps": [{"api_key": {"header": nested}}],
+        "files": ["report.md"],
+    }
+
+    sid = str(uuid.uuid4())
+    await seed_session(
+        db_path,
+        session_id=sid,
+        status="completed",
+        artifact_contract_json=payload,
+        artifact_verification_json={"status": "ok"},
+    )
+
+    async def fake_get_artifact(_artifact_id, **_kwargs):
+        return {"id": "a-nested", "kind": "result", "name": "result", "content": payload}
+
+    monkeypatch.setattr(invocations, "get_artifact", fake_get_artifact)
+
+    findings = await run_findings({"run": sid, "kind": "artifacts"})
+    artifact = await get_artifact({"artifact_id": "a-nested"})
+
+    # Positive control: the value really is in the payload both tools read, so
+    # the two absence checks below are not vacuously true.
+    assert nested in json.dumps(payload)
+
+    assert nested not in json.dumps(findings)
+    assert nested not in json.dumps(artifact)
+    # And the ordinary field beside it is still served. Withholding too much is
+    # a defect too, and a quieter one.
+    assert findings["artifacts"]["contract"]["files"] == ["report.md"]
+
+
 async def test_run_findings_oversized_artifact_contract_is_capped(db_path):
     """A multi-megabyte artifact contract must not make the serialized
     response exceed the same aggregate bound every other findings section

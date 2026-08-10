@@ -267,15 +267,29 @@ def redact_scalar(key: str, value: Any) -> Any:
     return f"[{type(value).__name__}]"
 
 
-def redact_arguments(value: Any) -> Any:
+def redact_arguments(value: Any, *, parent_key: str = "") -> Any:
     """Recursively redact secret- and absolute-path-shaped values. Used on
     tool-call arguments and on artifact contract/verification payloads, the
     two places a new Operator read tool could otherwise widen exposure
-    beyond what the existing tools already show."""
+    beyond what the existing tools already show.
+
+    ``parent_key`` carries the field name a container arrived under, because a
+    credential name has to cover what is nested beneath it and not only a scalar
+    sitting directly on it. Without it the name was consulted for scalars alone,
+    so ``{"auth": "..."}`` was withheld while ``{"auth": {"value": "..."}}`` was
+    served — the same split, across two shapes, that sharing the field-name rule
+    had just closed across two layers. The session and artifact projection
+    already judges the name before descending into a container; this is that
+    same step, on this path.
+    """
+    if isinstance(value, (dict, list)) and is_secret_field_name(parent_key):
+        return "[redacted]"
     if isinstance(value, dict):
         return {
             key: (
-                redact_arguments(val) if isinstance(val, (dict, list)) else redact_scalar(key, val)
+                redact_arguments(val, parent_key=key)
+                if isinstance(val, (dict, list))
+                else redact_scalar(key, val)
             )
             for key, val in value.items()
         }
