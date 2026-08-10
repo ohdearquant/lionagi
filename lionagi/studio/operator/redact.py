@@ -114,10 +114,21 @@ _SECRET_KEY_MARKERS = (
     "authorization",
     "auth_token",
     "access_key",
+    "accesskey",
     "private_key",
+    "privatekey",
     "client_secret",
     "bearer",
 )
+# Multi-word markers are listed in both their separated and their run-together
+# spelling, because field names are folded to a single separator before the
+# comparison and a name written `accessKey` or `access-key` folds to
+# `accesskey`, which the separated spelling does not match. `api_key`/`apikey`
+# already worked this way; the other two names now follow it, and the
+# assignment pattern above already treats the same separators as optional.
+# Marker names whose folded form contains a shorter marker -- `authToken`
+# holds `token`, `clientSecret` holds `secret` -- are covered without a second
+# spelling.
 _SECRET_VALUE_PREFIXES = ("sk-", "ghp_", "gho_", "ghu_", "ghs_", "xox", "AKIA", "eyJ")
 
 

@@ -481,7 +481,16 @@ async def test_a_textual_secret_under_a_counter_shaped_name_is_still_redacted():
 
 
 def _spellings(name: str) -> list[str]:
-    """The separator and case variants one field name arrives in."""
+    """The separator and case variants one field name arrives in.
+
+    The run-together and camelCase forms are the load-bearing ones. Every other
+    variant here keeps a separator, so the fold that precedes the comparison
+    collapses all of them back onto the underscored name and they match
+    whatever the rule's vocabulary happens to be. Only dropping the separator
+    changes the folded string, so a list without these two asserts agreement
+    over exactly the spellings that cannot disagree.
+    """
+    parts = name.split("_")
     variants = [
         name,
         name.replace("_", "-"),
@@ -489,6 +498,8 @@ def _spellings(name: str) -> list[str]:
         name.replace("_", " "),
         name.upper(),
         name.title(),
+        "".join(parts),
+        parts[0] + "".join(part.capitalize() for part in parts[1:]),
     ]
     return list(dict.fromkeys(variants))
 
