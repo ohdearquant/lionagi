@@ -523,6 +523,14 @@ class OrchestrationEnv:
 
     # None = no budget configured; workers skip the BUDGET preamble.
     total_budget: int | None = None
+
+    # The wall-clock instant the run's timeout actually begins counting from,
+    # captured where that clock starts rather than derived later. Everything
+    # between the clock starting and an op being told its allowance — planning
+    # above all — is time already spent, and a deadline recomputed after it has
+    # been spent names an instant the run will never reach. None when no budget
+    # is configured, which is the same condition that skips the preamble.
+    budget_deadline_epoch: float | None = None
     _live_persist: dict | None = field(default=None, repr=False)
     _run_manifest: dict[str, Any] = field(default_factory=dict, repr=False)
     _name_counts: dict[str, int] = field(default_factory=dict)

@@ -76,6 +76,7 @@ def _env(tmp_path, orc) -> SimpleNamespace:
         bare=True,
         effort=None,
         total_budget=None,
+        budget_deadline_epoch=None,
         team_data=None,
         pack=None,
         session=SimpleNamespace(),
