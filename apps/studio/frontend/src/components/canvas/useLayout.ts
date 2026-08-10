@@ -445,10 +445,20 @@ export function getLayoutedElements(
   // whenever a node's result is consumed much later than it is produced (the
   // P2 case). Rather than fight that objective with a `ranker` option (the
   // ADR is explicit that no ranker choice changes the outcome), pin every
-  // edge's minlen to the exact ASAP rank gap between its endpoints. That
-  // leaves zero slack on every edge simultaneously, so the only feasible
-  // assignment left for any ranker to find is the ASAP one — dagre still
-  // does the ordering and routing, just not the ranking.
+  // edge's minlen to the exact ASAP rank gap between its endpoints. ASAP then
+  // satisfies every constraint with equality, so its total edge span equals
+  // the sum of the minlens, which is the lower bound any feasible assignment
+  // can reach — and reaching it requires every edge to be tight, which only
+  // ASAP is. dagre still does the ordering and routing, just not the ranking.
+  //
+  // Note what that argument rests on: ASAP is the unique MINIMUM-COST
+  // assignment here, not the unique feasible one. Slack-free constraints do
+  // not by themselves pin a solution — on the graph the decision was measured
+  // on, {b:1, h:4} with the rest unchanged satisfies all nine constraints at a
+  // total span of 15 against ASAP's 13. It loses on cost, not on legality. So
+  // this depends on the ranker minimizing total edge length, which every dagre
+  // ranker does. A future ranker with a different objective would need this
+  // revisited rather than trusted.
   for (const edge of edges) {
     const sourceRank = ranks.get(edge.source);
     const targetRank = ranks.get(edge.target);
