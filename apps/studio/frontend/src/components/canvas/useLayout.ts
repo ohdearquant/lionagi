@@ -462,11 +462,19 @@ export function getLayoutedElements(
   for (const edge of edges) {
     const sourceRank = ranks.get(edge.source);
     const targetRank = ranks.get(edge.target);
-    const minlen =
-      sourceRank !== undefined && targetRank !== undefined
-        ? Math.max(1, targetRank - sourceRank)
-        : undefined;
-    g.setEdge(edge.source, edge.target, minlen !== undefined ? { minlen } : undefined);
+    if (sourceRank !== undefined && targetRank !== undefined) {
+      g.setEdge(edge.source, edge.target, { minlen: Math.max(1, targetRank - sourceRank) });
+      continue;
+    }
+    // An endpoint is missing from `ranks`, so there is no gap to pin. Call
+    // setEdge with no label at all rather than passing `undefined` for one:
+    // graphlib treats the two differently. Omitting the argument applies the
+    // default edge label set above, while an explicit `undefined` is stored as
+    // the label, and dagre dereferences that label while routing — it throws
+    // "Cannot set properties of undefined (setting 'points')" and takes the
+    // whole layout with it. An edge can name an endpoint that never arrived as
+    // a node, so this path is reachable rather than defensive.
+    g.setEdge(edge.source, edge.target);
   }
 
   dagre.layout(g);
