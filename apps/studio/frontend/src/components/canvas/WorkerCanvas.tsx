@@ -466,6 +466,7 @@ export default function WorkerCanvas({
                   activityDetail: activity.activityDetail,
                   counter: activity.counter,
                   lastEventAt: activity.lastEventAt,
+                  liveSignalAt: activity.liveSignalAt,
                 }
               : {}),
           },

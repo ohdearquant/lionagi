@@ -100,25 +100,30 @@ function useAnimationSlot(wantsToAnimate: boolean): boolean {
 }
 
 // Returns to a static "stalled" reading STALL_TIMEOUT_MS after the last live
-// event, rather than polling: a single timer fires exactly at the deadline
-// implied by `lastEventAt`, so a node that keeps receiving events never
-// stalls (each new event reschedules the timer) and one that stops gets
-// caught the instant its window closes — this is "a test, not a comment"
-// per the ADR's Consequences section, see StepNode.test.tsx.
-function useStallState(lastEventAt: number | null | undefined, isRunning: boolean): boolean {
+// signal, rather than polling: a single timer fires exactly at the deadline
+// implied by `liveSignalAt`, so a node that keeps reporting work never stalls
+// (each new signal reschedules the timer) and one that stops gets caught the
+// instant its window closes — this is "a test, not a comment" per the ADR's
+// Consequences section, see StepNode.test.tsx.
+//
+// The input is `liveSignalAt`, not `lastEventAt`, and the difference is the
+// whole correctness of this hook. A null means the node has never reported
+// work at all, so there is no stream to have stopped and the honest answer is
+// "not stalled" — the same answer this returns for a node that is not running.
+function useStallState(liveSignalAt: number | null | undefined, isRunning: boolean): boolean {
   const [stalled, setStalled] = useState(false);
   useEffect(() => {
-    if (!isRunning || lastEventAt == null) {
+    if (!isRunning || liveSignalAt == null) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing to the external clock (Date.now()), which React has no other way to read
       setStalled(false);
       return;
     }
-    setStalled(isStalled(lastEventAt, Date.now()));
-    const remaining = lastEventAt + STALL_TIMEOUT_MS - Date.now();
+    setStalled(isStalled(liveSignalAt, Date.now()));
+    const remaining = liveSignalAt + STALL_TIMEOUT_MS - Date.now();
     if (remaining <= 0) return;
     const timer = setTimeout(() => setStalled(true), remaining);
     return () => clearTimeout(timer);
-  }, [lastEventAt, isRunning]);
+  }, [liveSignalAt, isRunning]);
   return stalled;
 }
 
@@ -196,11 +201,16 @@ export interface StepNodeData {
   activityDetail?: string | null;
   /** Token or event counter, whichever the provider reports. */
   counter?: number | null;
-  /** Epoch ms of the most recent live signal for this node — the ONLY input
-   *  that drives whether/how fast this node's animation runs. Absent means
-   *  "no live stream correlation", which never animates regardless of
+  /** Epoch ms of the most recent signal of ANY kind for this node — the ONLY
+   *  input that drives whether/how fast this node's animation runs. Absent
+   *  means "no live stream correlation", which never animates regardless of
    *  execStatus. */
   lastEventAt?: number | null;
+  /** Epoch ms of the last signal that reported work in progress, as opposed
+   *  to a lifecycle transition. Drives the stall reading and nothing else.
+   *  Absent means no liveness signal exists for this node, which is not the
+   *  same as one that went quiet, and must not read as stalled. */
+  liveSignalAt?: number | null;
 }
 
 // Non-animation precedence cues (border weight + a left-edge status rail)
@@ -287,7 +297,7 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
 
   const cardRef = useRef<HTMLDivElement>(null);
   const inViewport = useInViewport(cardRef);
-  const stalled = useStallState(data.lastEventAt, status === "running");
+  const stalled = useStallState(data.liveSignalAt, status === "running");
   const pulseMs = useEventRatePulse(data.lastEventAt);
   // Every gate ADR-0113 D3 requires, all real signals: actually running,
   // fresh events (not stalled), a live stream correlation at all

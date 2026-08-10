@@ -216,10 +216,14 @@ describe("WorkerCanvas — live activity reaches the card it describes", () => {
     // fresh event is fresh. Un-normalized it is ~1.7 trillion ms old, so
     // every node carrying a signal would render "stalled" the instant it got
     // one — the arm below proves that is what the normalizer prevents.
-    const raw = [rawEvent()];
+    //
+    // The event has to REPORT WORK, not merely exist, or the stall clock is
+    // never armed and both arms pass for the wrong reason: a lifecycle-only
+    // node has no liveness signal to lose and is never stalled at any age.
+    const raw = [rawEvent({ payload: { name: "plan", text: "drafting" } })];
 
     renderCanvas(buildNodeActivityByName(raw.map(normalizeSignalEvent)));
-    expect(cardTextFor("plan")).toContain("thinking");
+    expect(cardTextFor("plan")).toContain("streaming");
     expect(cardTextFor("plan")).not.toContain("stalled");
 
     renderCanvas(buildNodeActivityByName(raw));

@@ -21,6 +21,7 @@ describe("deriveNodeActivity", () => {
       lastText: null,
       counter: null,
       lastEventAt: null,
+      liveSignalAt: null,
       eventCount: 0,
     });
   });
@@ -65,6 +66,58 @@ describe("deriveNodeActivity", () => {
   it("tracks lastEventAt as the max timestamp regardless of array order", () => {
     const snap = deriveNodeActivity([ev("NodeStarted", 500), ev("NodeQueued", 10)]);
     expect(snap.lastEventAt).toBe(500);
+  });
+});
+
+// The shape today's backend actually produces, taken from a real run: a node
+// emits NodeStarted, then nothing at all for the 32-39 seconds it works, then
+// NodeCompleted. Reading event silence as a stall turns every live node on the
+// canvas into a stalled one for roughly two thirds of its life, and the longer
+// the op the worse it reads. `liveSignalAt` is what separates "never reported
+// work" from "reported work and stopped".
+describe("liveSignalAt separates silence-by-design from a dead stream", () => {
+  it("stays null across a lifecycle-only node, however long it runs", () => {
+    const snap = deriveNodeActivity([
+      ev("NodeQueued", 0, { name: "writer" }),
+      ev("NodeStarted", 10, { name: "writer" }),
+      ev("NodeCompleted", 35_510, { name: "writer" }),
+    ]);
+    expect(snap.lastEventAt).toBe(35_510);
+    expect(snap.liveSignalAt).toBeNull();
+  });
+
+  it("does not call a working lifecycle-only node stalled", () => {
+    const snap = deriveNodeActivity([
+      ev("NodeQueued", 0, { name: "writer" }),
+      ev("NodeStarted", 10, { name: "writer" }),
+    ]);
+    // Well past the timeout, which is the normal case for a real op.
+    const now = 10 + STALL_TIMEOUT_MS * 3;
+    expect(isStalled(snap.liveSignalAt, now)).toBe(false);
+    // And the reading this replaces, so the test states what it prevents.
+    expect(isStalled(snap.lastEventAt, now)).toBe(true);
+  });
+
+  it("still catches a node whose real stream died", () => {
+    // The failure the stall reading exists for: work WAS being reported, then
+    // it stopped. Without this arm the fix above would be indistinguishable
+    // from deleting the feature.
+    const snap = deriveNodeActivity([
+      ev("NodeStarted", 10, { name: "writer" }),
+      ev("AssistantDelta", 500, { name: "writer", text: "partial" }),
+    ]);
+    expect(snap.liveSignalAt).toBe(500);
+    expect(isStalled(snap.liveSignalAt, 500 + STALL_TIMEOUT_MS + 1)).toBe(true);
+    expect(isStalled(snap.liveSignalAt, 500 + STALL_TIMEOUT_MS)).toBe(false);
+  });
+
+  it("advances on a tool call and on a counter, not just on text", () => {
+    expect(
+      deriveNodeActivity([ev("ToolCallStarted", 42, { name: "w", tool_name: "grep" })]).liveSignalAt,
+    ).toBe(42);
+    expect(deriveNodeActivity([ev("Whatever", 77, { name: "w", token_count: 12 })]).liveSignalAt).toBe(
+      77,
+    );
   });
 });
 

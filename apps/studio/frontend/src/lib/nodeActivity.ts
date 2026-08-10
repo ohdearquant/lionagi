@@ -13,6 +13,16 @@
 // exactly what StepNode should show for a node it has no richer signal for.
 // A future emitter can add payload fields (or new kinds) without any change
 // on this side.
+//
+// That reality has one consequence worth stating outright, because getting it
+// wrong is worse than showing nothing. Under today's signals a node emits
+// NOTHING between NodeStarted and NodeCompleted — measured on a real run, 32
+// to 39 seconds per node, and proportionally worse for ops that run minutes.
+// The events that DO flow during that window (hook and message signals) carry
+// no op id or name, so the correlator below drops them, correctly: filing
+// them under a guess would be worse. So `liveSignalAt` stays null for the
+// whole of a node's working life, and any reading that treats event silence
+// as evidence about the node must consult it rather than `lastEventAt`.
 import type { SignalEvent } from "./api";
 
 export type NodeActivityKind = "thinking" | "tool" | "streaming" | "waiting";
@@ -23,6 +33,20 @@ export interface NodeActivitySnapshot {
   lastText: string | null;
   counter: number | null;
   lastEventAt: number | null;
+  /** Epoch ms of the last event that actually said what the node was DOING —
+   *  a tool call, a stream delta, or any event carrying text or a counter.
+   *  Lifecycle events do not advance it, because they bracket a node's work
+   *  rather than report on it.
+   *
+   *  This exists so the stall clock has an honest input. Stalling means "a
+   *  stream that was flowing has stopped", and a node fed only lifecycle
+   *  signals never had a stream, so its silence between started and completed
+   *  is the normal case rather than evidence of anything. Measured against a
+   *  real run of today's backend, every node is silent for the whole 32-39s
+   *  it works, which a stall clock reading `lastEventAt` calls stalled for
+   *  about two thirds of its life. Null here means "no liveness signal
+   *  exists", which the card must not read as either alive or stuck. */
+  liveSignalAt: number | null;
   eventCount: number;
 }
 
@@ -54,6 +78,7 @@ export function deriveNodeActivity(events: readonly SignalEvent[]): NodeActivity
   let lastText: string | null = null;
   let counter: number | null = null;
   let lastEventAt: number | null = null;
+  let liveSignalAt: number | null = null;
   let activity: NodeActivityKind | null = null;
   let activityDetail: string | null = null;
 
@@ -67,6 +92,22 @@ export function deriveNodeActivity(events: readonly SignalEvent[]): NodeActivity
     if (count !== null) counter = count;
 
     const toolName = firstString(ev.payload, ["tool_name", "tool"]);
+
+    // Recognised as reporting work in progress, rather than enumerated as
+    // "not a lifecycle kind". Framed positively so a lifecycle kind added
+    // later cannot start arming the stall clock by being unlisted, while a
+    // future kind that carries text or a tool name arms it without edits
+    // here — the same defensive-read stance as the fields above.
+    if (
+      TOOL_KINDS.has(ev.kind) ||
+      STREAM_KINDS.has(ev.kind) ||
+      text ||
+      toolName ||
+      count !== null
+    ) {
+      if (liveSignalAt === null || ev.ts > liveSignalAt) liveSignalAt = ev.ts;
+    }
+
     if (TOOL_KINDS.has(ev.kind) || toolName) {
       activity = "tool";
       activityDetail = toolName;
@@ -82,7 +123,15 @@ export function deriveNodeActivity(events: readonly SignalEvent[]): NodeActivity
     }
   }
 
-  return { activity, activityDetail, lastText, counter, lastEventAt, eventCount: events.length };
+  return {
+    activity,
+    activityDetail,
+    lastText,
+    counter,
+    lastEventAt,
+    liveSignalAt,
+    eventCount: events.length,
+  };
 }
 
 // Correlates the raw event stream against a PLANNED graph, whose node ids are
@@ -125,10 +174,15 @@ export function buildNodeActivityByName(
   return result;
 }
 
-// A node "stalls" once this long passes with no fresh event while it is still
-// reporting itself as running — the failure mode ADR-0113's Consequences
-// section names explicitly: a node pulsing forever after its event stream
-// dies asserts liveness it no longer has.
+// A node "stalls" once this long passes with no fresh LIVE signal while it is
+// still reporting itself as running — the failure mode ADR-0113's Consequences
+// section names explicitly: a node pulsing forever after its event stream dies
+// asserts liveness it no longer has.
+//
+// Feed this `liveSignalAt`, never `lastEventAt`. The two differ exactly when a
+// node's only events are lifecycle ones, which is every node under today's
+// backend, and reading `lastEventAt` there turns "we were never told anything"
+// into the much stronger claim "it was working and stopped".
 export const STALL_TIMEOUT_MS = 12_000;
 
 export function isStalled(

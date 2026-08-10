@@ -228,7 +228,14 @@ describe("StepNode — a stall timeout returns the node to a static 'stalled' st
 
   it("pulses right up to the stall timeout, then goes static and says it stalled", () => {
     const now = Date.now();
-    renderNode({ execStatus: "running", lastEventAt: now, activity: "thinking" });
+    // liveSignalAt is what arms the clock: this node HAS reported work, so
+    // its going quiet is the failure the stalled reading exists to catch.
+    renderNode({
+      execStatus: "running",
+      lastEventAt: now,
+      liveSignalAt: now,
+      activity: "thinking",
+    });
     const card = container.firstElementChild as HTMLElement;
     expect(isAnimating(card)).toBe(true);
     expect(activityText()).not.toContain("stalled");
@@ -243,13 +250,23 @@ describe("StepNode — a stall timeout returns the node to a static 'stalled' st
 
   it("never stalls a node still receiving fresh events at the same cadence", () => {
     const now = Date.now();
-    renderNode({ execStatus: "running", lastEventAt: now, activity: "thinking" });
+    renderNode({
+      execStatus: "running",
+      lastEventAt: now,
+      liveSignalAt: now,
+      activity: "thinking",
+    });
 
     act(() => {
       vi.advanceTimersByTime(STALL_TIMEOUT_MS - 1);
     });
     // A fresh event lands just under the deadline, resetting the window.
-    renderNode({ execStatus: "running", lastEventAt: Date.now(), activity: "thinking" });
+    renderNode({
+      execStatus: "running",
+      lastEventAt: Date.now(),
+      liveSignalAt: Date.now(),
+      activity: "thinking",
+    });
     act(() => {
       vi.advanceTimersByTime(STALL_TIMEOUT_MS - 1);
     });
@@ -257,6 +274,23 @@ describe("StepNode — a stall timeout returns the node to a static 'stalled' st
     const card = container.firstElementChild as HTMLElement;
     expect(isAnimating(card)).toBe(true);
     expect(activityText()).not.toContain("stalled");
+  });
+
+  it("never stalls a node that has no liveness signal to lose", () => {
+    // Every node under today's backend: lifecycle events bracket the work and
+    // nothing is emitted in between, so lastEventAt freezes at NodeStarted
+    // while the node runs perfectly normally for its whole life. Measured on a
+    // real run, that silence is 32-39 seconds per node, so reading it as a
+    // stall put "stalled" on every live card for about two thirds of the run.
+    const now = Date.now();
+    renderNode({ execStatus: "running", lastEventAt: now, activity: "thinking" });
+
+    act(() => {
+      vi.advanceTimersByTime(STALL_TIMEOUT_MS * 3);
+    });
+
+    expect(activityText()).not.toContain("stalled");
+    expect(activityText()).toContain("thinking");
   });
 });
 
