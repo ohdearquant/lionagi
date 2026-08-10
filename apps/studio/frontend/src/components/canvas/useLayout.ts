@@ -438,8 +438,51 @@ export function getLayoutedElements(
   for (const node of nodes) {
     g.setNode(node.id, { width: NODE_WIDTH, height: estimateNodeHeight(node) });
   }
+  // Rank assignment is ours (ADR-0113 D2), not dagre's: `ranks` above already
+  // computed each node's ASAP depth. dagre's own rankers — network-simplex
+  // included, which is the untouched default here — minimize total edge
+  // length instead, which is a different objective and disagrees with ASAP
+  // whenever a node's result is consumed much later than it is produced (the
+  // P2 case). Rather than fight that objective with a `ranker` option (the
+  // ADR is explicit that no ranker choice changes the outcome), pin every
+  // edge's minlen to the exact ASAP rank gap between its endpoints. ASAP then
+  // satisfies every constraint with equality, so its total edge span equals
+  // the sum of the minlens, which is the lower bound any feasible assignment
+  // can reach — and reaching it requires every edge to be tight, which only
+  // ASAP is. dagre still does the ordering and routing, just not the ranking.
+  //
+  // Note what that argument rests on: ASAP is the unique MINIMUM-COST
+  // assignment here, not the unique feasible one. Slack-free constraints do
+  // not by themselves pin a solution — on the graph the decision was measured
+  // on, {b:1, h:4} with the rest unchanged satisfies all nine constraints at a
+  // total span of 15 against ASAP's 13. It loses on cost, not on legality. So
+  // this depends on the ranker minimizing total edge length, which every dagre
+  // ranker does. A future ranker with a different objective would need this
+  // revisited rather than trusted.
   for (const edge of edges) {
-    g.setEdge(edge.source, edge.target);
+    const sourceRank = ranks.get(edge.source);
+    const targetRank = ranks.get(edge.target);
+    if (sourceRank !== undefined && targetRank !== undefined) {
+      g.setEdge(edge.source, edge.target, { minlen: Math.max(1, targetRank - sourceRank) });
+      continue;
+    }
+    // An endpoint is missing from `ranks`, which happens exactly when the edge
+    // names a node that never arrived: computeNodeDepths ranks every node it
+    // was given and skips edges pointing outside that set. Skip the edge here
+    // too, so the layout and the rank map describe the same graph.
+    //
+    // Handing it to dagre instead is worse than useless. graphlib's setEdge
+    // CREATES an endpoint it has not seen, so the absent node gets a rank and
+    // a slot of its own, and dagre pushes the real node that depends on it out
+    // of the rank this function just computed — positions contradicting the
+    // `ranks` map returned beside them, on behalf of a node nothing draws. It
+    // also costs real time at scale, since dagre lays out every phantom.
+    //
+    // If a future change does need one of these to reach dagre, call setEdge
+    // with no label rather than passing `undefined` for one: graphlib stores an
+    // explicit `undefined` AS the label, and dagre dereferences it while
+    // routing — "Cannot set properties of undefined (setting 'points')", which
+    // takes the whole layout down.
   }
 
   dagre.layout(g);
