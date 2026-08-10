@@ -10,7 +10,12 @@ import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
 import StepNode, { MAX_ANIMATING_NODES } from "./StepNode";
 import type { StepNodeData, NodeExecStatus } from "./StepNode";
-import { NODE_HEIGHT } from "./useLayout";
+import {
+  NODE_HEIGHT,
+  PREVIEW_LINE_HEIGHT,
+  TEXT_PREVIEW_HEIGHT,
+  TEXT_PREVIEW_LINES,
+} from "./useLayout";
 import { STALL_TIMEOUT_MS } from "@/lib/nodeActivity";
 
 // Handle needs a ReactFlow store; the card's own layout is what is under test.
@@ -472,5 +477,56 @@ describe("StepNode — nothing animates outside the viewport", () => {
     renderNode({ execStatus: "running", lastEventAt: Date.now(), activity: "thinking" });
     const card = container.firstElementChild as HTMLElement;
     expect(isAnimating(card)).toBe(true);
+  });
+});
+
+/** The assistant-text preview: the second child of the live-activity row. */
+function previewEl(): HTMLElement {
+  const activityRow = rows()[2];
+  const preview = activityRow?.children[1] as HTMLElement | undefined;
+  if (!preview) throw new Error("no preview element under the activity row");
+  return preview;
+}
+
+describe("StepNode — the preview reserves its height instead of collapsing", () => {
+  it("occupies the same height with no text as with two full lines", () => {
+    // The invariant line-clamping alone cannot provide: a clamp caps how tall
+    // the block may get and says nothing about how short. An empty preview
+    // that collapses lets justify-between slide the rows above it downward,
+    // so the same fact stops being in the same place from card to card.
+    renderNode({ lastText: null });
+    const empty = previewEl().style.height;
+
+    renderNode({
+      lastText: "one two three four five six seven eight nine ten eleven twelve thirteen",
+    });
+    const full = previewEl().style.height;
+
+    expect(empty).toBe(`${TEXT_PREVIEW_HEIGHT}px`);
+    expect(full).toBe(empty);
+  });
+
+  it("draws exactly the lines it reserves room for", () => {
+    // Reservation and rendering are computed from one line height, so the
+    // clamped lines fill the reserved box exactly — no third line peeking
+    // past the clip, no dead band under a full preview.
+    renderNode({ lastText: "some text" });
+    expect(previewEl().style.lineHeight).toBe(`${PREVIEW_LINE_HEIGHT}px`);
+    expect(TEXT_PREVIEW_HEIGHT).toBe(PREVIEW_LINE_HEIGHT * TEXT_PREVIEW_LINES);
+  });
+
+  it("counts the whole preview inside the height the layout reserves", () => {
+    // The failure this replaces: the preview row was added to the card and
+    // NODE_HEIGHT stayed a hand-written literal that did not grow with it, so
+    // the card drew more than the layout had reserved. Now the card height is
+    // a sum with the preview as one of its terms — give the preview another
+    // line and NODE_HEIGHT follows, rather than silently overflowing.
+    expect(NODE_HEIGHT).toBeGreaterThan(TEXT_PREVIEW_HEIGHT);
+    // Chrome (padding 8 top and bottom, 3px border both sides) plus the two
+    // text rows above the activity block, which the card always draws.
+    const chrome = 8 * 2 + 3 * 2;
+    expect(NODE_HEIGHT - TEXT_PREVIEW_HEIGHT - chrome).toBeGreaterThanOrEqual(
+      PREVIEW_LINE_HEIGHT * 3,
+    );
   });
 });

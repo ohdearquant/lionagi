@@ -386,19 +386,26 @@ describe("computeNodeDepths / maxGraphDepth — longest-path rank index", () => 
 
 describe("enforceMinRankGap — minimum vertical gap within a rank", () => {
   it("is a no-op when nodes are already spaced beyond the floor", () => {
+    // Spaced off the node height rather than a literal: the floor is
+    // height + gap, so a hardcoded y stops clearing it the moment the card
+    // grows and this test starts asserting a push while still calling itself
+    // a no-op.
+    const clear = NODE_HEIGHT + 50;
     const nodes: Node[] = [
       { ...bare("a"), position: { x: 0, y: 0 } },
-      { ...bare("b"), position: { x: 0, y: 100 } },
+      { ...bare("b"), position: { x: 0, y: clear } },
     ];
     const out = enforceMinRankGap(nodes, 6);
     expect(out.find((n) => n.id === "a")!.position.y).toBe(0);
-    expect(out.find((n) => n.id === "b")!.position.y).toBe(100);
+    expect(out.find((n) => n.id === "b")!.position.y).toBe(clear);
   });
 
   it("pushes an overlapping node down until the gap floor is met", () => {
+    // Every node measures NODE_HEIGHT regardless of its own data (see
+    // estimateNodeHeight), so b at y=10 overlaps a by all but 10px of it.
     const nodes: Node[] = [
-      { ...bare("a"), position: { x: 0, y: 0 } }, // height 40
-      { ...bare("b"), position: { x: 0, y: 10 } }, // overlaps a by 30px
+      { ...bare("a"), position: { x: 0, y: 0 } },
+      { ...bare("b"), position: { x: 0, y: 10 } },
     ];
     const out = enforceMinRankGap(nodes, 6);
     const a = out.find((n) => n.id === "a")!;
@@ -1192,9 +1199,12 @@ describe("getLayoutedElements — folding a mid-run branch+join stays edge-aware
     // Measured pre-fix band at NODE_HEIGHT=56: ~1528x504, raw fit ~0.644 at a
     // 1280x560 panel. NODE_HEIGHT rose to 88 for the live-activity row (ADR-
     // 0113 row 6, see useLayout.ts), which raises every row's height and so
-    // this band's too — remeasured at ~1500x664, raw fit ~0.649 — small drift
-    // is fine, a strip (unfolded ~7692-wide) is the regression this guards
-    // against.
+    // this band's too — remeasured then at ~1500x664. It rose again when
+    // NODE_HEIGHT stopped being a literal and became the sum of the rows the
+    // card draws, which came out 11px taller than the literal had claimed:
+    // remeasured at ~719 tall. Drift with the row height is expected and is
+    // why the width and fit stay bands; a strip (unfolded ~7692-wide) is the
+    // regression this guards against.
     const c = chain(30);
     const { nodes } = getLayoutedElements(c.nodes(), c.edges, "LR");
     const left = Math.min(...nodes.map((n) => n.position.x));
@@ -1212,7 +1222,7 @@ describe("getLayoutedElements — folding a mid-run branch+join stays edge-aware
 
     expect(width).toBeGreaterThan(1300);
     expect(width).toBeLessThan(1700);
-    expect(height).toBeCloseTo(664, -1);
+    expect(height).toBeCloseTo(719, -1);
     expect(rawFit).toBeGreaterThan(0.55);
     expect(rawFit).toBeLessThan(0.75);
   });

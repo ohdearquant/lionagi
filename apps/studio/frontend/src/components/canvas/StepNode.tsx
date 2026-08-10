@@ -5,7 +5,13 @@ import { Handle, Position } from "reactflow";
 import type { NodeProps } from "reactflow";
 import { useTranslations } from "use-intl";
 import { IconCheck, IconClose, IconPause, IconWarning } from "@/components/ui/icons";
-import { NODE_HEIGHT, NODE_WIDTH } from "./useLayout";
+import {
+  NODE_HEIGHT,
+  NODE_WIDTH,
+  PREVIEW_LINE_HEIGHT,
+  TEXT_PREVIEW_HEIGHT,
+  TEXT_PREVIEW_LINES,
+} from "./useLayout";
 import { isStalled, pulseDurationMs, STALL_TIMEOUT_MS } from "@/lib/nodeActivity";
 import type { NodeActivityKind } from "@/lib/nodeActivity";
 
@@ -147,11 +153,11 @@ const ACTIVITY_LABEL: Record<NodeActivityKind, string> = {
   waiting: "waiting",
 };
 
-// Fixed line count for the assistant-text preview (ADR-0113 row 6: "truncated
-// to a fixed line count"). Exported so the reserved-height math in
-// useLayout.ts's NODE_HEIGHT comment and this file agree on the number, even
-// though only the constant lives there.
-export const TEXT_PREVIEW_LINES = 2;
+// The preview's line count and reserved height live in useLayout.ts, beside
+// the NODE_HEIGHT sum they are terms of — one home for the card's geometry, so
+// the space the layout reserves and the space the card draws cannot drift.
+// Re-exported here because the line count reads as a property of the card.
+export { TEXT_PREVIEW_LINES };
 
 const ROLE_VAR: Record<string, string> = {
   researcher: "var(--role-researcher)",
@@ -454,10 +460,14 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
 
       {/* Live-activity row (ADR-0113 D3/row 6): current activity + counter on
           one line, the agent's latest text clipped to TEXT_PREVIEW_LINES on
-          the next. Always rendered, at a fixed clipped height, so a node
-          with no text yet reserves exactly the space one with a full preview
-          uses — see NODE_HEIGHT's comment in useLayout.ts. The word here and
-          the animation state above are two independent readouts of the same
+          the next. The preview HOLDS its height whether or not there is text
+          to put in it, which is what makes a card with nothing to say the same
+          shape as one mid-sentence — line-clamping alone caps how tall the
+          block can get and says nothing about how short, so an empty one used
+          to collapse and let justify-between slide the row below it upward.
+          Its line-height is set from the same constant the reservation is
+          computed from, so the two cannot round apart. The word here and the
+          animation state above are two independent readouts of the same
           `stalled`/`activity` facts, which is what keeps them from ever
           disagreeing under prefers-reduced-motion. */}
       <div className="mt-0.5 flex flex-col gap-0.5">
@@ -466,11 +476,13 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
           {counterText && <span className="shrink-0 tabular-nums">{counterText}</span>}
         </div>
         <div
-          className="overflow-hidden font-mono text-[length:var(--t-xs)] leading-tight text-content-muted"
+          className="overflow-hidden font-mono text-[length:var(--t-xs)] text-content-muted"
           style={{
             display: "-webkit-box",
             WebkitLineClamp: TEXT_PREVIEW_LINES,
             WebkitBoxOrient: "vertical",
+            height: TEXT_PREVIEW_HEIGHT,
+            lineHeight: `${PREVIEW_LINE_HEIGHT}px`,
           }}
         >
           {data.lastText || ""}
