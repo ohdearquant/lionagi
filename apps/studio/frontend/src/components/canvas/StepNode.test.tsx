@@ -8,8 +8,10 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
-import StepNode from "./StepNode";
+import StepNode, { MAX_ANIMATING_NODES } from "./StepNode";
 import type { StepNodeData, NodeExecStatus } from "./StepNode";
+import { NODE_HEIGHT } from "./useLayout";
+import { STALL_TIMEOUT_MS } from "@/lib/nodeActivity";
 
 // Handle needs a ReactFlow store; the card's own layout is what is under test.
 vi.mock("reactflow", () => ({
@@ -41,8 +43,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderNode(data: Partial<StepNodeData>) {
-  const full: StepNodeData = {
+function baseData(data: Partial<StepNodeData>): StepNodeData {
+  return {
     label: "plan-step",
     role: "critic",
     assignment: "",
@@ -53,17 +55,40 @@ function renderNode(data: Partial<StepNodeData>) {
     outputs: [],
     ...data,
   };
+}
+
+function renderNode(data: Partial<StepNodeData>, id?: string) {
+  const full = baseData(data);
   act(() => {
     // NodeProps carries more than the card reads; the rest is ReactFlow's.
     root.render(
       <IntlProvider locale="en" messages={enMessages}>
-        {React.createElement(StepNode, { data: full, selected: false } as never)}
+        {React.createElement(StepNode, { data: full, selected: false, id } as never)}
       </IntlProvider>,
     );
   });
 }
 
-/** The card's two rows, in order. */
+/** Renders several cards at once, sharing one animation-slot registry pass —
+ *  needed for the concurrent-animation-cap tests. */
+function renderNodes(entries: Array<{ id: string; data: Partial<StepNodeData> }>) {
+  act(() => {
+    root.render(
+      <IntlProvider locale="en" messages={enMessages}>
+        {entries.map(({ id, data }) =>
+          React.createElement(StepNode, {
+            key: id,
+            id,
+            data: baseData(data),
+            selected: false,
+          } as never),
+        )}
+      </IntlProvider>,
+    );
+  });
+}
+
+/** The card's content rows, in order: name/state, role/elapsed, live-activity. */
 function rows(): Element[] {
   return Array.from(container.querySelectorAll(":scope > div > div"));
 }
@@ -72,6 +97,20 @@ function bottomRightText(): string {
   const bottom = rows()[1];
   const spans = bottom.querySelectorAll("span");
   return spans[spans.length - 1]?.textContent ?? "";
+}
+
+/** The live-activity row's header line (activity word + counter). */
+function activityText(): string {
+  return rows()[2]?.textContent ?? "";
+}
+
+function cards(): Element[] {
+  return Array.from(container.children);
+}
+
+function isAnimating(card: Element): boolean {
+  const dot = card.querySelector("span.animate-pulse");
+  return dot !== null;
 }
 
 describe("StepNode — the bottom-right corner always says something", () => {
@@ -123,16 +162,16 @@ describe("StepNode — the bottom-right corner always says something", () => {
 });
 
 describe("StepNode — the card keeps its shape", () => {
-  it("renders both rows even when the node carries no role", () => {
+  it("renders all three rows even when the node carries no role", () => {
     // Held open rather than dropped: a missing role must not move the row above
     // it, because one height is what the layout reserves for every node.
     renderNode({ role: "" });
-    expect(rows().length).toBe(2);
+    expect(rows().length).toBe(3);
   });
 
-  it("renders both rows for a node carrying nothing but a label", () => {
+  it("renders all three rows for a node carrying nothing but a label", () => {
     renderNode({ role: "", execStatus: undefined, durationSeconds: undefined });
-    expect(rows().length).toBe(2);
+    expect(rows().length).toBe(3);
     expect(bottomRightText().trim().length).toBeGreaterThan(0);
   });
 
@@ -152,5 +191,165 @@ describe("StepNode — the card keeps its shape", () => {
     const failedIcon = rows()[0].querySelector("span.flex.shrink-0.items-center");
     expect(failedIcon?.className).toContain("text-status-error");
     expect(failedIcon?.className).not.toContain("text-status-warning");
+  });
+});
+
+describe("StepNode — fixed height regardless of live text (ADR-0113 row 6)", () => {
+  it("renders the assistant text but keeps the card's height constant, empty or full", () => {
+    renderNode({ lastText: null });
+    const emptyCard = container.firstElementChild as HTMLElement;
+    const emptyHeight = emptyCard.style.height;
+    expect(emptyHeight).toBe(`${NODE_HEIGHT}px`);
+
+    const longText = "one two three four five six seven eight nine ten eleven twelve thirteen";
+    renderNode({ lastText: longText });
+    const fullCard = container.firstElementChild as HTMLElement;
+    // The text must actually be on the card (row 6 exists), and the card's
+    // own reserved height must not have grown to fit it (that is the
+    // defect useLayout.ts's NODE_HEIGHT comment records fixing once already).
+    expect(fullCard.textContent).toContain("one two three");
+    expect(fullCard.style.height).toBe(emptyHeight);
+  });
+
+  it("is the same height for two side-by-side nodes whether or not either has finished", () => {
+    renderNodes([
+      { id: "unfinished", data: { execStatus: "running", lastText: null } },
+      {
+        id: "finished",
+        data: { execStatus: "completed", lastText: "final answer, three lines of it, done" },
+      },
+    ]);
+    const heights = cards().map((c) => (c as HTMLElement).style.height);
+    expect(new Set(heights).size).toBe(1);
+    expect(heights[0]).toBe(`${NODE_HEIGHT}px`);
+  });
+});
+
+describe("StepNode — a stall timeout returns the node to a static 'stalled' state", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("pulses right up to the stall timeout, then goes static and says it stalled", () => {
+    const now = Date.now();
+    renderNode({ execStatus: "running", lastEventAt: now, activity: "thinking" });
+    const card = container.firstElementChild as HTMLElement;
+    expect(isAnimating(card)).toBe(true);
+    expect(activityText()).not.toContain("stalled");
+
+    act(() => {
+      vi.advanceTimersByTime(STALL_TIMEOUT_MS + 1);
+    });
+
+    expect(isAnimating(card)).toBe(false);
+    expect(activityText()).toContain("stalled");
+  });
+
+  it("never stalls a node still receiving fresh events at the same cadence", () => {
+    const now = Date.now();
+    renderNode({ execStatus: "running", lastEventAt: now, activity: "thinking" });
+
+    act(() => {
+      vi.advanceTimersByTime(STALL_TIMEOUT_MS - 1);
+    });
+    // A fresh event lands just under the deadline, resetting the window.
+    renderNode({ execStatus: "running", lastEventAt: Date.now(), activity: "thinking" });
+    act(() => {
+      vi.advanceTimersByTime(STALL_TIMEOUT_MS - 1);
+    });
+
+    const card = container.firstElementChild as HTMLElement;
+    expect(isAnimating(card)).toBe(true);
+    expect(activityText()).not.toContain("stalled");
+  });
+});
+
+describe("StepNode — prefers-reduced-motion carries the same information, not less", () => {
+  it("shows the identical activity word and counter whether or not motion is reduced", () => {
+    const props: Partial<StepNodeData> = {
+      execStatus: "running",
+      lastEventAt: Date.now(),
+      activity: "tool",
+      activityDetail: "run_tests",
+      counter: 128,
+    };
+
+    renderNode(props);
+    const animatedText = activityText();
+    const animatedHasPulse = isAnimating(container.firstElementChild as HTMLElement);
+
+    // Force a real remount so the reduced-motion hook re-reads matchMedia —
+    // it only asks on mount, same as the running card does today.
+    act(() => root.unmount());
+    root = createRoot(container);
+    vi.stubGlobal("matchMedia", () => ({
+      matches: true,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    renderNode(props);
+    const reducedText = activityText();
+    const reducedHasPulse = isAnimating(container.firstElementChild as HTMLElement);
+
+    expect(animatedHasPulse).toBe(true);
+    expect(reducedHasPulse).toBe(false);
+    // The information — not merely "did it animate" — must match exactly.
+    expect(reducedText).toBe(animatedText);
+    expect(reducedText).toContain("128");
+    expect(reducedText).toContain("run_tests");
+  });
+});
+
+describe("StepNode — the concurrent-animation cap keeps a big canvas responsive", () => {
+  it("animates at most MAX_ANIMATING_NODES nodes when more than that many are running", () => {
+    const total = MAX_ANIMATING_NODES + 3;
+    const now = Date.now();
+    const entries = Array.from({ length: total }, (_, i) => ({
+      id: `n${i}`,
+      data: { execStatus: "running" as const, lastEventAt: now, activity: "thinking" as const },
+    }));
+    renderNodes(entries);
+
+    expect(cards().length).toBe(total);
+    const animatingCount = cards().filter(isAnimating).length;
+    expect(animatingCount).toBe(MAX_ANIMATING_NODES);
+  });
+});
+
+describe("StepNode — nothing animates outside the viewport", () => {
+  it("does not animate a running node the IntersectionObserver reports as not intersecting", () => {
+    class NotIntersectingObserver {
+      constructor(private cb: IntersectionObserverCallback) {}
+      observe(target: Element) {
+        this.cb([{ isIntersecting: false, target } as IntersectionObserverEntry], this as never);
+      }
+      disconnect() {}
+      unobserve() {}
+    }
+    vi.stubGlobal("IntersectionObserver", NotIntersectingObserver);
+
+    renderNode({ execStatus: "running", lastEventAt: Date.now(), activity: "thinking" });
+    const card = container.firstElementChild as HTMLElement;
+    expect(isAnimating(card)).toBe(false);
+  });
+
+  it("animates a running node the IntersectionObserver reports as intersecting", () => {
+    class IntersectingObserver {
+      constructor(private cb: IntersectionObserverCallback) {}
+      observe(target: Element) {
+        this.cb([{ isIntersecting: true, target } as IntersectionObserverEntry], this as never);
+      }
+      disconnect() {}
+      unobserve() {}
+    }
+    vi.stubGlobal("IntersectionObserver", IntersectingObserver);
+
+    renderNode({ execStatus: "running", lastEventAt: Date.now(), activity: "thinking" });
+    const card = container.firstElementChild as HTMLElement;
+    expect(isAnimating(card)).toBe(true);
   });
 });

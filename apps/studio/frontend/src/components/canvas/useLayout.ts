@@ -7,15 +7,20 @@ import type { Node, Edge } from "reactflow";
 // of them is edited.
 export const NODE_WIDTH = 210;
 
-// StepNode is a fixed two-row card: name and state on top, role and elapsed
-// along the bottom, both rows always rendered. So one constant describes it at
-// every moment of a run, and dagre reserves exactly what the node occupies.
+// StepNode is a fixed three-row card: name and state on top, role and
+// elapsed second, and a live-activity row (agent's latest text, current
+// activity, event/token counter) along the bottom — all three rows always
+// rendered. So one constant describes it at every moment of a run, and dagre
+// reserves exactly what the node occupies.
 //
 // It used to grow a row at a time as a run filled its data in, which meant the
 // height depended on how far along the run was, ranks came out ragged, and this
 // function had to guess. Fixing the card removed the guess: two nodes side by
-// side are now the same size whether or not either has finished.
-export const NODE_HEIGHT = 56;
+// side are the same size whether or not either has finished, and — since the
+// live-activity row was added — whether or not either has produced any
+// assistant text yet. The row's text is clipped to a fixed line count rather
+// than allowed to grow the card, which is what keeps this constant honest.
+export const NODE_HEIGHT = 88;
 
 /** The height of a rendered node. Constant by construction — see NODE_HEIGHT.
  *  Kept as a function because the layout passes call it per node and a future
