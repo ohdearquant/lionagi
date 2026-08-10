@@ -444,6 +444,45 @@ describe("getLayoutedElements — exposes a rank map alongside the layout", () =
   });
 });
 
+describe("getLayoutedElements — an edge naming a node that never arrived", () => {
+  // Reachable in production, not a defensive case: the graph is assembled from
+  // a live event stream, so an edge can arrive before its endpoint does, or
+  // instead of it. computeNodeDepths already skips those edges, and the layout
+  // has to agree with it — graphlib's setEdge CREATES any endpoint it has not
+  // seen, so handing one over gives a rank and a slot to a node nothing draws.
+  const nodes: Node[] = [bare("a"), bare("b"), bare("c")];
+  const dangling: Edge[] = [{ id: "ghost-a", source: "ghost", target: "a" }];
+  const xOf = (laid: Node[], id: string) => laid.find((n) => n.id === id)!.position.x;
+
+  it("leaves the real node on the rank the rank map assigns it", () => {
+    const { nodes: laid, ranks } = getLayoutedElements(nodes, dangling, "LR");
+    expect(laid).toHaveLength(3);
+    // All three are roots once the dangling edge is ignored, so all three are
+    // rank 0 and share an x. The failure this guards against is positions that
+    // contradict the rank map returned beside them: the phantom source takes
+    // rank 0 and displaces "a" into the next rank, while its untouched
+    // siblings stay put.
+    expect(ranks.get("a")).toBe(0);
+    expect(ranks.get("b")).toBe(0);
+    expect(xOf(laid, "a")).toBe(xOf(laid, "b"));
+    expect(xOf(laid, "b")).toBe(xOf(laid, "c"));
+  });
+
+  it("does not invent a node for the endpoint that never arrived", () => {
+    const { nodes: laid } = getLayoutedElements(nodes, dangling, "LR");
+    expect(laid.map((n) => n.id).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("still ranks and spaces an edge whose endpoints both exist", () => {
+    // Control. Ignoring unresolved endpoints must not be satisfiable by
+    // ignoring every edge — a real edge still has to separate its endpoints.
+    const real: Edge[] = [{ id: "a-b", source: "a", target: "b" }];
+    const { nodes: laid, ranks } = getLayoutedElements(nodes, real, "LR");
+    expect(ranks.get("b")).toBe(1);
+    expect(xOf(laid, "b")).toBeGreaterThan(xOf(laid, "a"));
+  });
+});
+
 describe("getLayoutedElements — deep chain with global fan-in (readability fixture)", () => {
   // Modeled on the reported hairball shape: several independent roots, one
   // long implementer/tester chain hanging off the first root, every node

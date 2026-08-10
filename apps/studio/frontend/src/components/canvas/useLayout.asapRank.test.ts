@@ -97,13 +97,38 @@ describe("canvas/useLayout.ts — rank assignment is ASAP", () => {
     }
   });
 
-  it("keeps a node with no edges at rank 0 rather than inventing a position for it", () => {
+  it("draws a node with no edges in the first column rather than inventing a position for it", () => {
     // An operation that entered the graph unattached depends on nothing, and
     // the honest drawing says so. Placing it beside its apparent siblings
     // would imply a relationship the graph does not carry.
     const detached: Node = { id: "loose", position: { x: 0, y: 0 }, data: { label: "loose" } };
-    const ranks = computeNodeDepths([...nodes, detached], edges);
+    const withDetached = [...nodes, detached];
 
-    expect(ranks.get("loose")).toBe(0);
+    expect(computeNodeDepths(withDetached, edges).get("loose")).toBe(0);
+
+    // The rank assertion above is the non-discriminating half — it passes
+    // against a canvas that ignores the rank function entirely. The detached
+    // node has to be DRAWN in rank 0's column, beside the other work that
+    // depends on nothing.
+    const { nodes: laidOut } = getLayoutedElements(withDetached, edges, "LR");
+    expect(drawnColumns(laidOut)[0]).toEqual(["a", "b", "c", "loose"]);
+  });
+
+  it("lays out a graph whose edge names an endpoint that never arrived", () => {
+    // An edge can reference a node the graph never received — an escalation
+    // child whose parent is absent, for instance. Such an edge has no rank gap
+    // to pin, and the layout still has to draw the nodes it does have. Passing
+    // dagre an explicit `undefined` label for this edge crashes the whole
+    // layout, so this covers every node on the canvas, not just the dangling one.
+    const dangling: Edge[] = [...edges, { id: "ghost-h", source: "ghost", target: "h" }];
+
+    expect(() => getLayoutedElements(nodes, dangling, "LR")).not.toThrow();
+
+    const { nodes: laidOut } = getLayoutedElements(nodes, dangling, "LR");
+    expect(laidOut.map((n) => n.id).sort()).toEqual([...ids].sort());
+    for (const node of laidOut) {
+      expect(Number.isFinite(node.position.x), `${node.id} has no finite x`).toBe(true);
+      expect(Number.isFinite(node.position.y), `${node.id} has no finite y`).toBe(true);
+    }
   });
 });
