@@ -1,23 +1,27 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Does the budget's scheduling model promise more parallelism than the executor delivers?
+"""Does the budget's divisor cover every schedule the executor can produce?
 
-`op_budget_share` divides a flow's total budget by `schedule_wave_count`, so a
-count that lands BELOW the number of stages the executor actually runs hands
-every op more time than the flow can afford, and the flow overruns its
-deadline. `schedule_wave_count` documents the opposite direction: the real
-schedule "can only beat, never lose to" its count when ops take comparable
-time. Every other test of that function checks its arithmetic against a
-hand-computed number, which cannot see whether the executor agrees. These run
-the executor.
+`op_budget_share` divides a flow's total budget by `max_sequential_depth`, so a
+divisor that lands BELOW the number of ops the executor actually runs in
+sequence hands every op more time than the flow can afford, and the flow
+overruns its deadline. Every other test of that function checks its arithmetic
+against a hand-computed number, which cannot see whether the executor agrees.
+These run the executor.
 
-The scheduling here is real — the same `flow()` entry point production uses.
-Only the work inside an op belongs to the test: a fixed sleep, so the
-equal-duration precondition the claim names actually holds. The stage count is
-then read off the recorded spans as a longest chain of non-overlapping ops,
-which is what the divisor means and which does not vary with how heavy the
-executor's per-op overhead happens to be.
+The scheduling here is real: the same `flow()` entry point production uses.
+Only the work inside an op belongs to the test, and how long that work takes is
+the whole point. An earlier version of this file slept a FIXED amount in every
+op, which held the equal-duration assumption the divisor used to be built on,
+so it agreed with a divisor that undercounted five of these eight shapes and
+read as coverage while doing it. Durations here are deliberately unequal, and
+each shape is swept with the slow op in every admission position, because a
+long-running op holding a slot is what makes the ops behind it serialize.
+
+The depth is then read off the recorded spans as a longest chain of
+non-overlapping ops, which is what the divisor means and which does not vary
+with how heavy the executor's per-op overhead happens to be.
 """
 
 import asyncio
@@ -27,7 +31,7 @@ from uuid import uuid4
 
 import pytest
 
-from lionagi.cli.orchestrate.flow import schedule_wave_count
+from lionagi.cli.orchestrate.flow import max_sequential_depth
 from lionagi.operations.flow import flow
 from lionagi.operations.node import Operation
 from lionagi.protocols.graph.edge import Edge
@@ -38,13 +42,34 @@ from lionagi.session.session import Session
 # enough that a dozen stages stay quick.
 WORK = 0.05
 
+# The two work lengths the sweep hands out. The gap between them has to be
+# wide enough that a slow op is still holding its slot after several fast ops
+# have come and gone, since that queueing is the effect being measured; an
+# order of magnitude does it, and leaves the ordering robust on a loaded
+# machine.
+FAST, SLOW = 0.02, 0.22
+
+
+def _duration_patterns(num_ops: int) -> list[list[float]]:
+    """One slow op in each admission position, plus an all-fast control.
+
+    Which op is slow decides how much serializing happens, and the answer is
+    not the same for every position, so the shape is only swept once every
+    position has been tried. The all-fast row is the schedule the old fixed
+    sleep produced, kept so its result stays visible next to the others.
+    """
+    patterns = [[FAST] * num_ops]
+    for slow_at in range(num_ops):
+        patterns.append([SLOW if i == slow_at else FAST for i in range(num_ops)])
+    return patterns
+
 
 def _sequential_depth(spans: list[tuple[float, float]]) -> int:
     """Longest run of ops that executed strictly one after another.
 
-    This is the quantity the budget divisor is supposed to be — the function
-    under test opens by calling it "how many ops actually end up running one
-    after another". Read off the spans as a longest-path, it is independent of
+    This is the quantity the budget divisor bounds — the function under test
+    opens by calling itself "the most ops that can end up running one after
+    another". Read off the spans as a longest-path, it is independent of
     how long an op takes and of the executor's per-op overhead. Dividing the
     elapsed time by the sleep instead would count that overhead as extra
     stages: a four-op chain measures seven that way, because ~37ms of setup
@@ -79,9 +104,18 @@ def _peak_concurrency(spans: list[tuple[float, float]]) -> int:
 
 
 async def _run_real_flow(
-    dep_indices: list[list[int]], num_ops: int, max_concurrent: int
+    dep_indices: list[list[int]],
+    num_ops: int,
+    max_concurrent: int,
+    durations: list[float] | None = None,
 ) -> tuple[int, int]:
-    """Execute this shape on the real executor; return (stages, peak concurrency)."""
+    """Execute this shape on the real executor; return (stages, peak concurrency).
+
+    `durations` assigns work lengths in the order ops are admitted rather than
+    by op index, because the point of a slow op is that it occupies a slot,
+    and which op holds a slot is a scheduling outcome rather than a property
+    of the graph. Omitted, every op takes the same fixed `WORK`.
+    """
     graph = Graph()
     ops = []
     for i in range(num_ops):
@@ -95,10 +129,14 @@ async def _run_real_flow(
 
     spans: list[tuple[float, float]] = []
     t0 = time.monotonic()
+    admitted = 0
 
     async def work(**_kwargs):
+        nonlocal admitted
+        length = WORK if durations is None else durations[admitted % len(durations)]
+        admitted += 1
         start = time.monotonic() - t0
-        await asyncio.sleep(WORK)
+        await asyncio.sleep(length)
         spans.append((start, time.monotonic() - t0))
         return "ok"
 
@@ -153,49 +191,86 @@ async def test_a_straight_chain_measures_one_stage_per_op():
 
 @pytest.mark.asyncio
 async def test_independent_ops_fill_the_cap_and_no_more():
+    # Equal durations, so this shape runs as two clean pairs. The sweep below
+    # gets the same four ops to three deep by making one of them slow, which
+    # is the difference a fixed sleep cannot show.
     stages, peak = await _run_real_flow([[], [], [], []], 4, 2)
     assert stages == 2
     assert peak == 2
 
 
 # --- The claim -----------------------------------------------------------
+#
+# `expected` is not derived from the function. It is the depth the executor was
+# measured reaching on that shape, written down so a change to the divisor has
+# to argue with a number rather than silently redefine what it is compared
+# against. A test that asked only "does the divisor cover what we just
+# measured" would follow the divisor wherever it went.
 
-SHAPES = [
-    # (name, dep_indices, num_ops, max_concurrent)
-    ("one root feeding three dependents", [[], [0], [0], [0]], 4, 2),
-    ("a chain whose ops sort last", [[], [], [], [2], [3]], 5, 2),
-    ("a chain competing with independent work", [[], [], [0], [], [], [2]], 6, 2),
-    ("two chains sharing a cap of two", [[], [0], [], [2], [1], [3]], 6, 2),
-    ("a wide fan-in behind a narrow cap", [[], [], [], [], [0, 1, 2, 3]], 5, 2),
+SWEEP_SHAPES = [
+    # (name, dep_indices, num_ops, max_concurrent, expected depth)
+    ("four independent ops", [[], [], [], []], 4, 2, 3),
+    ("a straight chain of four", [[], [0], [1], [2]], 4, 2, 4),
+    ("three independent ops and one dependent", [[], [], [], [0]], 4, 2, 3),
+    ("one root feeding three dependents", [[], [0], [0], [0]], 4, 2, 3),
+    ("a chain whose ops sort last", [[], [], [], [2], [3]], 5, 2, 4),
+    ("a chain competing with independent work", [[], [], [0], [], [], [2]], 6, 2, 5),
+    ("two chains sharing a cap of two", [[], [0], [], [2], [1], [3]], 6, 2, 5),
+    ("a wide fan-in behind a narrow cap", [[], [], [], [], [0, 1, 2, 3]], 5, 2, 4),
 ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name,deps,num_ops,cap", SHAPES)
-async def test_the_model_never_promises_more_parallelism_than_the_executor_delivers(
-    name, deps, num_ops, cap
+@pytest.mark.parametrize("name,deps,num_ops,cap,expected", SWEEP_SHAPES)
+async def test_the_divisor_covers_the_worst_schedule_without_being_looser(
+    name, deps, num_ops, cap, expected
 ):
-    """The budget divisor must not come in under the executor's real stage count.
+    """Two properties, and they fail in opposite directions.
 
-    Measured on the best of three runs. A run that happens to be slowed by
-    other load inflates its stage count, so taking the fastest keeps a busy
-    machine from manufacturing a failure — and a model that undercounts even
-    the executor's best schedule has undercounted.
+    COVERAGE is the one that matters in production: a divisor below the depth
+    the executor reaches hands every op more time than the flow can afford, and
+    the flow overruns its own deadline with later ops cancelled part-written.
+
+    TIGHTNESS keeps the first property from being satisfied trivially.
+    Returning the op count always covers, and always shrinks every op's budget
+    to the serial worst case, so this pins the divisor to the depth actually
+    reachable rather than to a safe constant.
+
+    Every duration pattern runs twice and the lower depth is kept. Load on the
+    machine can only push apart two ops that would otherwise have overlapped,
+    which inflates a depth; nothing makes a depth read low. So the smaller
+    reading is the truer one, and a busy machine cannot manufacture either a
+    coverage failure or a tightness failure out of noise.
     """
-    model = schedule_wave_count(deps, num_ops, cap)
+    divisor = max_sequential_depth(deps, num_ops, cap)
+    assert divisor == expected, (
+        f"{name}: the divisor is now {divisor} where this shape was measured at "
+        f"{expected}. If the executor's behaviour changed, re-measure and update "
+        f"`expected`; if it did not, the divisor has moved away from reality."
+    )
 
-    observed = []
-    for _attempt in range(3):
-        stages, peak = await _run_real_flow(deps, num_ops, cap)
-        assert peak <= cap, (
-            f"{name}: {peak} ops in flight under a cap of {cap} — the cap was not "
-            f"enforced, so elapsed time says nothing about how many stages ran"
-        )
-        observed.append(stages)
+    per_pattern: list[int] = []
+    for durations in _duration_patterns(num_ops):
+        attempts = []
+        for _attempt in range(2):
+            stages, peak = await _run_real_flow(deps, num_ops, cap, durations)
+            assert peak <= cap, (
+                f"{name}: {peak} ops in flight under a cap of {cap} — the cap was "
+                f"not enforced, so this run says nothing about sequencing"
+            )
+            attempts.append(stages)
+        per_pattern.append(min(attempts))
 
-    best = min(observed)
-    assert best <= model, (
-        f"{name}: the executor needed {best} stages (runs: {observed}) where the "
-        f"model budgeted for {model}. Each op is handed total/{model} seconds, so "
-        f"a flow of this shape overruns its deadline by {best - model} stages."
+    worst = max(per_pattern)
+    assert worst <= divisor, (
+        f"{name}: the executor ran {worst} ops in sequence (per duration pattern: "
+        f"{per_pattern}) where the divisor is {divisor}. Each op is handed "
+        f"total/{divisor} seconds, so a flow of this shape overruns its deadline "
+        f"by {worst - divisor} ops' worth of budget."
+    )
+    assert worst == divisor, (
+        f"{name}: the divisor is {divisor} but no duration pattern got the "
+        f"executor past {worst} (per pattern: {per_pattern}). The budget is being "
+        f"divided by more stages than this shape can produce, so every op is told "
+        f"it has less time than it really has."
     )

@@ -16,8 +16,8 @@ from lionagi.cli.orchestrate.flow import (
     _build_budget_preambles,
     _format_budget_preamble,
     critical_path_depth,
+    max_sequential_depth,
     op_budget_share,
-    schedule_wave_count,
 )
 
 # ── _format_budget_preamble ────────────────────────────────────────────────
@@ -127,31 +127,42 @@ def test_share_falls_back_to_the_op_count_without_dependency_data():
 # independent ops one after another, and a share computed from depth 1 hands
 # each of them the whole wall clock, so the first two spend the deadline and
 # the rest are cancelled part-written.
+#
+# What the cap contributes is not a count of batches. Once `conc` ops are in
+# flight together, a sequence of ops that run strictly one after another can
+# pick up at most one of them, so it reaches at most `num_ops - conc + 1`. The
+# ops that lose the race for a slot do not have to resume in step with each
+# other, and any test phrased in rounds of equal length is asserting a schedule
+# rather than a bound.
 
 
-def test_share_counts_scheduling_rounds_when_a_cap_serializes_independent_ops():
+def test_share_counts_every_op_when_a_cap_of_one_serializes_them_all():
     # Four independent ops, cap of 1: the graph permits full overlap, the cap
-    # permits none. Four rounds, so 900s / 4.
+    # permits none, so all four run in sequence and each gets 900s / 4.
     assert op_budget_share(900, [[], [], [], []], 4, 1) == 225
 
 
-def test_share_counts_partial_rounds_under_a_cap_that_allows_some_overlap():
-    # Cap of 2 over four independent ops is two rounds, not four.
-    assert op_budget_share(900, [[], [], [], []], 4, 2) == 450
+def test_share_counts_the_ops_that_can_queue_behind_one_slow_op():
+    # Four independent ops at a cap of 2. Two start together, and a sequence
+    # can hold only one of those two, so the reachable depth is 3 rather than
+    # the two equal-length rounds an even schedule would show: one op finishes
+    # early, another takes its slot, that one finishes, a third takes it.
+    assert op_budget_share(900, [[], [], [], []], 4, 2) == 300
 
 
-def test_share_rounds_a_partial_final_batch_up():
-    # Three ops at a cap of 2 still needs two rounds: one pair, then a single.
+def test_share_over_a_cap_leaving_one_op_to_follow():
+    # Three ops at a cap of 2: two start together, one waits, so at most two
+    # run in sequence.
     assert op_budget_share(900, [[], [], []], 3, 2) == 450
 
 
-def test_share_takes_the_dependency_chain_when_it_is_longer_than_the_rounds():
-    # A 3-chain under a cap of 3: rounds is 1, so depth decides. The cap being
-    # present must not shorten a share the dependencies already justify.
+def test_share_takes_the_dependency_chain_when_it_is_longer():
+    # A 3-chain under a cap of 3: capacity forces nothing, so depth decides.
+    # The cap being present must not shorten a share the dependencies justify.
     assert op_budget_share(900, [[], [0], [1]], 3, 3) == 300
 
 
-def test_share_takes_the_rounds_when_they_exceed_the_dependency_chain():
+def test_share_takes_the_cap_when_it_forces_more_than_the_dependency_chain():
     # Fan-in: depth 2, but a cap of 1 forces all four into sequence.
     assert op_budget_share(900, [[], [], [], [0, 1, 2]], 4, 1) == 225
 
@@ -167,17 +178,20 @@ def test_share_treats_a_non_positive_cap_as_unbounded():
 # ── Where the two bounds interact ───────────────────────────────────────────
 #
 # A dependency does not only lengthen the chain, it idles capacity while it is
-# unsatisfied, and the ops it blocks have to be picked up in some later pass.
-# Neither bound sees that, so neither does the larger of the two.
+# unsatisfied, and the ops it blocks have to be picked up later. Counting
+# batches of `conc` ops misses that, because it assumes every slot is busy in
+# every batch. Counting the ops that can queue behind a single occupied slot
+# does not.
 
 
-def test_a_dependency_idles_capacity_so_neither_bound_sees_the_third_wave():
-    # One root, three dependents, two slots. The root runs alone (one slot idle
-    # because nothing else is ready), then two dependents, then the last.
+def test_a_dependency_idles_capacity_and_the_batch_count_cannot_see_it():
+    # One root, three dependents, two slots. The root runs alone because
+    # nothing else is ready, and its dependents follow it.
     deps = [[], [0], [0], [0]]
-    assert schedule_wave_count(deps, 4, 2) == 3
-    # Both bounds say 2, so max() of them cannot reach 3. This is the whole
-    # finding: the counterexample is invisible to either bound alone.
+    assert max_sequential_depth(deps, 4, 2) == 3
+    # Neither the chain nor a count of full batches reaches 3, which is why
+    # the divisor is neither of them. The batch count is the shape of the
+    # bound this file used to assert, kept here as the thing that undercounts.
     assert critical_path_depth(deps) == 2
     assert math.ceil(4 / 2) == 2
 
@@ -188,42 +202,45 @@ def test_the_share_for_that_schedule_fits_inside_the_deadline():
     assert op_budget_share(900, [[], [0], [0], [0]], 4, 2) == 300
 
 
-def test_a_diamond_under_a_cap_counts_the_pass_its_join_needs():
+def test_a_diamond_under_a_cap_counts_the_stage_its_join_needs():
     # root → two middles → join. The join cannot start until both middles are
-    # done, so it gets a pass of its own however wide the cap is.
-    assert schedule_wave_count([[], [0], [0], [1, 2]], 4, 2) == 3
+    # done, so it follows them however wide the cap is.
+    assert max_sequential_depth([[], [0], [0], [1, 2]], 4, 2) == 3
 
 
-def test_a_wide_layer_splits_across_passes_under_a_narrow_cap():
-    # A root feeding five dependents at a cap of 2: root, then three passes of
-    # two, two, one.
-    assert schedule_wave_count([[], [0], [0], [0], [0], [0]], 6, 2) == 4
+def test_a_wide_layer_queues_behind_a_narrow_cap():
+    # A root feeding five dependents at a cap of 2. Once the root is done, two
+    # dependents start together and a sequence can hold only one of them, so
+    # four of the five can end up nose to tail behind the root.
+    assert max_sequential_depth([[], [0], [0], [0], [0], [0]], 6, 2) == 5
 
 
 def test_an_uncapped_schedule_is_exactly_the_dependency_depth():
-    # With capacity for everyone each pass clears one level, which is the
-    # cheaper short-circuit the function takes.
+    # With capacity for everyone, only the dependencies serialize anything,
+    # which is the cheaper short-circuit the function takes.
     deps = [[], [0], [1]]
-    assert schedule_wave_count(deps, 3, 0) == critical_path_depth(deps) == 3
-    assert schedule_wave_count([[], [], []], 3, 0) == 1
+    assert max_sequential_depth(deps, 3, 0) == critical_path_depth(deps) == 3
+    assert max_sequential_depth([[], [], []], 3, 0) == 1
 
 
 def test_a_plan_whose_dependency_data_does_not_match_its_ops_assumes_no_overlap():
     # Nothing can be said about what overlaps, so every op is assumed serial.
-    assert schedule_wave_count([[], [0]], 4, 2) == 4
-    assert schedule_wave_count([], 3, 2) == 3
+    assert max_sequential_depth([[], [0]], 4, 2) == 4
+    assert max_sequential_depth([], 3, 2) == 3
 
 
 def test_a_dependency_pointing_outside_the_plan_does_not_stall_the_count():
     # Matches critical_path_depth's tolerance: a malformed index is ignored
     # rather than treated as a dependency that can never be satisfied. All four
-    # ops are ready immediately, so the cap alone decides — a stall would give
-    # the no-overlap fallback of 4 instead.
-    assert schedule_wave_count([[], [9], [-1], []], 4, 2) == 2
+    # ops are ready immediately, so the cap alone decides, giving the same 3 as
+    # four genuinely independent ops — a stall would give the no-overlap
+    # fallback of 4 instead.
+    assert max_sequential_depth([[], [9], [-1], []], 4, 2) == 3
+    assert max_sequential_depth([[], [], [], []], 4, 2) == 3
 
 
-def test_an_empty_plan_has_no_waves():
-    assert schedule_wave_count([], 0, 2) == 0
+def test_an_empty_plan_has_no_depth():
+    assert max_sequential_depth([], 0, 2) == 0
 
 
 # ── The share an op is actually told ────────────────────────────────────────
