@@ -255,7 +255,7 @@ options.export_dir, description`). Rules:
    Freeform step graphs, "join"/"debounce" nodes, and emission grants that
    `engine_defs` cannot persist are rejected fictions.
 2. **Topology is data, not drawing.** Each kind's pipeline lives in one
-   λ-reviewed catalog (`lib/designer/topology.ts`); the canvas auto-lays it
+   reviewed catalog (`lib/designer/topology.ts`); the canvas auto-lays it
    out. Users never wire engine edges by hand.
 3. **Nodes are information-dense, inline.** A node shows its stage name,
    role, resolved model (per-stage override or engine default), real

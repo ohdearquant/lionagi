@@ -284,7 +284,7 @@ running" with "you typo'd a flag".)
 Implementation is pure reads over existing tables (`sessions`,
 `invocations`, `session_signals`) plus `session_controls` from part 1.
 `li o ctl status` becomes an alias into the same renderer. This directly
-replaces the hand-rolled sqlite polls every λ writes today.
+replaces the hand-rolled sqlite polls every caller writes today.
 
 ### 7. Per-provider usage: `usage_events` + `li usage`
 
@@ -333,7 +333,7 @@ predictive routing is attempted.
 
 Problem: gemini quota is a daily window while codex/claude are weekly, so
 gemini-routed lanes (mirror, doc verification) die mid-fleet when the daily
-window exhausts, and every λ handles it ad hoc.
+window exhausts, and every caller handles it ad hoc.
 
 v1 is **reactive** fallback, configured as chains in settings
 (project overrides global, ADR-0060 resolution):
