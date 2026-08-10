@@ -438,8 +438,25 @@ export function getLayoutedElements(
   for (const node of nodes) {
     g.setNode(node.id, { width: NODE_WIDTH, height: estimateNodeHeight(node) });
   }
+  // Rank assignment is ours (ADR-0113 D2), not dagre's: `ranks` above already
+  // computed each node's ASAP depth. dagre's own rankers — network-simplex
+  // included, which is the untouched default here — minimize total edge
+  // length instead, which is a different objective and disagrees with ASAP
+  // whenever a node's result is consumed much later than it is produced (the
+  // P2 case). Rather than fight that objective with a `ranker` option (the
+  // ADR is explicit that no ranker choice changes the outcome), pin every
+  // edge's minlen to the exact ASAP rank gap between its endpoints. That
+  // leaves zero slack on every edge simultaneously, so the only feasible
+  // assignment left for any ranker to find is the ASAP one — dagre still
+  // does the ordering and routing, just not the ranking.
   for (const edge of edges) {
-    g.setEdge(edge.source, edge.target);
+    const sourceRank = ranks.get(edge.source);
+    const targetRank = ranks.get(edge.target);
+    const minlen =
+      sourceRank !== undefined && targetRank !== undefined
+        ? Math.max(1, targetRank - sourceRank)
+        : undefined;
+    g.setEdge(edge.source, edge.target, minlen !== undefined ? { minlen } : undefined);
   }
 
   dagre.layout(g);
