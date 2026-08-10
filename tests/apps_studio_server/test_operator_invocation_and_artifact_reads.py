@@ -478,3 +478,142 @@ async def test_a_textual_secret_under_a_counter_shaped_name_is_still_redacted():
     projected = _safe_content({"token_count": UNSHAPED_SECRET})
 
     assert projected == {"token_count": "[redacted]"}
+
+
+def _spellings(name: str) -> list[str]:
+    """The separator and case variants one field name arrives in.
+
+    The run-together and camelCase forms are the load-bearing ones. Every other
+    variant here keeps a separator, so the fold that precedes the comparison
+    collapses all of them back onto the underscored name and they match
+    whatever the rule's vocabulary happens to be. Only dropping the separator
+    changes the folded string, so a list without these two asserts agreement
+    over exactly the spellings that cannot disagree.
+    """
+    parts = name.split("_")
+    variants = [
+        name,
+        name.replace("_", "-"),
+        name.replace("_", "."),
+        name.replace("_", " "),
+        name.upper(),
+        name.title(),
+        "".join(parts),
+        parts[0] + "".join(part.capitalize() for part in parts[1:]),
+    ]
+    return list(dict.fromkeys(variants))
+
+
+def _every_name_the_secret_rule_knows() -> list[str]:
+    """Read the corpus out of the rule instead of writing it down again.
+
+    A hand-picked list can only hold names its author already believed both
+    layers agreed about. That is not a hypothetical: two layers disagreed about
+    `auth` while a test whose docstring claimed to assert their agreement was
+    green, because the name was in neither list the author had chosen. Deriving
+    the corpus means a name added to the vocabulary is covered by the same
+    commit that adds it.
+    """
+    from lionagi.studio.operator import redact
+
+    return sorted(set(redact._SECRET_KEY_MARKERS) | redact._EXACT_SECRET_FIELD_NAMES)
+
+
+# Names a caller legitimately reads that carry a secret marker as a substring.
+# `authors` is live on our own records, so withholding it deletes data rather
+# than protecting anything. This is the arm that fails a fix which closes a gap
+# by widening the substring markers instead of naming exact spellings.
+_NAMES_A_CALLER_NEEDS_TO_READ = [
+    "author",
+    "authors",
+    "author_name",
+    "authored_by",
+    "co_authors",
+    "oauth_client_id",
+    "unauthorized",
+    "authority",
+    "authorized_keys_count",
+    "display_name",
+    "created_at",
+]
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [spelling for name in _every_name_the_secret_rule_knows() for spelling in _spellings(name)],
+)
+async def test_every_name_the_secret_rule_knows_reads_the_same_on_both_paths(spelling):
+    """Two callers ask whether a field name names a secret, on different paths.
+
+    A name one of them treats as a secret and the other does not means the same
+    credential is withheld on the session and artifact reads and served on the
+    tool-argument and manifest reads. Pinning each rule on its own cannot see
+    that — both stay green while they disagree — so this asserts the two answers
+    together, over every name the rule is written in and every spelling of each.
+
+    The two now share one predicate, which makes the agreement structural rather
+    than coincidental. The assertion is still worth keeping: it is what reddens
+    if either caller grows its own copy of the rule again, which is how they
+    came apart the first time.
+    """
+    from lionagi.studio.operator import application_mcp, redact
+
+    assert redact._is_secret_key(spelling) is True
+    assert application_mcp._secret_field(spelling) is True
+
+
+@pytest.mark.parametrize("name", _NAMES_A_CALLER_NEEDS_TO_READ)
+async def test_a_name_that_merely_contains_a_marker_is_still_served(name):
+    """Withholding too much is a defect too, and a quieter one.
+
+    `auth` names a credential; `author` does not, and neither do `authors` or
+    `oauth_client_id`. A rule that closes the `auth` gap by searching for it as
+    a substring passes every test about credentials and silently empties fields
+    a caller reads, which is why the exact-match names are compared for equality
+    against the folded name rather than searched for inside it.
+    """
+    from lionagi.studio.operator import application_mcp, redact
+
+    assert redact._is_secret_key(name) is False
+    assert application_mcp._secret_field(name) is False
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "url",
+        "uri",
+        "dsn",
+        "store_url",
+        "store-url",
+        "store.url",
+        "storeUrl",
+        "database_url",
+        "database-url",
+        "databaseUrl",
+        "db_url",
+        "db-url",
+        "dbUrl",
+        "connection_url",
+        "connection-url",
+        "connectionUrl",
+    ],
+)
+async def test_a_location_field_is_withheld_even_when_its_value_has_no_url_shape(key):
+    """Store locations are withheld by field name as well as by value shape.
+
+    Every other test that plants a store location also gives it a scheme, so
+    the pattern layer catches it and the name layer is never what makes the
+    assertion pass. Deleting the name check outright left the whole suite
+    green. A location that reaches us as bare text — a host, a path fragment,
+    an operator's note — has only this layer between it and the caller.
+    """
+    from lionagi.studio.operator.application_mcp import _safe_content
+
+    # Premise: this value survives under a name that matches nothing, so any
+    # redaction below is the work of the key and not of a pattern.
+    assert _safe_content({"note": UNSHAPED_SECRET}) == {"note": UNSHAPED_SECRET}
+
+    projected = _safe_content({key: UNSHAPED_SECRET})
+
+    assert projected == {key: "[redacted]"}

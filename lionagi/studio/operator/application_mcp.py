@@ -24,7 +24,13 @@ import anyio
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
-from .redact import MESSAGE_BYTE_CAP, PER_ITEM_TEXT_CAP, scrub_text
+from .redact import (
+    MESSAGE_BYTE_CAP,
+    PER_ITEM_TEXT_CAP,
+    fold_field_name,
+    is_secret_field_name,
+    scrub_text,
+)
 from .rename_session import RENAME_SESSION_DESCRIPTION, RenameSessionInput, rename_session
 from .resume_run import RESUME_RUN_DESCRIPTION, ResumeRunInput, resume_run
 from .run_detail import RunDetailInput, run_detail
@@ -347,22 +353,24 @@ _SESSION_DETAIL_DROP = frozenset(
 )
 _INVOCATION_DROP = frozenset({"node_metadata", "status_evidence_refs"})
 _ARTIFACT_DROP = frozenset({"file_path"})
-_SECRET_FIELD_MARKERS = (
-    "secret",
-    "token",
-    "password",
-    "passwd",
-    "api_key",
-    "apikey",
-    "credential",
-    "authorization",
-    "access_key",
-    "private_key",
-    "client_secret",
-)
-_FIELD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 _URL_FIELD_NAMES = frozenset(
-    {"url", "uri", "dsn", "store_url", "database_url", "db_url", "connection_url"}
+    {
+        "url",
+        "uri",
+        "dsn",
+        "store_url",
+        "database_url",
+        "db_url",
+        "connection_url",
+        # Compared after folding, so store-url and store.url are covered by the
+        # underscored spellings above. Concatenated spellings are not: they
+        # carry no separator to fold, and this is an exact-match set, so
+        # storeUrl has to be listed in its own right.
+        "storeurl",
+        "databaseurl",
+        "dburl",
+        "connectionurl",
+    }
 )
 _PATH_FIELD_NAMES = frozenset({"path", "directory", "cwd", "root"})
 _STORE_URL_RE = re.compile(
@@ -391,22 +399,12 @@ def _safe_text(value: str) -> str:
 
 
 def _secret_field(key: str) -> bool:
-    # Separators do not change which field a name refers to. HTTP headers
-    # arrive as X-API-Key, config files write api.key, and our own records
-    # write api_key; every marker below that contains an underscore would
-    # otherwise match only the last of those. Fold any run of non-alphanumeric
-    # characters to a single underscore so all the spellings compare equal.
-    # This can only widen what we redact, which is the safe direction for a
-    # rule whose job is to withhold.
-    lowered = _FIELD_SEPARATOR_RE.sub("_", key.lower())
-    return lowered in {"auth", "authentication", "bearer"} or any(
-        marker in lowered for marker in _SECRET_FIELD_MARKERS
-    )
+    return is_secret_field_name(key)
 
 
 def _safe_content(value: Any, *, key: str = "") -> Any:
     """Recursively remove credentials, store URLs, and host filesystem layouts."""
-    if key.lower() in _URL_FIELD_NAMES or _secret_field(key):
+    if fold_field_name(key) in _URL_FIELD_NAMES or _secret_field(key):
         # Judge by field name only where the value could carry text. A number
         # is neither a credential nor a URL, and several counters we report
         # carry a marker in their name — input_tokens, output_tokens — so
@@ -415,7 +413,7 @@ def _safe_content(value: Any, *, key: str = "") -> Any:
         # null-handling of secret fields unchanged.
         if not isinstance(value, (int, float, bool)):
             return "[redacted]"
-    if key.lower() in _PATH_FIELD_NAMES and isinstance(value, str):
+    if fold_field_name(key) in _PATH_FIELD_NAMES and isinstance(value, str):
         public_value = public_project(value)
         return _safe_text(public_value) if public_value is not None else None
     if isinstance(value, dict):
