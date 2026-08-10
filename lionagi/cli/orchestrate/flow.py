@@ -409,11 +409,15 @@ switch to writing the deliverable with what you have.
 def critical_path_depth(dep_indices: list[list[int]]) -> int:
     """Longest dependency chain in the plan, in ops.
 
-    This is the number of ops that must run one after another, which is what
-    bounds the flow's wall clock. It is not the op count: ops with no path
-    between them run at the same time, since the executor's default
-    concurrency is the whole assignment list and only dependencies hold an op
-    back.
+    This is how many ops the *dependencies* force to run one after another,
+    which is not the op count: ops with no path between them are free to run at
+    the same time.
+
+    It is a lower bound on the flow's wall clock, not the bound. A concurrency
+    cap serializes ops this function calls parallel, and under `--max-concurrent
+    1` it says 1 for a plan that runs strictly in sequence. Callers sizing a
+    budget want the larger of the two — see `op_budget_share`, which is the
+    reason this returns a chain length rather than a duration.
 
     Dependencies point backwards (op i may only depend on ops before it), so a
     single forward pass is enough. Cycles are therefore not reachable here, and
@@ -430,18 +434,63 @@ def critical_path_depth(dep_indices: list[list[int]]) -> int:
     return max(depths)
 
 
-def op_budget_share(total_budget: int, dep_indices: list[list[int]], num_ops: int) -> int:
+def op_budget_share(
+    total_budget: int,
+    dep_indices: list[list[int]],
+    num_ops: int,
+    max_concurrent: int = 0,
+) -> int:
     """Seconds to offer one op out of the flow's total budget.
 
-    The divisor is the critical-path depth rather than the op count, for the
-    reason given on `critical_path_depth`. `num_ops` is the fallback for a plan
-    with no dependency information at all, where nothing can be said about what
-    overlaps.
+    Two things force ops to run one after another, and the divisor has to
+    respect both. Dependencies are one: `critical_path_depth`. The concurrency
+    cap is the other, and it is easy to forget because it is usually not set —
+    with `--max-concurrent 1` the executor serializes four independent ops that
+    the dependency graph says could all run at once. Taking only the depth
+    there would hand every one of them the whole budget, and the flow's own
+    deadline would expire partway through.
+
+    So the divisor is the larger of the two lower bounds on how many ops must
+    run in sequence: the longest dependency chain, and the number of scheduling
+    rounds the cap imposes. `max_concurrent <= 0` means unbounded, matching how
+    the executor reads it, in which case the rounds bound is 1 and the depth
+    decides alone. `num_ops` is the fallback for a plan carrying no dependency
+    information, where nothing can be said about what overlaps.
     """
-    divisor = critical_path_depth(dep_indices) or num_ops
+    conc = max_concurrent if max_concurrent > 0 else num_ops
+    rounds = math.ceil(num_ops / conc) if conc > 0 else num_ops
+    divisor = max(critical_path_depth(dep_indices) or num_ops, rounds)
     if divisor <= 0:
         return total_budget
     return int(total_budget / divisor)
+
+
+def _build_budget_preambles(
+    total_budget: int | None,
+    dep_indices: list[list[int]],
+    num_ops: int,
+    max_concurrent: int,
+    deadline_epoch: float,
+) -> dict[int, str]:
+    """The per-op budget preambles for one flow, keyed by op index.
+
+    Exists as its own function so the share an op is actually told can be
+    asserted directly. Tests that only call `op_budget_share` cannot see
+    whether the caller uses it, which is how the equal-split divisor survived
+    a suite that was green the whole time.
+    """
+    if not total_budget or num_ops <= 0:
+        return {}
+    share = op_budget_share(total_budget, dep_indices, num_ops, max_concurrent)
+    return {
+        i: _format_budget_preamble(
+            op_index=i + 1,
+            num_ops=num_ops,
+            op_budget_seconds=share,
+            deadline_epoch=deadline_epoch,
+        )
+        for i in range(num_ops)
+    }
 
 
 def _format_budget_preamble(
@@ -2841,29 +2890,20 @@ async def _run_flow_inner(
             if not worker_is_cli(env, ta.assignee, pool[i % len(pool)] if pool else None)
         )
 
-    budget_preambles: dict[int, str] = {}
-    if env.total_budget and assignments:
-        # Divide the budget by how many ops run *one after another*, not by how
-        # many there are. Independent ops run at the same time — the executor's
-        # default concurrency is the whole assignment list, so only
-        # dependencies serialize anything — and dividing by the op count told
-        # every op in a wide graph that it had a fraction of the wall clock it
-        # actually had. Ops then paced themselves against that smaller number
-        # and dropped whatever was not the deliverable, which in practice meant
-        # the parts that run last.
-        #
-        # For a straight chain the depth equals the op count and this changes
-        # nothing; it only ever widens the share for graphs that really do run
-        # work in parallel.
-        share = op_budget_share(env.total_budget, dep_indices, len(assignments))
-        deadline = time.time() + env.total_budget
-        for i in range(len(assignments)):
-            budget_preambles[i] = _format_budget_preamble(
-                op_index=i + 1,
-                num_ops=len(assignments),
-                op_budget_seconds=share,
-                deadline_epoch=deadline,
-            )
+    # Divide the budget by how many ops must run *one after another*, not by
+    # how many there are. Dividing by the op count told every op in a wide
+    # graph that it had a fraction of the wall clock it actually had, and ops
+    # pace themselves against that number and drop whatever is not the
+    # deliverable — which in practice means the parts that run last. Both
+    # things that serialize ops are accounted for there: dependencies, and the
+    # concurrency cap this run was given.
+    budget_preambles = _build_budget_preambles(
+        env.total_budget,
+        dep_indices,
+        len(assignments),
+        max_concurrent,
+        time.time() + (env.total_budget or 0),
+    )
 
     plan_result = _PlanResult(
         assignments=assignments,
