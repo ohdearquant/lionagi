@@ -467,11 +467,27 @@ export function getLayoutedElements(
   for (const edge of edges) {
     const sourceRank = ranks.get(edge.source);
     const targetRank = ranks.get(edge.target);
-    const minlen =
-      sourceRank !== undefined && targetRank !== undefined
-        ? Math.max(1, targetRank - sourceRank)
-        : undefined;
-    g.setEdge(edge.source, edge.target, minlen !== undefined ? { minlen } : undefined);
+    if (sourceRank !== undefined && targetRank !== undefined) {
+      g.setEdge(edge.source, edge.target, { minlen: Math.max(1, targetRank - sourceRank) });
+      continue;
+    }
+    // An endpoint is missing from `ranks`, which happens exactly when the edge
+    // names a node that never arrived: computeNodeDepths ranks every node it
+    // was given and skips edges pointing outside that set. Skip the edge here
+    // too, so the layout and the rank map describe the same graph.
+    //
+    // Handing it to dagre instead is worse than useless. graphlib's setEdge
+    // CREATES an endpoint it has not seen, so the absent node gets a rank and
+    // a slot of its own, and dagre pushes the real node that depends on it out
+    // of the rank this function just computed — positions contradicting the
+    // `ranks` map returned beside them, on behalf of a node nothing draws. It
+    // also costs real time at scale, since dagre lays out every phantom.
+    //
+    // If a future change does need one of these to reach dagre, call setEdge
+    // with no label rather than passing `undefined` for one: graphlib stores an
+    // explicit `undefined` AS the label, and dagre dereferences it while
+    // routing — "Cannot set properties of undefined (setting 'points')", which
+    // takes the whole layout down.
   }
 
   dagre.layout(g);
