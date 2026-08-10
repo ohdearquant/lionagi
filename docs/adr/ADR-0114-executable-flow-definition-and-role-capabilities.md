@@ -1,11 +1,13 @@
 # ADR-0114: An executable flow definition, and roles whose declared capabilities are real
 
 - **Status**: Proposed
-- **Date**: 2026-08-08
+- **Date**: 2026-08-08 (Amendment 1: 2026-08-10)
 - **Supersedes**: none
-- **Related**: ADR-0113 (execution graph as the primary run canvas), #2836 (deterministic YAML
-  pipeline interface), #2928 (REJECT-to-replan and the refusal budget), #2929 (role instance
-  naming at the spawn boundary), #2924 (escalation children enter the DAG with no edges)
+- **Related**: ADR-0113 (execution graph as the primary run canvas), ADR-0073 (fixed
+  workflow-definition execution, Accepted), ADR-0023 (dependency-aware operation graph execution
+  kernel), #2836 (deterministic YAML pipeline interface), #2928 (REJECT-to-replan and the refusal
+  budget), #2929 (role instance naming at the spawn boundary), #2924 (escalation children enter
+  the DAG with no edges)
 
 ## Context
 
@@ -252,3 +254,140 @@ where it is: impossible. Worth building as well, and it does not substitute.
 loop, roughly a day. Rejected because the thing that makes a gate useful is choosing *which* node
 is one, and a hardcode picks for the user forever. It also leaves the other 20 capabilities exactly
 as inert, which is the larger finding.
+
+---
+
+# Amendment 1 (2026-08-10): the compile target, values between nodes, and fan-out
+
+D1 through D7 decide what a flow definition *is*. They do not say what it compiles to, how a value
+gets from one node to the next, or what fan-out means when the degree is not known until something
+runs. Those three came up as soon as anyone tried to write a definition by hand, and all three
+turned out to be answerable from what the executor already does rather than from new design.
+
+Everything below was measured at `2bff9d607` by reading `lionagi/operations/flow.py` and
+`lionagi/operations/builder.py`.
+
+## D8 — A definition compiles to builder calls, not to a graph
+
+The compile target is a sequence of `OperationGraphBuilder.add_operation(...)` calls, one per
+step, in file order. `add_operation(node_id=...)` writes `metadata["reference_id"]`, which is
+already what the executor uses to name a node in progress events and what the run canvas draws, so
+a step's YAML key becomes its identity end to end with nothing extra.
+
+**The footgun this decision exists to legislate.** `depends_on` is three-valued and the two falsy
+values mean opposite things. A list depends on exactly those nodes. `[]` means no dependencies, so
+the node is a root of its own fan. `None`, the default, chains onto the builder's current heads
+with `sequential` edges, and `sequential` edges are ordinary predecessors at execution time.
+
+So a compiler that omits `depends_on` when a step declares no dependencies produces a **chain
+where the author wrote a fan**. Every parallel step waits for the one written above it, the run is
+correct, the graph draws as a line, and the only symptom is wall clock. A definition compiler must
+pass `depends_on=[]` explicitly for a step with no declared dependencies, and there must be a test
+that asserts the resulting graph has no edge between two steps that declare none, because a test
+that only checks the run completed cannot see this.
+
+## D9 — Fan-in needs no node kind, and authored-degree fan-out needs no new machinery
+
+A node with N predecessors already waits for all N (`_wait_for_dependencies` awaits every
+predecessor's completion event) and already receives all N results (`_prepare_operation` merges
+each predecessor's result into the node's `context`). **Fan-in is therefore a property of having
+several dependencies, not a node kind.** `after: [a, b, c]` is a fan-in and the definition needs no
+`aggregate:` keyword.
+
+`add_aggregation` stays available for callers that want the `aggregation_sources` metadata, and the
+executor's aggregation wait is a separate mechanism that remains supported. The point is only that
+a definition does not have to reach for it.
+
+Fan-out at a degree the author knows when writing the file is N steps sharing one `after:`. That is
+also nothing new. Between them, these two cover every shape a hand-written pipeline usually wants,
+including the common one of several independent readers into one synthesiser.
+
+## D10 — Data-dependent fan-out is out of scope here, with the shape it will take when it lands
+
+Fan-out whose degree comes from an upstream result is **excluded from the first definition**. The
+reason is the property that makes a static definition worth having: the whole graph is known before
+anything runs, so it can be drawn, budgeted, and reviewed up front. A runtime degree breaks that by
+construction, and it is a different feature wearing the same word.
+
+Recording the intended shape, so this exclusion does not get re-litigated from scratch:
+
+The expansion should be **deterministic and should not cost a model call**. The obvious two
+implementations are both wrong for this. A planner call to decide the degree reintroduces exactly
+the per-run planning cost a static definition exists to remove. A worker emitting spawn requests
+does the same thing with extra steps, since something has to read the upstream result and decide.
+
+The right mechanism already exists and is unused for this. `flow.py` exposes `on_op_complete`,
+documented as the only race-free point at which a caller may inject, and `ReactiveExecutor.inject()`
+schedules a pre-built operation into a running flow. A deterministic expander reads a named field
+off the producing node's result and injects one node per element. No model is consulted. The
+reactive executor was built for model-driven growth and turns out to serve data-driven growth
+unchanged.
+
+Two things must land before that is buildable, and neither is in this decision:
+
+- **An injected node attaches only to its emitter.** `_accept_node` creates a single edge from
+  emitter to child, so nothing downstream of the fan can depend on the fanned nodes. A definition
+  that fans out and then merges is not expressible until #2924 lands. This is the blocking one.
+- **Spawn capacity is shared with `max_ops`.** A fan of twelve would silently consume the reactive
+  allowance, which is the same defect D4 already requires the definition to state its way out of.
+
+Stated this way, data-dependent fan-out becomes wiring once #2924 is done rather than new executor
+machinery, which is the outcome worth protecting.
+
+## D11 — A value reaches a downstream node under the producing node's name
+
+Measured, and this is the gap that makes hand-authoring awkward today:
+
+`_prepare_operation` writes each predecessor's result into the consumer's context under
+`f"{pred.id}_result"`, where `pred.id` is a UUID. Separately, the flow-level workspace grows only
+when an operation's response carries a top-level `context` key, which the executor deep-merges.
+Grepping `lionagi/operations` for a producer of `response["context"]` returns none. So **no
+built-in operation puts a named value into the shared workspace**, and a prompt template has no way
+to reference an upstream result by a name a human chose.
+
+Decision: when a node has a `reference_id`, its result is also exposed to consumers under that
+name. A definition's step keys are unique by construction, since they are keys in a mapping, so the
+names are unambiguous without any new validation.
+
+**This is additive, not a rename.** `lionagi/studio/services/workflow_compile.py` documents and
+uses the `{pred_id}_result` key when mapping upstream context onto an engine node's positional
+input. Changing the key would break that consumer silently, because it falls back to flow-level
+inputs and would degrade to a plausible wrong answer rather than an error. Both keys are written.
+
+**Rejected for now: a declared input/output assignment syntax on each step**, of the form
+`"inputs -> outputs"`, where a step declares the names it reads and the names it produces, and the
+runtime injects only the keys a given role has not already seen. It is the better long-run answer.
+It makes the data flow checkable before the run, since a step reading a name nothing produces is a
+static error, and the seen-key filter stops re-sending context a role already has. It is rejected
+for the first definition on two grounds: it is a second naming concept layered on `reference_id`
+rather than a use of it, and its main advantage over plain names is a token-cost saving that has
+not been measured on any real pipeline. Revisit with that measurement rather than on taste.
+
+## D12 — The safe expression evaluator moves out of the Studio layer
+
+`StudioExprCondition` in `lionagi/studio/services/workflow_compile.py` is the only `EdgeCondition`
+subclass in the package. It compiles a restricted-grammar expression with no calls, no builtins and
+no globals, and it evaluates against `{"result": ..., "context": ...}`, which is exactly the shape
+`_check_edge_conditions` passes to `Edge.check_condition`. It is the right evaluator and it already
+works.
+
+It is also in the Studio services layer, so the CLI and the core operations package cannot use it
+without inverting the dependency direction. It moves to the graph protocol layer as the shared
+condition type, with Studio keeping an alias so its own compiler is unchanged. A conditional edge
+in a definition then means the same thing whichever surface authored it, which is the property that
+makes an editor round trip honest.
+
+## Scope note on structured output
+
+A node whose work is done by an agent process passes artifacts, and its downstream consumers read
+files. For those nodes structured output is not on the critical path and the definition needs
+nothing for it. Structured output matters for nodes that call a model endpoint directly and parse
+the reply into a schema, and for those the response format has to be nameable from the definition.
+That is left open here rather than decided, because the first pipelines worth authoring are agent
+pipelines and deciding a schema-reference syntax before one is needed would be guessing.
+
+## What this amendment does not change
+
+D1 through D7 stand as written. Nothing here introduces a node kind, a second format, or an
+executor change. D8, D9, D11 and D12 are all uses or small extensions of behaviour that already
+exists; D10 is an exclusion with its future shape recorded.
