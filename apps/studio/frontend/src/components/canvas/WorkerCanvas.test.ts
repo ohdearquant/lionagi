@@ -277,9 +277,11 @@ describe("WorkerCanvas.tsx — source contract for the readability floor clamp",
 });
 
 // ─── Rank-distance wiring — long-range edges know how far they span ──────────
-// ConditionEdge routes rank distance >= 3 edges as smooth-step instead of
-// bezier; it can only do that if WorkerCanvas stamps rankDistance onto edge
-// data after each layout pass, from useLayout's returned rank map.
+// ConditionEdge routes edges spanning at least LONG_RANGE_RANK_DISTANCE ranks
+// as smooth-step instead of bezier; it can only do that if WorkerCanvas stamps
+// rankDistance onto edge data after each layout pass, from useLayout's returned
+// rank map. The threshold is named rather than repeated here because it has
+// already moved once, and a number copied into a comment does not move with it.
 
 describe("WorkerCanvas.tsx — source contract for rank-distance edge data", () => {
   const CANVAS_DIR = path.resolve(__dirname);
