@@ -7,8 +7,11 @@ import type { EdgeProps } from "reactflow";
 // A bezier between ranks that are far apart draws one long curve sweeping
 // across every intervening rank's cards — the "spaghetti" a deep chain reads
 // as. Past this rank distance, route with a rounded step instead: it hugs the
-// rank grid rather than cutting across it.
-const LONG_RANGE_RANK_DISTANCE = 3;
+// rank grid rather than cutting across it. Under ASAP ranking (ADR-0113 D2) a
+// 2-rank gap already means a result sat waiting for a rank's worth of other
+// work to finish, so that wait is worth reading off the edge rather than only
+// the 3+ case a dependency-ranked graph used to produce.
+const LONG_RANGE_RANK_DISTANCE = 2;
 const LONG_RANGE_BORDER_RADIUS = 12;
 const LONG_RANGE_OFFSET = 24;
 
