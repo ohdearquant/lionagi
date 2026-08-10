@@ -487,6 +487,7 @@
       "progressRunning": "En ejecución",
       "progressFailed": "Fallido",
       "progressPending": "Pendiente",
+      "progressEscalated": "Escalado",
       "progressElapsed": "Transcurrido",
       "expandGraph": "Expandir gráfico de ejecución",
       "collapseGraph": "Contraer gráfico de ejecución",

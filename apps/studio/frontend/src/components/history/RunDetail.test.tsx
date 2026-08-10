@@ -553,6 +553,17 @@ describe("history/RunDetail.tsx — shouldRenderAuthoredGraph", () => {
     expect(src).toMatch(/edges:\s*resolveGraphEdges\(graph\.nodes,\s*graph\.edges\)/);
   });
 
+  // The progress counters are sentence-case labels ("Total", "Completed"); the
+  // graphNodeStatus* vocabulary is lowercase because it renders inside a node
+  // card ("done", "running"). The escalated counter borrowed the node-status
+  // key, so it rendered as the only lowercase label in the strip. Assert on the
+  // source because the counters carry no other behaviour to observe.
+  it("the escalated counter uses the progress label vocabulary, not the node-status one", () => {
+    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+    expect(src).toMatch(/\{t\("progressEscalated"\)\}\s*\{counts\.escalated\}/);
+    expect(src).not.toMatch(/\{t\("graphNodeStatusEscalated"\)\}\s*\{counts\.escalated\}/);
+  });
+
   it("omitted edges + no runtime edges renders the authored graph, and normalized edges survive a WorkerCanvas-style map", async () => {
     const { shouldRenderAuthoredGraph } = await import("./RunDetail");
     const persisted = { nodes: [{ id: "a" }, { id: "b" }] } as {

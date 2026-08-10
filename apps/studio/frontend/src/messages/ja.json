@@ -487,6 +487,7 @@
       "progressRunning": "実行中",
       "progressFailed": "失敗",
       "progressPending": "保留中",
+      "progressEscalated": "エスカレーション",
       "progressElapsed": "経過時間",
       "expandGraph": "実行グラフを展開",
       "collapseGraph": "実行グラフを折りたたむ",

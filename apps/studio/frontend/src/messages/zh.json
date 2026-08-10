@@ -487,6 +487,7 @@
       "progressRunning": "运行中",
       "progressFailed": "失败",
       "progressPending": "待处理",
+      "progressEscalated": "已升级",
       "progressElapsed": "已用时间",
       "expandGraph": "展开执行图",
       "collapseGraph": "收起执行图",

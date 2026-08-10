@@ -487,6 +487,7 @@
       "progressRunning": "실행 중",
       "progressFailed": "실패",
       "progressPending": "대기 중",
+      "progressEscalated": "에스컬레이션",
       "progressElapsed": "경과 시간",
       "expandGraph": "실행 그래프 펼치기",
       "collapseGraph": "실행 그래프 접기",
