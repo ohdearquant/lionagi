@@ -425,7 +425,7 @@ describe("useLiveBoard — a poll slower than the interval does not stack", () =
     // 8s per fetch: longer than the 5s watchdog, so every gap between
     // successes trips "stale". That is an ordinary slow backend, not a fault,
     // and the board still owes the operator the data it successfully fetched.
-    const slow = <T,>(value: T) =>
+    const slow = <T>(value: T) =>
       new Promise<T>((resolve) => setTimeout(() => resolve(value), 8_000));
 
     vi.mocked(listRuns).mockImplementation(() =>
@@ -440,7 +440,14 @@ describe("useLiveBoard — a poll slower than the interval does not stack", () =
       }),
     );
     vi.mocked(listInvocations).mockImplementation(() =>
-      slow({ invocations: [], limit: 100, offset: 0, has_next: false, total: 0, completed_total: 0 }),
+      slow({
+        invocations: [],
+        limit: 100,
+        offset: 0,
+        has_next: false,
+        total: 0,
+        completed_total: 0,
+      }),
     );
     vi.mocked(listSchedules).mockImplementation(() => slow({ schedules: [] }));
 
