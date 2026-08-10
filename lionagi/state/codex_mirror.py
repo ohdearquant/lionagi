@@ -516,7 +516,15 @@ async def mirror_session(
                 "name": name or "Codex session",
                 "status": status,
                 "invocation_kind": "agent",
-                "agent_name": "codex",
+                # No agent_name. It is a ROLE field -- the role a branch plays
+                # within a flow, per the column's own note in schema.sql -- and
+                # an imported desktop thread has no role. Writing the engine
+                # there put a wrong value at the definition site, and because
+                # the role tier sits ahead of the prompt tier in
+                # resolve_display_name, it also shadowed the informative
+                # prompt-derived name every imported row would otherwise show.
+                # The engine is not lost: it is already carried by provider and
+                # by source_kind below.
                 "source_kind": SOURCE_KIND,
                 "model": model,
                 "provider": provider,
@@ -561,7 +569,9 @@ async def mirror_session(
             "progression_id": bprog,
             "model": model,
             "provider": provider,
-            "agent_name": "codex",
+            # Same reasoning as the session row above: the branch of an
+            # imported thread plays no role either, and create_branch reads
+            # this key with .get(), so omitting it stores NULL.
         }
     )
 

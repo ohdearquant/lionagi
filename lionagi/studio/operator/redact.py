@@ -27,6 +27,8 @@ __all__ = (
     "ARTIFACT_BYTE_CAP",
     "public_project",
     "scrub_text",
+    "fold_field_name",
+    "is_secret_field_name",
     "known_secret_values",
     "redact_scalar",
     "redact_arguments",
@@ -112,10 +114,21 @@ _SECRET_KEY_MARKERS = (
     "authorization",
     "auth_token",
     "access_key",
+    "accesskey",
     "private_key",
+    "privatekey",
     "client_secret",
     "bearer",
 )
+# Multi-word markers are listed in both their separated and their run-together
+# spelling, because field names are folded to a single separator before the
+# comparison and a name written `accessKey` or `access-key` folds to
+# `accesskey`, which the separated spelling does not match. `api_key`/`apikey`
+# already worked this way; the other two names now follow it, and the
+# assignment pattern above already treats the same separators as optional.
+# Marker names whose folded form contains a shorter marker -- `authToken`
+# holds `token`, `clientSecret` holds `secret` -- are covered without a second
+# spelling.
 _SECRET_VALUE_PREFIXES = ("sk-", "ghp_", "gho_", "ghu_", "ghs_", "xox", "AKIA", "eyJ")
 
 
@@ -189,9 +202,50 @@ def scrub_text(text: str, *, known_values: frozenset[str] | None = None) -> str:
     return text
 
 
+_FIELD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
+
+
+def fold_field_name(key: str) -> str:
+    """Reduce a field name to the spelling the secret markers are written in.
+
+    Separators do not change which field a name refers to. HTTP headers arrive
+    as X-API-Key, config files write api.key, and our own records write
+    api_key, so every marker containing an underscore would otherwise match
+    only the last of those. Folding any run of non-alphanumeric characters to a
+    single underscore makes all the spellings compare equal.
+
+    This lives here, and not beside either caller, because both redaction
+    layers have to agree about it. When they disagreed, the same credential was
+    withheld on one path and served on the other.
+    """
+    return _FIELD_SEPARATOR_RE.sub("_", key.lower())
+
+
+# Names that mean a credential on their own but must not match as substrings.
+# "auth" inside "author" or "authorized_keys_count" is a different word, and
+# redacting those would delete data a caller legitimately reads, so these are
+# compared for equality against the folded name rather than searched for.
+_EXACT_SECRET_FIELD_NAMES = frozenset({"auth", "authentication", "bearer"})
+
+
+def is_secret_field_name(key: str) -> bool:
+    """Say whether a field name names a credential.
+
+    This is the whole rule, in one place, because two copies of it disagreed:
+    one carried the exact-match names above and the other did not, so a value
+    under an `auth` key was withheld on the session and artifact paths and
+    served on the tool-argument and manifest paths. Sharing the separator fold
+    alone was not enough — the vocabulary has to be shared too, or the same
+    class of gap simply moves to whichever name the two lists differ on.
+    """
+    folded = fold_field_name(key)
+    return folded in _EXACT_SECRET_FIELD_NAMES or any(
+        marker in folded for marker in _SECRET_KEY_MARKERS
+    )
+
+
 def _is_secret_key(key: str) -> bool:
-    lowered = key.lower()
-    return any(marker in lowered for marker in _SECRET_KEY_MARKERS)
+    return is_secret_field_name(key)
 
 
 def _looks_like_secret_value(value: str) -> bool:
@@ -224,15 +278,29 @@ def redact_scalar(key: str, value: Any) -> Any:
     return f"[{type(value).__name__}]"
 
 
-def redact_arguments(value: Any) -> Any:
+def redact_arguments(value: Any, *, parent_key: str = "") -> Any:
     """Recursively redact secret- and absolute-path-shaped values. Used on
     tool-call arguments and on artifact contract/verification payloads, the
     two places a new Operator read tool could otherwise widen exposure
-    beyond what the existing tools already show."""
+    beyond what the existing tools already show.
+
+    ``parent_key`` carries the field name a container arrived under, because a
+    credential name has to cover what is nested beneath it and not only a scalar
+    sitting directly on it. Without it the name was consulted for scalars alone,
+    so ``{"auth": "..."}`` was withheld while ``{"auth": {"value": "..."}}`` was
+    served — the same split, across two shapes, that sharing the field-name rule
+    had just closed across two layers. The session and artifact projection
+    already judges the name before descending into a container; this is that
+    same step, on this path.
+    """
+    if isinstance(value, (dict, list)) and is_secret_field_name(parent_key):
+        return "[redacted]"
     if isinstance(value, dict):
         return {
             key: (
-                redact_arguments(val) if isinstance(val, (dict, list)) else redact_scalar(key, val)
+                redact_arguments(val, parent_key=key)
+                if isinstance(val, (dict, list))
+                else redact_scalar(key, val)
             )
             for key, val in value.items()
         }

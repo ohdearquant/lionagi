@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lionagi.state.session_naming import (
+    _UNINFORMATIVE_STORED_NAMES,
     DISPLAY_NAME_MAX_LEN,
     agent_role_label,
     resolve_display_name,
@@ -237,3 +240,108 @@ def test_blank_fields_are_treated_as_absent() -> None:
         "id": "abc123",
     }
     assert resolve_display_name(row) == "reviewer's genuine short name"
+
+
+def test_a_yaml_block_indicator_does_not_shield_the_banner() -> None:
+    """A prompt routed through a YAML document keeps the block-scalar indicator
+    that introduced it, and it lands ahead of the banner. Every strip pattern is
+    anchored at the start, so one stray "|-" left the entire system-message
+    banner in the display name -- on most of the rows on this machine, not a
+    rare shape.
+    """
+    out = sanitize_prompt_name("|- LION_SYSTEM_MESSAGE --- # Welcome to LIONAGI We are")
+    assert out is not None
+    assert not out.startswith("|"), out
+    assert "LION_SYSTEM_MESSAGE" not in out, out
+    assert "Welcome to LIONAGI" in out, out
+
+
+def test_a_bare_pipe_indicator_is_stripped_too() -> None:
+    out = sanitize_prompt_name("| # TASK - grade two answers to one question")
+    assert out == "TASK - grade two answers to one question", out
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "fix the graph fold so a long chain renders",
+        "a || b is the guard we want here",
+        "use the | operator to union the two sets",
+    ],
+    ids=["no-pipe", "pipe-inside", "pipe-as-subject"],
+)
+def test_prose_is_left_alone(raw: str) -> None:
+    """The arm that keeps the strip from over-reaching. Only a leading indicator
+    is noise; a pipe anywhere else is the text the reader asked to see."""
+    assert sanitize_prompt_name(raw) == raw
+
+
+# ── placeholder stored names ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("placeholder", sorted(_UNINFORMATIVE_STORED_NAMES))
+def test_a_placeholder_stored_name_does_not_become_the_title(placeholder: str) -> None:
+    """Every enumerated placeholder falls through to the id instead of winning.
+
+    These are defaults written when the writer had nothing better, and one
+    store held 11851 rows named "agent" and 917 named "Codex session". A tier
+    that accepts them renders that many identical cards, which is indenting the
+    same failure the id slice in ``agent_role_label`` was added to fix.
+
+    Parametrized over the set rather than spot-checking one member: the defect
+    is a value appearing thousands of times, so the population that matters is
+    the whole set, and a spot check cannot see a member that stops working.
+    """
+    row = {"id": "aaaabbbbccccddddeeee", "name": placeholder}
+    assert resolve_display_name(row) == "ccccddddeeee"
+
+
+@pytest.mark.parametrize("variant", ["Codex Session", "  codex session  ", "AGENT", "Flow"])
+def test_placeholders_are_matched_regardless_of_case_or_padding(variant: str) -> None:
+    """Written by several call sites, so the casing is not guaranteed to agree."""
+    row = {"id": "aaaabbbbccccddddeeee", "name": variant}
+    assert resolve_display_name(row) == "ccccddddeeee"
+
+
+@pytest.mark.parametrize(
+    "real",
+    [
+        "agentic workflow refactor",  # contains a placeholder as a prefix
+        "session recovery after a crash",  # starts with one
+        "rework the flow planner",  # contains one in the middle
+        "Codex session limits and how we hit them",  # starts with the longest one
+    ],
+)
+def test_a_name_that_merely_contains_a_placeholder_is_still_a_real_name(
+    real: str,
+) -> None:
+    """The match is on the whole value, and it has to stay that way.
+
+    A substring or prefix test would read every one of these as a placeholder
+    and throw away a perfectly good title. This is the arm that fails if the
+    check is ever "improved" into ``startswith`` or ``in``, which is the
+    natural-looking edit here.
+    """
+    assert resolve_display_name({"id": "aaaabbbbccccddddeeee", "name": real}) == real
+
+
+def test_a_role_label_still_outranks_a_placeholder_name() -> None:
+    """The tier order is untouched; only the prompt tier learned to decline.
+
+    A row carrying a role label never reaches the prompt tier, so it renders
+    exactly as it did before. This is the no-regression arm for the mirrored
+    rows, which all carry one.
+    """
+    row = {
+        "id": "aaaabbbbccccddddeeee",
+        "name": "Codex session",
+        "agent_name": "codex",
+        "started_at": 0.0,
+    }
+    assert resolve_display_name(row) == "codex · aaaa · 00:00"
+
+
+def test_a_real_stored_name_is_unaffected() -> None:
+    """The other no-regression arm: rows whose stored name says something."""
+    row = {"id": "aaaabbbbccccddddeeee", "name": "Refactor the auth module"}
+    assert resolve_display_name(row) == "Refactor the auth module"

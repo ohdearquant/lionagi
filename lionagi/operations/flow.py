@@ -60,6 +60,18 @@ GATE_VERDICT_KEY = "gate_verdict"
 GATE_VERDICT_REJECT = "reject"
 SKIP_REASON_UPSTREAM_GATE_REJECT = "upstream_gate_reject"
 
+# Lifecycle status to announce for an operation that is already terminal when
+# the flow reaches it -- a resumed run replaying work an earlier attempt
+# finished. CANCELLED and ABORTED are deliberately absent: neither has a
+# lifecycle signal of its own, and announcing either under one of these words
+# would assert an outcome that did not happen. They stay unannounced until they
+# have a signal to be announced as.
+_PRETERMINAL_ANNOUNCE_STATUS = {
+    EventStatus.COMPLETED: "completed",
+    EventStatus.FAILED: "failed",
+    EventStatus.SKIPPED: "skipped",
+}
+
 # Tracks which Operation a reactive task is running (per-task contextvar).
 _CURRENT_OP: contextvars.ContextVar = contextvars.ContextVar("reactive_current_op", default=None)
 
@@ -489,6 +501,21 @@ class DependencyAwareExecutor:
                 )
             if operation.id not in self.results and operation.response is not None:
                 self.results[operation.id] = operation.response
+
+            # Every node is announced "queued" before execution begins, so an
+            # operation that is already terminal on arrival has to be answered
+            # here. Returning without a terminal leaves it announced and never
+            # resolved, which reads as work still pending rather than work
+            # already done -- the misreading a resumed run produces for every
+            # operation an earlier attempt finished.
+            announce_status = _PRETERMINAL_ANNOUNCE_STATUS.get(operation.execution.status)
+            if announce_status is not None:
+                branch = self.operation_branches.get(operation.id, self.session.default_branch)
+                branch_name, name_is_fallback = self._branch_display_name(operation, branch)
+                self._emit_terminal_once(
+                    operation, branch_name, announce_status, 0.0, name_is_fallback
+                )
+
             self.completion_events[operation.id].set()
             return
 

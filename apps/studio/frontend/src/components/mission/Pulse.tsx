@@ -77,11 +77,11 @@ export default function Pulse({ window: window_, onWindowChange }: Props) {
   const { data, error, loading } = usePulse(window_);
 
   // Recomputed from the dense per-bucket counts, not data.completion_rate —
-  // the server field's denominator still includes cancelled runs (Ocean
-  // 7/6: "31% completion" was an artifact of counting daemon-restart
-  // casualties as failures). This excludes cancelled entirely. It still
-  // cannot exclude orphaned/phantom-reaped failures from the failed count —
-  // that needs a backend reason-level breakdown (see sparkline.ts TODO).
+  // the server field's denominator still includes cancelled runs, so a
+  // reported "31% completion" turned out to be an artifact of counting
+  // daemon-restart casualties as failures. This excludes cancelled entirely.
+  // It still cannot exclude orphaned/phantom-reaped failures from the failed
+  // count — that needs a backend reason-level breakdown (see sparkline.ts TODO).
   const rate = data ? completionRateFromBuckets(data.buckets) : null;
   const ratePct = rate != null ? Math.round(rate * 100) : null;
   // "" marks a failure without a usable message — localize the fallback.

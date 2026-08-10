@@ -1932,3 +1932,405 @@ describe("history/RunDetail.tsx — the dag panel height policy is floor/grow-on
     expect(nextRun.height).toBe(DAG_MIN_HEIGHT);
   });
 });
+
+// ─── ADR-0113 rows 3 & 5: graph/list view — pure resolution logic ──────────
+
+describe("history/RunDetail.tsx — hasResolvableGraph (row 3: what counts as a real canvas)", () => {
+  const node = (id: string) => ({
+    id,
+    label: id,
+    role: "",
+    assignment: "",
+    prompt: "",
+    capacity: 1,
+    timeout: null,
+    inputs: [],
+    outputs: [],
+  });
+
+  it("a graph with edges is resolvable", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    const graph = {
+      nodes: [node("A"), node("B")],
+      edges: [{ id: "e1", source: "A", target: "B", mode: "simple" as const }],
+    };
+    expect(hasResolvableGraph(graph, { nodes: [], edges: [] })).toBe(true);
+  });
+
+  it("a single node with no edges is NOT resolvable — a canvas with one node and no edges is not a canvas", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    const graph = { nodes: [node("A")], edges: [] };
+    expect(hasResolvableGraph(graph, { nodes: [], edges: [] })).toBe(false);
+  });
+
+  it("several disconnected nodes with no edges are also not resolvable — same reasoning, not just the one-node case", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    const graph = { nodes: [node("A"), node("B"), node("C")], edges: [] };
+    expect(hasResolvableGraph(graph, { nodes: [], edges: [] })).toBe(false);
+  });
+
+  it("falls through to a real-edged opGraph when the authored graph is edgeless (mirrors shouldRenderAuthoredGraph)", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    const authoredEdgeless = { nodes: [node("A"), node("B")], edges: [] };
+    const opGraph = {
+      nodes: [{ id: "A" }, { id: "B" }],
+      edges: [{ id: "e1", source: "A", target: "B" }],
+    };
+    expect(hasResolvableGraph(authoredEdgeless, opGraph)).toBe(true);
+  });
+
+  it("no graph at all is not resolvable", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    expect(hasResolvableGraph(null, { nodes: [], edges: [] })).toBe(false);
+  });
+});
+
+describe("history/RunDetail.tsx — resolveInitialView (row 5: the precedence rule)", () => {
+  it("defaults to graph when a resolvable graph exists and the reader has made no choice", async () => {
+    const { resolveInitialView } = await import("./RunDetail");
+    expect(
+      resolveInitialView({ urlView: null, storedPreference: null, hasResolvableGraph: true }),
+    ).toBe("graph");
+  });
+
+  it("defaults to list when there is no resolvable graph and the reader has made no choice", async () => {
+    const { resolveInitialView } = await import("./RunDetail");
+    expect(
+      resolveInitialView({ urlView: null, storedPreference: null, hasResolvableGraph: false }),
+    ).toBe("list");
+  });
+
+  // This is the precedence the brief calls out explicitly: "default is
+  // graph" and "preference is persisted" are in tension exactly once — a
+  // graph-having run whose reader has already chosen "list" — and the
+  // reader's choice must win. A regression that makes the default win
+  // again (e.g. checking hasResolvableGraph before storedPreference) fails
+  // this test.
+  it("a stored 'list' preference beats the graph default, even when a resolvable graph exists", () => {
+    return import("./RunDetail").then(({ resolveInitialView }) => {
+      expect(
+        resolveInitialView({
+          urlView: null,
+          storedPreference: "list",
+          hasResolvableGraph: true,
+        }),
+      ).toBe("list");
+    });
+  });
+
+  it("the URL view param outranks the stored preference (a pasted deep link reproduces what was shared)", async () => {
+    const { resolveInitialView } = await import("./RunDetail");
+    expect(
+      resolveInitialView({
+        urlView: "graph",
+        storedPreference: "list",
+        hasResolvableGraph: false,
+      }),
+    ).toBe("graph");
+  });
+});
+
+// ─── ADR-0113 rows 3, 5, 8, 9 — mounted behavior ────────────────────────────
+//
+// Reuses the mount pattern from the hidden-count-badge suite above
+// (getSession/streamSession/streamSignals/ResumeRun/WorkerCanvas mocked at
+// module scope): real RunDetail, real BranchesSection/RunStepCard, a fake
+// WorkerCanvas standing in for ReactFlow.
+
+describe("history/RunDetail.tsx — graph/list view toggle and cross-view selection, mounted", () => {
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    Element.prototype.scrollIntoView = vi.fn();
+    // localStorage is unavailable in this test runtime (jsdom under Node's
+    // experimental webstorage without a backing file) — RunDetail's own
+    // reads/writes already tolerate that (readStoredView/writeStoredView),
+    // so these tests exercise the URL query param instead, which jsdom does
+    // support. The stored-preference SIDE of the precedence rule is covered
+    // directly against resolveInitialView (pure function, above), which
+    // needs no browser storage at all.
+    window.history.replaceState(null, "", "/");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const node = (id: string) => ({
+    id,
+    label: id,
+    role: "",
+    assignment: "",
+    prompt: "",
+    capacity: 1,
+    timeout: null,
+    inputs: [],
+    outputs: [],
+  });
+
+  const edgedGraph = {
+    name: "run",
+    description: "",
+    nodes: [node("A"), node("B")],
+    edges: [{ id: "e-ab", source: "A", target: "B", mode: "simple" as const }],
+  };
+
+  const singleNodeGraph = {
+    name: "run",
+    description: "",
+    nodes: [node("A")],
+    edges: [],
+  };
+
+  function sessionWithBranches(graph: unknown, invocationKind: string | null = null) {
+    return {
+      id: "run-mount-view",
+      name: "run-mount-view",
+      created_at: 0,
+      updated_at: 0,
+      status: "completed",
+      invocation_kind: invocationKind,
+      branches: [{ id: "branch-a", name: "A", created_at: 0, messages: [] }],
+      graph,
+    };
+  }
+
+  async function mountRunDetail(session: unknown) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue(session as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-mount-view" />
+        </IntlProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return {
+      container,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("row 3: a run with edges opens on the graph", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      expect(container.querySelector('[data-testid="worker-canvas"]')).not.toBeNull();
+      expect(container.querySelector("#run-branches")).toBeNull();
+      const graphTab = container.querySelector('[data-testid="run-detail-view-graph"]');
+      expect(graphTab?.getAttribute("aria-selected")).toBe("true");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 3: a single-node run with no edges opens on the list", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(singleNodeGraph));
+    try {
+      expect(container.querySelector('[data-testid="worker-canvas"]')).toBeNull();
+      expect(container.querySelector("#run-branches")).not.toBeNull();
+      const listTab = container.querySelector('[data-testid="run-detail-view-list"]');
+      expect(listTab?.getAttribute("aria-selected")).toBe("true");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 5: an explicit ?view=list in the URL beats the graph default for a run with edges", async () => {
+    window.history.replaceState(null, "", "/?view=list");
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      expect(container.querySelector('[data-testid="worker-canvas"]')).toBeNull();
+      expect(container.querySelector("#run-branches")).not.toBeNull();
+      const listTab = container.querySelector('[data-testid="run-detail-view-list"]');
+      expect(listTab?.getAttribute("aria-selected")).toBe("true");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 5: clicking the List tab switches away from the graph, and Graph switches back", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const listTab = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-detail-view-list"]',
+      );
+      await act(async () => {
+        listTab?.click();
+      });
+      expect(container.querySelector('[data-testid="worker-canvas"]')).toBeNull();
+      expect(container.querySelector("#run-branches")).not.toBeNull();
+
+      const graphTab = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-detail-view-graph"]',
+      );
+      await act(async () => {
+        graphTab?.click();
+      });
+      expect(container.querySelector('[data-testid="worker-canvas"]')).not.toBeNull();
+      expect(container.querySelector("#run-branches")).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 5: selection survives a view switch — selecting a step in the list, then switching to graph, keeps it as the selected node", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const listTab = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-detail-view-list"]',
+      );
+      await act(async () => {
+        listTab?.click();
+      });
+      const expandButton = container.querySelector<HTMLButtonElement>(
+        'button[aria-controls="step-A-body"]',
+      );
+      expect(expandButton).not.toBeNull();
+      // A session with this few branches auto-expands every step on load
+      // (see the session-load effect above), so the single step here starts
+      // already expanded — collapsing it first (a plain expand/collapse,
+      // not a selection) and then re-expanding it is what actually exercises
+      // "the reader opened this step," which is the act that selects it.
+      await act(async () => {
+        expandButton?.click();
+      });
+      await act(async () => {
+        expandButton?.click();
+      });
+      const selectedRow = document.getElementById("step-A")?.parentElement;
+      expect(selectedRow?.hasAttribute("data-selected")).toBe(true);
+
+      const graphTab = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-detail-view-graph"]',
+      );
+      await act(async () => {
+        graphTab?.click();
+      });
+      const indicator = container.querySelector('[data-testid="run-detail-selected-node"]');
+      expect(indicator?.textContent).toContain("A");
+    } finally {
+      unmount();
+    }
+  });
+});
+
+// ─── ADR-0113 rows 8 & 9 — run controls, mounted ────────────────────────────
+
+describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () => {
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const flatGraph = { name: "run", description: "", nodes: [], edges: [] };
+
+  function sessionOf(invocationKind: string | null) {
+    return {
+      id: "run-mount-controls",
+      name: "run-mount-controls",
+      created_at: 0,
+      updated_at: 0,
+      status: "running",
+      invocation_kind: invocationKind,
+      branches: [],
+      graph: flatGraph,
+    };
+  }
+
+  async function mountRunDetail(session: unknown) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue(session as never);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-mount-controls" />
+        </IntlProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return {
+      container,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("row 8: pause is shown and DISABLED, with its reason, on an agent run — never hidden", async () => {
+    const { container, unmount } = await mountRunDetail(sessionOf("agent"));
+    try {
+      const pauseButton = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-pause"]',
+      );
+      expect(pauseButton).not.toBeNull();
+      expect(pauseButton?.disabled).toBe(true);
+      expect(pauseButton?.title).toContain("no pause seam");
+      // Resume is not a listed agent capability at all — not offered, not
+      // just disabled.
+      expect(container.querySelector('[data-testid="run-controls-resume"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 8: steer is offered and enabled on an agent run", async () => {
+    const { container, unmount } = await mountRunDetail(sessionOf("agent"));
+    try {
+      const steerButton = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-steer"]',
+      );
+      expect(steerButton).not.toBeNull();
+      expect(steerButton?.disabled).toBe(false);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("pause is offered and enabled on a flow run", async () => {
+    const { container, unmount } = await mountRunDetail(sessionOf("flow"));
+    try {
+      const pauseButton = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-pause"]',
+      );
+      expect(pauseButton?.disabled).toBe(false);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("no control panel renders for a kind the control poller does not drain (e.g. show-play)", async () => {
+    const { container, unmount } = await mountRunDetail(sessionOf("show-play"));
+    try {
+      expect(container.querySelector('[data-testid="run-controls"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+});

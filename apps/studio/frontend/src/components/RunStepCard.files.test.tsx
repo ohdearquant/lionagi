@@ -25,8 +25,8 @@ function paths(command: string): string[] {
 
 describe("shell file extraction", () => {
   it("keeps rooted paths, including the ones a command only reads", () => {
-    expect(paths("cat /Users/lion/projects/atlas/INDEX.md")).toEqual([
-      "/Users/lion/projects/atlas/INDEX.md",
+    expect(paths("cat /Users/dev/projects/docs/INDEX.md")).toEqual([
+      "/Users/dev/projects/docs/INDEX.md",
     ]);
     expect(paths("uv run pytest ~/work/tests/test_flow.py")).toEqual(["~/work/tests/test_flow.py"]);
     // `./` and `../` are roots too; they normalise away, which is expected.
@@ -66,26 +66,26 @@ describe("shell file extraction", () => {
   it("rejects a wrapped script captured as one quoted token", () => {
     // The tokenizer returns the body of a quoted argument as a single word.
     // Before the root and segment rules, this whole script was one "file".
-    const wrapped = `/bin/zsh -lc '/usr/bin/find /Users/lion -name FINDINGS.md -mmin -60'`;
-    expect(paths(wrapped)).not.toContain("/usr/bin/find /Users/lion -name FINDINGS.md -mmin -60");
+    const wrapped = `/bin/zsh -lc '/usr/bin/find /Users/dev -name FINDINGS.md -mmin -60'`;
+    expect(paths(wrapped)).not.toContain("/usr/bin/find /Users/dev -name FINDINGS.md -mmin -60");
   });
 
   it("claims nothing at all for a path only visible inside a quoted wrapper", () => {
     // A known limit, asserted so it stays known. The tokenizer cannot see
     // inside a quoted argument, so the real path here is invisible. Listing
     // nothing is the correct outcome; listing the script was the defect.
-    const wrapped = `/bin/zsh -lc "cat /Users/lion/projects/notes/a.md"`;
+    const wrapped = `/bin/zsh -lc "cat /Users/dev/projects/notes/a.md"`;
     expect(paths(wrapped)).toEqual([]);
   });
 
   it("keeps paths whose directories are named in a non-Latin script", () => {
     // The segment check ran before the rooted check, so an ASCII-only class
-    // rejected these before the rooted rule could vouch for them — on a
-    // machine whose directories are routinely named in Chinese, that dropped
-    // real files. Rooted and rootless both, since widening the class fixes
+    // rejected these before the rooted rule could vouch for them. Wherever
+    // directories are routinely named outside Latin script, that dropped real
+    // files. Rooted and rootless both, since widening the class fixes
     // the rootless case too as long as the name still looks like a file.
-    expect(paths("cat /Users/lion/项目/main.py")).toEqual(["/Users/lion/项目/main.py"]);
-    expect(paths("cat /Users/lion/Café/notes.md")).toEqual(["/Users/lion/Café/notes.md"]);
+    expect(paths("cat /Users/dev/项目/main.py")).toEqual(["/Users/dev/项目/main.py"]);
+    expect(paths("cat /Users/dev/Café/notes.md")).toEqual(["/Users/dev/Café/notes.md"]);
     expect(paths("cat 文档/报告.md")).toEqual(["文档/报告.md"]);
   });
 
@@ -109,9 +109,9 @@ describe("shell file extraction", () => {
 
   it("rejects regex and shell fragments", () => {
     for (const frag of [
-      `rg "\\.busy\\b" /Users/lion/projects`,
+      `rg "\\.busy\\b" /Users/dev/projects`,
       `rg "read.transaction" .`,
-      `awk '/^##/ {print}' /Users/lion/x.md`,
+      `awk '/^##/ {print}' /Users/dev/x.md`,
     ]) {
       for (const p of paths(frag)) {
         expect(p.startsWith("/"), `${p} is not rooted`).toBe(true);

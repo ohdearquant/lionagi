@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path, PureWindowsPath
@@ -23,9 +24,16 @@ import anyio
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
-from .redact import scrub_text
+from .redact import (
+    MESSAGE_BYTE_CAP,
+    PER_ITEM_TEXT_CAP,
+    fold_field_name,
+    is_secret_field_name,
+    scrub_text,
+)
 from .rename_session import RENAME_SESSION_DESCRIPTION, RenameSessionInput, rename_session
 from .resume_run import RESUME_RUN_DESCRIPTION, ResumeRunInput, resume_run
+from .run_detail import RunDetailInput, run_detail
 from .run_findings import RunFindingsInput, run_findings
 from .run_progress import RunProgressInput, run_progress
 from .store import OperatorStore
@@ -68,6 +76,42 @@ class RunStatsInput(_StrictInput):
 
 class CurrentViewInput(_StrictInput):
     """No arguments: the view is a property of the turn, not of the request."""
+
+
+class ListSessionsInput(_StrictInput):
+    playbook: str | None = None
+    status: str | list[str] | None = None
+    project: str | None = None
+    search: str | None = None
+    limit: int = Field(default=20, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+    sort: Literal["recent", "cost"] = "recent"
+
+
+class SessionDetailInput(_StrictInput):
+    session_id: str = Field(min_length=1, max_length=200)
+    message_limit: int = Field(default=200, ge=1, le=1_000)
+    message_cursor: str | None = None
+
+
+class SessionSignalsInput(_StrictInput):
+    session_id: str = Field(min_length=1, max_length=200)
+    after_seq: int | None = Field(default=None, ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class GetInvocationInput(_StrictInput):
+    invocation_id: str = Field(min_length=1, max_length=200)
+
+
+class ListArtifactsInput(_StrictInput):
+    session_id: str | None = Field(default=None, min_length=1, max_length=200)
+    invocation_id: str | None = Field(default=None, min_length=1, max_length=200)
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class GetArtifactInput(_StrictInput):
+    artifact_id: str = Field(min_length=1, max_length=200)
 
 
 class NavigateInput(_StrictInput):
@@ -131,9 +175,16 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "launch_playbook": LaunchPlaybookInput,
     "run_progress": RunProgressInput,
     "run_findings": RunFindingsInput,
+    "run_detail": RunDetailInput,
     "cancel_run": CancelRunInput,
     "resume_run": ResumeRunInput,
     "rename_session": RenameSessionInput,
+    "list_sessions": ListSessionsInput,
+    "session_detail": SessionDetailInput,
+    "session_signals": SessionSignalsInput,
+    "get_invocation": GetInvocationInput,
+    "list_artifacts": ListArtifactsInput,
+    "get_artifact": GetArtifactInput,
 }
 
 _TOOL_DESCRIPTIONS = {
@@ -203,9 +254,43 @@ _TOOL_DESCRIPTIONS = {
         "them as a best-effort read; any section too large to return in "
         "full is capped and says so via its own 'truncated' flag."
     ),
+    "run_detail": (
+        "Report the full projection of one run: identity, playbook/agent "
+        "and model/provider fields, timing, health, cost and token totals, "
+        "and other detail fields as stored, bounded and redacted the same "
+        "way the other read tools are. Takes a bare run id (no id-prefix or "
+        "name-substring resolution). Returns 'known': false with a "
+        "'source' of 'unavailable' if the store could not be read, or "
+        "'store' if the store was read but no run matched."
+    ),
     "cancel_run": CANCEL_RUN_DESCRIPTION,
     "resume_run": RESUME_RUN_DESCRIPTION,
     "rename_session": RENAME_SESSION_DESCRIPTION,
+    "list_sessions": (
+        "List a filtered page of Studio sessions. The result is capped at 500 rows, "
+        "reports the matching total and whether more rows exist, and labels the store source."
+    ),
+    "session_detail": (
+        "Read one Studio session and its bounded per-branch message windows. Content is "
+        "redacted, storage paths and internal state are omitted, and continuation cursors "
+        "and truncation flags come from the session store."
+    ),
+    "session_signals": (
+        "Read at most 500 ordered signals after a sequence number. Signal payloads are "
+        "redacted and capped at 100000 bytes, with row and payload truncation reported."
+    ),
+    "get_invocation": (
+        "Read one invocation with at most 50 child sessions and 50 artifacts. Artifact "
+        "content is redacted and capped at 2000000 bytes, and every truncation is reported."
+    ),
+    "list_artifacts": (
+        "List at most 200 artifact metadata records for one session or invocation. "
+        "Bodies and storage paths are omitted and row truncation is reported."
+    ),
+    "get_artifact": (
+        "Read one artifact with redacted content capped at 2000000 bytes. Storage paths "
+        "are omitted and content truncation is reported."
+    ),
 }
 
 _TOOL_SCHEMAS = [
@@ -237,6 +322,481 @@ def public_project(value: Any) -> str | None:
     if windows_path.is_absolute():
         return windows_path.name or "external-project"
     return value[:160]
+
+
+_SIGNAL_PAYLOAD_BYTE_CAP = 100_000
+_ARTIFACT_CONTENT_BYTE_CAP = 2_000_000
+_SESSION_BRANCH_CAP = 500
+_SESSION_LIST_DROP = frozenset(
+    {
+        "node_metadata",
+        "artifacts_path",
+        "artifact_contract_json",
+        "artifact_verification_json",
+        "project_source",
+        "branch_count",
+        "tags",
+    }
+)
+_SESSION_DETAIL_DROP = frozenset(
+    {
+        "node_metadata",
+        "artifacts_path",
+        "artifact_contract_json",
+        "artifact_verification_json",
+        "graph",
+        "segments",
+        "status_evidence_refs",
+        "project_source",
+        "source_show",
+    }
+)
+_INVOCATION_DROP = frozenset({"node_metadata", "status_evidence_refs"})
+_ARTIFACT_DROP = frozenset({"file_path"})
+_URL_FIELD_NAMES = frozenset(
+    {
+        "url",
+        "uri",
+        "dsn",
+        "store_url",
+        "database_url",
+        "db_url",
+        "connection_url",
+        # Compared after folding, so store-url and store.url are covered by the
+        # underscored spellings above. Concatenated spellings are not: they
+        # carry no separator to fold, and this is an exact-match set, so
+        # storeUrl has to be listed in its own right.
+        "storeurl",
+        "databaseurl",
+        "dburl",
+        "connectionurl",
+    }
+)
+_PATH_FIELD_NAMES = frozenset({"path", "directory", "cwd", "root"})
+_STORE_URL_RE = re.compile(
+    r"(?i)\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|mongodb(?:\+srv)?|file)"
+    r"(?:\+[a-z0-9_]+)?://[^\s\"']+"
+)
+_CREDENTIALED_URL_RE = re.compile(r"(?i)\bhttps?://[^/\s:@]+:[^@\s/]+@[^\s\"']+")
+_ROOT_POSIX_PATH_RE = re.compile(
+    r"(?<![\w/])/(?:Users|home|tmp|var|opt|etc|private|srv|mnt|Volumes)(?:/[^\s\"']+)*"
+)
+_UNC_PATH_RE = re.compile(r"(?<!\\)(\\\\[^\\\s]+\\[^\\\s]+(?:\\[^\\\s]+)*)")
+
+
+def _safe_text(value: str) -> str:
+    value = _STORE_URL_RE.sub("[redacted-url]", value)
+    value = _CREDENTIALED_URL_RE.sub("[redacted-url]", value)
+    value = _ROOT_POSIX_PATH_RE.sub(
+        lambda match: match.group(0).rsplit("/", 1)[-1] or "[redacted-path]",
+        value,
+    )
+    value = _UNC_PATH_RE.sub(
+        lambda match: match.group(0).rsplit("\\", 1)[-1] or "[redacted-path]",
+        value,
+    )
+    return scrub_text(value)
+
+
+def _secret_field(key: str) -> bool:
+    return is_secret_field_name(key)
+
+
+def _safe_content(value: Any, *, key: str = "") -> Any:
+    """Recursively remove credentials, store URLs, and host filesystem layouts."""
+    if fold_field_name(key) in _URL_FIELD_NAMES or _secret_field(key):
+        # Judge by field name only where the value could carry text. A number
+        # is neither a credential nor a URL, and several counters we report
+        # carry a marker in their name — input_tokens, output_tokens — so
+        # redacting on the name alone deletes usage data to protect nothing.
+        # None stays redacted: that costs no information and keeps the
+        # null-handling of secret fields unchanged.
+        if not isinstance(value, (int, float, bool)):
+            return "[redacted]"
+    if fold_field_name(key) in _PATH_FIELD_NAMES and isinstance(value, str):
+        public_value = public_project(value)
+        return _safe_text(public_value) if public_value is not None else None
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            safe_key = _safe_text(str(raw_key))
+            if safe_key in _ARTIFACT_DROP or safe_key in _SESSION_DETAIL_DROP:
+                continue
+            projected[safe_key] = _safe_content(item, key=safe_key)
+        return projected
+    if isinstance(value, list):
+        return [_safe_content(item) for item in value]
+    if isinstance(value, str):
+        return _safe_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return f"[{type(value).__name__}]"
+
+
+def _safe_mapping(value: dict[str, Any], *, drop: frozenset[str]) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in drop:
+            continue
+        if key == "project":
+            public_value = public_project(item)
+            projected[key] = _safe_text(public_value) if public_value is not None else None
+        else:
+            projected[key] = _safe_content(item, key=key)
+    return projected
+
+
+def _cap_payload(value: Any, limit: int) -> tuple[Any, bool]:
+    encoded = json.dumps(value, separators=(",", ":"), default=str).encode()
+    if len(encoded) <= limit:
+        return value, False
+    if isinstance(value, str):
+        low, high = 0, len(value)
+        while low < high:
+            midpoint = (low + high + 1) // 2
+            candidate = json.dumps(value[:midpoint], separators=(",", ":")).encode()
+            if len(candidate) <= limit:
+                low = midpoint
+            else:
+                high = midpoint - 1
+        return value[:low], True
+    return {"truncated": True, "reason": "content exceeds the byte cap"}, True
+
+
+def _cap_strings(value: Any, *, skip_keys: frozenset[str] = frozenset()) -> bool:
+    truncated = False
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in skip_keys:
+                continue
+            if isinstance(item, str):
+                value[key], item_truncated = _cap_payload(item, PER_ITEM_TEXT_CAP)
+                truncated = truncated or item_truncated
+            else:
+                truncated = _cap_strings(item, skip_keys=skip_keys) or truncated
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            if isinstance(item, str):
+                value[index], item_truncated = _cap_payload(item, PER_ITEM_TEXT_CAP)
+                truncated = truncated or item_truncated
+            else:
+                truncated = _cap_strings(item, skip_keys=skip_keys) or truncated
+    return truncated
+
+
+def _safe_artifact(row: dict[str, Any], *, include_content: bool) -> dict[str, Any]:
+    if not include_content:
+        projected = _safe_mapping(
+            {key: value for key, value in row.items() if key != "content"},
+            drop=_ARTIFACT_DROP,
+        )
+        projected["metadata_truncated"] = _cap_strings(projected)
+        return projected
+    projected = _safe_mapping(row, drop=_ARTIFACT_DROP)
+    metadata_truncated = _cap_strings(projected, skip_keys=frozenset({"content"}))
+    content, truncated = _cap_payload(projected.get("content"), _ARTIFACT_CONTENT_BYTE_CAP)
+    projected["content"] = content
+    projected["content_truncated"] = truncated
+    projected["metadata_truncated"] = metadata_truncated
+    return projected
+
+
+def _bound_session_messages(session: dict[str, Any]) -> bool:
+    remaining = MESSAGE_BYTE_CAP
+    truncated = False
+    branches = session.get("branches")
+    if not isinstance(branches, list):
+        return False
+    for branch in branches:
+        if not isinstance(branch, dict):
+            continue
+        messages = branch.get("messages")
+        if not isinstance(messages, list):
+            continue
+        if remaining < 2:
+            if messages:
+                truncated = True
+                branch["messages_truncated"] = True
+            branch["messages"] = []
+            continue
+        remaining -= 2
+        kept_reversed = []
+        for message in reversed(messages):
+            size = (
+                len(
+                    json.dumps(
+                        message,
+                        separators=(",", ":"),
+                        default=str,
+                    ).encode()
+                )
+                + 1
+            )
+            if size > remaining:
+                truncated = True
+                continue
+            kept_reversed.append(message)
+            remaining -= size
+        kept_reversed.reverse()
+        if len(kept_reversed) != len(messages):
+            branch["messages_truncated"] = True
+        branch["messages"] = kept_reversed
+    return truncated
+
+
+def _bound_session_structure(session: dict[str, Any]) -> tuple[bool, bool]:
+    branches_truncated = False
+    branches = session.get("branches")
+    if isinstance(branches, list) and len(branches) > _SESSION_BRANCH_CAP:
+        session["branches"] = branches[:_SESSION_BRANCH_CAP]
+        branches_truncated = True
+    stats_truncated = False
+    stats = session.get("message_stats")
+    if isinstance(stats, dict):
+        for field in ("branches", "errors", "files"):
+            value = stats.pop(field, None)
+            stats_truncated = stats_truncated or bool(value)
+    return branches_truncated, stats_truncated
+
+
+async def list_sessions(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = ListSessionsInput.model_validate(arguments)
+    from lionagi.studio.services import runs as runs_service
+    from lionagi.studio.services import sessions as sessions_service
+    from lionagi.studio.services._db import store_exists
+
+    # The carrier answers an absent store with an empty list, so without this
+    # check a store that cannot be read is indistinguishable from a store with
+    # nothing in it. Those are different answers and a caller acts differently
+    # on each: "no runs" invites a conclusion, "I could not look" does not.
+    if not store_exists():
+        return {"known": False, "source": "unavailable"}
+
+    if isinstance(args.status, str):
+        status_filter: str | list[str] | None = args.status
+    elif args.status:
+        status_filter = [str(status) for status in args.status]
+    else:
+        status_filter = None
+    statuses = runs_service._normalize_status_filter(status_filter)
+    where = sessions_service.SessionFilter(
+        playbook=args.playbook,
+        statuses=statuses,
+        project=args.project,
+        search=args.search,
+    )
+    rows = await runs_service.list_runs(
+        playbook=args.playbook,
+        status=status_filter,
+        project=args.project,
+        search=args.search,
+        limit=args.limit,
+        offset=args.offset,
+        sort=args.sort,
+    )
+    total = await sessions_service.count_sessions(where)
+    projected = []
+    content_truncated = False
+    for row in rows[: args.limit]:
+        safe = _safe_mapping(row, drop=_SESSION_LIST_DROP)
+        row_truncated = _cap_strings(safe)
+        safe["content_truncated"] = row_truncated
+        content_truncated = content_truncated or row_truncated
+        projected.append(safe)
+    return {
+        "known": True,
+        "sessions": projected,
+        "total": total,
+        "limit": args.limit,
+        "offset": args.offset,
+        "truncated": args.offset + len(projected) < total,
+        "content_truncated": content_truncated,
+        "source": "store",
+    }
+
+
+async def session_detail(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = SessionDetailInput.model_validate(arguments)
+    from lionagi.studio.services import sessions as sessions_service
+
+    source = "store"
+    try:
+        row = await sessions_service.get_session(
+            args.session_id,
+            message_limit=args.message_limit,
+            message_offset=0,
+            message_cursor=args.message_cursor,
+        )
+    except sessions_service.MessageCursorError:
+        if args.message_cursor is None:
+            raise
+        row = await sessions_service.get_session(
+            args.session_id,
+            message_limit=args.message_limit,
+            message_offset=0,
+            message_cursor=None,
+        )
+        source = "fallback"
+    if row is None:
+        return {"known": False, "source": "store"}
+    projected = _safe_mapping(row, drop=_SESSION_DETAIL_DROP)
+    branches_truncated, message_stats_truncated = _bound_session_structure(projected)
+    messages_bytes_truncated = _bound_session_messages(projected)
+    content_truncated = _cap_strings(
+        projected,
+        skip_keys=frozenset({"message_cursor", "message_next_cursor"}),
+    )
+    return {
+        "known": True,
+        "source": source,
+        "message_byte_limit": MESSAGE_BYTE_CAP,
+        "messages_bytes_truncated": messages_bytes_truncated,
+        "branches_truncated": branches_truncated,
+        "message_stats_truncated": message_stats_truncated,
+        "content_truncated": content_truncated,
+        **projected,
+    }
+
+
+async def session_signals(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = SessionSignalsInput.model_validate(arguments)
+    from lionagi.studio.services import signals as signals_service
+    from lionagi.studio.services._db import store_exists
+
+    # Same reason as list_sessions: the carrier returns an empty page both for a
+    # session with no signals and for a store it could not open.
+    if not store_exists():
+        return {"known": False, "source": "unavailable"}
+
+    rows = await signals_service.get_signals_after(
+        args.session_id,
+        args.after_seq or 0,
+        limit=args.limit + 1,
+    )
+    projected = []
+    for row in rows[: args.limit]:
+        safe = _safe_mapping(row, drop=frozenset())
+        metadata_truncated = _cap_strings(safe, skip_keys=frozenset({"payload"}))
+        payload, truncated = _cap_payload(safe.get("payload"), _SIGNAL_PAYLOAD_BYTE_CAP)
+        safe["payload"] = payload
+        safe["payload_truncated"] = truncated
+        safe["metadata_truncated"] = metadata_truncated
+        projected.append(safe)
+    return {
+        "known": True,
+        "signals": projected,
+        "limit": args.limit,
+        "truncated": len(rows) > args.limit,
+        "source": "store",
+    }
+
+
+async def get_invocation(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = GetInvocationInput.model_validate(arguments)
+    from lionagi.state.db import read_only_open_supported
+    from lionagi.studio.services import invocations as invocations_service
+
+    # This tool only reads, and an ordinary open applies schema on the way in —
+    # taking a write lock and possibly issuing one-time migration statements to
+    # serve a read. Ask for read-only where the store can give it. Unlike
+    # _artifact_rows, which refuses the read outright when read-only is
+    # unavailable, this degrades to the ordinary open: the tool's guarantee to
+    # its caller is the redaction layer, not the connection mode, so losing
+    # read-only on a server-backed store costs hygiene rather than safety.
+    row = await invocations_service.get_invocation(
+        args.invocation_id, readonly=read_only_open_supported()
+    )
+    if row is None:
+        return {"known": False}
+    raw_sessions = row.get("sessions")
+    sessions: list[Any] = raw_sessions if isinstance(raw_sessions, list) else []
+    raw_artifacts = row.get("artifacts")
+    artifacts: list[Any] = raw_artifacts if isinstance(raw_artifacts, list) else []
+    projected = _safe_mapping(
+        {key: value for key, value in row.items() if key not in {"sessions", "artifacts"}},
+        drop=_INVOCATION_DROP,
+    )
+    content_truncated = _cap_strings(projected)
+    projected["sessions"] = [
+        _safe_mapping(item, drop=frozenset()) for item in sessions[:50] if isinstance(item, dict)
+    ]
+    for session in projected["sessions"]:
+        content_truncated = _cap_strings(session) or content_truncated
+    projected["artifacts"] = [
+        _safe_artifact(item, include_content=True)
+        for item in artifacts[:50]
+        if isinstance(item, dict)
+    ]
+    projected.update(
+        {
+            "known": True,
+            "source": "store",
+            "sessions_truncated": len(sessions) > 50,
+            "artifacts_truncated": len(artifacts) > 50,
+            "content_truncated": content_truncated,
+        }
+    )
+    return projected
+
+
+async def _artifact_rows(
+    *, session_id: str | None, invocation_id: str | None
+) -> list[dict[str, Any]] | None:
+    """Artifact rows for one owner, or None when the store cannot be read safely.
+
+    ``read_only_open_supported()`` is for callers wanting read-only as an
+    optimisation: on the stores it reports False for, it hands back a *writable*
+    connection. These tools are read-only by contract, so passing it would ask
+    for a guarantee and silently accept its opposite. An unavailable read-only
+    open is therefore reported as an unavailable read, never widened into a
+    writable one.
+    """
+    from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+    from lionagi.studio.services.invocations import _serialize_artifact
+
+    if state_db_known_absent() or not read_only_open_supported():
+        return None
+    async with StateDB(readonly=True) as db:
+        if session_id is not None:
+            rows = await db.list_artifacts_for_session(session_id)
+        else:
+            rows = await db.list_artifacts_for_invocation(invocation_id or "")
+    return [_serialize_artifact(row) for row in rows]
+
+
+async def list_artifacts(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = ListArtifactsInput.model_validate(arguments)
+    if (args.session_id is None) == (args.invocation_id is None):
+        raise ValueError("Provide exactly one of session_id or invocation_id")
+    rows = await _artifact_rows(session_id=args.session_id, invocation_id=args.invocation_id)
+    if rows is None:
+        return {"known": False, "source": "unavailable"}
+    return {
+        "known": True,
+        "artifacts": [
+            _safe_artifact(row, include_content=False)
+            for row in rows[: args.limit]
+            if isinstance(row, dict)
+        ],
+        "limit": args.limit,
+        "truncated": len(rows) > args.limit,
+        "source": "store",
+    }
+
+
+async def get_artifact(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = GetArtifactInput.model_validate(arguments)
+    from lionagi.state.db import read_only_open_supported
+    from lionagi.studio.services import invocations as invocations_service
+
+    # Read-only where the store supports it, for the reason given in
+    # get_invocation above.
+    row = await invocations_service.get_artifact(
+        args.artifact_id, readonly=read_only_open_supported()
+    )
+    if row is None:
+        return {"known": False}
+    return {"known": True, "source": "store", **_safe_artifact(row, include_content=True)}
 
 
 async def list_recent_runs(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -516,9 +1076,16 @@ _TOOL_HANDLERS = {
     "launch_playbook": launch_playbook,
     "run_progress": run_progress,
     "run_findings": run_findings,
+    "run_detail": run_detail,
     "cancel_run": cancel_run,
     "resume_run": resume_run,
     "rename_session": rename_session,
+    "list_sessions": list_sessions,
+    "session_detail": session_detail,
+    "session_signals": session_signals,
+    "get_invocation": get_invocation,
+    "list_artifacts": list_artifacts,
+    "get_artifact": get_artifact,
 }
 
 

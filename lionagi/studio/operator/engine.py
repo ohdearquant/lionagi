@@ -76,9 +76,16 @@ _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__launch_playbook",
     "mcp__studio_operator__run_progress",
     "mcp__studio_operator__run_findings",
+    "mcp__studio_operator__run_detail",
     "mcp__studio_operator__cancel_run",
     "mcp__studio_operator__resume_run",
     "mcp__studio_operator__rename_session",
+    "mcp__studio_operator__list_sessions",
+    "mcp__studio_operator__session_detail",
+    "mcp__studio_operator__session_signals",
+    "mcp__studio_operator__get_invocation",
+    "mcp__studio_operator__list_artifacts",
+    "mcp__studio_operator__get_artifact",
 ]
 _MODEL_CONTEXT_FRAME_LIMIT = 64
 _MODEL_CONTEXT_BYTE_LIMIT = 128 * 1024

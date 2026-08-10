@@ -11,10 +11,10 @@ describe("isLongRangeEdge — rank-distance routing threshold", () => {
   it("is short-range under the threshold", () => {
     expect(isLongRangeEdge(0)).toBe(false);
     expect(isLongRangeEdge(1)).toBe(false);
-    expect(isLongRangeEdge(2)).toBe(false);
   });
 
   it("is long-range at and beyond the threshold", () => {
+    expect(isLongRangeEdge(2)).toBe(true);
     expect(isLongRangeEdge(3)).toBe(true);
     expect(isLongRangeEdge(4)).toBe(true);
     expect(isLongRangeEdge(10)).toBe(true);

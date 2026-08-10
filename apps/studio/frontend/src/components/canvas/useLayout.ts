@@ -7,15 +7,20 @@ import type { Node, Edge } from "reactflow";
 // of them is edited.
 export const NODE_WIDTH = 210;
 
-// StepNode is a fixed two-row card: name and state on top, role and elapsed
-// along the bottom, both rows always rendered. So one constant describes it at
-// every moment of a run, and dagre reserves exactly what the node occupies.
+// StepNode is a fixed three-row card: name and state on top, role and
+// elapsed second, and a live-activity row (agent's latest text, current
+// activity, event/token counter) along the bottom — all three rows always
+// rendered. So one constant describes it at every moment of a run, and dagre
+// reserves exactly what the node occupies.
 //
 // It used to grow a row at a time as a run filled its data in, which meant the
 // height depended on how far along the run was, ranks came out ragged, and this
 // function had to guess. Fixing the card removed the guess: two nodes side by
-// side are now the same size whether or not either has finished.
-export const NODE_HEIGHT = 56;
+// side are the same size whether or not either has finished, and — since the
+// live-activity row was added — whether or not either has produced any
+// assistant text yet. The row's text is clipped to a fixed line count rather
+// than allowed to grow the card, which is what keeps this constant honest.
+export const NODE_HEIGHT = 88;
 
 /** The height of a rendered node. Constant by construction — see NODE_HEIGHT.
  *  Kept as a function because the layout passes call it per node and a future
@@ -438,8 +443,35 @@ export function getLayoutedElements(
   for (const node of nodes) {
     g.setNode(node.id, { width: NODE_WIDTH, height: estimateNodeHeight(node) });
   }
+  // Rank assignment is ours (ADR-0113 D2), not dagre's: `ranks` above already
+  // computed each node's ASAP depth. dagre's own rankers — network-simplex
+  // included, which is the untouched default here — minimize total edge
+  // length instead, which is a different objective and disagrees with ASAP
+  // whenever a node's result is consumed much later than it is produced (the
+  // P2 case). Rather than fight that objective with a `ranker` option (the
+  // ADR is explicit that no ranker choice changes the outcome), pin every
+  // edge's minlen to the exact ASAP rank gap between its endpoints. ASAP then
+  // satisfies every constraint with equality, so its total edge span equals
+  // the sum of the minlens, which is the lower bound any feasible assignment
+  // can reach — and reaching it requires every edge to be tight, which only
+  // ASAP is. dagre still does the ordering and routing, just not the ranking.
+  //
+  // Note what that argument rests on: ASAP is the unique MINIMUM-COST
+  // assignment here, not the unique feasible one. Slack-free constraints do
+  // not by themselves pin a solution — on the graph the decision was measured
+  // on, {b:1, h:4} with the rest unchanged satisfies all nine constraints at a
+  // total span of 15 against ASAP's 13. It loses on cost, not on legality. So
+  // this depends on the ranker minimizing total edge length, which every dagre
+  // ranker does. A future ranker with a different objective would need this
+  // revisited rather than trusted.
   for (const edge of edges) {
-    g.setEdge(edge.source, edge.target);
+    const sourceRank = ranks.get(edge.source);
+    const targetRank = ranks.get(edge.target);
+    const minlen =
+      sourceRank !== undefined && targetRank !== undefined
+        ? Math.max(1, targetRank - sourceRank)
+        : undefined;
+    g.setEdge(edge.source, edge.target, minlen !== undefined ? { minlen } : undefined);
   }
 
   dagre.layout(g);

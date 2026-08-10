@@ -95,7 +95,7 @@ function assertNoOverlap(nodes: Node[]) {
 }
 
 describe("estimateNodeHeight", () => {
-  // The card is a fixed two-row box, so its height cannot depend on how far
+  // The card is a fixed-height box, so its height cannot depend on how far
   // along a run is. This is the invariant the whole layout leans on: two nodes
   // side by side are the same size whether or not either has finished, which is
   // what lets a rank line up. It used to grow a row at a time, and these tests
@@ -1188,9 +1188,13 @@ describe("getLayoutedElements — folding a mid-run branch+join stays edge-aware
   it("the truly-sequential 30-node chain still folds into the previously-measured band", () => {
     // Pins the readability win survives the edge-aware rewrite: every
     // boundary in a pure chain is a safe (1-predecessor/1-successor) break,
-    // so this must fold exactly as before. Measured pre-fix band: ~1528x504,
-    // raw fit ~0.644 at a 1280x560 panel — small drift is fine, a strip
-    // (unfolded ~7692-wide) is the regression this guards against.
+    // so this must fold exactly as before, modulo the row height itself.
+    // Measured pre-fix band at NODE_HEIGHT=56: ~1528x504, raw fit ~0.644 at a
+    // 1280x560 panel. NODE_HEIGHT rose to 88 for the live-activity row (ADR-
+    // 0113 row 6, see useLayout.ts), which raises every row's height and so
+    // this band's too — remeasured at ~1500x664, raw fit ~0.649 — small drift
+    // is fine, a strip (unfolded ~7692-wide) is the regression this guards
+    // against.
     const c = chain(30);
     const { nodes } = getLayoutedElements(c.nodes(), c.edges, "LR");
     const left = Math.min(...nodes.map((n) => n.position.x));
@@ -1208,7 +1212,7 @@ describe("getLayoutedElements — folding a mid-run branch+join stays edge-aware
 
     expect(width).toBeGreaterThan(1300);
     expect(width).toBeLessThan(1700);
-    expect(height).toBeCloseTo(504, -1);
+    expect(height).toBeCloseTo(664, -1);
     expect(rawFit).toBeGreaterThan(0.55);
     expect(rawFit).toBeLessThan(0.75);
   });

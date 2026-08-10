@@ -45,7 +45,7 @@ against, and each of these had a consumer reading the silence a different way.
    "cancel the wait" and "cancel the work" were indistinguishable from the document. They
    are different operations and always were.
 3. **The result partitions the observed ids.** D6 named the pending list without saying
-   which ids qualify for it. That silence was read three different ways in one review round,
+   which ids qualify for it. That silence was read three different ways by three readers,
    which is how a reader-derived rule announces that it needs writing down. The partition is
    now stated outright.
 4. **A call carries a minimum duration when an id resolves nothing by waiting.** This is

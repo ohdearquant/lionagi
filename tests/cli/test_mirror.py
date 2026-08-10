@@ -1616,6 +1616,69 @@ async def test_orchestrated_rollout_is_never_mirrored(tmp_path):
         assert await _mirror_one_codex(db, path, state, {}) == 0
 
 
+async def test_an_imported_rollout_is_named_from_its_first_prompt(tmp_path):
+    """Every imported rollout was landing under the same generic name.
+
+    The name is derived by reading the instruction off a mirrored message, and
+    the message carries it on a content model rather than in a mapping. Asked
+    for a mapping key, the derivation found nothing for every rollout ever
+    imported and each one fell through to the fallback -- so a board of live
+    sessions showed one repeated title with nothing to tell them apart.
+
+    Driven through the whole mirror rather than the derivation alone: the two
+    halves each look right in isolation, and it is the seam between them that
+    carried the defect.
+    """
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-00000000000a"
+    path = tmp_path / "rollout-named.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "Codex Desktop"))
+    state = _FileState(session_uid="")
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) > 0
+        session = await db.get_session(codex_sid(uid))
+
+    assert session is not None
+    assert session["name"] == "q", (
+        f"named {session['name']!r}; the first prompt never reached the name"
+    )
+
+
+async def test_a_rollout_with_no_real_prompt_keeps_the_generic_name(tmp_path):
+    """The arm that separates deriving the right name from deriving any name.
+
+    Codex opens some rollouts with an injected context block and no human turn
+    at all. Those carry nothing worth showing, so they are expected to keep the
+    fallback -- without this, a derivation that returned the injected block
+    would pass the test above while putting machine plumbing on the board.
+    """
+    import json as _json
+
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+
+    uid = "0199bbbb-0000-0000-0000-00000000000b"
+    lines = _codex_rollout_lines(uid, "Codex Desktop").splitlines()
+    injected = _json.loads(lines[1])
+    injected["payload"]["content"] = [{"text": "<environment_context>cwd=/x</environment_context>"}]
+    lines[1] = _json.dumps(injected)
+    path = tmp_path / "rollout-injected.jsonl"
+    path.write_text("".join(line + "\n" for line in lines))
+    state = _FileState(session_uid="")
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await _mirror_one_codex(db, path, state, {})
+        session = await db.get_session(codex_sid(uid))
+
+    assert session is not None
+    assert session["name"] == "Codex session", (
+        f"named {session['name']!r}; an injected context block became the title"
+    )
+
+
 async def test_orchestrated_rollout_absorbs_an_earlier_import(tmp_path):
     """A row imported before this rule existed is removed the first time the
     mirror reclassifies its rollout, so old double entries heal on upgrade."""
@@ -2810,3 +2873,43 @@ def test_grep_evidence_live_mirror_paths_call_bound_mirror_content() -> None:
         "cli/mirror.py does not thread the mirror bounding budget/source pointers "
         "into mirror_session()"
     )
+
+
+async def test_an_imported_rollout_leaves_the_role_field_empty(tmp_path):
+    """`agent_name` is a role field, and an imported desktop thread has no role.
+
+    Writing the engine name there was wrong at the definition site, and it had
+    a visible consequence: the role tier sits ahead of the prompt tier in
+    `resolve_display_name`, so every imported row rendered the engine and
+    shadowed the informative prompt-derived name the mirror had just computed.
+
+    Both rows are asserted. The session and the branch each carried the label,
+    so checking only the session would pass while the branch kept it.
+    """
+    from lionagi.cli.mirror import _FileState, _mirror_one_codex
+    from lionagi.state.codex_mirror import session_db_id as codex_sid
+    from lionagi.state.session_naming import resolve_display_name
+
+    uid = "0199cccc-0000-0000-0000-00000000000b"
+    path = tmp_path / "rollout-role.jsonl"
+    path.write_text(_codex_rollout_lines(uid, "Codex Desktop"))
+    state = _FileState(session_uid="")
+
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        assert await _mirror_one_codex(db, path, state, {}) > 0
+        sid = codex_sid(uid)
+        session = await db.get_session(sid)
+        branches = await db.list_branches(sid)
+
+    assert session is not None
+    assert session["agent_name"] is None, (
+        f"session carries role {session['agent_name']!r}; the engine is in a role field"
+    )
+    assert branches, "no branch was mirrored, so the branch assertion below proves nothing"
+    for br in branches:
+        assert br["agent_name"] is None, (
+            f"branch carries role {br['agent_name']!r}; the session was cleared but its branch was not"
+        )
+
+    # The point of clearing the field: the prompt now reaches the display name.
+    assert resolve_display_name(dict(session)) == "q"
