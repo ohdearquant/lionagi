@@ -304,6 +304,31 @@ describe("StepNode — prefers-reduced-motion carries the same information, not 
   });
 });
 
+describe("StepNode — an absent activity signal is not a claim that the node is waiting", () => {
+  it("gives a running node with no activity signal its status word, not 'waiting'", () => {
+    // This is what the canvas renders for every running node today, because
+    // nothing supplies the activity fields yet. Saying "waiting" next to a
+    // node that is visibly running states something false about the run;
+    // absence of a signal is not evidence of waiting.
+    renderNode({ execStatus: "running", lastEventAt: Date.now() });
+
+    // Assert the word that must be there, not just the absence of the wrong
+    // one: an empty activity row would satisfy a "does not say waiting" check
+    // while dropping the caption entirely and silently shortening the row.
+    expect(activityText()).toContain("running");
+    expect(activityText()).not.toContain("waiting");
+  });
+
+  it("still calls a queued node waiting, because a queued node is waiting", () => {
+    // Guards the other direction, so the fix above cannot be satisfied by
+    // removing the word everywhere: "waiting" is correct for a queued node and
+    // has to survive.
+    renderNode({ execStatus: "queued" });
+
+    expect(activityText()).toContain("waiting");
+  });
+});
+
 describe("StepNode — the concurrent-animation cap keeps a big canvas responsive", () => {
   it("animates at most MAX_ANIMATING_NODES nodes when more than that many are running", () => {
     const total = MAX_ANIMATING_NODES + 3;
