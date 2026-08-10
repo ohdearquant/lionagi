@@ -34,7 +34,12 @@ import {
   transitiveReduceDisplay,
 } from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
-import { deriveDisplayStatus, deriveVerdict, isEffectivelyActive } from "@/lib/runStatus";
+import {
+  deriveDisplayStatus,
+  deriveVerdict,
+  isEffectivelyActive,
+  isUnsuccessfulTerminal,
+} from "@/lib/runStatus";
 import type { Verdict } from "@/lib/runStatus";
 import type { RunMessage, RunResumeResponse, RunStep, WorkerGraph } from "@/lib/types";
 import type { NodeExecStatus } from "@/components/canvas/StepNode";
@@ -637,6 +642,8 @@ function ProgressSummaryBar({
 
 interface OverviewData {
   status: string;
+  /** Why the run ended this way, for terminal statuses that need explaining. */
+  statusReason?: string | null;
   durationSec: number | null;
   branchCount: number;
   messageCount: number;
@@ -697,6 +704,14 @@ function OverviewSection({ data }: { data: OverviewData }) {
             </div>
           ))}
         </div>
+        {data.statusReason && (
+          <div className="mt-3 border-t border-edge-subtle pt-3">
+            <span className="text-[length:var(--t-xs)] font-semibold uppercase tracking-wider text-content-muted">
+              {t("statStatus")}
+            </span>
+            <p className="mt-0.5 text-meta text-content-secondary">{data.statusReason}</p>
+          </div>
+        )}
         {provenance.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-3 border-t border-edge-subtle pt-3">
             {provenance.map((p) => (
@@ -1990,6 +2005,13 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   const overviewData: OverviewData = {
     status: displayStatus,
+    // A run that ends badly owes the operator a sentence. The backend already
+    // writes one (e.g. "Run exceeded the configured timeout." for a blown
+    // deadline); without this it never reaches the page, and a timed-out run
+    // shows a bare "cancelled" beside two branches reading "failed".
+    statusReason: isUnsuccessfulTerminal(runForStatus)
+      ? (session.status_reason_summary ?? null)
+      : null,
     durationSec,
     branchCount: session.branches.length,
     messageCount: totalMessages,
