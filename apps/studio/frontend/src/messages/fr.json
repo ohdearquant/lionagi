@@ -519,7 +519,8 @@
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
-          "still-pausing": "Still finishing in-flight operations."
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-operator-command": "No operator command performs this yet, so it would act on the run in some other way. Use the CLI run controls meanwhile."
         }
       }
     },

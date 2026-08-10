@@ -599,6 +599,11 @@ export interface OperatorResourceVersion {
 
 export interface OperatorCommandProposal {
   id: string;
+  /** Which command this proposal would run ("cancel", "resume", ...). Present
+   * so a caller can check the proposal it got back is the one it asked for
+   * before confirming it. `target` also carries this, but only for commands
+   * that supply a target version, which the run controls do not. */
+  commandType: string;
   command: Record<string, unknown>;
   commandHash: string;
   risk: "mutate" | "execute" | "admin";

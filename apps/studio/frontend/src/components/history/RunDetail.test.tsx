@@ -2311,26 +2311,35 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
     }
   });
 
-  it("row 8: steer is offered and enabled on an agent run", async () => {
+  // Row 8's claim is that an agent run OFFERS steer, and that still holds — the
+  // button is present on an agent run, which is what separates a capability the
+  // engine has from one it does not. It is disabled for a different reason than
+  // the capability table: nothing delivers the message yet.
+  it("row 8: steer is offered on an agent run, and disabled for want of an operator command", async () => {
     const { container, unmount } = await mountRunDetail(sessionOf("agent"));
     try {
       const steerButton = container.querySelector<HTMLButtonElement>(
         '[data-testid="run-controls-steer"]',
       );
       expect(steerButton).not.toBeNull();
-      expect(steerButton?.disabled).toBe(false);
+      expect(steerButton?.disabled).toBe(true);
     } finally {
       unmount();
     }
   });
 
-  it("pause is offered and enabled on a flow run", async () => {
+  // Still rendered on a flow run, and disabled: no operator command pauses, so
+  // an enabled button here would submit a turn to an operator that can only
+  // answer it with some other mutation of the same run. Shown rather than
+  // hidden, on the same principle as the agent-run refusal above.
+  it("pause is offered but disabled on a flow run while no operator command pauses", async () => {
     const { container, unmount } = await mountRunDetail(sessionOf("flow"));
     try {
       const pauseButton = container.querySelector<HTMLButtonElement>(
         '[data-testid="run-controls-pause"]',
       );
-      expect(pauseButton?.disabled).toBe(false);
+      expect(pauseButton).not.toBeNull();
+      expect(pauseButton?.disabled).toBe(true);
     } finally {
       unmount();
     }

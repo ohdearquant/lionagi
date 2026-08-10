@@ -41,21 +41,27 @@ describe("lib/runControls — derivePausePhase (the pausing-vs-paused window)", 
 });
 
 describe("lib/runControls — pauseControlState", () => {
-  it("is offered and enabled for a running flow with no pause requested", async () => {
+  // These two are the cases where the run itself has no objection: a live flow
+  // or play, no pause requested. They were the enabled state, and they are the
+  // exact cases the missing operator command has to speak up in — a live pause
+  // button here submits a turn to an operator that has no tool for it, and the
+  // proposal that comes back is some other mutation of the run. Enabled again
+  // is correct the moment a tool performs the verb, and not before.
+  it("is offered but disabled for a running flow, because no operator command pauses", async () => {
     const { pauseControlState } = await import("./runControls");
     expect(pauseControlState("flow", false, "idle")).toEqual({
       offered: true,
-      disabled: false,
-      reasonCode: null,
+      disabled: true,
+      reasonCode: "no-operator-command",
     });
   });
 
-  it("is offered and enabled for a running play with no pause requested", async () => {
+  it("is offered but disabled for a running play, for the same reason", async () => {
     const { pauseControlState } = await import("./runControls");
     expect(pauseControlState("play", false, "idle")).toEqual({
       offered: true,
-      disabled: false,
-      reasonCode: null,
+      disabled: true,
+      reasonCode: "no-operator-command",
     });
   });
 
@@ -111,12 +117,17 @@ describe("lib/runControls — resumeControlState", () => {
     expect(result.reasonCode).toBe("still-pausing");
   });
 
-  it("is offered and enabled once fully paused", async () => {
+  // Fully paused is where resume would go live, so it is where the missing
+  // command surfaces. Worth stating plainly: the operator does own a tool named
+  // `resume_run`, and it is not this. It launches a fresh invocation rather
+  // than releasing a pause gate, which is why an entry for the resume verb
+  // cannot simply point at it.
+  it("is offered but disabled once fully paused, because no operator command releases a pause gate", async () => {
     const { resumeControlState } = await import("./runControls");
     expect(resumeControlState("play", false, "paused")).toEqual({
       offered: true,
-      disabled: false,
-      reasonCode: null,
+      disabled: true,
+      reasonCode: "no-operator-command",
     });
   });
 
@@ -129,13 +140,17 @@ describe("lib/runControls — resumeControlState", () => {
 });
 
 describe("lib/runControls — steerControlState (row 8: steer offered on an agent run)", () => {
-  it("is offered and enabled for flow, play, and agent runs alike", async () => {
+  // Steer stays OFFERED on all three kinds, which is what row 8 asks for and
+  // what distinguishes this from hiding the control: the capability table still
+  // says an agent run can be steered. It is disabled only because nothing
+  // carries the message yet.
+  it("is offered for flow, play, and agent runs alike, and disabled on all three for want of a command", async () => {
     const { steerControlState } = await import("./runControls");
     for (const kind of ["flow", "play", "agent"] as const) {
       expect(steerControlState(kind, false)).toEqual({
         offered: true,
-        disabled: false,
-        reasonCode: null,
+        disabled: true,
+        reasonCode: "no-operator-command",
       });
     }
   });
@@ -168,87 +183,152 @@ describe("lib/runControls — proposeRunControl / confirmRunControl route throug
     vi.resetModules();
   });
 
-  it("creates a conversation, submits a turn carrying the run id, and resolves with the proposal frame the turn produced", async () => {
+  // NOTE for whoever adds the first operator control tool: the submit-then-wait
+  // path in proposeRunControl (including waitForProposal's error and timeout
+  // arms) is deliberately unexercised end-to-end right now, because no verb has
+  // a command type and every call refuses before it opens a conversation. Add
+  // the map entry and this block gets its round-trip test back — that test is
+  // owed at the same time as the tool, not later.
+
+  it("refuses every control verb without opening a conversation, because no operator command performs one", async () => {
+    const created = vi.fn().mockResolvedValue({ id: "conv-1" });
+    const submitted = vi.fn();
     vi.doMock("@/lib/api", () => ({
-      createOperatorConversation: vi.fn().mockResolvedValue({ id: "conv-1" }),
-      submitOperatorTurn: vi.fn().mockResolvedValue({
-        conversationId: "conv-1",
-        requestId: "req-1",
-        acceptedSequence: 1,
-      }),
-      streamOperatorConversation: vi.fn((_conversationId, _after, handlers) => {
-        queueMicrotask(() =>
-          handlers.onFrame({
-            version: 1,
-            conversationId: "conv-1",
-            requestId: "req-1",
-            sequence: 2,
-            type: "proposal",
-            payload: {
-              proposal: {
-                id: "prop-1",
-                command: { verb: "pause" },
-                commandHash: "hash-1",
-                risk: "mutate",
-                summary: "Pause run-abc123",
-                idempotencyKey: "idem-1",
-                expiresAt: Date.now() + 60_000,
-              },
-            },
-            createdAt: Date.now(),
-          }),
-        );
-        return () => {};
-      }),
-      confirmOperatorProposal: vi
-        .fn()
-        .mockResolvedValue({ proposalId: "prop-1", status: "succeeded" }),
-    }));
-
-    const { proposeRunControl, confirmRunControl } = await import("./runControls");
-    const api = await import("@/lib/api");
-
-    const result = await proposeRunControl("run-abc123", "flow", "pause");
-
-    expect(api.createOperatorConversation).toHaveBeenCalledTimes(1);
-    const turnArgs = vi.mocked(api.submitOperatorTurn).mock.calls[0];
-    expect(turnArgs[0]).toBe("conv-1");
-    expect(turnArgs[1].instruction).toContain("run-abc123");
-    expect(result.conversationId).toBe("conv-1");
-    expect(result.proposal.id).toBe("prop-1");
-
-    await confirmRunControl(result.conversationId, result.proposal);
-    expect(api.confirmOperatorProposal).toHaveBeenCalledWith("conv-1", "prop-1", "hash-1", null);
-  });
-
-  it("rejects when the turn ends with an error frame instead of a proposal", async () => {
-    vi.doMock("@/lib/api", () => ({
-      createOperatorConversation: vi.fn().mockResolvedValue({ id: "conv-2" }),
-      submitOperatorTurn: vi.fn().mockResolvedValue({
-        conversationId: "conv-2",
-        requestId: "req-2",
-        acceptedSequence: 1,
-      }),
-      streamOperatorConversation: vi.fn((_conversationId, _after, handlers) => {
-        queueMicrotask(() =>
-          handlers.onFrame({
-            version: 1,
-            conversationId: "conv-2",
-            requestId: "req-2",
-            sequence: 2,
-            type: "error",
-            payload: { error: { code: "refused", message: "not allowed", retryable: false } },
-            createdAt: Date.now(),
-          }),
-        );
-        return () => {};
-      }),
+      createOperatorConversation: created,
+      submitOperatorTurn: submitted,
+      streamOperatorConversation: vi.fn(),
       confirmOperatorProposal: vi.fn(),
     }));
 
     const { proposeRunControl } = await import("./runControls");
-    await expect(
-      proposeRunControl("run-xyz", "agent", "message", { message: "hi" }),
-    ).rejects.toThrow("not allowed");
+
+    for (const verb of ["pause", "resume", "message"] as const) {
+      await expect(proposeRunControl("run-abc123", "flow", verb)).rejects.toThrow(
+        /No operator command performs/,
+      );
+    }
+    // The refusal has to land before the turn is spent, not after waiting it out.
+    expect(created).not.toHaveBeenCalled();
+    expect(submitted).not.toHaveBeenCalled();
+  });
+});
+
+describe("lib/runControls — assertProposalMatches binds a proposal to what was asked for", () => {
+  const proposal = (over: Record<string, unknown> = {}) =>
+    ({
+      id: "prop-1",
+      commandType: "pause",
+      command: { run_id: "run-abc123" },
+      commandHash: "hash-1",
+      risk: "mutate" as const,
+      summary: "Pause run-abc123",
+      idempotencyKey: "idem-1",
+      expiresAt: Date.now() + 60_000,
+      ...over,
+    }) as never;
+
+  it("accepts a proposal whose command type and run both match the request", async () => {
+    const { assertProposalMatches } = await import("./runControls");
+    expect(() => assertProposalMatches(proposal(), "pause", "run-abc123")).not.toThrow();
+  });
+
+  it("refuses a cancel proposal returned for a pause request", async () => {
+    // The case this whole check exists for. Cancelling is the nearest thing an
+    // operator with no pause tool can reach, the summary it arrives with is
+    // truthful, and it names the very run the user was looking at — so nothing
+    // except the command type separates it from the click that was made.
+    const { assertProposalMatches } = await import("./runControls");
+    expect(() =>
+      assertProposalMatches(proposal({ commandType: "cancel" }), "pause", "run-abc123"),
+    ).toThrow(/Refused a proposal for "cancel" when "pause" was requested/);
+  });
+
+  it("refuses a proposal that would act on a different run", async () => {
+    const { assertProposalMatches } = await import("./runControls");
+    expect(() =>
+      assertProposalMatches(proposal({ command: { run_id: "run-other" } }), "pause", "run-abc123"),
+    ).toThrow(/targeting a different run/);
+  });
+
+  it("refuses a proposal that never names the run it would act on", async () => {
+    const { assertProposalMatches } = await import("./runControls");
+    expect(() => assertProposalMatches(proposal({ command: {} }), "pause", "run-abc123")).toThrow(
+      /does not name the run/,
+    );
+  });
+});
+
+describe("lib/runControls — confirmRunControl treats a non-applied status as a failure", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  const proposal = {
+    id: "prop-1",
+    commandType: "pause",
+    command: { run_id: "run-abc123" },
+    commandHash: "hash-1",
+    risk: "mutate",
+    summary: "Pause run-abc123",
+    idempotencyKey: "idem-1",
+    expiresAt: Date.now() + 60_000,
+  } as never;
+
+  it("returns the result when the command was applied", async () => {
+    vi.doMock("@/lib/api", () => ({
+      createOperatorConversation: vi.fn(),
+      submitOperatorTurn: vi.fn(),
+      streamOperatorConversation: vi.fn(),
+      confirmOperatorProposal: vi
+        .fn()
+        .mockResolvedValue({ proposalId: "prop-1", status: "succeeded" }),
+    }));
+    const { confirmRunControl } = await import("./runControls");
+    const api = await import("@/lib/api");
+
+    await expect(confirmRunControl("conv-1", proposal)).resolves.toMatchObject({
+      status: "succeeded",
+    });
+    expect(api.confirmOperatorProposal).toHaveBeenCalledWith("conv-1", "prop-1", "hash-1", null);
+  });
+
+  // Each of these resolves rather than rejecting at the API layer, so before
+  // this check the caller ran its success path and told the user the run was
+  // paused when the command had been refused, lost a race, or timed out.
+  it.each(["failed", "conflict", "expired"] as const)(
+    "throws instead of reporting success when the confirmation came back %s",
+    async (status) => {
+      vi.doMock("@/lib/api", () => ({
+        createOperatorConversation: vi.fn(),
+        submitOperatorTurn: vi.fn(),
+        streamOperatorConversation: vi.fn(),
+        confirmOperatorProposal: vi.fn().mockResolvedValue({
+          proposalId: "prop-1",
+          status,
+          error: { code: status, message: `the run was not paused (${status})`, retryable: false },
+        }),
+      }));
+      const { confirmRunControl } = await import("./runControls");
+
+      await expect(confirmRunControl("conv-1", proposal)).rejects.toThrow(
+        `the run was not paused (${status})`,
+      );
+    },
+  );
+
+  it("still throws when the refusal carries no message to quote", async () => {
+    vi.doMock("@/lib/api", () => ({
+      createOperatorConversation: vi.fn(),
+      submitOperatorTurn: vi.fn(),
+      streamOperatorConversation: vi.fn(),
+      confirmOperatorProposal: vi
+        .fn()
+        .mockResolvedValue({ proposalId: "prop-1", status: "expired" }),
+    }));
+    const { confirmRunControl } = await import("./runControls");
+
+    await expect(confirmRunControl("conv-1", proposal)).rejects.toThrow(
+      "The command was not applied (expired).",
+    );
   });
 });

@@ -461,6 +461,7 @@ describe("OperatorPanel", () => {
           payload: {
             proposal: {
               id: "proposal-1",
+              commandType: "provider_permission",
               command: {
                 tool: "Bash",
                 arguments: { command: "git status", authorization: "Bearer secret" },

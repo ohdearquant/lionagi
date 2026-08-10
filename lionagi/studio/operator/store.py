@@ -1905,6 +1905,14 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             {
                 "proposal": {
                     "id": proposal_id,
+                    # The command type travels on the frame, not only on the
+                    # stored row. A caller that asked for one command and was
+                    # handed a proposal for another has no other way to tell:
+                    # `target` carries the type today, but only when a
+                    # target_version was supplied, and the run-control commands
+                    # supply none — so for exactly those the frame described a
+                    # mutation the caller could not identify before confirming.
+                    "commandType": command_type,
                     "command": command,
                     "commandHash": command_hash,
                     "risk": risk,

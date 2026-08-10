@@ -515,6 +515,7 @@ async def test_application_mcp_launch_blocks_on_real_durable_human_proposal(tmp_
         "id": "daily-triage",
         "version": proposal["targetVersion"],
     }
+    assert proposal_frame["payload"]["proposal"]["commandType"] == "launch"
     assert "endpoint" not in proposal["command"]
     assert "command" not in proposal["command"]
 
@@ -691,6 +692,15 @@ async def test_application_mcp_cancel_run_allow_executes_via_the_real_default_co
         "project": "/Users/admin/test-project",
     }
     assert proposal["risk"] == "execute"
+
+    # The frame is all a confirming caller sees before it decides, and this
+    # command carries no target version, so `target` is None and cannot say
+    # what the command is. Without commandType on the frame a cancel proposal
+    # is indistinguishable from a proposal for any other command naming the
+    # same run -- which is what a caller asking for something else would get.
+    proposal_frame = await _wait_frame(store, cid, frame_type="proposal")
+    assert proposal_frame["payload"]["proposal"]["target"] is None
+    assert proposal_frame["payload"]["proposal"]["commandType"] == "cancel"
 
     decision = await coordinator.decide(
         cid,
