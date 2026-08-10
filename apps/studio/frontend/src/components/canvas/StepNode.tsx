@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useId, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Handle, Position } from "reactflow";
 import type { NodeProps } from "reactflow";
 import { useTranslations } from "use-intl";
@@ -63,26 +63,39 @@ function useInViewport(ref: React.RefObject<Element | null>): boolean {
 // registry rather than context/store plumbing: every StepNode instance
 // competes for one of a fixed number of slots, first-claimed-first-served,
 // released on unmount or whenever the node no longer wants to animate.
+//
+// The slot belongs to the card, not to the node it is showing. The run detail
+// keeps its inline canvas mounted while the expanded graph is open, so the
+// same run — and therefore the same node ID — is on screen twice at once.
+// Keyed by node ID, that arrangement breaks the budget in both directions: the
+// second card finds its ID already registered and animates without taking a
+// slot, so twice the cap moves while the registry counts the cap; and whichever
+// card unmounts first releases the entry the other is still animating on, after
+// which fresh nodes claim slots that are already in use. Keyed by card, the two
+// simply compete like any other pair.
 export const MAX_ANIMATING_NODES = 10;
-const animatingNodeIds = new Set<string>();
+const animatingCards = new Set<symbol>();
 
-function useAnimationSlot(nodeId: string, wantsToAnimate: boolean): boolean {
+function useAnimationSlot(wantsToAnimate: boolean): boolean {
   const [granted, setGranted] = useState(false);
+  // This card's identity in the registry: allocated once per mount, never
+  // shared, and never rendered. Lazily-initialized state rather than the node
+  // ID precisely because two live cards can carry the same node ID.
+  const [slot] = useState(() => Symbol("animation-slot"));
   useEffect(() => {
     if (!wantsToAnimate) {
-      animatingNodeIds.delete(nodeId);
+      animatingCards.delete(slot);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing local render state FROM the shared module-level slot registry (the external system here), not deriving it from props/state React already has
       setGranted(false);
       return;
     }
-    const alreadyHeld = animatingNodeIds.has(nodeId);
-    const canClaim = alreadyHeld || animatingNodeIds.size < MAX_ANIMATING_NODES;
-    if (canClaim) animatingNodeIds.add(nodeId);
+    const canClaim = animatingCards.size < MAX_ANIMATING_NODES;
+    if (canClaim) animatingCards.add(slot);
     setGranted(canClaim);
     return () => {
-      animatingNodeIds.delete(nodeId);
+      animatingCards.delete(slot);
     };
-  }, [nodeId, wantsToAnimate]);
+  }, [slot, wantsToAnimate]);
   return granted;
 }
 
@@ -274,19 +287,12 @@ export function computeNodeVisualStyle(status: NodeExecStatus, selected: boolean
   return { borderWidth, borderColor, bgColor, labelColor, railColor };
 }
 
-function StepNodeComponent({ data, selected, id }: NodeProps<StepNodeData>) {
+function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
   const t = useTranslations("history.detail");
   // roleColor arrives as a data-driven CSS var string — keep inline
   const roleColor = ROLE_VAR[data.role] || "var(--content-muted)";
   const status = data.execStatus ?? "pending";
   const reducedMotion = usePrefersReducedMotion();
-
-  // Identity for the shared animation-slot registry. React Flow always
-  // supplies `id`; the fallback only matters off-canvas (e.g. a unit test
-  // rendering the card directly), where a stable per-mount id still lets the
-  // cap behave correctly.
-  const fallbackId = useId();
-  const nodeId = id || fallbackId;
 
   const cardRef = useRef<HTMLDivElement>(null);
   const inViewport = useInViewport(cardRef);
@@ -300,7 +306,7 @@ function StepNodeComponent({ data, selected, id }: NodeProps<StepNodeData>) {
   // these gates never even competes for a slot.
   const wantsToAnimate =
     status === "running" && !stalled && !reducedMotion && inViewport && data.lastEventAt != null;
-  const animationGranted = useAnimationSlot(nodeId, wantsToAnimate);
+  const animationGranted = useAnimationSlot(wantsToAnimate);
   const animating = wantsToAnimate && animationGranted;
 
   // These derive from status data (dag-* tokens) — keep inline

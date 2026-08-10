@@ -345,6 +345,102 @@ describe("StepNode — the concurrent-animation cap keeps a big canvas responsiv
   });
 });
 
+/**
+ * Two canvases over the same run, mounted at once. The run detail keeps its
+ * inline canvas mounted while the expanded graph is open, so both sets of cards
+ * are live and carry identical node IDs. Every test above renders one canvas,
+ * and one canvas cannot exhibit this at all.
+ */
+function renderTwoCanvases(
+  inline: Array<{ id: string; data: Partial<StepNodeData> }>,
+  expanded: Array<{ id: string; data: Partial<StepNodeData> }>,
+) {
+  const groups: Array<[string, Array<{ id: string; data: Partial<StepNodeData> }>]> = [
+    ["inline", inline],
+    ["expanded", expanded],
+  ];
+  act(() => {
+    root.render(
+      <IntlProvider locale="en" messages={enMessages}>
+        {groups.flatMap(([canvas, entries]) =>
+          entries.map(({ id, data }) =>
+            React.createElement(StepNode, {
+              // The React key separates the two cards; the node `id` they are
+              // handed is deliberately the same, which is the real situation.
+              key: `${canvas}-${id}`,
+              id,
+              data: baseData(data),
+              selected: false,
+            } as never),
+          ),
+        )}
+      </IntlProvider>,
+    );
+  });
+}
+
+function runningNodes(count: number, prefix = "n") {
+  const now = Date.now();
+  return Array.from({ length: count }, (_, i) => ({
+    id: `${prefix}${i}`,
+    data: { execStatus: "running" as const, lastEventAt: now, activity: "thinking" as const },
+  }));
+}
+
+describe("StepNode — the animation budget survives two canvases over one run", () => {
+  it("still animates at most MAX_ANIMATING_NODES when the expanded graph doubles the cards", () => {
+    // Both canvases show the same MAX_ANIMATING_NODES running nodes, so twice
+    // the cap is on screen carrying only `cap` distinct IDs. Keyed by node ID,
+    // the second canvas's cards each find their ID already registered and
+    // animate without taking a slot: every card moves, the registry still reads
+    // `cap`, and nothing anywhere reports that the budget was exceeded.
+    const nodes = runningNodes(MAX_ANIMATING_NODES);
+    renderTwoCanvases(nodes, nodes);
+
+    expect(cards().length).toBe(MAX_ANIMATING_NODES * 2);
+    expect(cards().filter(isAnimating).length).toBe(MAX_ANIMATING_NODES);
+  });
+
+  it("does not free a slot the surviving canvas is still animating on", () => {
+    // Collapsing the expanded graph unmounts one card per node while the inline
+    // card keeps animating. Keyed by node ID, that unmount deletes the entry the
+    // inline card is still using, emptying the registry while `cap` nodes are
+    // visibly moving — so the next node to start running claims a slot that is
+    // already spoken for, and the canvas ends up over budget.
+    const shared = runningNodes(MAX_ANIMATING_NODES);
+    renderTwoCanvases(shared, shared);
+
+    // Expanded canvas closes; a new node starts running in the same commit.
+    renderTwoCanvases(shared, runningNodes(1, "late"));
+
+    expect(cards().length).toBe(MAX_ANIMATING_NODES + 1);
+    expect(cards().filter(isAnimating).length).toBe(MAX_ANIMATING_NODES);
+  });
+
+  it("releases a slot when a holder stops, so a newly mounted card can take it", () => {
+    // The guard against satisfying the two above by never releasing anything.
+    // It arrives as a fresh card rather than one already turned away, because a
+    // denied card does not re-compete: slots are first-claimed-first-served and
+    // a card that lost re-runs its effect only if its own inputs change. That
+    // is the existing behaviour, unchanged here — the excess falls back to the
+    // static state, which is what the cap is for.
+    const shared = runningNodes(MAX_ANIMATING_NODES);
+    renderTwoCanvases(shared, []);
+    expect(cards().filter(isAnimating).length).toBe(MAX_ANIMATING_NODES);
+
+    // One holder completes and a new node starts running in the same commit.
+    const [first, ...rest] = shared;
+    renderTwoCanvases(
+      [{ id: first.id, data: { execStatus: "completed" as const } }, ...rest],
+      runningNodes(1, "late"),
+    );
+
+    expect(cards().filter(isAnimating).length).toBe(MAX_ANIMATING_NODES);
+    expect(isAnimating(cards()[0])).toBe(false);
+    expect(isAnimating(cards()[cards().length - 1])).toBe(true);
+  });
+});
+
 describe("StepNode — nothing animates outside the viewport", () => {
   it("does not animate a running node the IntersectionObserver reports as not intersecting", () => {
     class NotIntersectingObserver {
