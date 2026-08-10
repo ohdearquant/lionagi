@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { deriveNodeActivity, isStalled, pulseDurationMs, STALL_TIMEOUT_MS } from "./nodeActivity";
+import {
+  buildNodeActivityByName,
+  deriveNodeActivity,
+  isStalled,
+  pulseDurationMs,
+  STALL_TIMEOUT_MS,
+} from "./nodeActivity";
 import type { SignalEvent } from "./api";
 
 function ev(kind: string, ts: number, payload: Record<string, unknown> = {}): SignalEvent {
@@ -93,5 +99,90 @@ describe("pulseDurationMs", () => {
       expect(ms).toBeGreaterThanOrEqual(700);
       expect(ms).toBeLessThanOrEqual(2400);
     }
+  });
+});
+
+// The correlation is the part that fails silently: keying on op_id resolves
+// nothing against a planned graph and yields an empty snapshot per node, which
+// is indistinguishable from a run that has not emitted anything yet.
+function named(
+  name: string,
+  opId: string,
+  kind: string,
+  ts: number,
+  extra: Record<string, unknown> = {},
+): SignalEvent {
+  return {
+    id: `${opId}-${kind}-${ts}`,
+    session_id: "s",
+    seq: ts,
+    kind,
+    op_id: opId,
+    ts,
+    payload: { name, ...extra },
+  };
+}
+
+describe("buildNodeActivityByName", () => {
+  it("buckets by the authored step name, not by the runtime op id", () => {
+    // Same authored step, two different runtime ops (a retry, or a node the
+    // engine re-created). Keyed by op_id this reads as two unrelated nodes,
+    // neither of which matches anything the planned graph draws.
+    const by = buildNodeActivityByName([
+      named("plan", "uuid-a", "NodeStarted", 1),
+      named("plan", "uuid-b", "ToolCallStarted", 2, { tool_name: "grep" }),
+    ]);
+
+    expect([...by.keys()]).toEqual(["plan"]);
+    expect(by.get("plan")!.eventCount).toBe(2);
+    expect(by.get("plan")!.activity).toBe("tool");
+  });
+
+  it("keeps separate authored steps separate", () => {
+    const by = buildNodeActivityByName([
+      named("plan", "uuid-a", "NodeStarted", 1),
+      named("build", "uuid-b", "NodeQueued", 2),
+    ]);
+
+    expect(by.get("plan")!.activity).toBe("thinking");
+    expect(by.get("build")!.activity).toBe("waiting");
+  });
+
+  it("places an event that carries only an op id, using the name that op already announced", () => {
+    // The shape a richer emitter will have: the lifecycle signal names the
+    // step, the interesting one does not repeat it.
+    const bare: SignalEvent = {
+      id: "bare",
+      session_id: "s",
+      seq: 2,
+      kind: "ToolCallStarted",
+      op_id: "uuid-a",
+      ts: 2,
+      payload: { tool_name: "rg" },
+    };
+    const by = buildNodeActivityByName([named("plan", "uuid-a", "NodeStarted", 1), bare]);
+
+    expect(by.get("plan")!.eventCount).toBe(2);
+    expect(by.get("plan")!.activityDetail).toBe("rg");
+  });
+
+  it("drops an event it cannot place rather than filing it under a guess", () => {
+    const orphan: SignalEvent = {
+      id: "orphan",
+      session_id: "s",
+      seq: 1,
+      kind: "ToolCallStarted",
+      op_id: "uuid-unknown",
+      ts: 1,
+      payload: { tool_name: "rg" },
+    };
+    const by = buildNodeActivityByName([named("plan", "uuid-a", "NodeStarted", 1), orphan]);
+
+    expect([...by.keys()]).toEqual(["plan"]);
+    expect(by.get("plan")!.eventCount).toBe(1);
+  });
+
+  it("returns an empty map for an empty stream", () => {
+    expect(buildNodeActivityByName([]).size).toBe(0);
   });
 });

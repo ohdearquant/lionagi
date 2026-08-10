@@ -34,6 +34,8 @@ import {
   transitiveReduceDisplay,
 } from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
+import { buildNodeActivityByName } from "@/lib/nodeActivity";
+import type { NodeActivitySnapshot } from "@/lib/nodeActivity";
 import { deriveDisplayStatus, deriveVerdict, isEffectivelyActive } from "@/lib/runStatus";
 import type { Verdict } from "@/lib/runStatus";
 import type { RunMessage, RunResumeResponse, RunStep, WorkerGraph } from "@/lib/types";
@@ -1285,7 +1287,7 @@ export function EventsSection({
                 <div key={ev.id} className="hover:bg-surface-overlay">
                   <div className="flex items-start gap-2 px-3 py-1.5">
                     <span className="mt-0.5 shrink-0 font-mono text-[length:var(--t-xs)] tabular-nums text-content-muted">
-                      {new Date(ev.ts * 1000).toLocaleTimeString([], {
+                      {new Date(ev.ts).toLocaleTimeString([], {
                         hour: "2-digit",
                         minute: "2-digit",
                         second: "2-digit",
@@ -1899,6 +1901,21 @@ export default function RunDetail({ id }: RunDetailProps) {
     return result;
   }, [runGraph, signalEvents]);
 
+  // What each node is DOING inside its running state, correlated from the same
+  // stream and by the same authored-name rule as nodeStatuses above. Kept to
+  // the planned graph's own nodes so a signal for something the graph does not
+  // draw cannot grow the map.
+  const nodeActivity = useMemo((): Map<string, NodeActivitySnapshot> | undefined => {
+    if (!runGraph) return undefined;
+    const byName = buildNodeActivityByName(signalEvents);
+    const result = new Map<string, NodeActivitySnapshot>();
+    for (const node of runGraph.nodes) {
+      const live = byName.get(node.id);
+      if (live) result.set(node.id, live);
+    }
+    return result;
+  }, [runGraph, signalEvents]);
+
   // The SAME reconciled map feeds both the always-visible progress summary
   // and the graph nodes below (WorkerCanvas nodeStatuses prop) — one source,
   // so the header can never disagree with what a node renders. Reconciling
@@ -2093,6 +2110,7 @@ export default function RunDetail({ id }: RunDetailProps) {
                 editable={false}
                 execSteps={execSteps}
                 nodeStatuses={reconciledNodeStatuses}
+                nodeActivity={nodeActivity}
                 compact
                 onLayoutHeight={onDagLayoutHeight}
                 live={live}
@@ -2138,6 +2156,7 @@ export default function RunDetail({ id }: RunDetailProps) {
                     editable={false}
                     execSteps={execSteps}
                     nodeStatuses={reconciledNodeStatuses}
+                    nodeActivity={nodeActivity}
                     compact
                     onLayoutHeight={noopLayoutHeight}
                     live={live}

@@ -85,6 +85,46 @@ export function deriveNodeActivity(events: readonly SignalEvent[]): NodeActivity
   return { activity, activityDetail, lastText, counter, lastEventAt, eventCount: events.length };
 }
 
+// Correlates the raw event stream against a PLANNED graph, whose node ids are
+// authored step names — so events bucket by `payload.name`, never by `op_id`
+// (a runtime UUID the planned graph knows nothing about; see
+// operationGraph.ts's buildNodeStatusesByName, which correlates the same way
+// for lifecycle status). Keying on op_id here would resolve nothing and
+// produce an empty snapshot for every node, which reads as "no signals yet"
+// rather than as the miscorrelation it is.
+//
+// Unlike the lifecycle path this does not filter by kind: every event for a
+// node feeds the activity fold, because the richer kinds a future emitter adds
+// are exactly the ones worth showing. Such an event may carry only `op_id`, so
+// the name learned from that op's Node* events is remembered and used to place
+// it. An event whose op has never carried a name is dropped rather than filed
+// under a guess.
+export function buildNodeActivityByName(
+  events: readonly SignalEvent[],
+): Map<string, NodeActivitySnapshot> {
+  const nameByOp = new Map<string, string>();
+  for (const ev of events) {
+    const name = ev.payload && typeof ev.payload.name === "string" ? ev.payload.name : "";
+    if (name && ev.op_id && !nameByOp.has(ev.op_id)) nameByOp.set(ev.op_id, name);
+  }
+
+  const eventsByName = new Map<string, SignalEvent[]>();
+  for (const ev of events) {
+    const direct = ev.payload && typeof ev.payload.name === "string" ? ev.payload.name : "";
+    const name = direct || nameByOp.get(ev.op_id) || "";
+    if (!name) continue;
+    const bucket = eventsByName.get(name);
+    if (bucket) bucket.push(ev);
+    else eventsByName.set(name, [ev]);
+  }
+
+  const result = new Map<string, NodeActivitySnapshot>();
+  for (const [name, bucket] of eventsByName) {
+    result.set(name, deriveNodeActivity(bucket));
+  }
+  return result;
+}
+
 // A node "stalls" once this long passes with no fresh event while it is still
 // reporting itself as running — the failure mode ADR-0113's Consequences
 // section names explicitly: a node pulsing forever after its event stream

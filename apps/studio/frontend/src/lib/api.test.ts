@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { resolveApiBase, resolveAuthToken } from "./api";
+import { normalizeSignalEvent, resolveApiBase, resolveAuthToken } from "./api";
+import type { SignalEvent } from "./api";
 
 describe("resolveApiBase", () => {
   beforeEach(() => {
@@ -649,5 +650,48 @@ describe("runs/sessions query construction", () => {
     await getSession("s1");
     const url = new URL(calls[0]!.url, "http://localhost");
     expect(url.searchParams.has("message_cursor")).toBe(false);
+  });
+});
+
+// The backend stamps a signal's `ts` with time.time() — Unix SECONDS — and the
+// frontend compares it against Date.now(), which is milliseconds. The gap is
+// about 1.7 trillion, so an un-normalized fresh event reads as ancient rather
+// than as malformed: nothing throws, and every node carrying a signal quietly
+// reports itself stalled. Converting once here is what keeps every consumer
+// from having to know where the number came from.
+describe("normalizeSignalEvent", () => {
+  const raw: SignalEvent = {
+    id: "e1",
+    session_id: "s1",
+    seq: 1,
+    kind: "NodeStarted",
+    op_id: "op1",
+    ts: 1_770_000_000,
+    payload: { name: "plan" },
+  };
+
+  it("converts the backend's seconds into epoch milliseconds", () => {
+    expect(normalizeSignalEvent(raw).ts).toBe(1_770_000_000_000);
+  });
+
+  it("leaves every other field alone", () => {
+    const out = normalizeSignalEvent(raw);
+    expect({ ...out, ts: raw.ts }).toEqual(raw);
+  });
+
+  it("does not mutate the event it was given", () => {
+    normalizeSignalEvent(raw);
+    expect(raw.ts).toBe(1_770_000_000);
+  });
+
+  it("lands on the same clock Date.now() reports", () => {
+    // The assertion that actually matters: a timestamp taken now, stamped the
+    // way the backend stamps it, must come back within a second of Date.now()
+    // — and the un-normalized value must NOT, or this conversion is decorative.
+    const now = Date.now();
+    const asBackendSends = { ...raw, ts: now / 1000 };
+
+    expect(Math.abs(normalizeSignalEvent(asBackendSends).ts - now)).toBeLessThan(1000);
+    expect(Math.abs(asBackendSends.ts - now)).toBeGreaterThan(1_000_000_000);
   });
 });

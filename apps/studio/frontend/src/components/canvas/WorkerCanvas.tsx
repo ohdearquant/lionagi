@@ -30,6 +30,7 @@ export { FIT_ZOOM_FLOOR };
 import { followModeReducer, initialFollowModeState, shouldAutoCenter } from "./followMode";
 import { reconcileNodeStatuses, computeStagePosition } from "@/lib/execGraphProgress";
 import type { GraphEdge } from "@/lib/execGraphProgress";
+import type { NodeActivitySnapshot } from "@/lib/nodeActivity";
 
 import type {
   AgentProfileSummary,
@@ -98,6 +99,12 @@ interface WorkerCanvasProps {
    * has a matching entry; nodes with no entry fall back to the legacy
    * execSteps/currentStep-derived status. */
   nodeStatuses?: Record<string, NodeExecStatus>;
+  /** Authored step id → live-activity snapshot, correlated from the signal
+   * stream the same way nodeStatuses is (by authored name, never op_id — see
+   * lib/nodeActivity.ts buildNodeActivityByName). Absent, or absent for a
+   * given node, means "no live correlation": that card renders exactly as it
+   * did before this data existed and never animates. */
+  nodeActivity?: Map<string, NodeActivitySnapshot>;
   currentStep?: string | null;
   onChange?: (nodes: WorkerStepNode[], edges: WorkerLinkEdge[]) => void;
   /** Read-only embed in a small container (e.g. RunDetail's 280px run-dag
@@ -319,14 +326,22 @@ function fromFlowEdges(edges: Edge<ConditionEdgeData>[]): WorkerLinkEdge[] {
 
 // ─── Canvas ──────────────────────────────────────────────
 
+// Hoisted so the default is one array for the life of the module rather than a
+// fresh one per render. It feeds the status memo and the projection effect's
+// dependency list, so a per-render identity makes that effect re-run on every
+// render it does not bail out of, and the effect's own setNodes triggers the
+// next render.
+const NO_EXEC_STEPS: NonNullable<WorkerCanvasProps["execSteps"]> = [];
+
 export default function WorkerCanvas({
   graph,
   editable = false,
   roles = [],
   agentProfiles = [],
   modelOverrides = {},
-  execSteps = [],
+  execSteps = NO_EXEC_STEPS,
   nodeStatuses,
+  nodeActivity,
   currentStep = null,
   onChange,
   compact = false,
@@ -427,17 +442,36 @@ export default function WorkerCanvas({
 
   // Apply the effective status map to the laid-out flow nodes/edges.
   useEffect(() => {
-    if (execSteps.length === 0 && !currentStep && !nodeStatuses) return;
+    if (execSteps.length === 0 && !currentStep && !nodeStatuses && !nodeActivity) return;
 
     const completedMap = new Map(
       execSteps.filter((s) => s.status === "completed").map((s) => [s.step, s]),
     );
 
     setNodes((nds) =>
-      nds.map((n) => ({
-        ...n,
-        data: { ...n.data, execStatus: effectiveStatuses[n.id] ?? "pending" },
-      })),
+      nds.map((n) => {
+        // Absent-safe by omission: a node the signal stream has not correlated
+        // gets no activity keys written at all, so its card renders exactly as
+        // it did before this projection existed rather than being handed a row
+        // of nulls to interpret.
+        const activity = nodeActivity?.get(n.id);
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            execStatus: effectiveStatuses[n.id] ?? "pending",
+            ...(activity
+              ? {
+                  activity: activity.activity,
+                  activityDetail: activity.activityDetail,
+                  lastText: activity.lastText,
+                  counter: activity.counter,
+                  lastEventAt: activity.lastEventAt,
+                }
+              : {}),
+          },
+        };
+      }),
     );
 
     setEdges((eds) =>
@@ -449,7 +483,7 @@ export default function WorkerCanvas({
         },
       })),
     );
-  }, [execSteps, currentStep, nodeStatuses, effectiveStatuses, setNodes, setEdges]);
+  }, [execSteps, currentStep, nodeStatuses, nodeActivity, effectiveStatuses, setNodes, setEdges]);
 
   // ── Stage / rank position — honest under transitive reduction because it
   // is derived from the authored edge set, never the displayed one. ──

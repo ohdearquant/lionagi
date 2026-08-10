@@ -1307,8 +1307,21 @@ export interface SignalEvent {
   seq: number;
   kind: string;
   op_id: string;
+  /** Epoch MILLISECONDS, so it can be compared against `Date.now()` directly.
+   *  The backend stamps this in SECONDS (`time.time()`, in the session
+   *  observer) and passes it through the signals service unchanged;
+   *  `normalizeSignalEvent` does the conversion once, here at the wire, and
+   *  it is the only place that knows the backend's unit. */
   ts: number;
   payload: Record<string, unknown>;
+}
+
+const SIGNAL_TS_SECONDS_TO_MS = 1000;
+
+/** Converts one raw signal off the wire into the frontend's units. Exported so
+ *  the unit can be asserted directly rather than inferred from a consumer. */
+export function normalizeSignalEvent(raw: SignalEvent): SignalEvent {
+  return { ...raw, ts: raw.ts * SIGNAL_TS_SECONDS_TO_MS };
 }
 
 export function streamSignals(
@@ -1326,7 +1339,7 @@ export function streamSignals(
     if ("type" in event && event.type === "done") {
       close();
     }
-    onEvent(event);
+    onEvent("type" in event ? event : normalizeSignalEvent(event));
   });
   return close;
 }
