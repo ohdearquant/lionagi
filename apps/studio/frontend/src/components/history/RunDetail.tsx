@@ -52,6 +52,7 @@ import {
 } from "@/lib/execGraphProgress";
 import type { ProgressCounts } from "@/lib/execGraphProgress";
 import {
+  applyExecutablePath,
   confirmRunControl,
   controlKindFor,
   derivePausePhase,
@@ -1468,9 +1469,16 @@ function RunControls({
 
   if (!kind) return null;
 
-  const pauseState = pauseControlState(kind, runTerminal, pausePhase);
-  const resumeState = resumeControlState(kind, runTerminal, pausePhase);
-  const steerState = steerControlState(kind, runTerminal);
+  // applyExecutablePath layers the surface-wide refusal on top of the run's
+  // own state: no command exists that pauses a run, releases a pause gate, or
+  // delivers a steering message, so all three are shown and disabled rather
+  // than dispatching an instruction the operator has no tool for.
+  const pauseState = applyExecutablePath("pause", pauseControlState(kind, runTerminal, pausePhase));
+  const resumeState = applyExecutablePath(
+    "resume",
+    resumeControlState(kind, runTerminal, pausePhase),
+  );
+  const steerState = applyExecutablePath("message", steerControlState(kind, runTerminal));
 
   async function propose(verb: ControlVerb, message?: string) {
     setBusy(verb);
@@ -1490,7 +1498,11 @@ function RunControls({
     setBusy(dialog.verb);
     setError(null);
     try {
-      await confirmRunControl(dialog.conversationId, dialog.proposal);
+      // Binds the proposal to this verb and run, and reads the status the
+      // confirm call returns -- both throw rather than reporting a control as
+      // accepted when it was refused, rejected, or never applied. The local
+      // "accepted" callbacks below run only once the command actually landed.
+      await confirmRunControl(dialog.verb, runId, dialog.conversationId, dialog.proposal);
       if (dialog.verb === "pause") onPauseAccepted();
       else if (dialog.verb === "resume") onResumeAccepted();
       else {
@@ -1507,6 +1519,19 @@ function RunControls({
 
   const reasonText = (code: ControlReasonCode | null) =>
     code ? t(`controls.reason.${code}`) : null;
+
+  // Every offered-but-disabled control states its refusal in text, not only in
+  // a tooltip — a refusal the reader has to hover to discover is not a legible
+  // one. Deduplicated by code because the common case is several controls
+  // refusing for the same reason, and repeating one sentence three times reads
+  // as three separate problems.
+  const refusals = Array.from(
+    new Set(
+      [pauseState, resumeState, steerState]
+        .filter((state) => state.offered && state.disabled && state.reasonCode !== null)
+        .map((state) => state.reasonCode as ControlReasonCode),
+    ),
+  );
 
   return (
     <div
@@ -1552,14 +1577,15 @@ function RunControls({
             {t("controls.steer")}
           </button>
         )}
-        {pauseState.disabled && pauseState.reasonCode && (
+        {refusals.map((code) => (
           <span
-            data-testid="run-controls-pause-reason"
+            key={code}
+            data-testid={`run-controls-reason-${code}`}
             className="text-[length:var(--t-xs)] text-content-muted"
           >
-            {reasonText(pauseState.reasonCode)}
+            {reasonText(code)}
           </span>
-        )}
+        ))}
       </div>
 
       {steerOpen && steerState.offered && (
@@ -1585,25 +1611,50 @@ function RunControls({
       {dialog && (
         <div
           data-testid="run-controls-confirm"
-          className="flex flex-wrap items-center gap-2 rounded border border-edge bg-surface-overlay px-2 py-1.5 text-[length:var(--t-xs)] text-content-secondary"
+          className="flex flex-col gap-1 rounded border border-edge bg-surface-overlay px-2 py-1.5 text-[length:var(--t-xs)] text-content-secondary"
         >
-          <span>{t(`controls.confirm.${dialog.verb}`)}</span>
-          <button
-            type="button"
-            disabled={busy !== null}
-            onClick={() => void confirmDialog()}
-            className="rounded border border-edge px-2 py-0.5 text-content-primary transition-colors hover:border-accent/50"
+          <div className="flex flex-wrap items-center gap-2">
+            <span>{t(`controls.confirm.${dialog.verb}`)}</span>
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => void confirmDialog()}
+              className="rounded border border-edge px-2 py-0.5 text-content-primary transition-colors hover:border-accent/50"
+            >
+              {t("controls.confirmYes")}
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => setDialog(null)}
+              className="rounded border border-edge px-2 py-0.5 text-content-primary transition-colors hover:border-accent/50"
+            >
+              {t("controls.confirmCancel")}
+            </button>
+          </div>
+          {/* What the proposal would actually do, read off the proposal rather
+              than off the verb that was asked for. The two can disagree: the
+              turn carries a natural-language instruction, so the command that
+              comes back is whichever one the operator model chose, and this
+              line is where a reader sees "Cancel run …" under "Confirm
+              pause?" instead of confirming it blind. Server-supplied text, so
+              it is rendered as-is rather than translated. */}
+          <div
+            data-testid="run-controls-confirm-proposal"
+            className="flex flex-wrap items-baseline gap-2 text-content-muted"
           >
-            {t("controls.confirmYes")}
-          </button>
-          <button
-            type="button"
-            disabled={busy !== null}
-            onClick={() => setDialog(null)}
-            className="rounded border border-edge px-2 py-0.5 text-content-primary transition-colors hover:border-accent/50"
-          >
-            {t("controls.confirmCancel")}
-          </button>
+            {dialog.proposal.commandType && (
+              <code data-testid="run-controls-confirm-command-type" className="font-mono">
+                {dialog.proposal.commandType}
+              </code>
+            )}
+            <span data-testid="run-controls-confirm-summary">{dialog.proposal.summary}</span>
+            {dialog.proposal.target && (
+              <span data-testid="run-controls-confirm-target" className="font-mono">
+                {dialog.proposal.target.kind} {dialog.proposal.target.id}
+              </span>
+            )}
+          </div>
         </div>
       )}
 

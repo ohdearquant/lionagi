@@ -519,7 +519,8 @@
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
-          "still-pausing": "Still finishing in-flight operations."
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-executable-path": "এটি সম্পন্ন করার জন্য এখনও কোনো কমান্ড নেই।"
         }
       }
     },

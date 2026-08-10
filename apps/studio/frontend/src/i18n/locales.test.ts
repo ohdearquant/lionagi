@@ -202,8 +202,11 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 1058 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1058);
+  // 1059 since the run controls gained a reason string for a verb with no
+  // backing command. Translated in all 16 locales rather than copied from
+  // English, so the identity-leak baseline below does not move.
+  it("en.json has 1059 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1059);
   });
 
   it.each(LOCALES.map((l) => l.code))(

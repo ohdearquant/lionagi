@@ -49,7 +49,11 @@ export type ControlReasonCode =
   | "agent-no-pause-seam"
   | "already-pause-requested"
   | "not-paused"
-  | "still-pausing";
+  | "still-pausing"
+  /** No command exists that would carry this verb out, so the control is
+   * shown and refused rather than offered and unable to deliver. See
+   * COMMAND_TYPES_BY_VERB for which verbs are backed. */
+  | "no-executable-path";
 
 export interface ControlState {
   /** Whether the control renders at all. A kind this ADR does not cover
@@ -82,6 +86,34 @@ export type PausePhase = "idle" | "pausing" | "paused";
 export function derivePausePhase(pauseRequested: boolean, runningCount: number): PausePhase {
   if (!pauseRequested) return "idle";
   return runningCount > 0 ? "pausing" : "paused";
+}
+
+/** Whether any command exists that would actually carry this verb out. When
+ * none does, the control is refused before a conversation is ever opened —
+ * the propose step sends a natural-language instruction, so an unbacked verb
+ * does not fail cleanly, it comes back as some other command. Refusing early
+ * is what keeps that substitution from ever reaching a confirm dialog. */
+export function hasExecutablePath(verb: ControlVerb): boolean {
+  return COMMAND_TYPES_BY_VERB[verb].size > 0;
+}
+
+/** Layers the surface-wide fact that a verb has no backing command on top of
+ * whatever the run-state machine below decided.
+ *
+ * Deliberately separate from those state machines rather than folded into
+ * them. Two reasons. It keeps every run-state rule reachable and tested
+ * instead of shadowed by a refusal that currently fires first for every input.
+ * And it makes this refusal WIN over the run-state reasons, which is what the
+ * reader needs: "The run is not paused" on a resume button implies resume will
+ * work once the run pauses, and that is not true of a verb nothing can carry
+ * out. A verb the state machine did not offer at all stays unoffered — this
+ * disables controls, it never adds one.
+ *
+ * The moment a backing command's type is added to COMMAND_TYPES_BY_VERB this
+ * becomes a no-op and the specific run-state reason resurfaces on its own. */
+export function applyExecutablePath(verb: ControlVerb, state: ControlState): ControlState {
+  if (!state.offered || hasExecutablePath(verb)) return state;
+  return offeredState(true, "no-executable-path");
 }
 
 export function pauseControlState(
@@ -215,14 +247,126 @@ export async function proposeRunControl(
   return { conversationId: conversation.id, proposal };
 }
 
+/** Command types that legitimately satisfy each control verb.
+ *
+ * Every set is empty, and that is a finding rather than a placeholder. The
+ * operator's mutating command set is prefill_schedule, launch_playbook,
+ * cancel_run, resume_run and rename_session; none of them pauses a run,
+ * releases a pause gate, or delivers a steering message. `resume_run` is the
+ * trap: it carries command type "resume" and its own docstring says it is a
+ * distinct operation from un-pausing a paused run, so it matches this verb by
+ * name while doing something else.
+ *
+ * A control command therefore rides a natural-language instruction to a model
+ * that has no tool for it, and the nearest available match to "stop this run"
+ * is cancel_run. Until a backing command exists, every proposal returned for a
+ * control verb is the wrong command, and refusing it is the only correct
+ * outcome. Adding the backing command means adding its type here, and the
+ * checks below start passing without further change. */
+const COMMAND_TYPES_BY_VERB: Record<ControlVerb, ReadonlySet<string>> = {
+  pause: new Set(),
+  resume: new Set(),
+  message: new Set(),
+};
+
+/** A returned proposal does not match the control that was requested. Thrown
+ * before anything is confirmed, so the run is never mutated. */
+export class ControlProposalMismatch extends Error {
+  constructor(
+    readonly verb: ControlVerb,
+    readonly proposalCommandType: string,
+    reason: string,
+  ) {
+    super(reason);
+    this.name = "ControlProposalMismatch";
+  }
+}
+
+/** The run a proposal would actually act on, or null when it names none.
+ * `target.id` is the resource the store resolved; `command.session_id` is what
+ * the command itself carries. Either identifies the run, so a proposal is
+ * bound when one of them matches and neither names a different run. */
+function proposalRunIds(proposal: OperatorCommandProposal): string[] {
+  const ids: string[] = [];
+  if (proposal.target?.id) ids.push(proposal.target.id);
+  const fromCommand = proposal.command?.session_id;
+  if (typeof fromCommand === "string" && fromCommand) ids.push(fromCommand);
+  return ids;
+}
+
+/** Checks a returned proposal against the control that asked for it, throwing
+ * rather than returning a boolean so no caller can proceed by ignoring the
+ * result. The proposal arrives from a model round-trip, so neither its command
+ * nor its target is guaranteed to be what was requested — binding them here is
+ * what keeps "confirm pause" from executing some other mutation. */
+export function assertProposalSatisfies(
+  verb: ControlVerb,
+  runId: string,
+  proposal: OperatorCommandProposal,
+  /** The command types that satisfy `verb`. Defaults to the table above, which
+   * is empty for every verb today — meaning every call refuses at the first
+   * check, and a test asserting any of the later refusals would pass no matter
+   * what this function did with run ids. Passing a set explicitly is what keeps
+   * each rule here separately falsifiable, and is what a backing command's own
+   * tests use before its type is added to the table. */
+  allowed: ReadonlySet<string> = COMMAND_TYPES_BY_VERB[verb],
+): void {
+  const commandType = proposal.commandType ?? "";
+  if (!allowed.has(commandType)) {
+    throw new ControlProposalMismatch(
+      verb,
+      commandType,
+      `Refusing to confirm: asked to ${verb} this run, but the proposed command is "${commandType || "unknown"}".`,
+    );
+  }
+  const runIds = proposalRunIds(proposal);
+  if (runIds.length === 0) {
+    throw new ControlProposalMismatch(
+      verb,
+      commandType,
+      "Refusing to confirm: the proposed command does not name the run it would act on.",
+    );
+  }
+  const other = runIds.find((id) => id !== runId);
+  if (other) {
+    throw new ControlProposalMismatch(
+      verb,
+      commandType,
+      `Refusing to confirm: the proposed command targets run ${other}, not this run.`,
+    );
+  }
+}
+
+/** Throws unless the confirm call reported the command as actually applied.
+ *
+ * The status field is load-bearing: the API reports "failed", "conflict" and
+ * "expired" in a 200 body rather than by raising, so a caller that only
+ * catches thrown errors reports every one of those as an accepted control.
+ * "executing" is not success either — the command has not landed yet, and
+ * treating it as accepted is what makes a control look applied while it is
+ * still in flight. */
+export function assertCommandApplied(verb: ControlVerb, result: OperatorProposalResult): void {
+  if (result.status === "succeeded") return;
+  const detail = result.error?.message ?? result.status;
+  throw new Error(`The ${verb} command was not applied: ${detail}`);
+}
+
+/** Confirms a control proposal after binding it to the verb and run that were
+ * requested, and after reading the result the confirm call returns. Both
+ * checks throw rather than returning a value a caller can ignore. */
 export async function confirmRunControl(
+  verb: ControlVerb,
+  runId: string,
   conversationId: string,
   proposal: OperatorCommandProposal,
 ): Promise<OperatorProposalResult> {
-  return confirmOperatorProposal(
+  assertProposalSatisfies(verb, runId, proposal);
+  const result = await confirmOperatorProposal(
     conversationId,
     proposal.id,
     proposal.commandHash,
     proposal.target?.version ?? null,
   );
+  assertCommandApplied(verb, result);
+  return result;
 }

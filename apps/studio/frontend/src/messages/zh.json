@@ -519,7 +519,8 @@
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
-          "still-pausing": "Still finishing in-flight operations."
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-executable-path": "目前还没有可以执行此操作的命令。"
         }
       }
     },

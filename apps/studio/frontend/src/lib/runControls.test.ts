@@ -40,6 +40,11 @@ describe("lib/runControls — derivePausePhase (the pausing-vs-paused window)", 
   });
 });
 
+// The state machines below decide from the RUN's state. Whether a verb has a
+// command behind it at all is a separate fact about our command surface, and
+// applyExecutablePath (tested further down) layers it on top. Keeping them
+// apart is what lets these run-state rules stay reachable while every verb is
+// unbacked.
 describe("lib/runControls — pauseControlState", () => {
   it("is offered and enabled for a running flow with no pause requested", async () => {
     const { pauseControlState } = await import("./runControls");
@@ -148,6 +153,180 @@ describe("lib/runControls — steerControlState (row 8: steer offered on an agen
   });
 });
 
+describe("lib/runControls — hasExecutablePath / applyExecutablePath", () => {
+  // Tripwire. Every one of the operator's mutating commands is accounted for
+  // (prefill_schedule, launch_playbook, cancel_run, resume_run,
+  // rename_session) and none of them pauses a run, releases a pause gate, or
+  // delivers a steering message. When a backing command lands, its type goes
+  // into COMMAND_TYPES_BY_VERB, this test fails, and whoever added it is
+  // pointed straight at the refusals below that have to be revisited.
+  it("reports no executable path for any of the three verbs", async () => {
+    const { hasExecutablePath } = await import("./runControls");
+    expect(hasExecutablePath("pause")).toBe(false);
+    expect(hasExecutablePath("resume")).toBe(false);
+    expect(hasExecutablePath("message")).toBe(false);
+  });
+
+  it("disables an offered control and states the reason as no-executable-path", async () => {
+    const { applyExecutablePath } = await import("./runControls");
+    expect(
+      applyExecutablePath("pause", { offered: true, disabled: false, reasonCode: null }),
+    ).toEqual({ offered: true, disabled: true, reasonCode: "no-executable-path" });
+  });
+
+  // The run-state reason implies a counterfactual that is not true: "the run
+  // is not paused" tells the reader resume will work once it pauses. It will
+  // not, so this refusal has to win rather than defer to the more specific
+  // reason.
+  it("overrides a run-state reason that would imply the control works in another state", async () => {
+    const { applyExecutablePath, resumeControlState } = await import("./runControls");
+    const runState = resumeControlState("flow", false, "idle");
+    expect(runState.reasonCode).toBe("not-paused");
+    expect(applyExecutablePath("resume", runState).reasonCode).toBe("no-executable-path");
+  });
+
+  it("never turns an unoffered control into an offered one", async () => {
+    const { applyExecutablePath, resumeControlState } = await import("./runControls");
+    // Resume is not a listed agent capability — it is hidden, and a refusal
+    // about our command surface must not surface it.
+    expect(resumeControlState("agent", false, "idle").offered).toBe(false);
+    expect(applyExecutablePath("resume", resumeControlState("agent", false, "idle")).offered).toBe(
+      false,
+    );
+  });
+});
+
+describe("lib/runControls — assertProposalSatisfies binds the proposal to what was asked for", () => {
+  const proposalOf = (over: Record<string, unknown> = {}) =>
+    ({
+      id: "prop-1",
+      commandType: "pause",
+      command: { session_id: "run-abc123" },
+      commandHash: "hash-1",
+      risk: "mutate" as const,
+      summary: "Pause run-abc123",
+      idempotencyKey: "idem-1",
+      expiresAt: 0,
+      ...over,
+    }) as never;
+
+  // Every assertion here passes an explicit allow-set. With the real table
+  // empty, the command-type check refuses first for every input, so a test
+  // relying on the default would pass without the run-id rules below existing
+  // at all.
+  const ALLOWS_PAUSE = new Set(["pause"]);
+
+  it("accepts a proposal whose command type is allowed and whose target is this run", async () => {
+    const { assertProposalSatisfies } = await import("./runControls");
+    expect(() =>
+      assertProposalSatisfies(
+        "pause",
+        "run-abc123",
+        proposalOf({ target: { kind: "session", id: "run-abc123", version: "3" } }),
+        ALLOWS_PAUSE,
+      ),
+    ).not.toThrow();
+  });
+
+  // The substitution this whole check exists for: the turn asks in prose for
+  // a pause, and the nearest tool the operator has is cancel_run.
+  it("refuses a cancel proposal returned for a pause request", async () => {
+    const { assertProposalSatisfies, ControlProposalMismatch } = await import("./runControls");
+    expect(() =>
+      assertProposalSatisfies(
+        "pause",
+        "run-abc123",
+        proposalOf({ commandType: "cancel", summary: "Cancel run run-abc123" }),
+        ALLOWS_PAUSE,
+      ),
+    ).toThrow(ControlProposalMismatch);
+  });
+
+  it("refuses a proposal carrying no command type at all", async () => {
+    const { assertProposalSatisfies } = await import("./runControls");
+    // An older server omits commandType from the proposal frame. Unverifiable
+    // is not a match.
+    expect(() =>
+      assertProposalSatisfies(
+        "pause",
+        "run-abc123",
+        proposalOf({ commandType: undefined }),
+        ALLOWS_PAUSE,
+      ),
+    ).toThrow(/unknown/);
+  });
+
+  it("refuses a proposal that names no run at all", async () => {
+    const { assertProposalSatisfies } = await import("./runControls");
+    expect(() =>
+      assertProposalSatisfies("pause", "run-abc123", proposalOf({ command: {} }), ALLOWS_PAUSE),
+    ).toThrow(/does not name the run/);
+  });
+
+  it("refuses a proposal that targets a different run", async () => {
+    const { assertProposalSatisfies } = await import("./runControls");
+    expect(() =>
+      assertProposalSatisfies(
+        "pause",
+        "run-abc123",
+        proposalOf({ command: { session_id: "run-other" } }),
+        ALLOWS_PAUSE,
+      ),
+    ).toThrow(/run-other/);
+  });
+
+  it("refuses when target and command name different runs, even if one of them is this run", async () => {
+    const { assertProposalSatisfies } = await import("./runControls");
+    expect(() =>
+      assertProposalSatisfies(
+        "pause",
+        "run-abc123",
+        proposalOf({ target: { kind: "session", id: "run-other", version: "3" } }),
+        ALLOWS_PAUSE,
+      ),
+    ).toThrow(/run-other/);
+  });
+});
+
+describe("lib/runControls — assertCommandApplied reads the status the confirm call returns", () => {
+  it("passes only on succeeded", async () => {
+    const { assertCommandApplied } = await import("./runControls");
+    expect(() =>
+      assertCommandApplied("pause", { proposalId: "p", status: "succeeded" } as never),
+    ).not.toThrow();
+  });
+
+  // These arrive in a 200 body, not as a raised error, so a caller that only
+  // catches throws treats every one of them as an accepted control.
+  it.each(["failed", "conflict", "expired"] as const)("throws on %s", async (status) => {
+    const { assertCommandApplied } = await import("./runControls");
+    expect(() => assertCommandApplied("pause", { proposalId: "p", status } as never)).toThrow(
+      /was not applied/,
+    );
+  });
+
+  // Not a failure, but not success either: the command has not landed, and
+  // reporting it as accepted is what makes a control look applied while it is
+  // still in flight.
+  it("throws on executing, which is in-flight rather than applied", async () => {
+    const { assertCommandApplied } = await import("./runControls");
+    expect(() =>
+      assertCommandApplied("resume", { proposalId: "p", status: "executing" } as never),
+    ).toThrow(/was not applied/);
+  });
+
+  it("surfaces the server's own error message when it sends one", async () => {
+    const { assertCommandApplied } = await import("./runControls");
+    expect(() =>
+      assertCommandApplied("message", {
+        proposalId: "p",
+        status: "failed",
+        error: { code: "gone", message: "run already exited", retryable: false },
+      } as never),
+    ).toThrow(/run already exited/);
+  });
+});
+
 describe("lib/runControls — controlInstructionText", () => {
   it("names the run id explicitly so the operator does not have to disambiguate 'this run'", async () => {
     const { controlInstructionText } = await import("./runControls");
@@ -217,8 +396,13 @@ describe("lib/runControls — proposeRunControl / confirmRunControl route throug
     expect(result.conversationId).toBe("conv-1");
     expect(result.proposal.id).toBe("prop-1");
 
-    await confirmRunControl(result.conversationId, result.proposal);
-    expect(api.confirmOperatorProposal).toHaveBeenCalledWith("conv-1", "prop-1", "hash-1", null);
+    // This proposal carries no commandType, which is what a server predating
+    // the frame change sends. Confirming refuses and — the part that matters —
+    // never reaches the confirm endpoint, so nothing is applied.
+    await expect(
+      confirmRunControl("pause", "run-abc123", result.conversationId, result.proposal),
+    ).rejects.toThrow(/Refusing to confirm/);
+    expect(api.confirmOperatorProposal).not.toHaveBeenCalled();
   });
 
   it("rejects when the turn ends with an error frame instead of a proposal", async () => {
