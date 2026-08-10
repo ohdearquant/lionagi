@@ -322,6 +322,14 @@ function StepNodeComponent({ data, selected, id }: NodeProps<StepNodeData>) {
   // and where a stall becomes visible text rather than only an animation
   // that quietly stops. Independent of reducedMotion/animating: this is the
   // static-equivalent information those two must carry identically.
+  //
+  // A running node with no activity signal falls back to its status word, not
+  // to "waiting". Absence of a signal means we do not know what the node is
+  // doing; it does not mean the node is waiting, and a caption reading
+  // "waiting" beside a node that is visibly running is a false statement about
+  // the run. A queued node genuinely is waiting, so that branch keeps the word.
+  // The status word also keeps the row occupied, which the fixed-height
+  // contract above depends on.
   const activityWord = stalled
     ? "stalled"
     : status === "running"
@@ -329,7 +337,7 @@ function StepNodeComponent({ data, selected, id }: NodeProps<StepNodeData>) {
         ? data.activityDetail
           ? `${ACTIVITY_LABEL[data.activity]}: ${data.activityDetail}`
           : ACTIVITY_LABEL[data.activity]
-        : ACTIVITY_LABEL.waiting
+        : t(STATUS_WORD_KEY[status])
       : status === "queued"
         ? ACTIVITY_LABEL.waiting
         : "";
