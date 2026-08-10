@@ -127,21 +127,25 @@ function useStallState(liveSignalAt: number | null | undefined, isRunning: boole
   return stalled;
 }
 
-// Pulse speed tracks the actual event rate rather than a fixed cadence — a
+// Pulse speed tracks the actual work rate rather than a fixed cadence — a
 // node emitting many events per second reads as busier than one emitting one
-// every few seconds. A sliding 5s window of observed `lastEventAt` values,
+// every few seconds. A sliding 5s window of observed `liveSignalAt` values,
 // entirely local to this node (no cross-node coordination needed).
-function useEventRatePulse(lastEventAt: number | null | undefined): number {
+//
+// Same field as the stall clock and the presence gate, for the same reason:
+// lifecycle events bracket a node's work rather than report on it, so letting
+// them drive the speed would read a node's start as a burst of activity.
+function useEventRatePulse(liveSignalAt: number | null | undefined): number {
   const windowRef = useRef<number[]>([]);
   const [duration, setDuration] = useState(1500);
   useEffect(() => {
-    if (lastEventAt == null) return;
+    if (liveSignalAt == null) return;
     const seen = windowRef.current;
-    seen.push(lastEventAt);
-    const cutoff = lastEventAt - 5000;
+    seen.push(liveSignalAt);
+    const cutoff = liveSignalAt - 5000;
     while (seen.length && seen[0]! < cutoff) seen.shift();
     setDuration(pulseDurationMs(seen.length));
-  }, [lastEventAt]);
+  }, [liveSignalAt]);
   return duration;
 }
 
@@ -298,15 +302,32 @@ function StepNodeComponent({ data, selected }: NodeProps<StepNodeData>) {
   const cardRef = useRef<HTMLDivElement>(null);
   const inViewport = useInViewport(cardRef);
   const stalled = useStallState(data.liveSignalAt, status === "running");
-  const pulseMs = useEventRatePulse(data.lastEventAt);
-  // Every gate ADR-0113 D3 requires, all real signals: actually running,
-  // fresh events (not stalled), a live stream correlation at all
-  // (lastEventAt present — no signal means no animation, never a guess),
-  // on-screen, and not overridden by prefers-reduced-motion. The cap is
-  // applied last, via useAnimationSlot, so a node that already fails one of
-  // these gates never even competes for a slot.
+  const pulseMs = useEventRatePulse(data.liveSignalAt);
+  // Every gate the live-node contract requires, all real signals: actually
+  // running, fresh work (not stalled), a live signal at all, on-screen, and
+  // not overridden by prefers-reduced-motion. The cap is applied last, via
+  // useAnimationSlot, so a node that already fails one of these gates never
+  // even competes for a slot.
+  //
+  // The presence gate reads `liveSignalAt`, not `lastEventAt`, and the two
+  // are not interchangeable here. `lastEventAt` advances on ANY event
+  // including the lifecycle ones that merely bracket a node's work, so a node
+  // fed only NodeStarted satisfies it for as long as it claims to be running
+  // — while `liveSignalAt` stays null, which makes the stall clock answer
+  // "not stalled" (correctly: no stream ever flowed, so none can have
+  // stopped). Gating on `lastEventAt` therefore combined a permanently-true
+  // presence test with a permanently-false stall test, and the pulse asserted
+  // a live stream for nodes that had never reported one. Reading the same
+  // field the stall clock reads keeps the two halves from disagreeing: a node
+  // only pulses while something is actually reporting work, and the moment
+  // that reporting stops the stall clock can end it.
+  //
+  // A running node with no live signal is not hidden by this — the running
+  // dot and the running border rail both draw on `status` alone. It simply
+  // holds still, which is the honest rendering of a node we know is running
+  // and know nothing else about.
   const wantsToAnimate =
-    status === "running" && !stalled && !reducedMotion && inViewport && data.lastEventAt != null;
+    status === "running" && !stalled && !reducedMotion && inViewport && data.liveSignalAt != null;
   const animationGranted = useAnimationSlot(wantsToAnimate);
   const animating = wantsToAnimate && animationGranted;
 

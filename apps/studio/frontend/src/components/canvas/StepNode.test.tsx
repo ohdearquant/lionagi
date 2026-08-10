@@ -294,11 +294,57 @@ describe("StepNode — a stall timeout returns the node to a static 'stalled' st
   });
 });
 
+describe("StepNode — a node with no live signal does not animate as though it had one", () => {
+  it("does not pulse a running node whose only events are lifecycle ones", () => {
+    // The production shape today: NodeStarted arrives and nothing follows it
+    // for the node's whole working life. That sets lastEventAt but not
+    // liveSignalAt, so the stall clock has nothing to arm and correctly never
+    // fires. Animating on lastEventAt combined those two into a pulse that
+    // could never be stopped by anything — a card asserting a live stream it
+    // had never been told about, for as long as it claimed to be running.
+    const now = Date.now();
+    renderNode({
+      execStatus: "running",
+      lastEventAt: now,
+      liveSignalAt: null,
+      activity: "thinking",
+    });
+
+    const card = container.firstElementChild as HTMLElement;
+    expect(isAnimating(card)).toBe(false);
+    // Still legibly running: the pulse is what goes away, not the node's
+    // state. The running dot draws off execStatus alone, so it is present and
+    // simply static, and the activity row still reports what NodeStarted told
+    // us the node is doing.
+    expect(card.querySelector("span.rounded-full")).not.toBeNull();
+    expect(activityText()).toContain("thinking");
+  });
+
+  it("pulses the same node once a real work signal arrives", () => {
+    // The must-MATCH half. Without this, the expectation above would be
+    // satisfied by the animation being broken outright rather than by the
+    // gate discriminating, and nothing here would notice.
+    const now = Date.now();
+    renderNode({
+      execStatus: "running",
+      lastEventAt: now,
+      liveSignalAt: now,
+      activity: "streaming",
+    });
+
+    expect(isAnimating(container.firstElementChild as HTMLElement)).toBe(true);
+  });
+});
+
 describe("StepNode — prefers-reduced-motion carries the same information, not less", () => {
   it("shows the identical activity word and counter whether or not motion is reduced", () => {
     const props: Partial<StepNodeData> = {
       execStatus: "running",
       lastEventAt: Date.now(),
+      // A node mid tool-call has reported work, so it carries a live signal —
+      // which is what lets it animate at all. Without it this test would
+      // compare two static cards and its pulse assertions would mean nothing.
+      liveSignalAt: Date.now(),
       activity: "tool",
       activityDetail: "run_tests",
       counter: 128,
@@ -361,7 +407,12 @@ describe("StepNode — the concurrent-animation cap keeps a big canvas responsiv
     const now = Date.now();
     const entries = Array.from({ length: total }, (_, i) => ({
       id: `n${i}`,
-      data: { execStatus: "running" as const, lastEventAt: now, activity: "thinking" as const },
+      data: {
+        execStatus: "running" as const,
+        lastEventAt: now,
+        liveSignalAt: now,
+        activity: "streaming" as const,
+      },
     }));
     renderNodes(entries);
 
@@ -405,11 +456,20 @@ function renderTwoCanvases(
   });
 }
 
+// Nodes that are actually streaming, so every animation gate but the cap is
+// satisfied and the cap is the only thing these tests can be measuring. A
+// lifecycle-only node (no liveSignalAt) never competes for a slot at all,
+// which would let a budget test pass while animating nothing.
 function runningNodes(count: number, prefix = "n") {
   const now = Date.now();
   return Array.from({ length: count }, (_, i) => ({
     id: `${prefix}${i}`,
-    data: { execStatus: "running" as const, lastEventAt: now, activity: "thinking" as const },
+    data: {
+      execStatus: "running" as const,
+      lastEventAt: now,
+      liveSignalAt: now,
+      activity: "streaming" as const,
+    },
   }));
 }
 
@@ -479,7 +539,17 @@ describe("StepNode — nothing animates outside the viewport", () => {
     }
     vi.stubGlobal("IntersectionObserver", NotIntersectingObserver);
 
-    renderNode({ execStatus: "running", lastEventAt: Date.now(), activity: "thinking" });
+    // Every other gate deliberately passes — a streaming node with a live
+    // signal — so the off-screen reading is the only thing that can be
+    // stopping the pulse. A fixture that failed some other gate would satisfy
+    // this expectation without the viewport logic doing anything.
+    const now = Date.now();
+    renderNode({
+      execStatus: "running",
+      lastEventAt: now,
+      liveSignalAt: now,
+      activity: "streaming",
+    });
     const card = container.firstElementChild as HTMLElement;
     expect(isAnimating(card)).toBe(false);
   });
@@ -495,7 +565,13 @@ describe("StepNode — nothing animates outside the viewport", () => {
     }
     vi.stubGlobal("IntersectionObserver", IntersectingObserver);
 
-    renderNode({ execStatus: "running", lastEventAt: Date.now(), activity: "thinking" });
+    const now = Date.now();
+    renderNode({
+      execStatus: "running",
+      lastEventAt: now,
+      liveSignalAt: now,
+      activity: "streaming",
+    });
     const card = container.firstElementChild as HTMLElement;
     expect(isAnimating(card)).toBe(true);
   });
