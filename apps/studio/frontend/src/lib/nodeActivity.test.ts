@@ -113,11 +113,12 @@ describe("liveSignalAt separates silence-by-design from a dead stream", () => {
 
   it("advances on a tool call and on a counter, not just on text", () => {
     expect(
-      deriveNodeActivity([ev("ToolCallStarted", 42, { name: "w", tool_name: "grep" })]).liveSignalAt,
+      deriveNodeActivity([ev("ToolCallStarted", 42, { name: "w", tool_name: "grep" })])
+        .liveSignalAt,
     ).toBe(42);
-    expect(deriveNodeActivity([ev("Whatever", 77, { name: "w", token_count: 12 })]).liveSignalAt).toBe(
-      77,
-    );
+    expect(
+      deriveNodeActivity([ev("Whatever", 77, { name: "w", token_count: 12 })]).liveSignalAt,
+    ).toBe(77);
   });
 });
 
