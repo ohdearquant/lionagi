@@ -24,9 +24,15 @@ export const NODE_WIDTH = 210;
 // a literal, because a literal can only ever be checked against itself: a test
 // asserting the card's style height equals the constant passes whatever the
 // constant says, including when the content needs more room than it grants.
-// Carried as a literal it was 88 while the card drew 99 worth of rows, so a
+// Carried as a literal it was 88 while the card drew 98 worth of rows, so a
 // running node — the widest border, and the only kind with live text to show —
 // overflowed its own border by the preview's second line.
+//
+// The sum below comes to 99, one more than a browser measures, because the name
+// row is reserved from its type scale (ceil of 12px at 1.375 leading = 17) where
+// the browser lays it out at 16. Leave it: over-reserving costs a pixel of empty
+// card, under-reserving clips text, and the drawn height depends on font metrics
+// that are not the same on every platform.
 
 // The type scale these rows are set in (theme.css --t-xs / --t-sm) and the two
 // Tailwind leading ratios used on them. Duplicated from CSS by necessity: the
