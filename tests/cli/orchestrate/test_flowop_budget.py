@@ -16,6 +16,7 @@ from lionagi.cli.orchestrate.flow import (
     _build_budget_preambles,
     _format_budget_preamble,
     critical_path_depth,
+    dependency_depths,
     max_sequential_depth,
     op_budget_share,
 )
@@ -297,6 +298,112 @@ def test_preamble_numbers_the_ops_from_one():
     preambles = _build_budget_preambles(600, [[], [0], [1]], 3, 0, time.time() + 600)
     assert "op 1 of 3" in preambles[0]
     assert "op 3 of 3" in preambles[2]
+
+
+# ── The share and the deadline have to describe the same thing ─────────────
+#
+# Measured on a real 9-op run: every op got the identical sentence, "your share
+# is approximately 1800 seconds (until 15:31:32 UTC)", while the run began at
+# 13:59:57. For a wave-1 op those two halves are 1800s and 5400s apart — the
+# same sentence naming a budget and a deadline three times its size. The
+# >70%-switch-to-writing rule keys off the share, so a wave-1 op begins drafting
+# a third of the way into the time it actually has.
+#
+# These fix the arithmetic in the text, so they compute against a pinned epoch
+# rather than `time.time()`: a test that recomputes the expected instant the
+# same way the code does would agree with any answer the code gave.
+
+_EPOCH = 1_786_000_000.0  # a fixed instant, so the expected strings are literals
+
+
+def _deadlines_in(preamble: str) -> list[str]:
+    return re.findall(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", preamble)
+
+
+def test_a_first_wave_op_is_given_its_own_waves_deadline_not_the_flows():
+    """The defect, stated directly: 1800s and an instant 5400s away.
+
+    Three waves of 1800s each. The first op's own deadline must land one share
+    in, and the flow's end must still be present but named as the flow's.
+    """
+    flow_end = _EPOCH + 5400
+    preambles = _build_budget_preambles(5400, [[], [], [0, 1], [2]], 4, 0, flow_end)
+    first = preambles[0]
+
+    assert _seconds_in(first) == 1800
+    assert "wave 1 of 3" in first
+    # _EPOCH + 1800, not _EPOCH + 5400.
+    assert "runs until 2026-08-06T07:36:40 UTC" in first
+    assert "flow as a whole ends at 2026-08-06T08:36:40 UTC" in first
+    assert "that later time is not your deadline" in first
+
+
+def test_each_wave_gets_a_different_deadline():
+    """Under the old text every preamble was identical but for the op number.
+
+    So this is the assertion that separates the two versions: three waves must
+    produce three distinct op deadlines, and ops sharing a wave must share one.
+    """
+    flow_end = _EPOCH + 5400
+    p = _build_budget_preambles(5400, [[], [], [0, 1], [2]], 4, 0, flow_end)
+    own = [_deadlines_in(p[i])[0] for i in range(4)]
+
+    assert own[0] == own[1], "ops 1 and 2 are both in wave 1"
+    assert len({own[0], own[2], own[3]}) == 3, f"waves collapsed to one deadline: {own}"
+    assert own[0] < own[2] < own[3], f"later waves must fall later: {own}"
+
+
+def test_the_last_waves_deadline_is_the_flows_deadline():
+    """The chain of per-wave deadlines has to end where the flow does.
+
+    If it landed short, the final op would be told to finish before the flow
+    needs it; if it overran, the wave deadlines would promise time the flow has
+    already spent.
+    """
+    flow_end = _EPOCH + 5400
+    p = _build_budget_preambles(5400, [[], [], [0, 1], [2]], 4, 0, flow_end)
+    own, flow = _deadlines_in(p[3])
+    assert own == flow == "2026-08-06T08:36:40"
+
+
+def test_a_capped_run_names_no_wave_because_it_has_none_to_name():
+    """A cap forcing more sequence than the chain makes the wave unknowable.
+
+    Four independent ops through one slot run one after another, but which op
+    goes when depends on nothing in the plan. Naming a wave here would hand
+    three of the four a deadline they start out already past, so the text says
+    the share is counted from the start it cannot predict.
+    """
+    flow_end = _EPOCH + 900
+    p = _build_budget_preambles(900, [[], [], [], []], 4, 1, flow_end)
+    text = p[0]
+
+    assert "wave" not in text.split("[/BUDGET]")[0].split("- Pace")[0]
+    assert "counted from when you start" in text
+    assert "that is the flow's deadline, not yours" in text
+    assert _deadlines_in(text) == ["2026-08-06T07:21:40"], (
+        "a run with no derivable wave should name one instant, the flow's"
+    )
+
+
+def test_an_uncapped_plan_still_names_waves_when_the_cap_is_slack():
+    """The guard keys on whether the cap BINDS, not on whether one was given.
+
+    A cap of four over a four-op plan changes no schedule, so the waves are
+    still the plan's and must still be named. A guard written as "any cap at
+    all" would silence them here.
+    """
+    p = _build_budget_preambles(900, [[], [0], [1]], 3, 4, _EPOCH + 900)
+    assert "wave 1 of 3" in p[0]
+    assert "wave 3 of 3" in p[2]
+
+
+def test_dependency_depths_places_each_op_in_its_own_wave():
+    # Two roots, a join, then a tail: depths 1, 1, 2, 3.
+    assert dependency_depths([[], [], [0, 1], [2]]) == [1, 1, 2, 3]
+    # Unequal branches: the join takes the longer one.
+    assert dependency_depths([[], [0], [1], [0], [2, 3]]) == [1, 2, 3, 2, 4]
+    assert dependency_depths([]) == []
 
 
 def test_no_preambles_without_a_total_budget():

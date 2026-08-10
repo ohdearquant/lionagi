@@ -392,10 +392,33 @@ async def _finalize_applied(db, control_id: str, claim: str | None = None) -> st
     return _CONTROL_UNSTAMPED
 
 
+# An op is told two numbers, and they have to agree. The share is per wave;
+# the flow's end is not. Handing every op "N seconds (until <flow end>)" put a
+# wave-1 op in a plan three waves deep in front of a sentence whose two halves
+# were three times apart, and the >70%-switch-to-writing rule keys off the
+# share, so it started drafting when it had used a third of the time it really
+# had. Which number an op paced against came down to which half it believed.
+_BUDGET_OPENING_WAVED = """\
+You are op {op_index} of {num_ops} in this flow, in wave {wave} of {waves}. \
+Your share of the total budget is approximately {seconds} seconds, which on \
+this plan runs until {op_deadline_iso} UTC. The flow as a whole ends at \
+{deadline_iso} UTC; that later time is not your deadline."""
+
+# When a concurrency cap forces more ops into sequence than the dependency
+# chain does, an op's wave stops being a property of the plan: it depends on
+# who finishes first, which is not known when this text is written. Saying so
+# is better than naming a wave that the schedule may not honour, because an op
+# handed a deadline it starts out already past has no good move.
+_BUDGET_OPENING_QUEUED = """\
+You are op {op_index} of {num_ops} in this flow. Your share of the total \
+budget is approximately {seconds} seconds, counted from when you start; ops \
+queue for capacity in this run, so when that is cannot be known in advance. \
+The flow as a whole ends at {deadline_iso} UTC; that is the flow's deadline, \
+not yours."""
+
 _BUDGET_PREAMBLE_TEMPLATE = """\
 [BUDGET]
-You are op {op_index} of {num_ops} in this flow. Your share of the total \
-budget is approximately {seconds} seconds (until {deadline_iso} UTC).
+{opening}
 - Pace your reasoning accordingly.
 - Prefer "good enough by the deadline" over "ideal but late".
 - If you find yourself >70% through your budget and still in research, \
@@ -407,6 +430,30 @@ skip them.
 [/BUDGET]
 
 """
+
+
+def dependency_depths(dep_indices: list[list[int]]) -> list[int]:
+    """How far down the dependency chain each op sits, one-based, per op.
+
+    An op's depth is the wave it can first run in when nothing caps
+    concurrency: everything at depth 1 starts together, depth 2 waits for one
+    of them, and so on.
+
+    Dependencies point backwards (op i may only depend on ops before it), so a
+    single forward pass is enough. Cycles are therefore not reachable here, and
+    an entry pointing outside the plan is ignored rather than raising: a bad
+    index should not be able to take down a run over a budget hint.
+
+    The longest chain and the per-op depths come from one traversal on purpose.
+    They are the same walk, and two copies of it would be free to disagree
+    about a plan while each looked right on its own tests.
+    """
+    depths = [1] * len(dep_indices)
+    for i, deps in enumerate(dep_indices):
+        for j in deps:
+            if 0 <= j < i:
+                depths[i] = max(depths[i], depths[j] + 1)
+    return depths
 
 
 def critical_path_depth(dep_indices: list[list[int]]) -> int:
@@ -424,20 +471,10 @@ def critical_path_depth(dep_indices: list[list[int]]) -> int:
     together with what the cap forces. This function is exact only when nothing
     caps concurrency, which is the common case and why it is still worth
     computing directly.
-
-    Dependencies point backwards (op i may only depend on ops before it), so a
-    single forward pass is enough. Cycles are therefore not reachable here, and
-    an entry pointing outside the plan is ignored rather than raising: a bad
-    index should not be able to take down a run over a budget hint.
     """
     if not dep_indices:
         return 0
-    depths = [1] * len(dep_indices)
-    for i, deps in enumerate(dep_indices):
-        for j in deps:
-            if 0 <= j < i:
-                depths[i] = max(depths[i], depths[j] + 1)
-    return max(depths)
+    return max(dependency_depths(dep_indices))
 
 
 def max_sequential_depth(dep_indices: list[list[int]], num_ops: int, max_concurrent: int) -> int:
@@ -532,12 +569,26 @@ def _build_budget_preambles(
     if not total_budget or num_ops <= 0:
         return {}
     share = op_budget_share(total_budget, dep_indices, num_ops, max_concurrent)
+    waves = max_sequential_depth(dep_indices, num_ops, max_concurrent)
+
+    # An op's wave is a property of the plan only while the dependency chain is
+    # what forces ops into sequence. Once a concurrency cap forces more than the
+    # chain does, where an op lands depends on who finishes first, so there is
+    # no wave to name and the preamble says so instead of guessing one.
+    depths: list[int] = []
+    if len(dep_indices) == num_ops and waves > 0 and waves == critical_path_depth(dep_indices):
+        depths = dependency_depths(dep_indices)
+
+    flow_start = deadline_epoch - total_budget
     return {
         i: _format_budget_preamble(
             op_index=i + 1,
             num_ops=num_ops,
             op_budget_seconds=share,
             deadline_epoch=deadline_epoch,
+            wave=depths[i] if depths else None,
+            waves=waves if depths else None,
+            op_deadline_epoch=(flow_start + depths[i] * share) if depths else None,
         )
         for i in range(num_ops)
     }
@@ -548,17 +599,35 @@ def _format_budget_preamble(
     num_ops: int,
     op_budget_seconds: int,
     deadline_epoch: float,
+    wave: int | None = None,
+    waves: int | None = None,
+    op_deadline_epoch: float | None = None,
 ) -> str:
+    """One op's budget preamble.
+
+    Without a wave the opening states the share alone and names the flow's end
+    as the flow's, since that is all that can be said honestly. That is also
+    the safe default for a caller that has no schedule to hand over.
+    """
     import datetime
 
-    deadline_dt = datetime.datetime.fromtimestamp(deadline_epoch, tz=datetime.timezone.utc)
-    deadline_iso = deadline_dt.strftime("%Y-%m-%dT%H:%M:%S")
-    return _BUDGET_PREAMBLE_TEMPLATE.format(
+    def _iso(epoch: float) -> str:
+        dt = datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+    deadline_iso = _iso(deadline_epoch)
+    waved = wave is not None and waves is not None and op_deadline_epoch is not None
+    template = _BUDGET_OPENING_WAVED if waved else _BUDGET_OPENING_QUEUED
+    opening = template.format(
         op_index=op_index,
         num_ops=num_ops,
         seconds=op_budget_seconds,
         deadline_iso=deadline_iso,
+        wave=wave,
+        waves=waves,
+        op_deadline_iso=_iso(op_deadline_epoch) if op_deadline_epoch is not None else "",
     )
+    return _BUDGET_PREAMBLE_TEMPLATE.format(opening=opening)
 
 
 async def _resolve_invocation_terminal_flow(
