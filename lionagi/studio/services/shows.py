@@ -42,16 +42,10 @@ def _play_dirs(show_dir: Path) -> list[Path]:
 def _live_play_meta(
     play_dir: Path, on_disk: bool
 ) -> tuple[dict[str, Any] | None, bool, str | None]:
-    """Read a DB-known play's live ``_meta.json``.
-
-    Returns ``(meta, unavailable, error)``. A DB row only exists for a play
-    whose directory was present at import time, so ``on_disk`` being False
-    now means that directory has since disappeared (deleted or moved) -
-    that is unavailable, not "never started". Likewise a ``_meta.json`` that
-    exists but fails to parse (e.g. truncated by a crashed writer) is
-    unavailable, not empty. A play directory that legitimately has no
-    ``_meta.json`` yet (never started) is a normal, available empty read.
-    """
+    """Read a DB-known play's live ``_meta.json``. Returns
+    ``(meta, unavailable, error)``: a directory gone since import, or a
+    ``_meta.json`` that fails to parse, is unavailable -- distinct from a
+    play directory with no `_meta.json` yet, which is a normal empty read."""
     if not on_disk:
         return None, True, "play directory not found on disk"
     read = _read_json_checked(play_dir / "_meta.json")
@@ -222,16 +216,9 @@ async def get_show(topic: str) -> dict[str, Any] | None:
                 "merge_sha": p["merge_sha"],
                 "status": p["status"],
             }
-            # The plays table is populated once by import_shows() and never
-            # resynced, so its status can only be as fresh as the last
-            # import. _meta.json is written live by whatever is actually
-            # running the play, so where a play exists on disk its meta
-            # (status in particular) wins; the DB row still supplies fields
-            # disk doesn't carry (worktree, session linkage, merge info).
-            # When the live read is unavailable (directory gone, file
-            # unreadable/corrupt) the DB status is stale by definition and
-            # must not be presented as current - live_state carries that
-            # instead of silently falling back to it.
+            # Disk meta wins over the DB row when available (see studio.md);
+            # live_unavailable signals when it isn't, rather than falling
+            # back to a DB status that is stale by definition.
             disk_meta, live_unavailable, live_error = _live_play_meta(play_dir, on_disk)
             meta = {**db_meta, **disk_meta} if disk_meta else db_meta
 
@@ -352,26 +339,12 @@ async def _all_show_topics() -> set[str]:
 async def list_gated_plays() -> list[dict[str, Any]]:
     """Every play, across every show, currently sitting in the ``gated``
     lifecycle status — read live (disk status winning over any DB row for
-    the same play), the same merge ``get_show()`` performs.
-
-    The ``plays`` table is populated once by ``import_shows()`` and never
-    resynced afterward (a show already in the DB is skipped on re-import),
-    so it cannot be the source of truth for a live alert queue: a play
-    directory created after import has no DB row, a play rewritten on disk
-    after import has a stale DB row, and a show never imported has no DB
-    row at all. Enumerating every show directory on disk (unioned with
-    every DB topic) and going through ``get_show()`` per show — which gives
-    disk precedence over the DB for any play present in both — answers this
-    from the same resolution step ``get_show()`` uses, so the two can never
-    disagree about the same play.
-
-    A DB-known play whose live state cannot currently be read (its
-    directory disappeared, or its metadata file is unreadable) is included
-    here too, tagged ``live_state: "unavailable"``, rather than either
-    silently dropping it or presenting the stale imported status as if it
-    were current. Whether that play is actually gated cannot be established
-    from this queue - it is a "look here" entry, not a gate verdict.
-    """
+    the same play), the same merge ``get_show()`` performs, so the two can
+    never disagree. A DB-known play whose live state cannot currently be
+    read is included too, tagged ``live_state: "unavailable"``, rather than
+    dropped or shown with a stale imported status; whether it's actually
+    gated cannot be established from this queue, so it is a "look here"
+    entry, not a gate verdict. See studio.md."""
     out: list[dict[str, Any]] = []
     for topic in sorted(await _all_show_topics()):
         show = await get_show(topic)

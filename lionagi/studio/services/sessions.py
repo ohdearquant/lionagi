@@ -321,15 +321,12 @@ async def list_sessions(
             "artifacts_path": row["artifacts_path"],
             "source_kind": row["source_kind"] or "live",
             "artifact_contract_json": _parse_json_col(row["artifact_contract_json"]),
-            # Resolved, not passed through: a terminal session that was contracted
-            # and holds no verdict reports that absence here exactly as the detail
-            # route does. Returning the raw column instead would give the two
-            # routes different answers for the same session, which is the
-            # conflation this state exists to remove.
-            #
-            # artifacts_path is withheld deliberately, and the row does carry one.
-            # Supplying it would enable the live-progress arm, which reads the
-            # artifacts directory per row -- a filesystem walk for every running
+            # Resolved, not passed through, so this list route and the detail
+            # route can't disagree about the same session (see studio.md).
+            # artifacts_path is withheld deliberately even though the row
+            # carries one: supplying it would enable the live-progress arm,
+            # which reads the artifacts directory per row -- a filesystem
+            # walk for every running
             # session on a paginated list that Studio polls. Withholding it leaves
             # the two cheap arms intact (a stored verdict still wins, terminal
             # absence is still named) and declines only the live read, which

@@ -3,21 +3,8 @@
 
 """MCP servers as a managed Studio resource.
 
-Studio keeps one authoritative registry (``LIONAGI_HOME/mcp_servers.json``,
-full configs including secret values, enable/disable state, last connection
-status) and derives a plain ``.mcp.json`` from it on every write
-(``LIONAGI_HOME/.mcp.json``), containing only the *enabled* servers in
-exactly the ``{"mcpServers": {...}}`` shape ``lionagi/cli/_mcp_resolve.py``
-already parses. A run submitted with ``--mcp-config
-~/.lionagi/.mcp.json`` sees exactly the servers Studio manages, and never a
-disabled one -- disabled servers are simply absent from the derived file
-rather than marked with a flag a reader might not honour.
-
-The registry is a separate store from the derived file (not a passthrough
-onto some project's ``.mcp.json``) because Studio is not scoped to one
-project directory -- it manages many named projects from a single process,
-and per-project cwd discovery would pick whichever project happened to be
-the server's launch directory, which is not a meaningful answer here.
+See ``docs/internals/studio.md`` ("MCP server registry") for the
+registry/derived-file split, the write-lock discipline, and secret handling.
 """
 
 from __future__ import annotations
@@ -67,16 +54,7 @@ class DuplicateServerError(McpServerError):
 # ---------------------------------------------------------------------------
 
 
-# Every mutation is a read-modify-write over the whole registry file, so two
-# of them interleaving loses one wholesale: the second writes back a dict it
-# read before the first landed. The routes run these in worker threads, so the
-# boundary that has to hold is a thread lock, and it has to span the load and
-# the save rather than either alone. Reads outside it are fine -- os.replace
-# makes each save atomic, so a reader sees one whole registry or the other.
-#
-# It is reentrant because a mutation may call another one, and it is never
-# held across a network probe: a connection attempt can run for seconds, and
-# blocking every save behind it would trade a lost write for a frozen UI.
+# Spans load-through-save (see studio.md); never held across a network probe.
 _REGISTRY_WRITE_LOCK = threading.RLock()
 
 
@@ -88,17 +66,8 @@ def _load_registry() -> dict[str, dict[str, Any]]:
 
 
 def _write_private(path: Path, content: str) -> None:
-    """Write ``content`` to ``path`` atomically, owner-only.
-
-    Both the registry and its derived ``.mcp.json`` hold secret env values,
-    so a reader other than the owner must never see them -- not even
-    briefly. The temp file is created via ``mkstemp``, which is guaranteed
-    ``0600`` regardless of umask, and ``os.replace`` is atomic so a crash
-    mid-write never leaves a half-written registry. The final ``chmod`` is
-    what repairs a file created before this fix: a plain ``write_text``
-    writes into the existing inode and leaves its old ``0644`` mode alone,
-    so an explicit chmod on every save is what actually closes that off.
-    """
+    """Write ``content`` to ``path`` atomically, owner-only (0600 regardless
+    of umask; also repairs a pre-existing 0644 file). See studio.md."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
@@ -120,12 +89,8 @@ def _save_registry(servers: dict[str, dict[str, Any]]) -> None:
 
 
 def _sync_mcp_json(servers: dict[str, dict[str, Any]]) -> None:
-    """Regenerate the standard ``.mcp.json`` CLI runs can point at.
-
-    Only enabled servers are included -- a disabled server is exactly as
-    absent from this file as one that was never registered, so a reader that
-    knows nothing about Studio's "enabled" concept still gets the right set.
-    """
+    """Regenerate the standard ``.mcp.json`` CLI runs can point at, containing
+    only enabled servers."""
     enabled = {
         name: entry["config"] for name, entry in servers.items() if entry.get("enabled", True)
     }
@@ -139,13 +104,8 @@ def _sync_mcp_json(servers: dict[str, dict[str, Any]]) -> None:
 # ---------------------------------------------------------------------------
 
 
-# Which fields belong to which transport. `_merge_config` clears these -- the
-# ones the patch itself did not supply -- when a save declares the other
-# transport, so a stale command/args/env or url does not survive a switch.
-# `_validate_shape` checks `command`/`url` only for the transport that names
-# them, but `args`/`env` shape-check unconditionally regardless of transport.
-# `timeout` and `alwaysAllow` are deliberately in neither set: they apply to
-# both transports.
+# `_merge_config` clears these when a save declares the other transport.
+# `timeout`/`alwaysAllow` apply to both, so neither is in either set.
 _STDIO_ONLY_FIELDS = ("command", "args", "env")
 _HTTP_ONLY_FIELDS = ("url",)
 
@@ -163,6 +123,7 @@ def _validate_shape(name: str, config: dict[str, Any]) -> list[str]:
     if not isinstance(config, dict):
         return [*errors, "config must be an object"]
 
+    # 'args'/'env' shape-check unconditionally, regardless of transport.
     has_command = bool(config.get("command"))
     has_url = bool(config.get("url"))
     if has_command and has_url:
@@ -214,13 +175,8 @@ def _config_from_body(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mask_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Strip env values from a config before it leaves the process.
-
-    A client sees which env keys are configured (``env_keys``), never their
-    values, in list/get responses or validation results. Values are only
-    ever read back off disk inside this module (e.g. to attempt a
-    connection), never serialized into an HTTP response.
-    """
+    """Strip env values from a config before it leaves the process; a client
+    sees only which env keys are configured (``env_keys``)."""
     masked = {k: v for k, v in config.items() if k != "env"}
     masked["env_keys"] = sorted((config.get("env") or {}).keys())
     return masked
@@ -244,11 +200,9 @@ def _public_entry(name: str, entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def _scrub_secrets(text: str, config: dict[str, Any]) -> str:
-    """Remove any configured env *value* from an error string before it is
-    returned to a client. A failed connection attempt can echo back its own
-    environment (subprocess stderr, an auth error naming the token it
-    rejected) -- this is the point secrets could otherwise leak through a
-    path that isn't the config itself."""
+    """Remove any configured env *value* from an error string before it
+    reaches a client -- a failed connection attempt can echo its own
+    environment back (subprocess stderr, a rejected auth token)."""
     for value in (config.get("env") or {}).values():
         if isinstance(value, str) and value:
             text = text.replace(value, _SECRET_MASK)
@@ -261,13 +215,9 @@ def _scrub_secrets(text: str, config: dict[str, Any]) -> str:
 
 
 async def _attempt_connection(config: dict[str, Any]) -> dict[str, Any]:
-    """Actually try to reach the server: spawns the stdio process or opens
-    the http connection directly through fastmcp's Client, bypassing the
-    shared MCPConnectionPool (lionagi.service.connections.mcp_wrapper) so a
-    validation probe never lingers as a pooled, reusable connection shared
-    with unrelated branches. Honest about what it proves: a live handshake
-    right now, not that every tool the server exposes will keep working.
-    """
+    """Spawn/connect directly through fastmcp's Client, bypassing the shared
+    MCPConnectionPool so a validation probe never lingers as a pooled,
+    reusable connection. Proves a live handshake now, not lasting health."""
     try:
         from fastmcp import Client as FastMCPClient
     except ImportError:
@@ -317,10 +267,7 @@ def get_server(name: str) -> dict[str, Any] | None:
 
 
 def register_server(name: str, config: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
-    # Registering is `update_server`'s merge onto an empty base rather than a
-    # second, separately-invented rule: a `None` env value means "key absent"
-    # here exactly as it does for an existing server, and `validate_config`
-    # already validates new names the same way (see its docstring).
+    # Registering merges onto an empty base, same rule as an existing server.
     merged = _merge_config({}, config)
     errors = _validate_shape(name, merged)
     if errors:
@@ -344,40 +291,11 @@ def register_server(name: str, config: dict[str, Any], *, enabled: bool = True) 
 
 
 def _merge_config(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-    """Merge a partial config onto the stored one instead of replacing it.
-
-    A client never receives env *values* back (see ``_mask_config``), so a
-    save that only changed e.g. ``args`` and echoed nothing else back must
-    not wipe the env block it never saw. ``env`` merges key-by-key; a `None`
-    value for a key removes it (the client's explicit way to drop a secret
-    without knowing its value). Any other field replaces wholesale when
-    present, and only an explicit `None` removes it -- a wrong-typed falsy
-    value (``""``, ``[]``) is *not* treated as "key absent": it is written
-    into the merged config as-is and left for ``_validate_shape`` to reject,
-    the same way a raw, unmerged config would. Laundering a malformed value
-    into "absent" here would make it validate by accident.
-
-    ``args`` is the one exception to "`None` removes it": unlike ``timeout``
-    (where `None` means "no timeout", a value ``_validate_shape`` accepts),
-    the shape check has no such reading for ``args`` -- it must always be a
-    list, empty or not. Treating ``args: null`` as "key absent" would delete
-    a malformed value into a *valid* one (the default ``[]``) instead of
-    leaving it for the shape check to reject, so it is written through like
-    any other wrong-typed value; the typed empty list is the actual way to
-    clear it.
-
-    A transport switch drops every *leftover* field belonging to the
-    transport being left, not just the one that names it. The shape check
-    only requires exactly one of ``command``/``url``, so an http entry that
-    kept the old ``args`` and ``env`` would still validate -- and the derived
-    ``.mcp.json`` would then hand every reader a set of stdio arguments and
-    secrets that the chosen transport never uses. This only clears fields the
-    patch itself did not touch: a field the caller explicitly supplied in the
-    same patch (well-formed or not) is left for `_validate_shape` to judge on
-    its own merits instead of being silently discarded before validation
-    ever sees it -- otherwise a malformed ``env`` sent alongside a fresh
-    ``url`` would vanish rather than being rejected.
-    """
+    """Merge a partial config onto the stored one instead of replacing it --
+    a client never receives env values back, so an unrelated save must not
+    wipe an env block it never saw. See studio.md for the full merge rules
+    (``None``-removes, the ``args`` exception, and the transport-switch
+    field-drop)."""
     merged = dict(existing)
     for key in ("command", "args", "url", "timeout", "alwaysAllow"):
         if key not in patch:
@@ -469,27 +387,10 @@ def remove_server(name: str) -> bool:
 
 async def check_server_connection(name: str) -> dict[str, Any] | None:
     """Attempt a real connection to an already-registered server and persist
-    the outcome, so list/get can honestly report "whether the last
-    connection attempt succeeded" instead of a shape guess.
-
-    The registry is reloaded after the probe rather than reusing the
-    pre-await snapshot: ``_attempt_connection`` can run for seconds, and
-    writing back a stale full ``servers`` dict would silently revert any
-    save that landed while the probe was in flight.
-
-    The reloaded entry is matched against the configuration that was actually
-    probed before the outcome is kept. A name is mutable and reusable: an
-    operator can edit a server, or delete it and register a different one
-    under the same name, while the probe is still running. Matching on name
-    alone would stamp "connected" onto a server this attempt never reached.
-    A result that no longer describes the current configuration is discarded
-    rather than persisted, so the stored status is always one that was
-    obtained for the configuration it sits on.
-
-    Only the final reload-compare-save runs under the registry write lock. The
-    probe itself must not hold it: it can take seconds, and a save blocked
-    behind a network attempt is a worse failure than the one the lock prevents.
-    """
+    the outcome. Reloads and re-matches against the probed config before
+    saving, so a concurrent edit/replace under the same name during the
+    probe can't stamp a stale result; only the final compare-save holds the
+    registry lock. See studio.md for the full race analysis."""
     servers = _load_registry()
     entry = servers.get(name)
     if entry is None:
@@ -518,19 +419,11 @@ async def check_server_connection(name: str) -> dict[str, Any] | None:
 async def validate_config(
     name: str, config: dict[str, Any], *, check_connection: bool = False
 ) -> dict[str, Any]:
-    """Validate a config before it is saved. ``config`` is a patch, not
-    necessarily a complete config -- an edit can carry a `None` env value
-    that means "delete this key", which never stands alone as a usable
-    shape. ``update_server`` merges a patch onto the stored config before
-    validating it; this runs the same merge so validation checks what would
-    actually be persisted, not the raw patch. A server that does not exist
-    yet merges onto an empty config, which is exactly the shape a save
-    would produce for a first-time registration.
-
-    Shape is always checked; connection is only attempted when the caller
-    opts in, and the response says explicitly whether it was -- a shape
-    check that silently claimed to prove a server works would be worse than
-    no check at all."""
+    """Validate a config before it is saved. ``config`` is a patch (as
+    ``update_server`` receives it), merged the same way so validation checks
+    what would actually be persisted. Shape is always checked; connection is
+    only attempted when the caller opts in, and the response says explicitly
+    whether it was."""
     existing = (_load_registry().get(name) or {}).get("config") or {}
     merged = _merge_config(existing, config)
     errors = _validate_shape(name, merged)

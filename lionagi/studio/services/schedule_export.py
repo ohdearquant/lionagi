@@ -1,19 +1,9 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Read-only conversion of ``schedules`` rows into a ``ScheduleSet`` document.
-
-Two modes, both never touching the database:
-
-- Legacy conversion (``managed_by IS NULL`` -- rows created before the
-  declaration layer): reconstructs a typed ``ScheduleMember`` per row from
-  its raw ``action_*``/trigger columns, running each candidate through the
-  same ``resolve_member`` static resolution a real ``apply`` would use so a
-  malformed row is caught here rather than emitted half-valid. A row with
-  ``on_success``/``on_fail`` is never converted -- chained follow-up actions
-  have no v1 equivalent and must be redesigned as a flow by hand.
-- Declaration/cli re-export (``managed_by IN ('cli', 'declaration')``):
-  simply re-validates each row's already-typed ``authored_spec`` back into a
-  ``ScheduleMember`` -- there is no structural conversion to do.
+"""Read-only conversion of ``schedules`` rows into a ``ScheduleSet``
+document. See ``docs/internals/studio.md`` ("Schedule export") for the two
+conversion modes (legacy vs. declaration/cli re-export) and the
+round-trip-identity rules the grouping/keying helpers below enforce.
 """
 
 from __future__ import annotations
@@ -94,17 +84,12 @@ def _pick_project(rows: list[dict[str, Any]], fallback: str) -> str:
 
 
 def _member_key(row: dict[str, Any], doc_project: str, used: set[str]) -> str:
-    """The document's schedule-map key for *row*.
-
-    Strips a leading ``"{doc_project}/"`` from the row's (globally unique)
-    ``name`` -- reapplying then reconstructs the identical qualified name
-    (``doc_project/local_name``), which is what lets an export round-trip a
-    row's original identity. Grouping (``_group_into_documents``) guarantees
-    a row lands in the document matching its effective project, so the
-    prefix either matches or the name is bare. A stripped local name that
+    """The document's schedule-map key for *row* -- strips a leading
+    ``"{doc_project}/"`` from the row's globally-unique ``name`` so
+    reapplying reconstructs the identical qualified name, letting export
+    round-trip a row's original identity. A stripped local name that
     collides with one already used falls back to the full original name
-    (still unique) so no two members are ever silently merged.
-    """
+    (still unique) so no two members are ever silently merged."""
     name = row["name"]
     local = name[len(doc_project) + 1 :] if name.startswith(f"{doc_project}/") else name
     if local in used:
@@ -360,13 +345,10 @@ def _group_into_documents(
     qualified name's prefix; bare-named rows share a single
     *base_name*-keyed group). Grouping before computing member keys
     guarantees a row's effective project always matches its document's
-    project, avoiding double-qualification on re-apply.
-
-    Also returns a ``{row_name: reconstructed_qualified_name}`` map -- the
-    name a later apply actually produces for every ready row, so callers can
-    compare it against the row's stored name to decide whether a rename
-    needs disclosing.
-    """
+    project, avoiding double-qualification on re-apply. Also returns a
+    ``{row_name: reconstructed_qualified_name}`` map so callers can compare
+    it against the row's stored name to decide whether a rename needs
+    disclosing."""
     grouped: dict[str, list[tuple[dict[str, Any], ScheduleMember]]] = {}
     for row, member in ready:
         proj = _effective_project(row) or base_name
@@ -411,16 +393,12 @@ def convert_legacy_rows(
     rows: list[dict[str, Any]], *, flows_dir: Path, manifest_dir: Path
 ) -> tuple[list[ScheduleSetDocument], list[ExportReportLine]]:
     """Convert every chain-free, expressible legacy row into a member of a
-    ``ScheduleSet`` document -- one document per distinct project among the
+    ``ScheduleSet`` document, one document per distinct project among the
     rows (see ``_group_into_documents``), so a mixed-project export still
     round-trips every row's original qualified name exactly. Rows with
     ``on_success``/``on_fail``, an unsupported action_kind, a legacy-only
-    field with no v1 equivalent (a flow_yaml row's action_model, non-empty
-    action_extra_args, a non-default github poll_interval_sec), or a
-    malformed trigger are reported ``BLOCKED`` and omitted -- never
-    half-emitted. Within each document, a row whose own project matches is
-    keyed by its local (prefix-stripped) name, so re-applying reconstructs
-    its original qualified name exactly (see ``_member_key``)."""
+    field with no v1 equivalent, or a malformed trigger are reported
+    ``BLOCKED`` and omitted, never half-emitted."""
     lines: list[ExportReportLine] = []
     ready: list[tuple[dict[str, Any], ScheduleMember]] = []
     # (index into `lines`, row, member) for every provisional READY line, so

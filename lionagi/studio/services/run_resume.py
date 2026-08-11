@@ -84,18 +84,11 @@ class RunResumeRequest(BaseModel):
 
 # invocation_kind values that replay a checkpointed flow instead of
 # reopening a single agent branch. Kept separate from the DB CHECK
-# constraint's vocabulary (schema.sql) so a new kind must be classified
-# here explicitly before it can be resumed at all.
-#
-# fanout is deliberately excluded: `_run_fanout` (cli/orchestrate/fanout.py)
-# never stamps a run_id into node_metadata and never instantiates a
-# CheckpointWriter, so a real fanout session can never satisfy
-# _resolve_flow_checkpoint's prerequisites — there is no future in which one
-# does. Routing it through the checkpoint-resolution path anyway would only
-# ever fail with flow-specific wording ("...or never reached _build_dag")
-# that misdescribes why. Treating it as unsupported instead is the honest,
-# structurally-correct answer, decided by what the kind can ever produce, not
-# by kind membership in a set built for a different execution shape.
+# constraint's vocabulary (schema.sql) so a new kind must be classified here
+# explicitly before it can be resumed at all. `fanout` is deliberately
+# excluded -- it can never satisfy _resolve_flow_checkpoint's prerequisites
+# (see studio.md), so it is treated as unsupported rather than routed
+# through the checkpoint path to fail with misdescribing wording.
 FLOW_RESUME_KINDS = frozenset({"play", "flow", "show-play"})
 
 
@@ -221,23 +214,14 @@ async def _ensure_branch_snapshot_available(branch_id: str) -> None:
 
 
 async def _require_resumable_snapshot(run_id: str, branch_id: str) -> bool:
-    """The one prerequisite check for an agent-kind resume, shared by GET and POST.
-
-    Returns whether the source run is still queued. A queued source has no
-    snapshot to check yet — a queued resume writes its own worker config and
-    the snapshot is verified once the source actually finishes, matching
-    _resume_agent_run's own launch-time branching. Only when the source is
-    already terminal does `li agent -r` need a snapshot to reopen right now,
-    so only then is one required here.
-
-    resume_availability (GET) and _resume_agent_run (POST) both call this
-    instead of each doing their own version of it — GET previously only
-    checked branch membership, so it could answer "resumable" for a run POST
-    would then 409 on because the branch's CLI snapshot was never written or
-    had since been pruned. Sharing the check means GET's answer and POST's
-    outcome can only disagree when something about the run genuinely changed
-    between the two calls.
-    """
+    """The one prerequisite check for an agent-kind resume, shared by GET
+    and POST. Returns whether the source run is still queued -- a queued
+    source has no snapshot to check yet (verified once it finishes); only a
+    terminal source needs one right now, since `li agent -r` needs it to
+    reopen immediately. Both `resume_availability` and `_resume_agent_run`
+    call this rather than each having their own version, so GET's answer and
+    POST's outcome can only disagree when the run genuinely changed between
+    the two calls."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
     source_status = await _run_status(run_id)
@@ -601,17 +585,14 @@ async def _dispatch_resume_by_kind(
 
 
 async def resume_availability(run_id: str) -> dict[str, Any]:
-    """Read-only resumability precheck the UI calls before rendering the resume action.
-
-    Never launches anything and never touches the `li` executable/launch
+    """Read-only resumability precheck the UI calls before rendering the
+    resume action. Never launches anything or touches the `li` launch
     admission path. Reuses the exact branch/checkpoint resolution
     `resume_run` uses, so a "yes" here and the POST outcome can never
-    disagree about the same run. A run with no checkpoint, an ambiguous
-    target, or an unsupported invocation_kind are each a distinct,
-    explicit ``resumable: False`` state with a machine-readable ``reason`` —
-    never a generic failure and never something the UI could mistake for
-    "still loading".
-    """
+    disagree. A run with no checkpoint, an ambiguous target, or an
+    unsupported invocation_kind is each a distinct, explicit
+    ``resumable: False`` with a machine-readable ``reason``, never a
+    generic failure the UI could mistake for "still loading"."""
     _svc_validate_identifier(run_id, "run_id")
     if state_db_known_absent():
         raise RunNotFoundError(f"Run {run_id!r} not found")

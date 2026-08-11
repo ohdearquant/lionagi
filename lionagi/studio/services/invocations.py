@@ -134,16 +134,12 @@ async def count_invocations(
 
 async def get_invocation(invocation_id: str, *, readonly: bool = False) -> dict[str, Any] | None:
     """One invocation with its child sessions, artifacts and derived health.
-
-    ``readonly`` opens the store read-only for callers whose contract says they
-    only read. The ordinary open runs schema application, which takes a write
-    lock and can issue one-time migration statements, so a caller that promises
-    not to write should not be reaching for it. It defaults to False because
-    read-only mode is available only on an on-disk SQLite store: passing True
-    unconditionally would fail at open elsewhere rather than degrade, so the
-    decision belongs to the caller that knows its own contract and has checked
-    ``read_only_open_supported()``.
-    """
+    ``readonly`` opens the store read-only for callers whose contract says
+    they only read -- the ordinary open runs schema application, which
+    takes a write lock and can issue migration statements. Defaults False
+    because read-only mode is available only on an on-disk SQLite store;
+    the decision belongs to a caller that has checked
+    ``read_only_open_supported()``."""
     if state_db_known_absent():
         return None
     async with StateDB(readonly=readonly) as db:

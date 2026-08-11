@@ -137,33 +137,11 @@ async def upsert_disposition(
     actor: str = "operator",
     revision: int | None = None,
 ) -> dict[str, Any]:
-    """Create-or-replace *item_id*'s disposition. Idempotent under retry:
-    the same (item_id, state, ...) PUT replayed while the row is still
-    active produces one current row plus one appended history entry per
-    call, never a duplicate terminal state for a caller that only retries
-    after a confirmed failure.
-
-    *revision* fences the one case that isn't safe to leave unconditional:
-    recreating a row that a DELETE has already removed. A PUT that finds no
-    active row for item_id but a last-operation revision recorded for it
-    (the item was created and then deleted) must carry a revision at least
-    that high, or it is rejected (409) rather than resurrecting a stale
-    disposition -- e.g. a delayed retry of the pre-delete PUT arriving after
-    the undo, replaying an old expires_at. Updating an already-active row
-    never fences: nothing was lost to resurrect.
-
-    This means an ACTIVE row is deliberately last-writer-wins: a PUT
-    carrying a stale (or absent) revision against a row that is still
-    active always applies, even if a newer PUT already moved it on --
-    e.g. a revision-1 PUT landing after a revision-2 PUT overwrites the
-    revision-2 fields and becomes revision 3. This is chosen, not missed:
-    the fence exists to stop *resurrection after delete*, where a stale
-    write recreates something a human already discharged, not to arbitrate
-    between concurrent edits to a row that's still there to see and retry
-    against. Guarding active-row updates too would break the idempotent
-    retry this function promises above -- an operator's own retried PUT is
-    itself a "stale revision against an active row" from the server's
-    point of view, and it must still apply."""
+    """Create-or-replace *item_id*'s disposition. Idempotent under retry.
+    *revision* fences only resurrection-after-delete (a PUT with no active
+    row but a recorded last-operation revision must match or exceed it, else
+    409); an active row is deliberately last-writer-wins with no fencing, so
+    an operator's own retried PUT always applies. See studio.md."""
     if not item_id.strip():
         raise HTTPException(status_code=422, detail="item_id must not be empty")
     if state not in _VALID_STATES:
