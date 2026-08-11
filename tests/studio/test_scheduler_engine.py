@@ -3190,3 +3190,63 @@ async def test_fire_exception_records_the_real_exception_text_as_error_detail(st
     assert row["status"] == "failed"
     assert row["error_detail"] == "ModuleNotFoundError: No module named 'nope'"
     assert row["ended_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_fire_deadline_records_one_timed_out_terminal_and_releases_slot(
+    state_db, monkeypatch
+):
+    """A launcher deadline is a timed-out outcome, not a generic failed exception."""
+    import lionagi.studio.config as studio_config
+    from lionagi.studio.scheduler import subprocess as subprocess_mod
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
+    svc = _DbSvc(state_db)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule()
+    await _seed_schedule(state_db, schedule)
+    run_id = "run-deadline"
+    _, slot_claim = await engine._reserve_global_slot()
+    assert engine._global_inflight == 1
+
+    async def _deadline(*_args, on_launched=None, **_kwargs):
+        if on_launched is not None:
+            await on_launched()
+        raise subprocess_mod.SubprocessDeadlineExceededError(
+            invocation_id="inv-deadline",
+            deadline_seconds=2,
+        )
+
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["uv", "run", "li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(side_effect=_deadline),
+        ),
+    ):
+        await engine._fire(
+            schedule,
+            run_id,
+            trigger_context={"scheduled": True},
+            global_slot_claim=slot_claim,
+        )
+
+    run = await state_db.get_schedule_run(run_id)
+    invocation = await state_db.get_invocation(run["invocation_id"])
+    assert run["status"] == "timed_out"
+    assert run["status_reason_code"] == "run.timed_out.deadline"
+    assert invocation["status"] == "timed_out"
+    assert invocation["status_reason_code"] == "run.timed_out.deadline"
+    terminal_events = await state_db.fetch_all(
+        "SELECT entity_id, status FROM status_transitions "
+        "WHERE entity_id IN (?, ?) AND status = 'timed_out'",
+        (run_id, invocation["id"]),
+    )
+    assert sorted(event["entity_id"] for event in terminal_events) == sorted(
+        [run_id, invocation["id"]]
+    )
+    assert engine._global_inflight == 0

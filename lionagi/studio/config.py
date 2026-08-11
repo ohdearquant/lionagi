@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import stat
 import time
@@ -286,6 +287,7 @@ MAX_SCHEDULED_CONCURRENT: int = int(os.environ.get("LIONAGI_STUDIO_MAX_SCHEDULED
 # 0 = unlimited (worker executions impose no concurrency limit of their own).
 MAX_ADHOC_CONCURRENT: int = int(os.environ.get("LIONAGI_STUDIO_MAX_ADHOC_CONCURRENT", "4"))
 
+
 # ── Lifecycle reaper config ───────────────────────────────────────────────────
 # Default invocation deadline in seconds (2 hours). Override per action kind
 # via LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS (e.g. _AGENT_SECONDS).
@@ -293,9 +295,49 @@ MAX_ADHOC_CONCURRENT: int = int(os.environ.get("LIONAGI_STUDIO_MAX_ADHOC_CONCURR
 # SchedulerEngine._check_budget): the budget gate is a pre-fire cumulative
 # check, not a mid-run kill, so this deadline is what bounds a single run's
 # worst-case spend.
-INVOCATION_DEADLINE_SECONDS: int = int(
-    os.environ.get("LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS", "7200")
+def _positive_deadline_seconds(value: str | int | float, *, source: str) -> float:
+    """Parse one execution deadline and reject values that cannot bound work."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{source} must be a positive number of seconds, got {value!r}") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(f"{source} must be positive and finite, got {value!r}")
+    return seconds
+
+
+INVOCATION_DEADLINE_SECONDS: float = _positive_deadline_seconds(
+    os.environ.get("LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS", "7200"),
+    source="LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS",
 )
+
+
+def invocation_deadline_seconds(
+    action_kind: str | None,
+    *,
+    global_default: float | int | None = None,
+) -> float:
+    """Resolve and validate the execution deadline for one action kind.
+
+    Per-kind environment overrides are intentionally read at action admission,
+    matching the command allow-list's revocation behavior. A malformed or
+    non-positive override fails before spawn instead of turning the deadline
+    into an unbounded wait.
+    """
+    default = INVOCATION_DEADLINE_SECONDS if global_default is None else global_default
+    default_seconds = _positive_deadline_seconds(
+        default,
+        source="global invocation deadline",
+    )
+    if not action_kind:
+        return default_seconds
+    env_key = f"LIONAGI_STUDIO_INVOCATION_DEADLINE_{action_kind.upper()}_SECONDS"
+    raw = os.environ.get(env_key)
+    if raw is None:
+        return default_seconds
+    return _positive_deadline_seconds(raw, source=env_key)
+
+
 # Grace period before a running invocation with zero child sessions is reaped.
 ZERO_SESSION_GRACE_SECONDS: int = int(
     os.environ.get("LIONAGI_STUDIO_ZERO_SESSION_GRACE_SECONDS", "300")

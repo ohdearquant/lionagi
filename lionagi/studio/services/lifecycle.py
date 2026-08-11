@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -46,20 +45,14 @@ _SESSIONLESS_ACTION_KINDS = frozenset({"command"})
 _INVOCATION_REAPER_PAGE_SIZE = 500
 
 
-def _deadline_for_kind(action_kind: str | None, global_default: int) -> int:
-    """Resolve the effective deadline: checks
-    ``LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS`` first, falling back
-    to *global_default* when absent or *action_kind* is None.
-    """
-    if action_kind:
-        env_key = f"LIONAGI_STUDIO_INVOCATION_DEADLINE_{action_kind.upper()}_SECONDS"
-        raw = os.environ.get(env_key)
-        if raw is not None:
-            try:
-                return int(raw)
-            except ValueError:
-                _log.warning("Ignoring non-integer env var %s=%r", env_key, raw)
-    return global_default
+def _deadline_for_kind(action_kind: str | None, global_default: float | int) -> float:
+    """Compatibility wrapper around the shared validated deadline resolver."""
+    from lionagi.studio.config import invocation_deadline_seconds
+
+    return invocation_deadline_seconds(
+        action_kind,
+        global_default=global_default,
+    )
 
 
 async def _running_invocations_for_reaping(db: StateDB) -> AsyncIterator[dict]:
@@ -85,7 +78,7 @@ async def _running_invocations_for_reaping(db: StateDB) -> AsyncIterator[dict]:
 
 async def reap_stale_invocations(
     *,
-    deadline_seconds: int | None = None,
+    deadline_seconds: float | int | None = None,
     zero_session_grace_seconds: int | None = None,
 ) -> int:
     """Transition stale running invocations to ``timed_out``.

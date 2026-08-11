@@ -89,6 +89,15 @@ async def _failing_execute(row: dict) -> tuple[int, str]:
     return 1, "boom"
 
 
+async def _timed_out_execute(row: dict) -> tuple[int, str]:
+    from lionagi.studio.scheduler.subprocess import SubprocessDeadlineExceededError
+
+    raise SubprocessDeadlineExceededError(
+        invocation_id=f"inv-{row['id']}",
+        deadline_seconds=2,
+    )
+
+
 # ── 1. Claim CAS race ────────────────────────────────────────────────────
 
 
@@ -349,6 +358,20 @@ async def test_submit_claim_execute_completed_round_trip(db: StateDB) -> None:
         ("queued", "running"),
         ("running", "completed"),
     ]
+
+
+async def test_claimed_task_deadline_is_recorded_as_timed_out(db: StateDB) -> None:
+    run_id = await _submit_host_task(db)
+
+    claimed = await claim_and_execute(
+        db,
+        worker_id="w1",
+        execute=_timed_out_execute,
+    )
+
+    assert claimed == 1
+    row = await db.fetch_one("SELECT status FROM schedule_runs WHERE id = ?", (run_id,))
+    assert row["status"] == "timed_out"
 
 
 async def test_cancelled_to_running_rejected(db: StateDB) -> None:

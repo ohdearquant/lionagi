@@ -83,6 +83,9 @@ class ScheduleRunCancelled(Signal):
 _SIGNAL_BY_STATUS: dict[str, type[Signal]] = {
     "completed": ScheduleRunSucceeded,
     "failed": ScheduleRunFailed,
+    # A deadline is a failure-class terminal outcome for handler routing,
+    # while the durable status/reason preserve the timed_out distinction.
+    "timed_out": ScheduleRunFailed,
     "cancelled": ScheduleRunCancelled,
 }
 
