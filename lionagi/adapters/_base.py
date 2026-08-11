@@ -12,6 +12,8 @@ import urllib.parse
 from collections.abc import Callable
 from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
 
+from lionagi.libs.credential_fields import fold_field_name, is_secret_field_name
+
 T = TypeVar("T")
 
 # ---------------------------------------------------------------------------
@@ -112,7 +114,10 @@ def _redact_url(value: str) -> str:
     if parsed.query:
         params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
         redacted_params = [
-            (k, "***") if k.lower() in _SENSITIVE_QUERY_PARAMS else (k, v) for k, v in params
+            (k, "***")
+            if fold_field_name(k) in _SENSITIVE_QUERY_PARAMS or is_secret_field_name(k)
+            else (k, v)
+            for k, v in params
         ]
         new_query = urllib.parse.urlencode(redacted_params, quote_via=urllib.parse.quote, safe="*")
         if new_query != parsed.query:

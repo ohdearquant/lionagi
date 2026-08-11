@@ -53,11 +53,12 @@ def _studio(path: str, method: str = "GET", body: dict[str, Any] | None = None) 
 
     url = f"{_studio_url()}/api/schedules{path}"
     data = json.dumps(body).encode() if body is not None else None
+    declares_json = data is not None or method.upper() not in {"GET", "HEAD", "OPTIONS"}
     request = urllib.request.Request(  # noqa: S310 — fixed http(s) Studio base URL
         url,
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"} if data else {},
+        headers={"Content-Type": "application/json"} if declares_json else {},
     )
     try:
         with urllib.request.urlopen(request, timeout=STUDIO_TIMEOUT_SECONDS) as response:  # noqa: S310

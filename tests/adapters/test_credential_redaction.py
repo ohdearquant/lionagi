@@ -27,6 +27,33 @@ class TestRedactUrlQueryCredentials:
         assert "my-private-key" not in result
         assert "api_key=***" in result
 
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "access_key",
+            "access-key",
+            "access.key",
+            "accessKey",
+            "private_key",
+            "private-key",
+            "private.key",
+            "privateKey",
+        ],
+    )
+    def test_access_and_private_key_spellings_are_redacted(self, field_name):
+        url = f"https://api.example.com/v1?{field_name}=credential-value-3005&safe=visible"
+
+        result = _redact_url(url)
+
+        assert "credential-value-3005" not in result
+        assert "safe=visible" in result
+
+    @pytest.mark.parametrize("field_name", ["accessibility", "private_mode"])
+    def test_noncredential_access_and_private_words_are_preserved(self, field_name):
+        url = f"https://api.example.com/v1?{field_name}=visible"
+
+        assert _redact_url(url) == url
+
     def test_multiple_secrets_in_query_all_redacted(self):
         url = "https://example.com/cb?token=secret&api_key=k&safe=value"
         result = _redact_url(url)

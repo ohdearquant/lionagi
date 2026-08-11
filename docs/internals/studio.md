@@ -23,15 +23,17 @@ Content-Type/CSRF check -> bearer-token gate -> route. A real preflight
 never reaches the bearer-token/Content-Type middlewares because CORS
 answers it first.
 
-**`require_json_content_type`** — rejects state-changing `/api` requests
-that don't declare a JSON body. FastAPI parses request bodies as JSON
-regardless of declared Content-Type, so a cross-site "simple request"
-(`text/plain`, no CORS preflight) carrying a JSON-shaped body would
-otherwise reach route handlers unchecked — the classic form-based JSON CSRF
-vector. The SPA always sends `application/json` on requests carrying a body
-(`apps/studio/frontend/src/lib/api.ts` `fetchJson`) and no body at all for
-routes that need none, so this only rejects traffic the frontend itself
-never produces.
+**`require_json_content_type`** — rejects every state-changing `/api`
+request that does not declare `application/json`, including bodyless action
+routes. FastAPI parses bodies as JSON regardless of declared Content-Type,
+and a cross-site "simple request" can also reach an empty-body trigger,
+enable, disable, delete, or cancel route without a CORS preflight. The shared
+SPA `fetchJson` transport adds the JSON media type to every unsafe method, so
+first-party callers satisfy the contract even when they have no body.
+
+**`GET /api/identity`** — authenticated, state-store-free desktop launch probe.
+It returns only the fixed daemon identity and LionAGI version; desktop startup
+uses it after `/health` instead of invoking the database-backed `/api/stats`.
 
 **`_mount_spa`** — uses a 404 exception handler, not a catch-all route, for
 the SPA fallback: a catch-all `/{full_path:path}` route would intercept

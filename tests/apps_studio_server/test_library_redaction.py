@@ -92,7 +92,14 @@ def _make_redaction_client(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    return TestClient(app, base_url="http://127.0.0.1:8765"), agents_dir
+    return (
+        TestClient(
+            app,
+            base_url="http://127.0.0.1:8765",
+            headers={"Content-Type": "application/json"},
+        ),
+        agents_dir,
+    )
 
 
 # ---------------------------------------------------------------------------

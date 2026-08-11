@@ -276,9 +276,9 @@ Exact semantics:
 - `/health` remains public. Non-API `GET` and `HEAD` requests other than schema/docs
   remain public so the SPA document and hashed assets can load.
 - `OPTIONS` passes the inner guards because valid-host preflight is answered by CORS.
-- A non-GET/HEAD/OPTIONS `/api` request with a non-empty body must declare media type
-  `application/json`; otherwise it returns HTTP 415. Bodyless mutation requests do not
-  acquire a synthetic content-type requirement.
+- Every non-GET/HEAD/OPTIONS `/api` request must declare media type
+  `application/json`; otherwise it returns HTTP 415. The rule includes bodyless action
+  routes so a cross-site simple request cannot bypass preflight by omitting its body.
 - The rule is central. Individual services cannot opt out by omitting a dependency.
 
 This is defense in depth for the shipped local daemon; it is not a claim that one static

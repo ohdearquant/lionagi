@@ -32,7 +32,11 @@ def _make_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     from lionagi.studio.app import create_app
 
-    return TestClient(create_app(), base_url="http://127.0.0.1:8765")
+    return TestClient(
+        create_app(),
+        base_url="http://127.0.0.1:8765",
+        headers={"Content-Type": "application/json"},
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -198,6 +202,7 @@ def test_leo_requires_bearer_when_token_set(tmp_path, monkeypatch):
         app,
         raise_server_exceptions=False,
         base_url="http://127.0.0.1:8765",
+        headers={"Content-Type": "application/json"},
     ) as client:
         r = client.post("/api/leo/sessions")
     assert r.status_code == 401
@@ -213,6 +218,7 @@ def test_leo_correct_token_reaches_retired_route_404(tmp_path, monkeypatch):
         app,
         raise_server_exceptions=False,
         base_url="http://127.0.0.1:8765",
+        headers={"Content-Type": "application/json"},
     ) as client:
         r = client.post(
             "/api/leo/sessions",

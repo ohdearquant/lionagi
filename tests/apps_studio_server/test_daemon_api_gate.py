@@ -89,6 +89,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/engine-defs/{def_id}"),
     ("GET", "/api/engine-runs/"),
     ("GET", "/api/engine-runs/{run_id}"),
+    ("GET", "/api/identity"),
     ("GET", "/api/invocations/"),
     ("GET", "/api/invocations/{invocation_id}"),
     ("GET", "/api/mcp/servers/"),
@@ -277,7 +278,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 131
+    assert len(_GOLDEN_ROUTES) == 132
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -417,7 +418,11 @@ def _patch_db(monkeypatch, db_path: Path) -> None:
 def _make_client() -> TestClient:
     from lionagi.studio.app import app
 
-    return TestClient(app, base_url="http://127.0.0.1:8765")
+    return TestClient(
+        app,
+        base_url="http://127.0.0.1:8765",
+        headers={"Content-Type": "application/json"},
+    )
 
 
 async def _seed_completed_session(db_path: Path, session_id: str) -> None:

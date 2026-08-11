@@ -1071,7 +1071,7 @@ async def stream_session_route(session_id: str):
     name="stream_signals",
     response_class=None,
 )
-async def stream_signals(session_id: str) -> Any:
+async def stream_signals(session_id: str, after_seq: int = 0) -> Any:
     # Pre-flight 404 guard before opening the stream (ADR-0076).
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
@@ -1079,19 +1079,19 @@ async def stream_signals(session_id: str) -> Any:
     from . import signals as signals_svc
 
     async def generate():
-        after_seq: int = 0
+        cursor = max(0, after_seq)
         last_heartbeat = time.monotonic()
 
         while True:
-            rows = await signals_svc.get_signals_after(session_id, after_seq)
+            rows = await signals_svc.get_signals_after(session_id, cursor)
 
             if rows:
                 for row in rows:
                     # _PAYLOAD_BYTE_CAP (session/observer.py) caps the payload
                     # column only; the row envelope adds overhead so frames can exceed it.
                     yield f"data: {json.dumps(row)}\n\n"
-                    if row["seq"] > after_seq:
-                        after_seq = row["seq"]
+                    if row["seq"] > cursor:
+                        cursor = row["seq"]
                 last_heartbeat = time.monotonic()
                 # get_signals_after is itself page-limited, so a non-empty
                 # batch does not mean the client is caught up to the tip —

@@ -245,6 +245,7 @@ _MIGRATED_AREAS = {
     "invocations",
     "launches",
     "projects",
+    "identity",
     "engine-defs",
     "workflow-defs",
     "sessions",
@@ -290,6 +291,11 @@ def test_live_app_health_route_present():
 def test_live_app_stats_route_present():
     paths = {getattr(r, "path", None) for r in _live_app.routes}
     assert "/api/stats" in paths
+
+
+def test_live_app_identity_route_present():
+    paths = {getattr(r, "path", None) for r in _live_app.routes}
+    assert "/api/identity" in paths
 
 
 def test_live_app_projects_route_present():

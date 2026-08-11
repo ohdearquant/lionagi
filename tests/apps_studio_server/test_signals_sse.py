@@ -220,6 +220,35 @@ async def test_service_get_signals_after_seq_filter(patched_signals_db):
     assert rows[1]["seq"] == 4
 
 
+async def test_signals_stream_starts_after_requested_resume_cursor(monkeypatch):
+    """A reconnect must not replay the session's full durable signal log."""
+    from lionagi.studio.services import sessions as sessions_svc
+    from lionagi.studio.services import signals as signals_svc
+
+    seen: list[tuple[str, int]] = []
+
+    async def _exists(_session_id: str) -> bool:
+        return True
+
+    async def _after(session_id: str, after_seq: int):
+        seen.append((session_id, after_seq))
+        return []
+
+    async def _state(_session_id: str):
+        return {"status": "completed"}
+
+    monkeypatch.setattr(sessions_svc, "session_exists", _exists)
+    monkeypatch.setattr(sessions_svc, "get_session_stream_state", _state)
+    monkeypatch.setattr(sessions_svc, "is_session_stream_done", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(signals_svc, "get_signals_after", _after)
+
+    response = await sessions_svc.stream_signals("resume-session", after_seq=41)
+    frame = await anext(response.body_iterator)
+
+    assert seen == [("resume-session", 41)]
+    assert '"type":"done"' in frame
+
+
 # ---------------------------------------------------------------------------
 # HTTP endpoint: GET /api/sessions/{id}/signals
 # ---------------------------------------------------------------------------

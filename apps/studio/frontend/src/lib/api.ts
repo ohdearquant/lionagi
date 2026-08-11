@@ -103,6 +103,8 @@ export class ApiError extends Error {
 // fails validation on a dozen fields is still one mistake to the person reading
 // it, and a dozen clauses is harder to act on than three plus a number.
 const MAX_VALIDATION_ERRORS_SHOWN = 3;
+const SAFE_HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const RETRYABLE_SSE_CLIENT_STATUSES = new Set([408, 425, 429]);
 
 /**
  * Render a FastAPI/Pydantic validation body into one readable sentence.
@@ -135,11 +137,30 @@ function formatValidationErrors(detail: unknown[]): string | undefined {
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
 
+  // Preserve object-shaped headers for existing callers/tests, while making
+  // Headers and tuple-list inputs mutable too.
+  const initialHeaders = init?.headers;
+  const headers: HeadersInit =
+    initialHeaders instanceof Headers || Array.isArray(initialHeaders)
+      ? new Headers(initialHeaders)
+      : { ...(initialHeaders ?? {}) };
+  const setHeader = (name: string, value: string) => {
+    if (headers instanceof Headers) headers.set(name, value);
+    else (headers as Record<string, string>)[name] = value;
+  };
+
+  // Every unsafe API call declares JSON, including bodyless POST/DELETE
+  // actions. Besides matching the backend contract, this makes browser calls
+  // non-simple requests so cross-site forms cannot invoke mutating routes.
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (!SAFE_HTTP_METHODS.has(method) && !new Headers(headers).has("content-type")) {
+    setHeader("Content-Type", "application/json");
+  }
+
   // Attach the desktop-shell bearer token when present.
   const token = resolveAuthToken();
-  const headers: HeadersInit = { ...(init?.headers ?? {}) };
   if (token) {
-    (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
+    setHeader("Authorization", `Bearer ${token}`);
   }
 
   let response: Response;
@@ -212,7 +233,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 // studio endpoints: unnamed `data: <json>\n\n` frames, auto-reconnect after
 // 2s unless closed. Callers parse the JSON and call the returned closer on
 // their terminal "done" frame.
-function sseSubscribe(path: string, onData: (data: string) => void): () => void {
+function sseSubscribe(path: string | (() => string), onData: (data: string) => void): () => void {
   const controller = new AbortController();
   let closed = false;
   const close = () => {
@@ -226,11 +247,26 @@ function sseSubscribe(path: string, onData: (data: string) => void): () => void 
         const token = resolveAuthToken();
         const headers: Record<string, string> = { Accept: "text/event-stream" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
-        const response = await fetch(`${API_BASE}${path}`, {
+        const requestPath = typeof path === "function" ? path() : path;
+        const response = await fetch(`${API_BASE}${requestPath}`, {
           headers,
           signal: controller.signal,
         });
-        if (!response.ok || !response.body) {
+        if (!response.ok) {
+          const permanentClientError =
+            response.status >= 400 &&
+            response.status < 500 &&
+            !RETRYABLE_SSE_CLIENT_STATUSES.has(response.status);
+          if (permanentClientError) {
+            // Authentication, authorization, validation, and missing-resource
+            // failures cannot heal on a timer. Stop instead of hammering the
+            // daemon every two seconds for the lifetime of the page.
+            closed = true;
+            break;
+          }
+          throw new Error(`SSE request failed: ${response.status}`);
+        }
+        if (!response.body) {
           throw new Error(`SSE request failed: ${response.status}`);
         }
         const reader = response.body.getReader();
@@ -1328,19 +1364,29 @@ export function streamSignals(
   id: string,
   onEvent: (event: SignalEvent | { type: string }) => void,
 ): () => void {
-  const close = sseSubscribe(`/api/sessions/${encodeURIComponent(id)}/signals`, (data) => {
-    let event: SignalEvent | { type: string };
-    try {
-      event = JSON.parse(data) as SignalEvent | { type: string };
-    } catch {
-      /* malformed chunk */
-      return;
-    }
-    if ("type" in event && event.type === "done") {
-      close();
-    }
-    onEvent("type" in event ? event : normalizeSignalEvent(event));
-  });
+  let afterSeq = 0;
+  const close = sseSubscribe(
+    () => {
+      const query = new URLSearchParams({ after_seq: String(afterSeq) });
+      return `/api/sessions/${encodeURIComponent(id)}/signals?${query}`;
+    },
+    (data) => {
+      let event: SignalEvent | { type: string };
+      try {
+        event = JSON.parse(data) as SignalEvent | { type: string };
+      } catch {
+        /* malformed chunk */
+        return;
+      }
+      if ("type" in event) {
+        if (event.type === "done") close();
+        onEvent(event);
+        return;
+      }
+      afterSeq = Math.max(afterSeq, event.seq);
+      onEvent(normalizeSignalEvent(event));
+    },
+  );
   return close;
 }
 

@@ -23,6 +23,7 @@
 use std::os::unix::process::CommandExt as _;
 
 use crate::port::{find_free_port, find_li_cli};
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -53,6 +54,8 @@ pub enum LaunchError {
     LaunchInProgress,
     #[error("server identity check failed after health: {0}")]
     IdentityCheckFailed(String),
+    #[error("failed to generate auth token: {0}")]
+    AuthTokenGenerationFailed(String),
 }
 
 impl serde::Serialize for LaunchError {
@@ -130,15 +133,20 @@ fn log_stdio(app: &AppHandle, suffix: &str) -> Stdio {
     .unwrap_or_else(Stdio::null)
 }
 
-/// Generate a 32-hex-char random token using `/dev/urandom` (macOS-only shell).
-pub fn generate_auth_token() -> String {
+fn generate_auth_token_from_reader(mut entropy: impl Read) -> Result<String, LaunchError> {
     let mut buf = [0u8; 16];
-    // /dev/urandom is always available on macOS and never blocks.
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read;
-        let _ = f.read_exact(&mut buf);
-    }
-    buf.iter().map(|b| format!("{b:02x}")).collect()
+    entropy
+        .read_exact(&mut buf)
+        .map_err(|error| LaunchError::AuthTokenGenerationFailed(error.to_string()))?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Generate a 32-hex-char random token using `/dev/urandom` (macOS-only shell).
+/// Refuse to start if the OS entropy source cannot provide all 16 bytes.
+pub fn generate_auth_token() -> Result<String, LaunchError> {
+    let entropy = std::fs::File::open("/dev/urandom")
+        .map_err(|error| LaunchError::AuthTokenGenerationFailed(error.to_string()))?;
+    generate_auth_token_from_reader(entropy)
 }
 
 /// Locate the CLI and spawn the backend process.  Health polling and state
@@ -180,7 +188,13 @@ pub fn spawn_backend(app: &AppHandle, auth_token: &str) -> Result<BackendHandle,
     })
 }
 
-/// After health 2xx, verify the backend identity with an authenticated GET /api/stats.
+#[derive(serde::Deserialize)]
+struct ServerIdentity {
+    identity: String,
+    version: String,
+}
+
+/// After health 2xx, verify the backend with the cheap authenticated identity probe.
 /// This ensures the health endpoint belongs to our process, not a port-race squatter.
 pub async fn verify_identity(port: u16, auth_token: &str) -> Result<(), LaunchError> {
     let client = reqwest::Client::builder()
@@ -190,7 +204,7 @@ pub async fn verify_identity(port: u16, auth_token: &str) -> Result<(), LaunchEr
 
     // Exact route path — a trailing slash would bounce through a redirect,
     // and redirects can drop the Authorization header.
-    let url = format!("http://127.0.0.1:{port}/api/stats");
+    let url = format!("http://127.0.0.1:{port}/api/identity");
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {auth_token}"))
@@ -198,12 +212,110 @@ pub async fn verify_identity(port: u16, auth_token: &str) -> Result<(), LaunchEr
         .await
         .map_err(|e| LaunchError::IdentityCheckFailed(e.to_string()))?;
 
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(LaunchError::IdentityCheckFailed(format!(
+    if !resp.status().is_success() {
+        return Err(LaunchError::IdentityCheckFailed(format!(
             "status {}",
             resp.status()
-        )))
+        )));
+    }
+
+    let body = resp
+        .json::<ServerIdentity>()
+        .await
+        .map_err(|e| LaunchError::IdentityCheckFailed(format!("invalid response: {e}")))?;
+    if body.identity != "lionagi-studio" || body.version.trim().is_empty() {
+        return Err(LaunchError::IdentityCheckFailed(format!(
+            "unexpected identity {:?} version {:?}",
+            body.identity, body.version
+        )));
+    }
+
+    log::info!("verified lionagi studio backend version {}", body.version);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Cursor, Error, Read};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    struct FailingEntropy;
+
+    impl Read for FailingEntropy {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(Error::other("entropy source failed"))
+        }
+    }
+
+    #[test]
+    fn auth_token_generation_rejects_a_short_entropy_read() {
+        let error = generate_auth_token_from_reader(Cursor::new([7u8; 15]))
+            .expect_err("15 entropy bytes must not produce a token");
+
+        assert!(error.to_string().contains("failed to generate auth token"));
+    }
+
+    #[test]
+    fn auth_token_generation_propagates_entropy_read_failures() {
+        let error = generate_auth_token_from_reader(FailingEntropy)
+            .expect_err("an entropy read failure must not produce a token");
+
+        assert!(error.to_string().contains("entropy source failed"));
+    }
+
+    async fn serve_once(body: &str) -> (u16, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = body.to_owned();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0u8; 1024];
+                let read = socket.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        (port, handle)
+    }
+
+    #[tokio::test]
+    async fn identity_check_uses_cheap_authenticated_endpoint() {
+        let (port, request) =
+            serve_once(r#"{"identity":"lionagi-studio","version":"0.34.1"}"#).await;
+
+        verify_identity(port, "desktop-test-token").await.unwrap();
+        let request = request.await.unwrap();
+
+        assert!(request.starts_with("GET /api/identity HTTP/1.1\r\n"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer desktop-test-token\r\n"));
+    }
+
+    #[tokio::test]
+    async fn identity_check_rejects_an_unrelated_success_response() {
+        let (port, _request) = serve_once(r#"{"identity":"not-lionagi","version":"1"}"#).await;
+
+        let error = verify_identity(port, "desktop-test-token")
+            .await
+            .expect_err("an unrelated 2xx server must not pass identity verification");
+
+        assert!(error.to_string().contains("unexpected identity"));
     }
 }

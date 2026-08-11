@@ -19,6 +19,13 @@ import re
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from lionagi.libs.credential_fields import (
+    EXACT_SECRET_FIELD_NAMES,
+    SECRET_KEY_MARKERS,
+    fold_field_name,
+    is_secret_field_name,
+)
+
 __all__ = (
     "MAX_CANDIDATES",
     "PER_KIND_ITEM_CAP",
@@ -52,6 +59,11 @@ MESSAGE_BYTE_CAP = 2 * 1024 * 1024
 # after redaction — a single field is never allowed to exceed the same
 # aggregate bound the other findings sections use.
 ARTIFACT_BYTE_CAP = 2 * 1024 * 1024
+
+# Backward-compatible private aliases used by the cross-layer agreement test.
+# The source of truth lives in libs.credential_fields.
+_EXACT_SECRET_FIELD_NAMES = EXACT_SECRET_FIELD_NAMES
+_SECRET_KEY_MARKERS = SECRET_KEY_MARKERS
 
 
 def public_project(value: Any) -> str | None:
@@ -103,32 +115,6 @@ _ASSIGNMENT_SECRET_RE = re.compile(
     r"(?i)\b((?:api[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?key"
     r"|private[_-]?key|password|passwd|secret|token)\w*)\s*[:=]\s*(\S+)"
 )
-_SECRET_KEY_MARKERS = (
-    "secret",
-    "token",
-    "password",
-    "passwd",
-    "api_key",
-    "apikey",
-    "credential",
-    "authorization",
-    "auth_token",
-    "access_key",
-    "accesskey",
-    "private_key",
-    "privatekey",
-    "client_secret",
-    "bearer",
-)
-# Multi-word markers are listed in both their separated and their run-together
-# spelling, because field names are folded to a single separator before the
-# comparison and a name written `accessKey` or `access-key` folds to
-# `accesskey`, which the separated spelling does not match. `api_key`/`apikey`
-# already worked this way; the other two names now follow it, and the
-# assignment pattern above already treats the same separators as optional.
-# Marker names whose folded form contains a shorter marker -- `authToken`
-# holds `token`, `clientSecret` holds `secret` -- are covered without a second
-# spelling.
 _SECRET_VALUE_PREFIXES = ("sk-", "ghp_", "gho_", "ghu_", "ghs_", "xox", "AKIA", "eyJ")
 
 
@@ -202,48 +188,6 @@ def scrub_text(text: str, *, known_values: frozenset[str] | None = None) -> str:
     return text
 
 
-_FIELD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
-
-
-def fold_field_name(key: str) -> str:
-    """Reduce a field name to the spelling the secret markers are written in.
-
-    Separators do not change which field a name refers to. HTTP headers arrive
-    as X-API-Key, config files write api.key, and our own records write
-    api_key, so every marker containing an underscore would otherwise match
-    only the last of those. Folding any run of non-alphanumeric characters to a
-    single underscore makes all the spellings compare equal.
-
-    This lives here, and not beside either caller, because both redaction
-    layers have to agree about it. When they disagreed, the same credential was
-    withheld on one path and served on the other.
-    """
-    return _FIELD_SEPARATOR_RE.sub("_", key.lower())
-
-
-# Names that mean a credential on their own but must not match as substrings.
-# "auth" inside "author" or "authorized_keys_count" is a different word, and
-# redacting those would delete data a caller legitimately reads, so these are
-# compared for equality against the folded name rather than searched for.
-_EXACT_SECRET_FIELD_NAMES = frozenset({"auth", "authentication", "bearer"})
-
-
-def is_secret_field_name(key: str) -> bool:
-    """Say whether a field name names a credential.
-
-    This is the whole rule, in one place, because two copies of it disagreed:
-    one carried the exact-match names above and the other did not, so a value
-    under an `auth` key was withheld on the session and artifact paths and
-    served on the tool-argument and manifest paths. Sharing the separator fold
-    alone was not enough — the vocabulary has to be shared too, or the same
-    class of gap simply moves to whichever name the two lists differ on.
-    """
-    folded = fold_field_name(key)
-    return folded in _EXACT_SECRET_FIELD_NAMES or any(
-        marker in folded for marker in _SECRET_KEY_MARKERS
-    )
-
-
 def _is_secret_key(key: str) -> bool:
     return is_secret_field_name(key)
 
@@ -296,14 +240,18 @@ def redact_arguments(value: Any, *, parent_key: str = "") -> Any:
     if isinstance(value, (dict, list)) and is_secret_field_name(parent_key):
         return "[redacted]"
     if isinstance(value, dict):
-        return {
-            key: (
-                redact_arguments(val, parent_key=key)
+        projected: dict[str, Any] = {}
+        for raw_key, val in value.items():
+            # Keys are observable content too: a token or absolute host path
+            # used as a JSON key must not escape merely because it is not in a
+            # value position. Match _safe_content's mapping projection.
+            safe_key = scrub_text(str(raw_key))
+            projected[safe_key] = (
+                redact_arguments(val, parent_key=safe_key)
                 if isinstance(val, (dict, list))
-                else redact_scalar(key, val)
+                else redact_scalar(safe_key, val)
             )
-            for key, val in value.items()
-        }
+        return projected
     if isinstance(value, list):
         return [
             redact_arguments(item) if isinstance(item, (dict, list)) else redact_scalar("", item)
