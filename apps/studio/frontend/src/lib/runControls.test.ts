@@ -17,6 +17,24 @@ describe("lib/runControls — controlKindFor", () => {
   });
 });
 
+describe("lib/runControls — hasAnyExecutablePath", () => {
+  // Deliberately unmocked. The run detail's decision to render no control
+  // section rests on this being false against the real registry; asserting it
+  // only through a mock would prove the wiring and say nothing about the fact.
+  it("is false today, because no verb has a backing command yet", async () => {
+    const { hasAnyExecutablePath } = await import("./runControls");
+    expect(hasAnyExecutablePath()).toBe(false);
+  });
+
+  it("agrees with the per-verb answer for every verb, so the two cannot drift", async () => {
+    const { hasAnyExecutablePath, hasExecutablePath } = await import("./runControls");
+    const verbs = ["pause", "resume", "message"] as const;
+    // Guards the aggregate against the case that matters: if it were ever
+    // hardcoded rather than derived, this is what would catch it.
+    expect(hasAnyExecutablePath()).toBe(verbs.some((v) => hasExecutablePath(v)));
+  });
+});
+
 describe("lib/runControls — derivePausePhase (the pausing-vs-paused window)", () => {
   it("reads idle when no pause has been requested, regardless of running count", async () => {
     const { derivePausePhase } = await import("./runControls");

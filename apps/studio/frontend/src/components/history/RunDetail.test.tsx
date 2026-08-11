@@ -50,6 +50,16 @@ vi.mock("@/components/canvas/WorkerCanvas", () => ({
   ),
 }));
 
+// The control section renders only while some verb has a backing command.
+// This wrapper defaults to the real registry, so a test says nothing by
+// accident; the control tests below opt in to a backed registry, because the
+// shown-and-disabled contract they assert is what exists once a command type
+// lands, not what exists today.
+vi.mock("@/lib/runControls", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/runControls")>("@/lib/runControls");
+  return { ...actual, hasAnyExecutablePath: vi.fn(actual.hasAnyExecutablePath) };
+});
+
 const HISTORY_DIR = path.resolve(__dirname);
 const mountedCards: Array<{ container: HTMLDivElement; root: Root }> = [];
 
@@ -2393,9 +2403,17 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
 // ─── ADR-0113 rows 8 & 9 — run controls, mounted ────────────────────────────
 
 describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     Element.prototype.scrollIntoView = vi.fn();
+    // Everything in this block describes the surface as it behaves once some
+    // verb has a backing command. That is the state in which D4's rule
+    // applies: a verb the engine cannot carry out is shown and disabled with
+    // its reason, never hidden, so a deliberate constraint does not read as a
+    // missing feature. The separate case — no verb backed at all — is covered
+    // below, and is the only reason these need to opt in.
+    const { hasAnyExecutablePath } = await import("@/lib/runControls");
+    vi.mocked(hasAnyExecutablePath).mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -2517,6 +2535,28 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
     const { container, unmount } = await mountRunDetail(sessionOf("show-play"));
     try {
       expect(container.querySelector('[data-testid="run-controls"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  // The state the surface is actually in today. Every verb above is disabled
+  // for want of a backing command, and a panel in which nothing can ever be
+  // clicked reads as a broken feature rather than an unbuilt one. So while no
+  // verb is backed the section is not rendered at all. This is scoped to that
+  // case and does not weaken the rule above: the moment one command type
+  // exists the section returns, and a verb the engine still cannot carry out
+  // goes back to being shown and disabled with its reason.
+  it("renders no control section at all while no verb has a backing command", async () => {
+    const { hasAnyExecutablePath } = await import("@/lib/runControls");
+    vi.mocked(hasAnyExecutablePath).mockReturnValue(false);
+    const { container, unmount } = await mountRunDetail(sessionOf("flow"));
+    try {
+      expect(container.querySelector('[data-testid="run-controls"]')).toBeNull();
+      // and specifically not the disabled-with-a-reason rendering
+      expect(
+        container.querySelector('[data-testid="run-controls-reason-no-executable-path"]'),
+      ).toBeNull();
     } finally {
       unmount();
     }

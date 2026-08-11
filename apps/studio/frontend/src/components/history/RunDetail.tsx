@@ -56,6 +56,7 @@ import {
   confirmRunControl,
   controlKindFor,
   derivePausePhase,
+  hasAnyExecutablePath,
   pauseControlState,
   proposeRunControl,
   resumeControlState,
@@ -2477,7 +2478,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       </div>
 
       <OverviewSection data={overviewData} />
-      {controlKind && (
+      {controlKind && hasAnyExecutablePath() && (
         <RunControls
           runId={session.id}
           kind={controlKind}
