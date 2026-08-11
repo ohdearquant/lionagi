@@ -10,6 +10,10 @@ test.describe("mobile schedule detail controls", () => {
     page,
   }) => {
     await page.goto("/schedules");
+    const operatorToggle = page.getByRole("button", { name: "Operator (⌘J)", exact: true });
+    if ((await operatorToggle.getAttribute("aria-pressed")) === "true") {
+      await page.getByRole("button", { name: "Close Operator", exact: true }).last().click();
+    }
     await page.getByRole("button", { name: SMOKE_SCHEDULE_NAME, exact: true }).click();
 
     const dialog = page.getByRole("dialog", { name: SMOKE_SCHEDULE_NAME, exact: true });

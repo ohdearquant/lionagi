@@ -98,6 +98,10 @@ async def seed_state_db(db: StateDB) -> dict[str, Any]:
                     {"early_graph": SMOKE_EXECUTION_GRAPH} if status == "completed" else None
                 ),
                 "name": name,
+                # The display-name contract ranks a playbook above the agent
+                # descriptor; seed that public tier so the browser fixture is
+                # reachable by its stable, greppable name.
+                "playbook_name": SMOKE_SESSION_NAME if status == "completed" else None,
                 "status": status,
                 "invocation_kind": "agent",
                 "source_kind": "live",

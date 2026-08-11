@@ -798,6 +798,7 @@ export default function ScheduleDetailModal({
                 <div className="flex flex-col gap-2">
                   <FieldLabel label={t("missedFire")}>
                     <Select
+                      aria-label={t("missedFire")}
                       value={form.missed_fire_policy}
                       onChange={(e) => set("missed_fire_policy", e.target.value)}
                     >
@@ -809,6 +810,7 @@ export default function ScheduleDetailModal({
 
                   <FieldLabel label={t("overlap")}>
                     <Select
+                      aria-label={t("overlap")}
                       value={form.overlap_policy}
                       onChange={(e) => set("overlap_policy", e.target.value)}
                     >
