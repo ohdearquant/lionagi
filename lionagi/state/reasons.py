@@ -66,7 +66,7 @@ class RunReasons:
     COMPLETED_EMPTY_NO_EVIDENCE = "run.completed_empty.no_evidence"
     # DAG's own result stands even when a post-completion finalize step raised
     COMPLETED_FINALIZE_ERROR = "run.completed.finalize_error"
-    # a gate node rejected mid-DAG (issue #2860) and its dependent subtree was
+    # a gate node rejected mid-DAG and its dependent subtree was
     # short-circuited to skipped rather than run against the rejected
     # baseline -- the run genuinely completed, so status stays "completed",
     # but the reason distinguishes it from a clean pass
@@ -76,11 +76,11 @@ class RunReasons:
     FAILED_ARTIFACT_WRITE = "run.failed.artifact_write"
     TIMED_OUT_DEADLINE = "run.timed_out.deadline"
     ABORTED_USER = "run.aborted.user"
-    CANCELLED_SIGINT = "run.cancelled.sigint"  # issue #1055
+    CANCELLED_SIGINT = "run.cancelled.sigint"
     CANCELLED_SIGTERM = "run.cancelled.sigterm"  # externally delivered SIGTERM (exit 143)
     CANCELLED_SYSTEM = "run.cancelled.system"
     CANCELLED_ORCHESTRATOR = "run.cancelled.orchestrator"
-    # `li kill` — Phase 2 reason codes (issue #1094)
+    # `li kill` reason codes
     CANCELLED_MANUAL_KILL = "run.cancelled.manual_kill"
     CANCELLED_FORCE_KILL = "run.cancelled.force_kill"
     CANCELLED_STALE_AUTO = "run.cancelled.stale_auto"
@@ -171,7 +171,7 @@ class DispatchReasons:
     ACKED_CONSUMER = "dispatch.acked.consumer"
 
 
-# ── Validator ────────────────────────────────────────────────────────
+# Validator
 
 
 def _collect(*classes: type) -> frozenset[str]:
@@ -197,7 +197,7 @@ VALID_REASON_CODES: Final[frozenset[str]] = _collect(
 ) | {LEGACY_IMPORTED}
 
 
-# ── Validation helpers ───────────────────────────────────────────────
+# Validation helpers
 
 
 def validate_reason_code(code: str) -> str:
@@ -225,7 +225,7 @@ def validate_entity_type(entity_type: str) -> str:
     )
 
 
-# ── Table mapping ────────────────────────────────────────────────────
+# Table mapping
 # StateDB.update_status() uses this to resolve canonical entity_type
 # → physical table name for the UPDATE statement.
 
