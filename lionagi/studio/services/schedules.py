@@ -63,11 +63,18 @@ _GITHUB_CURSOR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 def _svc_validate_github_cursor(cursor: str | None) -> None:
     """Service-boundary check: a github_cursor must be a UTC ISO-8601 instant
-    spelled exactly as GitHub spells it, ``YYYY-MM-DDTHH:MM:SSZ`` -- the
-    poller compares cursors as strings, so a space separator, fractional
-    part, or `+00:00` offset would order wrongly and silently skip/replay
-    events. `None` is allowed and clears the cursor ("no bookmark"), which
-    makes the next merged-mode poll dispatch everything its scan reaches."""
+    spelled exactly as GitHub spells it, ``YYYY-MM-DDTHH:MM:SSZ``.
+
+    The poller compares cursors as STRINGS against the API's own timestamps, so
+    the format is a correctness contract rather than a presentation choice: a
+    space separator, a fractional part, or a ``+00:00`` offset all denote the
+    right instant and all order wrongly against ``2026-07-20T15:21:57Z``, which
+    silently makes the poller skip or replay events.
+
+    ``None`` is allowed and clears the cursor, meaning "no bookmark". That is a
+    legitimate operator action and a consequential one -- an unbookmarked
+    merged-mode poll dispatches everything its scan reaches.
+    """
     if cursor is None:
         return
     if not isinstance(cursor, str) or not _GITHUB_CURSOR_RE.match(cursor):
@@ -82,11 +89,23 @@ def _svc_validate_github_cursor(cursor: str | None) -> None:
 
 
 def _svc_validate_action_cwd(cwd: str | None) -> None:
-    """Service-boundary check: an explicit action_cwd (ADR-0070 delta 1's
-    persisted execution root) must be an existing absolute directory; `None`
-    is allowed, an empty/whitespace value is not. Mirrors
-    ``scheduler.engine._is_usable_execution_root`` (kept in step by hand) but
-    spelled out here since this validator's product is the error message."""
+    """Service-boundary check: an explicit action_cwd (ADR-0070 delta 1's persisted
+    execution root) must be an existing absolute directory.
+
+    ``None`` means "no execution root configured" and is allowed. A supplied
+    but empty/whitespace value is rejected rather than persisted: it is neither
+    a usable directory nor a clear, and the scheduler now fails closed on any
+    non-``None`` root it cannot resolve, so an empty root would only ever
+    surface later as a refused run.
+
+    The two conditions below are exactly
+    ``lionagi.studio.scheduler.engine._is_usable_execution_root``, spelled out
+    rather than called. That is deliberate and is the one intended exception to
+    routing every usability decision through that predicate: this is an input
+    validator whose product is the error message, and it tells a caller which
+    of the two rules they broke, where the predicate can only say "no". Keep
+    the two in step -- if the predicate gains a condition, this gains a
+    matching branch."""
     if cwd is None:
         return
     p = Path(cwd)
@@ -335,11 +354,31 @@ def _schedule_cadence_seconds(row: dict[str, Any]) -> float | None:
 def compute_schedule_health(
     row: dict[str, Any], evidence: dict[str, Any], *, now: float
 ) -> dict[str, Any]:
-    """Derive a read-only health verdict for one schedule: disabled,
-    never-fired, no-evidence, overdue, failing, or healthy. See studio.md
-    for what distinguishes never-fired from no-evidence (both signals --
-    zero recorded rows AND no ``last_fired_at`` watermark -- must agree
-    nothing ever ran, else the honest verdict is "cannot tell")."""
+    """Derive a read-only health verdict for one schedule.
+
+    States: disabled (not enabled), never-fired (enabled, zero schedule_runs
+    rows recorded at all AND no retained last_fired_at watermark -- the
+    closest thing to a confident "never ran" this table can support),
+    no-evidence (enabled, and either recorded rows exist with none of them
+    execution evidence -- e.g. a skip/queue-only history -- or zero rows are
+    recorded but schedules.last_fired_at shows the schedule executed before
+    its schedule_runs history was pruned by retention; this table cannot
+    distinguish those shapes from each other, so it reports "cannot tell"
+    rather than guessing either way), overdue (enabled, cadence known, and
+    no execution evidence within grace of the expected cadence), failing
+    (the single latest executed run's outcome was failed/timed_out -- see
+    _HEALTH_FAILING_THRESHOLD), healthy (otherwise).
+
+    ``schedules.last_fired_at`` is a retained per-schedule column written by
+    the normal occurrence paths -- it survives schedule_runs retention
+    pruning even after every run row for a schedule is gone. never-fired is
+    the strongest claim this table can make ("nothing ever happened"), so it
+    must require BOTH signals to agree that nothing was recorded: zero rows
+    (last_recorded_run_at is None) AND no surviving watermark (last_fired_at
+    is None). Either one being non-null means the schedule executed at some
+    point and the honest verdict is "cannot tell" (no-evidence), not
+    "never-fired".
+    """
     last_executed_at = evidence.get("last_executed_run_at")
     last_executed_status = evidence.get("last_executed_status")
     last_recorded_at = evidence.get("last_recorded_run_at")

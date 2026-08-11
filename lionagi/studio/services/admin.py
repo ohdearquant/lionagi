@@ -297,15 +297,32 @@ def _artifacts_path(row: Any) -> Path | None:
     return None
 
 
-# Lock files lionagi itself creates under a run's artifact tree; matched by
-# name (not the `.lock` suffix, which also matches uv.lock/poetry.lock/
-# Cargo.lock -- see studio.md). The resume lock (`{digest}.lock`) lives in
-# `resume-locks/`, never under an artifact root, so it's unreachable here.
+# The lock files lionagi itself creates under a run's artifact tree. A stale one
+# of these means a process died still holding a claim, which is the only thing
+# this evidence is meant to detect.
+#
+# Matching by the ``.lock`` suffix instead reads dependency lockfiles -- uv.lock,
+# poetry.lock, Cargo.lock -- as dead runs. Since a run's artifacts_path is
+# routinely a repository root, and the search below is recursive, a single
+# checked-in uv.lock marked every completed session in that repository a zombie:
+# the classifier's most severe level, fired by a file that says nothing about any
+# process. Match the names we write, not the extension anyone may use.
+#
+# The resume lock (``{digest}.lock``) is deliberately absent: it lives in
+# ``resume-locks/`` beside the state DB, never under an artifact root, so it is
+# unreachable from here by construction.
 _RUNTIME_LOCK_NAMES: frozenset[str] = frozenset({"job.lock", "finalize.lock"})
 
-# Directory names never on the path to a run directory, pruned for cost: an
-# unpruned walk of a projects directory measured 100s vs. 3ms pruned. See
-# studio.md.
+# Directory names never on the path to a run directory, and routinely holding
+# more files than everything else in the tree combined.
+#
+# The cost of skipping them is what makes matching by name affordable. Matching
+# by suffix was fast for the wrong reason: a repository root almost always has a
+# dependency lockfile near the top, so the search hit one immediately and
+# stopped. Searching for names we write means the common answer is "not here",
+# and reaching that answer costs a complete traversal. Measured on one machine,
+# an unpruned walk of a projects directory took 100 seconds, against three
+# milliseconds for the suffix match it replaced.
 _UNSEARCHED_DIRS: frozenset[str] = frozenset(
     {
         ".git",
@@ -331,23 +348,37 @@ _UNSEARCHED_DIRS: frozenset[str] = frozenset(
 )
 
 
-# Wall-clock ceiling for one whole scan, not per-root: cost is concentrated
-# (measured 76s for 3780 artifact roots, 70 of those seconds in 4 roots), so
-# a per-root limit generous enough for a normal tree still admits a hundred
-# slow roots. See studio.md.
+# How long all the walks in one scan may take, in total. Pruning lowered the
+# per-tree constant but nothing bounds the work: a session's artifacts_path is
+# routinely a whole project directory, and the tree under it is whatever the
+# user happens to keep there. Measured against the live store, a full pass over
+# the 3780 artifact roots that exist on disk took 76 seconds, of which four
+# roots -- each a top-level directory -- accounted for 70.
+#
+# A ceiling on the scan rather than on each root, because the cost is
+# concentrated: a per-root limit generous enough for a normal tree still admits
+# a hundred slow roots, while one shared ceiling is the number that actually
+# bounds the endpoint.
 _SCAN_BUDGET_SECONDS = 5.0
 
-# Directories walked between budget checks -- the clock read is cheap but
-# not free.
+# Directories walked between budget checks. The clock read is cheap but not
+# free, and checking every directory would spend a measurable fraction of the
+# budget measuring the budget.
 _BUDGET_CHECK_INTERVAL = 64
 
 
 class _ScanBudget:
-    """Wall-clock ceiling shared by every walk in a single scan. Monotonic
-    on purpose: a system clock adjustment mid-scan must not extend or
-    collapse the ceiling. The ceiling is read when a budget is built rather
-    than defaulted in the signature, so retuning the module constant
-    retunes the next scan instead of a value bound at import."""
+    """Wall-clock ceiling shared by every walk in a single scan.
+
+    Monotonic on purpose: a system clock adjustment mid-scan must not extend or
+    collapse the ceiling, and this deadline is never compared against the
+    ``cutoff`` timestamps, which are wall-clock by necessity.
+
+    The ceiling is read when a budget is built rather than defaulted in the
+    signature, so that retuning the module constant retunes the next scan. A
+    default argument would have bound the value at import and left the constant
+    looking like a knob that does nothing.
+    """
 
     def __init__(self, seconds: float | None = None) -> None:
         ceiling = _SCAN_BUDGET_SECONDS if seconds is None else seconds
@@ -380,13 +411,20 @@ def _find_stale_lock(
     cache: dict[tuple[str, float], _ScanResult] | None = None,
     budget: _ScanBudget | None = None,
 ) -> _ScanResult:
-    """Find a stale runtime lock under *root*. Pass *cache* to share results
-    across one scan -- sessions repeat artifact roots heavily (one root was
-    152 of 500 recent sessions), and the cache is caller-owned/per-scan
-    rather than module-level since a scan is a snapshot at one `cutoff`.
-    Pass *budget* to bound the whole scan; a truncated result is cached like
-    any other, since re-walking it within the same scan can't improve on
-    the answer and would spend budget already gone."""
+    """Find a stale runtime lock under *root*.
+
+    Pass *cache* to share results across one scan. Sessions repeat their
+    artifact roots heavily -- one root accounted for 152 of 500 recent sessions
+    on one machine -- and without a cache each of those repeats re-walks the
+    same tree to reach the same answer. The cache is deliberately caller-owned
+    and per-scan rather than module-level: a scan is a snapshot taken at one
+    ``cutoff``, so results are consistent within it, while a process-lifetime
+    cache would keep answering with a filesystem that has since moved on.
+
+    Pass *budget* to bound the whole scan. A truncated result is cached like any
+    other: within one scan the answer for a root does not improve by asking
+    again, and re-walking it would spend budget that is already gone.
+    """
     key = (str(root), cutoff)
     if cache is not None and key in cache:
         return cache[key]
@@ -528,15 +566,20 @@ async def doctor(*, stale_hours: float = 1.0) -> dict[str, Any]:
 
 
 async def _code_identity_report() -> dict[str, Any]:
-    """Which code this daemon is actually running, and whether it has fallen
-    behind. With an editable install the daemon's one startup import
-    resolves to a working tree, so which code is running is a property of
-    whatever commit that checkout sits on -- the version string alone can't
-    distinguish a stale tree from a current one. Read fresh on every call,
-    never cached at start, since the question is "is the tree still
-    current" and a start-time value can only ever answer for then. Shells
-    out to git off the event loop, budget-bounded, so a daemon never stalls
-    on its own health check."""
+    """Which code this daemon is actually running, and whether it has fallen behind.
+
+    The daemon imports lionagi once, at start. With an editable install that
+    import resolves to a working tree, so which code is running is a property of
+    whatever commit that checkout sits on — a property nothing else in this
+    report can see. The version string cannot distinguish them: a stale tree and
+    a current one report the same one.
+
+    Read fresh on every call rather than cached at start, because the answer this
+    is asked for is "is the tree still current", and a value captured at start
+    can only ever say it was current then. The read shells out to git, so it runs
+    off the event loop and its own budget bounds it; a daemon must not stall on
+    its own health check.
+    """
     try:
         from lionagi.cli._code_identity import code_identity
 

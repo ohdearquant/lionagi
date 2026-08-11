@@ -89,13 +89,22 @@ _HISTORY_UNAVAILABLE_DETAIL = "Definition history is not readable right now"
 
 
 async def _read_history(kind: str, name: str) -> list[dict[str, Any]]:
-    """Version history for one definition, from the store that actually
-    holds it. Read through ``StateDB``, the same way ``save_definition``
-    writes it, so file/in-memory/server deployments all answer from the
-    configured store rather than an old local file laid over live disk
-    content. Raises rather than returning an empty list when the store
-    can't be read: "no versions" is a claim about the definition, while the
-    true statement here is a claim about the store. See studio.md."""
+    """Version history for one definition, from the store that actually holds it.
+
+    History is read through ``StateDB``, the same way ``save_definition``
+    writes it, so a file, an in-memory database and a server all answer from
+    the store the deployment is configured for. Reading SQLite directly instead
+    could only ever see a local file, which for a server-backed deployment is a
+    database nobody serves: version numbers and audit messages out of an old
+    local file, laid over content read live from disk, in one payload that
+    looks entirely consistent.
+
+    Raising when the store cannot be read is the point. Returning an empty list
+    would say this definition has no versions, which is a claim about the
+    definition; the true statement is that this deployment cannot answer, which
+    is a claim about the store. A caller told "no versions" reasonably concludes
+    nothing was ever saved.
+    """
     from lionagi.state.db import StateDB
 
     try:
@@ -380,13 +389,18 @@ async def save_definition(
     *,
     validate: bool = True,
 ) -> dict[str, Any]:
-    """Persist a definition version: DB write first, then disk (ADR-0077
-    D2); per-(kind, name) lock serialises concurrent saves. ``validate``
-    gates the cast role/mode check only, not the system-agent guard (always
-    runs); it defaults on for the direct save route, but
-    ``rollback_definition``/``snapshot_current`` pass ``validate=False``
-    since they replay content already accepted once, and a validator
-    tightened since would make an old version un-rollback-able."""
+    """Persist a definition version: DB write first, then disk (ADR-0077 D2); per-(kind, name) lock serialises concurrent saves.
+
+    ``validate`` gates the cast role/mode check below, not the system-agent
+    guard (which always runs). It defaults on for the direct save route --
+    the door a client posts arbitrary content through, and the one the agents
+    API's role/mode validation must also bind on (see ``_canonicalize_casts``
+    in ``agents.py``). ``rollback_definition`` and ``snapshot_current`` pass
+    ``validate=False``: they replay content that was already accepted once
+    (a stored version, a pre-existing disk file), and a validator tightened
+    after that content landed would make an old version un-rollback-able and
+    an existing file un-importable.
+    """
     # Validate at the service boundary — reject traversal sequences, path
     # separators, NUL, and glob metacharacters.
     validate_name_component(kind, label="kind")
@@ -464,12 +478,16 @@ async def save_definition(
 async def _save_skill_definition(
     name: str, content: str, message: str | None, *, validate: bool
 ) -> dict[str, Any]:
-    """Skill counterpart to ``save_definition``'s generic path. Always
-    writes ``<SKILLS_DIR>/<name>/SKILL.md`` regardless of what shape
-    currently exists on disk, normalizing to the one shape ``li skill``
-    actually resolves rather than preserving a legacy layout. Plugin-bundled
-    skills live under a plugin directory, never under ``SKILLS_DIR``, so
-    they're unreachable through this path by construction."""
+    """Skill counterpart to ``save_definition``'s generic path.
+
+    Always writes ``<SKILLS_DIR>/<name>/SKILL.md`` regardless of what shape (if
+    any) currently exists on disk -- a save through Studio normalizes a skill
+    to the one shape ``li skill`` actually resolves (see
+    ``skills.py::_find_skill_md`` / ``lionagi/cli/skill.py``), rather than
+    preserving whatever legacy layout it started from. Plugin-bundled skills
+    live under a plugin directory, never under ``SKILLS_DIR``, so they are
+    unreachable through this path by construction, not by an extra check.
+    """
     if validate:
         from .skills import validate_skill_content
 
