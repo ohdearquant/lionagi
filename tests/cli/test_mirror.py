@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -601,11 +602,14 @@ async def test_reconcile_flips_running_to_completed_when_idle(temp_db_path: Path
         )
         before = await db.get_session(session_db_id(SID))
         # Wall-clock well past the last message -> idle -> completed.
-        await reconcile_session_status(db, SID, now=before["updated_at"] + 10_000, live_window=300)
+        settled = await reconcile_session_status(
+            db, SID, now=before["updated_at"] + 10_000, live_window=300
+        )
         after = await db.get_session(session_db_id(SID))
     assert before["status"] == "running"
     assert after["status"] == "completed"
     assert after["status_reason_code"] == RunReasons.COMPLETED_OK
+    assert settled is True
 
 
 @pytest.mark.asyncio
@@ -687,10 +691,13 @@ async def test_reconcile_reactivates_completed_when_fresh(temp_db_path: Path) ->
         )
         before = await db.get_session(session_db_id(SID))
         # "now" within the live window of the last message -> running.
-        await reconcile_session_status(db, SID, now=before["updated_at"] + 1, live_window=300)
+        settled = await reconcile_session_status(
+            db, SID, now=before["updated_at"] + 1, live_window=300
+        )
         after = await db.get_session(session_db_id(SID))
     assert before["status"] == "completed"
     assert after["status"] == "running"
+    assert settled is False
 
 
 @pytest.mark.asyncio
@@ -922,6 +929,147 @@ async def test_multifile_session_completes_when_all_files_idle(
         row = await db.get_session(session_db_id(uid))
     assert row is not None
     assert row["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_idle_transcript_status_reconciliation_quiesces_after_cold_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Idle history costs one cold reconciliation, not one DB read per poll forever.
+
+    This models Studio's default five-second ambient-mirror poll with a bounded
+    but non-trivial transcript population.  Every file is already at EOF and
+    older than the liveness window, so the first pass must still repair stale
+    ``running`` rows after a daemon restart.  Once that check succeeds, another
+    unchanged pass has no new liveness fact to ask StateDB about.
+    """
+    import lionagi.cli.mirror as mirror_mod
+
+    root = tmp_path / "projects"
+    now = 1_800_000_000.0
+    states: dict[str, _FileState] = {}
+    expected_uids: list[str] = []
+    for index in range(64):
+        uid = f"idle-{index:04d}"
+        path = root / "-work-acme" / f"{uid}.jsonl"
+        _write_session_file(path, uid, age_secs=3600)
+        os.utime(path, (now - 600, now - 600))
+        states[str(path)] = _FileState(
+            session_uid=uid,
+            offset=path.stat().st_size,
+            project="acme",
+            attr_peeked=True,
+        )
+        expected_uids.append(uid)
+
+    calls: list[str] = []
+
+    async def _record_reconcile(_db, uid, **_kwargs):
+        calls.append(uid)
+        return True
+
+    monkeypatch.setattr(mirror_mod.time, "time", lambda: now)
+    monkeypatch.setattr(
+        "lionagi.state.claude_mirror.reconcile_session_status",
+        _record_reconcile,
+    )
+
+    await _one_pass(None, root, states, {}, since=None, live_window=300)
+    await _one_pass(None, root, states, {}, since=None, live_window=300)
+
+    assert calls == expected_uids
+
+
+@pytest.mark.asyncio
+async def test_live_transcript_reconciles_until_one_final_idle_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The DB liveness verdict, not file mtime, controls the final idle check."""
+    import lionagi.cli.mirror as mirror_mod
+
+    root = tmp_path / "projects"
+    uid = "live-then-idle"
+    path = root / "-work-acme" / f"{uid}.jsonl"
+    _write_session_file(path, uid, age_secs=10)
+    modified_at = 1_800_000_000.0
+    # A copied/restored transcript can have an old filesystem timestamp while
+    # the event timestamp persisted in StateDB is still live.  File mtime is a
+    # scan hint, never the liveness source of truth.
+    os.utime(path, (modified_at - 600, modified_at - 600))
+    states = {
+        str(path): _FileState(
+            session_uid=uid,
+            offset=path.stat().st_size,
+            project="acme",
+            attr_peeked=True,
+        )
+    }
+    calls: list[str] = []
+    settled = {"value": False}
+
+    async def _record_reconcile(_db, reconciled_uid, **_kwargs):
+        calls.append(reconciled_uid)
+        return settled["value"]
+
+    monkeypatch.setattr(mirror_mod.time, "time", lambda: modified_at)
+    monkeypatch.setattr(
+        "lionagi.state.claude_mirror.reconcile_session_status",
+        _record_reconcile,
+    )
+
+    # Still live according to the persisted message clock: keep observing even
+    # though the file itself already looks old.
+    await _one_pass(None, root, states, {}, since=None, live_window=300)
+    await _one_pass(None, root, states, {}, since=None, live_window=300)
+    # The DB reports the final idle transition as settled.  Later unchanged
+    # polls are quiescent.
+    settled["value"] = True
+    await _one_pass(None, root, states, {}, since=None, live_window=300)
+    await _one_pass(None, root, states, {}, since=None, live_window=300)
+
+    assert calls == [uid, uid, uid]
+
+
+@pytest.mark.asyncio
+async def test_idle_codex_rollout_status_reconciliation_also_quiesces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bounded polling rule covers Studio's default Codex tree too."""
+    import lionagi.cli.mirror as mirror_mod
+
+    now = 1_800_000_000.0
+    uid = "0199bbbb-0000-0000-0000-000000000099"
+    path = tmp_path / "2026" / "08" / "11" / "rollout-idle.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("{}\n")
+    os.utime(path, (now - 600, now - 600))
+    state = _FileState(
+        session_uid=uid,
+        offset=path.stat().st_size,
+        head_checked=True,
+        codex_provenance_peeked=True,
+    )
+    states = {str(path): state}
+    calls: list[str] = []
+
+    async def _record_reconcile(_db, reconciled_uid, **_kwargs):
+        calls.append(reconciled_uid)
+        return True
+
+    monkeypatch.setattr(mirror_mod.time, "time", lambda: now)
+    monkeypatch.setattr(
+        "lionagi.state.codex_mirror.reconcile_session_status",
+        _record_reconcile,
+    )
+
+    await mirror_mod._codex_pass(
+        None, tmp_path, states, {}, since=None, live_window=300, threads={}
+    )
+    await mirror_mod._codex_pass(
+        None, tmp_path, states, {}, since=None, live_window=300, threads={}
+    )
+
+    assert calls == [uid]
 
 
 @pytest.mark.asyncio

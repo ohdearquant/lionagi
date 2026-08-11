@@ -140,6 +140,12 @@ class _FileState:
     # cwd from its header but never reaches mirror_session again, so without
     # this the backfill would otherwise be retried every poll forever.
     codex_provenance_peeked: bool = False
+    # Process-local liveness checkpoint.  Once reconciliation says an unchanged
+    # transcript is settled (missing or idle+terminal), its EOF carries no new
+    # status evidence and must not cause another StateDB read every five-second
+    # poll.  Deliberately not persisted: every daemon restart rechecks each
+    # in-window transcript once before quiescing it.
+    status_settled_until_append: bool = False
 
 
 @dataclass
@@ -263,6 +269,20 @@ def _seed_lineage(lineage: _Lineage, states: dict[str, _FileState]) -> None:
     for st in states.values():
         if st.leaf_uuid and st.session_uid:
             lineage.leaf_owner[st.leaf_uuid] = st.session_uid
+
+
+def _needs_status_reconciliation(
+    state: _FileState,
+    *,
+    advanced: bool,
+) -> bool:
+    """Whether this file can add a liveness fact on the current poll.
+
+    A file that just advanced is always observed.  Otherwise the StateDB-backed
+    reconciliation verdict decides whether polling may quiesce; filesystem mtime
+    is only a scan-window hint and is deliberately not treated as liveness.
+    """
+    return bool(state.session_uid and (advanced or not state.status_settled_until_append))
 
 
 _WINDOW_UNITS = {"m": 60, "h": 3600, "d": 86400}
@@ -505,20 +525,22 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
 async def _one_pass(db, root: Path, states, offsets, *, since, live_window, lineage=None) -> int:
     now = time.time()
     total = 0
-    seen: set[str] = set()
+    reconcile: dict[str, list[_FileState]] = {}
     if lineage is None:
         lineage = _Lineage()
     for path in sorted(root.glob("*/*.jsonl")):
         if "_precompact_" in path.name:
             continue  # PreCompact-hook backups duplicate the live transcript (same sessionId)
         try:
-            if since is not None and (now - path.stat().st_mtime) > since:
+            modified_at = path.stat().st_mtime
+            if since is not None and (now - modified_at) > since:
                 continue
             key = str(path)
             state = states.get(key)
             if state is None:
                 state = _FileState(session_uid="", offset=offsets.get(key, 0))
                 states[key] = state
+            previous_offset = state.offset
             total += await _mirror_one(db, path, state, lineage)
             offsets[key] = state.offset
             # Idle/already-read files have no streamed events to derive from: peek
@@ -535,15 +557,21 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window, line
                     if cwd:
                         await _attribute_idle(db, state, cwd)
                     state.attr_peeked = True
-            seen.add(state.session_uid)
+            if _needs_status_reconciliation(
+                state,
+                advanced=state.offset != previous_offset,
+            ):
+                reconcile.setdefault(state.session_uid, []).append(state)
         except FileNotFoundError:
             continue
         except Exception as exc:  # one bad transcript must not kill the tail
             log_error(f"mirror failed for {path.name}: {exc}")
     from lionagi.state.claude_mirror import link_session_lineage, reconcile_session_status
 
-    for uid in seen:
-        await reconcile_session_status(db, uid, now=now, live_window=live_window)
+    for uid, candidates in reconcile.items():
+        settled = await reconcile_session_status(db, uid, now=now, live_window=live_window)
+        for state in candidates:
+            state.status_settled_until_append = settled
     for child_uid, parent_uid, parent_event_uuid in lineage.resolve():
         await link_session_lineage(
             db, child_uid=child_uid, parent_uid=parent_uid, parent_event_uuid=parent_event_uuid
@@ -727,26 +755,33 @@ async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, th
 
     now = time.time()
     total = 0
-    seen: set[str] = set()
+    reconcile: dict[str, list[_FileState]] = {}
     for path in sorted(root.rglob("rollout-*.jsonl")):
         try:
-            if since is not None and (now - path.stat().st_mtime) > since:
+            modified_at = path.stat().st_mtime
+            if since is not None and (now - modified_at) > since:
                 continue
             key = str(path)
             state = states.get(key)
             if state is None:
                 state = _FileState(session_uid="", offset=offsets.get(key, 0))
                 states[key] = state
+            previous_offset = state.offset
             total += await _mirror_one_codex(db, path, state, threads)
             offsets[key] = state.offset
-            if state.session_uid and not state.orchestrated:
-                seen.add(state.session_uid)
+            if not state.orchestrated and _needs_status_reconciliation(
+                state,
+                advanced=state.offset != previous_offset,
+            ):
+                reconcile.setdefault(state.session_uid, []).append(state)
         except FileNotFoundError:
             continue
         except Exception as exc:  # one bad rollout must not kill the tail
             log_error(f"mirror failed for {path.name}: {exc}")
-    for uid in seen:
-        await reconcile_session_status(db, uid, now=now, live_window=live_window)
+    for uid, candidates in reconcile.items():
+        settled = await reconcile_session_status(db, uid, now=now, live_window=live_window)
+        for state in candidates:
+            state.status_settled_until_append = settled
     return total
 
 
