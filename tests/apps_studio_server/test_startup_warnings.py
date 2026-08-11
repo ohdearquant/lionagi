@@ -30,9 +30,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 _STUDIO_APP_LOGGER = "lionagi.studio.app"
 
 
-# ---------------------------------------------------------------------------
 # Handler spy infrastructure
-# ---------------------------------------------------------------------------
 
 
 class _RecordList(list["logging.LogRecord"]):
@@ -68,9 +66,7 @@ def _spy_logger(name: str) -> Generator[_RecordList]:
         logger.setLevel(orig_level)
 
 
-# ---------------------------------------------------------------------------
 # Client factory
-# ---------------------------------------------------------------------------
 
 
 async def _anoop(*args: object, **kwargs: object) -> None:
@@ -145,9 +141,7 @@ def _bare_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Generator[T
             client.portal = None
 
 
-# ---------------------------------------------------------------------------
 # Warning: no auth token
-# ---------------------------------------------------------------------------
 
 
 class TestNoAuthWarning:
@@ -200,9 +194,7 @@ class TestNoAuthWarning:
         )
 
 
-# ---------------------------------------------------------------------------
 # Escalated warning: 0.0.0.0 bind without token
-# ---------------------------------------------------------------------------
 
 
 class TestEscalatedWarningOnWildcardBind:
@@ -246,9 +238,7 @@ class TestEscalatedWarningOnWildcardBind:
         )
 
 
-# ---------------------------------------------------------------------------
 # CORS method set is bounded (not '*')
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -362,9 +352,7 @@ class TestCORSBoundedMethods:
         assert "HEAD" in allowlist, f"HEAD must be in the CORS allowlist; got {sorted(allowlist)}"
 
 
-# ---------------------------------------------------------------------------
 # CORS wildcard origin warning
-# ---------------------------------------------------------------------------
 
 
 class TestCORSWildcardOriginWarning:
@@ -408,9 +396,7 @@ class TestCORSWildcardOriginWarning:
         )
 
 
-# ---------------------------------------------------------------------------
 # CLI wires the resolved bind host into the warning source
-# ---------------------------------------------------------------------------
 
 
 class TestCLIHostWiring:

@@ -423,9 +423,6 @@ async def test_update_options_whitespace_test_cmd_on_coding_raises(patched_svc):
         await svc.update_engine_def(def_id, {"options": {"test_cmd": "   "}})
 
 
-# ── Issue #1444: empty-body PUT must not return 404 for existing def ─────────
-
-
 async def test_update_empty_fields_existing_returns_truthy(patched_svc):
     """Empty fields dict on an existing def is a no-op, not a not-found."""
     svc, db_path = patched_svc
@@ -443,7 +440,7 @@ async def test_update_empty_fields_missing_returns_false(patched_svc):
 
 
 async def test_update_endpoint_empty_body_existing_200(patched_app):
-    """PUT {} on an existing def must return 200, not 404 (closes #1444)."""
+    """PUT {} on an existing def must return 200, not 404."""
     _, db_path, client = patched_app
     def_id = await _seed_engine_def(db_path, name="empty-body-def", kind="review")
     async with client as ac:

@@ -370,18 +370,18 @@ async def test_a_secret_nested_under_a_credential_name_is_withheld_on_both_read_
 ):
     """A credential field name has to cover what is stored underneath it.
 
-    The two read layers share one rule about which field names name a secret,
-    and the point of sharing it is that a caller cannot be served on one path
-    what it is denied on the other. Asking that rule directly cannot see this
-    gap: both layers agree `auth` names a credential, and one of them still
-    served the object stored under it, because only one consulted the name
-    before descending into a container. So this asks both public tools for the
-    same payload and requires the same answer of them.
+    The two read layers share one rule about which field names a secret, so
+    a caller must not be served on one path what it is denied on the other.
+    Testing that rule directly can't see this gap: both layers agree `auth`
+    names a credential, but one of them served the object stored under it
+    anyway because only one consulted the name before descending into a
+    container. So this asks both public tools for the same payload and
+    requires the same answer.
 
-    The planted value is deliberately shapeless -- it has spaces, no known
-    prefix, and no header or assignment form -- so nothing except the field
-    name can withhold it. A secret that looked like one would pass here
-    whether the name was consulted or not.
+    The planted value is deliberately shapeless -- spaces, no known prefix,
+    no header or assignment form -- so nothing except the field name can
+    withhold it; a secret that looked like one would pass here regardless
+    of whether the name was consulted.
     """
     import json
 
