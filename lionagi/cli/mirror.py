@@ -120,8 +120,8 @@ class _FileState:
     tool_names: dict[str, str] = field(default_factory=dict)
     project: str | None = None
     project_source: str | None = None
-    # Raw transcript cwd, the session's artifact root (issue #2848) -- unlike
-    # `project`, never bucketed/fallen-back, just the directory as reported.
+    # Raw transcript cwd, the session's artifact root -- unlike `project`,
+    # never bucketed/fallen-back, just the directory as reported.
     cwd: str | None = None
     model: str | None = None
     name: str | None = None
@@ -310,19 +310,13 @@ def _read_new_events(
 ) -> tuple[list[dict[str, Any]], list[tuple[int, int, str]], int, int]:
     """Read complete JSONL lines past the cursor.
 
-    Returns ``(events, sources, new_offset, unreadable)``. ``sources`` is the
-    per-event ``(byte_offset, byte_count, sha256)`` of each raw line, in the
-    same order as ``events`` — the basis for a resolvable mirror source pointer
-    (see ``_mirror_common.bound_mirror_content``).
+    Returns ``(events, sources, new_offset, unreadable)``; ``sources`` holds
+    each raw line's ``(byte_offset, byte_count, sha256)`` in ``events`` order.
+    The cursor is NOT advanced here — the caller only commits it after the
+    batch is durably mirrored, so a write failure re-reads the same lines.
 
-    The cursor is NOT advanced here — the caller only commits it after the batch
-    is durably mirrored, so a write failure re-reads the same lines next pass.
-
-    ``unreadable`` counts lines that were not JSON, or were JSON but not a record
-    object. It is reported rather than folded into the events count because a line
-    that could not be read is not a line deliberately not mirrored, and a consumer
-    comparing what a file held against what landed needs the difference between a
-    damaged corpus and an uninteresting one.
+    ``unreadable`` counts non-JSON or non-record lines, kept separate from the
+    events count so a consumer can tell a damaged corpus from an uninteresting one.
     """
     size = path.stat().st_size
     if state.offset > size:  # file truncated/rotated — re-read from the top.
@@ -422,8 +416,8 @@ async def _attribute_idle(db, state: _FileState, cwd: str) -> None:
     Covers sessions mirrored before project/artifact-root attribution existed,
     which have no new events to trigger the normal (streamed-event) attribution
     path. The two backfills are independent: a row can already carry a project
-    from an earlier mirror pass while still missing artifacts_path (issue #2848's
-    dominant case), so each is only (re)written when actually missing.
+    from an earlier mirror pass while still missing artifacts_path, so each is
+    only (re)written when actually missing.
     """
     from lionagi.state.claude_mirror import session_db_id
 
@@ -585,11 +579,9 @@ def _peek_codex_head(path: Path) -> tuple[str, dict[str, Any] | None]:
     ``("headerless", None)`` for a complete first line that is not one, and
     ``("torn", None)`` when the line is still being written or unreadable.
     Completeness is decided by the trailing newline BEFORE any parse attempt:
-    rollouts are append-only JSONL, so a line without its newline is still
-    arriving and defers even when the bytes so far happen to parse — later
-    appends can extend or corrupt it. A newline-terminated line that cannot
-    parse is permanently corrupt and settles as headerless; the normal reader
-    accounts for the bad line.
+    a line without one may still be arriving and could extend or corrupt what
+    parses so far. A newline-terminated line that fails to parse is permanently
+    corrupt and settles as headerless; the normal reader accounts for the bad line.
     """
     from lionagi.state.codex_mirror import session_meta
 
@@ -752,9 +744,7 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         # A file the mirror read in full and produced nothing from is a finding, not
         # a quiet skip: without this it is indistinguishable from a file not yet
         # reached. The durable half is the session row the writer keeps for such a
-        # file; this only surfaces it in the run that saw it. Measured cause on the
-        # local corpus: 6 of 29,652 rollouts (all 2025-09-01/02) predate the
-        # enveloped record format and match no record type this mirror reads.
+        # file; this only surfaces it in the run that saw it.
         state.barren_reported = True
         warn(
             f"{path.name}: read {sum(tally.seen.values())} record(s), mirrored none "

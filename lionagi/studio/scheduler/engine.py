@@ -334,21 +334,17 @@ async def _resolve_action_cwd(schedule: dict) -> str | None:
     """Resolve the working directory for a scheduled subprocess spawn.
 
     Layered resolution (first hit wins): ``action_cwd`` (the schedule's own
-    persisted execution root, ADR-0070 delta 1) -> ``action_project``'s
-    stored path -> fall-through. On fall-through, a schedule that carries an
-    explicit ``action_cwd``/``action_project`` fails closed
+    persisted execution root) -> ``action_project``'s stored path ->
+    fall-through. On fall-through, a schedule that carries an explicit
+    ``action_cwd``/``action_project`` fails closed
     (``SchedulerCwdInheritRefusedError``) rather than silently inheriting the
     daemon's cwd, which can itself resolve to a project and run the action in
-    the wrong place with no visible failure; ``LIONAGI_SCHEDULER_CWD`` is
-    consulted only for ownerless (pre-migration) rows, else ``None`` inherits
-    the daemon cwd with a deprecation warning.
+    the wrong place with no visible failure; ``LIONAGI_SCHEDULER_CWD``
+    applies only to ownerless (pre-migration) rows.
 
     Returns the resolved cwd, or ``None`` for the ownerless fall-through.
     Raises ``SchedulerCwdInheritRefusedError`` for the owner-carrying
     fall-through.
-
-    Imports ``lionagi.studio.services.projects`` lazily so this module stays
-    importable without the ``studio`` (fastapi) extra.
     """
     action_cwd = schedule.get("action_cwd")
     if action_cwd:
@@ -523,17 +519,14 @@ class SchedulerEngine:
         interpreted in and how that zone was arrived at.
 
         The startup log line says this once for the process default; this
-        says it per row, which is what makes it answerable after the fact
-        and per schedule -- a row carrying its own declared zone and a row
+        says it per row -- a row carrying its own declared zone and a row
         riding the process default resolve differently, and only the row
         knows which it is. Rows are also stamped as they arm and as they
-        fire; this pass exists so a daemon that resolves its zone
-        differently from the previous run corrects every row at startup
-        rather than only the ones that happen to fire afterwards.
+        fire; this pass corrects every row at startup if the daemon resolves
+        its zone differently from the previous run, not only the ones that
+        happen to fire afterwards.
 
-        Idempotent: a row whose stamp already matches is left untouched, so
-        re-running this on every startup writes nothing once the fleet has
-        converged.
+        Idempotent: a row whose stamp already matches is left untouched.
         """
         try:
             schedules = await self._svc.list_schedules()
@@ -570,22 +563,20 @@ class SchedulerEngine:
     async def _backfill_action_cwd(self) -> None:
         """One-shot startup backfill: give pre-migration schedules a persisted execution root.
 
-        ADR-0070 delta 1. ``action_cwd`` is additive and nullable (see
-        ``MIGRATION_COLUMNS``), so rows created before this feature shipped
-        have it unset. For any such row whose ``action_project`` resolves to
-        a directory that still exists on disk, snapshot that path into
-        ``action_cwd`` -- the same derivation `create_schedule()` performs
-        for newly created schedules. A row with no resolvable
-        ``action_project`` is left with ``action_cwd`` unset. Note that such a
-        row still *carries* an execution root, so it does not fall through to
+        ``action_cwd`` is additive and nullable, so rows created before this
+        feature shipped have it unset. For any such row whose
+        ``action_project`` resolves to a directory that still exists on
+        disk, snapshot that path into ``action_cwd`` -- the same derivation
+        `create_schedule()` performs for newly created schedules. A row with
+        no resolvable ``action_project`` is left with ``action_cwd`` unset --
+        it still *carries* an execution root, so it does not fall through to
         the ownerless ``LIONAGI_SCHEDULER_CWD`` path: ``_resolve_action_cwd()``
-        fails closed for it when the schedule fires, until its project is
-        registered at an existing path or it is given an explicit
-        ``action_cwd``.
+        fails closed for it until its project resolves to an existing path
+        or it is given an explicit ``action_cwd``.
 
         Idempotent: only rows where ``action_cwd`` is still ``None`` are
         touched, so re-running this on every daemon startup is a no-op once
-        every backfillable row has been filled in.
+        every backfillable row is filled in.
         """
         try:
             schedules = await self._svc.list_schedules()
@@ -625,26 +616,19 @@ class SchedulerEngine:
         current timezone interpretation before the tick loop starts.
 
         Guards against silently-stale fire times if LIONAGI_SCHEDULER_TZ (or
-        the host's local timezone) changed since a schedule was last armed —
-        the same interpretation change that PATCH and enable also trigger via
-        recompute_next_fire().
+        the host's local timezone) changed since a schedule was last armed.
 
         A schedule whose stored next_fire_at is already due (<= now) is left
         untouched here: it must flow through _check_missed_fires() first, so
         missed_fire_policy ("run_once" / "skip") gets a chance to run before
-        anything advances next_fire_at into the future. _check_missed_fires()
-        runs right after this method returns (see _tick_loop), and the
-        recovery path (_recover_missed_fire_run_once() / _record_missed_
-        fire_skip()) is what advances next_fire_at once the policy has been
-        applied — synchronously, before _check_missed_fires() returns, so
-        the _tick() call that immediately follows never observes the same
-        past-due timestamp. Only schedules whose stored next_fire_at is
-        still ahead of now — the timezone-migration correction case this
-        hook exists for — are recomputed here.
+        anything advances next_fire_at into the future -- that recovery path
+        advances next_fire_at once the policy has applied, synchronously and
+        before _check_missed_fires() returns, so the _tick() call that
+        follows never observes the same past-due timestamp. Only schedules
+        still ahead of now are recomputed here.
 
-        This method never fires anything itself, so it has no
-        occurrence-insert to reconcile against schedule_runs -- that
-        consultation happens in _check_missed_fires() for any due schedule.
+        Fires nothing itself, so there is no occurrence-insert to reconcile
+        against schedule_runs.
         """
         try:
             schedules = await self._svc.list_schedules(enabled=True)
@@ -894,7 +878,7 @@ class SchedulerEngine:
     async def _reconcile_dispatched_orphans(self) -> None:
         """Startup-only reconciliation for schedule_runs rows that were
         confirmed dispatched (an external process was launched) but never
-        reached a terminal status (see #2755).
+        reached a terminal status.
 
         Unlike ``_recover_undispatched_fires()`` (``dispatched_at IS NULL``,
         safe to re-fire because nothing was ever launched), a row here may
@@ -1609,47 +1593,31 @@ class SchedulerEngine:
 
         Returns ``(allowed, claim)``. ``allowed`` is False only when the
         schedule is bounded (``max_runs`` set) and has already consumed its
-        budget — persisted fired rows (running or resolved) plus fires
+        budget -- persisted fired rows (running or resolved) plus fires
         claimed in this process whose occurrence rows have not yet
-        committed; callers must refuse to fire in that case. ``claim`` is a ``_MaxRunsClaim`` token when a
-        bounded schedule's budget was actually reserved, or ``None`` when
-        the schedule is unbounded (``max_runs`` unset — always allowed, no
-        claim to release). Guarded by an engine-wide lock so concurrent
-        callers — the tick loop, fire_now(), github polling — can't both
-        read the same count and both claim it before either claim is
-        visible. This is the single-process analogue of a DB-backed
-        compare-and-set; only one scheduler process runs today, so a
-        DB-backed reservation is not needed. Chain children (chain_depth>0)
-        never call this — only top-level fires consume budget.
+        committed; callers must refuse to fire in that case. ``claim`` is a
+        ``_MaxRunsClaim`` token when a bounded schedule's budget was
+        actually reserved, or ``None`` when the schedule is unbounded
+        (``max_runs`` unset -- always allowed, no claim to release). Guarded
+        by an engine-wide lock so concurrent callers -- the tick loop,
+        fire_now(), github polling -- can't both read the same count and
+        both claim it before either claim is visible; this is the
+        single-process analogue of a DB-backed compare-and-set. Chain
+        children (chain_depth>0) never call this -- only top-level fires
+        consume budget.
 
         Whenever ``allowed`` is True the caller MUST pass ``claim`` through
         to ``_fire()`` as ``max_runs_claim=`` (even when it is ``None``) so
-        it gets released — exactly once, on every exit path including
-        pre-run failures — from ``_fire()``'s own ``finally`` block. Unlike
-        an earlier implementation, the claim is no longer released from inside
-        ``_check_max_runs()`` alone: a fire that fails before ever reaching
-        ``_check_max_runs()`` (e.g. ``create_invocation`` raising) would
-        otherwise leak the claim permanently for the life of the process,
-        since nothing else would ever release it.
+        it gets released -- exactly once, on every exit path including
+        pre-run failures -- from ``_fire()``'s own ``finally`` block. A fire
+        that fails before ever reaching ``_check_max_runs()`` (e.g.
+        ``create_invocation`` raising) would leak the claim permanently for
+        the life of the process if that were the only release path.
 
-        Snapshot ordering matters here: ``inflight`` is read BEFORE the
-        awaited ``count_schedule_runs()`` call, not after. ``release()`` is
-        deliberately lock-free (a claim must still release from a
-        cancelled/failing ``_fire()``'s ``finally`` without depending on
-        this lock, which would otherwise reintroduce cancellation-unsafe
-        lock-acquire-in-finally hazards), so a concurrent fire's claim can
-        be released by another task while this call is suspended awaiting
-        the DB. If ``inflight`` were read *after* that await (an intermediate
-        design), a fire that both persists its occurrence row and releases
-        its claim entirely within this call's await window would vanish
-        from both the persisted count (read too early, before the write)
-        and the in-flight snapshot (read too late, after the release) —
-        the exact gap that adversarial concurrency testing exploited.
-        Reading ``inflight`` first captures that other fire's claim before
-        it can disappear: the persisted count may still be stale, but the
-        in-flight snapshot backstops it, so the sum can only ever
-        over-count (spurious refusal, safe and self-correcting on the next
-        tick) — never under-count (an actual overshoot).
+        ``inflight`` is read BEFORE the awaited ``count_schedule_runs()``
+        call, not after -- see docs/internals/engine.md for why the
+        ordering matters and what the read-after-await variant let slip
+        through under concurrent fires.
         """
         max_runs = schedule.get("max_runs")
         if not max_runs:
@@ -1820,26 +1788,22 @@ class SchedulerEngine:
         """Return True if the schedule has exhausted its configured spend budget.
 
         Pre-fire cumulative gate, not a mid-run interrupt: a run already in
-        flight is not killed when it crosses the budget line, because its
-        cost is unknown until it terminates. So a schedule may overshoot its
+        flight is not killed when it crosses the budget line, since its cost
+        is unknown until it terminates -- a schedule may overshoot its
         budget by up to one run's cost before the next fire is refused. Pair
         with LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS to bound a single
         run's worst-case spend.
 
         Unlike max_runs / the global slot this is a pure DB read with
-        nothing to reserve or release -- both budget_usd and budget_tokens
-        unset means unbounded (always False). Either configured bound
-        tripping is sufficient to report exhausted.
+        nothing to reserve or release -- unset budget_usd and budget_tokens
+        means unbounded (always False); either bound tripping is sufficient.
 
-        ``spend["cost_usd"]`` is a sum of *reported* cost only -- a session
-        whose engine never priced itself contributes nothing to it, not a
-        confirmed $0. This deliberately does not force exhaustion just
-        because some sessions are unreported (that would turn a data gap
-        into an outage for schedules that are, as far as anyone can tell,
-        fine); it only makes the gap visible via a log line here and via
-        ``unreported_sessions`` in the schedule's spend rollup, so a near-
-        zero reading with many unreported sessions is legible as "unknown",
-        not silently trusted as "cheap".
+        ``spend["cost_usd"]`` sums *reported* cost only -- a session whose
+        engine never priced itself contributes nothing to it, not a
+        confirmed $0. This does not force exhaustion just because some
+        sessions are unreported; it only surfaces the gap (a log line here,
+        ``unreported_sessions`` in the spend rollup) so a near-zero reading
+        with many unreported sessions reads as "unknown", not "cheap".
         """
         budget_usd = schedule.get("budget_usd")
         budget_tokens = schedule.get("budget_tokens")
@@ -2272,21 +2236,17 @@ class SchedulerEngine:
         """Extra ``update_schedule()`` fields for a threshold-alert fire.
 
         Folded into the SAME schedule update call that already writes
-        ``last_fired_at``/``next_fire_at`` inside ``_fire_inner()`` --
+        ``last_fired_at``/``next_fire_at`` inside ``_fire_inner()``,
         deliberately placed AFTER ``create_schedule_run()`` has durably
-        persisted the run row (both the invalid-action-failure branch and
-        the normal running branch call this only once their own
-        ``create_schedule_run()`` has already succeeded). Stamping the
-        cooldown any earlier (e.g. in ``_maybe_fire()`` before ``_fire()``
-        even starts) risks consuming it on a ``create_invocation()`` (or
-        other pre-persistence) failure that leaves zero durable record an
+        persisted the run row. Stamping the cooldown any earlier (e.g. in
+        ``_maybe_fire()`` before ``_fire()`` even starts) risks consuming it
+        on a pre-persistence failure that leaves zero durable record an
         alert was ever attempted -- the exact silent-loss shape this
         feature exists to prevent.
 
-        Only top-level fires (``chain_depth == 0``) of a
-        threshold-configured schedule stamp the cooldown; on_success/
-        on_fail chain children are follow-on actions of the same alert
-        cycle, not a new one, and must not restamp it.
+        Only top-level fires (``chain_depth == 0``) stamp the cooldown;
+        on_success/on_fail chain children are follow-on actions of the same
+        alert cycle and must not restamp it.
         """
         if chain_depth != 0 or not schedule.get("threshold_config"):
             return {}
@@ -2388,32 +2348,23 @@ class SchedulerEngine:
         whether or not a process ultimately ran -- a commit with no launch
         is re-fired by startup recovery, not by the caller.
 
-        PRE-DISPATCH REFUSALS DO NOT CONSUME THE TRIGGER. Everything that
+        PRE-DISPATCH REFUSALS DO NOT CONSUME THE TRIGGER: everything that
         can refuse without starting a process -- resolving the `li`
         executable, building argv, resolving the execution root -- runs
         BEFORE the occurrence transaction, so its failure is recorded
-        without the cursor advance in *extra_schedule_fields*. Nothing ran,
-        so re-offering the trigger is not a re-execution, and the caller
-        learns that from the False return. Only a failure of something that
-        did start (non-zero exit, timeout, kill) keeps the at-most-once
-        advance below.
+        without the cursor advance in *extra_schedule_fields*, and the
+        caller learns that from the False return. Only a failure of
+        something that did start (non-zero exit, timeout, kill) keeps the
+        at-most-once advance below.
 
         DELIVERY CONTRACT -- at-least-once up to confirmed process launch,
-        at-most-once past it. Three windows: (1) before the occurrence
-        transaction commits, a crash leaves nothing durable, so a restart
-        fires fresh -- never a duplicate. (2) Between commit and
-        ``spawn_and_wait()`` confirming launch (``on_launched`` stamping
-        ``dispatched_at``), the row is durable but undispatched;
-        ``_recover_undispatched_fires()`` finds it on startup and re-fires
-        via *supersedes_run_id*, which routes the occurrence insert through
-        ``tombstone_and_replace_schedule_run()`` to tombstone the orphan and
-        insert the replacement atomically (its CAS also requires
-        ``dispatched_at IS NULL``, so a launch that gets confirmed in the
-        race against recovery wins and the tombstone is a no-op). (3) Once
+        at-most-once past it: full three-window breakdown in
+        docs/internals/engine.md. In short, ``dispatched_at`` is the
+        boundary -- a row committed but not yet confirmed dispatched is
+        re-fired by ``_recover_undispatched_fires()`` on startup; once
         ``dispatched_at`` is confirmed, the process genuinely exists and is
-        never re-fired -- the row is resolved by the stale-run reaper or its
-        own terminal write. This boundary is deliberate: a duplicate
-        real-world side effect is worse than one unretried outcome.
+        never re-fired, since a duplicate real-world side effect is worse
+        than one unretried outcome.
         """
         sid = schedule["id"]
         now = time.time()
@@ -2651,8 +2602,8 @@ class SchedulerEngine:
             # commits, never inside it, so a crash before this call can at
             # worst discard an occurrence that was never durably recorded.
             # A crash AFTER this commits but before spawn_and_wait confirms
-            # launch is the second window in this method's delivery-
-            # contract docstring above -- _recover_undispatched_fires()
+            # launch is the durable-but-undispatched window of this
+            # method's delivery contract -- _recover_undispatched_fires()
             # handles it at the next startup, not here. (A recovery
             # re-fire skips the cursor advance and is instead atomic with
             # tombstoning the orphan it supersedes -- see

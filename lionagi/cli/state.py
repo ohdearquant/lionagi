@@ -49,9 +49,6 @@ __all__ = [
 ]
 
 
-# ── run/team import helpers ───────────────────────────────────────────────────
-
-
 def _mtime_as_float(path: Path) -> float:
     try:
         return path.stat().st_mtime
@@ -245,7 +242,6 @@ async def _import_one_run(
             branch_msg_ids.append(msg["id"])
             total_messages += 1
 
-        # Create branch progression with ordered message IDs.
         branch_prog_id = str(uuid.uuid4())
         await db.create_progression(branch_prog_id, branch_msg_ids)
 
@@ -293,9 +289,6 @@ async def _import_one_run(
 
     print(f"  imported {run_id}: {total_branches} branch(es), {total_messages} message(s)")
     return 1, total_branches, total_messages
-
-
-# ── DB maintenance helpers ────────────────────────────────────────────────────
 
 
 def _format_bytes(n: int) -> str:
@@ -1025,21 +1018,7 @@ async def _null_content(
 ) -> dict[str, int]:
     """Replace old message bodies with a marker, keeping every row and reference.
 
-    This exists because the prune cannot reach these bytes. The prune selects
-    SESSIONS; the bytes live on MESSAGES; and a message some surviving
-    progression still names is kept whatever its age. So a store can be almost
-    entirely message content, have every message inside a keep-window, and give
-    a prune nothing to delete.
-
-    The row, its id, its role, its timestamp and its place in every progression
-    all survive. What is dropped is the body, and in its place goes a value that
-    says a body was there and how large it was, so the removal stays legible
-    instead of reading as a turn that produced nothing.
-
-    ``dry_run`` performs the update and rolls it back, so the reported numbers
-    are measurements of the operation rather than an estimate of it. That makes
-    a preview a WRITE that takes the same lock for the same duration -- it is
-    not a read, and on a large store it is not a quick one.
+    Design rationale: docs/internals/state.md
     """
     import time as _time
 
@@ -1245,9 +1224,6 @@ async def _doctor(
         return {"running": total, "swept": swept_count, "skipped": skipped}
 
 
-# ── _import_runs / _import_teams ─────────────────────────────────────────────
-
-
 async def _import_runs() -> dict[str, int]:
     """Scan RUNS_ROOT and import every run with a run.json manifest."""
     from lionagi.state.db import StateDB
@@ -1418,9 +1394,6 @@ async def _import_teams() -> dict[str, int]:
                     await conn.execute(msg_stmt, mrow)
 
     return counts
-
-
-# ── CLI parser + runner ───────────────────────────────────────────────────────
 
 
 def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -1792,9 +1765,6 @@ def run_state(args: argparse.Namespace) -> int:
         return 0
 
     return 1
-
-
-# ── machine result ────────────────────────────────────────────────────────────
 
 
 async def _machine_ls_data(*, limit: int, status: str | None) -> dict[str, Any]:

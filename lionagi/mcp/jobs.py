@@ -269,28 +269,13 @@ def _reserve_run_dir() -> tuple[str, Path]:
 def _discard_reservation(d: Path) -> bool:
     """Give a reserved directory back, along with what a submission put in it.
 
-    A submission that fails partway through writing has already left files
-    behind, so removing only an empty directory would give the reservation back
-    for some failures and not others. The files a submission writes into its own
-    reservation are named here, and only those: they are addressed as fixed
-    names under *d*, never through a path a caller handed in. A caller may name
-    an MCP config that lives anywhere at all, and that file is theirs — it is not
-    part of this reservation whatever it points at, and nothing here can be
-    talked into deleting it.
-
-    ``rmdir`` refuses a directory with anything in it, and that refusal stays the
-    safety here rather than becoming a check taken beforehand: whatever this is
-    asked to remove, a directory holding a run's state survives it — anything not
-    on the short list above stops the removal. A removal that fails for any other
-    reason leaves a directory nobody claimed, which is worth less than the error
-    that sent us here.
-
-    Returns whether the directory is actually gone afterward. When it is not —
-    the one case this function suppresses rather than raises for — a marker is
-    left in what remains of it, so a directory found later under the jobs root
-    with no job record reads as a giveback that could not run rather than as one
-    that succeeded; both leave the same absence of a job otherwise, and nothing
-    else here tells them apart.
+    Only the fixed names in ``_RESERVATION_CONTENTS`` are removed — never a
+    caller-supplied path (e.g. an MCP config) that happens to live under *d*.
+    ``rmdir`` then refuses anything else left in the directory, which is the
+    safety: a directory holding real run state survives this call. Returns
+    whether the directory is actually gone; when not, a marker is left behind
+    so a bare directory found later reads as a failed giveback rather than an
+    unexplained one. See docs/internals/jobs.md#reservation-rollback-contract.
     """
     for name in _RESERVATION_CONTENTS:
         try:
@@ -315,17 +300,10 @@ def _discard_reservation(d: Path) -> bool:
 def _discard_reservation_and_warn(d: Path, run_id: str) -> None:
     """Give a reservation back, and say so when the giveback itself fails.
 
-    ``_discard_reservation``'s own marker only helps an operator who later
-    goes looking under the jobs root. The boolean it returns is the only
-    signal available at the moment the failure actually happens, so every
-    caller that discards a reservation on an error path must act on it here
-    rather than let a `False` disappear along with the exception it rode in on.
-
-    The boolean says nothing about whether the marker write itself landed —
-    that write is best-effort and suppresses its own ``OSError`` — so this
-    checks the marker's actual presence afterward rather than assuming it from
-    the directory surviving. An operator reading the warning must not be sent
-    looking for a file that was never written.
+    Checks the marker's actual presence rather than assuming it from the
+    directory surviving, since the marker write is itself best-effort — an
+    operator reading the warning must not be sent looking for a file that was
+    never written. See docs/internals/jobs.md#reservation-rollback-contract.
     """
     if _discard_reservation(d):
         return
@@ -346,25 +324,13 @@ def _discard_reservation_and_warn(d: Path, run_id: str) -> None:
         )
 
 
-# --- record I/O ----------------------------------------------------------------
-
-
 def _write_job(record: dict[str, Any]) -> None:
-    # Publish atomically: write a unique temp file in the same directory, then
-    # os.replace() it into place. os.replace is atomic on the same filesystem, so
-    # a concurrent reader (status / list_jobs) never observes a torn file — and a
-    # failed write leaves the previous record intact instead of a partial one. The
-    # temp name is per-write-unique so two writers to the same run (the pid-attach
-    # write in submit() and the terminal hook) never collide on the temp itself.
-    # This makes each publish all-or-nothing; it does not serialize two writers,
-    # so a read-modify-write pair can still lose an update (last replace wins).
-    # Checked before the temp file is opened, so a refused record leaves neither a
-    # staging file nor a published one. json.dumps would write a non-finite float
-    # as the bare token NaN or Infinity, which only Python reads back: every
-    # reader of this record that is not Python — and every strict parser — would
-    # fail on it long after the run that wrote it. The start time already has a
-    # representation for "unreadable" and it is null, so nothing here encodes a
-    # sentinel that this refuses.
+    # Publish atomically via a per-write-unique temp file + os.replace(), so a
+    # concurrent reader never observes a torn file and a failed write leaves the
+    # previous record intact. This makes each publish all-or-nothing; it does not
+    # serialize two writers, so a read-modify-write pair can still lose an update
+    # (last replace wins). Refuse non-finite floats before the temp file is
+    # opened: json.dumps would write NaN/Infinity, which only Python reads back.
     raise_if_non_finite(record)
     d = config.job_dir(record["run_id"])
     d.mkdir(parents=True, exist_ok=True)
@@ -584,9 +550,6 @@ def _read_run_manifest(run_id: str) -> dict[str, Any] | None:
         return None
 
 
-# --- process + log helpers -----------------------------------------------------
-
-
 def _pid_alive(pid: int | None) -> bool:
     if not pid or pid <= 1:
         return False
@@ -632,16 +595,11 @@ def _askable_pid(value: object) -> int | None:
 
 
 # The identity-verified process reads live in lionagi.ln._proc, which owns the
-# process-group primitives, and are bound here to this surface's marker. A
-# second copy would be a second thing to keep correct, and these are exactly the
-# reads a quiescence sweep elsewhere has to agree with.
-#
-# Written as wrappers rather than assigned aliases so the shared name is
-# resolved per call. An alias would freeze the original function object here,
-# and a probe substituted in lionagi.ln._proc would then reach the shared scan
-# below while missing this module's own direct calls — two targets with
-# different reach, which is how a substitution silently covers half of what its
-# author believes it covers.
+# process-group primitives, and are bound here to this surface's marker so
+# there is exactly one copy to keep correct. Written as wrappers rather than
+# assigned aliases so the shared name is resolved per call: an alias would
+# freeze the original function object here, and a probe substituted in
+# lionagi.ln._proc would then miss this module's own direct calls.
 def _process_create_time(pid: int) -> tuple[str, float | None]:
     return process_create_time(pid)
 
@@ -720,15 +678,12 @@ def _list_artifacts(run_id: str) -> tuple[list[str], str]:
     """The persisted artifacts of *run_id*, and whether the traversal completed.
 
     A failed traversal answers ``"unreadable"``, never a bare empty list — "no
-    artifacts" is a claim about the run, "couldn't list them" a claim about the
-    read, and conflating them tells the caller something false. A missing
-    artifacts directory is not a failed read: nothing creates one until a run
-    persists something, so absence just means an empty list. Metadata is read
-    directly (`.stat()`) rather than via the `is_file()`-style predicates, since
-    those report `False` both for "not a file" and "couldn't be checked" —
-    indistinguishably, and inconsistently across interpreter versions — which
-    would hide exactly the shortfall this function's `"unreadable"` state exists
-    to report.
+    artifacts" is a claim about the run, "couldn't list them" a claim about
+    the read. A missing artifacts directory is not a failed read: nothing
+    creates one until a run persists something, so absence just means an
+    empty list. Metadata is read via `.stat()` rather than `is_file()`-style
+    predicates, since those report `False` both for "not a file" and
+    "couldn't be checked" indistinguishably.
     """
     adir = config.run_dir(run_id) / "artifacts"
     unreadable = False
@@ -874,9 +829,6 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
     )
 
 
-# --- lifecycle derivation ------------------------------------------------------
-
-
 class SpawnError(RuntimeError):
     """Raised when the child could not be started after the job record existed.
 
@@ -1012,9 +964,6 @@ def _derive(
     }
 
 
-# --- public API ----------------------------------------------------------------
-
-
 def _submit_cwd() -> str | None:
     """This process's own directory, or None when it no longer has one.
 
@@ -1046,19 +995,13 @@ def submit(
     """Spawn a ``li`` run in the background and return its handle immediately.
 
     *flags* are the already-built CLI flags (everything except the prompt).
-    *prompt*, when given, is handed to an agent via ``--prompt-file`` (robust for
-    long text) or appended as the flow/fanout positional.
-
-    On terminal, the run records its status and — if a delivery command is
-    configured — sends a terminal notice. *notify_command* is an optional
-    per-submit delivery-argv override (JSON list); *notify_target* fills the
-    ``{target}`` placeholder in the configured command. With neither and no
-    configured default, the run simply records its status and delivers nothing.
-
-    *mcp_config* and *no_mcp_config* are the caller's own answer to where the
-    child's MCP servers come from, passed as values (not re-parsed out of
-    *flags*, which are already rendered in `--flag=value` form) since this
-    function must decide whether to resolve its own server set.
+    *prompt*, when given, is handed to an agent via ``--prompt-file`` (robust
+    for long text) or appended as the flow/fanout positional. *notify_command*
+    is a per-submit delivery-argv override (JSON list); *notify_target* fills
+    the ``{target}`` placeholder in the configured command — with neither and
+    no configured default, the run just records its status and delivers
+    nothing. *mcp_config* and *no_mcp_config* are passed as values, not
+    re-parsed out of *flags* (already rendered in ``--flag=value`` form).
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
@@ -1527,16 +1470,13 @@ def _notice_recorded_undelivered(run_id: str) -> bool:
 def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
     """Publish the end of a run whose process is conclusively gone.
 
-    Idempotent, safe to call from every observer at once. The whole check runs
-    inside the per-run lock against a record reread there — the caller's
-    observation was taken before the lock, and by now the terminal hook, a
-    kill, or another observer may have already written the end.
-
-    All admission checks (record exists and matches, spawn reached "started",
-    no end recorded yet, *finding* is in `CONCLUSIVE_FINDINGS`) hold under the
-    lock. ``finished_at`` is *observed_at* — when the loss was established, not
-    the unknowable moment the process actually exited. Notification runs after
-    this returns, outside the lock, and is the winner's to attempt.
+    Idempotent, safe to call from every observer at once: all admission
+    checks (record exists and matches, spawn reached "started", no end
+    recorded yet, *finding* is in `CONCLUSIVE_FINDINGS`) are re-made inside
+    the per-run lock against a record reread there, since the terminal hook,
+    a kill, or another observer may have already written the end since the
+    caller's observation. ``finished_at`` is *observed_at* — when the loss
+    was established, not the unknowable moment the process actually exited.
     """
     if finding not in CONCLUSIVE_FINDINGS:
         return ReapResult(False, None, "finding_is_not_conclusive")
@@ -1586,24 +1526,12 @@ def _admits_orphan_reap(job: dict[str, Any] | None, liveness: ProcessLiveness) -
 def _deliver_reap_notice(run_id: str, record: dict[str, Any]) -> dict[str, Any] | None:
     """Attempt the terminal notice the run's own process never got to send.
 
-    The dead child was the owner of both the end and its delivery, so an
-    observer that publishes the end and stops there leaves a notice-only caller
-    asleep forever — the terminality would be repaired and the wake-up would
-    not. The winner of the transition therefore attempts the same configured
-    delivery the hook would have, through the hook's own resolution, so a
-    per-run override and the project/global settings mean here exactly what they
-    mean there and there is only one place a notifier is configured.
-
-    Best-effort and after the fact. The end is already durable when this runs,
-    so nothing here can change how the run came out: a refusal, a non-zero exit
-    or a timeout is recorded as a delivery failure. Before delivery starts, a
-    write-ahead outcome records that the attempt's result is unknown; a crash
-    before the final result therefore remains machine-readable.
-
-    The guard is total for the same reason: this is called from a read path, and
-    a notifier that comes apart in a way the hook does not classify must not
-    turn a status read of an already-ended run into a failed call. What can be
-    lost is the final delivery result, while the attempted state stays durable.
+    The dead child was the owner of both the end and its delivery, so the
+    winner of the reap transition attempts the same configured delivery the
+    hook would have, through the hook's own resolution. Best-effort and after
+    the fact: nothing here can change how the run came out, and the exception
+    guard is total since this runs from a read path. See
+    docs/internals/jobs.md#reap-notice-delivery-ownership.
     """
     from ._notify_hook import deliver_terminal_notice
 
@@ -2179,18 +2107,13 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
     """Recent jobs, newest first (run_id sorts by timestamp).
 
     Every entry resolves through ``status``, so a conclusively gone run is
-    ended here exactly as a direct status read would. ``notify_delivery_state``,
-    ``terminal_source``, ``record_state``, and ``spawn_state`` all ride along
-    for the same reason: this listing is the surface a caller polls while
-    waiting on several runs, and collapsing any of them into the outcome alone
-    would hide a fact this listing exists to surface (a failed notice, a
-    self-ended orphan, a damaged-but-present record, a spawn stuck vs. genuinely
-    running). A directory without a job record is not listed — submissions
-    reserve their directory before `job.json` publishes it, the boundary that
-    makes a reservation a job. Only a missing (not unreadable) jobs directory
-    reports as an empty list; an unreadable one raises, since a listing has no
-    field to say "could not be read" and reporting empty would falsely mean
-    "no jobs at all".
+    ended here exactly as a direct status read would; the per-entry fields
+    ride along uncollapsed since this listing is what a caller polls while
+    waiting on several runs. A directory without a job record is not listed —
+    submissions reserve their directory before `job.json` publishes it, the
+    boundary that makes a reservation a job. Only a missing (not unreadable)
+    jobs directory reports as an empty list; an unreadable one raises, since
+    reporting empty would falsely mean "no jobs at all".
     """
     try:
         entries = sorted(config.JOBS_DIR.iterdir(), reverse=True)
@@ -2324,14 +2247,11 @@ async def wait(
     case, so the result is never a bare boolean — see
     docs/internals/mcp.md#wait-result-buckets for the full ``pending`` /
     ``stopped_without_end`` / ``unresolved_spawn`` / ``all_terminal`` /
-    ``timed_out`` contract, including why ``unresolved_spawn`` exists and the
-    back-off floor paid while any id sits in either special bucket.
-
-    Observing leaves the run as it was, with one fenced exception: resolving
-    a status may durably reap a conclusively-gone started orphan (see
-    ``_reap_if_conclusively_gone``). A wait that expires, or whose caller
-    cancels or disconnects, leaves the durable record untouched (cancelling
-    an observation is not cancelling the work).
+    ``timed_out`` contract. Observing leaves the run as it was, with one
+    fenced exception: resolving a status may durably reap a conclusively-gone
+    started orphan (see ``_reap_if_conclusively_gone``). Cancelling an
+    observation is not cancelling the work — an expired or cancelled wait
+    leaves the durable record untouched.
     """
     import anyio  # deferred: the CLI's terminal hook also imports this module and stays import-light
 
@@ -2398,12 +2318,12 @@ def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
     """Record a terminal status for *run_id* (called by the CLI notify hook).
 
     The CLI's terminal status is trusted and recorded verbatim, never matched
-    against a local set (an earlier version's fallback-to-`"completed"` on any
-    miss silently turned `timed_out`/`cancelled`/`aborted`/`completed_empty`
-    into a false success). First-writer-wins: a record that already carries an
-    end (a kill, a lifecycle-cached end, an orphan transition published while
-    this hook was starting) keeps it — this call reports what's there rather
-    than replacing it, though its own delivery attempt still goes ahead.
+    against a local set — a fallback to `"completed"` on any miss would
+    silently turn `timed_out`/`cancelled`/`aborted`/`completed_empty` into a
+    false success. First-writer-wins: a record that already carries an end (a
+    kill, a lifecycle-cached end, an orphan transition published while this
+    hook was starting) keeps it — this call reports what's there rather than
+    replacing it, though its own delivery attempt still goes ahead.
     """
     with _locked_job(run_id) as guard:
         job = guard.record

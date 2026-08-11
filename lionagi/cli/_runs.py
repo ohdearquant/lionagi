@@ -111,8 +111,6 @@ class RunDir:
     state_root: Path
     artifact_root: Path
 
-    # ── Path helpers ────────────────────────────────────────────────
-
     @property
     def manifest_path(self) -> Path:
         return self.state_root / "run.json"
@@ -163,8 +161,6 @@ class RunDir:
     def dag_image_path(self) -> Path:
         return self.artifact_root / "flow_dag.png"
 
-    # ── Manifest I/O ────────────────────────────────────────────────
-
     def write_manifest(self, data: dict) -> None:
         """Replace run.json with *data* plus this run's identity fields.
 
@@ -189,7 +185,7 @@ class RunDir:
             return {}
         return json.loads(self.manifest_path.read_text())
 
-    # ── Notify-outcome I/O (separate from the manifest; see notify_settings.py) ──
+    # Notify-outcome I/O is separate from the manifest; see notify_settings.py.
 
     @property
     def notify_outcome_path(self) -> Path:
@@ -219,8 +215,6 @@ class RunDir:
         with os.fdopen(fd, "w") as fh:
             fh.write(text)
         return path
-
-    # ── Directory setup ─────────────────────────────────────────────
 
     def ensure_state_dirs(self) -> None:
         ensure_lionagi_dir(self.branches_dir)
@@ -305,9 +299,6 @@ def allocate_run(
     return run
 
 
-# ── Branch lookup (canonical + legacy fallback) ─────────────────────────
-
-
 def _branch_dirs() -> list[tuple[str | None, Path, str]]:
     """Every directory that can hold a branch file, with its run id and suffix.
 
@@ -365,9 +356,6 @@ def find_branch(branch_id: str) -> tuple[str | None, Path]:
     raise FileNotFoundError(f"No branch log found for id {branch_id!r}")
 
 
-# ── Last-branch pointer (with legacy schema compat) ─────────────────────
-
-
 def load_last_branch() -> tuple[str | None, str]:
     """Read the last-branch pointer; returns (run_id, branch_id), run_id=None for pre-run-scoped schema."""
     if not _LAST_BRANCH_POINTER.exists():
@@ -384,15 +372,11 @@ def load_last_branch() -> tuple[str | None, str]:
 def save_last_branch_pointer(run_id: str, branch_id: str) -> None:
     """Record which branch `--continue` should pick up next. Best effort.
 
-    This is a convenience pointer, and it is written late — after a run has
-    produced its answer and, in the agent path, before that answer's terminal
-    notice goes out. Letting a filesystem error escape from here would cost the
-    caller the notice and the return value both, to protect a file whose only
-    job is to save someone typing a branch id.
-
-    So the failure is reported and not raised. It is reported rather than
-    swallowed because the next `--continue` will silently pick up an older run,
-    and that is confusing precisely when nobody remembers this warning.
+    A filesystem error here must not cost the caller its notice or return
+    value over a file that only saves someone typing a branch id, so failures
+    are reported, never raised. Reported rather than swallowed: silently
+    picking up an older run on the next `--continue` is confusing precisely
+    when nobody remembers this warning.
     """
     from lionagi.cli._logging import warn
 
@@ -405,9 +389,6 @@ def save_last_branch_pointer(run_id: str, branch_id: str) -> None:
             f"could not record this run as the last branch ({exc}); "
             f"`li agent -c` will resume an earlier run instead of this one"
         )
-
-
-# ── Introspection ───────────────────────────────────────────────────────
 
 
 def list_runs(limit: int | None = None) -> list[RunDir]:
@@ -433,8 +414,6 @@ def list_runs(limit: int | None = None) -> list[RunDir]:
         out.append(RunDir(run_id=d.name, state_root=d, artifact_root=artifact_root))
     return out
 
-
-# ── Live-persist lifecycle (absorbed from _persist.py) ──────────────────────
 
 _log = logging.getLogger("lionagi.cli")
 
@@ -1221,20 +1200,11 @@ async def _reopen_session_for_resume(
 ) -> bool:
     """Return a resumed session to ``running`` so its next close is a real change.
 
-    A session's closing transition only announces itself when the status
-    actually changes. A resume adopts a session an earlier leg already took
-    terminal, so writing that same terminal status at the end is not a change:
-    the leg finishes without announcing anything, the completion notice never
-    arrives, and the job record never closes. Reopening first restores the
-    invariant the rest of the system reads off this column, which is that a
-    session marked terminal is not currently executing.
-
-    Reopening is the only sanctioned exit from a terminal status, so it carries
-    an override. That is not a formality to satisfy the guard: it is what makes
-    each reopening attributable. Declaring a terminal-to-running edge in the
-    session policy would have satisfied the guard too, and would have permitted
-    terminal exit for every writer in the system, while finality is exactly what
-    the reapers, the teardown guard and ``li wait`` all rest on.
+    A resume adopts a session an earlier leg already took terminal; without
+    reopening, the leg finishes without announcing anything and the job
+    record never closes. The write carries an override because reopening is
+    the only sanctioned exit from a terminal status. Full rationale:
+    docs/internals/_runs.md.
     """
     from lionagi.cli.kill import current_pid_markers
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
@@ -1603,15 +1573,11 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
     """Recover a session row that ``setup_agent_persist()`` committed before
     failing on a later step, terminalizing it if it is still "running".
 
-    ``setup_agent_persist()`` can call ``create_session()`` and then raise
-    inside the same setup (e.g. the following ``create_branch()``); it catches
-    that exception and returns None, so its caller sees no context but the
-    session row itself is still durable and left running forever. A caller
-    whose *run_id* is minted fresh for every attempt (never reused across a
-    resume, the way a new operator turn always is) can pass it here after
-    setup fails to recover that row -- and close it out -- instead of
-    reporting the run as never having existed. Returns None only when no
-    session was ever recorded under this run id.
+    ``setup_agent_persist()`` can raise after ``create_session()`` but before
+    ``create_branch()``, leaving that row durable but running forever with no
+    caller left holding context. Only safe to call with a *run_id* minted
+    fresh for this attempt (never reused across a resume). Returns None only
+    when no session was ever recorded under this run id.
     """
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB
     from lionagi.state.reasons import RunReasons

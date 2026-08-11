@@ -203,7 +203,6 @@ async def _persist_node_metadata_patch(db, session_id: str, patch: dict) -> None
     await db.merge_session_node_metadata(session_id, patch)
 
 
-# ── Artifact-contract text — shared by planned legs and spawned nodes ─────────
 # Shared by _build_dag and _execute_dag's decorate_instruction closure so
 # both use one namespacing rule instead of two copies drifting apart.
 
@@ -270,7 +269,6 @@ def _artifact_directive(run, node_id: str, leg_expected: list[dict]) -> str:
     return note
 
 
-# ── Control poller (ADR-0069 D1–D3: session-control transport) ──────────────
 # `li o ctl pause|resume|msg` enqueues a session_controls row from a separate
 # process; this poller is the only consumer, verb-specific apply/stamp order.
 
@@ -280,15 +278,13 @@ _CONTROL_POLL_INTERVAL = 2.0
 # tick here rather than let later controls overtake it in the DB.
 _CONTROL_UNSTAMPED = "unstamped"
 
-# ── Escalation mirror linking — attributes an escalated leg's CLI transcript
-# back to this run instead of leaving it an unlinked, misattributed session.
-# The transcript mirror may run in another process and lag behind this run's
-# own completion, so the link write gets a few bounded retries rather than
-# firing once and giving up.
+# Attributes an escalated leg's CLI transcript to this run instead of leaving
+# it unlinked/misattributed. The mirror may run in another process and lag
+# behind this run's completion, so the link write gets a few bounded retries
+# rather than firing once and giving up.
 _ESCALATION_LINK_RETRIES = 5
 _ESCALATION_LINK_RETRY_INTERVAL = 1.0
 
-# ── Team lifecycle (done-signal / wakeup rounds / quiescence) ───────────────
 # Driven by ReactiveExecutor's on_op_complete hook, not a poll loop (which
 # would race the executor's task-group teardown) — see TeamLifecycleCoordinator.
 
@@ -410,25 +406,14 @@ skip them.
 
 
 def critical_path_depth(dep_indices: list[list[int]]) -> int:
-    """Longest dependency chain in the plan, in ops.
+    """Longest dependency chain in the plan, in ops — a lower bound on the
+    flow's wall clock (`max_sequential_depth` is what actually sizes the
+    budget). See docs/internals/flow.md for the full reasoning.
 
-    This is how many ops the *dependencies* force to run one after another,
-    which is not the op count: ops with no path between them are free to run at
-    the same time.
-
-    It is a lower bound on the flow's wall clock, not the bound. A concurrency
-    cap serializes ops this function calls parallel, and under `--max-concurrent
-    1` it says 1 for a plan that runs strictly in sequence.
-
-    What actually sizes a budget is `max_sequential_depth`, which takes this
-    together with what the cap forces. This function is exact only when nothing
-    caps concurrency, which is the common case and why it is still worth
-    computing directly.
-
-    Dependencies point backwards (op i may only depend on ops before it), so a
-    single forward pass is enough. Cycles are therefore not reachable here, and
-    an entry pointing outside the plan is ignored rather than raising: a bad
-    index should not be able to take down a run over a budget hint.
+    Dependencies point backwards (op i may only depend on ops before it), so
+    a single forward pass is enough; cycles are unreachable, and an entry
+    pointing outside the plan is ignored rather than raising: a bad index
+    should not be able to take down a run over a budget hint.
     """
     if not dep_indices:
         return 0
@@ -441,31 +426,11 @@ def critical_path_depth(dep_indices: list[list[int]]) -> int:
 
 
 def max_sequential_depth(dep_indices: list[list[int]], num_ops: int, max_concurrent: int) -> int:
-    """The most ops that can end up running one after another.
-
-    This number divides the flow's budget, so its error has a direction:
-    counting too few hands every op more time than the flow can afford and the
-    flow overruns its deadline, while counting too many only means an op is
-    told it has slightly less time than it might have had. That asymmetry is
-    what makes this an upper bound rather than an estimate.
-
-    It has to be a bound, because the quantity it describes depends on how long
-    each op runs and a budget is computed before any of them have. An earlier
-    version simulated the schedule directly — a queue of ready ops, admitting
-    `max_concurrent` at a time, counting passes. That models one schedule, the
-    one where every op takes about as long as every other, and the executor
-    runs a great many. Give four ops a cap of two and let the second one run
-    six times longer than the rest, and the other three serialize behind it in
-    a chain of three where the simulation counted two. Unequal durations are
-    the normal case, not the corner, so the equal-duration schedule is the
-    wrong thing to be exact about.
-
-    Two things force ops into sequence and the bound is the worse of them.
-    Dependencies force a chain that no amount of capacity can shorten. Capacity
-    forces the rest: any run of ops executing strictly one after another can
-    contain at most one op from a set that started together, so it is bounded
-    by one plus however many ops are not in that first admitted batch. Neither
-    can exceed the everything-serializes case of one op at a time.
+    """Upper bound on the most ops that can end up running one after another;
+    this is what divides the flow's op budget. It has to be a bound, not an
+    estimate, because the quantity it describes depends on how long each op
+    runs and a budget is computed before any of them have. See
+    docs/internals/flow.md for the full reasoning.
 
     `max_concurrent <= 0` means unbounded, matching how the executor reads it.
     A plan whose dependency data does not describe its ops gets `num_ops`, the
@@ -477,24 +442,9 @@ def max_sequential_depth(dep_indices: list[list[int]], num_ops: int, max_concurr
         return num_ops
     conc = max_concurrent if max_concurrent > 0 else num_ops
 
-    # Unbounded capacity admits every ready op, so each pass clears one level
-    # of the dependency graph and the pass count is exactly the longest chain.
-    # Worth taking directly: it is the common case and it is one linear scan.
     if conc >= num_ops:
         return critical_path_depth(dep_indices) or num_ops
 
-    # Two things can force ops into sequence, and the answer is the worse of
-    # them.
-    #
-    # Dependencies force a chain no amount of capacity can shorten.
-    #
-    # Capacity forces the rest. When ops are ready the executor admits
-    # `conc` of them at once, and a run of ops that execute strictly one
-    # after another can contain at most ONE op out of any set that started
-    # together — so such a run is at most one of that first batch plus every
-    # op outside it, `num_ops - conc + 1`.
-    #
-    # Nothing can exceed `num_ops`, which is the everything-serializes case.
     return min(num_ops, max(critical_path_depth(dep_indices), num_ops - conc + 1))
 
 
@@ -524,18 +474,12 @@ def _build_budget_preambles(
 ) -> dict[int, str]:
     """The per-op budget preambles for one flow, keyed by op index.
 
-    Exists as its own function so the share an op is actually told can be
-    asserted directly. Tests that only call `op_budget_share` cannot see
-    whether the caller uses it, which is how the equal-split divisor survived
-    a suite that was green the whole time.
-
     `deadline_epoch` is an instant the caller captured when the run's clock
-    started, not a duration to add to now. It is deliberately not defaulted:
-    the obvious fallback, `now + total_budget`, is wrong by however long the
-    run has already been going, and it is wrong silently and in the permissive
-    direction — every op would be told it has more time than it does. Missing
-    the instant therefore means no preamble at all, since telling an op
-    nothing is the honest failure and telling it a late deadline is not.
+    started, not a duration to add to now — deliberately not defaulted: the
+    obvious fallback, `now + total_budget`, would be wrong by however long
+    the run has already been going, silently and in the permissive direction
+    (every op told it has more time than it does). Missing the instant means
+    no preamble at all — telling an op nothing is the honest failure.
     """
     if total_budget and num_ops > 0 and deadline_epoch is None:
         # A budgeted run that got this far without an instant is a wiring
@@ -773,9 +717,6 @@ def _flow_header_fn(w: dict, i: int, n: int) -> list[str]:
     return [f"  {w['id']} ({w['name']}){tag}  [{w['model']}]{dep_str}"]
 
 
-# ── Phase data containers ─────────────────────────────────────────────────────
-
-
 @dataclass
 class _PlanResult:
     """Planning output: resolved assignments and per-agent metadata."""
@@ -822,25 +763,18 @@ class _ExecResult:
     escalated_agent_ids: list[str] = field(default_factory=list)
 
 
-# ── Phase 1: build DAG ────────────────────────────────────────────────────────
-
-
 def _deps_from_built_graph(builder, label_by_node: dict[str, str]) -> dict[str, list[str]]:
     """Read each node's incoming edges out of the graph the executor walks.
 
-    A dependency list re-derived from what the planner declared is a statement
-    about the *input* to the build step, not an observation of its *output*:
-    the builder can add or omit edges, the executor waits on every incoming
-    edge whatever its label, and nothing downstream would notice the two
-    disagreeing. Reading the graph makes the reported structure and the
-    executed one the same object.
+    A dependency list re-derived from what the planner declared describes
+    the *input* to the build step, not an observation of its *output* — the
+    builder can add or omit edges, and nothing downstream would notice the
+    two disagreeing.
 
-    `label_by_node` names the nodes a reader already has a name for — plan
-    steps, by their 1-based ordinal, matching how deps have always been shown.
-    A head outside it is a node that has no plan ordinal because it did not
-    exist at plan time; it is named by the spawn id stamped on it (the same id
-    its own result record carries), falling back to the raw node id so an edge
-    is never dropped for want of a name.
+    `label_by_node` names nodes a reader already has a name for — plan steps,
+    by 1-based ordinal. A head outside it has no plan ordinal (spawned after
+    plan time); it falls back to its stamped spawn id, then the raw node id,
+    so an edge is never dropped for want of a name.
     """
     graph = builder.get_graph()
     nodes = getattr(graph, "internal_nodes", None)
@@ -1046,9 +980,6 @@ async def _build_dag(
     )
 
 
-# ── Resume: pre-mark checkpoint-completed nodes ───────────────────────────────
-
-
 def _reconstruct_spawned_nodes(
     env: OrchestrationEnv,
     plan_result: _PlanResult,
@@ -1209,9 +1140,6 @@ def _apply_checkpoint_precompletion(
             "Pass --allow-degraded-context to run them against an empty "
             "branch instead."
         )
-
-
-# ── Phase 2: execution ────────────────────────────────────────────────────────
 
 
 async def _execute_dag(
@@ -2189,9 +2117,6 @@ async def _execute_dag(
     )
 
 
-# ── Phase 3: synthesis ────────────────────────────────────────────────────────
-
-
 async def _synthesize(
     env: OrchestrationEnv,
     prompt: str,
@@ -2263,9 +2188,6 @@ async def _synthesize(
     }
     progress(f"Synthesis done ({t_synth_elapsed:.1f}s).")
     return synthesis_result
-
-
-# ── Phase 4: finalize ─────────────────────────────────────────────────────────
 
 
 def _finalize_flow(
@@ -2412,9 +2334,6 @@ def _finalize_flow(
             }
 
     return output
-
-
-# ── Public entry points ───────────────────────────────────────────────────────
 
 
 async def _run_flow(

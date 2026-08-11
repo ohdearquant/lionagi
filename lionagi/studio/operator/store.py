@@ -2,19 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """SQLite-backed durable store for the ADR-0083 Operator protocol.
 
-These defensive ``CREATE TABLE IF NOT EXISTS`` statements intentionally make
-the protocol usable by direct Studio service callers as well as through the
-normal StateDB-opening daemon lifespan.  The tables use the canonical StateDB
-file and never fall back to process memory.
+These defensive ``CREATE TABLE IF NOT EXISTS`` statements make the protocol
+usable by direct Studio service callers as well as through the normal
+StateDB-opening daemon lifespan. The tables use the canonical StateDB file
+and never fall back to process memory.
 
-Streamed frames are written once per provider chunk, so the durable record
-carries an explicit retention contract enforced on the write path -- see
-``MAX_FRAME_PAYLOAD_BYTES``, ``MAX_FRAMES_PER_TURN`` and
-``MAX_TURN_PAYLOAD_BYTES``.  Nothing is ever dropped silently: an oversized
+Streamed frames carry an explicit retention contract enforced on the write
+path -- see ``MAX_FRAME_PAYLOAD_BYTES``, ``MAX_FRAMES_PER_TURN`` and
+``MAX_TURN_PAYLOAD_BYTES``. Nothing is dropped silently: an oversized
 payload is stored truncated and says so, and frames refused past a turn's
-budget are counted into a single ``truncation`` summary frame naming what was
-elided and how much.  Terminal ``done`` frames are exempt so a turn can always
-be closed.
+budget are folded into one ``truncation`` summary frame naming what was
+elided. Terminal ``done`` frames are exempt so a turn can always close.
 """
 
 from __future__ import annotations
@@ -715,12 +713,8 @@ class OperatorStore:
         reversed; a report that does not count higher than that page's own
         stored count is DISCARDED, because otherwise the stale view wins and is
         still labelled current, which is the exact failure this whole mechanism
-        exists to fix.
-
-        Each page gets its own row. A shared row would make every report erase
-        the previous page's high-water mark, and a delayed older report from the
-        page that asked could then be re-admitted as its latest -- the same stale
-        view, arriving by a longer road.
+        exists to fix. Each page gets its own row -- see the schema comment on
+        ``studio_operator_views`` for why a shared row would be wrong.
 
         Returns whether the report was applied.
         """
@@ -801,23 +795,17 @@ class OperatorStore:
     ) -> str | None:
         """Record what this turn will run on and return the session it may resume.
 
-        A provider session belongs to the (provider, model) pair that created
-        it, and until now the only thing that could invalidate one was an
-        explicit pin change. An unpinned conversation has no pin to change: it
-        runs on whatever the environment resolves to, which is re-read every
-        turn, so moving the default silently resumed a session that belonged to
-        the old pair. This compares the pair that is about to run against the
-        pair that last ran, which is the comparison the pin check could never
-        make.
+        A provider session belongs to the (provider, model) pair that created it.
+        An unpinned conversation still runs on whatever the environment resolves
+        to, re-read every turn, so this compares the pair about to run against
+        the pair that last ran rather than relying on the pin alone.
 
-        Returns the session id to resume with, or ``None`` when the pair moved
-        and the stored session no longer belongs to this turn.
+        Returns the session id to resume with, or ``None`` when the pair moved and
+        the stored session no longer belongs to this turn.
 
-        A stored pair of ``NULL`` returns the session unchanged. It means no
-        turn has recorded a resolution yet, which is not evidence that anything
-        changed, and every conversation alive when this ships is in exactly
-        that state -- reading it as a mismatch would drop every live session
-        once, at upgrade, and would look like the check working.
+        A stored pair of ``NULL`` means no turn has recorded a resolution yet, not
+        that anything changed -- treating it as a mismatch would drop every
+        existing session's resume on its first use after this column was added.
         """
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
@@ -856,44 +844,20 @@ class OperatorStore:
         return None if moved else session_id
 
     async def claim_branch_id(self, conversation_id: str) -> str:
-        """Return the identity every turn of this conversation builds its
-        Branch with, minting and persisting one on the first call.
+        """Return the identity every turn of this conversation builds its Branch
+        with, minting and persisting one on the first call.
 
-        This is the fix for the Operator's own log showing N unrelated
-        branches for one N-turn conversation: previously every turn built a
-        brand-new ``Branch()`` with a fresh random id, so
-        ``setup_agent_persist`` (``lionagi/cli/_runs.py``) saw a never-before-
-        seen branch id on every turn and created a new ``sessions`` row for
-        each one. Feeding the SAME id back in lets that existing machinery's
-        own "resume" arm run instead: it looks up ``branch_id`` in the
-        ``branches`` table, and when found, reopens that branch's existing
-        session and appends to it rather than inserting a new row --
-        `setup_agent_persist` already contains this append path (used for CLI
-        resume); nothing about that machinery is changed here. This method
-        only decides what id every turn hands it.
+        Stores an IDENTITY (a UUID), not a live Branch -- turns arrive as separate
+        requests and the daemon restarts between them, so no Python object is
+        shared across turns. Idempotent and race-safe under the store's usual
+        ``BEGIN IMMEDIATE`` transaction: a losing racer blocks until the winner
+        commits, then reads back and returns the id it wrote instead of minting
+        its own.
 
-        A brand-new Branch object is still constructed in-process on every
-        turn -- this stores an IDENTITY (a UUID), never a live Branch, since
-        turns arrive as separate HTTP requests, the daemon restarts between
-        them, and two browser tabs can drive one conversation concurrently.
-        None of those can be assumed to share a Python object.
-
-        Idempotent and race-safe: wrapped in the store's usual
-        ``BEGIN IMMEDIATE`` transaction (the same pattern
-        ``claim_resolved_pair`` uses), which SQLite serializes against any
-        other write transaction on this file. Two turns racing to claim the
-        first id for one conversation therefore never see a NULL row at the
-        same time -- the second transaction blocks until the first commits,
-        then reads back the id the first one just wrote and returns that
-        instead of minting its own. The conversation never ends up with two
-        candidate ids to disagree about.
-
-        A conversation created before this column existed reads NULL here on
-        its first post-upgrade turn and adopts an id at that point --
-        deliberately, rather than backfilling one via migration. Its turns
-        already on record stay exactly as they were recorded; only turns from
-        here forward group under the newly-claimed id. No history is
-        rewritten.
+        A conversation created before this column existed adopts an id lazily on
+        its first post-upgrade turn instead of through a migration; already-
+        recorded turns keep their original grouping. See docs/internals/store.md
+        for the full rationale.
         """
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:

@@ -36,8 +36,6 @@ def _pid_alive(pid: int | None) -> bool | None:
     return _pid_alive_int(pid)
 
 
-# ── ANSI colours (only when stdout is a TTY) ─────────────────────────────────
-
 _IS_TTY = sys.stdout.isatty()
 
 
@@ -94,9 +92,6 @@ def _colour_status(status: str) -> str:
     return fn(status)
 
 
-# ── Elapsed formatting ────────────────────────────────────────────────────────
-
-
 def _elapsed(started_at: float | None, ended_at: float | None = None) -> str:
     """Human-readable elapsed time.  Uses ended_at if present, else now."""
     if started_at is None:
@@ -127,9 +122,6 @@ def _since_timestamp(window: str) -> float:
     if unit not in multipliers:
         raise ValueError(f"Unknown time unit {unit!r} in --since {window!r}")
     return time.time() - value * multipliers[unit]
-
-
-# ── DB query helpers ─────────────────────────────────────────────────────────
 
 
 async def _query_running_sessions(
@@ -283,9 +275,6 @@ def _stream_tail(run_dir: Path, branch_id: str, n_lines: int = 5) -> list[str]:
         return []
 
 
-# ── Table rendering ───────────────────────────────────────────────────────────
-
-
 def _trunc(s: str, n: int) -> str:
     if len(s) <= n:
         return s
@@ -402,9 +391,6 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-# ── Entity row builders ───────────────────────────────────────────────────────
-
-
 def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": sess["id"][:16],
@@ -455,9 +441,6 @@ def _play_to_row(play: dict[str, Any]) -> dict[str, Any]:
         "elapsed": _elapsed(play.get("started_at"), play.get("ended_at")),
         "agents": str(play.get("branch_count") or 0),
     }
-
-
-# ── Detail views ──────────────────────────────────────────────────────────────
 
 
 async def _fetch_branches(db: Any, session_id: str) -> list[dict[str, Any]]:
@@ -781,9 +764,6 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# ── Gather all running entities ───────────────────────────────────────────────
-
-
 _TRAILING_ANNOTATION_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 
@@ -880,9 +860,6 @@ async def _gather_table_rows(
     return [_ROW_BUILDERS[kind](row) for kind, row in entities]
 
 
-# ── Async main routines ───────────────────────────────────────────────────────
-
-
 async def _run_table(
     *,
     since: float | None,
@@ -931,9 +908,6 @@ async def _run_detail(entity_id: str) -> str:
         raise
     except Exception as exc:  # noqa: BLE001
         return _red(f"error: {mask_credentials(str(exc))}")
-
-
-# ── Watch loop ────────────────────────────────────────────────────────────────
 
 
 def _clear_screen() -> None:
@@ -1025,7 +999,6 @@ def _watch_loop(
     return exit_code
 
 
-# ── Wait-for-terminal primitive (li monitor run / li monitor --run) ───────────
 # Scripting primitive; see docs/internals/cli.md for the full contract.
 
 # Default wait bound so a stuck run can't hang forever; pass max_wait=0 to opt
@@ -1596,9 +1569,6 @@ def run_monitor_wait(argv: list[str]) -> int:
     )
 
 
-# ── CLI registration ──────────────────────────────────────────────────────────
-
-
 def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register `li monitor` with argparse."""
     mon = subparsers.add_parser(
@@ -1779,8 +1749,6 @@ def run_monitor(args: argparse.Namespace) -> int:
     print(output)
     return 0
 
-
-# ── machine result ────────────────────────────────────────────────────────────
 
 # Every entity carries these; a caller reads `kind` and knows which of the
 # per-kind blocks below it also has. Timestamps are epoch seconds exactly as the

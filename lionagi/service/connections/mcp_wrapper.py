@@ -98,7 +98,6 @@ class _MCPRecoveryCapability:
         self.security = security
 
 
-# --- Generic-executor admission rule -----------------------------------
 # Registration-time admission control, independent of MCPSecurityConfig
 # (transport auth) and PermissionPolicy (invocation-time) — see docs/internals/runtime.md.
 
@@ -303,7 +302,6 @@ def _has_structural_ref_siblings(siblings: Mapping) -> bool:
     return any(key not in _ANNOTATION_ONLY_REF_SIBLING_KEYWORDS for key in siblings)
 
 
-# --- Keyword registry for the sufficiency proof --------------------------
 # Classifies every Draft 2020-12 keyword into one of four classes, then
 # walks the whole document unconditionally. See docs/internals/runtime.md.
 
@@ -805,7 +803,6 @@ def _property_is_free_form(
 _MAX_SCHEMA_WALK_DEPTH = 12
 _MAX_SCHEMA_WALK_NODES = 5000
 
-# --- Walker keyword whitelist -------------------------------------------
 # WHITELIST not blacklist — enumerating "keywords we understand" avoids the
 # denylist arms race. See docs/internals/runtime.md.
 

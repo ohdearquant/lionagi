@@ -161,40 +161,15 @@ def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
 
 
 def redact_runtime_fields_in_place(data) -> None:
-    """Wrap the runtime-only values in a raw request mapping so nothing can
-    print or serialize them.
+    """Wrap the runtime-only fields (``env``, ``on_spawn``) in a raw request
+    mapping so nothing can print or serialize them.
 
-    Called at the top of every model-level ``mode="before"`` validator, because
-    that is the one place a validator holds the WHOLE raw input, and pydantic
-    keeps a failing validator's raw input on the error. ``exclude`` and
-    ``repr=False`` do not reach that channel: they govern the model, and this
-    runs before a model exists.
-
-    Every declared runtime field is wrapped, not just ``env``. ``on_spawn`` is
-    a callback, and a bound one carries its receiver into its own ``repr``, so
-    a supervisor holding credentials would print them from the same error. The
-    wrapper is unwrapped by the field validators, which are the only code that
-    needs the value.
-
-    Anything the raw mapping holds under any other key is untouched and is not
-    covered by this. The claim here is about the two declared runtime fields.
-
-    **An immutable mapping is refused, not skipped.** Substituting in place is
-    not a convenience here, it is the whole mechanism: pydantic keeps the
-    object that was passed INTO the failing validator, so handing back a
-    sanitized copy changes nothing about what the error holds. When the raw
-    input cannot be written to, there is no way to make it safe, and the only
-    two options are to leak it or to refuse it. ``BaseModel.model_validate()``
-    accepts any mapping, so this route is public and reachable, and skipping
-    quietly meant a credential in ``str(exc)``, ``exc.errors()`` and
-    ``exc.json()`` alike.
-
-    The refusal is a ``TypeError`` because pydantic converts ``ValueError`` and
-    ``AssertionError`` into a ``ValidationError`` that quotes the rejected
-    input, which would reintroduce exactly what is being prevented. It names
-    the fields and the mapping type and never the values. A mapping carrying
-    neither runtime field has nothing to protect and passes through, so
-    read-only inputs are not broken in general.
+    Must run at the top of every model-level ``mode="before"`` validator —
+    that is the one place pydantic keeps the WHOLE raw input on a failing
+    validator, and ``exclude``/``repr=False`` do not reach that channel since
+    they govern the model, which does not exist yet at that point. An
+    immutable mapping is refused (``TypeError``) rather than silently skipped;
+    see docs/internals/_cli_subprocess.md for why.
     """
     if not isinstance(data, Mapping):
         return
@@ -220,41 +195,17 @@ def redact_runtime_fields_in_place(data) -> None:
 def _kill_abandoned_spawn(task: asyncio.Future) -> None:
     """End the group of a child nobody is left to receive.
 
-    Runs as a done-callback because by then there is nothing left to await
-    from: the coroutine that asked for the child has already unwound.
+    Runs as a done-callback: the coroutine that asked for the child has
+    already unwound by the time this fires, so there is nothing left to await
+    from.
 
-    A cancelled task is a KNOWN HOLE here, not a case of nothing having
-    happened, and it is logged rather than passed over in silence. Interpreter
-    shutdown cancels pending tasks, and a cancellation landing inside the
-    creation call leaves a child the OS has made and whose pid was never
-    returned to anyone in this process. asyncio closes the transport on that
-    path, which ends the direct child; the group it leads is not reached,
-    because reaching it needs the pid.
-
-    This was measured rather than reasoned about: a leg spawned under a loop
-    that then shuts down leaves a SIGTERM-ignoring descendant running, and it
-    still does. Recording the handle as soon as the creation call returns was
-    tried and removed — it covers only a window between the call returning and
-    the caller resuming, which is not where the cancellation lands.
-
-    Closing it needs the pid before the creation call returns. There is a route
-    to that: driving ``loop.subprocess_exec`` with a protocol that records
-    ``transport.get_pid()`` in ``connection_made``, which the loop schedules
-    before the cancellable wait. It is declined here because it means
-    reimplementing ``create_subprocess_exec`` on top of stdlib classes outside
-    that module's ``__all__``, pinning this file to their shape across every
-    Python version supported.
-
-    Nor does anything recover it later. This said the opposite until it was
-    read against the code: that the orphan is in the record the caller writes
-    and a later sweep still finds it. ``on_spawn`` fires only once the creation
-    call has returned, which is precisely what did not happen here, so the
-    window leaves no record of any kind — which is what the log line is for,
-    and why it is a warning. Left as a stated hole, not a handled one.
-
-    The exception is retrieved where there is one, or asyncio reports it as
-    never-retrieved at exit and a cancelled spawn starts looking like a defect
-    in the spawn.
+    A cancelled task is a known, logged hole here, not a handled case: a
+    cancellation landing inside the creation call leaves a child the OS has
+    made whose pid was never returned to anyone in this process, and nothing
+    recovers it later — ``on_spawn`` fires only once the creation call has
+    returned, which is precisely what did not happen. See
+    docs/internals/_cli_subprocess.md for why the pid cannot be captured
+    earlier and why this stays an open hole rather than being closed.
     """
     if task.cancelled():
         log.warning(
@@ -274,18 +225,11 @@ def _kill_abandoned_spawn(task: asyncio.Future) -> None:
 def _end_group_with_evidence(proc: Any) -> str:
     """End a child's group wherever its identity can be established.
 
-    TWO facts establish that a recorded group id still belongs to this child,
-    and they cover different moments, so checking only one leaves a hole where
-    the other applies. While the child is unreaped its pid cannot have been
-    reissued, so the group id is provably still its own and no scan is needed.
-    Once it has been reaped, only a live member pins that id, which is what the
-    membership scan looks for.
-
-    Checking only the second is what left a SIGTERM-ignoring descendant running
-    whenever the process table could not be read: the refusal is correct AFTER
-    the reap and wrong before it, where identity was never in question. The rule
-    was stated correctly and implemented halfway, which is the kind of gap that
-    reads as caution rather than as a defect.
+    Two facts establish that a recorded group id still belongs to this child,
+    covering different moments: while unreaped, its pid cannot have been
+    reissued, so the group id is provably still its own and no scan is
+    needed; once reaped, only a live member pins that id, which is what the
+    membership scan checks for.
     """
     pgid = getattr(proc, "pid", None)
     if getattr(proc, "returncode", None) is None:
@@ -322,43 +266,16 @@ def _kill_group_if_occupied(pgid: Any) -> str:
 async def end_child_group(proc: Any, *, grace: float = 5.0) -> None:
     """End every member of the child's group, and survive being cancelled.
 
-    Two things this does that awaiting the graceful helper alone does not.
-
-    It drains the GROUP rather than the process. The graceful helper returns as
-    soon as the process it holds a handle to is gone, and a descendant that
-    ignores SIGTERM outlives a parent that does not — so the group is read
-    afterwards and killed if anyone is still in it. A group that answers with
-    members is still the group whose id was recorded, because a group id is not
-    reissued while it has members.
-
-    It cannot be interrupted into leaving something running. The graceful pass
-    waits out a grace period, and that wait is a cancellation point that a
-    runner being torn down is exactly where it meets. So a synchronous kill
-    runs in a ``finally`` when that pass did not finish: no await, so nothing
-    can interpose.
-
-    Every signal it sends is conditioned on the recorded group id still being
-    this child's, and there are exactly two things that establish that. Either
-    the child has not been waited, in which case its pid cannot have been
-    reissued and the polite signal is safe; or the group answers with a live
-    member, and an occupied group is never reissued. Nothing else counts, and
-    the graceful helper is therefore reached ONLY on the not-yet-waited path:
-    it signals the group id it is given without checking anything, so calling it
-    after a normal drain would send SIGTERM to whatever now holds a recycled id.
-
-    The escalation keys on that membership evidence rather than on whether the
-    direct child is dead. Those are different facts: a leader that died to
-    SIGTERM sets ``returncode`` while a descendant ignoring SIGTERM is still in
-    its group, and a backstop gated on the leader's liveness reads that as
-    nothing left to do. Confusing the two is the defect this function exists to
-    fix, so it must not be the condition the fix runs under.
-
-    What it therefore cannot close, rather than papering over it: a scan that
-    could not read the whole process table and saw no members leaves emptiness
-    unproved, and this refuses to signal on that, because an unprovable group
-    and a reissued one look the same from here. That refusal is logged rather
-    than silent — it is the one outcome where something may still be running
-    and nothing was done about it.
+    Drains the GROUP, not just the process: the graceful helper returns as
+    soon as the direct child is gone, but a descendant that ignores SIGTERM
+    outlives a parent that does not, so the group is read afterward and
+    killed if anyone is still in it. Every signal sent is conditioned on the
+    recorded group id still being this child's — either the child hasn't
+    been waited yet (pid not reissued) or the group answers with a live
+    member (an occupied group is never reissued); nothing else qualifies, and
+    a scan that can't prove the group is empty is treated as unproved, not
+    clean. See docs/internals/_cli_subprocess.md for the full rationale,
+    including why the fallback kill runs synchronously in a ``finally``.
     """
     swept = False
     try:
