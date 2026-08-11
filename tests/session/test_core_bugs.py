@@ -14,9 +14,7 @@ from lionagi.session.observer import SessionObserver
 from lionagi.session.session import Session
 from lionagi.session.signal import Signal, StructuredOutput
 
-# ---------------------------------------------------------------------------
 # InstructionContent dict response_format survives serialization
-# ---------------------------------------------------------------------------
 
 
 class TestResponseFormatSerialization:
@@ -75,9 +73,7 @@ class TestResponseFormatSerialization:
         assert "_structure_instance" not in serialized
 
 
-# ---------------------------------------------------------------------------
 # Observer handlers run concurrently (non-blocking)
-# ---------------------------------------------------------------------------
 
 
 class TestConcurrentObserverDispatch:
@@ -173,9 +169,7 @@ class TestConcurrentObserverDispatch:
         assert seqs == sorted(seqs), "Events must be recorded in emission order"
 
 
-# ---------------------------------------------------------------------------
 # Observe by emitting agent role (RoleFilter)
-# ---------------------------------------------------------------------------
 
 
 class TestObserveByRole:
@@ -299,9 +293,7 @@ class TestObserveByRole:
             obs.observe(None, lambda e, ctx: None)
 
 
-# ---------------------------------------------------------------------------
 # Branch / Session serialization and split regressions
-# ---------------------------------------------------------------------------
 
 
 class TestBranchStateRegressions:

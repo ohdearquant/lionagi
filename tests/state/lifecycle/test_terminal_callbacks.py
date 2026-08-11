@@ -32,7 +32,7 @@ from lionagi.state.lifecycle.deliveries import (
 )
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
 
-# ── Fixtures (mirrors tests/state/lifecycle/test_service.py) ─────────────────
+# Fixtures (mirrors tests/state/lifecycle/test_service.py)
 
 
 @pytest.fixture
@@ -93,7 +93,7 @@ def _command(**overrides) -> TransitionCommand:
     return TransitionCommand(**base)
 
 
-# ── Registry mechanics ────────────────────────────────────────────────────────
+# Registry mechanics
 
 
 @pytest.mark.asyncio
@@ -324,7 +324,7 @@ async def test_fast_sync_handler_still_runs_and_error_handling_is_unchanged():
     assert ran == ["ok-sync"]
 
 
-# ── Lifecycle-service integration (D1 hook point) ────────────────────────────
+# Lifecycle-service integration (D1 hook point)
 
 
 @pytest.mark.asyncio
@@ -453,7 +453,7 @@ async def test_no_registered_handler_is_a_noop(db: StateDB):
     assert outcome.result == "applied"
 
 
-# ── terminal_deliveries reconciliation (1b, 1b-i, 1b-ii) ─────────────────────
+# terminal_deliveries reconciliation (1b, 1b-i, 1b-ii)
 
 
 @pytest.mark.asyncio

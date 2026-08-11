@@ -40,7 +40,7 @@ async def _make_session(db: StateDB, **fields) -> dict:
     return s
 
 
-# ── Insert + read ────────────────────────────────────────────────────────────
+# Insert + read
 
 
 async def test_insert_artifact_with_invocation_link(db: StateDB):
@@ -89,7 +89,7 @@ async def test_get_artifact_missing_returns_none(db: StateDB):
     assert await db.get_artifact("notarealid") is None
 
 
-# ── Validation ───────────────────────────────────────────────────────────────
+# Validation
 
 
 async def test_insert_artifact_requires_kind(db: StateDB):
@@ -102,7 +102,7 @@ async def test_insert_artifact_requires_name(db: StateDB):
         await db.insert_artifact(kind="x", name="", content={})
 
 
-# ── file_path containment (path/symlink containment defect class) ───────────
+# file_path containment (path/symlink containment defect class)
 #
 # Studio artifact file references (ADR-0077 delta 5) must stay relative and
 # non-traversing before the API can ever expose them for preview/download.
@@ -136,7 +136,7 @@ async def test_insert_artifact_accepts_safe_relative_file_path(db: StateDB):
     assert row["file_path"] == "outputs/report.pdf"
 
 
-# ── FK cascade ────────────────────────────────────────────────────────────────
+# FK cascade
 
 
 async def test_artifacts_cascade_when_invocation_deleted(db: StateDB):
@@ -155,7 +155,7 @@ async def test_artifacts_cascade_when_invocation_deleted(db: StateDB):
     assert await db.get_artifact(art_id) is None
 
 
-# ── Idempotency ───────────────────────────────────────────────────────────────
+# Idempotency
 
 
 async def test_insert_artifact_is_idempotent(db: StateDB):
@@ -210,7 +210,7 @@ async def test_insert_artifact_idempotent_updates_content(db: StateDB):
     assert rows[0]["content"]["verdict"] == "APPROVE"
 
 
-# ── Ordering ──────────────────────────────────────────────────────────────────
+# Ordering
 
 
 async def test_list_artifacts_ordered_by_created_at(db: StateDB):
