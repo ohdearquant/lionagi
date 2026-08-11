@@ -97,6 +97,22 @@ export function hasExecutablePath(verb: ControlVerb): boolean {
   return COMMAND_TYPES_BY_VERB[verb].size > 0;
 }
 
+/** Whether any control verb at all has a backing command.
+ *
+ * When none does, the run detail renders no control section rather than a
+ * section in which every control is disabled. A surface whose every verb
+ * refuses reads as a broken feature, while its absence reads as one not built
+ * yet, and only the second is true. The per-verb refusal above stays exactly
+ * as it is: it is what protects the mixed state, where some verbs are backed
+ * and others are not.
+ *
+ * The verb list comes from the registry itself rather than a second literal,
+ * so the two can never disagree, and the section reappears on its own the
+ * moment any command type lands. */
+export function hasAnyExecutablePath(): boolean {
+  return (Object.keys(COMMAND_TYPES_BY_VERB) as ControlVerb[]).some(hasExecutablePath);
+}
+
 /** Layers the surface-wide fact that a verb has no backing command on top of
  * whatever the run-state machine below decided.
  *
