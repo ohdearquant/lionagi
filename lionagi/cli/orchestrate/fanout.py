@@ -33,7 +33,9 @@ from ._orchestration import (
     available_roles,
     build_worker_branch,
     finalize_orchestration,
+    mode_roster,
     parse_orchestrator_provider,
+    resolve_modes,
     role_roster,
     setup_orchestration,
     start_live_persist,
@@ -271,7 +273,7 @@ async def _run_fanout_inner(
             prompt,
             roles=roster,
             dag=False,
-            guidance=role_roster(env.default_model_spec),
+            guidance=f"{role_roster(env.default_model_spec)}\n\n{mode_roster(env.pack)}",
             max_tasks=num_workers,
         )
     except EmptyOutgoingContentError:
@@ -285,6 +287,27 @@ async def _run_fanout_inner(
     t_decompose = time.monotonic() - t0
     if not assignments:
         return "Orchestrator produced no assignments."
+
+    # Validate the complete plan before creating any worker. The permissive
+    # resolver remains available to flow and legacy callers, but fanout must
+    # not claim success after silently stripping planner intent.
+    planned_modes: list[list[str] | None] = []
+    for index, assignment in enumerate(assignments, start=1):
+        if not assignment.modes:
+            planned_modes.append(None)
+            continue
+        try:
+            planned_modes.append(
+                resolve_modes(
+                    assignment.assignee,
+                    assignment.modes,
+                    env.pack,
+                    reject_invalid=True,
+                )
+            )
+        except ValueError as exc:
+            raise FanoutPlanError(f"assignment {index} has invalid modes: {exc}") from exc
+
     progress(f"Phase 1 done ({t_decompose:.1f}s): {len(assignments)} assignments generated.")
 
     worker_names: list[str] = [env.assign_name(ta.assignee) for ta in assignments]
@@ -326,7 +349,7 @@ async def _run_fanout_inner(
                 role=ta.assignee,
                 model_override=model_override,
                 explicit_name=wname,
-                modes=ta.modes or None,
+                modes=planned_modes[i],
             )
         except BaseException as exc:
             attribute_worker_build_failure(exc, agent_id=wname, role=ta.assignee)

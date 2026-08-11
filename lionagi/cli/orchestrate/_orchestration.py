@@ -258,10 +258,19 @@ def role_config(role: str, pack: Pack | None = None) -> Any:
 
 
 def resolve_modes(
-    role: str, override: list[str] | None = None, pack: Pack | None = None
+    role: str,
+    override: list[str] | None = None,
+    pack: Pack | None = None,
+    *,
+    reject_invalid: bool = False,
 ) -> list[str]:
     """Cognitive modes for *role*: validated per-task override, else pack
-    defaults. Invalid/disallowed modes are dropped with a warning."""
+    defaults.
+
+    Invalid/disallowed modes retain the historical warning-and-drop behavior
+    unless ``reject_invalid`` is set. Planning surfaces use the strict form so
+    an executor never silently weakens a plan it already accepted.
+    """
     import logging
 
     from lionagi.casts.pattern import Mode
@@ -274,13 +283,18 @@ def resolve_modes(
     out: list[str] = []
     for m in requested:
         if gated and allow is not None and m not in allow:
+            message = f"mode {m!r} not permitted for role {role!r} (allow={sorted(allow)})"
+            if reject_invalid:
+                raise ValueError(message)
             log.warning(
                 "mode %r not permitted for role %r (allow=%s); dropping", m, role, sorted(allow)
             )
             continue
         try:
             Mode.load(m)
-        except ValueError:
+        except ValueError as exc:
+            if reject_invalid:
+                raise ValueError(f"unknown mode {m!r} for role {role!r}") from exc
             log.warning("unknown mode %r for role %r; dropping", m, role)
             continue
         out.append(m)
