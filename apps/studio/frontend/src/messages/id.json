@@ -482,17 +482,47 @@
       "graphNodeStatusFailed": "gagal",
       "graphNodeStatusSkipped": "dilewati",
       "graphNodeStatusEscalated": "dieskalasi",
-      "progressEscalated": "Dieskalasi",
       "progressTotal": "Total",
       "progressCompleted": "Selesai",
       "progressRunning": "Berjalan",
       "progressFailed": "Gagal",
       "progressPending": "Tertunda",
+      "progressEscalated": "Dieskalasi",
       "progressElapsed": "Waktu berlalu",
       "expandGraph": "Perluas grafik eksekusi",
       "collapseGraph": "Ciutkan grafik eksekusi",
       "closeExpandedGraph": "Tutup",
-      "nodeNoBranch": "Tidak ada cabang yang ditemukan untuk “{node}” — langkah ini belum dimulai."
+      "nodeNoBranch": "Tidak ada cabang yang ditemukan untuk “{node}” — langkah ini belum dimulai.",
+      "viewGraph": "Graph",
+      "viewList": "List",
+      "viewToggleLabel": "Graph or list view",
+      "selectedNode": "Selected: {node}",
+      "controls": {
+        "pause": "Pause",
+        "pausePhasePausing": "Pausing…",
+        "pausePhasePaused": "Paused",
+        "resume": "Resume gate",
+        "steer": "Steer",
+        "steerSend": "Send",
+        "steerPlaceholder": "Message to steer the run…",
+        "confirmYes": "Confirm",
+        "confirmCancel": "Cancel",
+        "proposeFailed": "Could not propose the command.",
+        "confirmFailed": "Could not confirm the command.",
+        "confirm": {
+          "pause": "Confirm pause?",
+          "resume": "Confirm resume?",
+          "message": "Confirm sending this message?"
+        },
+        "reason": {
+          "run-terminal": "This run has ended.",
+          "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "already-pause-requested": "A pause has already been requested.",
+          "not-paused": "The run is not paused.",
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-executable-path": "Belum ada perintah yang dapat menjalankan tindakan ini."
+        }
+      }
     },
     "masterAria": "Daftar riwayat",
     "detailAria": "Detail item"

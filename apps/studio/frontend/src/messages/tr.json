@@ -482,17 +482,47 @@
       "graphNodeStatusFailed": "başarısız",
       "graphNodeStatusSkipped": "atlandı",
       "graphNodeStatusEscalated": "yükseltildi",
-      "progressEscalated": "Yükseltildi",
       "progressTotal": "Toplam",
       "progressCompleted": "Tamamlandı",
       "progressRunning": "Çalışıyor",
       "progressFailed": "Başarısız",
       "progressPending": "Beklemede",
+      "progressEscalated": "Yükseltildi",
       "progressElapsed": "Geçen süre",
       "expandGraph": "Yürütme grafiğini genişlet",
       "collapseGraph": "Yürütme grafiğini daralt",
       "closeExpandedGraph": "Kapat",
-      "nodeNoBranch": "“{node}” için dal bulunamadı — bu adım henüz başlamadı."
+      "nodeNoBranch": "“{node}” için dal bulunamadı — bu adım henüz başlamadı.",
+      "viewGraph": "Graph",
+      "viewList": "List",
+      "viewToggleLabel": "Graph or list view",
+      "selectedNode": "Selected: {node}",
+      "controls": {
+        "pause": "Pause",
+        "pausePhasePausing": "Pausing…",
+        "pausePhasePaused": "Paused",
+        "resume": "Resume gate",
+        "steer": "Steer",
+        "steerSend": "Send",
+        "steerPlaceholder": "Message to steer the run…",
+        "confirmYes": "Confirm",
+        "confirmCancel": "Cancel",
+        "proposeFailed": "Could not propose the command.",
+        "confirmFailed": "Could not confirm the command.",
+        "confirm": {
+          "pause": "Confirm pause?",
+          "resume": "Confirm resume?",
+          "message": "Confirm sending this message?"
+        },
+        "reason": {
+          "run-terminal": "This run has ended.",
+          "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "already-pause-requested": "A pause has already been requested.",
+          "not-paused": "The run is not paused.",
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-executable-path": "Bunu gerçekleştirecek bir komut henüz yok."
+        }
+      }
     },
     "masterAria": "geçmiş listesi",
     "detailAria": "öğe ayrıntısı"

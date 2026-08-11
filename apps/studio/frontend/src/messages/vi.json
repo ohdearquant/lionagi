@@ -482,17 +482,47 @@
       "graphNodeStatusFailed": "thất bại",
       "graphNodeStatusSkipped": "đã bỏ qua",
       "graphNodeStatusEscalated": "đã leo thang",
-      "progressEscalated": "Đã leo thang",
       "progressTotal": "Tổng",
       "progressCompleted": "Hoàn tất",
       "progressRunning": "Đang chạy",
       "progressFailed": "Thất bại",
       "progressPending": "Đang chờ",
+      "progressEscalated": "Đã leo thang",
       "progressElapsed": "Thời gian trôi qua",
       "expandGraph": "Mở rộng biểu đồ thực thi",
       "collapseGraph": "Thu gọn biểu đồ thực thi",
       "closeExpandedGraph": "Đóng",
-      "nodeNoBranch": "Không tìm thấy nhánh cho “{node}” — bước này chưa bắt đầu."
+      "nodeNoBranch": "Không tìm thấy nhánh cho “{node}” — bước này chưa bắt đầu.",
+      "viewGraph": "Graph",
+      "viewList": "List",
+      "viewToggleLabel": "Graph or list view",
+      "selectedNode": "Selected: {node}",
+      "controls": {
+        "pause": "Pause",
+        "pausePhasePausing": "Pausing…",
+        "pausePhasePaused": "Paused",
+        "resume": "Resume gate",
+        "steer": "Steer",
+        "steerSend": "Send",
+        "steerPlaceholder": "Message to steer the run…",
+        "confirmYes": "Confirm",
+        "confirmCancel": "Cancel",
+        "proposeFailed": "Could not propose the command.",
+        "confirmFailed": "Could not confirm the command.",
+        "confirm": {
+          "pause": "Confirm pause?",
+          "resume": "Confirm resume?",
+          "message": "Confirm sending this message?"
+        },
+        "reason": {
+          "run-terminal": "This run has ended.",
+          "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "already-pause-requested": "A pause has already been requested.",
+          "not-paused": "The run is not paused.",
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-executable-path": "Chưa có lệnh nào để thực hiện thao tác này."
+        }
+      }
     },
     "masterAria": "danh sách lịch sử",
     "detailAria": "chi tiết mục"

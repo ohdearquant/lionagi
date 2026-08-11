@@ -482,17 +482,47 @@
       "graphNodeStatusFailed": "ошибка",
       "graphNodeStatusSkipped": "пропущено",
       "graphNodeStatusEscalated": "эскалировано",
-      "progressEscalated": "Эскалировано",
       "progressTotal": "Всего",
       "progressCompleted": "Завершено",
       "progressRunning": "Выполняется",
       "progressFailed": "Ошибка",
       "progressPending": "Ожидание",
+      "progressEscalated": "Эскалировано",
       "progressElapsed": "Прошло времени",
       "expandGraph": "Развернуть граф выполнения",
       "collapseGraph": "Свернуть граф выполнения",
       "closeExpandedGraph": "Закрыть",
-      "nodeNoBranch": "Ветка для «{node}» не найдена — этот шаг ещё не начался."
+      "nodeNoBranch": "Ветка для «{node}» не найдена — этот шаг ещё не начался.",
+      "viewGraph": "Graph",
+      "viewList": "List",
+      "viewToggleLabel": "Graph or list view",
+      "selectedNode": "Selected: {node}",
+      "controls": {
+        "pause": "Pause",
+        "pausePhasePausing": "Pausing…",
+        "pausePhasePaused": "Paused",
+        "resume": "Resume gate",
+        "steer": "Steer",
+        "steerSend": "Send",
+        "steerPlaceholder": "Message to steer the run…",
+        "confirmYes": "Confirm",
+        "confirmCancel": "Cancel",
+        "proposeFailed": "Could not propose the command.",
+        "confirmFailed": "Could not confirm the command.",
+        "confirm": {
+          "pause": "Confirm pause?",
+          "resume": "Confirm resume?",
+          "message": "Confirm sending this message?"
+        },
+        "reason": {
+          "run-terminal": "This run has ended.",
+          "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "already-pause-requested": "A pause has already been requested.",
+          "not-paused": "The run is not paused.",
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-executable-path": "Пока нет команды, которая бы это выполнила."
+        }
+      }
     },
     "masterAria": "Список истории",
     "detailAria": "Сведения об элементе"

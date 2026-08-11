@@ -515,6 +515,12 @@ async def test_application_mcp_launch_blocks_on_real_durable_human_proposal(tmp_
         "id": "daily-triage",
         "version": proposal["targetVersion"],
     }
+    # The frame is the only view of a proposal a stream client ever gets, so
+    # the row carrying commandType (asserted above) says nothing about whether
+    # the frame does. A client checking a returned proposal against the request
+    # it made needs the type here, and the two must agree.
+    assert proposal_frame["payload"]["proposal"]["commandType"] == "launch"
+    assert proposal_frame["payload"]["proposal"]["commandType"] == proposal["commandType"]
     assert "endpoint" not in proposal["command"]
     assert "command" not in proposal["command"]
 

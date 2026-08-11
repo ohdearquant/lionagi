@@ -1905,6 +1905,13 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             {
                 "proposal": {
                     "id": proposal_id,
+                    # The frame is the only view of a proposal a stream client
+                    # ever sees, so it has to carry what that client needs to
+                    # check the proposal against the request it made. Without
+                    # the type, a caller can confirm a proposal by id and hash
+                    # while having no way to tell what it would actually do.
+                    # Same key and value as the full row serialization.
+                    "commandType": command_type,
                     "command": command,
                     "commandHash": command_hash,
                     "risk": risk,
