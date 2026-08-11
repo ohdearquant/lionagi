@@ -22,7 +22,7 @@ from lionagi.cli.orchestrate._orchestration import (
 )
 from lionagi.state.db import StateDB
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -64,7 +64,7 @@ def _minimal_env(orc_branch: Branch | None = None) -> OrchestrationEnv:
     )
 
 
-# ── start_live_persist: happy path + invariants ───────────────────────────────
+# start_live_persist: happy path + invariants
 
 
 async def test_start_creates_session_and_registers_hook_on_orc_branch(
@@ -184,7 +184,7 @@ async def test_orchestration_manifest_tracks_start_and_terminal_status(
     assert completed["ended_at"] >= completed["started_at"]
 
 
-# ── start_live_persist: failure path closes the DB ────────────────────────────
+# start_live_persist: failure path closes the DB
 
 
 async def test_start_create_session_failure_closes_db(
@@ -221,7 +221,7 @@ async def test_start_create_session_failure_closes_db(
     )
 
 
-# ── _register_branch_hook: lazy branch row + multi-message paths ──────────────
+# _register_branch_hook: lazy branch row + multi-message paths
 
 
 async def test_register_branch_hook_creates_row_on_first_message(
@@ -506,7 +506,7 @@ async def test_hook_updates_system_msg_id_when_system_replaced(
     await stop_live_persist(env, status="completed")
 
 
-# ── stop_live_persist: invariants ─────────────────────────────────────────────
+# stop_live_persist: invariants
 
 
 async def test_stop_updates_session_bookmarks_and_status(
@@ -760,7 +760,7 @@ async def test_stop_with_none_context_is_noop(temp_db_path: Path):
     await stop_live_persist(env, status="completed")  # MUST NOT raise
 
 
-# ── End-to-end: no aiosqlite thread leak ──────────────────────────────────────
+# End-to-end: no aiosqlite thread leak
 
 
 async def test_start_stop_does_not_leak_aiosqlite_thread(temp_db_path: Path):
@@ -793,7 +793,7 @@ async def test_start_stop_does_not_leak_aiosqlite_thread(temp_db_path: Path):
         )
 
 
-# ── lazy _ensure_branch_row retry after first-init failure ───────────────────
+# lazy _ensure_branch_row retry after first-init failure
 
 
 async def test_ensure_branch_row_retries_after_transient_failure(
@@ -854,7 +854,7 @@ async def test_ensure_branch_row_retries_after_transient_failure(
     await stop_live_persist(env, status="completed")
 
 
-# ── finalize_orchestration() and stop_live_persist() DAG paths ───────────────
+# finalize_orchestration() and stop_live_persist() DAG paths
 
 
 def dag_extras() -> dict:
@@ -895,7 +895,7 @@ def _mock_chat_model(branch: Branch) -> None:
     branch._imodel_manager.registry["chat"] = mock
 
 
-# ── Test 2.1 — finalize returns branch_ids and writes branch snapshots ─────────
+# Test 2.1 — finalize returns branch_ids and writes branch snapshots
 
 
 def test_finalize_returns_branch_ids_and_writes_branch_snapshots(
@@ -942,7 +942,7 @@ def test_finalize_returns_branch_ids_and_writes_branch_snapshots(
     assert hints == []
 
 
-# ── Test 2.2 — finalize stores dag extras for live persist teardown ────────────
+# Test 2.2 — finalize stores dag extras for live persist teardown
 
 
 def test_finalize_stores_dag_extras_for_live_persist_teardown(
@@ -1034,7 +1034,7 @@ def test_finalize_omits_khive_injection_stats_without_registered_providers(
     assert "khive_injection" not in env._finalize_extras
 
 
-# ── Test 2.3 — finalize emits resume hints for orchestrator and workers ────────
+# Test 2.3 — finalize emits resume hints for orchestrator and workers
 
 
 def test_finalize_emits_resume_hints_for_orchestrator_and_workers(
@@ -1070,7 +1070,7 @@ def test_finalize_emits_resume_hints_for_orchestrator_and_workers(
     assert critic_hint is not None and str(critic.id) in critic_hint
 
 
-# ── Test 2.4 — snapshot write failure logs warning and continues ────────────────
+# Test 2.4 — snapshot write failure logs warning and continues
 
 
 def test_finalize_snapshot_write_failure_logs_warning_and_continues(
@@ -1122,7 +1122,7 @@ def test_finalize_snapshot_write_failure_logs_warning_and_continues(
     assert any("finalize: branch snapshot write failed" in rec.message for rec in caplog.records)
 
 
-# ── Test 2.5 — stop persists finalize extras without messages ─────────────────
+# Test 2.5 — stop persists finalize extras without messages
 
 
 async def test_stop_persists_finalize_extras_as_session_node_metadata_without_messages(
@@ -1147,7 +1147,7 @@ async def test_stop_persists_finalize_extras_as_session_node_metadata_without_me
     assert s["ended_at"] is not None
 
 
-# ── Test 2.6 — stop persists dag metadata and message bookmarks together ───────
+# Test 2.6 — stop persists dag metadata and message bookmarks together
 
 
 async def test_stop_persists_dag_metadata_and_message_bookmarks_together(
@@ -1189,7 +1189,7 @@ async def test_stop_persists_dag_metadata_and_message_bookmarks_together(
     assert all(h is not hook for h in worker.on_message_added)
 
 
-# ── Test 2.7 — stop without finalize extras leaves node_metadata unchanged ────
+# Test 2.7 — stop without finalize extras leaves node_metadata unchanged
 
 
 async def test_stop_without_finalize_extras_leaves_existing_node_metadata_unchanged(
@@ -1214,7 +1214,7 @@ async def test_stop_without_finalize_extras_leaves_existing_node_metadata_unchan
     assert after["status"] == "completed"
 
 
-# ── Test 2.8 — stop: get_progression failure logs and closes db ───────────────
+# Test 2.8 — stop: get_progression failure logs and closes db
 
 
 async def test_stop_get_progression_failure_logs_and_closes_db(
@@ -1242,7 +1242,7 @@ async def test_stop_get_progression_failure_logs_and_closes_db(
     assert any("progression unavailable" in rec.message for rec in caplog.records)
 
 
-# ── Test 2.9 — stop: close failure logs warning and clears context ────────────
+# Test 2.9 — stop: close failure logs warning and clears context
 
 
 async def test_stop_close_failure_logs_warning_and_clears_context(
@@ -1270,7 +1270,7 @@ async def test_stop_close_failure_logs_warning_and_clears_context(
     assert any("close failed" in rec.message for rec in caplog.records)
 
 
-# ── Test 2.10 — stop persists cancelled status with dag metadata ───────────────
+# Test 2.10 — stop persists cancelled status with dag metadata
 
 
 async def test_stop_persists_cancelled_status_with_dag_metadata(
@@ -1319,7 +1319,7 @@ async def test_stop_persists_cancelled_status_with_dag_metadata(
     assert worker_row["ended_at"] is not None
 
 
-# ── ADR-0064: artifact contract snapshot and verification ─────────────────────
+# ADR-0064: artifact contract snapshot and verification
 
 
 async def test_start_persists_artifact_contract(
@@ -1433,7 +1433,7 @@ async def test_stop_verification_preserves_non_completed_reason(
     assert v["status"] == "failed"
 
 
-# ── issue #2053: post-completion finalize error must not flip a successful DAG ──
+# A post-completion finalize error must not flip a successful DAG.
 
 
 async def test_stop_finalize_error_stays_completed_with_distinct_reason(
@@ -1490,7 +1490,7 @@ async def test_stop_finalize_error_does_not_override_real_dag_failure_reason(
     assert s["status_reason_code"] == "run.failed.exception"
 
 
-# ── output-write failure is a real failure, not a finalize hiccup ─────────────
+# output-write failure is a real failure, not a finalize hiccup
 
 
 async def test_stop_artifact_write_error_flips_completed_to_failed_with_distinct_reason(
@@ -1549,7 +1549,7 @@ async def test_stop_artifact_write_error_does_not_override_real_dag_failure_reas
     assert s["status_reason_code"] == "run.failed.exception"
 
 
-# ── ADR-0064 + ADR-0057: session→invocation propagation on missing artifact ──
+# ADR-0064 + ADR-0057: session→invocation propagation on missing artifact
 #
 # The tests above prove the *session* row flips to failed/FAILED_MISSING_ARTIFACT.
 # A multi-leg `li play`/`li o flow` run is read by callers (Studio, `li status`,
@@ -2175,17 +2175,17 @@ async def test_all_legs_completed_resolves_invocation_completed(
 async def test_child_finalize_error_surfaces_at_invocation_not_flattened_to_ok(
     temp_db_path: Path,
 ):
-    """issue #2053, seam 2: a child session can be "completed" (its own DAG
-    produced its result) while carrying a COMPLETED_FINALIZE_ERROR reason
-    (a guarded best-effort teardown step -- team post, snapshot, resume
-    pointer, graph -- failed). _resolve_invocation_terminal_flow must not
-    flatten that into plain COMPLETED_OK: a reader of the invocation record
-    needs to see the same degraded-but-not-failed distinction the child
-    record already carries, not a false "all clean" signal.
+    """A child session can be "completed" (its own DAG produced its result)
+    while carrying a COMPLETED_FINALIZE_ERROR reason (a guarded best-effort
+    teardown step -- team post, snapshot, resume pointer, graph -- failed).
+    _resolve_invocation_terminal_flow must not flatten that into plain
+    COMPLETED_OK: a reader of the invocation record needs to see the same
+    degraded-but-not-failed distinction the child record already carries,
+    not a false "all clean" signal.
 
-    This must FAIL against the pre-fix resolver, which only inspects
-    child_statuses (all "completed") and returns RunReasons.COMPLETED_OK
-    regardless of status_reason_code.
+    A resolver that only inspects child_statuses (all "completed") and
+    returns RunReasons.COMPLETED_OK regardless of status_reason_code would
+    fail this.
     """
     from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
     from lionagi.state.reasons import RunReasons
@@ -2254,14 +2254,14 @@ async def test_child_finalize_error_surfaces_at_invocation_not_flattened_to_ok(
 async def test_finalize_side_effects_guarded_independently(
     temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """issue #2053, secondary: the best-effort finalize side effects (team
-    post, snapshot/resume-pointer, graph image) must each be guarded on
-    their own -- a raising team post must not skip the snapshot/resume
-    pointer step that runs after it.
+    """The best-effort finalize side effects (team post, snapshot/resume-
+    pointer, graph image) must each be guarded on their own -- a raising
+    team post must not skip the snapshot/resume pointer step that runs
+    after it.
 
-    This must FAIL against the pre-fix code, where all three shared one
-    try/except: the first raise (team post) skipped `finalize_orchestration`
-    entirely, so no session snapshot/resume pointer was ever written.
+    Code that shares one try/except across all three would fail this: the
+    first raise (team post) would skip `finalize_orchestration` entirely,
+    so no session snapshot/resume pointer would ever be written.
     """
     from types import SimpleNamespace
     from unittest.mock import patch
@@ -2350,24 +2350,24 @@ async def test_finalize_side_effects_guarded_independently(
     assert node_metadata["agents"][0]["id"] == "op1"
 
 
-# ── bench545 regressions: plan-time per-leg wiring + escalation backstop ──────
+# Plan-time per-leg wiring + escalation backstop.
 #
-# Both tests below reproduce the actual production gap (play fe9a23ac,
-# artifacts under bench545): the play-level artifact_contract was NULL for
-# the WHOLE run — nothing at plan time ever populated a per-leg contract, so
-# the tests above (which hand-build a `contract` and pass it to
-# start_live_persist directly) do not exercise the gap itself. These two
-# start with NO contract, exactly like bench545, and drive the real
-# _build_dag / _execute_dag phase functions to prove the wiring — not just a
-# role-profile declaration nobody consults — is what closes it.
+# Both tests below reproduce an observed production gap: the play-level
+# artifact_contract was NULL for the whole run — nothing at plan time ever
+# populated a per-leg contract, so the tests above (which hand-build a
+# `contract` and pass it to start_live_persist directly) do not exercise the
+# gap itself. These two start with no contract, exactly like that run, and
+# drive the real _build_dag / _execute_dag phase functions to prove the
+# wiring — not just a role-profile declaration nobody consults — is what
+# closes it.
 
 
 async def test_build_dag_wires_role_artifact_defaults_into_live_contract_and_fails_loud(
     temp_db_path: Path,
     tmp_path: Path,
 ):
-    """A path: no whole-flow contract is declared (play-level NULL, as in
-    bench545). The only source of a per-leg contract is the resolved
+    """A path: no whole-flow contract is declared (play-level NULL, as
+    observed in production). The only source of a per-leg contract is the resolved
     worker's own casts Role (no committed AgentProfile file exists in this
     repo, so w_profile is always None in practice — the role fallback IS the
     real path). _build_dag must itself populate the live contract from the
@@ -2389,7 +2389,7 @@ async def test_build_dag_wires_role_artifact_defaults_into_live_contract_and_fai
     )
     ctx = env._live_persist
     assert ctx is not None
-    assert ctx["artifact_contract"] is None  # bench545 starting state
+    assert ctx["artifact_contract"] is None  # matches the observed production starting state
 
     assignments = [TaskAssignment(task="review the PR", assignee="reviewer")]
     plan_result = _PlanResult(
@@ -2414,8 +2414,8 @@ async def test_build_dag_wires_role_artifact_defaults_into_live_contract_and_fai
     assert entry["path"] == "reviewer/review.md"
     assert entry["required"] is True
 
-    # ...and the session row itself carries it — the exact field bench545
-    # showed stuck at NULL for the whole play.
+    # ...and the session row itself carries it — the exact field the
+    # production run showed stuck at NULL for the whole play.
     async with StateDB() as db:
         s = await db.get_session(ctx["session_id"])
     assert s is not None
@@ -2826,12 +2826,13 @@ async def test_execute_dag_bounds_escalation_link_drain_on_cancellation(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Round-3 regression: when ``_execute_dag`` itself is cancelled, the
-    shielded finally used to gather ``_escalation_link_tasks`` with no cancel
-    and no timeout — a link write that never returns (hung DB call, stuck
-    await) blocked teardown forever. The drain must now be bounded on the
-    cancellation path: give an in-flight link a short grace period, then
-    cancel it and confirm it actually unwinds before returning."""
+    """Escalation-link drain must be bounded, not just guarded — see
+    docs/internals/cli.md's `_orchestration.py` section. A shielded finally
+    that gathers ``_escalation_link_tasks`` with no cancel and no timeout
+    lets a link write that never returns (hung DB call, stuck await) block
+    teardown forever. This drives cancellation into ``_execute_dag`` itself
+    and confirms an in-flight link gets a short grace period, then is
+    cancelled and actually unwinds before returning."""
     import time
     from types import SimpleNamespace
     from unittest.mock import patch
@@ -2917,24 +2918,23 @@ async def test_execute_dag_bounds_escalation_link_drain_on_late_cancellation(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A cancellation landing on ``_execute_dag`` itself after ``run_dag()``
-    already returned lands while the finally is inside its own drain
-    gather, where the except that sets ``_dag_cancelled`` never ran — so
-    that flag stays False, and this is the branch that must bound the
-    drain on its own, not just when cancellation lands mid-``run_dag()``.
+    """Covers the OTHER route into the drain (see docs/internals/cli.md's
+    `_orchestration.py` section): cancellation landing after ``run_dag()``
+    already returned, inside the finally's own drain gather, where the
+    except that sets ``_dag_cancelled`` never runs — that flag stays False,
+    so this branch must bound the drain on its own, independent of the
+    mid-``run_dag()`` case.
 
-    A link task that responds to a *single* cancellation is not enough to
-    exercise this: ``asyncio.gather()``'s own cancellation only needs the
-    one child to unwind once, so a bare, unguarded gather already handles
-    it without any except/drain machinery. This link task instead swallows
-    the *first* cancellation it receives and only unwinds on a second one —
-    a bare gather with no except and no bounded drain genuinely hangs
-    forever on a single external cancel against a task like this, because
-    ``asyncio.gather()`` doesn't settle its own cancellation until every
-    child actually finishes, and a raw ``Task.cancel()`` only delivers once.
-    Verified by temporarily reverting the shield+drain handling below back
-    to that bare-gather shape and running this exact test: it timed out at
-    the 8s deadline instead of finishing at ~2s."""
+    A link task that responds to a single cancellation would not exercise
+    this: ``asyncio.gather()``'s own cancellation only needs one child to
+    unwind once, so a bare, unguarded gather already handles that case. This
+    link task instead swallows the first cancellation it receives and only
+    unwinds on a second one — confirmed by temporarily reverting the
+    shield+drain handling below to a bare-gather shape and re-running this
+    exact test: it timed out at the 8s deadline instead of finishing at
+    ~2s, because ``asyncio.gather()`` doesn't settle its own cancellation
+    until every child finishes, and a raw ``Task.cancel()`` only delivers
+    once."""
     import time
     from types import SimpleNamespace
     from unittest.mock import patch
@@ -2993,8 +2993,9 @@ async def test_execute_dag_bounds_escalation_link_drain_on_late_cancellation(
         on_op_complete = kwargs.get("on_op_complete")
         if on_op_complete is not None:
             on_op_complete(node)
-        # Returns normally — unlike the round-3 test, cancellation has not
-        # landed yet, so the except that sets _dag_cancelled never fires.
+        # Returns normally — unlike the mid-run_dag() cancellation case,
+        # cancellation has not landed yet, so the except that sets
+        # _dag_cancelled never fires.
         return {"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
 
     engine_run = SimpleNamespace(run_dag=run_dag)
@@ -3029,34 +3030,26 @@ async def test_execute_dag_bounds_escalation_link_drain_survivor_await(
     temp_db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """``_drain_escalation_links_bounded`` gives in-flight links a grace
-    period, then cancels whatever survived and awaits the survivors — that
-    second await used to have no bound at all, so a link task that never
-    responds to that cancellation would hang it forever, the same class of
-    bug the grace period was added to fix in the first place, just moved
-    one step later. The fix bounds that second await too (a second short
-    grace window) and abandons anything still alive after it, logging how
-    many.
+    """The survivor-await step of ``_drain_escalation_links_bounded`` (see
+    docs/internals/cli.md's `_orchestration.py` section) needs its own bound:
+    after the first grace period, whatever survived gets cancelled and
+    awaited, and that second await must not itself be unbounded.
 
-    Caveat verified while building this test: this specific link task
-    (needs two cancellation deliveries to unwind) exercises the full drain
-    sequence — grace-period gather, explicit cancel of survivors, second
-    bounded gather — end to end, and the whole thing stays comfortably
-    inside the hard deadline below. It does not, on its own, prove the
-    second window's *bound* is load-bearing for this exact shape: anyio's
-    cancel scope keeps re-delivering cancellation for as long as a task
-    keeps re-suspending on a fresh awaitable, so a finite swallow count
-    (however large) tends to resolve inside the *first* grace window rather
-    than surviving into the second. A link task that never responds to
-    cancellation at all defeats both grace windows identically (confirmed
-    empirically: neither the first nor the second `move_on_after` returns
-    control while such a task stays alive) — there is no way to construct a
-    task that reliably survives window one but is bounded by window two, so
-    this test cannot safely isolate that distinction. What it does verify:
-    the drain sequence introduced by this fix does not regress a link task
-    that needs more than a single cancellation to unwind, and the
-    abandonment logic
-    does not itself hang anything."""
+    This exercises the full drain sequence end to end — grace-period gather,
+    explicit cancel of survivors, second bounded gather — with a link task
+    that needs two cancellation deliveries to unwind, and confirms the whole
+    thing stays inside the hard deadline below. It does NOT isolate whether
+    the second window's bound specifically is load-bearing for this shape:
+    anyio's cancel scope keeps re-delivering cancellation as long as a task
+    keeps re-suspending on a fresh awaitable, so a finite swallow count tends
+    to resolve inside the first grace window rather than surviving into the
+    second, and a link task that never responds to cancellation at all
+    defeats both windows identically (confirmed empirically — neither
+    `move_on_after` returns control while such a task stays alive). There is
+    no task shape that reliably survives window one but is bounded by window
+    two, so this test cannot isolate that distinction; it verifies the drain
+    sequence doesn't regress a link task needing more than one cancellation,
+    and that the abandonment logging doesn't itself hang."""
     import time
     from types import SimpleNamespace
     from unittest.mock import patch
@@ -3419,7 +3412,7 @@ async def test_execute_dag_escalation_backstop_catches_reactively_spawned_node(
     assert s["status_reason_code"] == "run.failed.escalated"
 
 
-# ── Node-failure backstop ──────────────────────────────────────────────────────
+# Node-failure backstop
 #
 # A flow whose final node died could still report succeeded: an operation's
 # invoke() raised, DependencyAwareExecutor caught it and set that node's own

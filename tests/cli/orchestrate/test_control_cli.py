@@ -62,7 +62,7 @@ async def _make_invocation(db: StateDB, *, status: str = "running") -> str:
     return inv_id
 
 
-# ── pause ───────────────────────────────────────────────────────────────────
+# pause
 
 
 @pytest.mark.asyncio
@@ -131,7 +131,7 @@ def test_pause_no_state_db_returns_exit_unknown(temp_db_path: Path):
     assert rc == EXIT_UNKNOWN
 
 
-# ── resume ──────────────────────────────────────────────────────────────────
+# resume
 
 
 @pytest.mark.asyncio
@@ -149,7 +149,7 @@ async def test_resume_enqueues_row(temp_db_path: Path):
     assert pending[0]["payload"] is None
 
 
-# ── msg ─────────────────────────────────────────────────────────────────────
+# msg
 
 
 @pytest.mark.asyncio
@@ -172,7 +172,7 @@ def test_msg_unknown_id_returns_exit_unknown(temp_db_path: Path):
     assert rc == EXIT_UNKNOWN
 
 
-# ── write-path guards: ambiguity, terminal sessions, non-flow kinds ─────────
+# write-path guards: ambiguity, terminal sessions, non-flow kinds
 
 
 @pytest.mark.asyncio
@@ -241,7 +241,7 @@ async def test_play_kind_session_accepted(temp_db_path: Path):
         assert len(await db.list_pending_session_controls(sid)) == 1
 
 
-# ── multiple controls queue independently ──────────────────────────────────
+# multiple controls queue independently
 
 
 @pytest.mark.asyncio

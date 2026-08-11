@@ -25,7 +25,7 @@ def _parse_flow_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(["o", "flow", *argv])
 
 
-# ── Spec field validation ─────────────────────────────────────────────────────
+# Spec field validation
 
 
 class TestSpecValidationRejectsBadTypes:
@@ -132,7 +132,7 @@ class TestSpecValidationRejectsBadTypes:
         err = _validate_spec_fields({"team_mode": True})
         assert err is not None
 
-    # ── Present-null values must be rejected (YAML `null` → Python None) ──
+    # Present-null values must be rejected (YAML `null` → Python None)
 
     def test_workers_null_rejected(self):
         err = _validate_spec_fields({"workers": None})
@@ -335,7 +335,7 @@ class TestSpecValidationAcceptsValidFields:
         assert "workers" in caplog.text
 
 
-# ── Save path containment ─────────────────────────────────────────────────────
+# Save path containment
 
 
 class TestSavePathContainment:
@@ -379,7 +379,7 @@ class TestSavePathContainment:
         run_flow.assert_called_once()
 
 
-# ── ADR-0064: artifacts: field validation in _validate_spec_fields ────────────
+# ADR-0064: artifacts: field validation in _validate_spec_fields
 
 
 class TestArtifactsFieldValidation:

@@ -25,7 +25,7 @@ from lionagi.cli.orchestrate.flow import (
     _synthesize,
 )
 
-# ── Shared stubs ──────────────────────────────────────────────────────────────
+# Shared stubs
 
 
 def _make_env(
@@ -240,7 +240,7 @@ class _FakeBranch:
         return {"id": str(self.id), "created_at": 0, "name": self.name}
 
 
-# ── Tests for _build_dag ──────────────────────────────────────────────────────
+# Tests for _build_dag
 
 
 @pytest.mark.asyncio
@@ -485,7 +485,7 @@ async def test_build_dag_pool_override_passes_to_worker(tmp_path):
     assert calls[1]["model_override"] == "codex/expensive"
 
 
-# ── Tests for _execute_dag ────────────────────────────────────────────────────
+# Tests for _execute_dag
 
 
 @pytest.mark.asyncio
@@ -1111,7 +1111,7 @@ async def test_execute_dag_drains_segment_metadata_write_before_returning(tmp_pa
     assert segment_writes[-1]["segments"], "segment entry for the completed node was not recorded"
 
 
-# ── Reactive spawn artifact enforcement through REAL teardown ─────────────────
+# Reactive spawn artifact enforcement through REAL teardown
 # Replaces the old interim regression test that pinned spawned artifacts as
 # permanently non-required (a spawned node used to have no way to learn its
 # own artifact dir before running). decorate_instruction now tells it that
@@ -1362,7 +1362,7 @@ async def test_execute_dag_segment_writer_merges_into_real_statedb(
     assert meta.get("unverifiable_count") == 2
 
 
-# ── Tests for _synthesize ─────────────────────────────────────────────────────
+# Tests for _synthesize
 
 
 @pytest.mark.asyncio
@@ -1510,7 +1510,7 @@ async def test_synthesize_includes_spawned_artifact_dir(tmp_path):
     assert str(tmp_path / "researcher") in instruction
 
 
-# ── Tests for _finalize_flow ──────────────────────────────────────────────────
+# Tests for _finalize_flow
 
 
 def test_finalize_flow_text_output(tmp_path):
@@ -1756,7 +1756,7 @@ def test_finalize_flow_agents_includes_spawned_node(tmp_path):
     assert spawned_agent["spawned"] is True
 
 
-# ── issue #2053: post-DAG finalize failures must not become DAG failures ──────
+# Post-DAG finalize failures must not become DAG failures.
 
 
 def test_finalize_flow_team_post_failure_still_returns_output_and_records_error(tmp_path):
@@ -1918,7 +1918,7 @@ def test_finalize_flow_artifact_write_failure_is_split_from_finalize_error(tmp_p
     assert len(finalize_calls) == 1
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# Helpers
 
 
 def _asyncio_coro(value):

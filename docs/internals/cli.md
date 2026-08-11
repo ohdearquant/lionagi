@@ -328,6 +328,38 @@ spawned this generation — otherwise a resume that reconstructs every spawned
 node as already-terminal would report `n_spawned=0` and silently skip the
 `with_synthesis`-or-`n_spawned` gate in `_run_flow_inner`.
 
+### `_orchestration.py` — live-persist finalize and escalation-link teardown
+
+A DAG that already produced its result must not lose that result because a
+post-completion, best-effort teardown step raises. Three such steps run after
+a DAG finishes: posting to the team inbox, writing the session
+snapshot/resume pointer, and rendering the graph image. Each is guarded in
+its own try/except — sharing one try/except across all three would mean the
+first raise (the team post) skips the rest, so the snapshot and resume
+pointer would never get written even though the run itself succeeded.
+
+When any of these guarded steps fails, the session still ends with status
+`completed`, but its reason code becomes `COMPLETED_FINALIZE_ERROR` instead
+of `COMPLETED_OK`. That distinction has to survive the hop from the child
+session's record to the parent invocation's record —
+`_resolve_invocation_terminal_flow` must not flatten a degraded-but-not-failed
+child into a plain `COMPLETED_OK` at the invocation level, or a reader of the
+invocation loses the only signal that a teardown step misbehaved.
+
+Escalation-link teardown has its own hazard: `_execute_dag`'s cancellation
+path drains any in-flight escalation-link tasks before returning, and that
+drain must be bounded, not just guarded. `_drain_escalation_links_bounded`
+gives in-flight links a grace period to unwind on their own, then cancels
+whatever survived and awaits those survivors under a second, shorter grace
+window, abandoning (and logging) anything still alive after that. Both grace
+windows matter independently: a link task can swallow a first cancellation
+and only unwind on a second one, so a single unbounded `asyncio.gather()`
+with no drain machinery can hang forever on external cancellation. The bound
+has to hold on both routes into teardown — cancellation landing mid-`run_dag()`
+(caught by an except that also sets `_dag_cancelled`) and cancellation
+landing after `run_dag()` has already returned, inside the `finally` block's
+own drain `gather()` (where that except never runs, so `_dag_cancelled` stays
+`False`) — since only one of those two routes exercises the flag.
 ### `_round_records.py` / `_quiescence.py` — proving a manifest round is idle
 
 A manifest round dispatches independent legs as subprocesses, each in its own

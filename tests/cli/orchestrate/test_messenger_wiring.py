@@ -401,7 +401,7 @@ async def test_unbound_worker_operate_does_not_serialize_any_tool_schema(tmp_pat
     assert not captured.get("tool_schemas")
 
 
-# ── Team-coordination prompt selection ─────────────────────────────────────
+# Team-coordination prompt selection
 #
 # Regression coverage for the two-channel contradiction: a team-mode worker
 # prompt must describe exactly one coordination channel — the in-process
@@ -511,7 +511,7 @@ async def test_cli_worker_branch_prompt_has_bash_channel_only(tmp_path):
         assert marker not in prompt
 
 
-# ── Mixed-provider teams: messenger roster must match actual reachability ──
+# Mixed-provider teams: messenger roster must match actual reachability
 #
 # In a heterogeneous --workers pool (some CLI-provider specs, some API
 # specs) under team mode, only the API workers end up messenger-bound. A
@@ -614,9 +614,8 @@ async def test_messenger_bound_worker_prompt_flags_cli_teammate_end_to_end(tmp_p
     assert "Unknown recipient" in prompt
 
 
-# ── Attached-team history: messenger-bound workers can't live-poll the
+# Attached-team history: messenger-bound workers can't live-poll the
 # persisted file, so prior messages must be surfaced to them some other way
-# ─────────────────────────────────────────────────────────────────────────
 #
 # `--team-attach` loads an existing team's persisted messages (li team's
 # file channel). A bash-channel worker can still `li team receive` live and
@@ -726,7 +725,7 @@ async def test_messenger_bound_worker_system_prompt_excludes_attached_history_en
     assert "kickoff broadcast" in [m["content"] for m in ctx["prior_team_messages"]["messages"]]
 
 
-# ── Coordinator reachability: the orchestrator is not a messenger target ───
+# Coordinator reachability: the orchestrator is not a messenger target
 #
 # The roster line for "orchestrator" is the one entry team_worker_system()
 # always emits without going through the messenger_names reachability
