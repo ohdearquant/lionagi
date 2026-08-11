@@ -55,9 +55,7 @@ def _make_svc() -> AsyncMock:
     return svc
 
 
-# ---------------------------------------------------------------------------
 # _reserve_global_slot / _release_global_slot — pure reservation logic
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -131,9 +129,7 @@ async def test_release_global_slot_decrements_and_floors_at_zero(monkeypatch):
     assert engine._global_inflight == 0
 
 
-# ---------------------------------------------------------------------------
 # _maybe_fire — defers on no slot, fires normally when available
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -209,9 +205,7 @@ async def test_maybe_fire_fires_when_slot_available(monkeypatch):
     assert kwargs["global_slot_claim"] is not None
 
 
-# ---------------------------------------------------------------------------
 # _tick_github — defers before fetch when no slot; releases on no-events
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -393,9 +387,7 @@ async def test_tick_github_fires_and_releases_slot_on_completion(monkeypatch):
     assert engine._global_inflight == 0
 
 
-# ---------------------------------------------------------------------------
 # fire_now — refuses (does not defer) at capacity
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -437,9 +429,7 @@ async def test_fire_now_succeeds_when_slot_available(monkeypatch):
     assert kwargs["global_slot_claim"] is not None
 
 
-# ---------------------------------------------------------------------------
 # Slot released after a real _fire() completes
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -502,9 +492,7 @@ async def test_fire_releases_global_slot_on_exception(monkeypatch):
     assert engine._global_inflight == 0
 
 
-# ---------------------------------------------------------------------------
 # Deferred-record throttling
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -528,13 +516,11 @@ async def test_maybe_record_deferred_throttles_after_first(monkeypatch):
     assert svc.create_schedule_run.await_count == 2
 
 
-# ---------------------------------------------------------------------------
 # _run_task_worker_tick — ad-hoc executions draw from their own independent
 # concurrency pool (MAX_ADHOC_CONCURRENT / _adhoc_inflight), never the
 # scheduled-fire cap. A shared counter let a continuously replenished stream
 # of scheduled fires starve the ad-hoc lane indefinitely; each lane now has
 # its own guaranteed capacity.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
