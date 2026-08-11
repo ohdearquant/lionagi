@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { AgentDetail } from "@/components/library/AgentDetail";
 import { CreateAgentPanel } from "@/components/library/CreateAgentPanel";
@@ -368,22 +368,26 @@ function LibraryPage() {
   ];
   const KIND_TABS = ALL_KIND_TABS.filter((tab) => !UNFINISHED_KINDS.has(tab.value));
 
-  const filtered = items.filter((item) => {
-    if (UNFINISHED_KINDS.has(item.kind)) return false;
-    if (kindFilter !== "all" && item.kind !== kindFilter) return false;
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      if (
-        !item.name.toLowerCase().includes(q) &&
-        !(item.description ?? "").toLowerCase().includes(q)
-      ) {
-        return false;
-      }
-    }
-    return true;
-  });
+  const filtered = useMemo(
+    () =>
+      items.filter((item) => {
+        if (UNFINISHED_KINDS.has(item.kind)) return false;
+        if (kindFilter !== "all" && item.kind !== kindFilter) return false;
+        if (search.trim()) {
+          const q = search.toLowerCase();
+          if (
+            !item.name.toLowerCase().includes(q) &&
+            !(item.description ?? "").toLowerCase().includes(q)
+          ) {
+            return false;
+          }
+        }
+        return true;
+      }),
+    [items, kindFilter, search],
+  );
 
-  // Auto-select the first row whenever the tab or loaded items change (and no explicit sel).
+  // Keep detail selection aligned with the rows the current tab/search shows.
   useEffect(() => {
     if (loading) return;
 
@@ -422,8 +426,7 @@ function LibraryPage() {
         replace: true,
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally runs only on tab/items change
-  }, [tab, loading, items.length]);
+  }, [tab, loading, filtered, search, sel, navigate]);
 
   const selectItem = useCallback(
     (item: LibraryItem) => {

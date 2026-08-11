@@ -11,7 +11,12 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { formatCalendarDayLabel, groupAgendaByHour, truncateMiddle } from "./SchedulesCalendar";
+import {
+  formatCalendarDayLabel,
+  groupAgendaByHour,
+  projectIntervalFires,
+  truncateMiddle,
+} from "./SchedulesCalendar";
 import type { ScheduleSummary } from "@/lib/types";
 import type { RunRow } from "./data";
 
@@ -69,6 +74,34 @@ function runRow(overrides: Partial<RunRow> = {}): RunRow {
 const MIN = 60_000;
 // 2026-07-06 (Monday) 09:00 local, as an epoch-ms base for fixture firings.
 const DAY_BASE = new Date(2026, 6, 6, 9, 0, 0, 0).getTime();
+
+describe("projectIntervalFires — bounded calendar projection", () => {
+  it("returns the first real firing in each visible day without expanding every occurrence", () => {
+    const start = new Date(2026, 0, 1, 0, 0, 0, 0).getTime();
+    const end = new Date(2026, 1, 1, 0, 0, 0, 0).getTime() - 1;
+
+    const fires = projectIntervalFires(start, 1_000, start, end, "day");
+
+    expect(fires).toHaveLength(31);
+    expect(fires.map((atMs) => new Date(atMs).getDate())).toEqual(
+      Array.from({ length: 31 }, (_, index) => index + 1),
+    );
+    expect(fires.every((atMs) => new Date(atMs).getHours() === 0)).toBe(true);
+  });
+
+  it("preserves the interval phase when jumping to the next visible hour", () => {
+    const first = new Date(2026, 6, 6, 9, 7, 30, 0).getTime();
+    const start = new Date(2026, 6, 6, 9, 0, 0, 0).getTime();
+    const end = new Date(2026, 6, 6, 12, 59, 59, 999).getTime();
+
+    expect(projectIntervalFires(first, 13 * MIN, start, end, "hour")).toEqual([
+      first,
+      first + 5 * 13 * MIN,
+      first + 9 * 13 * MIN,
+      first + 14 * 13 * MIN,
+    ]);
+  });
+});
 
 function fire(atMs: number, s: ScheduleSummary) {
   return { kind: "fire" as const, atMs, schedule: s };

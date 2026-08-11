@@ -443,6 +443,37 @@ export const DAG_MAX_ZOOM = 1;
 // shrinking further; ReactFlow's own pan/zoom-out takes over from there.
 export const FIT_ZOOM_FLOOR = 0.65;
 
+export const PINNED_DUMMY_BUDGET_PER_INPUT = 2;
+
+export function estimatePinnedDummyNodes(minlens: number[]): number {
+  // Dagre's edge-label pass doubles every minlen before normalization, then
+  // inserts a dummy at each intermediate rank: (2 * minlen) - 1 per edge.
+  return minlens.reduce((total, minlen) => total + Math.max(1, 2 * Math.floor(minlen) - 1), 0);
+}
+
+/**
+ * Scale ASAP minlen gaps whenever their synthetic-node burden exceeds a
+ * linear budget. The burden, not a node-count threshold, is the risk: a
+ * 99-node deep-chain-with-fan-in graph can expand almost as badly as #3012's
+ * 111-node fixture. Dagre represents every extra rank on an edge as a dummy
+ * node, so bounding that count before layout prevents rank pinning from
+ * turning a modest input into thousands of synchronous layout objects.
+ */
+export function boundPinnedMinlens(rankGaps: number[], nodeCount: number): number[] {
+  const exact = rankGaps.map((gap) => (Number.isFinite(gap) ? Math.max(1, Math.floor(gap)) : 1));
+  const exactDummyNodes = estimatePinnedDummyNodes(exact);
+  const dummyBudget = Math.max(nodeCount, exact.length) * PINNED_DUMMY_BUDGET_PER_INPUT;
+  if (exactDummyNodes <= dummyBudget) return exact;
+
+  // A minlen of one already costs one label dummy per edge. Scale only the
+  // additional gap burden into what remains of the budget.
+  const minimumDummyNodes = exact.length;
+  const scalableBudget = Math.max(0, dummyBudget - minimumDummyNodes);
+  const scalableDummyNodes = exactDummyNodes - minimumDummyNodes;
+  const scale = scalableBudget / scalableDummyNodes;
+  return exact.map((gap) => 1 + Math.floor((gap - 1) * scale));
+}
+
 // getLayoutedElements (below) reports the graph's UNSCALED bounding-box
 // size. A container that reserves height at that value reserves for a shape
 // the graph never actually draws: at the zoom fitView will actually apply —
@@ -489,12 +520,13 @@ export function getLayoutedElements(
   // length instead, which is a different objective and disagrees with ASAP
   // whenever a node's result is consumed much later than it is produced (the
   // P2 case). Rather than fight that objective with a `ranker` option (the
-  // ADR is explicit that no ranker choice changes the outcome), pin every
-  // edge's minlen to the exact ASAP rank gap between its endpoints. ASAP then
-  // satisfies every constraint with equality, so its total edge span equals
-  // the sum of the minlens, which is the lower bound any feasible assignment
-  // can reach — and reaching it requires every edge to be tight, which only
-  // ASAP is. dagre still does the ordering and routing, just not the ranking.
+  // ADR is explicit that no ranker choice changes the outcome), pin each
+  // edge's minlen to its ASAP rank gap. For ordinary graphs this is exact:
+  // ASAP satisfies every constraint with equality, so its total edge span
+  // equals the sum of the minlens, the lower bound any feasible assignment
+  // can reach. When exact pinning exceeds the linear synthetic-node budget,
+  // boundPinnedMinlens may scale those gaps down; Dagre
+  // still preserves dependency order, while avoiding the #3012 expansion.
   //
   // Note what that argument rests on: ASAP is the unique MINIMUM-COST
   // assignment here, not the unique feasible one. Slack-free constraints do
@@ -504,12 +536,11 @@ export function getLayoutedElements(
   // this depends on the ranker minimizing total edge length, which every dagre
   // ranker does. A future ranker with a different objective would need this
   // revisited rather than trusted.
-  for (const edge of edges) {
+  const rankedEdges = edges.flatMap((edge) => {
     const sourceRank = ranks.get(edge.source);
     const targetRank = ranks.get(edge.target);
     if (sourceRank !== undefined && targetRank !== undefined) {
-      g.setEdge(edge.source, edge.target, { minlen: Math.max(1, targetRank - sourceRank) });
-      continue;
+      return [{ edge, rankGap: Math.max(1, targetRank - sourceRank) }];
     }
     // An endpoint is missing from `ranks`, which happens exactly when the edge
     // names a node that never arrived: computeNodeDepths ranks every node it
@@ -528,7 +559,15 @@ export function getLayoutedElements(
     // explicit `undefined` AS the label, and dagre dereferences it while
     // routing — "Cannot set properties of undefined (setting 'points')", which
     // takes the whole layout down.
-  }
+    return [];
+  });
+  const pinnedMinlens = boundPinnedMinlens(
+    rankedEdges.map(({ rankGap }) => rankGap),
+    nodes.length,
+  );
+  rankedEdges.forEach(({ edge }, index) => {
+    g.setEdge(edge.source, edge.target, { minlen: pinnedMinlens[index] });
+  });
 
   dagre.layout(g);
 

@@ -82,6 +82,18 @@ describe("routes/library.tsx — uses SplitPane master-detail", () => {
   });
 });
 
+describe("routes/library.tsx — selection follows the visible search results", () => {
+  const src = fs.readFileSync(path.join(ROUTES_DIR, "library.tsx"), "utf-8");
+  const effectStart = src.indexOf("// Keep detail selection aligned");
+  const effectEnd = src.indexOf("const selectItem", effectStart);
+  const selectionEffect = src.slice(effectStart, effectEnd);
+
+  it("reconciles selection when text search or the URL sel changes", () => {
+    expect(selectionEffect).toMatch(/\}, \[[^\]]*search[^\]]*sel[^\]]*\]\);/s);
+    expect(selectionEffect).not.toContain("intentionally runs only on tab/items change");
+  });
+});
+
 // ─── Detail pane components ───────────────────────────────────────────────────
 
 describe("AgentDetail — detail pane contract", () => {

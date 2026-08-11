@@ -25,6 +25,8 @@ import {
   DAG_FIT_PADDING,
   FIT_ZOOM_FLOOR,
   computeReservedHeight,
+  boundPinnedMinlens,
+  estimatePinnedDummyNodes,
 } from "./useLayout";
 import { transitiveReduceDisplay } from "@/lib/operationGraph";
 import { fitZoomFor, MIN_INTERACTIVE_ZOOM } from "./WorkerCanvas";
@@ -93,6 +95,93 @@ function assertNoOverlap(nodes: Node[]) {
     }
   }
 }
+
+describe("Dagre rank pinning — large-graph dummy-node budget (#3012)", () => {
+  const chain = Array.from({ length: 10 }, (_, index) => `chain-${index}`);
+  const roots = Array.from({ length: 100 }, (_, index) => `root-${index}`);
+  const issueNodes = [...chain.map(bare), ...roots.map(bare), bare("sink")];
+  const issueEdges: Edge[] = [
+    ...chain.slice(0, -1).map((id, index) => ({
+      id: `${id}-${chain[index + 1]}`,
+      source: id,
+      target: chain[index + 1],
+    })),
+    { id: "chain-9-sink", source: "chain-9", target: "sink" },
+    ...roots.map((id) => ({ id: `${id}-sink`, source: id, target: "sink" })),
+  ];
+  const underThresholdChain = Array.from({ length: 9 }, (_, index) => `short-chain-${index}`);
+  const underThresholdRoots = Array.from({ length: 89 }, (_, index) => `short-root-${index}`);
+  const underThresholdNodes = [
+    ...underThresholdChain.map(bare),
+    ...underThresholdRoots.map(bare),
+    bare("short-sink"),
+  ];
+  const underThresholdEdges: Edge[] = [
+    ...underThresholdChain.slice(0, -1).map((id, index) => ({
+      id: `${id}-${underThresholdChain[index + 1]}`,
+      source: id,
+      target: underThresholdChain[index + 1],
+    })),
+    {
+      id: "short-chain-8-short-sink",
+      source: "short-chain-8",
+      target: "short-sink",
+    },
+    ...underThresholdRoots.map((id) => ({
+      id: `${id}-short-sink`,
+      source: id,
+      target: "short-sink",
+    })),
+  ];
+
+  it("keeps exact ASAP gaps for ordinary graphs", () => {
+    const gaps = [1, 6, 5, 4, 3, 2];
+    expect(boundPinnedMinlens(gaps, 18)).toEqual(gaps);
+  });
+
+  it("bounds the issue fixture's 1,910 synthetic nodes before Dagre runs", () => {
+    // Ten chain edges establish a sink at rank 10, then 100 independent roots
+    // feed that sink directly. Dagre doubles minlen to reserve edge-label
+    // ranks, so the ten minlen=1 edges create one dummy apiece and the hundred
+    // minlen=10 edges create nineteen apiece: 10 + (100 * 19) = 1,910.
+    const gaps = [...Array(10).fill(1), ...Array(100).fill(10)];
+    expect(estimatePinnedDummyNodes(gaps)).toBe(1_910);
+
+    const bounded = boundPinnedMinlens(gaps, 111);
+
+    expect(estimatePinnedDummyNodes(bounded)).toBeLessThanOrEqual(222);
+    expect(bounded.every((gap) => gap >= 1)).toBe(true);
+    expect(bounded.some((gap, index) => gap < gaps[index])).toBe(true);
+  });
+
+  it("bounds an adversarial 99-node graph based on estimated burden, not node count", () => {
+    expect(underThresholdNodes).toHaveLength(99);
+    expect(underThresholdEdges).toHaveLength(98);
+    const gaps = [...Array(9).fill(1), ...Array(89).fill(9)];
+    expect(estimatePinnedDummyNodes(gaps)).toBe(1_522);
+
+    const bounded = boundPinnedMinlens(gaps, underThresholdNodes.length);
+
+    expect(estimatePinnedDummyNodes(bounded)).toBeLessThanOrEqual(198);
+    expect(bounded.some((gap, index) => gap < gaps[index])).toBe(true);
+  });
+
+  it("lays out the measured fixture with finite positions and dependency-ordered ranks", () => {
+    expect(issueNodes).toHaveLength(111);
+    expect(issueEdges).toHaveLength(110);
+    const layout = getLayoutedElements(issueNodes, issueEdges, "LR");
+
+    expect(layout.nodes).toHaveLength(issueNodes.length);
+    expect(
+      layout.nodes.every(
+        (node) => Number.isFinite(node.position.x) && Number.isFinite(node.position.y),
+      ),
+    ).toBe(true);
+    for (const edge of issueEdges) {
+      expect(layout.ranks.get(edge.source)).toBeLessThan(layout.ranks.get(edge.target)!);
+    }
+  });
+});
 
 describe("estimateNodeHeight", () => {
   // The card is a fixed-height box, so its height cannot depend on how far

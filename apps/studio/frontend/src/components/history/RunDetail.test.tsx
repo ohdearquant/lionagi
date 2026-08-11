@@ -15,6 +15,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import RunStepCard from "@/components/RunStepCard";
 import enMessages from "@/messages/en.json";
+import type { SignalEvent } from "@/lib/api";
 import type { RunStep, WorkerGraph } from "@/lib/types";
 
 vi.mock("@/components/ui/Markdown", () => ({
@@ -336,22 +337,22 @@ describe("history/RunDetail.tsx — hidden-count badge and show-implied toggle, 
     ],
   };
 
-  const minimalSession = (graph: unknown) => ({
+  const minimalSession = (graph: unknown, status = "completed") => ({
     id: "run-mount-1",
     name: "run-mount-1",
     created_at: 0,
     updated_at: 0,
-    status: "completed",
+    status,
     branches: [],
     graph,
   });
 
-  async function mountRunDetail(graph: unknown) {
+  async function mountRunDetail(graph: unknown, status = "completed") {
     const [{ getSession }, { default: RunDetail }] = await Promise.all([
       import("@/lib/api"),
       import("./RunDetail"),
     ]);
-    vi.mocked(getSession).mockResolvedValue(minimalSession(graph) as never);
+    vi.mocked(getSession).mockResolvedValue(minimalSession(graph, status) as never);
 
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -377,6 +378,173 @@ describe("history/RunDetail.tsx — hidden-count badge and show-implied toggle, 
       },
     };
   }
+
+  it("replays persisted signal history for a completed session without opening the message stream", async () => {
+    const { streamSession, streamSignals } = await import("@/lib/api");
+    vi.mocked(streamSession).mockClear();
+    vi.mocked(streamSignals).mockClear();
+    let onSignal: ((event: SignalEvent | { type: string }) => void) | undefined;
+    vi.mocked(streamSignals).mockImplementation((_id, listener) => {
+      onSignal = listener;
+      return () => {};
+    });
+
+    const { container, unmount } = await mountRunDetail(null);
+    try {
+      expect(streamSession).not.toHaveBeenCalled();
+      expect(streamSignals).toHaveBeenCalledOnce();
+
+      await act(async () => {
+        onSignal?.({
+          id: "signal-history-1",
+          session_id: "run-mount-1",
+          seq: 1,
+          kind: "NodeStarted",
+          op_id: "persisted-op",
+          ts: 1_000,
+          payload: { name: "historical-node" },
+        });
+        onSignal?.({ type: "done" });
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).toContain("persisted-op");
+      expect(container.textContent).toContain("historical-node");
+    } finally {
+      unmount();
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  it("opens both SSE channels after a running snapshot resolves", async () => {
+    const { streamSession, streamSignals } = await import("@/lib/api");
+    vi.mocked(streamSession).mockClear();
+    vi.mocked(streamSignals).mockClear();
+
+    const { unmount } = await mountRunDetail(null, "running");
+    try {
+      expect(streamSession).toHaveBeenCalledOnce();
+      expect(streamSignals).toHaveBeenCalledOnce();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("retains collected signals when a live message stream reports done", async () => {
+    const [{ getSession, streamSession, streamSignals }, { default: RunDetail }] =
+      await Promise.all([import("@/lib/api"), import("./RunDetail")]);
+    let onSession: ((event: Record<string, unknown>) => void) | undefined;
+    let onSignal: ((event: SignalEvent | { type: string }) => void) | undefined;
+    const stopSignals = vi.fn();
+    vi.mocked(getSession)
+      .mockResolvedValueOnce(minimalSession(null, "running") as never)
+      .mockResolvedValueOnce(minimalSession(null, "completed") as never);
+    vi.mocked(streamSession).mockImplementation((_id, listener) => {
+      onSession = listener;
+      return () => {};
+    });
+    vi.mocked(streamSignals).mockImplementation((_id, listener) => {
+      onSignal = listener;
+      return stopSignals;
+    });
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id="run-mount-1" />
+          </IntlProvider>,
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        onSignal?.({
+          id: "signal-live-1",
+          session_id: "run-mount-1",
+          seq: 1,
+          kind: "NodeCompleted",
+          op_id: "live-op",
+          ts: 2_000,
+          payload: { name: "finished-node" },
+        });
+        await Promise.resolve();
+      });
+      expect(container.textContent).toContain("live-op");
+
+      await act(async () => {
+        onSession?.({ type: "done" });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).toContain("live-op");
+      expect(stopSignals).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  it("ignores an initial session response after navigation selects another run", async () => {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    let resolveSlow!: (session: ReturnType<typeof minimalSession>) => void;
+    const slow = new Promise<ReturnType<typeof minimalSession>>((resolve) => {
+      resolveSlow = resolve;
+    });
+    vi.mocked(getSession).mockImplementation((runId: string) => {
+      if (runId === "run-slow") return slow as never;
+      return Promise.resolve({
+        ...minimalSession(null),
+        id: "run-fast",
+        name: "Fast run",
+      }) as never;
+    });
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const render = async (runId: string) => {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id={runId} />
+          </IntlProvider>,
+        );
+        await Promise.resolve();
+      });
+    };
+
+    try {
+      await render("run-slow");
+      await render("run-fast");
+      expect(container.textContent).toContain("Fast run");
+
+      await act(async () => {
+        resolveSlow({
+          ...minimalSession(null),
+          id: "run-slow",
+          name: "Stale slow run",
+        });
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).toContain("Fast run");
+      expect(container.textContent).not.toContain("Stale slow run");
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
 
   it("shows the hidden-count badge and the reduced edge set by default", async () => {
     const { container, unmount } = await mountRunDetail(diamondWithSkipGraph);

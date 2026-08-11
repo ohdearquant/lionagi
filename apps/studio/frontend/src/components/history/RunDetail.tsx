@@ -57,6 +57,16 @@ const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+export function isTerminalSessionStatus(status: string | null | undefined): boolean {
+  const displayStatus = deriveDisplayStatus({ status: status ?? "" });
+  return (
+    displayStatus === "completed" ||
+    displayStatus === "failed" ||
+    displayStatus === "cancelled" ||
+    displayStatus === "orphaned"
+  );
+}
+
 /** A value whose entire content is one identifier, as a short id — or null for
  * anything else. Deliberately narrow: only an object whose single key is `id`
  * qualifies, so shortening can never drop a sibling field the reader would
@@ -1455,9 +1465,18 @@ export default function RunDetail({ id }: RunDetailProps) {
   const suppressAutoScrollRef = useRef(false);
   const initialScrollDoneRef = useRef(false);
   const olderSentinelRef = useRef<HTMLDivElement>(null);
+  const sessionStreamEligible = Boolean(
+    id && session?.id === id && !done && (live || !isTerminalSessionStatus(session.status)),
+  );
+  // The signals endpoint is both history and live transport: it replays all
+  // persisted rows before its done sentinel, including for terminal sessions.
+  // Keep this independent of the message stream so completed runs recover
+  // their execution history without replaying the session's messages.
+  const signalStreamEligible = Boolean(id && session?.id === id);
 
   useEffect(() => {
     if (!id) return;
+    let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
     setSession(null);
     setRunGraph(null);
@@ -1472,17 +1491,10 @@ export default function RunDetail({ id }: RunDetailProps) {
     initialScrollDoneRef.current = false;
     getSession(id)
       .then((s) => {
+        if (cancelled) return;
         setSession(s);
         setOlderCursor(s.message_next_cursor ?? null);
-        const ss = (s.status ?? "").toLowerCase();
-        if (
-          ss === "completed" ||
-          ss === "done" ||
-          ss === "success" ||
-          ss === "failed" ||
-          ss === "failure" ||
-          ss === "cancelled"
-        ) {
+        if (isTerminalSessionStatus(s.status)) {
           setDone(true);
         }
         if (s.branches.length <= 3) {
@@ -1508,7 +1520,12 @@ export default function RunDetail({ id }: RunDetailProps) {
           });
         }
       })
-      .catch((e: unknown) => setError(String(e)));
+      .catch((e: unknown) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   useEffect(() => {
@@ -1553,7 +1570,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   }, [id, resumeWatch]);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || !sessionStreamEligible) return;
     let cancelled = false;
     const stop = streamSession(id, (event) => {
       if (event.type === "heartbeat") return;
@@ -1589,10 +1606,10 @@ export default function RunDetail({ id }: RunDetailProps) {
       cancelled = true;
       stop();
     };
-  }, [id]);
+  }, [id, sessionStreamEligible]);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || !signalStreamEligible) return;
     const stop = streamSignals(id, (event) => {
       if ("type" in event) return;
       const sig = event as SignalEvent;
@@ -1603,9 +1620,8 @@ export default function RunDetail({ id }: RunDetailProps) {
     });
     return () => {
       stop();
-      setSignalEvents([]);
     };
-  }, [id]);
+  }, [id, signalStreamEligible]);
 
   useEffect(() => {
     if (suppressAutoScrollRef.current) {

@@ -13,9 +13,18 @@ interface Props {
   onLocaleChange: (l: string) => void;
 }
 
+// SplitPane needs 900px before it collapses; the default Operator dock is
+// 408px and the icon rail consumes the remainder of a ~1360px window. Fresh
+// sessions below this width therefore start undocked, while an explicit saved
+// open/closed choice always wins.
+const OPERATOR_DEFAULT_OPEN_MIN_WIDTH = 1_360;
+
 function getOperatorOpen(): boolean {
   if (typeof window === "undefined") return true;
-  return window.localStorage.getItem("studio:operator-visibility") !== "closed";
+  const persisted = window.localStorage.getItem("studio:operator-visibility");
+  if (persisted === "open") return true;
+  if (persisted === "closed") return false;
+  return window.innerWidth >= OPERATOR_DEFAULT_OPEN_MIN_WIDTH;
 }
 
 export default function AppShell({ children, onLocaleChange }: Props) {
@@ -118,7 +127,7 @@ export default function AppShell({ children, onLocaleChange }: Props) {
           toggleOperator={toggleOperator}
         />
 
-        <OperatorPanel open={operatorOpen} onClose={closeOperator} />
+        {operatorOpen && <OperatorPanel open onClose={closeOperator} />}
       </div>
     </ToastProvider>
   );

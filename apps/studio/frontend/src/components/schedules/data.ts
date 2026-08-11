@@ -76,6 +76,35 @@ export interface SchedulesData {
 
 const POLL_MS = 30_000;
 const RUNS_PER_SCHEDULE = 25;
+export const RUN_SUMMARY_CONCURRENCY = 6;
+
+/** Promise.allSettled semantics with a fixed worker pool and stable result order. */
+export async function mapSettledWithConcurrency<T, R>(
+  items: T[],
+  requestedConcurrency: number,
+  task: (item: T, index: number) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  if (items.length === 0) return [];
+  const concurrency = Math.min(items.length, Math.max(1, Math.floor(requestedConcurrency) || 1));
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      try {
+        results[index] = { status: "fulfilled", value: await task(items[index], index) };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return results;
+}
 
 /**
  * Fetches all schedules plus each schedule's recent runs (the API exposes
@@ -88,46 +117,65 @@ export function useSchedulesData(): SchedulesData {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const aliveRef = useRef(true);
+  const inFlightRef = useRef<Promise<void> | null>(null);
+  const trailingRefreshRef = useRef(false);
 
-  const load = useCallback(async () => {
-    try {
-      const res = await listSchedules();
-      if (!aliveRef.current) return;
-      const list = res.schedules;
-      const settled = await Promise.allSettled(
-        list.map((s) => listScheduleRuns(s.id, { limit: RUNS_PER_SCHEDULE })),
-      );
-      if (!aliveRef.current) return;
-      const nameById = new Map(list.map((s) => [s.id, s.name]));
-      const allRuns: RunRow[] = [];
-      for (const r of settled) {
-        if (r.status === "fulfilled") {
-          for (const run of r.value.runs) {
-            allRuns.push({
-              ...run,
-              scheduleName: nameById.get(run.schedule_id) ?? run.schedule_id,
-            });
+  const load = useCallback(function loadSchedules(): Promise<void> {
+    if (inFlightRef.current) {
+      trailingRefreshRef.current = true;
+      return inFlightRef.current;
+    }
+
+    const request = (async () => {
+      try {
+        const res = await listSchedules();
+        if (!aliveRef.current) return;
+        const list = res.schedules;
+        const settled = await mapSettledWithConcurrency(list, RUN_SUMMARY_CONCURRENCY, (schedule) =>
+          listScheduleRuns(schedule.id, { limit: RUNS_PER_SCHEDULE }),
+        );
+        if (!aliveRef.current) return;
+        const nameById = new Map(list.map((s) => [s.id, s.name]));
+        const allRuns: RunRow[] = [];
+        for (const r of settled) {
+          if (r.status === "fulfilled") {
+            for (const run of r.value.runs) {
+              allRuns.push({
+                ...run,
+                scheduleName: nameById.get(run.schedule_id) ?? run.schedule_id,
+              });
+            }
           }
         }
+        setSchedules(list);
+        setRuns(allRuns);
+        setNowMs(Date.now());
+        setError(false);
+      } catch {
+        if (aliveRef.current) setError(true);
+      } finally {
+        if (aliveRef.current) setLoading(false);
       }
-      setSchedules(list);
-      setRuns(allRuns);
-      setNowMs(Date.now());
-      setError(false);
-    } catch {
-      if (aliveRef.current) setError(true);
-    } finally {
-      if (aliveRef.current) setLoading(false);
-    }
+    })();
+    inFlightRef.current = request;
+    void request.finally(() => {
+      if (inFlightRef.current !== request) return;
+      inFlightRef.current = null;
+      if (trailingRefreshRef.current && aliveRef.current) {
+        trailingRefreshRef.current = false;
+        void loadSchedules();
+      }
+    });
+    return request;
   }, []);
 
   useEffect(() => {
     aliveRef.current = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- load() calls setState, but this is a data-fetch pattern matching the rest of the codebase
     void load();
     const id = setInterval(() => void load(), POLL_MS);
     return () => {
       aliveRef.current = false;
+      trailingRefreshRef.current = false;
       clearInterval(id);
     };
   }, [load]);
