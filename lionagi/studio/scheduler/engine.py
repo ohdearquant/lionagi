@@ -33,6 +33,7 @@ from lionagi.studio.scheduler.signals import (
 )
 from lionagi.studio.services.scheduler_state import (
     SchedulerStateService,
+    _DBSchedulerStateService,
     create_skipped_run,
     default_scheduler_state,
     flush_run_telemetry,
@@ -735,6 +736,8 @@ class SchedulerEngine:
                 ft.cancel()
             await asyncio.gather(*self._fire_tasks, return_exceptions=True)
             self._fire_tasks.clear()
+        if isinstance(self._svc, _DBSchedulerStateService):
+            await self._svc.close()
 
     def _tracked_fire(self, *args: Any, **kwargs: Any) -> asyncio.Task:
         """Create a tracked _fire task; prevents orphans surviving shutdown."""
@@ -3085,5 +3088,5 @@ class SchedulerEngine:
         return None
 
 
-scheduler = SchedulerEngine()
+scheduler = SchedulerEngine(svc=_DBSchedulerStateService(persistent=True))
 register_default_handlers(scheduler._signal_bus)

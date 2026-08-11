@@ -5,6 +5,7 @@ both serializer paths in lionagi.studio.services.invocations."""
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 
@@ -208,6 +209,202 @@ async def test_list_invocations_route_reports_total_and_completed_total(tmp_path
     assert result["total"] == 3
     assert result["completed_total"] == 2
     assert len(result["invocations"]) == 1
+
+
+async def test_list_invocations_route_never_applies_schema_for_sqlite_get(tmp_path, monkeypatch):
+    """A pure GET must use SQLite's read-only engine, never its migration path."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        await _create_invocation(db, status="completed")
+
+    async def fail_schema_apply(_db):
+        raise AssertionError("invocation GET attempted schema application")
+
+    monkeypatch.setattr(StateDB, "_apply_schema", fail_schema_apply)
+
+    result = await invocations_mod.list_invocations_route(
+        skill=None, plugin=None, status=None, limit=50, offset=0
+    )
+
+    assert result["total"] == 1
+    assert result["completed_total"] == 1
+
+
+async def test_list_invocations_route_opens_state_db_once(tmp_path, monkeypatch):
+    """The route should reuse one engine rather than reopening per query."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        await _create_invocation(db, status="completed")
+        await _create_invocation(db, status="failed")
+
+    open_count = 0
+    original_open = StateDB.open
+
+    async def tracking_open(db):
+        nonlocal open_count
+        open_count += 1
+        await original_open(db)
+
+    monkeypatch.setattr(StateDB, "open", tracking_open)
+
+    result = await invocations_mod.list_invocations_route(
+        skill=None, plugin=None, status=None, limit=50, offset=0
+    )
+
+    assert result["total"] == 2
+    assert result["completed_total"] == 1
+    assert open_count == 1
+
+
+async def test_list_invocations_route_uses_one_snapshot_during_concurrent_write(
+    tmp_path, monkeypatch
+):
+    """Rows, child sessions, and totals must describe one database snapshot.
+
+    A WAL writer commits a child session and another completed invocation after
+    the route has read its page but before it reads children and totals.
+    Separate autocommit reads return a torn response (the new child plus totals
+    of two); one explicit snapshot must keep every database-derived field at
+    the pre-write view.
+    """
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        initial_invocation_id = await _create_invocation(db, status="completed")
+
+    writer = StateDB(db_path)
+    await writer.open()
+    progression_id = uuid.uuid4().hex
+    await writer.create_progression(progression_id)
+    original_list_rows = StateDB.list_invocations
+    inserted = False
+
+    async def interleave_writer(db, **kwargs):
+        nonlocal inserted
+        rows = await original_list_rows(db, **kwargs)
+        if db.readonly and not inserted:
+            inserted = True
+            await writer.create_session(
+                {
+                    "id": str(uuid.uuid4()),
+                    "progression_id": progression_id,
+                    "status": "completed",
+                    "invocation_id": initial_invocation_id,
+                }
+            )
+            await _create_invocation(writer, status="completed")
+        return rows
+
+    monkeypatch.setattr(StateDB, "list_invocations", interleave_writer)
+    try:
+        result = await invocations_mod.list_invocations_route(
+            skill=None, plugin=None, status=None, limit=50, offset=0
+        )
+    finally:
+        await writer.close()
+
+    assert inserted is True
+    assert len(result["invocations"]) == 1
+    assert result["invocations"][0]["health"] == "unknown"
+    assert result["total"] == 1
+    assert result["completed_total"] == 1
+
+    async with StateDB(db_path, readonly=True) as db:
+        assert await db.count_invocations() == 2
+        assert len(await db.list_sessions_for_invocation(initial_invocation_id)) == 1
+
+
+async def test_get_invocation_defaults_to_readonly_for_sqlite(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        inv_id = await _create_invocation(db)
+
+    async def fail_schema_apply(_db):
+        raise AssertionError("invocation detail GET attempted schema application")
+
+    monkeypatch.setattr(StateDB, "_apply_schema", fail_schema_apply)
+
+    result = await invocations_mod.get_invocation(inv_id)
+
+    assert result is not None
+    assert result["id"] == inv_id
+
+
+async def test_list_invocations_offloads_process_snapshot(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    event_loop_thread = threading.get_ident()
+
+    async with StateDB(db_path) as db:
+        inv_id = await _create_invocation(db)
+        progression_id = uuid.uuid4().hex
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": str(uuid.uuid4()),
+                "progression_id": progression_id,
+                "status": "running",
+                "invocation_id": inv_id,
+            }
+        )
+
+    snapshot_threads: list[int] = []
+
+    def fake_snapshot() -> str:
+        snapshot_threads.append(threading.get_ident())
+        return ""
+
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod, "_ps_snapshot", fake_snapshot)
+
+    await invocations_mod.list_invocations()
+
+    assert snapshot_threads
+    assert snapshot_threads[0] != event_loop_thread
+
+
+async def test_list_invocations_does_not_query_children_per_row(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        for index in range(3):
+            inv_id = await _create_invocation(db)
+            progression_id = uuid.uuid4().hex
+            await db.create_progression(progression_id)
+            await db.create_session(
+                {
+                    "id": str(uuid.uuid4()),
+                    "progression_id": progression_id,
+                    "name": f"child-{index}",
+                    "status": "completed",
+                    "invocation_id": inv_id,
+                }
+            )
+
+    per_row_calls = 0
+    original = StateDB.list_sessions_for_invocation
+
+    async def tracking_per_row(db, invocation_id):
+        nonlocal per_row_calls
+        per_row_calls += 1
+        return await original(db, invocation_id)
+
+    monkeypatch.setattr(StateDB, "list_sessions_for_invocation", tracking_per_row)
+
+    rows = await invocations_mod.list_invocations()
+
+    assert len(rows) == 3
+    assert all(row["health"] == "healthy" for row in rows)
+    assert per_row_calls == 0
 
 
 async def test_get_invocation_schedule_run_fields_none_for_interactive_invocation(

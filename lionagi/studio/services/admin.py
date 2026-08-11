@@ -1055,7 +1055,7 @@ async def list_admin_events(
 
 
 async def prune_sessions(session_ids: list[str]) -> int:
-    """Delete sessions by explicit ID list."""
+    """Prune explicitly selected terminal sessions through targeted cleanup."""
     require_file_store()
     seen: dict[str, None] = {}
     for sid in session_ids:
@@ -1063,26 +1063,10 @@ async def prune_sessions(session_ids: list[str]) -> int:
     unique_ids = list(seen)
     if not unique_ids or not store_exists():
         return 0
-    placeholders = ",".join("?" * len(unique_ids))
-    async with _open_db(store_path()) as db:
-        cur = await db.execute(
-            f"DELETE FROM sessions WHERE id IN ({placeholders})",  # noqa: S608
-            unique_ids,
-        )
-        await db.commit()
-        pruned = cur.rowcount or 0
-        await db.execute(
-            """
-            DELETE FROM messages
-            WHERE id NOT IN (
-              SELECT value FROM progressions, json_each(progressions.collection)
-            )
-            """
-        )
-        await db.commit()
-    # Recorded after the aiosqlite transaction above commits — insert_admin_event
-    # opens its own StateDB (SQLAlchemy) write transaction; nesting it inside
-    # the aiosqlite block would self-deadlock on the sqlite write lock.
+
+    from lionagi.studio.services.db_maintenance import prune_terminal_sessions_by_id
+
+    pruned = await prune_terminal_sessions_by_id(unique_ids)
     from lionagi.state.db import StateDB
 
     async with StateDB() as sdb:

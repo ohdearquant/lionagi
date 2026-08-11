@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -145,6 +146,29 @@ def test_runs_list_invalid_page_rejected(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.get("/api/runs?page=0")
     assert r.status_code == 422
+
+
+async def test_list_runs_offloads_process_snapshot(tmp_path, monkeypatch):
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.admin as admin_mod
+    import lionagi.studio.services.runs as runs_mod
+
+    db_path = tmp_path / "state.db"
+    await _seed_sessions(db_path, [{"id": str(uuid.uuid4()), "status": "running"}])
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    event_loop_thread = threading.get_ident()
+    snapshot_threads: list[int] = []
+
+    def fake_snapshot() -> str:
+        snapshot_threads.append(threading.get_ident())
+        return ""
+
+    monkeypatch.setattr(admin_mod, "_ps_snapshot", fake_snapshot)
+
+    await runs_mod.list_runs(limit=20)
+
+    assert snapshot_threads
+    assert snapshot_threads[0] != event_loop_thread
 
 
 # ─── GET /api/runs/projects — per-project counts for the lazy runs explorer ───

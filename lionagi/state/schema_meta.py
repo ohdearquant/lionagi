@@ -143,6 +143,12 @@ invocations = Table(
 Index("idx_invocations_skill", invocations.c.skill)
 Index("idx_invocations_status", invocations.c.status)
 Index("idx_invocations_updated", invocations.c.updated_at)
+Index(
+    "idx_invocations_reaper",
+    invocations.c.status,
+    invocations.c.started_at,
+    invocations.c.id,
+)
 
 # ── sessions ──────────────────────────────────────────────────────────────────
 

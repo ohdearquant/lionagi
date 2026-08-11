@@ -4,18 +4,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
 
 from fastapi import Query
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lionagi._errors import NotFoundError
-from lionagi.state.db import StateDB, state_db_known_absent
+from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 from lionagi.state.health import SessionHealth, classify_session_health, worst_health
 
 from ..registry import studio_route
 from ._io import parse_json_col as _parse_json_col
+
+
+async def _ps_snapshot_async() -> str:
+    """Capture process state without blocking Studio's event loop."""
+    from .admin import _ps_snapshot
+
+    return await asyncio.to_thread(_ps_snapshot)
 
 
 def _invocation_health(
@@ -55,6 +64,105 @@ def _invocation_health(
     return worst_health(healths).value, last_activity
 
 
+async def _load_invocations_from_db(
+    db: StateDB,
+    *,
+    skill: str | None = None,
+    plugin: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    connection: AsyncConnection,
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    rows = await db.list_invocations(
+        skill=skill,
+        plugin=plugin,
+        status=status,
+        limit=limit,
+        offset=offset,
+        connection=connection,
+    )
+    children_by_invocation = await db.list_sessions_for_invocations(
+        [row["id"] for row in rows], connection=connection
+    )
+    return rows, children_by_invocation
+
+
+async def _serialize_invocations(
+    rows: list[dict[str, Any]],
+    children_by_invocation: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    now = time.time()
+    ps_snapshot: str | None = None
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        child_sessions = children_by_invocation[r["id"]]
+        if child_sessions and ps_snapshot is None:
+            ps_snapshot = await _ps_snapshot_async()
+        health, last_activity_at = _invocation_health(
+            child_sessions, now=now, ps_snapshot=ps_snapshot
+        )
+        node_meta = r.get("node_metadata")
+        if isinstance(node_meta, str):
+            try:
+                node_meta = json.loads(node_meta)
+            except json.JSONDecodeError:
+                node_meta = None
+        out.append(
+            {
+                "id": r["id"],
+                "skill": r["skill"],
+                "plugin": r.get("plugin"),
+                "prompt": r.get("prompt"),
+                "started_at": r["started_at"],
+                "ended_at": r.get("ended_at"),
+                "status": r["status"],
+                "status_reason_code": r.get("status_reason_code"),
+                "status_reason_summary": r.get("status_reason_summary"),
+                "status_evidence_refs": _parse_json_col(r.get("status_evidence_refs")),
+                "session_count": r.get("session_count", 0),
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "node_metadata": node_meta,
+                # ADR-0063: project provenance from the most-recently updated
+                # child session.  NULL when the invocation has no sessions yet.
+                "project": r.get("project"),
+                "project_source": r.get("project_source"),
+                # From the schedule_run that fired this invocation (ADR-0070),
+                # when it was a scheduled run. NULL for interactive invocations.
+                "schedule_run_exit_code": r.get("schedule_run_exit_code"),
+                "schedule_run_error_detail": r.get("schedule_run_error_detail"),
+                # ADR-0057 health verdict + last-activity, derived from child
+                # sessions (issue #2851) — same vocabulary runs already use.
+                "health": health,
+                "last_activity_at": last_activity_at,
+            }
+        )
+    return out
+
+
+async def _list_invocations_from_db(
+    db: StateDB,
+    *,
+    skill: str | None = None,
+    plugin: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    async with db.read_snapshot() as connection:
+        rows, children_by_invocation = await _load_invocations_from_db(
+            db,
+            skill=skill,
+            plugin=plugin,
+            status=status,
+            limit=limit,
+            offset=offset,
+            connection=connection,
+        )
+    return await _serialize_invocations(rows, children_by_invocation)
+
+
 async def list_invocations(
     *,
     skill: str | None = None,
@@ -65,59 +173,31 @@ async def list_invocations(
 ) -> list[dict[str, Any]]:
     if state_db_known_absent():
         return []
-    async with StateDB() as db:
-        rows = await db.list_invocations(
-            skill=skill, plugin=plugin, status=status, limit=limit, offset=offset
+    async with StateDB(readonly=read_only_open_supported()) as db:
+        return await _list_invocations_from_db(
+            db,
+            skill=skill,
+            plugin=plugin,
+            status=status,
+            limit=limit,
+            offset=offset,
         )
-        now = time.time()
-        ps_snapshot: str | None = None
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            child_sessions = await db.list_sessions_for_invocation(r["id"])
-            if child_sessions and ps_snapshot is None:
-                from .admin import _ps_snapshot
 
-                ps_snapshot = _ps_snapshot()
-            health, last_activity_at = _invocation_health(
-                child_sessions, now=now, ps_snapshot=ps_snapshot
-            )
-            node_meta = r.get("node_metadata")
-            if isinstance(node_meta, str):
-                try:
-                    node_meta = json.loads(node_meta)
-                except json.JSONDecodeError:
-                    node_meta = None
-            out.append(
-                {
-                    "id": r["id"],
-                    "skill": r["skill"],
-                    "plugin": r.get("plugin"),
-                    "prompt": r.get("prompt"),
-                    "started_at": r["started_at"],
-                    "ended_at": r.get("ended_at"),
-                    "status": r["status"],
-                    "status_reason_code": r.get("status_reason_code"),
-                    "status_reason_summary": r.get("status_reason_summary"),
-                    "status_evidence_refs": _parse_json_col(r.get("status_evidence_refs")),
-                    "session_count": r.get("session_count", 0),
-                    "created_at": r["created_at"],
-                    "updated_at": r["updated_at"],
-                    "node_metadata": node_meta,
-                    # ADR-0063: project provenance from the most-recently updated
-                    # child session.  NULL when the invocation has no sessions yet.
-                    "project": r.get("project"),
-                    "project_source": r.get("project_source"),
-                    # From the schedule_run that fired this invocation (ADR-0070),
-                    # when it was a scheduled run. NULL for interactive invocations.
-                    "schedule_run_exit_code": r.get("schedule_run_exit_code"),
-                    "schedule_run_error_detail": r.get("schedule_run_error_detail"),
-                    # ADR-0057 health verdict + last-activity, derived from child
-                    # sessions (issue #2851) — same vocabulary runs already use.
-                    "health": health,
-                    "last_activity_at": last_activity_at,
-                }
-            )
-    return out
+
+async def _count_invocations_from_db(
+    db: StateDB,
+    *,
+    skill: str | None = None,
+    plugin: str | None = None,
+    status: str | None = None,
+    connection: AsyncConnection | None = None,
+) -> int:
+    return await db.count_invocations(
+        skill=skill,
+        plugin=plugin,
+        status=status,
+        connection=connection,
+    )
 
 
 async def count_invocations(
@@ -128,24 +208,27 @@ async def count_invocations(
 ) -> int:
     if state_db_known_absent():
         return 0
-    async with StateDB() as db:
-        return await db.count_invocations(skill=skill, plugin=plugin, status=status)
+    async with StateDB(readonly=read_only_open_supported()) as db:
+        return await _count_invocations_from_db(db, skill=skill, plugin=plugin, status=status)
 
 
-async def get_invocation(invocation_id: str, *, readonly: bool = False) -> dict[str, Any] | None:
+async def get_invocation(
+    invocation_id: str, *, readonly: bool | None = None
+) -> dict[str, Any] | None:
     """One invocation with its child sessions, artifacts and derived health.
 
     ``readonly`` opens the store read-only for callers whose contract says they
     only read. The ordinary open runs schema application, which takes a write
     lock and can issue one-time migration statements, so a caller that promises
-    not to write should not be reaching for it. It defaults to False because
-    read-only mode is available only on an on-disk SQLite store: passing True
-    unconditionally would fail at open elsewhere rather than degrade, so the
-    decision belongs to the caller that knows its own contract and has checked
-    ``read_only_open_supported()``.
+    not to write should not be reaching for it. ``None`` (the default) selects
+    read-only mode when the configured store supports it and otherwise uses the
+    ordinary server-backed connection. Callers may pass an explicit bool when
+    their own contract requires it.
     """
     if state_db_known_absent():
         return None
+    if readonly is None:
+        readonly = read_only_open_supported()
     async with StateDB(readonly=readonly) as db:
         row = await db.get_invocation(invocation_id)
         if row is None:
@@ -164,9 +247,7 @@ async def get_invocation(invocation_id: str, *, readonly: bool = False) -> dict[
         schedule_run = await db.get_schedule_run_by_invocation(invocation_id)
         ps_snapshot: str | None = None
         if sessions:
-            from .admin import _ps_snapshot
-
-            ps_snapshot = _ps_snapshot()
+            ps_snapshot = await _ps_snapshot_async()
         health, last_activity_at = _invocation_health(
             sessions, now=time.time(), ps_snapshot=ps_snapshot
         )
@@ -259,17 +340,43 @@ async def list_invocations_route(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    rows = await list_invocations(
-        skill=skill, plugin=plugin, status=status, limit=limit, offset=offset
-    )
+    if state_db_known_absent():
+        rows: list[dict[str, Any]] = []
+        total = 0
+        completed_total = 0
+    else:
+        async with StateDB(readonly=read_only_open_supported()) as db:
+            async with db.read_snapshot() as connection:
+                raw_rows, children_by_invocation = await _load_invocations_from_db(
+                    db,
+                    skill=skill,
+                    plugin=plugin,
+                    status=status,
+                    limit=limit,
+                    offset=offset,
+                    connection=connection,
+                )
+                total = await _count_invocations_from_db(
+                    db,
+                    skill=skill,
+                    plugin=plugin,
+                    status=status,
+                    connection=connection,
+                )
+                completed_total = await _count_invocations_from_db(
+                    db,
+                    skill=skill,
+                    plugin=plugin,
+                    status="completed",
+                    connection=connection,
+                )
+            rows = await _serialize_invocations(raw_rows, children_by_invocation)
     # Real totals, not a count of this page: `limit` caps at 200, so counting
     # `rows` instead silently plateaus there with nothing distinguishing an
     # exact count from a capped one. completed_total always means status ==
     # "completed" specifically -- it ignores the caller's own `status` filter
     # (which scopes `total`/`rows`) so success-rate math stays meaningful
     # even when a caller has filtered the list by some other status.
-    total = await count_invocations(skill=skill, plugin=plugin, status=status)
-    completed_total = await count_invocations(skill=skill, plugin=plugin, status="completed")
     return {
         "invocations": rows,
         "limit": limit,

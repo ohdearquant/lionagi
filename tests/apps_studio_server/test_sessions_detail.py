@@ -97,6 +97,44 @@ async def overwrite_session_node_metadata(db_path: Path, session_id: str, raw: s
         await db.commit()
 
 
+class _RowsCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def fetchall(self):
+        return self._rows
+
+
+class _CountingMessageDB:
+    def __init__(self, *, type_rows=None):
+        self.calls: list[str] = []
+        self._type_rows = type_rows or []
+
+    async def execute(self, sql, _params=()):
+        self.calls.append(sql)
+        if "FROM message_types" in sql:
+            return _RowsCursor(self._type_rows)
+        return _RowsCursor([])
+
+
+async def test_full_history_role_counts_use_one_json_table_query():
+    from lionagi.studio.services.sessions import _fetch_role_counts
+
+    db = _CountingMessageDB()
+
+    assert await _fetch_role_counts(db, [f"message-{index}" for index in range(1_201)]) == {}
+    assert len(db.calls) == 1
+
+
+async def test_full_history_action_scan_uses_one_message_query():
+    from lionagi.studio.services.sessions import _fetch_action_messages
+
+    db = _CountingMessageDB(type_rows=[{"type_id": 3, "lion_class": "ActionRequest"}])
+
+    assert await _fetch_action_messages(db, [f"message-{index}" for index in range(1_201)]) == []
+    assert len(db.calls) == 2  # one type lookup, one message scan
+
+
 # ---------------------------------------------------------------------------
 # Test 1.1 — falsy / unparseable inputs return None
 # ---------------------------------------------------------------------------

@@ -504,17 +504,17 @@ async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> di
     counts: dict[str, int] = {}
     if not msg_ids:
         return counts
-    for chunk_start in range(0, len(msg_ids), 500):
-        chunk = msg_ids[chunk_start : chunk_start + 500]
-        placeholders = ",".join("?" for _ in chunk)
-        cur = await db.execute(
-            f"SELECT role, COUNT(*) AS n FROM messages WHERE id IN ({placeholders}) GROUP BY role",  # noqa: S608
-            chunk,
-        )
-        for row in await cur.fetchall():
-            role = row["role"] or ""
-            if role:
-                counts[role] = counts.get(role, 0) + row["n"]
+    cur = await db.execute(
+        """SELECT m.role, COUNT(*) AS n
+           FROM json_each(?) AS ids
+           JOIN messages m ON m.id = ids.value
+           GROUP BY m.role""",
+        (json.dumps(msg_ids),),
+    )
+    for row in await cur.fetchall():
+        role = row["role"] or ""
+        if role:
+            counts[role] = row["n"]
     return counts
 
 
@@ -553,27 +553,25 @@ async def _fetch_action_messages(
     if not lion_class_by_type_id:
         return []
 
-    rows_by_id: dict[str, dict[str, Any]] = {}
     type_ids = list(lion_class_by_type_id)
     type_placeholders = ",".join("?" for _ in type_ids)
-    for chunk_start in range(0, len(msg_ids), 500):
-        chunk = msg_ids[chunk_start : chunk_start + 500]
-        placeholders = ",".join("?" for _ in chunk)
-        # `+m.lion_class` disqualifies the lion_class index so the planner probes
-        # the id primary key for the IN list instead of rescanning every
-        # action-class row in the whole table per chunk (minutes of I/O at scale).
-        cur = await db.execute(
-            f"""
-            SELECT m.id, m.created_at, m.content, m.sender, m.role, m.lion_class
-            FROM messages m
-            WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
-            """,  # noqa: S608
-            [*chunk, *type_ids],
-        )
-        for row in await cur.fetchall():
-            data = dict(row)
-            data["lion_class_str"] = lion_class_by_type_id.get(data.pop("lion_class"))
-            rows_by_id[data["id"]] = _format_message(data)
+    # Expand the full progression once in SQLite rather than issuing one
+    # statement per 500 ids. The ids.key ordering preserves progression order.
+    cur = await db.execute(
+        f"""
+        SELECT m.id, m.created_at, m.content, m.sender, m.role, m.lion_class
+        FROM json_each(?) AS ids
+        JOIN messages m ON m.id = ids.value
+        WHERE +m.lion_class IN ({type_placeholders})
+        ORDER BY CAST(ids.key AS INTEGER)
+        """,  # noqa: S608
+        [json.dumps(msg_ids), *type_ids],
+    )
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    for row in await cur.fetchall():
+        data = dict(row)
+        data["lion_class_str"] = lion_class_by_type_id.get(data.pop("lion_class"))
+        rows_by_id[data["id"]] = _format_message(data)
     return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
 
 

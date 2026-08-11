@@ -32,6 +32,7 @@ async def _seed_running_session(
     session_id: str,
     artifacts_path: str | None = None,
     updated_at: float | None = None,
+    status: str = "running",
 ) -> None:
     async with StateDB(db_path) as db:
         pid = str(uuid.uuid4())
@@ -41,7 +42,7 @@ async def _seed_running_session(
                 "id": session_id,
                 "progression_id": pid,
                 "name": "test-session",
-                "status": "running",
+                "status": status,
                 "started_at": time.time(),
             }
         )
@@ -151,18 +152,91 @@ def test_admin_prune_selected_sessions(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     s1 = str(uuid.uuid4())
     s2 = str(uuid.uuid4())
-    _run(_seed_running_session(db_path, s1))
-    _run(_seed_running_session(db_path, s2))
+    _run(_seed_running_session(db_path, s1, status="completed"))
+    _run(_seed_running_session(db_path, s2, status="completed"))
     client = _make_client(tmp_path, monkeypatch, db_path)
 
     r = client.post("/api/admin/prune", json={"session_ids": [s1]})
     assert r.status_code == 200
     assert r.json()["pruned"] == 1
 
-    # Verify s1 gone, s2 remains via doctor
-    r2 = client.get("/api/admin/doctor")
-    remaining_ids = {p["session_id"] for p in r2.json()["phantom_sessions"]}
-    assert s1 not in remaining_ids
+    async def _remaining_ids() -> set[str]:
+        async with StateDB(db_path) as db:
+            rows = await db.fetch_all("SELECT id FROM sessions")
+        return {row["id"] for row in rows}
+
+    assert _run(_remaining_ids()) == {s2}
+
+
+def test_admin_prune_selected_sessions_refuses_running_rows(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    session_id = str(uuid.uuid4())
+    _run(_seed_running_session(db_path, session_id))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    response = client.post("/api/admin/prune", json={"session_ids": [session_id]})
+
+    assert response.status_code == 200
+    assert response.json()["pruned"] == 0
+
+    async def _read_session() -> dict | None:
+        async with StateDB(db_path) as db:
+            return await db.get_session(session_id)
+
+    assert _run(_read_session()) is not None
+
+
+def test_admin_prune_selected_terminal_session_cleans_only_its_lineage(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    session_id = str(uuid.uuid4())
+    progression_id = str(uuid.uuid4())
+    target_message_id = str(uuid.uuid4())
+    unrelated_message_id = str(uuid.uuid4())
+
+    async def _seed() -> None:
+        async with StateDB(db_path) as db:
+            for message_id in (target_message_id, unrelated_message_id):
+                await db.insert_message(
+                    {
+                        "id": message_id,
+                        "created_at": time.time(),
+                        "content": {"text": message_id},
+                        "role": "assistant",
+                    }
+                )
+            await db.create_progression(progression_id, [target_message_id])
+            await db.create_session(
+                {
+                    "id": session_id,
+                    "progression_id": progression_id,
+                    "name": "terminal-target",
+                    "status": "completed",
+                    "started_at": time.time(),
+                }
+            )
+
+    _run(_seed())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    response = client.post("/api/admin/prune", json={"session_ids": [session_id]})
+
+    assert response.status_code == 200
+    assert response.json()["pruned"] == 1
+
+    async def _read_rows() -> tuple[dict | None, dict | None, dict | None, dict | None]:
+        async with StateDB(db_path) as db:
+            return (
+                await db.get_session(session_id),
+                await db.fetch_one("SELECT id FROM progressions WHERE id = ?", (progression_id,)),
+                await db.get_message(target_message_id),
+                await db.get_message(unrelated_message_id),
+            )
+
+    session, progression, target_message, unrelated_message = _run(_read_rows())
+    assert session is None
+    assert progression is None
+    assert target_message is None
+    assert unrelated_message is not None
 
 
 def test_admin_prune_rejects_empty_body(tmp_path, monkeypatch):

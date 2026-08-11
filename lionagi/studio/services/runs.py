@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import stat
@@ -542,7 +543,7 @@ async def list_runs(
             if snapshot is None:
                 from .admin import _ps_snapshot
 
-                snapshot = _ps_snapshot()
+                snapshot = await asyncio.to_thread(_ps_snapshot)
             alive = _session_liveness(s, snapshot)
         out.append(_run_row(s, now, process_alive=alive))
 
