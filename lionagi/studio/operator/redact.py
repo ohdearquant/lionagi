@@ -242,15 +242,29 @@ def redact_arguments(value: Any, *, parent_key: str = "") -> Any:
     if isinstance(value, dict):
         projected: dict[str, Any] = {}
         for raw_key, val in value.items():
+            key_name = str(raw_key)
+            # Classification reads the key as the caller wrote it: scrubbing
+            # first rewrites a path-shaped key down to its leaf, and a leaf
+            # that no longer carries the credential marker would serve a value
+            # the raw key withheld.
+            redacted_val = (
+                redact_arguments(val, parent_key=key_name)
+                if isinstance(val, (dict, list))
+                else redact_scalar(key_name, val)
+            )
             # Keys are observable content too: a token or absolute host path
             # used as a JSON key must not escape merely because it is not in a
             # value position. Match _safe_content's mapping projection.
-            safe_key = scrub_text(str(raw_key))
-            projected[safe_key] = (
-                redact_arguments(val, parent_key=safe_key)
-                if isinstance(val, (dict, list))
-                else redact_scalar(safe_key, val)
-            )
+            safe_key = scrub_text(key_name)
+            # scrub_text is not injective — distinct path-shaped keys can share
+            # a leaf. Suffix instead of overwriting, so no entry silently
+            # disappears from the projection.
+            if safe_key in projected:
+                ordinal = 2
+                while f"{safe_key} [{ordinal}]" in projected:
+                    ordinal += 1
+                safe_key = f"{safe_key} [{ordinal}]"
+            projected[safe_key] = redacted_val
         return projected
     if isinstance(value, list):
         return [
