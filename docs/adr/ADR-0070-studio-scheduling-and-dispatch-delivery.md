@@ -554,6 +554,7 @@ consumer would appear to own work already committed by the producer.
 | 3 | Split trigger/admission, subprocess execution, and follow-up policy behind characterization tests; acceptance: each concern can be tested without starting the complete scheduler loop. | M | (filled at issue-open time) |
 | 4 | Route scheduled fires through the queued admission contract in ADR-0072; acceptance: a due trigger writes `queued` and execution starts only after a worker wins a lease. | M | (filled at issue-open time) |
 | 5 | Expose explicit queue/dispatch latency and oldest-due metrics; acceptance: operators can distinguish a healthy 30-second wait from stalled trigger, task, or delivery work. | M | (filled at issue-open time) |
+| 6 | Add an explicit positive execution deadline to scheduled actions and enforce it in the shared subprocess launcher with full process-group TERM/KILL cleanup and guarded `timed_out` terminalization; acceptance: a hanging child cannot retain all global slots indefinitely, no owned descendant remains after the cleanup budget, and races with cancellation or normal exit produce exactly one terminal outcome. | M | (filled at issue-open time) |
 
 ## Alternatives considered
 

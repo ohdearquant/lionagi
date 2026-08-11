@@ -195,3 +195,5 @@ codex_review_*.md
 /execgraph-*.png
 /fleet-*.png
 /fleet-*.md
+
+.pnpm-store/
