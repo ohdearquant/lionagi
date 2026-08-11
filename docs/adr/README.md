@@ -14,6 +14,21 @@ Each ADR follows `TEMPLATE.md` and is exactly one of two kinds:
 A gap between a retrospective truth and an aspirational target is an issue, never a blurred
 document.
 
+Kind describes what the document is and never changes as code lands. How much of a decided
+target has actually shipped is recorded in the separate, mutable `Implementation-status`
+header field (see `TEMPLATE.md`), updated as implementation progresses without a formal
+amendment.
+
+## Status lifecycle
+
+An ADR is authored `Proposed`. The flip to `Accepted` has an owner and a trigger: **the PR
+that merges the ADR's first dependent implementation also flips its status**, and whoever
+merges that PR owns the flip. When an implementation has already merged while the record
+still reads `Proposed`, the correction is an immediate docs follow-up, not a debt to
+accumulate. Decisions inside one ADR are separable: where only some decision clauses have
+shipped or one clause is blocked on an external dependency, the status line says so
+per-clause and `Implementation-status` names what landed and what remains.
+
 ## Architecture-quality figures (κ and τ)
 
 Several ADRs report two figures in their Consequences sections. κ is a coupling density:
@@ -50,6 +65,10 @@ ADR-0104 is a documented numbering exception for the same reason: it declares `c
 but carries a number far outside that block (0062-0067), which was allocated before the
 per-area scheme was applied to it. It is indexed under cli-surface and keeps its number, so
 inbound references stay valid.
+
+Numbers 0096-0103 belong to no area block and are reserved but unused: they fall between the
+end of the block regime (0095) and the start of the sequential regime (0104), and no document
+will be created to fill them.
 
 From ADR-0104 onward, numbers are in practice allocated **sequentially** rather than from the
 area block, and each such record is indexed under the area it declares. This is a description
@@ -91,6 +110,8 @@ its area block.
 - [ADR-0013](ADR-0013-built-in-tool-provider-and-branch-binding.md) — Built-in tool provider and
   Branch binding
 - 0014-0015 — unused (intentional gaps)
+- [ADR-0112](ADR-0112-mcp-tool-registration-naming-and-collisions.md) — MCP tool registration
+  naming and collision behavior (sequential number; see Numbering)
 
 ### session-branch (0016-0020)
 
@@ -133,6 +154,10 @@ its area block.
   queue
 - [ADR-0038](ADR-0038-escalation-tier-routing.md) — Escalation tier routing
 - 0039-0040 — unused (intentional gaps)
+- [ADR-0110](ADR-0110-deterministic-manifest-fanout.md) — Deterministic manifest fan-out —
+  legs from briefs, no planner (sequential number; see Numbering)
+- [ADR-0111](ADR-0111-run-base-ref-provenance-and-preconditions.md) — A run records the code
+  it was reasoning about, and can refuse to start (sequential number; see Numbering)
 
 ### agent-roles (0041-0046)
 
@@ -212,6 +237,8 @@ its area block.
 - [ADR-0073](ADR-0073-fixed-workflow-definition-execution.md) — Fixed workflow-definition
   execution
 - 0074-0075 — unused (intentional gaps)
+- [ADR-0108](ADR-0108-agent-run-steering-at-turn-end.md) — Agent-run steering at the turn-end
+  boundary (sequential number; see Numbering)
 
 ### studio (0076-0085)
 
@@ -230,6 +257,8 @@ its area block.
 - [ADR-0082](ADR-0082-vscode-studio-observability-client.md) — VS Code Studio observability client
 - [ADR-0083](ADR-0083-studio-operator-command-protocol.md) — Studio operator-command protocol
 - 0084-0085 — unused (intentional gaps)
+- [ADR-0113](ADR-0113-execution-graph-as-primary-run-canvas.md) — The execution graph as the
+  primary run canvas (sequential number; see Numbering)
 
 ### governance (0086-0089)
 
@@ -255,6 +284,18 @@ its area block.
   supersedes ADR-0060)
 - [ADR-0088](ADR-0088-plugin-system.md) — Plugin system (directory-bundle manifest with
   lazy activation; number from the adjacent free gap — the substrates block is exhausted)
+
+### cli-orchestration (sequential numbers only)
+
+Ratified 2026-08-11 as the seventeenth area: the CLI orchestration surface — `li o flow` /
+`li o fanout`, playbooks and flow definitions, orchestration guidance packs. It postdates
+the block regime, so it holds no number block; its records carry sequential numbers (≥0104).
+
+- [ADR-0114](ADR-0114-executable-flow-definition-and-role-capabilities.md) — An executable
+  flow definition, and roles whose declared capabilities are real (sequential number; see
+  Numbering)
+- [ADR-0115](ADR-0115-orchestration-guidance-as-an-enforced-pack.md) — Orchestration
+  guidance as an enforced pack (sequential number; see Numbering)
 
 Remaining areas land here as their records are accepted.
 

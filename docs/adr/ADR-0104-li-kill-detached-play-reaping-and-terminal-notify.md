@@ -1,9 +1,10 @@
 # ADR-0104: `li kill` reaping of detached-play workers and terminal-notify on kill
 
 - **Status**: Accepted (2026-07-15), amended 2026-07-27 — see Amendment 1
-- **Kind**: Partially implemented. D1/D2 (play-worker reaping) shipped code that
-  cannot reach a worker; that code is removed and the guidance corrected. D3/D5
-  (terminal-notify on kill) are unaffected.
+- **Kind**: Aspirational (records the target state)
+- **Implementation-status**: partial — D3/D5 (terminal-notify on kill) are on main;
+  D1/D2 (play-worker reaping) shipped code that cannot reach a worker; that code is
+  removed and the guidance corrected (see Amendment 1)
 - **Area**: cli-surface
 - **Date**: 2026-07-13
 - **Relations**: extends ADR-0058 (unified lifecycle transition service, whose terminal-callback emit this ADR relies on); none superseded
