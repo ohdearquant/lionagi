@@ -26,11 +26,6 @@ def _block_real_process_group_signals(monkeypatch):
     monkeypatch.setattr(proc_mod.os, "killpg", fail_if_unmocked)
 
 
-# ---------------------------------------------------------------------------
-# 1. start_new_session=True is always passed to subprocess creation
-# ---------------------------------------------------------------------------
-
-
 class TestSubprocessSessionIsolation:
     """Verify CLI subprocesses are isolated from the parent's process group."""
 
@@ -126,14 +121,7 @@ class TestSubprocessSessionIsolation:
             assert kwargs.get("start_new_session") is True
 
 
-# ---------------------------------------------------------------------------
-# 2. CancelledError propagates through _call() without triggering auto_finish
-# ---------------------------------------------------------------------------
-
-
 class TestCancellationSkipsAutoFinish:
-    """Verify that task cancellation never triggers auto_finish."""
-
     @pytest.mark.asyncio
     async def test_cancelled_error_skips_auto_finish(self):
         from lionagi.providers.anthropic.claude_code import (
@@ -273,11 +261,6 @@ class TestCancellationSkipsAutoFinish:
             assert stream_call_count == 2, "auto_finish should fire on normal completion"
 
 
-# ---------------------------------------------------------------------------
-# 3. _ndjson_from_cli cleanup: CancelledError must not be swallowed
-# ---------------------------------------------------------------------------
-
-
 class TestNdjsonCleanupPropagation:
     """Verify _ndjson_from_cli finally block doesn't swallow CancelledError."""
 
@@ -323,11 +306,6 @@ class TestNdjsonCleanupPropagation:
 
             # Verify cleanup was attempted
             mock_proc.terminate.assert_called()
-
-
-# ---------------------------------------------------------------------------
-# 4. Tool allowlist/blocklist: no spurious quotes in subprocess args
-# ---------------------------------------------------------------------------
 
 
 class TestToolAllowlistArgs:
@@ -390,11 +368,6 @@ class TestToolAllowlistArgs:
         assert '"' not in config_val, f"mcp_config value {config_val!r} has embedded quotes"
 
 
-# ---------------------------------------------------------------------------
-# 5. Mutable default: session must not be shared across calls
-# ---------------------------------------------------------------------------
-
-
 class TestSessionIsolation:
     """Verify each stream_claude_code_cli call gets its own session."""
 
@@ -411,11 +384,6 @@ class TestSessionIsolation:
             f"session default is {session_param.default!r}, not None — "
             "mutable default causes cross-request data leakage"
         )
-
-
-# ---------------------------------------------------------------------------
-# 6. Empty responses guard
-# ---------------------------------------------------------------------------
 
 
 class TestEmptyResponsesGuard:
@@ -444,11 +412,6 @@ class TestEmptyResponsesGuard:
             # Must not raise IndexError on responses[-1]
             result = await endpoint._call({"request": mock_request}, {})
             assert isinstance(result, dict)
-
-
-# ---------------------------------------------------------------------------
-# 7. Process-group kill + non-Unix cleanup
-# ---------------------------------------------------------------------------
 
 
 def _make_mock_proc(pid=12345):
@@ -696,11 +659,6 @@ class TestKillpgUnavailablePlatform:
         # AttributeError from the absent killpg. Asserting terminate() was
         # called instead pins a call that does nothing on a child which has
         # already exited, and would pass whether or not the group was dealt with.
-
-
-# ---------------------------------------------------------------------------
-# 8. Gemini & Pi stderr deadlock prevention
-# ---------------------------------------------------------------------------
 
 
 class TestStderrDeadlockPrevention:

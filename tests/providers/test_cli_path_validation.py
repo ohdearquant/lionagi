@@ -9,10 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Shared helper unit tests
-# ---------------------------------------------------------------------------
-
 
 class TestCliPathsHelper:
     """Direct unit tests for the shared helper functions."""
@@ -90,11 +86,6 @@ class TestCliPathsHelper:
 
         with pytest.raises(ValueError, match="traversal"):
             check_add_dir_entries_safe(["ok", "../../bad", "/abs/ok"], "add_dir")
-
-
-# ---------------------------------------------------------------------------
-# Codex provider — CodexCodeRequest
-# ---------------------------------------------------------------------------
 
 
 class TestCodexPathValidation:
@@ -202,11 +193,6 @@ class TestCodexPathValidation:
             add_dir=[str(project_root)],
         )
         assert str(project_root) in req.add_dir
-
-
-# ---------------------------------------------------------------------------
-# Claude Code provider — ClaudeCodeRequest
-# ---------------------------------------------------------------------------
 
 
 class TestClaudeCodePathValidation:
@@ -347,11 +333,6 @@ class TestClaudeCodePathValidation:
             ClaudeCodeRequest(prompt="hi", repo=repo, mcp_config="linked.json")
 
 
-# ---------------------------------------------------------------------------
-# Gemini provider — GeminiCodeRequest
-# ---------------------------------------------------------------------------
-
-
 class TestGeminiPathValidation:
     """include_directories in GeminiCodeRequest must be validated before argv."""
 
@@ -395,11 +376,6 @@ class TestGeminiPathValidation:
 
         with pytest.raises(Exception, match="outside the repository"):
             GeminiCodeRequest(prompt="hi", repo=repo, include_directories=["escape"])
-
-
-# ---------------------------------------------------------------------------
-# Pi provider — PiCodeRequest (extension and skill fields now also validated)
-# ---------------------------------------------------------------------------
 
 
 class TestPiExtensionSkillValidation:
