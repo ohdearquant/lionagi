@@ -13,9 +13,7 @@ from lionagi._errors import ItemExistsError, ValidationError
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.pile import Pile
 
-# ---------------------------------------------------------------------------
 # Fixtures / helpers
-# ---------------------------------------------------------------------------
 
 
 class Item(Element):
@@ -26,9 +24,7 @@ class OtherItem(Element):
     name: str = ""
 
 
-# ---------------------------------------------------------------------------
 # Regression: sized Element that is falsy when empty must not be dropped
-# ---------------------------------------------------------------------------
 
 
 class TestIncludeFalsyElement:
@@ -89,9 +85,7 @@ def pile_5(five_items):
     return Pile(collections=five_items)
 
 
-# ---------------------------------------------------------------------------
 # 1. to_df / dump (pandas-dependent)
-# ---------------------------------------------------------------------------
 
 pandas_missing = importlib.util.find_spec("pandas") is None
 
@@ -170,9 +164,7 @@ class TestInPlaceSetOps:
             p ^= [self.a0]  # type: ignore[assignment]
 
 
-# ---------------------------------------------------------------------------
 # 3. Non-in-place set ops (__or__, __and__, __xor__)
-# ---------------------------------------------------------------------------
 
 
 class TestNonInPlaceSetOps:
@@ -360,9 +352,7 @@ class TestMultiItemPop:
         assert result.item_type == {Item}
 
 
-# ---------------------------------------------------------------------------
 # 4. filter_by_type
-# ---------------------------------------------------------------------------
 
 
 class TestFilterByType:
@@ -440,9 +430,7 @@ class TestFilterByType:
         assert len(result) == 6
 
 
-# ---------------------------------------------------------------------------
 # 5. Strict type enforcement
-# ---------------------------------------------------------------------------
 
 
 class TestStrictType:
@@ -485,9 +473,7 @@ class TestStrictType:
             )
 
 
-# ---------------------------------------------------------------------------
 # 6. __setitem__ with UUID keys and integer indices
-# ---------------------------------------------------------------------------
 
 
 class TestSetItem:
@@ -523,9 +509,7 @@ class TestSetItem:
             pile_3[100] = new
 
 
-# ---------------------------------------------------------------------------
 # 7. insert at start, middle, end
-# ---------------------------------------------------------------------------
 
 
 class TestInsert:
@@ -559,9 +543,7 @@ class TestInsert:
             pile_3.insert(0, three_items[0])
 
 
-# ---------------------------------------------------------------------------
 # 8. Async edge cases
-# ---------------------------------------------------------------------------
 
 
 def test_pile_setitem_rolls_back_on_key_item_id_mismatch():

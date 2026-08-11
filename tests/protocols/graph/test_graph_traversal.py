@@ -61,7 +61,7 @@ def cyclic_graph():
 
 
 class TestGraphTraversal:
-    """Test graph traversal operations"""
+    """Graph traversal operations"""
 
     def test_get_heads(self, traversal_graph):
         graph, nodes, _ = traversal_graph
@@ -116,7 +116,7 @@ class TestGraphTraversal:
 
 
 class TestGraphCyclicProperties:
-    """Test cyclic graph properties"""
+    """Cyclic graph properties"""
 
     def test_cyclic_graph_heads(self, cyclic_graph):
         graph, _, _ = cyclic_graph
@@ -144,7 +144,7 @@ class TestGraphCyclicProperties:
 
 
 class TestGraphTraversalEdgeCases:
-    """Test graph traversal edge cases"""
+    """Graph traversal edge cases"""
 
     def test_isolated_node_traversal(self):
         graph = Graph()

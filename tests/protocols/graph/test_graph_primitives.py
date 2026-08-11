@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for expanded NodeConfig fields, create_node() audit field generation, and Node lifecycle with real Pydantic fields."""
+"""Graph primitives: node replacement, edge conditions, and predecessor/successor accessors."""
 
 from uuid import uuid4
 

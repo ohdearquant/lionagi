@@ -53,7 +53,7 @@ def complex_graph():
 
 
 class TestGraphBasics:
-    """Test basic graph operations"""
+    """Basic graph operations"""
 
     def test_empty_graph_creation(self, empty_graph):
         assert len(empty_graph.internal_nodes) == 0
@@ -133,7 +133,7 @@ class TestEdgeRoundTrip:
 
 
 class TestGraphModification:
-    """Test graph modification operations"""
+    """Graph modification operations"""
 
     def test_remove_node(self, simple_graph):
         graph, node1, node2, edge = simple_graph
@@ -163,7 +163,7 @@ class TestGraphModification:
 
 
 class TestGraphContainment:
-    """Test graph containment operations"""
+    """Graph containment operations"""
 
     def test_contains_node(self, simple_graph):
         graph, node1, node2, _ = simple_graph
@@ -184,7 +184,7 @@ class TestGraphContainment:
 
 
 class TestGraphProperties:
-    """Test graph property checks"""
+    """Graph property checks"""
 
     def test_empty_graph_properties(self, empty_graph):
         assert len(empty_graph.internal_nodes) == 0
