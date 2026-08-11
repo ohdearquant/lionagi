@@ -1,21 +1,10 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Server-side redaction for a demo-safe view of Library agent-profile content.
-
-Enabled by ``LIONAGI_STUDIO_DEMO_MODE``, a process-wide switch read fresh on every
-call -- never something a request can select. When on, every route that reads
-agent-profile content projects through the single classification table below
-(:data:`_SAFE_KEYS`) instead of returning frontmatter and body verbatim, so a
-screen-share or recorded demo of the Library never surfaces owner-authored
-prompts, guidance text, internal paths, or unrecognized frontmatter values.
-
-Classification starts from field *name*: an unrecognized key is dropped even
-when its value is a harmless-looking bool or number, because what leaks is the
-key existing in the response at all, not any property of what it happens to
-hold this run. A safe key's name is not enough on its own, though -- its value
-must also match the scalar shape the name implies, or a mapping/list nested
-under that key name would ride through the allowlist unexamined.
+"""Server-side redaction for a demo-safe view of Library agent-profile
+content. See ``docs/internals/studio.md`` ("Redaction / demo mode") for the
+classification rule (name-first, then shape-checked) and the DEMO_MODE
+switch semantics.
 """
 
 from __future__ import annotations
@@ -96,18 +85,12 @@ def _placeholder(value: Any) -> str:
 
 
 def abbreviate_path(value: Any) -> str:
-    """Reduce a filesystem path to its bare filename -- shared by every route
-    that carries a ``path``/``disk_path``/``symlink_target`` field, whether
-    that field lives inside a profile record (:func:`project_agent_fields`)
-    or in a definitions-route envelope built around one.
-
-    Raises ``TypeError`` for anything that is not path-like -- a mapping or
-    list under one of these keys is not a path with an unusual shape, it is
-    unrecognized content wearing a path key's name, and ``str()``-serializing
-    it would carry that content through in the returned filename. Callers
-    that read these keys from owner-authored data (:func:`project_agent_fields`)
-    must treat the error as "drop this field", not fall back to serializing it.
-    """
+    """Reduce a filesystem path to its bare filename -- shared by every
+    route carrying a ``path``/``disk_path``/``symlink_target`` field. Raises
+    ``TypeError`` for anything not path-like: a mapping/list under one of
+    these keys is unrecognized content wearing a path key's name, not a path
+    with an unusual shape, and callers reading owner-authored data must
+    treat the error as "drop this field", not fall back to serializing it."""
     if not isinstance(value, (str, os.PathLike)):
         raise TypeError(f"abbreviate_path() requires a path-like value, got {type(value).__name__}")
     return Path(value).name
