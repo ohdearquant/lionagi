@@ -2302,7 +2302,7 @@ export async function listEngineRuns(params?: EngineRunListParams): Promise<Engi
   if (params?.limit != null) query.set("limit", String(params.limit));
   if (params?.offset != null) query.set("offset", String(params.offset));
   const qs = query.toString();
-  return fetchJson<EngineRunSummary[]>(`/api/engine-runs${qs ? `?${qs}` : ""}`);
+  return fetchJson<EngineRunSummary[]>(`/api/engine-runs/${qs ? `?${qs}` : ""}`);
 }
 
 export async function getEngineRun(runId: string): Promise<EngineRunSummary> {

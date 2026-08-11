@@ -195,6 +195,19 @@ async def test_list_endpoint_returns_empty(patched_app):
     assert resp.json() == []
 
 
+async def test_canonical_list_endpoint_does_not_redirect(patched_app):
+    """Hosted clients reach the canonical list route without a redirect hop."""
+    _, _, client = patched_app
+    async with client as ac:
+        resp = await ac.get(
+            "/api/engine-runs/",
+            headers={"Origin": "https://studio.example.com"},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 200
+    assert "location" not in resp.headers
+
+
 async def test_list_endpoint_returns_seeded_rows(patched_app):
     _, db_path, client = patched_app
     rid1 = await _seed_engine_run(db_path, kind="research", started_at=1000.0)

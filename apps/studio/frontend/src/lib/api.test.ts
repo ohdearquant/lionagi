@@ -558,6 +558,39 @@ describe("engine defs API", () => {
   });
 });
 
+describe("engine runs API", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    vi.stubGlobal("window", {
+      ...window,
+      __STUDIO_API_BASE__: undefined,
+      location: { ...window.location, port: "8765", hostname: "localhost", protocol: "http:" },
+    });
+  });
+
+  it("listEngineRuns calls the canonical slash route directly", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        calls.push(url);
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    const { listEngineRuns } = await import("./api");
+    await listEngineRuns();
+
+    expect(calls).toEqual(["/api/engine-runs/"]);
+  });
+});
+
 // ─── Runs/sessions query construction (Fleet filters, cursor pagination) ─────
 
 describe("runs/sessions query construction", () => {
