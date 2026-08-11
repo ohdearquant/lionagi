@@ -43,7 +43,13 @@ import {
   isUnsuccessfulTerminal,
 } from "@/lib/runStatus";
 import type { Verdict } from "@/lib/runStatus";
-import type { RunMessage, RunResumeResponse, RunStep, WorkerGraph } from "@/lib/types";
+import type {
+  OperatorCommandProposal,
+  RunMessage,
+  RunResumeResponse,
+  RunStep,
+  WorkerGraph,
+} from "@/lib/types";
 import type { NodeExecStatus } from "@/components/canvas/StepNode";
 import {
   deriveProgressCounts,
@@ -52,6 +58,18 @@ import {
   reconcileNodeStatuses,
 } from "@/lib/execGraphProgress";
 import type { ProgressCounts } from "@/lib/execGraphProgress";
+import {
+  applyExecutablePath,
+  confirmRunControl,
+  controlKindFor,
+  derivePausePhase,
+  hasAnyExecutablePath,
+  pauseControlState,
+  proposeRunControl,
+  resumeControlState,
+  steerControlState,
+} from "@/lib/runControls";
+import type { ControlKind, ControlReasonCode, ControlVerb, PausePhase } from "@/lib/runControls";
 
 const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
 
@@ -128,8 +146,79 @@ export function shouldRenderAuthoredGraph(
 ): boolean {
   if (!graph) return false;
   const edgeCount = graph.edges?.length ?? 0;
-  const isEdgeless = graph.nodes.length >= 2 && edgeCount === 0;
+  // Node count deliberately does not enter this. The question is which SOURCE
+  // to draw from, not whether the authored graph is complete in itself. A
+  // one-node snapshot has nothing to draw an edge between, and that is the
+  // reason it should yield to a runtime graph that does have one rather than
+  // a reason to prefer it: treating it as authoritative rendered a real
+  // two-node runtime DAG as a flat list.
+  const isEdgeless = edgeCount === 0;
   return !(isEdgeless && opGraph.edges.length > 0);
+}
+
+// ── Graph/list view (ADR-0113 D1, D6) ───────────────────────────────────────
+
+export type RunDetailView = "graph" | "list";
+
+const RUN_DETAIL_VIEW_STORAGE_KEY = "studio.runDetail.view";
+const RUN_DETAIL_VIEW_QUERY_KEY = "view";
+const RUN_DETAIL_NODE_QUERY_KEY = "node";
+
+// localStorage can throw (private-browsing quotas) or simply be absent from
+// a test/SSR environment's window shim — never let a preference read/write
+// take the page down.
+function readStoredView(): string | null {
+  try {
+    return window.localStorage.getItem(RUN_DETAIL_VIEW_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredView(next: RunDetailView): void {
+  try {
+    window.localStorage.setItem(RUN_DETAIL_VIEW_STORAGE_KEY, next);
+  } catch {
+    // Best-effort — the URL query param (also written by the caller) still
+    // carries the choice for this navigation even if persistence fails.
+  }
+}
+
+export function parseRunDetailView(value: string | null | undefined): RunDetailView | null {
+  return value === "graph" || value === "list" ? value : null;
+}
+
+// shouldRenderAuthoredGraph decides whether a graph CAN be drawn at all
+// (falling back to the runtime opGraph, or nothing). This decides whether
+// that graph is worth defaulting TO: a graph with no edges is a scatter of
+// boxes with nothing to say about concurrency or dependency, and per D1 "a
+// canvas with one node and no edges is not a canvas" — that reasoning holds
+// however many disconnected nodes there are, not just at exactly one.
+export function hasResolvableGraph(
+  runGraph: { nodes: unknown[]; edges: unknown[] | null | undefined } | null,
+  opGraph: { nodes: unknown[]; edges: unknown[] },
+): boolean {
+  if (runGraph && shouldRenderAuthoredGraph(runGraph, opGraph)) {
+    return (runGraph.edges?.length ?? 0) > 0;
+  }
+  return opGraph.nodes.length > 0 && opGraph.edges.length > 0;
+}
+
+// D6's precedence rule, made explicit: default is graph, but a user's own
+// choice — whether carried on the URL (a deep link someone pasted) or in
+// their stored preference — always wins over the default, on every load,
+// not just the first. The URL outranks the stored preference so a shared
+// link reproduces what was shared even if the recipient has their own
+// pinned preference. See RunDetail.test.tsx's precedence test: it fails
+// if the default is ever allowed to win over an explicit choice.
+export function resolveInitialView(input: {
+  urlView: RunDetailView | null;
+  storedPreference: RunDetailView | null;
+  hasResolvableGraph: boolean;
+}): RunDetailView {
+  if (input.urlView) return input.urlView;
+  if (input.storedPreference) return input.storedPreference;
+  return input.hasResolvableGraph ? "graph" : "list";
 }
 
 // The planner persists depends_on endpoints as 1-BASED STEP NUMBERS while
@@ -638,7 +727,7 @@ function ProgressSummaryBar({
         {t("progressFailed")} {counts.failed}
       </span>
       <span className={counts.escalated > 0 ? "font-semibold text-status-warning" : undefined}>
-        {t("graphNodeStatusEscalated")} {counts.escalated}
+        {t("progressEscalated")} {counts.escalated}
       </span>
       <span>
         {t("progressPending")} {pending}
@@ -764,7 +853,7 @@ function BranchesSection({
   onLoadOlder,
   olderMessagesRemaining,
   loadingOlder,
-  highlightedStepKey,
+  selectedStepKey,
 }: {
   steps: RunStep[];
   live: boolean;
@@ -776,10 +865,11 @@ function BranchesSection({
   onLoadOlder?: () => void;
   olderMessagesRemaining?: number;
   loadingOlder?: boolean;
-  /** The step (RunStepCard) a graph-node drill-down just resolved to — ringed
-   * so the click's target is unmistakable. Cleared automatically after the
-   * pulse. */
-  highlightedStepKey?: string | null;
+  /** The step (RunStepCard) a graph-node drill-down resolved to, or that the
+   * reader opened directly in the list — ringed so the selection is
+   * unmistakable, and durable (ADR-0113 D6: selection survives a view
+   * switch), not a fading pulse. */
+  selectedStepKey?: string | null;
 }) {
   const t = useTranslations("history.detail");
   return (
@@ -804,9 +894,9 @@ function BranchesSection({
           steps.map((step) => (
             <div
               key={step.step}
-              data-highlighted={step.step === highlightedStepKey || undefined}
+              data-selected={step.step === selectedStepKey || undefined}
               className={
-                step.step === highlightedStepKey
+                step.step === selectedStepKey
                   ? "rounded ring-2 ring-accent ring-offset-2 ring-offset-surface-base transition-shadow"
                   : undefined
               }
@@ -1376,6 +1466,242 @@ export function EventsSection({
   );
 }
 
+// ── Run controls (ADR-0113 D4 / rows 8, 9) ──────────────────────────────────
+//
+// Pause/resume/steer never apply directly — every click proposes a command
+// through the ADR-0083 operator conversation, and nothing takes effect until
+// the reader explicitly confirms the proposal that comes back. That is the
+// same propose-then-confirm path every other operator command already rides;
+// this does not add a second one.
+
+type ControlDialog = {
+  verb: ControlVerb;
+  conversationId: string;
+  proposal: OperatorCommandProposal;
+};
+
+function RunControls({
+  runId,
+  kind,
+  runTerminal,
+  pausePhase,
+  onPauseAccepted,
+  onResumeAccepted,
+}: {
+  runId: string;
+  kind: ControlKind | null;
+  runTerminal: boolean;
+  pausePhase: PausePhase;
+  onPauseAccepted: () => void;
+  onResumeAccepted: () => void;
+}) {
+  const t = useTranslations("history.detail");
+  const [dialog, setDialog] = useState<ControlDialog | null>(null);
+  const [busy, setBusy] = useState<ControlVerb | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [steerOpen, setSteerOpen] = useState(false);
+  const [steerText, setSteerText] = useState("");
+
+  if (!kind) return null;
+
+  // applyExecutablePath layers the surface-wide refusal on top of the run's
+  // own state: no command exists that pauses a run, releases a pause gate, or
+  // delivers a steering message, so all three are shown and disabled rather
+  // than dispatching an instruction the operator has no tool for.
+  const pauseState = applyExecutablePath("pause", pauseControlState(kind, runTerminal, pausePhase));
+  const resumeState = applyExecutablePath(
+    "resume",
+    resumeControlState(kind, runTerminal, pausePhase),
+  );
+  const steerState = applyExecutablePath("message", steerControlState(kind, runTerminal));
+
+  async function propose(verb: ControlVerb, message?: string) {
+    setBusy(verb);
+    setError(null);
+    try {
+      const { conversationId, proposal } = await proposeRunControl(runId, kind!, verb, { message });
+      setDialog({ verb, conversationId, proposal });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("controls.proposeFailed"));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function confirmDialog() {
+    if (!dialog) return;
+    setBusy(dialog.verb);
+    setError(null);
+    try {
+      // Binds the proposal to this verb and run, and reads the status the
+      // confirm call returns -- both throw rather than reporting a control as
+      // accepted when it was refused, rejected, or never applied. The local
+      // "accepted" callbacks below run only once the command actually landed.
+      await confirmRunControl(dialog.verb, runId, dialog.conversationId, dialog.proposal);
+      if (dialog.verb === "pause") onPauseAccepted();
+      else if (dialog.verb === "resume") onResumeAccepted();
+      else {
+        setSteerOpen(false);
+        setSteerText("");
+      }
+      setDialog(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("controls.confirmFailed"));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const reasonText = (code: ControlReasonCode | null) =>
+    code ? t(`controls.reason.${code}`) : null;
+
+  // Every offered-but-disabled control states its refusal in text, not only in
+  // a tooltip — a refusal the reader has to hover to discover is not a legible
+  // one. Deduplicated by code because the common case is several controls
+  // refusing for the same reason, and repeating one sentence three times reads
+  // as three separate problems.
+  const refusals = Array.from(
+    new Set(
+      [pauseState, resumeState, steerState]
+        .filter((state) => state.offered && state.disabled && state.reasonCode !== null)
+        .map((state) => state.reasonCode as ControlReasonCode),
+    ),
+  );
+
+  return (
+    <div
+      data-testid="run-controls"
+      className="flex flex-col gap-2 rounded border border-edge bg-surface-raised p-2.5"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          data-testid="run-controls-pause"
+          disabled={pauseState.disabled || busy !== null}
+          title={reasonText(pauseState.reasonCode) ?? undefined}
+          onClick={() => void propose("pause")}
+          className="rounded border border-edge px-2 py-1 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {pausePhase === "pausing"
+            ? t("controls.pausePhasePausing")
+            : pausePhase === "paused"
+              ? t("controls.pausePhasePaused")
+              : t("controls.pause")}
+        </button>
+        {resumeState.offered && (
+          <button
+            type="button"
+            data-testid="run-controls-resume"
+            disabled={resumeState.disabled || busy !== null}
+            title={reasonText(resumeState.reasonCode) ?? undefined}
+            onClick={() => void propose("resume")}
+            className="rounded border border-edge px-2 py-1 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t("controls.resume")}
+          </button>
+        )}
+        {steerState.offered && (
+          <button
+            type="button"
+            data-testid="run-controls-steer"
+            disabled={steerState.disabled || busy !== null}
+            title={reasonText(steerState.reasonCode) ?? undefined}
+            onClick={() => setSteerOpen((v) => !v)}
+            className="rounded border border-edge px-2 py-1 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t("controls.steer")}
+          </button>
+        )}
+        {refusals.map((code) => (
+          <span
+            key={code}
+            data-testid={`run-controls-reason-${code}`}
+            className="text-[length:var(--t-xs)] text-content-muted"
+          >
+            {reasonText(code)}
+          </span>
+        ))}
+      </div>
+
+      {steerOpen && steerState.offered && (
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={steerText}
+            onChange={(event) => setSteerText(event.target.value)}
+            placeholder={t("controls.steerPlaceholder")}
+            className="focus-ring h-7 min-w-0 flex-1 rounded border border-edge bg-surface-base px-2 text-[length:var(--t-xs)] text-content-primary"
+          />
+          <button
+            type="button"
+            disabled={!steerText.trim() || busy !== null}
+            onClick={() => void propose("message", steerText)}
+            className="rounded border border-edge px-2 py-1 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t("controls.steerSend")}
+          </button>
+        </div>
+      )}
+
+      {dialog && (
+        <div
+          data-testid="run-controls-confirm"
+          className="flex flex-col gap-1 rounded border border-edge bg-surface-overlay px-2 py-1.5 text-[length:var(--t-xs)] text-content-secondary"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span>{t(`controls.confirm.${dialog.verb}`)}</span>
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => void confirmDialog()}
+              className="rounded border border-edge px-2 py-0.5 text-content-primary transition-colors hover:border-accent/50"
+            >
+              {t("controls.confirmYes")}
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => setDialog(null)}
+              className="rounded border border-edge px-2 py-0.5 text-content-primary transition-colors hover:border-accent/50"
+            >
+              {t("controls.confirmCancel")}
+            </button>
+          </div>
+          {/* What the proposal would actually do, read off the proposal rather
+              than off the verb that was asked for. The two can disagree: the
+              turn carries a natural-language instruction, so the command that
+              comes back is whichever one the operator model chose, and this
+              line is where a reader sees "Cancel run …" under "Confirm
+              pause?" instead of confirming it blind. Server-supplied text, so
+              it is rendered as-is rather than translated. */}
+          <div
+            data-testid="run-controls-confirm-proposal"
+            className="flex flex-wrap items-baseline gap-2 text-content-muted"
+          >
+            {dialog.proposal.commandType && (
+              <code data-testid="run-controls-confirm-command-type" className="font-mono">
+                {dialog.proposal.commandType}
+              </code>
+            )}
+            <span data-testid="run-controls-confirm-summary">{dialog.proposal.summary}</span>
+            {dialog.proposal.target && (
+              <span data-testid="run-controls-confirm-target" className="font-mono">
+                {dialog.proposal.target.kind} {dialog.proposal.target.id}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <p role="alert" className="text-[length:var(--t-xs)] text-status-failure">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── Public component ──────────────────────────────────────────────────────────
 
 // Floor for the execution-graph panel — keeps a tiny pipeline from collapsing
@@ -1439,15 +1765,70 @@ export default function RunDetail({ id }: RunDetailProps) {
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
-  // Graph-node drill-down: the branch a click resolved to (scrolled +
-  // highlighted below), or the node id a click found NO branch for (shown as
-  // an explicit not-started/no-branch state instead of a silent no-op).
-  const [highlightedStepKey, setHighlightedStepKey] = useState<string | null>(null);
+  // Cross-view selection (ADR-0113 D6): the step a graph-node click resolved
+  // to, or a list step the reader opened — either sets this, and it survives
+  // a graph/list toggle rather than fading, since selecting in one view and
+  // switching to the other is the whole point of D6's shared-selection
+  // contract. `unmatchedNodeId` covers a click that found NO branch (shown
+  // as an explicit not-started/no-branch state instead of a silent no-op).
+  const [selectedStepKey, setSelectedStepKey] = useState<string | null>(null);
   const [unmatchedNodeId, setUnmatchedNodeId] = useState<string | null>(null);
   // Full-width expand overlay for the execution graph — closed by its own
   // button or Escape; never by anything else, so a stray keypress elsewhere
   // can't dismiss it.
   const [graphExpanded, setGraphExpanded] = useState(false);
+  // ADR-0113 D6: the two raw sources resolveInitialView weighs against the
+  // default — the URL's `view` param (a pasted deep link) and the stored
+  // per-user preference — read once at mount (lazy useState initializers,
+  // never written again) rather than a ref, so reading them during render
+  // is safe. `userView` is a click during THIS session; once set it
+  // outranks both, same as a fresh choice always would.
+  const [initialUrlView] = useState<RunDetailView | null>(() =>
+    typeof window === "undefined"
+      ? null
+      : parseRunDetailView(
+          new URLSearchParams(window.location.search).get(RUN_DETAIL_VIEW_QUERY_KEY),
+        ),
+  );
+  const [initialStoredView] = useState<RunDetailView | null>(() =>
+    typeof window === "undefined" ? null : parseRunDetailView(readStoredView()),
+  );
+  const [userView, setUserView] = useState<RunDetailView | null>(null);
+  const handleSetView = useCallback((next: RunDetailView) => {
+    setUserView(next);
+    if (typeof window === "undefined") return;
+    writeStoredView(next);
+    const url = new URL(window.location.href);
+    url.searchParams.set(RUN_DETAIL_VIEW_QUERY_KEY, next);
+    window.history.replaceState(window.history.state, "", url);
+  }, []);
+  // ADR-0113 D6: the selected node is URL-addressable the same way `view`
+  // is — read once at mount (never re-read after) and restored against the
+  // first session load's branches. `initialNodeAppliedRef` bounds that
+  // restore to the run that was live when the component first mounted, so
+  // a later run swap (the Fleet view keeps this component mounted and only
+  // changes `id`) never re-applies a stale deep link onto the new run.
+  const [initialUrlNodeKey] = useState<string | null>(() =>
+    typeof window === "undefined"
+      ? null
+      : new URLSearchParams(window.location.search).get(RUN_DETAIL_NODE_QUERY_KEY),
+  );
+  const initialNodeAppliedRef = useRef(false);
+  const writeSelectedNodeToUrl = useCallback((key: string | null) => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (key) url.searchParams.set(RUN_DETAIL_NODE_QUERY_KEY, key);
+    else url.searchParams.delete(RUN_DETAIL_NODE_QUERY_KEY);
+    window.history.replaceState(window.history.state, "", url);
+  }, []);
+  // ADR-0113 D4/row 9: whether THIS client has asked this run to pause.
+  // There is no session-level "paused"/"pausing" status column yet (only
+  // per-node NodeExecStatus models it) — the pause gate is enforced by the
+  // executor in-process and observed here only through node signals, so the
+  // request itself is tracked locally rather than re-derived from a status
+  // string that does not exist. A reload loses it, same as any other
+  // client-only UI state; see the report for the follow-up this implies.
+  const [pauseRequested, setPauseRequested] = useState(false);
   const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const loadingOlderRef = useRef(false);
@@ -1476,7 +1857,6 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   useEffect(() => {
     if (!id) return;
-    let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
     setSession(null);
     setRunGraph(null);
@@ -1484,11 +1864,32 @@ export default function RunDetail({ id }: RunDetailProps) {
     setDone(false);
     setError(null);
     setSignalEvents([]);
+    // The pause request is scoped to the run it was made on. The Fleet view
+    // keeps this component mounted and swaps `id`, so leaving it set let run
+    // B derive its pause phase from run A's request: B could show pausing or
+    // paused, disable its own Pause, and offer a Resume that would then send
+    // a command carrying B's run id even though only A was ever paused.
+    setPauseRequested(false);
     setLoadingOlder(false);
     loadingOlderRef.current = false;
     setOlderLoadFailed(false);
     setOlderCursor(null);
     initialScrollDoneRef.current = false;
+    // A response for the run we navigated AWAY from must not land: the Fleet
+    // view keeps this component mounted and swaps `id`, so a slow response for
+    // run A would otherwise overwrite run B's freshly loaded session.
+    let cancelled = false;
+    // The Fleet view keeps this component mounted and swaps `id` — the
+    // selection is scoped to the run it was made on, so a run switch must
+    // drop it rather than let it read as the new run's selection.
+    // `initialNodeAppliedRef` only flips true once the FIRST run's session
+    // has resolved (below), so this leaves the deep-link restore below
+    // untouched on that very first load.
+    if (initialNodeAppliedRef.current) {
+      setSelectedStepKey(null);
+      setUnmatchedNodeId(null);
+      writeSelectedNodeToUrl(null);
+    }
     getSession(id)
       .then((s) => {
         if (cancelled) return;
@@ -1497,14 +1898,27 @@ export default function RunDetail({ id }: RunDetailProps) {
         if (isTerminalSessionStatus(s.status)) {
           setDone(true);
         }
-        if (s.branches.length <= 3) {
-          setExpandedSteps(new Set(s.branches.map((b) => b.name || b.id.slice(0, 8))));
-        } else {
-          const first = s.branches[0];
-          if (first) {
-            setExpandedSteps(new Set([first.name || first.id.slice(0, 8)]));
+        const branchExpansion =
+          s.branches.length <= 3
+            ? new Set(s.branches.map((b) => b.name || b.id.slice(0, 8)))
+            : s.branches[0]
+              ? new Set([s.branches[0].name || s.branches[0].id.slice(0, 8)])
+              : null;
+        // Restore a deep-linked node selection against THIS run's branches,
+        // once only, ever — a later run swap must not reapply it (see the
+        // clear-on-id-change block above).
+        if (!initialNodeAppliedRef.current) {
+          initialNodeAppliedRef.current = true;
+          if (initialUrlNodeKey) {
+            const match = matchGraphNodeToBranch(initialUrlNodeKey, s.branches);
+            if (match) {
+              const key = stepKeyForBranch(match);
+              branchExpansion?.add(key);
+              setSelectedStepKey(key);
+            }
           }
         }
+        if (branchExpansion) setExpandedSteps(branchExpansion);
         const graph = (s as unknown as Record<string, unknown>).graph as
           | { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null }
           | null
@@ -1526,7 +1940,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, initialUrlNodeKey, writeSelectedNodeToUrl]);
 
   useEffect(() => {
     if (!id || !resumeWatch || resumeWatch.run_id !== id) return;
@@ -1636,14 +2050,26 @@ export default function RunDetail({ id }: RunDetailProps) {
     }
   }, [session]);
 
-  const handleToggleExpand = useCallback((stepId: string, next: boolean) => {
-    setExpandedSteps((prev) => {
-      const updated = new Set(prev);
-      if (next) updated.add(stepId);
-      else updated.delete(stepId);
-      return updated;
-    });
-  }, []);
+  // Opening a step in the list is choosing to look at it — the same act
+  // that selecting its node in the graph performs, so it sets the same
+  // cross-view selection (ADR-0113 D6). Collapsing does not clear the
+  // selection: closing a card is not the same act as selecting a different
+  // one.
+  const handleToggleExpand = useCallback(
+    (stepId: string, next: boolean) => {
+      setExpandedSteps((prev) => {
+        const updated = new Set(prev);
+        if (next) updated.add(stepId);
+        else updated.delete(stepId);
+        return updated;
+      });
+      if (next) {
+        setSelectedStepKey(stepId);
+        writeSelectedNodeToUrl(stepId);
+      }
+    },
+    [writeSelectedNodeToUrl],
+  );
 
   // Graph-node drill-down. ReactFlow renders each node wrapper with a
   // `data-id` attribute (its own internals, not StepNode/WorkerCanvas
@@ -1654,15 +2080,17 @@ export default function RunDetail({ id }: RunDetailProps) {
       const match = matchGraphNodeToBranch(nodeId, session?.branches ?? []);
       if (!match) {
         setUnmatchedNodeId(nodeId);
-        setHighlightedStepKey(null);
+        setSelectedStepKey(null);
+        writeSelectedNodeToUrl(null);
         return;
       }
       setUnmatchedNodeId(null);
       const key = stepKeyForBranch(match);
       setExpandedSteps((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
-      setHighlightedStepKey(key);
+      setSelectedStepKey(key);
+      writeSelectedNodeToUrl(key);
     },
-    [session],
+    [session, writeSelectedNodeToUrl],
   );
 
   const handleDagPanelClick = useCallback(
@@ -1676,16 +2104,16 @@ export default function RunDetail({ id }: RunDetailProps) {
     [handleGraphNodeClick],
   );
 
-  // A finished drill-down highlight fades on its own rather than lingering
-  // until the next click — it is a "look here" pulse, not a persistent
-  // selection state.
+  // Scrolls the selected step into view whenever the selection changes AND
+  // the list is the visible view (the element only exists in the DOM then —
+  // in graph view this is a harmless no-op). Unlike the old drill-down
+  // pulse, the selection itself does not fade; only the scroll is one-shot
+  // per change.
   useEffect(() => {
-    if (!highlightedStepKey) return;
-    const el = document.getElementById(`step-${highlightedStepKey}`);
+    if (!selectedStepKey) return;
+    const el = document.getElementById(`step-${selectedStepKey}`);
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
-    const timer = setTimeout(() => setHighlightedStepKey(null), 2500);
-    return () => clearTimeout(timer);
-  }, [highlightedStepKey]);
+  }, [selectedStepKey]);
 
   useEffect(() => {
     if (!graphExpanded) return;
@@ -1828,6 +2256,14 @@ export default function RunDetail({ id }: RunDetailProps) {
     [id],
   );
 
+  // Confirming a pause proposal marks the request locally; derivePausePhase
+  // (above) turns that into "pausing" vs "paused" against the live running
+  // count, and confirming a resume clears it — a fresh pause() later
+  // installs its own gate, mirrored by allowing pauseRequested to be set
+  // again from idle.
+  const handlePauseAccepted = useCallback(() => setPauseRequested(true), []);
+  const handleResumeAccepted = useCallback(() => setPauseRequested(false), []);
+
   const sessionStatus = done ? "completed" : live ? "running" : "completed";
 
   const segments = useMemo(() => {
@@ -1839,6 +2275,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   const steps = useMemo(
     () => (session ? buildRunSteps(session, sessionStatus, segments) : []),
     [session, sessionStatus, segments],
+  );
+  // ADR-0113 D1/D6: the graph view's in-place node detail is the SAME
+  // RunStepCard the list renders for the same step — no separate detail
+  // shape to keep in sync with it.
+  const selectedGraphStep = useMemo(
+    () => (selectedStepKey ? (steps.find((s) => s.step === selectedStepKey) ?? null) : null),
+    [steps, selectedStepKey],
   );
 
   // Run-wide known file surface (union across every step/agent branch) —
@@ -1965,6 +2408,20 @@ export default function RunDetail({ id }: RunDetailProps) {
     [runGraph, reconciledNodeStatuses],
   );
 
+  // What the soft-pause gate counts as still running. The authored graph is
+  // the preferred source, because it is the same count the progress bar and
+  // the canvas already show. But computeProgressCountsForGraph answers null
+  // for a run with no authored graph, and a run can be entirely runtime —
+  // real operations, real edges, no early_graph. Passing null on to the pause
+  // phase as zero would report "nothing left running" for exactly those runs,
+  // so fall through to the runtime operation graph, and answer null only when
+  // neither source can say anything at all.
+  const pauseRunningCount = useMemo((): number | null => {
+    if (progressCounts) return progressCounts.running;
+    if (opGraph.nodes.length === 0) return null;
+    return opGraph.nodes.filter((n) => n.status === "running").length;
+  }, [progressCounts, opGraph]);
+
   // Elapsed wall-clock ticks once a second only while the run is actually
   // live; a finished or not-yet-loaded run has nothing left to advance.
   const [elapsedNow, setElapsedNow] = useState<number>(() => Date.now() / 1000);
@@ -2035,6 +2492,27 @@ export default function RunDetail({ id }: RunDetailProps) {
     status_reason_summary: session.status_reason_summary,
   };
   const displayStatus = deriveDisplayStatus(runForStatus);
+  const runTerminal =
+    displayStatus === "completed" || displayStatus === "failed" || displayStatus === "cancelled";
+  const controlKind = controlKindFor(session.invocation_kind ?? null);
+  const pausePhase: PausePhase = derivePausePhase(pauseRequested, pauseRunningCount);
+
+  // ADR-0113 D1/D6: a graph with edges is the default view; anything with no
+  // edges to draw (including "no graph at all") opens on the list.
+  // hasResolvableGraph is the single source of truth for "is there a graph
+  // worth rendering" — tab visibility, the default-view resolution below,
+  // and the render branch further down all gate on this SAME call, so they
+  // cannot disagree about a single-node or edgeless graph the way two
+  // separately-maintained predicates could.
+  const canRenderGraph = hasResolvableGraph(runGraph, opGraph);
+  const view: RunDetailView =
+    userView ??
+    resolveInitialView({
+      urlView: initialUrlView,
+      storedPreference: initialStoredView,
+      hasResolvableGraph: canRenderGraph,
+    });
+  const effectiveView: RunDetailView = canRenderGraph ? view : "list";
 
   const overviewData: OverviewData = {
     status: displayStatus,
@@ -2084,6 +2562,16 @@ export default function RunDetail({ id }: RunDetailProps) {
       </div>
 
       <OverviewSection data={overviewData} />
+      {controlKind && hasAnyExecutablePath() && (
+        <RunControls
+          runId={session.id}
+          kind={controlKind}
+          runTerminal={runTerminal}
+          pausePhase={pausePhase}
+          onPauseAccepted={handlePauseAccepted}
+          onResumeAccepted={handleResumeAccepted}
+        />
+      )}
       <ResumeRun
         key={session.id}
         runId={session.id}
@@ -2098,7 +2586,51 @@ export default function RunDetail({ id }: RunDetailProps) {
         contract={session.artifact_contract_json}
         verification={session.artifact_verification_json}
       />
-      {runGraph && shouldRenderAuthoredGraph(runGraph, opGraph) ? (
+      {canRenderGraph && (
+        <div
+          role="tablist"
+          aria-label={t("viewToggleLabel")}
+          className="flex items-center gap-1 self-start rounded border border-edge bg-surface-raised p-0.5"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveView === "graph"}
+            data-testid="run-detail-view-graph"
+            onClick={() => handleSetView("graph")}
+            className={`rounded px-2 py-1 font-mono text-[length:var(--t-xs)] transition-colors ${
+              effectiveView === "graph"
+                ? "bg-surface-overlay text-content-primary"
+                : "text-content-muted hover:text-content-secondary"
+            }`}
+          >
+            {t("viewGraph")}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveView === "list"}
+            data-testid="run-detail-view-list"
+            onClick={() => handleSetView("list")}
+            className={`rounded px-2 py-1 font-mono text-[length:var(--t-xs)] transition-colors ${
+              effectiveView === "list"
+                ? "bg-surface-overlay text-content-primary"
+                : "text-content-muted hover:text-content-secondary"
+            }`}
+          >
+            {t("viewList")}
+          </button>
+          {selectedStepKey && effectiveView === "graph" && (
+            <span
+              data-testid="run-detail-selected-node"
+              className="ml-2 truncate font-mono text-[length:var(--t-xs)] text-content-muted"
+            >
+              {t("selectedNode", { node: selectedStepKey })}
+            </span>
+          )}
+        </div>
+      )}
+      {effectiveView === "graph" && runGraph && shouldRenderAuthoredGraph(runGraph, opGraph) ? (
         <div id="run-dag" className="w-full scroll-mt-4">
           <SectionHeader
             label={t("sectionExecutionGraph")}
@@ -2120,15 +2652,6 @@ export default function RunDetail({ id }: RunDetailProps) {
           />
           {progressCounts && (
             <ProgressSummaryBar counts={progressCounts} elapsedLabel={elapsedLabel} t={t} />
-          )}
-          {unmatchedNodeId && (
-            <div
-              role="status"
-              data-testid="run-dag-unmatched-node"
-              className="mt-2 rounded border border-edge bg-surface-overlay px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary"
-            >
-              {t("nodeNoBranch", { node: unmatchedNodeId })}
-            </div>
           )}
           {/* A fan-out of dozens of workers cannot be legible in the same
               280px that fits a five-step pipeline — the panel takes its height
@@ -2206,55 +2729,98 @@ export default function RunDetail({ id }: RunDetailProps) {
           )}
         </div>
       ) : (
+        effectiveView === "graph" &&
         opGraph.nodes.length > 0 && (
           <div id="run-dag" className="scroll-mt-4">
             <SectionHeader label={t("sectionExecutionGraph")} count={opGraph.nodes.length} />
-            <OperationGraphSection state={opGraph} live={live && !done} />
+            <OperationGraphSection
+              state={opGraph}
+              live={live && !done}
+              onNodeClick={handleGraphNodeClick}
+            />
           </div>
         )
       )}
-      {/* Scroll-up trigger: reaching the top of the conversation loads the
-          next older page, same handler as the explicit button below. */}
-      <div ref={olderSentinelRef} aria-hidden="true" className="h-px" />
-      {olderLoadFailed ? (
-        <div className="flex items-center gap-2 self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary">
-          <span>{t("olderUnavailable")}</span>
-          <button
-            type="button"
-            onClick={handleReloadConversation}
-            disabled={loadingOlder}
-            className="rounded border border-edge px-2 py-0.5 text-content-primary transition-colors hover:border-accent/50 disabled:opacity-50"
-          >
-            {t("reloadConversation")}
-          </button>
+      {/* ADR-0113 D1/D6: a node selected in EITHER graph path (authored via
+          handleDagPanelClick, runtime via OperationGraphSection's onNodeClick)
+          expands in place here — the same RunStepCard the list view shows for
+          that step, not a second detail shape. A click that resolved no
+          branch gets the same explicit no-branch state regardless of which
+          graph produced it. */}
+      {effectiveView === "graph" && unmatchedNodeId && (
+        <div
+          role="status"
+          data-testid="run-dag-unmatched-node"
+          className="mt-2 rounded border border-edge bg-surface-overlay px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary"
+        >
+          {t("nodeNoBranch", { node: unmatchedNodeId })}
         </div>
-      ) : (
-        hiddenOlderCount > 0 && (
-          <button
-            type="button"
-            onClick={handleLoadOlder}
-            disabled={loadingOlder}
-            className="self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:opacity-50"
-          >
-            {loadingOlder
-              ? "…"
-              : `${t("loadOlder")} · ${t("olderRemaining", { count: hiddenOlderCount })}`}
-          </button>
-        )
       )}
-      <BranchesSection
-        steps={steps}
-        live={live}
-        expandedSteps={expandedSteps}
-        onToggleExpand={handleToggleExpand}
-        runId={session.id}
-        artifactRoot={session.artifacts_path}
-        runFiles={runFiles}
-        onLoadOlder={handleLoadOlder}
-        olderMessagesRemaining={hiddenOlderCount}
-        loadingOlder={loadingOlder}
-        highlightedStepKey={highlightedStepKey}
-      />
+      {effectiveView === "graph" && selectedGraphStep && (
+        <div className="mt-2 scroll-mt-4">
+          <RunStepCard
+            step={selectedGraphStep}
+            expanded
+            onToggleExpand={handleToggleExpand}
+            runId={session.id}
+            artifactRoot={session.artifacts_path}
+            runFiles={runFiles}
+            onLoadOlder={handleLoadOlder}
+            olderMessagesRemaining={hiddenOlderCount}
+            loadingOlder={loadingOlder}
+          />
+        </div>
+      )}
+      {/* Scroll-up trigger: reaching the top of the conversation loads the
+          next older page, same handler as the explicit button below. Kept
+          mounted regardless of view — an IntersectionObserver effect
+          attaches to it once, on session load (see sentinelMounted above),
+          and gating it on the list view would leave that effect watching a
+          ref that goes null whenever the reader starts on the graph. */}
+      <div ref={olderSentinelRef} aria-hidden="true" className="h-px" />
+      {effectiveView === "list" && (
+        <>
+          {olderLoadFailed ? (
+            <div className="flex items-center gap-2 self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary">
+              <span>{t("olderUnavailable")}</span>
+              <button
+                type="button"
+                onClick={handleReloadConversation}
+                disabled={loadingOlder}
+                className="rounded border border-edge px-2 py-0.5 text-content-primary transition-colors hover:border-accent/50 disabled:opacity-50"
+              >
+                {t("reloadConversation")}
+              </button>
+            </div>
+          ) : (
+            hiddenOlderCount > 0 && (
+              <button
+                type="button"
+                onClick={handleLoadOlder}
+                disabled={loadingOlder}
+                className="self-start rounded border border-edge bg-surface-raised px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary disabled:opacity-50"
+              >
+                {loadingOlder
+                  ? "…"
+                  : `${t("loadOlder")} · ${t("olderRemaining", { count: hiddenOlderCount })}`}
+              </button>
+            )
+          )}
+          <BranchesSection
+            steps={steps}
+            live={live}
+            expandedSteps={expandedSteps}
+            onToggleExpand={handleToggleExpand}
+            runId={session.id}
+            artifactRoot={session.artifacts_path}
+            runFiles={runFiles}
+            onLoadOlder={handleLoadOlder}
+            olderMessagesRemaining={hiddenOlderCount}
+            loadingOlder={loadingOlder}
+            selectedStepKey={selectedStepKey}
+          />
+        </>
+      )}
       <ErrorsSection errors={errors} partial={partialWindow} gateOutcome={gateOutcome} />
       <FilesSection files={runFiles} partial={partialWindow} />
       <EventsSection events={signalEvents} live={live && !done} />

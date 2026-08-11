@@ -51,6 +51,25 @@ vi.mock("@/components/canvas/WorkerCanvas", () => ({
   ),
 }));
 
+// The control section renders only while some verb has a backing command.
+// Every wrapper below delegates to the real implementation, so a test says
+// nothing by accident; the control tests opt in to a backed registry, because
+// the shown-and-disabled contract they assert is what exists once a command
+// type lands, not what exists today. The run-swap test additionally overrides
+// applyExecutablePath and the two dispatch calls, because the state it is
+// about — a pause the user actually accepted — cannot be reached at all while
+// every verb is refused before it is offered.
+vi.mock("@/lib/runControls", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/runControls")>("@/lib/runControls");
+  return {
+    ...actual,
+    hasAnyExecutablePath: vi.fn(actual.hasAnyExecutablePath),
+    applyExecutablePath: vi.fn(actual.applyExecutablePath),
+    proposeRunControl: vi.fn(actual.proposeRunControl),
+    confirmRunControl: vi.fn(actual.confirmRunControl),
+  };
+});
+
 const HISTORY_DIR = path.resolve(__dirname);
 const mountedCards: Array<{ container: HTMLDivElement; root: Root }> = [];
 
@@ -754,11 +773,25 @@ describe("history/RunDetail.tsx — shouldRenderAuthoredGraph", () => {
     expect(shouldRenderAuthoredGraph(authoredMissingEdges, opGraphWithEdges)).toBe(false);
   });
 
-  it("a single-node authored graph is never considered edgeless (nothing to draw an edge between)", async () => {
+  // This assertion is inverted from what it first said, on purpose. It read
+  // "a single-node authored graph is never considered edgeless, because there
+  // is nothing to draw an edge between" — which is true of that snapshot on
+  // its own, and the wrong rule for deciding which source to draw from. Held
+  // as authoritative, a one-node snapshot sitting beside a runtime graph that
+  // does have an edge meant the real DAG was never rendered at all.
+  it("a single-node authored graph yields to a runtime graph that has edges", async () => {
     const { shouldRenderAuthoredGraph } = await import("./RunDetail");
     const singleNode = { nodes: [{ id: "a" }], edges: [] };
     const opGraphWithEdges = { edges: [{ source: "op-a", target: "op-b" }] };
-    expect(shouldRenderAuthoredGraph(singleNode, opGraphWithEdges)).toBe(true);
+    expect(shouldRenderAuthoredGraph(singleNode, opGraphWithEdges)).toBe(false);
+  });
+
+  // The other arm, which the inversion must not cost: with nothing to fall
+  // through to, the authored snapshot is still what renders.
+  it("a single-node authored graph still renders when the runtime graph has no edges either", async () => {
+    const { shouldRenderAuthoredGraph } = await import("./RunDetail");
+    const singleNode = { nodes: [{ id: "a" }], edges: [] };
+    expect(shouldRenderAuthoredGraph(singleNode, { edges: [] })).toBe(true);
   });
 
   it("null graph never renders as the authored DAG", async () => {
@@ -776,6 +809,17 @@ describe("history/RunDetail.tsx — shouldRenderAuthoredGraph", () => {
     // resolveGraphEdges handles both concerns: null/undefined edges become []
     // and planner step-number refs are mapped onto node ids.
     expect(src).toMatch(/edges:\s*resolveGraphEdges\(graph\.nodes,\s*graph\.edges\)/);
+  });
+
+  // The progress counters are sentence-case labels ("Total", "Completed"); the
+  // graphNodeStatus* vocabulary is lowercase because it renders inside a node
+  // card ("done", "running"). The escalated counter borrowed the node-status
+  // key, so it rendered as the only lowercase label in the strip. Assert on the
+  // source because the counters carry no other behaviour to observe.
+  it("the escalated counter uses the progress label vocabulary, not the node-status one", () => {
+    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+    expect(src).toMatch(/\{t\("progressEscalated"\)\}\s*\{counts\.escalated\}/);
+    expect(src).not.toMatch(/\{t\("graphNodeStatusEscalated"\)\}\s*\{counts\.escalated\}/);
   });
 
   it("omitted edges + no runtime edges renders the authored graph, and normalized edges survive a WorkerCanvas-style map", async () => {
@@ -2155,5 +2199,731 @@ describe("history/RunDetail.tsx — the dag panel height policy is floor/grow-on
     const grown = reduce({ id: "run-1", height: DAG_MIN_HEIGHT }, "run-1", 420);
     const nextRun = reduce(grown, "run-2", 150);
     expect(nextRun.height).toBe(DAG_MIN_HEIGHT);
+  });
+});
+
+// ─── ADR-0113 rows 3 & 5: graph/list view — pure resolution logic ──────────
+
+describe("history/RunDetail.tsx — hasResolvableGraph (row 3: what counts as a real canvas)", () => {
+  const node = (id: string) => ({
+    id,
+    label: id,
+    role: "",
+    assignment: "",
+    prompt: "",
+    capacity: 1,
+    timeout: null,
+    inputs: [],
+    outputs: [],
+  });
+
+  it("a graph with edges is resolvable", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    const graph = {
+      nodes: [node("A"), node("B")],
+      edges: [{ id: "e1", source: "A", target: "B", mode: "simple" as const }],
+    };
+    expect(hasResolvableGraph(graph, { nodes: [], edges: [] })).toBe(true);
+  });
+
+  it("a single node with no edges is NOT resolvable — a canvas with one node and no edges is not a canvas", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    const graph = { nodes: [node("A")], edges: [] };
+    expect(hasResolvableGraph(graph, { nodes: [], edges: [] })).toBe(false);
+  });
+
+  it("several disconnected nodes with no edges are also not resolvable — same reasoning, not just the one-node case", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    const graph = { nodes: [node("A"), node("B"), node("C")], edges: [] };
+    expect(hasResolvableGraph(graph, { nodes: [], edges: [] })).toBe(false);
+  });
+
+  it("falls through to a real-edged opGraph when the authored graph is edgeless (mirrors shouldRenderAuthoredGraph)", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    const authoredEdgeless = { nodes: [node("A"), node("B")], edges: [] };
+    const opGraph = {
+      nodes: [{ id: "A" }, { id: "B" }],
+      edges: [{ id: "e1", source: "A", target: "B" }],
+    };
+    expect(hasResolvableGraph(authoredEdgeless, opGraph)).toBe(true);
+  });
+
+  // The one-node case takes the same fall-through. It used to be excluded,
+  // which meant an authored snapshot of a single node hid a runtime graph
+  // that had two nodes and an edge between them: canRenderGraph came back
+  // false and the run opened on the list with a real DAG sitting unrendered.
+  it("falls through to a real-edged opGraph even when the authored graph has exactly one node", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    const authoredSingleNode = { nodes: [node("A")], edges: [] };
+    const opGraph = {
+      nodes: [{ id: "A" }, { id: "B" }],
+      edges: [{ id: "e1", source: "A", target: "B" }],
+    };
+    expect(hasResolvableGraph(authoredSingleNode, opGraph)).toBe(true);
+  });
+
+  it("no graph at all is not resolvable", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    expect(hasResolvableGraph(null, { nodes: [], edges: [] })).toBe(false);
+  });
+});
+
+describe("history/RunDetail.tsx — resolveInitialView (row 5: the precedence rule)", () => {
+  it("defaults to graph when a resolvable graph exists and the reader has made no choice", async () => {
+    const { resolveInitialView } = await import("./RunDetail");
+    expect(
+      resolveInitialView({ urlView: null, storedPreference: null, hasResolvableGraph: true }),
+    ).toBe("graph");
+  });
+
+  it("defaults to list when there is no resolvable graph and the reader has made no choice", async () => {
+    const { resolveInitialView } = await import("./RunDetail");
+    expect(
+      resolveInitialView({ urlView: null, storedPreference: null, hasResolvableGraph: false }),
+    ).toBe("list");
+  });
+
+  // This is the precedence the brief calls out explicitly: "default is
+  // graph" and "preference is persisted" are in tension exactly once — a
+  // graph-having run whose reader has already chosen "list" — and the
+  // reader's choice must win. A regression that makes the default win
+  // again (e.g. checking hasResolvableGraph before storedPreference) fails
+  // this test.
+  it("a stored 'list' preference beats the graph default, even when a resolvable graph exists", () => {
+    return import("./RunDetail").then(({ resolveInitialView }) => {
+      expect(
+        resolveInitialView({
+          urlView: null,
+          storedPreference: "list",
+          hasResolvableGraph: true,
+        }),
+      ).toBe("list");
+    });
+  });
+
+  it("the URL view param outranks the stored preference (a pasted deep link reproduces what was shared)", async () => {
+    const { resolveInitialView } = await import("./RunDetail");
+    expect(
+      resolveInitialView({
+        urlView: "graph",
+        storedPreference: "list",
+        hasResolvableGraph: false,
+      }),
+    ).toBe("graph");
+  });
+});
+
+// ─── ADR-0113 rows 3, 5, 8, 9 — mounted behavior ────────────────────────────
+//
+// Reuses the mount pattern from the hidden-count-badge suite above
+// (getSession/streamSession/streamSignals/ResumeRun/WorkerCanvas mocked at
+// module scope): real RunDetail, real BranchesSection/RunStepCard, a fake
+// WorkerCanvas standing in for ReactFlow.
+
+describe("history/RunDetail.tsx — graph/list view toggle and cross-view selection, mounted", () => {
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    Element.prototype.scrollIntoView = vi.fn();
+    // localStorage is unavailable in this test runtime (jsdom under Node's
+    // experimental webstorage without a backing file) — RunDetail's own
+    // reads/writes already tolerate that (readStoredView/writeStoredView),
+    // so these tests exercise the URL query param instead, which jsdom does
+    // support. The stored-preference SIDE of the precedence rule is covered
+    // directly against resolveInitialView (pure function, above), which
+    // needs no browser storage at all.
+    window.history.replaceState(null, "", "/");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const node = (id: string) => ({
+    id,
+    label: id,
+    role: "",
+    assignment: "",
+    prompt: "",
+    capacity: 1,
+    timeout: null,
+    inputs: [],
+    outputs: [],
+  });
+
+  const edgedGraph = {
+    name: "run",
+    description: "",
+    nodes: [node("A"), node("B")],
+    edges: [{ id: "e-ab", source: "A", target: "B", mode: "simple" as const }],
+  };
+
+  const singleNodeGraph = {
+    name: "run",
+    description: "",
+    nodes: [node("A")],
+    edges: [],
+  };
+
+  function sessionWithBranches(graph: unknown, invocationKind: string | null = null) {
+    return {
+      id: "run-mount-view",
+      name: "run-mount-view",
+      created_at: 0,
+      updated_at: 0,
+      status: "completed",
+      invocation_kind: invocationKind,
+      branches: [{ id: "branch-a", name: "A", created_at: 0, messages: [] }],
+      graph,
+    };
+  }
+
+  async function mountRunDetail(session: unknown) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue(session as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-mount-view" />
+        </IntlProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return {
+      container,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("row 3: a run with edges opens on the graph", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      expect(container.querySelector('[data-testid="worker-canvas"]')).not.toBeNull();
+      expect(container.querySelector("#run-branches")).toBeNull();
+      const graphTab = container.querySelector('[data-testid="run-detail-view-graph"]');
+      expect(graphTab?.getAttribute("aria-selected")).toBe("true");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 3: a single-node run with no edges opens on the list, and offers no graph tab to switch to — a graph with no edges is not a canvas worth exposing at all", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(singleNodeGraph));
+    try {
+      expect(container.querySelector('[data-testid="worker-canvas"]')).toBeNull();
+      expect(container.querySelector("#run-branches")).not.toBeNull();
+      // No view toggle at all — there is nothing to switch to. Before the
+      // resolved-graph consolidation, canRenderGraph (looser than
+      // hasResolvableGraph) still exposed a clickable Graph tab here, and
+      // selecting it rendered a single disconnected node with no edges.
+      expect(container.querySelector('[data-testid="run-detail-view-graph"]')).toBeNull();
+      expect(container.querySelector('[data-testid="run-detail-view-list"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 5: an explicit ?view=list in the URL beats the graph default for a run with edges", async () => {
+    window.history.replaceState(null, "", "/?view=list");
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      expect(container.querySelector('[data-testid="worker-canvas"]')).toBeNull();
+      expect(container.querySelector("#run-branches")).not.toBeNull();
+      const listTab = container.querySelector('[data-testid="run-detail-view-list"]');
+      expect(listTab?.getAttribute("aria-selected")).toBe("true");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 5: clicking the List tab switches away from the graph, and Graph switches back", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const listTab = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-detail-view-list"]',
+      );
+      await act(async () => {
+        listTab?.click();
+      });
+      expect(container.querySelector('[data-testid="worker-canvas"]')).toBeNull();
+      expect(container.querySelector("#run-branches")).not.toBeNull();
+
+      const graphTab = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-detail-view-graph"]',
+      );
+      await act(async () => {
+        graphTab?.click();
+      });
+      expect(container.querySelector('[data-testid="worker-canvas"]')).not.toBeNull();
+      expect(container.querySelector("#run-branches")).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 5: selection survives a view switch — selecting a step in the list, then switching to graph, keeps it as the selected node", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const listTab = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-detail-view-list"]',
+      );
+      await act(async () => {
+        listTab?.click();
+      });
+      const expandButton = container.querySelector<HTMLButtonElement>(
+        'button[aria-controls="step-A-body"]',
+      );
+      expect(expandButton).not.toBeNull();
+      // A session with this few branches auto-expands every step on load
+      // (see the session-load effect above), so the single step here starts
+      // already expanded — collapsing it first (a plain expand/collapse,
+      // not a selection) and then re-expanding it is what actually exercises
+      // "the reader opened this step," which is the act that selects it.
+      await act(async () => {
+        expandButton?.click();
+      });
+      await act(async () => {
+        expandButton?.click();
+      });
+      const selectedRow = document.getElementById("step-A")?.parentElement;
+      expect(selectedRow?.hasAttribute("data-selected")).toBe(true);
+
+      const graphTab = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-detail-view-graph"]',
+      );
+      await act(async () => {
+        graphTab?.click();
+      });
+      const indicator = container.querySelector('[data-testid="run-detail-selected-node"]');
+      expect(indicator?.textContent).toContain("A");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 3 (runtime path): an opGraph with nodes but no edges falls back to the list, same as an edgeless authored graph", async () => {
+    const { streamSignals } = await import("@/lib/api");
+    vi.mocked(streamSignals).mockImplementationOnce((_id, cb) => {
+      cb(sig({ id: "e1", op_id: "op-a", kind: "NodeStarted", payload: { name: "A" } }));
+      return () => {};
+    });
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(null));
+    try {
+      expect(container.querySelector('[data-testid="op-graph-node"]')).toBeNull();
+      expect(container.querySelector("#run-branches")).not.toBeNull();
+      expect(container.querySelector('[data-testid="run-detail-view-graph"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 4 (authored path): selecting a node renders its detail card in place, in the graph view", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      // The mocked WorkerCanvas doesn't render ReactFlow's own node markup —
+      // handleDagPanelClick delegates on the raw DOM shape ReactFlow produces
+      // (`.react-flow__node[data-id]`), so a synthetic one exercises the same
+      // delegation the real graph relies on.
+      const canvas = container.querySelector('[data-testid="worker-canvas"]');
+      const panel = canvas?.parentElement;
+      expect(panel).not.toBeNull();
+      const fakeNode = document.createElement("div");
+      fakeNode.className = "react-flow__node";
+      fakeNode.dataset.id = "A";
+      panel!.appendChild(fakeNode);
+      await act(async () => {
+        fakeNode.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(document.getElementById("step-A")).not.toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 4 (runtime path): OperationGraphSection has a node click handler, and selecting a node renders its detail card in place", async () => {
+    const { streamSignals } = await import("@/lib/api");
+    vi.mocked(streamSignals).mockImplementationOnce((_id, cb) => {
+      cb(sig({ id: "e1", op_id: "op-a", kind: "NodeStarted", payload: { name: "A" } }));
+      cb(
+        sig({
+          id: "e2",
+          op_id: "op-b",
+          kind: "NodeStarted",
+          payload: { name: "B", parent_id: "op-a" },
+        }),
+      );
+      return () => {};
+    });
+    const session = {
+      ...sessionWithBranches(null),
+      branches: [{ id: "branch-b", name: "B", created_at: 0, messages: [] }],
+    };
+    const { container, unmount } = await mountRunDetail(session);
+    try {
+      // An opGraph with a real edge is a resolvable graph, so this defaults
+      // to the graph view without needing to click a tab.
+      const nodeCard = Array.from(
+        container.querySelectorAll<HTMLElement>('[data-testid="op-graph-node"]'),
+      ).find((el) => el.textContent?.includes("B"));
+      expect(nodeCard).toBeTruthy();
+      await act(async () => {
+        nodeCard?.click();
+      });
+      expect(document.getElementById("step-B")).not.toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 6 (D6 URL-addressability): a URL carrying a selected node restores that selection on load", async () => {
+    window.history.replaceState(null, "", "/?node=A");
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      expect(document.getElementById("step-A")).not.toBeNull();
+      const indicator = container.querySelector('[data-testid="run-detail-selected-node"]');
+      expect(indicator?.textContent).toContain("A");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("coupled minor: changing the run id clears the previous run's selected node", async () => {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    const runOne = sessionWithBranches(edgedGraph);
+    const runTwo = {
+      ...sessionWithBranches(edgedGraph),
+      id: "run-mount-view-2",
+      branches: [{ id: "branch-c", name: "C", created_at: 0, messages: [] }],
+    };
+    vi.mocked(getSession).mockImplementation(
+      async (id: string) => (id === "run-mount-view-2" ? runTwo : runOne) as never,
+    );
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id="run-mount-view" />
+          </IntlProvider>,
+        );
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const canvas = container.querySelector('[data-testid="worker-canvas"]');
+      const panel = canvas?.parentElement;
+      const fakeNode = document.createElement("div");
+      fakeNode.className = "react-flow__node";
+      fakeNode.dataset.id = "A";
+      panel!.appendChild(fakeNode);
+      await act(async () => {
+        fakeNode.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(
+        container.querySelector('[data-testid="run-detail-selected-node"]')?.textContent,
+      ).toContain("A");
+
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id="run-mount-view-2" />
+          </IntlProvider>,
+        );
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(container.querySelector('[data-testid="run-detail-selected-node"]')).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+});
+
+// ─── ADR-0113 rows 8 & 9 — run controls, mounted ────────────────────────────
+
+describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () => {
+  beforeEach(async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    Element.prototype.scrollIntoView = vi.fn();
+    // Everything in this block describes the surface as it behaves once some
+    // verb has a backing command. That is the state in which D4's rule
+    // applies: a verb the engine cannot carry out is shown and disabled with
+    // its reason, never hidden, so a deliberate constraint does not read as a
+    // missing feature. The separate case — no verb backed at all — is covered
+    // below, and is the only reason these need to opt in.
+    const { hasAnyExecutablePath } = await import("@/lib/runControls");
+    vi.mocked(hasAnyExecutablePath).mockReturnValue(true);
+  });
+
+  // Nothing in the vitest config resets mocks between tests, so the three
+  // wrappers the run-swap test overrides are put back to the real
+  // implementations here. Without this, one test's stand-in registry would
+  // silently become every later test's premise.
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    const actual = await vi.importActual<typeof import("@/lib/runControls")>("@/lib/runControls");
+    const { applyExecutablePath, proposeRunControl, confirmRunControl } =
+      await import("@/lib/runControls");
+    vi.mocked(applyExecutablePath).mockImplementation(actual.applyExecutablePath);
+    vi.mocked(proposeRunControl).mockImplementation(actual.proposeRunControl);
+    vi.mocked(confirmRunControl).mockImplementation(actual.confirmRunControl);
+  });
+
+  const flatGraph = { name: "run", description: "", nodes: [], edges: [] };
+
+  function sessionOf(invocationKind: string | null) {
+    return {
+      id: "run-mount-controls",
+      name: "run-mount-controls",
+      created_at: 0,
+      updated_at: 0,
+      status: "running",
+      invocation_kind: invocationKind,
+      branches: [],
+      graph: flatGraph,
+    };
+  }
+
+  async function mountRunDetail(session: unknown) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue(session as never);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-mount-controls" />
+        </IntlProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return {
+      container,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("row 8: pause is shown and DISABLED on an agent run — never hidden", async () => {
+    const { container, unmount } = await mountRunDetail(sessionOf("agent"));
+    try {
+      const pauseButton = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-pause"]',
+      );
+      expect(pauseButton).not.toBeNull();
+      expect(pauseButton?.disabled).toBe(true);
+      // Resume is not a listed agent capability at all — not offered, not
+      // just disabled.
+      expect(container.querySelector('[data-testid="run-controls-resume"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  // These three replace tests that asserted pause on a flow run and steer on
+  // an agent run were ENABLED. That expectation described a backend path that
+  // was never built: nothing in the operator's command set pauses a run,
+  // releases a pause gate, or delivers a steering message, and because the
+  // control dispatches a natural-language instruction, an unbacked verb does
+  // not fail cleanly — the nearest match to "stop this run" is cancel_run. A
+  // clickable button was the defect, not the fix.
+  it("every control is disabled while no command exists to carry its verb out", async () => {
+    const { container, unmount } = await mountRunDetail(sessionOf("flow"));
+    try {
+      for (const verb of ["pause", "resume", "steer"]) {
+        const button = container.querySelector<HTMLButtonElement>(
+          `[data-testid="run-controls-${verb}"]`,
+        );
+        expect(button, `${verb} button missing`).not.toBeNull();
+        expect(button?.disabled, `${verb} button is clickable`).toBe(true);
+      }
+    } finally {
+      unmount();
+    }
+  });
+
+  it("states the refusal in text, not only in a tooltip", async () => {
+    const { container, unmount } = await mountRunDetail(sessionOf("flow"));
+    try {
+      const reason = container.querySelector(
+        '[data-testid="run-controls-reason-no-executable-path"]',
+      );
+      expect(reason).not.toBeNull();
+      expect(reason?.textContent).toBe("No command exists yet to carry this out.");
+    } finally {
+      unmount();
+    }
+  });
+
+  // The refusal that wins is the one that does not imply a working
+  // counterfactual: "steer instead" and "the run is not paused" both tell the
+  // reader another route works, and neither does.
+  it("does not advise steering as an alternative while steer is itself refused", async () => {
+    const { container, unmount } = await mountRunDetail(sessionOf("agent"));
+    try {
+      const panel = container.querySelector('[data-testid="run-controls"]');
+      expect(panel?.textContent).not.toContain("steer instead");
+      expect(
+        container.querySelector('[data-testid="run-controls-reason-no-executable-path"]'),
+      ).not.toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("no control panel renders for a kind the control poller does not drain (e.g. show-play)", async () => {
+    const { container, unmount } = await mountRunDetail(sessionOf("show-play"));
+    try {
+      expect(container.querySelector('[data-testid="run-controls"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  // The state the surface is actually in today. Every verb above is disabled
+  // for want of a backing command, and a panel in which nothing can ever be
+  // clicked reads as a broken feature rather than an unbuilt one. So while no
+  // verb is backed the section is not rendered at all. This is scoped to that
+  // case and does not weaken the rule above: the moment one command type
+  // exists the section returns, and a verb the engine still cannot carry out
+  // goes back to being shown and disabled with its reason.
+  it("renders no control section at all while no verb has a backing command", async () => {
+    const { hasAnyExecutablePath } = await import("@/lib/runControls");
+    vi.mocked(hasAnyExecutablePath).mockReturnValue(false);
+    const { container, unmount } = await mountRunDetail(sessionOf("flow"));
+    try {
+      expect(container.querySelector('[data-testid="run-controls"]')).toBeNull();
+      // and specifically not the disabled-with-a-reason rendering
+      expect(
+        container.querySelector('[data-testid="run-controls-reason-no-executable-path"]'),
+      ).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  // The pane is reused across runs: the id-change effect cleared session,
+  // graph, signals, and selection, and left the pause request behind, so run
+  // B derived its control state from a pause only run A had ever received.
+  // Once a command exists to carry the verb out, that is a resume dispatched
+  // against B's id for A's pause. No unit test of the phase function can see
+  // this — what is wrong is which state survives the swap — so the assertion
+  // has to be mounted and has to swap.
+  it("a pause accepted on one run does not carry into the next run shown in the same pane", async () => {
+    const [{ getSession }, { default: RunDetail }, controls] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+      import("@/lib/runControls"),
+    ]);
+
+    // Stands in for a registry with a backing command. Left real, every verb
+    // is refused before it is offered and the pause this test is about can
+    // never be accepted at all.
+    vi.mocked(controls.applyExecutablePath).mockImplementation((_verb, state) => state);
+    vi.mocked(controls.proposeRunControl).mockResolvedValue({
+      conversationId: "conv-run-swap",
+      proposal: {
+        id: "prop-run-swap",
+        commandType: "pause_run",
+        summary: "Pause the run",
+        commandHash: "hash-run-swap",
+        target: null,
+      },
+    } as never);
+    vi.mocked(controls.confirmRunControl).mockResolvedValue({} as never);
+    vi.mocked(getSession).mockImplementation((async (runId: string) => ({
+      id: runId,
+      name: runId,
+      created_at: 0,
+      updated_at: 0,
+      status: "running",
+      invocation_kind: "flow",
+      branches: [],
+      graph: flatGraph,
+    })) as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const show = async (runId: string) => {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id={runId} />
+          </IntlProvider>,
+        );
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+    const pauseLabel = () =>
+      container.querySelector('[data-testid="run-controls-pause"]')?.textContent;
+    const stillPausing = () =>
+      container.querySelector('[data-testid="run-controls-reason-still-pausing"]');
+
+    try {
+      await show("run-swap-a");
+      expect(pauseLabel()).toBe("Pause");
+      expect(stillPausing()).toBeNull();
+
+      // Accept a pause on run A through the surface — propose, then confirm —
+      // rather than by setting the state this test is about.
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-pause"]')?.click();
+      });
+      const confirmYes = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-confirm"] button',
+      );
+      expect(confirmYes, "no confirm dialog appeared after proposing a pause").not.toBeNull();
+      await act(async () => {
+        confirmYes?.click();
+      });
+      // This run has no authored graph and no signals yet, so nothing can say
+      // how much is still in flight: the phase is "pausing", never "paused".
+      expect(pauseLabel()).toBe("Pausing…");
+      expect(stillPausing()).not.toBeNull();
+
+      // Same pane, next run. Nothing about B was ever paused.
+      await show("run-swap-b");
+      expect(pauseLabel()).toBe("Pause");
+      expect(stillPausing()).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
   });
 });
