@@ -71,6 +71,113 @@ shallow merge?).
 and 404. Warns once instead of stripping silently, since a reverse proxy whose
 public prefix genuinely ends in `/api` needs visibility into the rewrite.
 
+**`_await_vite_ready_url`** — A background thread drains Vite's stdout for
+the life of the dev-server process so Vite never blocks on a full pipe
+buffer; once the function itself returns (ready URL found, or timed out) that
+thread stops parsing lines and only keeps draining. It's a daemon thread with
+no explicit join, so it exits with the process rather than needing shutdown
+wiring.
+
+## lionagi/studio/scheduler/engine.py
+
+**`_reserve_max_runs_budget` / `_release_max_runs_claim`** — The single-process
+analogue of a DB-backed compare-and-set for `schedule['max_runs']`; only one
+scheduler process runs today, so no DB-backed reservation exists. Guarded by
+an engine-wide lock so the tick loop, `fire_now()`, and GitHub polling can't
+both read the same count and both claim it before either claim is visible.
+Reads `inflight` (this process's outstanding claims) *before* the awaited
+`count_schedule_runs()` call, not after — release() is deliberately lock-free
+(a claim must still release from a cancelled/failing `_fire()`'s `finally`
+without depending on this lock), so a concurrent fire's claim can vanish
+mid-await. Reading `inflight` first means the sum can only ever over-count
+(a spurious refusal, self-correcting on the next tick), never under-count
+into an actual overshoot — reading it after the await would let a fire that
+both persists its row and releases its claim inside this call's await window
+disappear from both the persisted count (read too early) and the in-flight
+snapshot (read too late). The claim is released from `_fire()`'s own
+`finally`, not from inside `_check_max_runs()`: a fire failing before ever
+reaching `_check_max_runs()` (e.g. `create_invocation` raising) would
+otherwise leak the claim for the life of the process. Chain children never
+call this — only top-level fires consume budget.
+
+**`_fire_inner` delivery contract** — At-least-once up to confirmed process
+launch, at-most-once past it, across three windows: (1) before the occurrence
+transaction commits, a crash leaves nothing durable, so a restart fires
+fresh, never a duplicate. (2) Between commit and `spawn_and_wait()`
+confirming launch (`on_launched` stamping `dispatched_at`), the row is
+durable but undispatched; `_recover_undispatched_fires()` finds it on startup
+and re-fires via `supersedes_run_id`, which routes the occurrence insert
+through `tombstone_and_replace_schedule_run()` to tombstone the orphan and
+insert the replacement atomically (its CAS also requires `dispatched_at IS
+NULL`, so a launch confirmed in the race against recovery wins and the
+tombstone is a no-op). (3) Once `dispatched_at` is confirmed, the process
+genuinely exists and is never re-fired — resolved by the stale-run reaper or
+its own terminal write. A duplicate real-world side effect is worse than one
+unretried outcome, hence the asymmetry. The occurrence-insert and any
+`extra_schedule_fields` cursor advance land in the same transaction as this
+delivery boundary — see `_write_occurrence()` for the atomic-with-tombstone
+recovery path.
+
+**`_reconcile_dispatched_orphans`** — Startup-only; handles schedule_runs rows
+that were confirmed dispatched but never reached a terminal status, which
+`_recover_undispatched_fires()` (safe to blindly re-fire) can't touch since a
+row here may have a genuinely live child. Resolves only from positive
+completion evidence: when every session linked to the invocation has
+independently reached a terminal status (each session's own teardown writes
+its own terminal status, independent of whether the dispatching scheduler
+survived to see the exit code), the schedule_run is finalized via
+`resolve_invocation_terminal()`. Unknown liveness is never treated as death —
+a row with no sessions yet, or any non-terminal session, falls through
+unchanged to the wall-clock stale reaper (`reap_stale_schedule_runs`).
+
+**`_recompute_armed_cron_schedules`** — Startup-only re-resolution of every
+enabled cron schedule's `next_fire_at` under the current timezone
+interpretation, guarding against stale fire times after
+`LIONAGI_SCHEDULER_TZ` (or the host timezone) changed since the schedule was
+last armed. A schedule already due (`next_fire_at <= now`) is left alone here
+so it flows through `_check_missed_fires()` first — `missed_fire_policy`
+("run_once"/"skip") must get a chance to run before anything advances the
+timestamp, and `_check_missed_fires()` runs immediately after this method
+returns in `_tick_loop`, synchronously advancing `next_fire_at` via the
+recovery path before the following `_tick()` call. Only schedules still ahead
+of now — the timezone-migration correction case this hook exists for — are
+recomputed here; the method never fires anything itself.
+
+**`_check_budget`** — Pre-fire cumulative spend gate, not a mid-run
+interrupt: a run already in flight is never killed when it crosses the
+budget line, since its cost is unknown until it terminates, so a schedule may
+overshoot by up to one run's cost before the next fire is refused. Pair with
+`LIONAGI_STUDIO_INVOCATION_DEADLINE_SECONDS` to bound a single run's
+worst-case spend. `spend["cost_usd"]` sums only *reported* cost — a session
+whose engine never priced itself contributes nothing, not a confirmed $0 —
+so this deliberately does not force exhaustion over unreported sessions
+alone (that would turn a data gap into an outage); it only surfaces the gap
+via a log line and `unreported_sessions` in the schedule's spend rollup, so a
+near-zero reading with many unreported sessions reads as "unknown," not
+"cheap."
+
+**`_threshold_alert_update_fields`** — Stamps `last_alert_at` into the same
+`update_schedule()` call that already writes `last_fired_at`/`next_fire_at`
+inside `_fire_inner()`, deliberately placed after `create_schedule_run()` has
+durably persisted the run row. Stamping the cooldown any earlier (e.g. before
+`_fire()` starts) risks consuming it on a pre-persistence failure (e.g.
+`create_invocation()` raising) that leaves zero durable record an alert was
+ever attempted — the exact silent-loss shape the feature exists to prevent.
+Only top-level fires (`chain_depth == 0`) of a threshold-configured schedule
+stamp the cooldown; `on_success`/`on_fail` chain children are follow-on
+actions of the same alert cycle, not a new one.
+
+## lionagi/studio/scheduler/subprocess.py
+
+**`spawn_and_wait`** — Both stdout/stderr streams are captured and drained
+concurrently, bounded rather than buffered whole: a single `communicate()`
+call on both pipes would hold an entire streaming leg's output in memory,
+and draining one stream at a time deadlocks once the other fills its buffer.
+When `action_kind="command"`, the command allow-list check re-runs here,
+immediately before spawn, closing the window where an awaited DB call
+between `build_argv()` and this function gives a revoked
+`LIONAGI_SCHEDULER_COMMAND_ALLOWLIST` env var a scheduling point to land in.
+
 ## lionagi/studio/services/schedules.py
 
 - **`_svc_validate_action_command`** — Delegates to the subprocess validators
