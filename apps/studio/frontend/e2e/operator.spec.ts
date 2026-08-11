@@ -39,6 +39,13 @@ test.beforeEach(async ({ page }) => {
   await page.route("https://analytics.khive.ai/**", (route) =>
     route.fulfill({ status: 200, contentType: "application/javascript", body: "" }),
   );
+  // These flows exercise the Operator panel itself, so establish the
+  // precondition they depend on: a fresh context has no persisted visibility
+  // choice, and below the responsive default width the panel would never
+  // mount. Seeding the explicit choice keeps the suite viewport-independent
+  // and exercises the persisted-choice branch the shell calls authoritative.
+  // The responsive default itself is covered by operator-default.spec.ts.
+  await page.addInitScript(() => window.localStorage.setItem("studio:operator-visibility", "open"));
 });
 
 test("Operator streams, persists, stops, records a run, and resumes it", async ({ page }) => {

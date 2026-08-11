@@ -13,11 +13,12 @@ interface Props {
   onLocaleChange: (l: string) => void;
 }
 
-// SplitPane needs 900px before it collapses; the default Operator dock is
-// 408px and the icon rail consumes the remainder of a ~1360px window. Fresh
+// SplitPane needs 900px before it collapses, the default Operator dock is
+// 408px, and the icon rail is 56px wide — so 1364px is the narrowest window
+// where the dock can open without collapsing the pane beside it. Fresh
 // sessions below this width therefore start undocked, while an explicit saved
 // open/closed choice always wins.
-const OPERATOR_DEFAULT_OPEN_MIN_WIDTH = 1_360;
+const OPERATOR_DEFAULT_OPEN_MIN_WIDTH = 1_364;
 
 function getOperatorOpen(): boolean {
   if (typeof window === "undefined") return true;
