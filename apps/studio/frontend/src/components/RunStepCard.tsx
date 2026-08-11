@@ -412,11 +412,16 @@ function RunStepCard({
 
     // File aggregation
     const fileMap = new Map<string, FileChange>();
+    const serverSafePaths = runFiles ? new Set(runFiles) : null;
     for (const t of toolMessages) {
       const args = (t.arguments as Record<string, unknown>) ?? {};
       const fn = t.function || "";
       const paths = pathFromArgs(args, t.summary || "", fn);
       for (const p of paths) {
+        // Run Detail supplies the server-normalized allowlist. Keep legacy
+        // standalone cards unchanged, but never echo a raw path the server
+        // rejected or normalized away inside the run detail surface.
+        if (serverSafePaths && !serverSafePaths.has(p)) continue;
         if (!fileMap.has(p)) {
           fileMap.set(p, { path: p, ops: { read: 0, write: 0, edit: 0, other: 0 } });
         }
@@ -470,7 +475,7 @@ function RunStepCard({
       firstTs,
       lastTs,
     };
-  }, [messages, result.duration_sec]);
+  }, [messages, result.duration_sec, runFiles]);
 
   // File-link resolution context (shared by the overview + conversation
   // Markdown renderers): agent dir first, then the run-wide file surface.

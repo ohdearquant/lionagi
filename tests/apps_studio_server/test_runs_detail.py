@@ -535,7 +535,11 @@ async def test_get_run_over_limit_session_computes_full_aggregates_from_all_mess
     stats = result["message_stats"]
     assert stats["tool_call_count"] == 1
     assert stats["error_count"] == 1
-    assert "/tmp/outside_window.txt" in stats["files"]
+    # The action is still aggregated outside the display window, but an
+    # absolute path cannot be disclosed without a run artifact root proving
+    # containment.
+    assert stats["files"] == []
+    assert result["run_files"]["redacted_count"] == 1
     assert any(e["output"] == "process exited with code 1." for e in stats["errors"])
 
     branch = result["branches"][0]

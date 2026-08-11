@@ -19,6 +19,7 @@ import type {
   OperatorTurnRequest,
   ResumeAvailability,
   RunDetail,
+  RunFileSummary,
   RunResumeRequest,
   RunResumeResponse,
   RunSummary,
@@ -1249,9 +1250,8 @@ export interface SessionDetail {
   // returns this verbatim) — the run's save root for file-link resolution.
   artifacts_path?: string | null;
   // Full-session aggregate (services/sessions.py get_session, computed over
-  // every branch's full progression, not the display window) — `files` is
-  // the run-wide known-file union, including files touched before the
-  // 200-message tail window this response's `branches[].messages` covers.
+  // every branch's full progression, not the display window). `files` is a
+  // compatibility projection of the bounded, safe `run_files.items` window.
   message_stats?: {
     message_count: number;
     roles: Record<string, number>;
@@ -1259,6 +1259,9 @@ export interface SessionDetail {
     error_count: number;
     files: string[];
   };
+  // Server-derived, privacy-preserving recent file window. Unlike
+  // branches[].messages, this covers the full stored run progression.
+  run_files?: RunFileSummary | null;
 }
 
 export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {

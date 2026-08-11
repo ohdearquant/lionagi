@@ -148,6 +148,25 @@ export interface RunStep {
   timestamp: number | null;
 }
 
+export type RunFileAccess = "read" | "write";
+
+export interface RunFileItem {
+  /** Artifact-root-relative public path; never an absolute host path. */
+  path: string;
+  /** Request intent the server can prove. An empty array means unknown. */
+  access: RunFileAccess[];
+  /** Whether the run has an artifact root eligible for the preview endpoint. */
+  openable: boolean;
+}
+
+export interface RunFileSummary {
+  items: RunFileItem[];
+  total: number;
+  shown: number;
+  truncated: boolean;
+  redacted_count: number;
+}
+
 // RunDetail comes from the filesystem run.json path (GET /api/runs/{id} →
 // services/runs.py get_run → _adapt_summary). Unlike RunSummary which maps
 // SQLite session rows, RunDetail reads the on-disk run manifest. The manifest
@@ -174,6 +193,7 @@ export interface RunDetail {
   // ADR-0029: artifact contract and verification result.
   artifact_contract_json?: ArtifactContract | null;
   artifact_verification_json?: ArtifactVerification | null;
+  run_files?: RunFileSummary | null;
 }
 
 // The checkpoint-replay kinds (play/flow/show-play) send neither

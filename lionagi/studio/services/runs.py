@@ -673,6 +673,7 @@ async def get_run(
         "message_cursor": session.get("message_cursor"),
         "message_next_cursor": session.get("message_next_cursor"),
         "message_stats": message_stats,
+        "run_files": session.get("run_files"),
         # Failure-reason contract consumed by the run-detail panel's banner.
         "status_reason_code": session.get("status_reason_code"),
         "status_reason_summary": session.get("status_reason_summary"),

@@ -1202,7 +1202,9 @@ async def test_get_session_action_stats_match_canonical_fully_qualified_lion_cla
 ):
     """The runtime persists lion_class as the fully-qualified dotted path (see the
     message_types seed rows in state/schema.sql), not the bare class name. Tool/error/
-    file aggregation must recognize that shape, not just a legacy short name."""
+    file aggregation must recognize that shape, not just a legacy short name.
+    The absolute path has no artifact root proving it is safe to disclose, so
+    it is counted as redacted instead of copied into the response."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-canonical", status="completed")
     msg_ids = ["req-0", "resp-0"]
@@ -1246,7 +1248,8 @@ async def test_get_session_action_stats_match_canonical_fully_qualified_lion_cla
     stats = result["message_stats"]
     assert stats["tool_call_count"] == 1
     assert stats["error_count"] == 1
-    assert "/tmp/canonical.txt" in stats["files"]
+    assert stats["files"] == []
+    assert result["run_files"]["redacted_count"] == 1
 
 
 def test_branch_file_stats_only_accept_structured_file_tool_paths():

@@ -23,7 +23,8 @@ import OperationGraphSection from "@/components/history/OperationGraphSection";
 import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
-import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
+import RunStepCard from "@/components/RunStepCard";
+import RunFilesSection from "@/components/history/RunFilesSection";
 import { IconChevronDown, IconChevronRight, IconPencil } from "@/components/ui/icons";
 import {
   ApiError,
@@ -1159,32 +1160,6 @@ function ErrorsSection({
               </div>
             );
           })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Files section ─────────────────────────────────────────────────────────────
-
-function FilesSection({ files, partial }: { files: string[]; partial?: boolean }) {
-  const t = useTranslations("history.detail");
-  return (
-    <div id="run-files" className="scroll-mt-4">
-      <SectionHeader label={t("sectionFiles")} count={files.length} />
-      {files.length === 0 ? (
-        <div className="rounded border border-edge bg-surface-raised px-4 py-3 text-sm text-content-muted">
-          {partial ? t("noFilesPartial") : t("noFiles")}
-        </div>
-      ) : (
-        <div className="max-h-56 overflow-y-auto rounded border border-edge bg-surface-raised px-3 py-2">
-          <ul className="flex flex-col gap-0.5">
-            {files.map((f) => (
-              <li key={f} className="font-mono text-[length:var(--t-xs)] text-content-secondary">
-                {f}
-              </li>
-            ))}
-          </ul>
         </div>
       )}
     </div>
@@ -2383,20 +2358,13 @@ export default function RunDetail({ id }: RunDetailProps) {
     [steps, selectedStepKey],
   );
 
-  // Run-wide known file surface (union across every step/agent branch) —
-  // the file-link resolver's save-root fallback when a bare filename isn't
-  // in the emitting agent's own step but was written by a sibling agent.
-  // Steps only cover the loaded (tail-windowed) messages, so a reference to
-  // a file touched earlier in a long session can't resolve from steps alone
-  // — seed/merge with the server's full-session union (message_stats.files),
-  // which is computed over every branch's full progression, not the window.
-  const runFiles = useMemo(() => {
-    const set = new Set<string>(session?.message_stats?.files ?? []);
-    for (const step of steps) {
-      for (const p of extractFilePaths(step.messages ?? [])) set.add(p);
-    }
-    return Array.from(set).sort();
-  }, [steps, session]);
+  // Only server-normalized paths are eligible for file links. Re-parsing raw
+  // tool arguments here would reintroduce absolute host paths and credentials.
+  const runFiles = useMemo(
+    () =>
+      (session?.run_files?.items ?? []).filter((item) => item.openable).map((item) => item.path),
+    [session],
+  );
 
   const errors = useMemo(() => {
     const errs: ErrorEntry[] = [];
@@ -2934,7 +2902,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         </>
       )}
       <ErrorsSection errors={errors} partial={partialWindow} gateOutcome={gateOutcome} />
-      <FilesSection files={runFiles} partial={partialWindow} />
+      <RunFilesSection runId={session.id} summary={session.run_files} />
       <EventsSection events={signalEvents} live={live && !done} />
       <div ref={bottomRef} />
     </div>

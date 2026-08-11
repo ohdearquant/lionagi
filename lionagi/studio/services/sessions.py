@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
+import re
 import time
 import unicodedata
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
@@ -12,6 +15,7 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel
 
 from lionagi._errors import NotFoundError, ValidationError
+from lionagi.libs.path_safety import is_protected_name
 from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 from lionagi.state.session_naming import resolve_display_name
@@ -38,6 +42,233 @@ def _normalize_session_label(raw: str) -> str | None:
     if any(unicodedata.category(char) == "Cc" for char in trimmed):
         raise ValidationError("label must not contain control characters")
     return trimmed
+
+
+# Run Detail must remain usable for runs that touch thousands of files.  This is
+# a serialization cap, not a caller-controlled page size: the server deliberately
+# exposes only the most recently touched safe paths.
+MAX_RUN_FILE_ITEMS = 100
+
+_READ_FILE_TOOLS = frozenset({"read", "read_file"})
+_WRITE_FILE_TOOLS = frozenset(
+    {
+        "write",
+        "write_file",
+        "edit",
+        "edit_file",
+        "multiedit",
+        "multi_edit",
+        "notebookedit",
+        "notebook_edit",
+    }
+)
+_NATIVE_READER_TOOLS = frozenset({"reader", "reader_tool"})
+_NATIVE_EDITOR_TOOLS = frozenset({"editor", "editor_tool"})
+_KNOWN_NON_FILE_PATH_TOOLS = frozenset(
+    {"bash", "exec", "exec_command", "glob", "grep", "list_dir", "search", "shell"}
+)
+_RUN_FILE_ARGUMENT_KEYS = ("file_path", "path", "notebook_path")
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+_ADDITIONAL_PROTECTED_NAMES = frozenset(
+    {
+        ".aws",
+        ".ssh",
+        "credentials.json",
+        "service-account.json",
+        "service_account.json",
+    }
+)
+
+
+def _normalized_tool_name(function: object) -> str:
+    return str(function or "").lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+
+
+def _run_file_argument_paths(arguments: dict[str, Any]) -> list[str]:
+    """Extract only structured path fields; never parse shell commands or prose."""
+    paths: list[str] = []
+    for key in _RUN_FILE_ARGUMENT_KEYS:
+        value = arguments.get(key)
+        if isinstance(value, str) and value:
+            paths.append(value)
+
+    # MultiEdit-style calls carry one explicit path per structured change.
+    changes = arguments.get("changes")
+    if isinstance(changes, list):
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            for key in _RUN_FILE_ARGUMENT_KEYS:
+                value = change.get(key)
+                if isinstance(value, str) and value:
+                    paths.append(value)
+                    break
+    return paths
+
+
+def _run_file_access(tool_name: str, arguments: dict[str, Any]) -> tuple[str | None, bool]:
+    """Return (access, include_path) using only tool semantics we can prove."""
+    if tool_name in _READ_FILE_TOOLS:
+        return "read", True
+    if tool_name in _WRITE_FILE_TOOLS:
+        return "write", True
+
+    action = _normalized_tool_name(arguments.get("action"))
+    if tool_name in _NATIVE_READER_TOOLS:
+        if action in {"open", "read"}:
+            return "read", True
+        return None, action != "list_dir"
+    if tool_name in _NATIVE_EDITOR_TOOLS:
+        return ("write", True) if action in {"edit", "write"} else (None, True)
+    if tool_name in _KNOWN_NON_FILE_PATH_TOOLS:
+        return None, False
+    # A future tool with an explicit structured file_path/path is useful
+    # provenance, but an unfamiliar name is never enough to claim access mode.
+    return None, True
+
+
+def _is_protected_run_file(parts: tuple[str, ...]) -> bool:
+    return any(
+        is_protected_name(part) or part.casefold() in _ADDITIONAL_PROTECTED_NAMES for part in parts
+    )
+
+
+def _safe_run_file_path(raw_path: str, artifact_root: Path | None) -> tuple[str, bool] | None:
+    """Return a public relative path and whether the artifact endpoint can open it.
+
+    Tool arguments are untrusted persisted input.  Absolute paths are disclosed
+    only after they are proven to live under the run's artifact root, and the
+    returned value is always root-relative.  Without a root, only lexically safe
+    relative paths are useful provenance and they are intentionally non-openable.
+    """
+    value = raw_path.strip()
+    if (
+        not value
+        or len(value) > 4096
+        or any(ord(char) < 32 for char in value)
+        or value.startswith(("~", "\\\\"))
+        or _WINDOWS_ABSOLUTE_PATH_RE.match(value)
+        or _URI_RE.match(value)
+        or "://" in value
+        or "\\" in value
+    ):
+        return None
+
+    candidate_path = Path(value)
+    # _derive_run_files resolves the root once before walking potentially
+    # thousands of paths; avoid repeating that filesystem work per item.
+    root = artifact_root
+    if root is None and candidate_path.is_absolute():
+        return None
+
+    if root is not None:
+        candidate = candidate_path if candidate_path.is_absolute() else root / candidate_path
+        try:
+            resolved = candidate.resolve(strict=False)
+        except (OSError, RuntimeError):
+            return None
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError:
+            return None
+        parts = relative.parts
+        openable = True
+    else:
+        # Normalize '.', but reject any '..' that would escape a virtual root.
+        normalized_parts: list[str] = []
+        for part in candidate_path.parts:
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                if not normalized_parts:
+                    return None
+                normalized_parts.pop()
+            else:
+                normalized_parts.append(part)
+        parts = tuple(normalized_parts)
+        openable = False
+
+    if not parts or _is_protected_run_file(tuple(parts)):
+        return None
+    public_path = Path(*parts).as_posix()
+    if public_path in {"", "."}:
+        return None
+    return public_path, openable
+
+
+def _derive_run_files(
+    action_messages: list[dict[str, Any]],
+    *,
+    artifact_root: Path | None,
+    limit: int = MAX_RUN_FILE_ITEMS,
+) -> dict[str, Any]:
+    """Derive a bounded, privacy-preserving file summary from tool requests."""
+    capped_limit = max(1, min(int(limit), MAX_RUN_FILE_ITEMS))
+    files: dict[str, dict[str, Any]] = {}
+    redacted_hashes: set[str] = set()
+    try:
+        resolved_artifact_root = artifact_root.resolve(strict=False) if artifact_root else None
+    except (OSError, RuntimeError):
+        resolved_artifact_root = None
+
+    for sequence, message in enumerate(action_messages):
+        if _short_lion_class(str(message.get("lion_class") or "")) != "ActionRequest":
+            continue
+        content = message.get("content")
+        content = content if isinstance(content, dict) else {}
+        arguments = content.get("arguments")
+        arguments = arguments if isinstance(arguments, dict) else {}
+        tool_name = _normalized_tool_name(content.get("function"))
+        access, include_paths = _run_file_access(tool_name, arguments)
+        if not include_paths:
+            continue
+        timestamp = message.get("timestamp")
+        sort_timestamp = float(timestamp) if isinstance(timestamp, (int, float)) else float("-inf")
+
+        for raw_path in _run_file_argument_paths(arguments):
+            safe = _safe_run_file_path(raw_path, resolved_artifact_root)
+            if safe is None:
+                # Keep only an irreversible identity so duplicate redactions do
+                # not inflate the count or leave credentials resident in output.
+                redacted_hashes.add(
+                    hashlib.sha256(raw_path.encode("utf-8", errors="surrogatepass")).hexdigest()
+                )
+                continue
+            path, openable = safe
+            entry = files.setdefault(
+                path,
+                {
+                    "path": path,
+                    "access": set(),
+                    "openable": openable,
+                    "last_seen": (float("-inf"), -1),
+                },
+            )
+            entry["openable"] = bool(entry["openable"] or openable)
+            if access is not None:
+                entry["access"].add(access)
+            entry["last_seen"] = max(entry["last_seen"], (sort_timestamp, sequence))
+
+    ordered = sorted(
+        files.values(), key=lambda item: (item["last_seen"], item["path"]), reverse=True
+    )
+    items = [
+        {
+            "path": item["path"],
+            "access": sorted(item["access"]),
+            "openable": item["openable"],
+        }
+        for item in ordered[:capped_limit]
+    ]
+    total = len(files)
+    return {
+        "items": items,
+        "total": total,
+        "shown": len(items),
+        "truncated": total > len(items),
+        "redacted_count": len(redacted_hashes),
+    }
 
 
 def _parse_metadata(raw: str | None) -> dict[str, Any] | None:
@@ -735,6 +966,7 @@ async def get_session(
 
         branches = []
         full_stats = _init_message_stats()
+        all_action_messages: list[dict[str, Any]] = []
         next_branch_anchors: dict[str, str] = {}
         for br in branch_rows:
             branch_id = br["id"]
@@ -773,6 +1005,7 @@ async def get_session(
             role_counts = await _fetch_role_counts(db, full_msg_ids)
             first_message_at, last_message_at = await _fetch_message_bounds(db, full_msg_ids)
             action_messages = await _fetch_action_messages(db, full_msg_ids)
+            all_action_messages.extend(action_messages)
             # message_count is the DB role-aggregate, not message_total: a
             # progression can reference ids whose row was pruned, so the two can diverge.
             message_count = sum(role_counts.values())
@@ -788,7 +1021,6 @@ async def get_session(
             full_stats["tool_call_count"] += branch_stats["tool_call_count"]
             full_stats["error_count"] += branch_stats["error_count"]
             full_stats["errors"].extend(branch_stats["errors"])
-            full_stats["files"].extend(branch_stats["files"])
 
             br_keys = br.keys()
             branches.append(
@@ -815,7 +1047,15 @@ async def get_session(
                 }
             )
 
-        full_stats["files"] = sorted(set(full_stats["files"]))
+        artifact_root = (
+            Path(session_row["artifacts_path"])
+            if isinstance(session_row["artifacts_path"], str) and session_row["artifacts_path"]
+            else None
+        )
+        run_files = _derive_run_files(all_action_messages, artifact_root=artifact_root)
+        # Compatibility for existing clients: retain the flat field, but make
+        # it mirror the same bounded safe surface instead of raw arguments.
+        full_stats["files"] = [item["path"] for item in run_files["items"]]
         message_next_cursor = (
             _encode_message_cursor(session_id, message_limit, next_branch_anchors)
             if next_branch_anchors
@@ -868,6 +1108,7 @@ async def get_session(
         "message_cursor": message_cursor,
         "message_next_cursor": message_next_cursor,
         "message_stats": full_stats,
+        "run_files": run_files,
         # Provenance disclosure — same fields exposed on list_sessions().
         "model": session_row["model"],
         "provider": session_row["provider"],
