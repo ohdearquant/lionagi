@@ -129,7 +129,13 @@ export function shouldRenderAuthoredGraph(
 ): boolean {
   if (!graph) return false;
   const edgeCount = graph.edges?.length ?? 0;
-  const isEdgeless = graph.nodes.length >= 2 && edgeCount === 0;
+  // Node count deliberately does not enter this. The question is which SOURCE
+  // to draw from, not whether the authored graph is complete in itself. A
+  // one-node snapshot has nothing to draw an edge between, and that is the
+  // reason it should yield to a runtime graph that does have one rather than
+  // a reason to prefer it: treating it as authoritative rendered a real
+  // two-node runtime DAG as a flat list.
+  const isEdgeless = edgeCount === 0;
   return !(isEdgeless && opGraph.edges.length > 0);
 }
 
@@ -1823,6 +1829,12 @@ export default function RunDetail({ id }: RunDetailProps) {
     setDone(false);
     setError(null);
     setSignalEvents([]);
+    // The pause request is scoped to the run it was made on. The Fleet view
+    // keeps this component mounted and swaps `id`, so leaving it set let run
+    // B derive its pause phase from run A's request: B could show pausing or
+    // paused, disable its own Pause, and offer a Resume that would then send
+    // a command carrying B's run id even though only A was ever paused.
+    setPauseRequested(false);
     setLoadingOlder(false);
     loadingOlderRef.current = false;
     setOlderLoadFailed(false);
@@ -2345,6 +2357,20 @@ export default function RunDetail({ id }: RunDetailProps) {
     [runGraph, reconciledNodeStatuses],
   );
 
+  // What the soft-pause gate counts as still running. The authored graph is
+  // the preferred source, because it is the same count the progress bar and
+  // the canvas already show. But computeProgressCountsForGraph answers null
+  // for a run with no authored graph, and a run can be entirely runtime —
+  // real operations, real edges, no early_graph. Passing null on to the pause
+  // phase as zero would report "nothing left running" for exactly those runs,
+  // so fall through to the runtime operation graph, and answer null only when
+  // neither source can say anything at all.
+  const pauseRunningCount = useMemo((): number | null => {
+    if (progressCounts) return progressCounts.running;
+    if (opGraph.nodes.length === 0) return null;
+    return opGraph.nodes.filter((n) => n.status === "running").length;
+  }, [progressCounts, opGraph]);
+
   // Elapsed wall-clock ticks once a second only while the run is actually
   // live; a finished or not-yet-loaded run has nothing left to advance.
   const [elapsedNow, setElapsedNow] = useState<number>(() => Date.now() / 1000);
@@ -2418,7 +2444,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   const runTerminal =
     displayStatus === "completed" || displayStatus === "failed" || displayStatus === "cancelled";
   const controlKind = controlKindFor(session.invocation_kind ?? null);
-  const pausePhase: PausePhase = derivePausePhase(pauseRequested, progressCounts?.running ?? 0);
+  const pausePhase: PausePhase = derivePausePhase(pauseRequested, pauseRunningCount);
 
   // ADR-0113 D1/D6: a graph with edges is the default view; anything with no
   // edges to draw (including "no graph at all") opens on the list.

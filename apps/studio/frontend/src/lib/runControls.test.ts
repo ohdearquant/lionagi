@@ -56,6 +56,16 @@ describe("lib/runControls — derivePausePhase (the pausing-vs-paused window)", 
     expect(derivePausePhase(true, 1)).toBe("pausing");
     expect(derivePausePhase(true, 0)).toBe("paused");
   });
+
+  it("holds at pausing when the running count is unknown, rather than reading unknown as zero", async () => {
+    const { derivePausePhase } = await import("./runControls");
+    // A run with no authored graph has nothing for the progress counter to
+    // count, so it answers null. Collapsing that to zero reported such runs
+    // as fully paused the instant the request was accepted, with operations
+    // still in flight, and offered Resume before the gate had drained.
+    expect(derivePausePhase(true, null)).toBe("pausing");
+    expect(derivePausePhase(false, null)).toBe("idle");
+  });
 });
 
 // The state machines below decide from the RUN's state. Whether a verb has a
@@ -452,5 +462,41 @@ describe("lib/runControls — proposeRunControl / confirmRunControl route throug
     await expect(
       proposeRunControl("run-xyz", "agent", "message", { message: "hi" }),
     ).rejects.toThrow("not allowed");
+  });
+
+  // The operator can accept the turn, answer in prose, and propose nothing.
+  // That used to leave the promise pending and the stream open until the
+  // 30-second timeout, so a refusal was reported to the reader as a stall.
+  // This test also fails by TIMING OUT if that regresses, since vitest's own
+  // per-test timeout is well under the 30 seconds the old path would take.
+  it("rejects immediately when a completed turn ends without proposing anything", async () => {
+    vi.doMock("@/lib/api", () => ({
+      createOperatorConversation: vi.fn().mockResolvedValue({ id: "conv-3" }),
+      submitOperatorTurn: vi.fn().mockResolvedValue({
+        conversationId: "conv-3",
+        requestId: "req-3",
+        acceptedSequence: 1,
+      }),
+      streamOperatorConversation: vi.fn((_conversationId, _after, handlers) => {
+        queueMicrotask(() =>
+          handlers.onFrame({
+            version: 1,
+            conversationId: "conv-3",
+            requestId: "req-3",
+            sequence: 2,
+            type: "done",
+            payload: { outcome: "completed" },
+            createdAt: Date.now(),
+          }),
+        );
+        return () => {};
+      }),
+      confirmOperatorProposal: vi.fn(),
+    }));
+
+    const { proposeRunControl } = await import("./runControls");
+    await expect(
+      proposeRunControl("run-xyz", "agent", "message", { message: "hi" }),
+    ).rejects.toThrow(/ended without a proposal \(completed\)/);
   });
 });

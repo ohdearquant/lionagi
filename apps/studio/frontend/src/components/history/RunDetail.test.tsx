@@ -51,13 +51,22 @@ vi.mock("@/components/canvas/WorkerCanvas", () => ({
 }));
 
 // The control section renders only while some verb has a backing command.
-// This wrapper defaults to the real registry, so a test says nothing by
-// accident; the control tests below opt in to a backed registry, because the
-// shown-and-disabled contract they assert is what exists once a command type
-// lands, not what exists today.
+// Every wrapper below delegates to the real implementation, so a test says
+// nothing by accident; the control tests opt in to a backed registry, because
+// the shown-and-disabled contract they assert is what exists once a command
+// type lands, not what exists today. The run-swap test additionally overrides
+// applyExecutablePath and the two dispatch calls, because the state it is
+// about — a pause the user actually accepted — cannot be reached at all while
+// every verb is refused before it is offered.
 vi.mock("@/lib/runControls", async () => {
   const actual = await vi.importActual<typeof import("@/lib/runControls")>("@/lib/runControls");
-  return { ...actual, hasAnyExecutablePath: vi.fn(actual.hasAnyExecutablePath) };
+  return {
+    ...actual,
+    hasAnyExecutablePath: vi.fn(actual.hasAnyExecutablePath),
+    applyExecutablePath: vi.fn(actual.applyExecutablePath),
+    proposeRunControl: vi.fn(actual.proposeRunControl),
+    confirmRunControl: vi.fn(actual.confirmRunControl),
+  };
 });
 
 const HISTORY_DIR = path.resolve(__dirname);
@@ -539,11 +548,25 @@ describe("history/RunDetail.tsx — shouldRenderAuthoredGraph", () => {
     expect(shouldRenderAuthoredGraph(authoredMissingEdges, opGraphWithEdges)).toBe(false);
   });
 
-  it("a single-node authored graph is never considered edgeless (nothing to draw an edge between)", async () => {
+  // This assertion is inverted from what it first said, on purpose. It read
+  // "a single-node authored graph is never considered edgeless, because there
+  // is nothing to draw an edge between" — which is true of that snapshot on
+  // its own, and the wrong rule for deciding which source to draw from. Held
+  // as authoritative, a one-node snapshot sitting beside a runtime graph that
+  // does have an edge meant the real DAG was never rendered at all.
+  it("a single-node authored graph yields to a runtime graph that has edges", async () => {
     const { shouldRenderAuthoredGraph } = await import("./RunDetail");
     const singleNode = { nodes: [{ id: "a" }], edges: [] };
     const opGraphWithEdges = { edges: [{ source: "op-a", target: "op-b" }] };
-    expect(shouldRenderAuthoredGraph(singleNode, opGraphWithEdges)).toBe(true);
+    expect(shouldRenderAuthoredGraph(singleNode, opGraphWithEdges)).toBe(false);
+  });
+
+  // The other arm, which the inversion must not cost: with nothing to fall
+  // through to, the authored snapshot is still what renders.
+  it("a single-node authored graph still renders when the runtime graph has no edges either", async () => {
+    const { shouldRenderAuthoredGraph } = await import("./RunDetail");
+    const singleNode = { nodes: [{ id: "a" }], edges: [] };
+    expect(shouldRenderAuthoredGraph(singleNode, { edges: [] })).toBe(true);
   });
 
   it("null graph never renders as the authored DAG", async () => {
@@ -2000,6 +2023,20 @@ describe("history/RunDetail.tsx — hasResolvableGraph (row 3: what counts as a 
     expect(hasResolvableGraph(authoredEdgeless, opGraph)).toBe(true);
   });
 
+  // The one-node case takes the same fall-through. It used to be excluded,
+  // which meant an authored snapshot of a single node hid a runtime graph
+  // that had two nodes and an edge between them: canRenderGraph came back
+  // false and the run opened on the list with a real DAG sitting unrendered.
+  it("falls through to a real-edged opGraph even when the authored graph has exactly one node", async () => {
+    const { hasResolvableGraph } = await import("./RunDetail");
+    const authoredSingleNode = { nodes: [node("A")], edges: [] };
+    const opGraph = {
+      nodes: [{ id: "A" }, { id: "B" }],
+      edges: [{ id: "e1", source: "A", target: "B" }],
+    };
+    expect(hasResolvableGraph(authoredSingleNode, opGraph)).toBe(true);
+  });
+
   it("no graph at all is not resolvable", async () => {
     const { hasResolvableGraph } = await import("./RunDetail");
     expect(hasResolvableGraph(null, { nodes: [], edges: [] })).toBe(false);
@@ -2416,8 +2453,18 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
     vi.mocked(hasAnyExecutablePath).mockReturnValue(true);
   });
 
-  afterEach(() => {
+  // Nothing in the vitest config resets mocks between tests, so the three
+  // wrappers the run-swap test overrides are put back to the real
+  // implementations here. Without this, one test's stand-in registry would
+  // silently become every later test's premise.
+  afterEach(async () => {
     vi.unstubAllGlobals();
+    const actual = await vi.importActual<typeof import("@/lib/runControls")>("@/lib/runControls");
+    const { applyExecutablePath, proposeRunControl, confirmRunControl } =
+      await import("@/lib/runControls");
+    vi.mocked(applyExecutablePath).mockImplementation(actual.applyExecutablePath);
+    vi.mocked(proposeRunControl).mockImplementation(actual.proposeRunControl);
+    vi.mocked(confirmRunControl).mockImplementation(actual.confirmRunControl);
   });
 
   const flatGraph = { name: "run", description: "", nodes: [], edges: [] };
@@ -2559,6 +2606,99 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
       ).toBeNull();
     } finally {
       unmount();
+    }
+  });
+
+  // The pane is reused across runs: the id-change effect cleared session,
+  // graph, signals, and selection, and left the pause request behind, so run
+  // B derived its control state from a pause only run A had ever received.
+  // Once a command exists to carry the verb out, that is a resume dispatched
+  // against B's id for A's pause. No unit test of the phase function can see
+  // this — what is wrong is which state survives the swap — so the assertion
+  // has to be mounted and has to swap.
+  it("a pause accepted on one run does not carry into the next run shown in the same pane", async () => {
+    const [{ getSession }, { default: RunDetail }, controls] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+      import("@/lib/runControls"),
+    ]);
+
+    // Stands in for a registry with a backing command. Left real, every verb
+    // is refused before it is offered and the pause this test is about can
+    // never be accepted at all.
+    vi.mocked(controls.applyExecutablePath).mockImplementation((_verb, state) => state);
+    vi.mocked(controls.proposeRunControl).mockResolvedValue({
+      conversationId: "conv-run-swap",
+      proposal: {
+        id: "prop-run-swap",
+        commandType: "pause_run",
+        summary: "Pause the run",
+        commandHash: "hash-run-swap",
+        target: null,
+      },
+    } as never);
+    vi.mocked(controls.confirmRunControl).mockResolvedValue({} as never);
+    vi.mocked(getSession).mockImplementation((async (runId: string) => ({
+      id: runId,
+      name: runId,
+      created_at: 0,
+      updated_at: 0,
+      status: "running",
+      invocation_kind: "flow",
+      branches: [],
+      graph: flatGraph,
+    })) as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const show = async (runId: string) => {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id={runId} />
+          </IntlProvider>,
+        );
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+    const pauseLabel = () =>
+      container.querySelector('[data-testid="run-controls-pause"]')?.textContent;
+    const stillPausing = () =>
+      container.querySelector('[data-testid="run-controls-reason-still-pausing"]');
+
+    try {
+      await show("run-swap-a");
+      expect(pauseLabel()).toBe("Pause");
+      expect(stillPausing()).toBeNull();
+
+      // Accept a pause on run A through the surface — propose, then confirm —
+      // rather than by setting the state this test is about.
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-pause"]')?.click();
+      });
+      const confirmYes = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-confirm"] button',
+      );
+      expect(confirmYes, "no confirm dialog appeared after proposing a pause").not.toBeNull();
+      await act(async () => {
+        confirmYes?.click();
+      });
+      // This run has no authored graph and no signals yet, so nothing can say
+      // how much is still in flight: the phase is "pausing", never "paused".
+      expect(pauseLabel()).toBe("Pausing…");
+      expect(stillPausing()).not.toBeNull();
+
+      // Same pane, next run. Nothing about B was ever paused.
+      await show("run-swap-b");
+      expect(pauseLabel()).toBe("Pause");
+      expect(stillPausing()).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
     }
   });
 });

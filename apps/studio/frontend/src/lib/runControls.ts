@@ -82,9 +82,17 @@ export type PausePhase = "idle" | "pausing" | "paused";
 /** Pause is soft: a requested pause does not become "paused" until every
  * operation already admitted has finished. `runningCount` is the same
  * progress-counts.running the graph and progress bar already read, so this
- * can never disagree with what the canvas shows. */
-export function derivePausePhase(pauseRequested: boolean, runningCount: number): PausePhase {
+ * can never disagree with what the canvas shows.
+ *
+ * `null` means that count is UNKNOWN, which is not the same as zero and must
+ * not collapse into it. A run with no authored graph has nothing for the
+ * progress counter to count, so it would hand over zero and settle straight
+ * to "paused" while its operations are still in flight — offering Resume
+ * before the pause gate has drained anything. Unknown holds at "pausing"
+ * instead, the phase that claims nothing about what has finished. */
+export function derivePausePhase(pauseRequested: boolean, runningCount: number | null): PausePhase {
   if (!pauseRequested) return "idle";
+  if (runningCount === null) return "pausing";
   return runningCount > 0 ? "pausing" : "paused";
 }
 
@@ -228,13 +236,17 @@ function waitForProposal(
           close();
           reject(new Error((frame.payload as OperatorErrorPayload).error.message));
         } else if (frame.type === "done") {
+          // Reaching `done` at all means no proposal arrived: a proposal
+          // frame settles this promise in the branch above. The outcome only
+          // changes the wording, never whether this is a failure — a turn
+          // that completed normally and proposed nothing leaves just as
+          // little to confirm as one that errored. Waiting the outcome out
+          // reported it as a 30-second stall instead of the refusal it is.
           const outcome = (frame.payload as OperatorDonePayload).outcome;
-          if (outcome !== "completed") {
-            settled = true;
-            clearTimeout(timer);
-            close();
-            reject(new Error(`Command turn ended without a proposal (${outcome}).`));
-          }
+          settled = true;
+          clearTimeout(timer);
+          close();
+          reject(new Error(`Command turn ended without a proposal (${outcome}).`));
         }
       },
     });
