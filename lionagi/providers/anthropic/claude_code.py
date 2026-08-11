@@ -237,20 +237,11 @@ class ClaudeCodeRequest(BaseModel):
     def _env_is_a_string_map(cls, value):
         """Reject a malformed environment without printing anything from it.
 
-        A child environment routinely holds credentials, and a pydantic
-        ValidationError quotes the whole rejected input into its message, so
-        letting the ordinary string check fail here would print every value in
-        the map beside the one bad entry. TypeError is the escape: pydantic
-        converts ValueError and AssertionError into validation errors and lets
-        anything else propagate untouched, so nothing from the mapping reaches
-        a traceback or a log line. It is also the right exception for a wrongly
-        typed mapping.
-
-        The value arrives wrapped when it came through a model-level validator,
-        which is what keeps it off that validator's error. This is the code that
-        needs to look at it, so this is where it is unwrapped; what the model
-        then stores is an ordinary mapping, kept out of dumps by ``exclude`` and
-        out of the request's representation by ``repr=False``.
+        TypeError is the escape from a pydantic ValidationError, which quotes
+        the whole rejected input — and a child environment routinely holds
+        credentials. Unwrapped here (from the ``Redacted`` a model-level
+        validator applied) since this is the code that needs to look at it;
+        see docs/internals/providers.md#cli-subprocess-lifecycle.
         """
         if isinstance(value, Redacted):
             value = value.reveal()
@@ -268,15 +259,11 @@ class ClaudeCodeRequest(BaseModel):
     @field_validator("on_spawn", mode="before")
     @classmethod
     def _unwrap_on_spawn(cls, value):
-        """Undo the wrapping a model-level validator applied.
+        """Undo the ``Redacted`` wrapping a model-level validator applied.
 
-        The callback is wrapped there for the same reason the environment is: a
-        BOUND callback carries its receiver into its own ``repr``, so a
-        supervisor holding a credential would print it from an error about some
-        unrelated field. Nothing but this validator needs the wrapper gone, and
-        pydantic rejects it outright as not callable if it survives — which is
-        the failure mode this method exists to prevent, and the one a test that
-        only checks for leaks would never see.
+        A bound callback carries its receiver into its own ``repr``, so a
+        supervisor holding a credential would print it from an unrelated
+        field's error if left wrapped past this point.
         """
         if isinstance(value, Redacted):
             value = value.reveal()
@@ -963,33 +950,8 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         async with contextlib.aclosing(stream_claude_code_cli(request_obj, **handlers)) as gen:
             async for item in gen:
                 if isinstance(item, CLISession):
-                    # The session carries the run's terminal verdict and is not
-                    # itself yielded here, so a failure recorded only there
-                    # reaches nobody on this stream: the result chunk emitted
-                    # beside it carries usage, cost, turns and duration, never
-                    # the error flag. A run that ended in error then looks
-                    # exactly like one that succeeded, and that is the direction
-                    # consumers believe without checking.
-                    #
-                    # The scope is this stream and no wider. `_call()` below
-                    # drives the same generator itself and returns the session
-                    # as a dict, so the flag is present there and nothing
-                    # branches on it; the one-shot helpers built on `_call()`
-                    # still return an ordinary answer for a failed session.
-                    # Closing that is a separate change with a separate
-                    # compatibility question, and this comment is not a claim
-                    # that it is closed.
-                    #
-                    # Per-tool failures already have their own carriers, so this
-                    # is only about the session-terminal verdict.
-                    #
-                    # The already-reported guard is vacuous today: nothing else
-                    # in this module constructs an error chunk, so the condition
-                    # is always true. It is kept because the emission it guards
-                    # belongs to this file, and the natural place to add a real
-                    # error chunk is a few lines up — at which point the guard
-                    # is what stops one failure being reported twice. Do not
-                    # read it as currently load-bearing.
+                    # Turns the session's terminal verdict into a chunk — see
+                    # docs/internals/providers.md#a-session-terminal-error-must-be-turned-back-into-a-stream-chunk.
                     if item.is_error and not any(c.type == "error" for c in item.chunks):
                         yield StreamChunk(
                             type="error",
@@ -1030,13 +992,10 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
             and responses
             and not isinstance(responses[-1], CLISession)
         ):
-            # Deep on purpose for everything else, then the runtime-only
-            # fields are put back BY IDENTITY. A deep copy of a bound method
-            # copies its receiver, so the continuation would notify a copy of
-            # the supervisor while the real one -- the thing holding the
-            # durable process accounting -- never hears about the second
-            # subprocess. A stateless callback hides this completely, which is
-            # why it needs saying rather than leaving to a copy mode.
+            # Deep copy, then put env/on_spawn back BY IDENTITY: a deep-copied
+            # bound method rebinds to a copied receiver, so the continuation's
+            # supervisor callback would otherwise silently stop being the
+            # original one that holds the durable process accounting.
             req2 = request.model_copy(deep=True)
             for _runtime_field in ("env", "on_spawn"):
                 object.__setattr__(req2, _runtime_field, getattr(request, _runtime_field))
