@@ -73,7 +73,7 @@ def _stats_args(*, since: str = "7d", group_by: str = "project,kind", as_json: b
     )
 
 
-# ── _validate_group_by ───────────────────────────────────────────────────────
+# _validate_group_by
 
 
 def test_validate_group_by_accepts_all_known_keys():
@@ -108,7 +108,7 @@ def test_validate_group_by_rejects_empty():
         _validate_group_by("")
 
 
-# ── aggregation + grouping ───────────────────────────────────────────────────
+# aggregation + grouping
 
 
 @pytest.mark.asyncio
@@ -179,7 +179,7 @@ async def test_null_group_value_renders_null_in_json(temp_db_path: Path):
     assert payload[0]["kind"] is None
 
 
-# ── --since boundary ──────────────────────────────────────────────────────────
+# --since boundary
 
 
 @pytest.mark.asyncio
@@ -209,7 +209,7 @@ async def test_since_filter_excludes_stale_runs(temp_db_path: Path):
     assert total == 1
 
 
-# ── JSON field names (downstream ADR hardcodes these) ────────────────────────
+# JSON field names (downstream ADR hardcodes these)
 
 
 @pytest.mark.asyncio
@@ -233,7 +233,7 @@ async def test_json_field_names_are_stable(temp_db_path: Path):
     assert isinstance(payload[0]["last_at"], str)
 
 
-# ── empty-DB behavior ─────────────────────────────────────────────────────────
+# empty-DB behavior
 
 
 @pytest.mark.asyncio
@@ -251,7 +251,7 @@ def test_rows_for_json_empty():
     assert _rows_for_json([], ["project"]) == []
 
 
-# ── run_stats() CLI dispatch ──────────────────────────────────────────────────
+# run_stats() CLI dispatch
 
 
 def test_run_stats_unknown_group_by_key_exits_nonzero(
@@ -316,7 +316,7 @@ def test_run_stats_empty_db_table_mode(temp_db_path: Path, capsys):
     assert "no runs" in captured.out
 
 
-# ── read-only contract: li stats never applies schema/migrations ────────────
+# read-only contract: li stats never applies schema/migrations
 
 
 def test_run_stats_never_invokes_apply_schema(temp_db_path: Path, capsys, monkeypatch):
@@ -352,7 +352,7 @@ def test_run_stats_nonexistent_db_path_does_not_create_file(temp_db_path: Path, 
     assert not temp_db_path.exists()
 
 
-# ── --since must reject non-positive windows (0d, -1d, ...) ─────────────────
+# --since must reject non-positive windows (0d, -1d, ...)
 
 
 def test_reject_non_positive_since_rejects_zero():

@@ -280,9 +280,7 @@ def test_schedule_trigger_wait_flag_parses():
     assert args.wait is True
 
 
-# ---------------------------------------------------------------------------
 # run_schedule dispatch: runs/run/status/trigger --wait
-# ---------------------------------------------------------------------------
 
 
 def test_schedule_runs_limit_out_of_range_rejected(monkeypatch, capsys):
@@ -582,9 +580,7 @@ def test_schedule_status_wait_polls_until_terminal(monkeypatch):
     assert len(calls) == 3
 
 
-# ---------------------------------------------------------------------------
 # trigger --wait: grace-period retry across the fire-now-before-insert race
-# ---------------------------------------------------------------------------
 
 
 def test_schedule_trigger_without_wait_unchanged(monkeypatch, capsys):
@@ -863,9 +859,7 @@ def test_base_url_no_warning_without_api_suffix(monkeypatch, caplog):
     assert not [r for r in caplog.records if "LIONAGI_STUDIO_URL" in r.message]
 
 
-# ---------------------------------------------------------------------------
 # _cmd_create: --project auto-detect from cwd (scheduler spawn-cwd fix)
-# ---------------------------------------------------------------------------
 
 
 def _run_create(monkeypatch, extra_args: list[str], api_response: dict | None = None) -> dict:
@@ -956,9 +950,7 @@ def test_schedule_create_auto_detect_exception_silently_skipped(monkeypatch):
     assert "action_project" not in outcome["body"]
 
 
-# ---------------------------------------------------------------------------
 # _cmd_create: --cwd (ADR-0070 delta 1 -- persisted execution root)
-# ---------------------------------------------------------------------------
 
 
 def test_schedule_create_explicit_cwd_used_as_is(monkeypatch, tmp_path):
@@ -1016,9 +1008,7 @@ def test_schedule_create_with_resolved_project_omits_cwd_fallback(monkeypatch):
     assert "action_cwd" not in outcome["body"]
 
 
-# ---------------------------------------------------------------------------
 # _cmd_create: --on-success / --on-fail chain flags
-# ---------------------------------------------------------------------------
 
 
 def test_schedule_create_on_success_round_trips_to_body(monkeypatch):
@@ -1215,7 +1205,6 @@ def test_schedule_create_without_chain_flags_omits_fields(monkeypatch):
     assert "on_fail" not in outcome["body"]
 
 
-# ---------------------------------------------------------------------------
 # _cmd_create: nested chain_action validation (recursive)
 #
 # The engine fires a chain_action via a shallow merge (`{**schedule,
@@ -1223,7 +1212,6 @@ def test_schedule_create_without_chain_flags_omits_fields(monkeypatch):
 # on_success/on_fail rides the exact same merge one level deeper when its
 # parent's run completes. Validation must recurse into those nested actions,
 # not just check the top level.
-# ---------------------------------------------------------------------------
 
 
 def test_schedule_create_nested_on_success_unknown_key_rejected(monkeypatch, capsys):
@@ -1337,9 +1325,7 @@ def test_schedule_create_nested_chain_missing_on_success_warns(monkeypatch):
     assert "re-fire" in warnings[0]
 
 
-# ---------------------------------------------------------------------------
 # _cmd_create: --once / --max-runs (one-shot semantics)
-# ---------------------------------------------------------------------------
 
 
 def test_schedule_create_once_maps_to_max_runs_1(monkeypatch):
@@ -1450,9 +1436,7 @@ def test_schedule_list_shows_remaining_runs(monkeypatch, capsys):
     assert "runs left" not in unlimited_line
 
 
-# ---------------------------------------------------------------------------
 # Cron far-out warning (date-pinned one-shot footgun)
-# ---------------------------------------------------------------------------
 
 
 def test_warn_if_cron_far_out_warns_beyond_360_days(monkeypatch):
@@ -1501,9 +1485,7 @@ def test_warn_if_cron_far_out_no_croniter_is_noop(monkeypatch):
     sched_mod._warn_if_cron_far_out("0 0 29 2 *")
 
 
-# ---------------------------------------------------------------------------
 # Near-miss flag suggestions (li schedule ...)
-# ---------------------------------------------------------------------------
 
 
 def test_suggest_schedule_flag_synonym_map():
@@ -1595,9 +1577,7 @@ def test_li_schedule_recognized_flags_still_dispatch(monkeypatch):
     assert rc == 0
 
 
-# ---------------------------------------------------------------------------
 # Help epilogs render for every subcommand
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -1624,9 +1604,7 @@ def test_schedule_create_help_repeats_shallow_merge_caveat(capsys):
     assert "shallow-merge" in out or "shallow merge" in out
 
 
-# ---------------------------------------------------------------------------
 # li schedule: surplus non-flag arguments must error (rc=2), not be ignored
-# ---------------------------------------------------------------------------
 
 
 def test_li_schedule_surplus_non_flag_argument_errors(monkeypatch, capsys):
@@ -1679,9 +1657,7 @@ def test_li_schedule_mixed_dash_and_bare_extras_both_reported(monkeypatch, capsy
     assert "stray-token" in err
 
 
-# ---------------------------------------------------------------------------
 # _cmd_create: github / github_poll trigger authoring
-# ---------------------------------------------------------------------------
 
 
 def _run_create_argv(monkeypatch, argv_tail: list[str], api_response: dict | None = None) -> dict:
@@ -1823,9 +1799,7 @@ def test_schedule_create_zero_poll_interval_errors(monkeypatch, capsys):
     assert "must be a positive integer" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
 # _cmd_create: --max-cost-usd / --max-tokens spend-budget flags
-# ---------------------------------------------------------------------------
 
 
 def test_schedule_create_max_cost_usd_wired_to_budget_usd(monkeypatch):
@@ -1866,9 +1840,7 @@ def test_schedule_create_zero_max_cost_usd_errors(monkeypatch, capsys):
     assert "finite positive number" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
 # _cmd_create: --threshold-config metric threshold alert flag
-# ---------------------------------------------------------------------------
 
 
 def test_schedule_create_threshold_config_flag_parses():
@@ -1974,9 +1946,7 @@ def test_schedule_create_zero_max_tokens_errors(monkeypatch, capsys):
     assert "must be a positive integer" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
 # `li schedule validate` / `li schedule apply` — declarative ScheduleSet CLI
-# ---------------------------------------------------------------------------
 
 
 def _parse_schedule_args(argv_tail: list[str]):
