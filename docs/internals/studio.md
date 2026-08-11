@@ -317,6 +317,27 @@ store — the decision belongs to a caller that has already checked
 `read_only_open_supported()`, since passing `True` unconditionally would
 fail at open elsewhere rather than degrade.
 
+## lionagi/studio/services/engine_runs.py
+
+- **Canonical runtime identity** — A persisted Engine execution has one
+  `engine_runs.id`, one signal session whose id is the same value, and optional
+  links to its outer Studio invocation and caller-supplied parent session.
+  `li engine run --invocation` wins over `LIONAGI_INVOCATION_ID`; the signal
+  session is persisted with `invocation_kind="engine"`. Embedded Workflow
+  Engine nodes stay inside the workflow's canonical session and expose a
+  per-node `engine_span_id` instead of creating a second top-level run row.
+- **Outcome envelope** — `outcome_json` is a bounded, versioned summary of
+  status, degradation, timing, result shape, effective-model provenance, and a
+  configuration fingerprint. It never stores prompt or result content. A run
+  that completed with degraded branches keeps `status="completed"` and
+  `error=NULL`; terminal `error` is reserved for total failure/cancellation.
+- **List/detail split** — `GET /api/engine-runs/` reads a seekable summary
+  projection and never selects stored `spec_json`, export paths, or raw error
+  text. Its cursor is opaque and bound to the active filters. Detail returns a
+  redacted, byte-capped preview by default; the larger redacted stored input is
+  available only through the explicit `include_spec=true` request made by the
+  Studio reveal control.
+
 ## lionagi/studio/services/operator.py
 
 **`report_operator_view`** — Records where the human is now, so the
@@ -575,7 +596,7 @@ never half-emitted.
   worker actually uses, which is why claim-time rejections must also
   surface observably (`worker._reject_claim`).
 
-## lionagi/studio/services/db_maintenance.py
+## lionagi/studio/services/db_maintenance.py — retention lineage cleanup
 
 - **`prune_old_data` FK safety** — `branches` CASCADE on `sessions`;
   `artifacts`/`plays`/`team_messages`/`dispatch_outbox` have soft FKs (no
@@ -1002,7 +1023,7 @@ carrying the reason and — whenever `notify_request()` finds a notify
 payload — emits a `dispatch_outbox` row via
 `lionagi.dispatch.outbox.enqueue_dispatch`.
 
-## lionagi/studio/scheduler/engine.py
+## lionagi/studio/scheduler/engine.py — admission and dispatch details
 
 **`_reserve_max_runs_budget`** — reserves one top-level fire against a
 schedule's `max_runs` cap. A fire consumes budget the instant it fires, not

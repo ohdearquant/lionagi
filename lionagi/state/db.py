@@ -442,7 +442,7 @@ VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 TransitionRejectedError = _lifecycle_adapters.TransitionRejectedError
 
 
-_INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play"})
+_INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play", "engine"})
 _SOURCE_KINDS = frozenset({"live", "imported_fs", "imported_codex"})
 
 _SHOW_STATUSES = frozenset({"active", "completed", "aborted", "imported"})
@@ -971,6 +971,13 @@ class StateDB:
             # real, distinct value.
             await self._backfill_attention_dispositions_once(conn)
             await self._reconcile_indexes(conn)
+            await conn.execute(
+                text(
+                    "UPDATE engine_runs SET parent_session_id = session_id "
+                    "WHERE parent_session_id IS NULL AND session_id IS NOT NULL "
+                    "AND EXISTS (SELECT 1 FROM sessions WHERE sessions.id = engine_runs.session_id)"
+                )
+            )
             await self._backfill_dispatched_at_once(conn)
             await self._backfill_imported_role_label_once(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
@@ -1267,6 +1274,7 @@ class StateDB:
     # their own provenance value; its absence beside a source_kind CHECK is what
     # marks a DB that would reject 'imported_codex'.
     _NARROW_SOURCE_KIND_MARKER = "'live', 'imported_fs')"
+    _NARROW_INVOCATION_KIND_MARKER = "'show-play')"
 
     @classmethod
     def _sessions_rebuild_needed(cls, create_sql: str) -> bool:
@@ -1278,7 +1286,10 @@ class StateDB:
         """
         if cls._LEGACY_SESSION_STATUS_CHECK_MARKER in create_sql:
             return True
-        return cls._NARROW_SOURCE_KIND_MARKER in create_sql
+        return (
+            cls._NARROW_SOURCE_KIND_MARKER in create_sql
+            or cls._NARROW_INVOCATION_KIND_MARKER in create_sql
+        )
 
     async def _rebuild_legacy_sessions_table(self) -> None:
         """Rebuild sessions if it carries either legacy CHECK: the 4-value status
@@ -1370,7 +1381,7 @@ class StateDB:
                               invocation_kind TEXT CHECK(
                                                 invocation_kind IS NULL
                                                 OR invocation_kind IN
-                                                  ('agent', 'play', 'flow', 'fanout', 'show-play')
+                                                  ('agent', 'play', 'flow', 'fanout', 'show-play', 'engine')
                                               ),
                               show_topic      TEXT,
                               show_play_name  TEXT,
@@ -5960,6 +5971,40 @@ class StateDB:
                 },
             )
 
+    async def set_engine_run_lineage(
+        self,
+        run_id: str,
+        *,
+        invocation_id: str | None,
+        signal_session_id: str | None,
+        parent_session_id: str | None,
+    ) -> None:
+        """Attach the three non-interchangeable identities for one engine execution."""
+        async with self._tx() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE engine_runs SET invocation_id = :invocation_id, "
+                    "signal_session_id = :signal_session_id, "
+                    "parent_session_id = :parent_session_id WHERE id = :id"
+                ),
+                {
+                    "id": run_id,
+                    "invocation_id": invocation_id,
+                    "signal_session_id": signal_session_id,
+                    "parent_session_id": parent_session_id,
+                },
+            )
+
+    async def record_engine_run_outcome(self, run_id: str, outcome_json: dict[str, Any]) -> None:
+        """Persist the bounded terminal envelope separately from failure text."""
+        async with self._tx() as conn:
+            await conn.execute(
+                text("UPDATE engine_runs SET outcome_json = :outcome WHERE id = :id").bindparams(
+                    bindparam("outcome", type_=JSON)
+                ),
+                {"id": run_id, "outcome": outcome_json},
+            )
+
     async def get_engine_run(self, run_id: str) -> dict[str, Any] | None:
         """Return a single engine run row as a dict, or None if not found."""
         async with self._read() as conn:
@@ -5968,7 +6013,8 @@ class StateDB:
                     await conn.execute(
                         text(
                             "SELECT id, kind, spec_json, status, started_at, ended_at, "
-                            "session_id, export_dir, error "
+                            "session_id, invocation_id, signal_session_id, parent_session_id, "
+                            "outcome_json, export_dir, error "
                             "FROM engine_runs WHERE id = :id"
                         ),
                         {"id": run_id},
@@ -5985,7 +6031,65 @@ class StateDB:
                 d["spec_json"] = json.loads(d["spec_json"])
             except (json.JSONDecodeError, TypeError):
                 pass
+        if isinstance(d.get("outcome_json"), str):
+            try:
+                d["outcome_json"] = json.loads(d["outcome_json"])
+            except (json.JSONDecodeError, TypeError):
+                pass
         return d
+
+    async def list_engine_run_summaries(
+        self,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        session_id: str | None = None,
+        before_started_at: float | None = None,
+        before_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return a deterministic keyset page without selecting stored input."""
+        conditions: list[str] = []
+        params: dict[str, Any] = {"limit": limit}
+        if kind is not None:
+            conditions.append("kind = :kind")
+            params["kind"] = kind
+        if status is not None:
+            conditions.append("status = :status")
+            params["status"] = status
+        if session_id is not None:
+            conditions.append(
+                "(signal_session_id = :session_id OR parent_session_id = :session_id "
+                "OR (signal_session_id IS NULL AND parent_session_id IS NULL "
+                "AND session_id = :session_id))"
+            )
+            params["session_id"] = session_id
+        if before_started_at is not None or before_id is not None:
+            if before_started_at is None or before_id is None:
+                raise ValueError("engine run cursor requires both started_at and id")
+            conditions.append("(started_at, id) < (:before_started_at, :before_id)")
+            params["before_started_at"] = before_started_at
+            params["before_id"] = before_id
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = (
+            "SELECT id, kind, status, started_at, ended_at, session_id, "  # noqa: S608
+            "invocation_id, signal_session_id, parent_session_id, outcome_json, "
+            "CASE WHEN export_dir IS NULL THEN 0 ELSE 1 END AS has_output, "
+            "CASE WHEN error IS NULL THEN 0 ELSE 1 END AS has_error FROM engine_runs "
+            f"{where} ORDER BY started_at DESC, id DESC LIMIT :limit"
+        )
+        async with self._read() as conn:
+            rows = (await conn.execute(text(sql), params)).mappings().all()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if isinstance(item.get("outcome_json"), str):
+                try:
+                    item["outcome_json"] = json.loads(item["outcome_json"])
+                except (json.JSONDecodeError, TypeError):
+                    item["outcome_json"] = None
+            result.append(item)
+        return result
 
     async def list_engine_runs(
         self,

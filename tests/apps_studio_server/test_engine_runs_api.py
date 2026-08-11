@@ -192,7 +192,20 @@ async def test_list_endpoint_returns_empty(patched_app):
     async with client as ac:
         resp = await ac.get("/api/engine-runs/")
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.json() == {"version": 1, "items": [], "next_cursor": None}
+
+
+async def test_canonical_list_endpoint_does_not_redirect(patched_app):
+    """Hosted clients reach the canonical list route without a redirect hop."""
+    _, _, client = patched_app
+    async with client as ac:
+        resp = await ac.get(
+            "/api/engine-runs/",
+            headers={"Origin": "https://studio.example.com"},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 200
+    assert "location" not in resp.headers
 
 
 async def test_list_endpoint_returns_seeded_rows(patched_app):
@@ -203,7 +216,7 @@ async def test_list_endpoint_returns_seeded_rows(patched_app):
     async with client as ac:
         resp = await ac.get("/api/engine-runs/")
     assert resp.status_code == 200
-    data = resp.json()
+    data = resp.json()["items"]
     ids = [r["id"] for r in data]
     assert rid1 in ids
     assert rid2 in ids
@@ -217,7 +230,7 @@ async def test_list_endpoint_filter_kind(patched_app):
     async with client as ac:
         resp = await ac.get("/api/engine-runs/?kind=planning")
     assert resp.status_code == 200
-    ids = [r["id"] for r in resp.json()]
+    ids = [r["id"] for r in resp.json()["items"]]
     assert rid_p in ids
     assert rid_r not in ids
 
@@ -230,7 +243,7 @@ async def test_list_endpoint_filter_status(patched_app):
     async with client as ac:
         resp = await ac.get("/api/engine-runs/?status=completed")
     assert resp.status_code == 200
-    ids = [r["id"] for r in resp.json()]
+    ids = [r["id"] for r in resp.json()["items"]]
     assert rid_done in ids
     assert rid_running not in ids
 
@@ -243,7 +256,7 @@ async def test_list_endpoint_newest_first(patched_app):
     async with client as ac:
         resp = await ac.get("/api/engine-runs/")
     assert resp.status_code == 200
-    rows = resp.json()
+    rows = resp.json()["items"]
     ids = [r["id"] for r in rows]
     assert ids.index(rid_new) < ids.index(rid_old)
 
@@ -258,7 +271,7 @@ async def test_get_endpoint_returns_row(patched_app):
     )
 
     async with client as ac:
-        resp = await ac.get(f"/api/engine-runs/{rid}")
+        resp = await ac.get(f"/api/engine-runs/{rid}?include_spec=true")
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == rid

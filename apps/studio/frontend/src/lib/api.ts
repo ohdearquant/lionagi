@@ -2277,13 +2277,30 @@ export async function getAttentionDispositionHistory(
 export interface EngineRunSummary {
   id: string;
   kind: string;
-  spec_json: Record<string, unknown>;
   status: string;
   started_at: number;
   ended_at: number | null;
   session_id: string | null;
+  invocation_id: string | null;
+  signal_session_id: string | null;
+  parent_session_id: string | null;
+  outcome: Record<string, unknown> | null;
+  has_output: boolean;
+  error_code: string | null;
+}
+
+export interface EngineRunDetail extends Omit<EngineRunSummary, "outcome"> {
+  spec_json: Record<string, unknown> | null;
+  spec_preview: Record<string, unknown>;
+  outcome_json: Record<string, unknown> | null;
   export_dir: string | null;
   error: string | null;
+}
+
+export interface EngineRunPage {
+  version: 1;
+  items: EngineRunSummary[];
+  next_cursor: string | null;
 }
 
 export interface EngineRunListParams {
@@ -2291,22 +2308,26 @@ export interface EngineRunListParams {
   status?: string;
   session_id?: string;
   limit?: number;
-  offset?: number;
+  cursor?: string;
 }
 
-export async function listEngineRuns(params?: EngineRunListParams): Promise<EngineRunSummary[]> {
+export async function listEngineRuns(params?: EngineRunListParams): Promise<EngineRunPage> {
   const query = new URLSearchParams();
   if (params?.kind) query.set("kind", params.kind);
   if (params?.status) query.set("status", params.status);
   if (params?.session_id) query.set("session_id", params.session_id);
   if (params?.limit != null) query.set("limit", String(params.limit));
-  if (params?.offset != null) query.set("offset", String(params.offset));
+  if (params?.cursor) query.set("cursor", params.cursor);
   const qs = query.toString();
-  return fetchJson<EngineRunSummary[]>(`/api/engine-runs${qs ? `?${qs}` : ""}`);
+  return fetchJson<EngineRunPage>(`/api/engine-runs/${qs ? `?${qs}` : ""}`);
 }
 
-export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
-  return fetchJson<EngineRunSummary>(`/api/engine-runs/${encodeURIComponent(runId)}`);
+export async function getEngineRun(
+  runId: string,
+  options?: { includeSpec?: boolean },
+): Promise<EngineRunDetail> {
+  const query = options?.includeSpec ? "?include_spec=true" : "";
+  return fetchJson<EngineRunDetail>(`/api/engine-runs/${encodeURIComponent(runId)}${query}`);
 }
 
 // ─── Shows / plays ──────────────────────────────────────────────────────────

@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   invocation_kind TEXT CHECK(
                     invocation_kind IS NULL
                     OR invocation_kind IN
-                      ('agent', 'play', 'flow', 'fanout', 'show-play')
+                      ('agent', 'play', 'flow', 'fanout', 'show-play', 'engine')
                   ),
   show_topic      TEXT,
   show_play_name  TEXT,
@@ -798,7 +798,11 @@ CREATE TABLE IF NOT EXISTS engine_runs (
               CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
   started_at  REAL    NOT NULL,            -- Unix epoch seconds
   ended_at    REAL,                        -- NULL while running
-  session_id  TEXT    REFERENCES sessions(id) ON DELETE SET NULL,
+  session_id  TEXT    REFERENCES sessions(id) ON DELETE SET NULL, -- legacy parent-session alias
+  invocation_id TEXT  REFERENCES invocations(id) ON DELETE SET NULL,
+  signal_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  outcome_json JSON,                       -- bounded, schema-versioned terminal outcome
   export_dir  TEXT,                        -- filesystem path when --save used
   error       TEXT                         -- last exception message on failure
 );
@@ -809,8 +813,16 @@ CREATE INDEX IF NOT EXISTS idx_engine_runs_status
   ON engine_runs(status);
 CREATE INDEX IF NOT EXISTS idx_engine_runs_started
   ON engine_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_engine_runs_started_id
+  ON engine_runs(started_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_engine_runs_session
   ON engine_runs(session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_engine_runs_invocation
+  ON engine_runs(invocation_id) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_engine_runs_signal_session
+  ON engine_runs(signal_session_id) WHERE signal_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_engine_runs_parent_session
+  ON engine_runs(parent_session_id) WHERE parent_session_id IS NOT NULL;
 
 -- ── Engine definitions ────────────────────────────────────────────────────────
 -- Named, persisted engine configurations created via Studio.  A definition

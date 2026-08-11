@@ -189,6 +189,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("started_at", "REAL NOT NULL"),
         ("ended_at", "REAL"),
         ("session_id", "TEXT"),
+        ("invocation_id", "TEXT"),
+        ("signal_session_id", "TEXT"),
+        ("parent_session_id", "TEXT"),
+        ("outcome_json", "JSON"),
         ("export_dir", "TEXT"),
         ("error", "TEXT"),
     ],
@@ -265,6 +269,14 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         *_MESSAGE_POINTER_INDEXES,
         "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
         "ON branches(session_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_started_id "
+        "ON engine_runs(started_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_invocation "
+        "ON engine_runs(invocation_id) WHERE invocation_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_signal_session "
+        "ON engine_runs(signal_session_id) WHERE signal_session_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_parent_session "
+        "ON engine_runs(parent_session_id) WHERE parent_session_id IS NOT NULL",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
     ),
     "postgresql": (
@@ -277,6 +289,14 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         *_MESSAGE_POINTER_INDEXES,
         "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
         "ON branches(session_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_started_id "
+        "ON engine_runs(started_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_invocation "
+        "ON engine_runs(invocation_id) WHERE invocation_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_signal_session "
+        "ON engine_runs(signal_session_id) WHERE signal_session_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_parent_session "
+        "ON engine_runs(parent_session_id) WHERE parent_session_id IS NOT NULL",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
     ),
 }
