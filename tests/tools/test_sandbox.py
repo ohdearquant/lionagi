@@ -19,10 +19,6 @@ from lionagi.tools.sandbox import (
     sandbox_merge,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _init_git_repo(path: Path) -> None:
     cmds = [
@@ -41,11 +37,6 @@ def _init_git_repo(path: Path) -> None:
 def git_repo(tmp_path):
     _init_git_repo(tmp_path)
     return tmp_path
-
-
-# ---------------------------------------------------------------------------
-# SandboxSession dataclass
-# ---------------------------------------------------------------------------
 
 
 def test_sandbox_session_fields():
@@ -82,11 +73,6 @@ def test_sandbox_session_base_sha_defaults_empty():
         repo_root="/tmp/r",
     )
     assert s.base_sha == ""
-
-
-# ---------------------------------------------------------------------------
-# create_sandbox
-# ---------------------------------------------------------------------------
 
 
 async def test_create_sandbox_creates_worktree(git_repo):
@@ -146,11 +132,6 @@ async def test_create_sandbox_base_sha_matches_worktree_head(git_repo):
     ).stdout.strip()
     assert session.base_sha == worktree_head
     await sandbox_discard(session)
-
-
-# ---------------------------------------------------------------------------
-# sandbox_diff
-# ---------------------------------------------------------------------------
 
 
 async def test_sandbox_diff_empty_for_no_changes(git_repo):
@@ -276,11 +257,6 @@ async def test_sandbox_diff_does_not_mutate_index_modified_tracked_file(git_repo
     await sandbox_discard(session)
 
 
-# ---------------------------------------------------------------------------
-# sandbox_commit
-# ---------------------------------------------------------------------------
-
-
 async def test_sandbox_commit_records_change(git_repo):
     session = await create_sandbox(str(git_repo))
     (Path(session.worktree_path) / "work.py").write_text("x = 1\n")
@@ -297,11 +273,6 @@ async def test_sandbox_commit_nothing_to_commit(git_repo):
     assert result["success"] is True
     assert "Nothing to commit" in result.get("message", "")
     await sandbox_discard(session)
-
-
-# ---------------------------------------------------------------------------
-# sandbox_merge
-# ---------------------------------------------------------------------------
 
 
 async def test_sandbox_merge_applies_changes(git_repo):
@@ -396,11 +367,6 @@ async def test_sandbox_merge_succeeds_on_unprotected_matching_base(git_repo):
 
     assert result["success"] is True and result["merged"] is True
     assert (git_repo / "merged.txt").read_text() == "from sandbox\n"
-
-
-# ---------------------------------------------------------------------------
-# sandbox_discard
-# ---------------------------------------------------------------------------
 
 
 async def test_sandbox_discard_sets_is_active_false(git_repo):
@@ -536,11 +502,6 @@ async def test_sandbox_commit_missing_worktree_returns_error(git_repo):
     assert "no longer exists" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Full lifecycle
-# ---------------------------------------------------------------------------
-
-
 async def test_sandbox_full_lifecycle(git_repo):
     # create
     session = await create_sandbox(str(git_repo), name="lifecycle-test")
@@ -574,11 +535,6 @@ async def test_sandbox_full_lifecycle(git_repo):
 
     # verify worktree cleaned up
     assert not os.path.exists(session.worktree_path)
-
-
-# ---------------------------------------------------------------------------
-# Detached HEAD
-# ---------------------------------------------------------------------------
 
 
 async def test_create_sandbox_detached_head_raises(git_repo):
@@ -615,11 +571,6 @@ async def test_sandbox_merge_refuses_detached_head_target(git_repo):
     assert not (git_repo / "merged.txt").exists()
     assert session.is_active is True
     await sandbox_discard(session)
-
-
-# ---------------------------------------------------------------------------
-# Cleanup: branch-deletion-only failure
-# ---------------------------------------------------------------------------
 
 
 async def test_sandbox_discard_branch_delete_failure_keeps_session(git_repo):

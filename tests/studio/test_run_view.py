@@ -195,7 +195,7 @@ def test_fallback_outcome_status_dominates_over_exit_code_zero():
     assert outcome["code"] != "completed"
 
 
-# ── exit_code_for_view: reuses the existing shared status vocabulary ───────
+# exit_code_for_view: reuses the existing shared status vocabulary
 
 
 @pytest.mark.parametrize(

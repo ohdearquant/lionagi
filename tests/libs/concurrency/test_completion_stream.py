@@ -11,11 +11,6 @@ from lionagi.ln.concurrency.patterns import CompletionStream
 pytestmark = pytest.mark.anyio
 
 
-# =============================================================================
-# Basic Lifecycle Tests
-# =============================================================================
-
-
 async def test_completion_stream_basic_usage(anyio_backend):
     """Test CompletionStream basic async for loop."""
 
@@ -62,11 +57,6 @@ async def test_completion_stream_empty_awaitables(anyio_backend):
     assert results == []
 
 
-# =============================================================================
-# Concurrency Limit Tests
-# =============================================================================
-
-
 async def test_completion_stream_with_limit(anyio_backend):
     """Test CompletionStream respects concurrency limit."""
     current_running = {"count": 0, "max": 0}
@@ -108,11 +98,6 @@ async def test_completion_stream_limit_none_allows_all_concurrent(
     assert current_running["max"] == NUM_TASKS
 
 
-# =============================================================================
-# Early Termination & Cancellation Tests
-# =============================================================================
-
-
 async def test_completion_stream_early_break_exits_cleanly(anyio_backend):
     """Test breaking early exits the stream cleanly without consuming all results."""
     consumed = []
@@ -149,11 +134,6 @@ async def test_completion_stream_consume_all_results(anyio_backend):
 
     assert len(results) == 10
     assert set(results) == {i * 2 for i in range(10)}
-
-
-# =============================================================================
-# Exception Handling Tests
-# =============================================================================
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -226,11 +206,6 @@ async def test_completion_stream_exception_early_in_iteration(anyio_backend):
     )
 
 
-# =============================================================================
-# Context Manager Tests
-# =============================================================================
-
-
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 async def test_completion_stream_not_in_context_manager_raises(anyio_backend):
     """Test CompletionStream raises when used outside context manager."""
@@ -275,11 +250,6 @@ async def test_completion_stream_proper_cleanup_in_aexit(anyio_backend):
 
     # Resources should be cleaned up (streams closed)
     # Task group should have exited
-
-
-# =============================================================================
-# Edge Cases & Stress Tests
-# =============================================================================
 
 
 @pytest.mark.slow
@@ -378,11 +348,6 @@ async def test_completion_stream_with_immediate_results(anyio_backend):
 
     assert len(results) == 5
     assert results == {i: i * 2 for i in range(5)}
-
-
-# =============================================================================
-# Integration Tests
-# =============================================================================
 
 
 @pytest.mark.slow

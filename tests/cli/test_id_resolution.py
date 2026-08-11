@@ -59,7 +59,7 @@ async def _seed_invocation(db: StateDB, invocation_id: str) -> None:
     )
 
 
-# ── across kinds ──────────────────────────────────────────────────────────────
+# across kinds
 
 
 async def test_a_prefix_that_fits_two_kinds_is_refused(db_path: Path):
@@ -104,7 +104,7 @@ async def test_an_unambiguous_prefix_still_resolves(db_path: Path):
     assert row["id"] == FIRST
 
 
-# ── inside one kind ───────────────────────────────────────────────────────────
+# inside one kind
 
 
 async def test_a_prefix_that_fits_two_rows_of_one_kind_is_refused(db_path: Path):
@@ -118,7 +118,7 @@ async def test_a_prefix_that_fits_two_rows_of_one_kind_is_refused(db_path: Path)
     assert "session" in str(caught.value)
 
 
-# ── case ──────────────────────────────────────────────────────────────────────
+# case
 
 
 async def test_an_upper_cased_prefix_does_not_match_a_lower_cased_id(db_path: Path):
@@ -135,7 +135,7 @@ async def test_an_upper_cased_prefix_does_not_match_a_lower_cased_id(db_path: Pa
         assert await resolve_entity(db, SHARED.upper()) is None
 
 
-# ── branch files ──────────────────────────────────────────────────────────────
+# branch files
 
 
 @pytest.fixture
@@ -191,7 +191,7 @@ def test_find_branch_takes_an_exact_id_from_an_older_run(runs_root: Path):
     assert (run_id, path) == ("run-old", older)
 
 
-# ── run directories ───────────────────────────────────────────────────────────
+# run directories
 
 
 def test_run_dir_lookup_refuses_a_prefix_that_fits_two_runs(
@@ -230,7 +230,7 @@ def test_run_dir_lookup_still_resolves_an_exact_id(tmp_path: Path, monkeypatch: 
     assert run_dir.state_root == exact
 
 
-# ── team files ────────────────────────────────────────────────────────────────
+# team files
 
 
 @pytest.fixture
@@ -271,7 +271,7 @@ def test_team_lookup_settles_on_an_id_or_a_name(teams_dir: Path):
     assert _team_file("two") == second
 
 
-# ── the resolvers the CLI surfaces actually call ──────────────────────────────
+# the resolvers the CLI surfaces actually call
 
 
 @pytest.mark.parametrize(
@@ -343,7 +343,7 @@ async def test_the_monitor_detail_resolver_still_takes_an_exact_id(db_path: Path
         assert (await _find_entity(db, SECOND))[0] == "invocation"
 
 
-# ── run id: a separate id space, not part of the generic resolver ─────────────
+# run id: a separate id space, not part of the generic resolver
 #
 # Run ids (cli/_runs.py, one directory per run) are not primary keys
 # `_util.resolve_entity` searches — they are mirrored onto sessions only

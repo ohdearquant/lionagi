@@ -17,18 +17,9 @@ from lionagi.lndl.types import (
     revalidate_with_action_results,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def make_action_call(name: str = "act") -> ActionCall:
     return ActionCall(name=name, function="fn", arguments={}, raw_call="fn()")
-
-
-# ---------------------------------------------------------------------------
-# Attack-driven tests: the exploit must be rejected
-# ---------------------------------------------------------------------------
 
 
 class TestBoolCoercionAttackCases:
@@ -58,11 +49,6 @@ class TestBoolCoercionAttackCases:
         assert _coerce_result(raw, bool | None) is True
 
 
-# ---------------------------------------------------------------------------
-# None-preservation for Optional[bool]
-# ---------------------------------------------------------------------------
-
-
 class TestBoolCoercionNonePreservation:
     def test_none_result_optional_bool_preserved(self) -> None:
         """None result for bool | None must stay None, not raise."""
@@ -71,11 +57,6 @@ class TestBoolCoercionNonePreservation:
     def test_none_result_required_bool_passes_through(self) -> None:
         """None for required bool passes through so model_validate raises clearly."""
         assert _coerce_result(None, bool) is None
-
-
-# ---------------------------------------------------------------------------
-# Actual bool input must pass through unchanged
-# ---------------------------------------------------------------------------
 
 
 class TestBoolCoercionNativePassthrough:
@@ -90,11 +71,6 @@ class TestBoolCoercionNativePassthrough:
 
     def test_native_true_passthrough_optional_bool(self) -> None:
         assert _coerce_result(True, bool | None) is True
-
-
-# ---------------------------------------------------------------------------
-# Non-bool scalar coercions remain unaffected
-# ---------------------------------------------------------------------------
 
 
 class TestNonBoolScalarCoercionUnchanged:
@@ -113,11 +89,6 @@ class TestNonBoolScalarCoercionUnchanged:
         result = _coerce_result({"k": "v"}, str)
         assert isinstance(result, str)
         assert json.loads(result) == {"k": "v"}
-
-
-# ---------------------------------------------------------------------------
-# End-to-end: revalidate_with_action_results on a bool field
-# ---------------------------------------------------------------------------
 
 
 class FlagModel(BaseModel):

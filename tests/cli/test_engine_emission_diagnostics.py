@@ -11,9 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _build_args(**kwargs) -> argparse.Namespace:
@@ -56,9 +54,7 @@ class MockStateDB:
         self.update_calls.append({"run_id": run_id, "status": status, "error": error})
 
 
-# ---------------------------------------------------------------------------
 # Engine CLI: emission_missing events → error column on completed row
-# ---------------------------------------------------------------------------
 
 
 async def test_emission_failures_written_to_db_error_on_completed(monkeypatch):
@@ -165,9 +161,7 @@ async def test_engine_without_emission_failures_attr_error_column_stays_null(mon
     assert completed[0]["error"] is None
 
 
-# ---------------------------------------------------------------------------
 # EngineRun._emission_failures accumulation
-# ---------------------------------------------------------------------------
 
 
 def _make_minimal_engine_run() -> Any:
@@ -272,9 +266,7 @@ async def test_operate_with_repair_no_failure_when_arrived(monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
 # Real StateDB: completed + error coexist in engine_runs table
-# ---------------------------------------------------------------------------
 
 
 async def test_completed_run_with_error_column_in_real_db(tmp_path):
@@ -310,11 +302,9 @@ async def test_completed_run_with_error_column_in_real_db(tmp_path):
     )
 
 
-# ---------------------------------------------------------------------------
 # INTEGRATION: real Engine subclass whose _run() calls operate_with_repair
 # with a branch that never emits — verifies the full Engine.run() → CLI
 # read-site handoff that the mock-based tests above could not catch.
-# ---------------------------------------------------------------------------
 
 
 class _NeverEmitBranch:

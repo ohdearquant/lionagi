@@ -35,7 +35,7 @@ __all__ = [
 _NATIVE = (dt.datetime, dt.date, dt.time, UUID)
 _SERIALIZATION_METHODS = ("model_dump", "to_dict", "dict")
 
-# --------- helpers ------------------------------------------------------------
+# helpers
 
 _ADDR_PAT = re.compile(r" at 0x[0-9A-Fa-f]+")
 
@@ -80,7 +80,7 @@ def _default_serializers(
     return ser
 
 
-# --------- default() factory --------------------------------------------------
+# default() factory
 
 
 def get_orjson_default(
@@ -174,7 +174,7 @@ def _cached_default(
     )
 
 
-# --------- defaults & options -------------------------------------------------
+# defaults & options
 
 
 def make_options(
@@ -206,7 +206,7 @@ def make_options(
     return opt
 
 
-# --------- non-finite float detection -----------------------------------------
+# non-finite float detection
 
 # orjson writes inf, -inf and nan as `null`, indistinguishable from a genuine
 # null on read. Detection below walks the object the way orjson does, so it
@@ -383,7 +383,7 @@ def _dumpb(
     return out
 
 
-# --------- dump helpers -------------------------------------------------------
+# dump helpers
 
 
 def json_dumpb(
@@ -487,7 +487,7 @@ def json_dumps(
     return orjson.loads(out) if as_loaded else out.decode("utf-8")
 
 
-# --------- streaming for very large outputs ----------------------------------
+# streaming for very large outputs
 
 
 def json_lines_iter(

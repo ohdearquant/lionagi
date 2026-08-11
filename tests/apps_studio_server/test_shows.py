@@ -16,9 +16,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402 — must follow importorskip
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -70,9 +68,7 @@ def show_with_play(shows_root: Path) -> str:
     return topic
 
 
-# ---------------------------------------------------------------------------
 # Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -116,9 +112,7 @@ def test_show_detail_not_found(patched_app):
     assert r.status_code == 404
 
 
-# ---------------------------------------------------------------------------
 # /api/shows/gated-plays — real gate signal for the Mission Control queue
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -393,9 +387,7 @@ def test_gated_plays_truncated_meta_json_is_reported_unavailable(shows_root: Pat
     assert entry["live_state"] == "unavailable"
 
 
-# ---------------------------------------------------------------------------
 # Path traversal tests (Fix 1)
-# ---------------------------------------------------------------------------
 
 
 def test_path_traversal_encoded_dotdot_shows(patched_app):
@@ -436,9 +428,7 @@ async def test_watch_show_invalid_topic_yields_done(tmp_path, monkeypatch):
     assert json.loads(events[0].removeprefix("data: ").strip()) == {"type": "done"}
 
 
-# ---------------------------------------------------------------------------
 # strict status_source provenance
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -505,9 +495,7 @@ def test_show_detail_status_source_is_sqlite_with_db(sqlite_patched_app):
     )
 
 
-# ---------------------------------------------------------------------------
 # Docker regression test: get_show works from DB even when show dir is absent
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -598,11 +586,6 @@ def test_get_show_returns_404_when_dir_absent_and_no_db_row(docker_patched_app):
     client, _topic = docker_patched_app
     r = client.get("/api/shows/nonexistent-topic-xyz")
     assert r.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# import_shows() must not write an undeclared plays.status value (issue #2619)
-# ---------------------------------------------------------------------------
 
 
 def test_import_shows_refuses_undeclared_play_status(tmp_path, monkeypatch):

@@ -376,9 +376,7 @@ def test_to_dict_from_dict(branch_with_mock_imodel: Branch):
     assert nm.content.instruction == "hello user"
 
 
-# ---------------------------------------------------------------------------
 # Edge cases (P1)
-# ---------------------------------------------------------------------------
 
 
 def test_branch_connect_rejects_duplicate_tool_name_without_update():
@@ -398,9 +396,7 @@ def test_branch_connect_rejects_duplicate_tool_name_without_update():
     assert "lookup" in branch.tools
 
 
-# ---------------------------------------------------------------------------
 # branch.run() — lines 1370-1391
-# ---------------------------------------------------------------------------
 
 
 async def _drain(gen) -> list:
@@ -490,9 +486,7 @@ async def test_branch_run_forwards_extra_kwargs_as_imodel_kw(monkeypatch):
     assert param.imodel_kw == {"temperature": 0.5, "max_tokens": 100}
 
 
-# ---------------------------------------------------------------------------
 # branch.ReActStream() — lines 1235-1340
-# ---------------------------------------------------------------------------
 
 
 async def test_react_stream_yields_results_from_inner_generator(monkeypatch):

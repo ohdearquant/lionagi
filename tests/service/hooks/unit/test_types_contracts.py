@@ -22,13 +22,11 @@ from lionagi.service.imodel import iModel
 
 class TestHookEventTypes:
     def test_hook_event_types_enum_values(self):
-        """Test that HookEventTypes contains the expected values."""
         assert HookEventTypes.PreEventCreate == "pre_event_create"
         assert HookEventTypes.PreInvocation == "pre_invocation"
         assert HookEventTypes.PostInvocation == "post_invocation"
 
     def test_allowed_hooks_types_contains_all(self):
-        """Test that ALLOWED_HOOKS_TYPES contains all HookEventTypes."""
         expected = {
             HookEventTypes.PreEventCreate,
             HookEventTypes.PreInvocation,
@@ -54,7 +52,6 @@ class TestAssociatedEventInfo:
         """Test AssociatedEventInfo works with partial data (total=False)."""
         info = AssociatedEventInfo(lion_class="test.Event")
         assert info["lion_class"] == "test.Event"
-        # Should not have other keys
         assert "event_id" not in info
         assert "event_created_at" not in info
 

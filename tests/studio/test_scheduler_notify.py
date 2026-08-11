@@ -106,9 +106,7 @@ async def test_unregistered_scope_never_fires():
     assert name not in DEFAULT_TERMINAL_CALLBACKS
 
 
-# ---------------------------------------------------------------------------
 # _fire_inner registration-lifetime regressions (mock service level)
-# ---------------------------------------------------------------------------
 
 from unittest.mock import AsyncMock, patch  # noqa: E402
 

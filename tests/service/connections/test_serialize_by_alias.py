@@ -13,10 +13,6 @@ from __future__ import annotations
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
-# ---------------------------------------------------------------------------
-# Helper: simulate the old override behaviour for a given model class + inputs
-# ---------------------------------------------------------------------------
-
 
 def _old_override_payload(model_cls, config_kwargs: dict, request: dict, extra_kwargs: dict):
     """Reproduces the pre-refactor override logic verbatim."""
@@ -28,11 +24,6 @@ def _old_override_payload(model_cls, config_kwargs: dict, request: dict, extra_k
 def _new_flag_payload(endpoint: Endpoint, request: dict):
     payload, _ = endpoint.create_payload(request)
     return payload
-
-
-# ---------------------------------------------------------------------------
-# Exa Search
-# ---------------------------------------------------------------------------
 
 
 class TestExaSearchPayloadParity:
@@ -67,11 +58,6 @@ class TestExaSearchPayloadParity:
         assert "excludeDomains" not in payload
 
 
-# ---------------------------------------------------------------------------
-# Exa Contents
-# ---------------------------------------------------------------------------
-
-
 class TestExaContentsPayloadParity:
     def test_basic_ids(self):
         from lionagi.providers.exa.contents import ExaContentsEndpoint, ExaContentsRequest
@@ -91,11 +77,6 @@ class TestExaContentsPayloadParity:
         req = {"ids": ["https://example.com"]}
         payload, _ = ep.create_payload(req)
         assert "ids" in payload
-
-
-# ---------------------------------------------------------------------------
-# Exa FindSimilar
-# ---------------------------------------------------------------------------
 
 
 class TestExaFindSimilarPayloadParity:
@@ -118,11 +99,6 @@ class TestExaFindSimilarPayloadParity:
         payload, _ = ep.create_payload(req)
         assert "numResults" in payload
         assert "num_results" not in payload
-
-
-# ---------------------------------------------------------------------------
-# Firecrawl Scrape
-# ---------------------------------------------------------------------------
 
 
 class TestFirecrawlScrapePayloadParity:
@@ -159,11 +135,6 @@ class TestFirecrawlScrapePayloadParity:
         assert "excludeTags" not in payload
 
 
-# ---------------------------------------------------------------------------
-# Firecrawl Map
-# ---------------------------------------------------------------------------
-
-
 class TestFirecrawlMapPayloadParity:
     def test_basic_url(self):
         from lionagi.providers.firecrawl.map import FirecrawlMapEndpoint, FirecrawlMapRequest
@@ -175,11 +146,6 @@ class TestFirecrawlMapPayloadParity:
         got = _new_flag_payload(ep, req)
 
         assert got == expected
-
-
-# ---------------------------------------------------------------------------
-# Firecrawl Crawl
-# ---------------------------------------------------------------------------
 
 
 class TestFirecrawlCrawlPayloadParity:
@@ -202,11 +168,6 @@ class TestFirecrawlCrawlPayloadParity:
         payload, _ = ep.create_payload(req)
         assert "maxDepth" in payload
         assert "max_depth" not in payload
-
-
-# ---------------------------------------------------------------------------
-# Default-false guard: serialize_by_alias=False must NOT affect non-Exa/Firecrawl
-# ---------------------------------------------------------------------------
 
 
 class TestSerializeByAliasDefault:

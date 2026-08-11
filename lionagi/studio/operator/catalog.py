@@ -3,15 +3,11 @@
 """The Operator's model catalog: which models exist, which provider each runs
 through, and which reasoning-effort levels each accepts.
 
-This is the single source of truth the frontend renders from (``GET
-/operator/models``) and the coordinator validates a turn's selection against
-before it ever reaches a provider CLI. Model identifiers and effort ceilings
-are grounded in the provider request models themselves — see
-``lionagi/providers/anthropic/claude_code.py`` (``ClaudeEffort``),
-``lionagi/providers/openai/codex.py`` plus the codex effort-ceiling tables in
-``lionagi/service/providers.py``, and
-``lionagi/providers/google/gemini_code.py`` (effort folds into the model
-name via ``resolve_agy_model`` rather than a separate parameter).
+Single source of truth for ``GET /operator/models`` and for the selection
+the coordinator validates before a turn reaches a provider CLI. See
+docs/internals/studio.md ("Model catalog, provider selection, and effort
+clamping") for how ids and effort ceilings are grounded in the provider
+request models.
 """
 
 from __future__ import annotations
@@ -83,22 +79,12 @@ def effort_choices(provider: str) -> tuple[OperatorEffort, ...]:
 
 
 def model_effort_choices(model: str) -> tuple[OperatorEffort, ...]:
-    """The efforts a specific model actually honors, not the ones its provider
-    has a name for.
-
-    Effort ceilings are per model, and the request path enforces them by
-    silently clamping: a Claude model that is not Opus turns ``xhigh`` into
-    ``high``, most Codex models turn ``max`` and ``ultra`` into ``xhigh``, and
-    Gemini Pro has no Medium tier so ``medium`` becomes High. Offering a value
-    the request will change is worse than not offering it, because the operator
-    picks a level and the provider is asked for a different one with nothing
-    said.
-
-    So the choices are derived from the same clamp functions the request path
-    uses, rather than restated here: an effort is offered only when clamping it
-    for this model leaves it alone. Deriving rather than duplicating is the
-    point -- a new ceiling added to the provider tables narrows this catalog on
-    its own, and cannot drift away from what the request will do.
+    """The efforts a specific model actually honors, derived from the same
+    clamp functions the request-build path applies rather than restated here
+    -- an effort is offered only when clamping it for this model is a no-op.
+    See docs/internals/studio.md ("Model catalog, provider selection, and
+    effort clamping") for why offering a value the request would silently
+    change is worse than not offering it.
     """
     spec = _BY_ID.get(model)
     if spec is None:
@@ -152,11 +138,9 @@ def resolve_selection(
     in ``build_operator_branch`` is unchanged for a turn that specifies none of
     them. Raises ``OperatorSelectionError`` for an unknown model, an unknown
     provider, a model that does not belong to an explicitly given provider, or
-    an effort the selection cannot honor. When a model is named, the effort is
+    an effort the selection cannot honor. When a model is named, effort is
     checked against that model's own ceiling rather than its provider's whole
-    vocabulary: the catalog offers per-model choices, so accepting a value the
-    catalog does not offer would let a stale client pin an effort the request
-    path then quietly clamps.
+    vocabulary -- see ``model_effort_choices``.
     """
     resolved_provider = provider
     if model is not None:

@@ -185,7 +185,7 @@ def test_no_comparison_ref_is_unknown_not_ok(tmp_path: Path) -> None:
     assert drift["unknown"]
 
 
-# ── the drift verdict ────────────────────────────────────────────────────────
+# the drift verdict
 
 
 def test_version_mismatch_against_installed_distribution_is_drift() -> None:
@@ -207,7 +207,7 @@ def test_behind_outranks_unknown_in_the_verdict() -> None:
     assert any("24 commit(s) behind" in reason for reason in drift["reasons"])
 
 
-# ── the snapshot, and the tree moving underneath it ──────────────────────────
+# the snapshot, and the tree moving underneath it
 
 
 @pytest.fixture
@@ -300,7 +300,7 @@ def test_the_snapshot_answers_when_the_checkout_has_moved() -> None:
     assert any("24 commit(s) behind" in reason for reason in drift["reasons"])
 
 
-# ── the tree moving without the commit moving ────────────────────────────────
+# the tree moving without the commit moving
 
 
 def test_a_dirty_tree_is_fingerprinted_and_a_clean_one_is_too(checkout_behind: Path) -> None:
@@ -683,7 +683,7 @@ def test_code_identity_reports_this_process() -> None:
     assert identity["git_live"]["status"] in ("ok", "not_a_git_checkout", "unknown")
 
 
-# ── the doctor check ─────────────────────────────────────────────────────────
+# the doctor check
 
 
 def _identity(drift_status: str, **overrides: object) -> dict[str, object]:
@@ -758,7 +758,7 @@ def test_run_doctor_exits_nonzero_on_unknown(monkeypatch: pytest.MonkeyPatch) ->
     assert doctor.run_doctor(_Args()) == 1
 
 
-# ── the surfaces a client reads ──────────────────────────────────────────────
+# the surfaces a client reads
 
 
 def test_handshake_carries_code_identity() -> None:

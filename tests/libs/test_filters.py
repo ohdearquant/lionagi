@@ -20,9 +20,6 @@ class Bundle(BaseModel):
     novelty: float = 0.0
 
 
-# -- TypeFilter -------------------------------------------------------------
-
-
 def test_type_filter_direct_instance():
     f = TypeFilter(Finding)
     fnd = Finding(claim="x")
@@ -39,9 +36,6 @@ def test_type_filter_scans_fields():
 
 def test_type_filter_no_match():
     assert TypeFilter(Finding).matches(Bundle(flower_name="rose")) == []
-
-
-# -- SpecFilter via Spec.q --------------------------------------------------
 
 
 def test_spec_q_returns_field_ref():
@@ -73,9 +67,6 @@ def test_spec_filter_is_in_and_present():
     assert flower.q.present()(Bundle()) is False
 
 
-# -- composition ------------------------------------------------------------
-
-
 def test_filter_composition():
     flower = Spec(str, name="flower_name")
     novelty = Spec(float, name="novelty")
@@ -102,9 +93,6 @@ def test_field_ref_not_hashable():
 
     with pytest.raises(TypeError):
         {flower.q}  # noqa: B018
-
-
-# -- exception handling: FieldRef-safe vs user-predicate visible ------------
 
 
 def test_field_ref_filter_safe_on_missing_field():

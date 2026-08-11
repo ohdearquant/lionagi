@@ -321,11 +321,11 @@ async def test_a_session_deleted_while_the_resume_waited_is_not_an_error(temp_db
 
 @pytest.mark.asyncio
 async def test_a_resumed_leg_links_its_session_to_its_own_invocation(temp_db_path):
-    """Issue #2767: a resumed leg reopens the branch's existing session row
-    instead of inserting a new one, so create_session's ON CONFLICT DO
-    NOTHING never runs for it and the resume's invocation_id was silently
-    dropped. The invocation that actually drove the resume must still be
-    able to find the session it drove.
+    """A resumed leg reopens the branch's existing session row instead of
+    inserting a new one, so create_session's ON CONFLICT DO NOTHING never
+    runs for it and the resume's invocation_id was silently dropped. The
+    invocation that actually drove the resume must still be able to find the
+    session it drove.
     """
     from lionagi import Branch
     from lionagi.cli._runs import setup_agent_persist, teardown_agent_persist

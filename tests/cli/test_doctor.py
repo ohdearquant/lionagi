@@ -35,7 +35,7 @@ def _closed_port_url() -> str:
     return f"http://127.0.0.1:{port}/api/admin/readiness"
 
 
-# ── _looks_editable ──────────────────────────────────────────────────────────
+# _looks_editable
 
 
 def test_looks_editable_true_under_pyproject(tmp_path: Path) -> None:
@@ -58,7 +58,7 @@ def test_looks_editable_false_for_none() -> None:
     assert _looks_editable(None) is False
 
 
-# ── _check_version ───────────────────────────────────────────────────────────
+# _check_version
 
 
 def test_check_version_ok_when_import_succeeds() -> None:
@@ -99,7 +99,7 @@ def test_check_version_fail_on_broken_import(monkeypatch: pytest.MonkeyPatch) ->
     assert "simulated broken install" in result["detail"]
 
 
-# ── _check_python ────────────────────────────────────────────────────────────
+# _check_python
 
 
 def test_check_python_warns_outside_venv(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,7 +117,7 @@ def test_check_python_ok_inside_venv(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["status"] == "ok"
 
 
-# ── _check_imports ───────────────────────────────────────────────────────────
+# _check_imports
 
 
 def test_check_imports_all_ok_on_healthy_install() -> None:
@@ -142,7 +142,7 @@ def test_check_imports_reports_broken_module(monkeypatch: pytest.MonkeyPatch) ->
     assert results["lionagi"]["status"] == "ok"
 
 
-# ── _check_core_deps ─────────────────────────────────────────────────────────
+# _check_core_deps
 
 
 def test_check_core_deps_all_ok() -> None:
@@ -167,7 +167,7 @@ def test_check_core_deps_reports_missing(monkeypatch: pytest.MonkeyPatch) -> Non
     assert results["aiohttp"]["status"] == "ok"
 
 
-# ── _check_studio_daemon ─────────────────────────────────────────────────────
+# _check_studio_daemon
 
 
 def test_check_studio_daemon_unreachable_is_warn_not_fail() -> None:
@@ -185,7 +185,7 @@ def test_studio_default_target_is_readiness_not_the_composite_report() -> None:
     assert _STUDIO_READINESS_URL_DEFAULT.endswith("/api/admin/readiness")
 
 
-# ── _readiness_verdict ───────────────────────────────────────────────────────
+# _readiness_verdict
 # Readiness answers 200 for all three of its states, so these assert the verdict
 # is taken from the body. A code-only check would pass every one of them.
 
@@ -223,7 +223,7 @@ def test_readiness_verdict_unrecognised_status_is_unknown() -> None:
     assert result["status"] == "unknown"
 
 
-# ── _check_lionagi_home ──────────────────────────────────────────────────────
+# _check_lionagi_home
 
 
 def test_check_lionagi_home_ok_when_writable(tmp_path: Path) -> None:
@@ -244,7 +244,7 @@ def test_check_lionagi_home_fail_when_not_writable(tmp_path: Path) -> None:
         home.chmod(0o700)
 
 
-# ── collect_checks / run_doctor ──────────────────────────────────────────────
+# collect_checks / run_doctor
 
 
 def test_collect_checks_shape() -> None:

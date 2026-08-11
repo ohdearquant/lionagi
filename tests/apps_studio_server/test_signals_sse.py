@@ -17,9 +17,7 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from lionagi.state.db import StateDB  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Helpers shared with test_sessions_detail.py conventions
-# ---------------------------------------------------------------------------
 
 
 async def _seed_session(db_path: Path, session_id: str = "sig-sess-1") -> None:
@@ -40,9 +38,7 @@ async def _seed_session(db_path: Path, session_id: str = "sig-sess-1") -> None:
         )
 
 
-# ---------------------------------------------------------------------------
 # StateDB: insert_session_signal + get_session_signals_after
-# ---------------------------------------------------------------------------
 
 
 async def test_insert_signal_returns_sequential_seq(tmp_path):
@@ -145,9 +141,7 @@ async def test_get_signals_payload_round_trips(tmp_path):
     assert row["payload"] == payload
 
 
-# ---------------------------------------------------------------------------
 # Studio service layer: signals.get_signals_after
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -220,9 +214,7 @@ async def test_service_get_signals_after_seq_filter(patched_signals_db):
     assert rows[1]["seq"] == 4
 
 
-# ---------------------------------------------------------------------------
 # HTTP endpoint: GET /api/sessions/{id}/signals
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -402,11 +394,9 @@ async def test_signals_endpoint_ordering_by_seq(patched_app):
     assert [r["seq"] for r in signal_rows] == [1, 2, 3]
 
 
-# ---------------------------------------------------------------------------
 # Production bind-site integration: observer.bind_db_persistence via the
 # CLI persist layer.  These tests prove the ignition wire exists and that
 # signals flow end-to-end from emit() → session_signals table → SSE service.
-# ---------------------------------------------------------------------------
 
 
 async def test_bind_db_persistence_production_path(tmp_path):
@@ -543,10 +533,8 @@ async def test_setup_agent_persist_wires_signal_bind(tmp_path, monkeypatch):
     await teardown_persist(ctx, status="completed")
 
 
-# ---------------------------------------------------------------------------
 # MAJOR-1: Concurrent emit must not drop rows (regression for BEGIN IMMEDIATE
 # on shared connection without per-instance asyncio lock).
-# ---------------------------------------------------------------------------
 
 
 async def test_concurrent_emit_all_rows_present(tmp_path):
@@ -590,9 +578,7 @@ async def test_concurrent_emit_all_rows_present(tmp_path):
     assert seqs == list(range(1, n + 1)), f"seq gaps detected: {seqs}"
 
 
-# ---------------------------------------------------------------------------
 # MAJOR-2: Payload safety — non-serialisable objects and large payloads.
-# ---------------------------------------------------------------------------
 
 
 async def test_payload_sanitizer_node_escalated_arbitrary_request(tmp_path):
@@ -755,9 +741,7 @@ async def test_payload_sanitizer_message_added_stores_ref_not_body(tmp_path):
     assert "data" not in payload
 
 
-# ---------------------------------------------------------------------------
 # MINOR: Bearer auth rejection for /api/sessions/{id}/signals
-# ---------------------------------------------------------------------------
 
 
 def test_signals_endpoint_requires_bearer_auth(tmp_path, monkeypatch):
@@ -796,9 +780,7 @@ def test_signals_endpoint_requires_bearer_auth(tmp_path, monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
 # MINOR: Generator cancellation — client disconnect stops the SSE generator.
-# ---------------------------------------------------------------------------
 
 
 async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatch):
@@ -860,11 +842,9 @@ async def test_signals_generator_cancellation_on_disconnect(tmp_path, monkeypatc
         pytest.fail(f"generator.aclose() raised unexpected {type(exc).__name__}: {exc}")
 
 
-# ---------------------------------------------------------------------------
 # Invariant: _write_lock must be connection-wide — concurrent signal emits
 # must not race with update_status, update_session, or insert_message on
 # the same bound StateDB connection.
-# ---------------------------------------------------------------------------
 
 
 async def test_concurrent_emit_and_update_status_no_failures(tmp_path):
@@ -1092,11 +1072,9 @@ async def test_concurrent_emit_and_artifact_verification_no_failures(tmp_path):
     assert seqs == list(range(1, n + 1)), f"seq gaps after artifact race: {seqs}"
 
 
-# ---------------------------------------------------------------------------
 # Invariant: byte cap must hold on the FINAL serialized form, including JSON
 # escaping overhead. Regression: quote/backslash-heavy payloads stored 32 KB
 # instead of the claimed 16 KB cap.
-# ---------------------------------------------------------------------------
 
 
 async def test_payload_byte_cap_final_form_plain(tmp_path):

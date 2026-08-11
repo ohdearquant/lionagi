@@ -147,7 +147,7 @@ def test_runs_list_invalid_page_rejected(tmp_path, monkeypatch):
     assert r.status_code == 422
 
 
-# ─── GET /api/runs/projects — per-project counts for the lazy runs explorer ───
+# GET /api/runs/projects — per-project counts for the lazy runs explorer
 
 
 def test_runs_projects_groups_counts_and_sorted(tmp_path, monkeypatch):
@@ -199,7 +199,7 @@ def test_runs_list_project_null_filter(tmp_path, monkeypatch):
     assert r2.json()["total"] == 2
 
 
-# ─── GET /api/runs?search= — session/agent name contains filter ─────────────
+# GET /api/runs?search= — session/agent name contains filter
 
 
 def test_runs_list_search_matches_name_or_agent_name(tmp_path, monkeypatch):
@@ -334,7 +334,7 @@ def test_runs_list_search_composes_with_pagination(tmp_path, monkeypatch):
     assert all("target" in run["name"] for run in data["runs"])
 
 
-# ─── ADR-0057/FIX-1: UNRESPONSIVE maps to 'stale' in runs list ───────────────
+# ADR-0057: UNRESPONSIVE maps to 'stale' in runs list
 
 
 async def _seed_running_session_with_activity(
@@ -476,9 +476,9 @@ def test_runs_list_node_metadata_dead_pid_reports_stale_without_monkeypatch(tmp_
 
 def test_runs_list_reports_status_ended_at_mismatch_count(tmp_path, monkeypatch):
     """A row whose status is 'running' but whose ended_at is already stamped
-    (issue #2844 -- status and ended_at disagreeing) must be visible as a
-    recomputed consistency count on the listing envelope, not something a
-    caller can only find by cross-checking every row's two fields by hand."""
+    must be visible as a recomputed consistency count on the listing
+    envelope, not something a caller can only find by cross-checking every
+    row's two fields by hand."""
     db_path = tmp_path / "state.db"
     good_running_id = str(uuid.uuid4())
     good_completed_id = str(uuid.uuid4())

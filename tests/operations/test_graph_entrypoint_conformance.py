@@ -5,105 +5,20 @@
 Session.flow / streaming-kernel execution authority.
 
 A ``GraphSurface`` manifest below classifies every graph-shaped function this
-suite can find in the shipped ``lionagi`` package: whether it delegates to
-``Session.flow`` (directly or through an adapter), reaches the sanctioned
-streaming kernel, is itself the kernel, or is a pure builder/alias that never
-executes anything. ``test_every_ast_discovered_graph_candidate_is_registered``
-scans the real source tree for qualified ``.flow``/``.flow_stream``/
-``.run_dag`` calls, bare calls to a locally-imported kernel function (the
-shape ``Session.flow``/``Session.flow_stream`` themselves use), and
-executor/graph-builder construction sites, and fails loudly (printing
-file:line and why it was flagged) if it finds one that is not in the
-manifest — so adding a new graph entrypoint without registering it here
-breaks the build instead of silently growing a second executor.
+suite can find in the shipped ``lionagi`` package (delegates to
+``Session.flow``, reaches the streaming kernel, is the kernel, or is a pure
+builder/alias). ``test_every_ast_discovered_graph_candidate_is_registered``
+scans the real source tree for graph-executor call/construction sites and
+fails on anything not in the manifest, so a new entrypoint that isn't
+registered breaks the build instead of silently growing a second executor.
 
-The executor-construction scan statically recognizes: a direct
-``DependencyAwareExecutor(...)``/``ReactiveExecutor(...)`` call; a
-``from ... import DependencyAwareExecutor as X`` import alias; a bare
-assignment alias one level deep (``X = DependencyAwareExecutor`` or
-``X = <existing alias>``), with imports and assignments replayed in one
-combined source-ordered pass so a later genuine import restores provenance
-an earlier unrelated rebinding discarded (and a later rebinding still drops
-provenance a prior import established, whichever comes last wins); and a
-literal ``getattr(<flow module>, "DependencyAwareExecutor")`` dynamic-lookup
-call — recognized only when the receiver statically denotes
-``lionagi.operations.flow`` — whether assigned to a name first or called
-inline. Import provenance is tracked per lexical scope, not as one flat
-whole-module timeline: each function/lambda scope starts from a copy of its
-enclosing scope's provenance, first masking every name any local import,
-assignment, ``for``/``async for`` target, match-pattern capture, or
-augmented assignment in the function body binds -- ANYWHERE in the body,
-conditional or not, since Python function scope is not statement-ordered: a
-name bound only inside an ``if``/``try``/``for``/``match``-case is still a
-lexical local for the whole function, so an inherited same-named binding
-must not leak through (masking-only binder forms never establish or restore
-provenance themselves) -- and
-also discarding any parameter-shadowed name, then replays its OWN body's
-UNCONDITIONAL binding events (in source order) on top of that masked copy —
-so a function-local reimport genuinely restores what a same-named parameter
-(or a conditional in-body import of the same name) masked. Within a scope, a
-binding event nested inside an ``if``/``try``/``except``/``for``/``while``/
-``with``/``match``-case block is CONDITIONAL: it may only DISCARD provenance
-(a conditional rebinding to something unrecognized is treated as if it might
-have executed, since trusting the name afterward risks a false-positive
-executor site) and may never ESTABLISH or RESTORE it (a conditional import
-might never execute, so applying it anyway risks the same false positive
-from the other direction) — only an unconditional binding, a direct
-statement of the scope's own body, can establish or restore provenance. It
-does not perform general data-flow analysis: resolution through a factory
-function's return value, a non-literal string argument, an alias threaded
-through more than one intermediate assignment, or any binding inside a
-comprehension or walrus assignment is not tracked and remains a residual
-imprecision. (Class bodies ARE tracked: each gets its own add-only
-environment -- see ``_SinkVisitor.visit_ClassDef``.)
-
-A name declared ``global``/``nonlocal`` anywhere in a function's own body is
-NOT a lexical local of that function and must not be masked the way a
-genuine local is, but the two declarations resolve against different target
-scopes and are handled accordingly: ``global`` overlays provenance from a
-pristine MODULE-scope snapshot rather than the lexical-enclosing scope (a
-`global NAME` reference skips every intermediate function scope, including
-one whose own parameter or local happens to shadow the same name), while
-``nonlocal`` resolves against the nearest enclosing FUNCTION scope, which the
-ordinary lexical inheritance chain already reproduces without any extra
-overlay. A ``global``/``nonlocal`` statement nested inside a CLASS body does
-not count as a declaration of the surrounding function at all -- a class
-body is its own namespace for this purpose, unlike the ordinary binding
-events collected within it. This scanner's governing invariant is
-ZERO-FALSE-NEGATIVES: a missed executor-construction site is a coverage hole
-(dangerous), while a spurious one only costs a review (safe); every
-global/nonlocal refinement above exists to close a false-negative, and where
-closing a remaining false-positive would require reasoning about whether a
-declared name's own binder form (a ``for``-target, match-capture, ``with``/
-``except ... as``, ``del``, or augmented assignment reached under the
-declaration) actually executes, that reasoning is deliberately NOT attempted
--- the scanner keeps the (possibly stale) inherited/overlaid provenance and
-reports a site, a documented conservative over-approximation pinned by
-``test_global_declared_executing_binder_is_conservative_overapproximation``.
-
-Registering a location in the manifest is necessary but not sufficient: any
-row that names an ``expected_target`` must also name a ``delegation_test`` —
-the exact pytest node id of the test that actually asserts the delegation
-(call count, argument identity, or a mocked target being reached) — and any
-row with ``persistence="required"`` must name a ``persistence_evidence`` node
-id backed by a real StateDB write. Both are validated against real source
-(not just checked for non-emptiness), so a stale or nonexistent reference
-fails the suite instead of reading as coverage.
-
-Known limitation of the delegation-test-id mechanism:
-``test_every_delegation_test_id_resolves_to_a_real_test_function`` only
-proves the named node id resolves to a real top-level test function in the
-right module — it does not read what that test's body actually asserts, so
-a row can cite a real, passing test that asserts an entirely different
-relationship (this is exactly how the studio-engine-node row's prior
-``EngineRun.run_dag`` claim went unnoticed: the cited coding-engine test is
-real and passing, but only ever exercises ``engine.run``, never
-``run_dag``). ``test_every_delegation_test_source_mentions_its_expected_target``
-adds a loud but weak structural companion — a substring check that the
-cited test's own source at least mentions a token drawn from
-``expected_target`` — which would have caught that exact drift. It is a
-necessary-not-sufficient tripwire, not a substitute for reading the cited
-test yourself before trusting a manifest row.
+For the AST scope/binding-provenance algorithm the scanner uses (per-scope
+masking, conditional vs. unconditional binding events, the global/nonlocal
+overlay rules, and the documented conservative-over-approximation policy),
+see "Graph-entrypoint conformance suite" in ``docs/internals/core.md``. That
+document also covers the manifest's ``delegation_test``/``persistence_evidence``
+validation and a known limitation: resolving a delegation-test id to a real
+test function does not check what that test's body actually asserts.
 """
 
 from __future__ import annotations
@@ -708,30 +623,19 @@ _TRY_STMT_TYPES: tuple[type[ast.stmt], ...] = (
 
 def _scope_declared_names(stmts: list[ast.stmt]) -> tuple[set[str], set[str]]:
     """Every name declared ``global`` and, separately, every name declared
-    ``nonlocal``, anywhere in ONE lexical scope's statement list *stmts* --
-    returned as ``(global_names, nonlocal_names)`` since the two declarations
-    resolve against DIFFERENT target scopes (see ``_SinkVisitor._push_func_scope``:
-    ``global`` overlays provenance from the MODULE scope, ``nonlocal`` keeps
-    inheriting from the lexical-enclosing scope) and must not be merged into
-    one set the way an earlier version of this function did.
+    ``nonlocal``, in one lexical scope's statement list *stmts*, returned as
+    ``(global_names, nonlocal_names)`` — kept as two sets, not merged, since
+    the declarations resolve against different target scopes (see
+    ``_SinkVisitor._push_func_scope``).
 
-    Descends transparently into control-flow bodies -- a ``global``/
-    ``nonlocal`` nested inside an ``if``/``try``/``try``-``except*``/``for``/
-    ``while``/``with``/``match``-case still applies to the whole enclosing
-    function scope (a ``global`` statement is a compile-time scope directive;
-    its surrounding control flow never conditions it) -- but STOPS at a
-    nested ``FunctionDef``/``AsyncFunctionDef``/``Lambda`` (those own their
-    own declarations) AND at a nested ``ClassDef``: a class body is its own
-    namespace, so ``global x`` there only redirects lookups of ``x`` within
-    the CLASS body's own execution; it does not declare the surrounding
-    function's same-named binding at all. Descending into the class body
-    here would wrongly un-mask a same-named local the enclosing function
-    itself never declared global/nonlocal (see
-    test_class_body_global_declaration_does_not_leak_into_enclosing_function).
-    ``_collect_scope_binding_events`` stops at ``ClassDef`` for the matching
-    reason on the binding side: an ordinary assignment in a class body binds
-    the CLASS namespace, never the enclosing function's; the class body gets
-    its own environment in ``_SinkVisitor.visit_ClassDef``."""
+    Descends into control-flow bodies (a ``global``/``nonlocal`` inside
+    if/try/for/while/with/match still applies to the whole enclosing
+    function, since it's a compile-time scope directive that control flow
+    never conditions), but stops at a nested function/lambda (owns its own
+    declarations) and at a nested class body: `global x` there only
+    redirects lookups within the class body's own execution and does not
+    declare the surrounding function's binding (see
+    test_class_body_global_declaration_does_not_leak_into_enclosing_function)."""
     global_names: set[str] = set()
     nonlocal_names: set[str] = set()
 
@@ -774,34 +678,16 @@ def _scope_declared_names(stmts: list[ast.stmt]) -> tuple[set[str], set[str]]:
 def _collect_scope_binding_events(
     stmts: list[ast.stmt], conditional: bool, events: list[_BindingEvent]
 ) -> None:
-    """Collect Import/ImportFrom/simple-Name-Assign binding events (an
-    annotated single-Name assignment with a value counts as one too), plus
-    mask-only ``_NameBindingEvent``s for AugAssign targets and bare
-    annotations (``name: T`` binds nothing at runtime but is a lexical
-    local of the whole scope), out of *stmts* --
-    the statement list of ONE lexical scope (a module body or a function
-    body) -- tagging each with whether it is CONDITIONAL: nested inside an
-    ``if``/``try``/``except``/``for``/``while``/``with`` body, or inside any
-    ``match`` statement's case body (a case might not match, so every case
-    body is conditional regardless of which case, if any, is the one that
-    runs), rather than a direct statement of *stmts* itself. Also emits
-    mask-only ``_NameBindingEvent``s (always CONDITIONAL, since the
-    surrounding loop/case/with/handler may not execute) for ``for``/``async
-    for`` statement targets, match-pattern captures, every ``with``/``async
-    with`` item's ``as`` target (reusing the same Store-name walker as
-    for-targets, so tuple/destructuring ``as (a, b)`` is collected too), and
-    every ``except ... as NAME`` handler name -- these ARE lexical locals of
-    the enclosing function scope (unlike a comprehension target, which is its
-    own separate scope and is never walked here since comprehensions are
-    expressions, not statements). A ``del NAME`` target gets the same
-    mask-only treatment but tagged with the CURRENT *conditional* value
-    (like ``AugAssign``, it is a direct statement of *stmts*, not a nested
-    body). Stops at a nested class body (its assignments and imports bind the
-    CLASS namespace, not this scope; ``_SinkVisitor.visit_ClassDef`` gives it
-    its own environment) and at a nested function, async function, or
-    lambda -- those get their own independent scope when ``_SinkVisitor``
-    reaches them, each replaying only its own body's events on top of a copy
-    of its enclosing scope's provenance."""
+    """Collect binding events (imports, simple Name assignments, and
+    mask-only events for AugAssign/annotation-only/for/match/with/except/del
+    targets) out of *stmts*, the statement list of one lexical scope, tagging
+    each as CONDITIONAL when nested inside if/try/except/for/while/with/match
+    (a case body is conditional regardless of which case runs) rather than a
+    direct statement of *stmts* itself. See "Graph-entrypoint conformance
+    suite" in docs/internals/core.md for why conditional vs. unconditional
+    matters. Stops at a nested class body (own namespace; see
+    ``_SinkVisitor.visit_ClassDef``) or a nested function/lambda (own scope,
+    replayed separately by ``_SinkVisitor``)."""
     for stmt in stmts:
         if isinstance(stmt, (ast.Import, ast.ImportFrom)):
             events.append((stmt, conditional))
@@ -812,14 +698,9 @@ def _collect_scope_binding_events(
         ):
             events.append((stmt, conditional))
         elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-            # An annotated assignment WITH a value binds exactly like a
-            # simple assignment (it can establish, restore, or clear
-            # provenance, so it must be a full event -- an annotated
-            # `name: object = importlib.import_module(...)` establishing
-            # provenance would otherwise be invisible and its construction
-            # site missed). A BARE annotation (`name: object`) never binds
-            # at runtime but still makes the name a lexical local of the
-            # whole function scope, so it is a mask-only event.
+            # A bare annotation (`name: object`) never binds at runtime but
+            # still makes the name a lexical local, so it gets a mask-only
+            # event; one with a value binds like a plain assignment.
             if stmt.value is not None:
                 events.append((stmt, conditional))
             else:
@@ -881,52 +762,29 @@ def _collect_scope_binding_events(
                 for name in _pattern_capture_names(case.pattern):
                     events.append((_NameBindingEvent(name, stmt.lineno, stmt.col_offset), True))
                 _collect_scope_binding_events(case.body, True, events)
-        # ClassDef: an ordinary assignment (or import) in a class body binds
-        # the CLASS namespace, never the enclosing function's -- Python gives
-        # the class body its own namespace, so emitting its binders here
-        # would wrongly MASK a same-named enclosing binding and hide a real
-        # construction site in the enclosing function (see
+        # ClassDef: a class body binds its own namespace, not the enclosing
+        # function's; emitting its binders here would wrongly mask a
+        # same-named enclosing binding (see
         # test_class_body_assignment_does_not_mask_enclosing_scope_name).
-        # The class body's own view is modeled by _SinkVisitor.visit_ClassDef.
-        # The one thing this deliberately gives up: a `global x` declaration
-        # INSIDE the class body can make a class-body assignment rebind the
-        # module's x at class-definition time, which this scope's replay now
-        # never sees -- but not clearing module provenance there keeps stale-
-        # but-possibly-correct provenance, which can only ADD a reported
-        # site, never miss a real one (the safe direction under this
-        # scanner's zero-false-negatives contract).
-        # FunctionDef/AsyncFunctionDef/Lambda: a new scope: stop here.
+        # Its own view is modeled by _SinkVisitor.visit_ClassDef.
+        # FunctionDef/AsyncFunctionDef/Lambda: a new scope, stop here.
 
 
 def _replay_binding_events(
     events: list[_BindingEvent], bound: dict[str, str], env: _FlowModuleEnv
 ) -> None:
-    """Replay *events* (as collected by ``_collect_scope_binding_events``) in
-    source order (by lineno, col_offset), mutating *bound*/*env* in place.
-
-    An event that would ESTABLISH or RESTORE provenance -- an import, or an
-    assignment recognized as a flow-module expression or a constructor
-    alias -- is applied only when UNCONDITIONAL: a conditional import or a
-    conditional alias-assignment might never execute, and trusting it anyway
-    risks exactly the false-positive executor site a conditionally-dead
-    branch must not produce.
-
-    An event that would CLEAR provenance -- an assignment to anything
-    unrecognized -- is ALWAYS applied, conditional or not: a conditional
-    rebinding might genuinely execute, and the conservative, false-positive-
-    safe choice is to stop trusting the name rather than assume the
-    rebinding didn't happen.
-
-    Net effect: within one scope, unconditional bindings behave exactly like
-    the old flat whole-module pass (source-order, last-one-wins); a
-    conditional import/alias-assignment is a no-op that neither restores nor
-    disturbs whatever provenance already held; a conditional rebinding to an
-    unrecognized value still clears it."""
+    """Replay *events* (from ``_collect_scope_binding_events``) in source
+    order, mutating *bound*/*env* in place. An event that would establish or
+    restore provenance (an import, or an assignment recognized as a
+    flow-module expression or constructor alias) applies only when
+    unconditional, since a conditional one might never execute. An event
+    that would clear provenance (an assignment to anything unrecognized)
+    always applies, conditional or not: a conditional rebinding might
+    genuinely execute, so the safe choice is to stop trusting the name."""
     for node, conditional in sorted(events, key=lambda pair: (pair[0].lineno, pair[0].col_offset)):
         if isinstance(node, _NameBindingEvent):
-            # for-target / match-capture / augassign-target: a lexical local
-            # for masking purposes only (see _scope_bound_names) -- never
-            # recognized as establishing or restoring import provenance.
+            # Mask-only event (for-target/match-capture/augassign/etc.):
+            # never establishes or restores import provenance.
             continue
         if isinstance(node, ast.ImportFrom):
             if conditional:
@@ -953,9 +811,8 @@ def _replay_binding_events(
                 elif alias.name == "importlib":
                     env.importlib_mods.add(alias.asname or "importlib")
         else:
-            # ast.Assign (single Name target) or ast.AnnAssign (Name target,
-            # non-None value) -- collection guarantees no other shape lands
-            # here, and both carry the binding in `.value`.
+            # ast.Assign or ast.AnnAssign (Name target, non-None value);
+            # both carry the binding in `.value`.
             target = node.target.id if isinstance(node, ast.AnnAssign) else node.targets[0].id
             if _is_flow_module_expr(node.value, env):
                 if conditional:
@@ -974,18 +831,12 @@ def _replay_binding_events(
 
 
 def _scope_bound_names(events: list[_BindingEvent]) -> set[str]:
-    """Every name that some binding statement collected in *events* assigns
-    at runtime -- CONDITIONAL bindings included. Used to mask a function
-    scope's inherited provenance before replaying its own unconditional
-    events: Python function scope is not statement-ordered, so a name
-    imported or assigned only inside an ``if``/``try``/``for``/``match``-case
-    anywhere in the body is still a lexical LOCAL for the ENTIRE function --
-    never the enclosing scope's same-named binding -- even on a code path
-    where that conditional statement never executes and the name ends up
-    merely unbound. Trusting an inherited binding for such a name would be
-    the same false-positive shape a conditional import already guards
-    against, just leaking in from the other direction (down from the
-    enclosing scope instead of sideways within one)."""
+    """Every name some binding statement in *events* assigns at runtime,
+    conditional bindings included. Used to mask a function scope's inherited
+    provenance before replaying its own unconditional events: Python
+    function scope is not statement-ordered, so a name bound only inside an
+    if/try/for/match anywhere in the body is still a lexical local for the
+    entire function, never the enclosing scope's same-named binding."""
     names: set[str] = set()
     for node, _conditional in events:
         if isinstance(node, ast.Import):
@@ -1005,39 +856,19 @@ def _scope_bound_names(events: list[_BindingEvent]) -> set[str]:
 
 def _collect_constructor_import_bindings(tree: ast.Module) -> tuple[dict[str, str], _FlowModuleEnv]:
     """Local alias -> canonical name for any `from ... import
-    <ConstructorSinkName> [as alias]` in *tree*'s MODULE scope, regardless of
-    which module path it is re-exported from (``Graph`` in particular is
-    re-exported from several ``lionagi.protocols.*`` modules, so this
-    deliberately does not filter by source module the way
-    ``_collect_kernel_import_bindings`` does), plus every simple one-level
-    assignment alias (``GraphRunner = DependencyAwareExecutor`` or
-    ``GraphRunner = <existing alias>``) and literal dynamic ``getattr``
-    lookup alias (``GraphRunner = getattr(mod, "DependencyAwareExecutor")``)
-    recognized by ``_resolve_constructor_alias_rhs``. Closes the
-    aliased-constructor gap: `from lionagi.operations.flow import
-    DependencyAwareExecutor as GraphRunner` followed by
-    `GraphRunner(...).execute()`, a bare `GraphRunner = DependencyAwareExecutor`
-    assignment, or a `getattr`-based dynamic lookup assigned to a name, must
-    all be recognized as constructing ``DependencyAwareExecutor`` even though
-    the call site only ever mentions the local alias.
+    <ConstructorSinkName> [as alias]` in *tree*'s module scope (not filtered
+    by source module, since e.g. ``Graph`` is re-exported from several
+    ``lionagi.protocols.*`` modules), plus one-level assignment aliases and
+    ``getattr``-based dynamic lookups recognized by
+    ``_resolve_constructor_alias_rhs``. Closes the aliased-constructor gap:
+    an import-as, a bare reassignment, or a dynamic getattr lookup must all
+    still be recognized as constructing the executor even when the call site
+    only mentions the local alias.
 
-    Only the module's OWN top-level statements (plus anything nested inside
-    module-level control flow, which is CONDITIONAL -- see
-    ``_collect_scope_binding_events``/``_replay_binding_events``) feed this
-    pass; a binding inside a nested function/lambda body is that function's
-    OWN scope and is resolved separately by ``_SinkVisitor`` when it enters
-    that scope, starting from a copy of this module-level result.
-
-    Returns ``(alias_map, flow_env)`` where the second element is the
-    import-provenance environment (:class:`_FlowModuleEnv`) of names bound
-    to ``lionagi.operations.flow``, the ``lionagi`` package root,
-    ``importlib``, and ``import_module`` -- used to restrict ``getattr``
-    recognition to receivers that provably denote the flow module. This pair
-    also becomes index 0 of ``_SinkVisitor``'s scope stacks (the pristine
-    MODULE-scope snapshot that never gets mutated in place -- see
-    ``_SinkVisitor.__init__``/``_push_func_scope``), which a ``global``
-    declaration inside any nested function scope overlays its provenance
-    from, rather than the lexical-enclosing scope."""
+    Returns ``(alias_map, flow_env)``; this pair also becomes index 0 of
+    ``_SinkVisitor``'s scope stacks — the pristine module-scope snapshot
+    that a ``global`` declaration inside any nested function overlays its
+    provenance from, rather than the lexical-enclosing scope."""
     bound: dict[str, str] = {}
     env = _FlowModuleEnv.empty()
     events: list[_BindingEvent] = []
@@ -1047,78 +878,19 @@ def _collect_constructor_import_bindings(tree: ast.Module) -> tuple[dict[str, st
 
 
 class _SinkVisitor(ast.NodeVisitor):
-    """Attributes qualified `.flow`/`.flow_stream`/`.run_dag` calls, bare
-    calls to a locally-imported kernel function, and
-    OperationGraphBuilder/executor/Graph construction calls (including
-    through an aliased import, a one-level assignment alias, or a literal
-    `getattr`-based dynamic lookup, assigned or called inline) to the
-    innermost enclosing function or method (dotted "Class.method" or
-    "function").
+    """Attaches qualified `.flow`/`.flow_stream`/`.run_dag` calls, bare
+    kernel-function calls, and executor/builder construction calls to the
+    innermost enclosing function or method (dotted "Class.method").
 
-    Import provenance (:class:`_FlowModuleEnv`) and constructor aliases
-    (``bound``) are tracked per lexical scope, not as one flat whole-module
-    timeline: entering a function or lambda pushes a scoped copy of both,
-    derived from the enclosing scope with any parameter-shadowed name
-    discarded from each. For a function/async function (never a lambda,
-    which can hold no statements), that copy is then further masked for
-    every name the function's OWN body binds ANYWHERE -- via
-    ``_scope_bound_names``, conditional bindings included, since a name
-    bound only inside an ``if``/``try``/``match``-case is still a lexical
-    local for the whole function and must not fall through to the enclosing
-    scope's same-named binding -- and only then advanced by replaying the
-    body's UNCONDITIONAL binding events on top of that masked copy, via the
-    same ``_collect_scope_binding_events``/``_replay_binding_events``
-    machinery ``_collect_constructor_import_bindings`` uses for the module
-    scope. Net effect: a genuine unconditional in-body reimport restores
-    provenance a same-named parameter shadowed (exactly as a module-level
-    reimport restores provenance an unrelated rebinding discarded), while a
-    conditional in-body reimport of an inherited name masks it and leaves it
-    masked -- it does not leak the outer scope's provenance through. The
-    scope is popped again on the way out, restoring the enclosing scope's
-    view for sibling functions.
-
-    A name declared ``global``/``nonlocal`` anywhere in a function's OWN body
-    (via ``_scope_declared_names``, which stops at a nested class body -- see
-    its docstring) is exempt from that masking pass, since it is not a
-    lexical local at all. The two declarations resolve against DIFFERENT
-    target scopes and are handled accordingly: ``global`` is overlaid from a
-    pristine MODULE-scope snapshot (index 0 of the scope stacks, never
-    mutated in place) rather than inherited from the lexical-enclosing
-    scope's copy, since a `global NAME` reference skips every intermediate
-    function scope no matter what any of them locally bind NAME to;
-    ``nonlocal`` needs no such overlay because it resolves against the
-    nearest ENCLOSING FUNCTION scope, which the ordinary lexical copy-chain
-    already reproduces by construction. See the module docstring's
-    zero-false-negatives invariant and ``_push_func_scope`` for the full
-    argument, and the ``test_global_declared_*``/``test_nonlocal_declared_*``
-    regressions for both directions of each.
-
-    A declared name's own binder forms (``for``-target, match-capture,
-    ``with``/``except ... as``, ``del``, augmented assignment) are still only
-    ever mask-only events in ``_replay_binding_events`` -- they never
-    establish or restore provenance there, so a declared name whose ONLY
-    in-scope binder is one of these forms keeps whatever provenance the
-    overlay/inheritance step already gave it, even though that binder form
-    may actually execute and rebind/clear the real module or enclosing
-    binding at runtime. This is a DELIBERATE, documented conservative
-    over-approximation, not a bug: this scanner's contract is
-    zero-false-negatives (a missed executor-construction site is dangerous; a
-    spurious one only costs a review), so keeping stale-but-possibly-correct
-    provenance through a maybe-executing declared binder can only ever ADD a
-    reported site, never drop one that is real. Eliminating this residual
-    would require reasoning about whether the binder actually executes --
-    genuine dead/live-code analysis -- which this scanner intentionally does
-    not do; see
-    test_global_declared_executing_binder_is_conservative_overapproximation,
-    which pins this exact shape as an expected, named false-positive so a
-    future change that trades it for a missed site fails that test instead
-    of quietly regressing.
-
-    The class-body environment (``visit_ClassDef``) applies the same
-    principle system-wide: it is built ADD-ONLY because adding provenance
-    can only add candidate sites, and adding sites is the false-positive-
-    safe side of the zero-false-negatives invariant -- every deliberate
-    imprecision in this scanner errs in that one direction."""
+    Import provenance and constructor aliases are tracked per lexical scope
+    (see "Graph-entrypoint conformance suite" in docs/internals/core.md for
+    the full masking/replay algorithm and the global/nonlocal overlay
+    rules). A declared name's own binder forms (for-target, match-capture,
+    with/except-as, del, augmented assignment) are still mask-only events in
+    ``_replay_binding_events`` and never establish/restore provenance there
+    — a deliberate conservative over-approximation pinned by
+    ``test_global_declared_executing_binder_is_conservative_overapproximation``,
+    not a bug, per the scanner's zero-false-negatives contract."""
 
     def __init__(
         self,
@@ -1155,59 +927,32 @@ class _SinkVisitor(ast.NodeVisitor):
             self.executor_hits.add(qualname)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        """Class bodies get their own environment, built ADD-ONLY on top of
+        """Class bodies get their own environment, built add-only on top of
         the enclosing scope's view.
 
-        A class body is its own namespace but NOT a function scope: name
-        resolution inside it is SEQUENTIAL (a read before any class-local
-        binding of that name falls through to the enclosing scope; there is
-        no scope-wide "assigned anywhere means local everywhere" rule the
-        way function bodies have). That rule is what justifies function
-        scopes' mask-then-replay model -- a use before an unconditional
-        rebinding is an UnboundLocalError at runtime, so no real construction
-        is lost by masking. Class bodies offer no such justification, so any
-        mask or provenance-clear applied to the class view could hide a
-        construction that really reads the enclosing binding. The class
-        environment is therefore strictly additive relative to the enclosing
-        scope:
+        Unlike a function body, a class body resolves names sequentially (a
+        read before any class-local binding falls through to the enclosing
+        scope) rather than by "assigned anywhere means local everywhere", so
+        masking would risk hiding a construction that really reads the
+        enclosing binding. The class environment is therefore additive only:
+        no masking, every establishing event applies including conditional
+        ones, and the enclosing view is unioned back in after replay so a
+        clear never drops enclosing-inherited provenance.
 
-        - no ``_scope_bound_names`` masking at all;
-        - every establishing event in the class body applies, conditional
-          ones included (trusting a maybe-executed class-body import can
-          only ADD a reported site, the safe direction);
-        - after replaying the class body's own events on private copies, the
-          enclosing view is unioned back in, so a replay-applied clear never
-          drops enclosing-inherited provenance;
-        - a class-body ``global`` declaration overlays MODULE-scope
-          provenance additively (class-body lookups of that name go to the
-          module even when an enclosing function masked it) -- and the
-          overlay is re-applied AFTER replay too, so a class-body rebind of
-          a global-declared name (conditional or not, since replay here is
-          forced unconditional) can never erase the module baseline the
-          declaration grants;
-        - the class body's OWN establishing events for global-declared
-          names (a recognized import or constructor/module alias gained
-          during replay relative to the pre-replay snapshot) are propagated
-          additively to every view currently on the scope stacks, module
-          snapshot included: a ``global x`` establishment executes at
-          class-definition time and genuinely rebinds the MODULE's ``x``,
-          which statements after the class definition (in the enclosing
-          function, and via later ``global`` overlays anywhere) really read.
-          Only establishing deltas propagate -- never clears (add-only), and
-          never the module overlay the class merely inherited (propagating
-          that would un-mask enclosing locals the declaration does not
-          touch). On the single-valued constructor-alias channel the
-          establishment OVERWRITES each view's existing attribution (a
-          stale alias kept in a globally-resolving view would hide the real
-          post-rebind executor construction), except that an executor
-          attribution is never replaced by a non-executor one -- the
-          attribution may only move toward reporting an executor, so every
-          direction of rebind errs reportward.
+        A class-body ``global`` declaration overlays module-scope provenance
+        additively, and the class body's own establishing events for
+        global-declared names propagate to every view on the scope stacks
+        (module snapshot included) since a `global x` establishment at
+        class-definition time genuinely rebinds the module's `x`. On the
+        constructor-alias channel an establishment overwrites each view's
+        existing attribution, except an executor attribution is never
+        replaced by a non-executor one — every direction of rebind errs
+        toward reporting a site, consistent with the scanner's
+        zero-false-negatives contract.
 
-        Ordinary (undeclared) class-body binders never leak OUT to the
-        enclosing scope -- ``_collect_scope_binding_events`` stops at
-        ``ClassDef`` -- and the class environment is popped when the body is
-        done."""
+        Ordinary (undeclared) class-body binders never leak out to the
+        enclosing scope, and the class environment is popped when the body
+        is done."""
         self._stack.append(node.name)
         enclosing_env = self._flow_env
         enclosing_bound = self._constructor_aliases
@@ -1345,50 +1090,23 @@ class _SinkVisitor(ast.NodeVisitor):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             events: list[_BindingEvent] = []
             _collect_scope_binding_events(node.body, False, events)
-            # Mask every name the body binds ANYWHERE (conditional included)
-            # before replaying -- see _scope_bound_names: a name imported or
-            # assigned only inside an if/try/match-case is still a lexical
-            # local for the whole function, so an inherited same-named
-            # binding from the enclosing scope must not leak through here.
-            # EXCEPT a name declared `global`/`nonlocal` anywhere in this
-            # scope's OWN body (see _scope_declared_names, which stops at a
-            # nested class body -- a global/nonlocal statement inside a
-            # nested class does NOT declare a name of THIS scope): such a
-            # name is NOT a function-local at all, so it must not be
-            # discarded from inherited provenance the way a genuine local is.
+            # Mask every name the body binds anywhere, except one declared
+            # global/nonlocal in this scope's own body — see "Graph-
+            # entrypoint conformance suite" in docs/internals/core.md.
             global_names, nonlocal_names = _scope_declared_names(node.body)
             declared = global_names | nonlocal_names
             for name in _scope_bound_names(events) - declared:
                 env.discard(name)
                 bound.pop(name, None)
-            # A `global NAME` declaration resolves EVERY reference and
-            # rebinding of NAME in this function against the MODULE scope,
-            # never the lexical-enclosing scope -- even when an enclosing
-            # function's own parameter or local binding shadows the same
-            # name for ITS OWN body (see
-            # test_global_declared_name_resolves_against_module_scope_not_shadowed_param).
-            # `env`/`bound` at this point still hold whatever the lexical
-            # parent's copy carried (correct for `nonlocal`, wrong for
-            # `global`), so every global-declared name is first cleared and
-            # then overlaid from a MODULE-scope snapshot -- the bottom of
-            # the scope stack (index 0). Function-scope replays never mutate
-            # it in place (only ever copies further down; see
-            # _flow_env.copy()/dict(self._constructor_aliases) above); the
-            # ONLY in-place updates it ever receives are class-body global
-            # establishments (see visit_ClassDef) -- additive on the
-            # provenance sets, and on the alias channel a genuine module
-            # rebinding executed at class-definition time may replace a
-            # non-executor attribution (never an executor one) -- so it
-            # always reflects the module's own bindings regardless of how
-            # many function scopes are currently pushed.
-            # `nonlocal`-declared names need no such overlay: nonlocal
-            # resolves against the nearest ENCLOSING FUNCTION scope, and
-            # `env`/`bound` here already start as a copy of that exact
-            # lexical parent's (already fully masked-and-replayed) view, so
-            # inheritance alone reproduces nonlocal's real target by
-            # construction (verified by
+            # global-declared names resolve against the module scope (index
+            # 0 of the stacks), not the lexical-enclosing copy already held
+            # in env/bound, so they're cleared and overlaid from there; see
+            # test_global_declared_name_resolves_against_module_scope_not_shadowed_param.
+            # nonlocal needs no such overlay: env/bound already start as a
+            # copy of the lexical parent's fully-resolved view, so ordinary
+            # inheritance reproduces nonlocal's target by construction (see
             # test_nonlocal_declared_name_not_masked_discovers_executor and
-            # its masked-outer control, test_nonlocal_declared_name_with_masked_outer_binding_finds_no_site).
+            # test_nonlocal_declared_name_with_masked_outer_binding_finds_no_site).
             module_env = self._flow_env_stack[0]
             module_bound = self._bound_stack[0]
             for name in global_names:

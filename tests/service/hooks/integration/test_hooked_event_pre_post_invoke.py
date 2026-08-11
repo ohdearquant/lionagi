@@ -154,8 +154,6 @@ class TestHookedEventPostHookIntegration:
     async def test_post_hook_error_with_exit_false_keeps_result(
         self, patch_cancellation, patch_logger
     ):
-        """Test that post-hook error with exit=False keeps main result."""
-
         async def post_hook(ev, **kw):
             raise RuntimeError("post-hook error")
 

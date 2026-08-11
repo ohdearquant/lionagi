@@ -541,8 +541,8 @@ class TestPerServerPolicyPersistence:
         """The tool proxy (`create_mcp_tool`'s stored callable) re-enters a
         transport it already holds via the capability-gated
         `_get_reconnect_client` -- that is the ONLY thing that recovers an
-        authorized policy (issue #2356), and it is not reachable through the
-        public `get_client` API."""
+        authorized policy, and it is not reachable through the public
+        `get_client` API."""
         self._reset()
         seen = []
 
@@ -594,8 +594,8 @@ class TestPerServerPolicyPersistence:
             self._reset()
 
     async def test_invocation_without_marker_does_not_recover_recorded_policy(self, monkeypatch):
-        """The bug in issue #2356: a bare, policy-omitting get_client() call
-        used to recover whatever policy an earlier caller authorized for the
+        """The regression: a bare, policy-omitting get_client() call used to
+        recover whatever policy an earlier caller authorized for the
         same resolved transport. A caller that makes no trust decision
         stays fail-closed, even though the exact same transport was
         authorized moments ago (and even holds a live capability for it --
@@ -862,12 +862,12 @@ class TestPerServerPolicyPersistence:
 
 
 class TestFreshLoadDoesNotInheritEarlierCallerTrust:
-    """Issue #2356: `None` at `get_client(security=...)` used to mean two
-    different things -- "the proxy re-entering a transport it already holds"
-    and "a loader that made no trust decision" -- and both hit the same
-    recovery. This reproduces the issue's own repro (two real
-    `ActionManager.load_mcp_config()` calls, client cache cleared between
-    them) and the proxy path that must keep working."""
+    """`None` at `get_client(security=...)` used to mean two different
+    things -- "the proxy re-entering a transport it already holds" and "a
+    loader that made no trust decision" -- and both hit the same recovery.
+    This reproduces that failure (two real `ActionManager.load_mcp_config()`
+    calls, client cache cleared between them) and the proxy path that must
+    keep working."""
 
     def _reset(self):
         MCPConnectionPool._security = None
@@ -984,10 +984,11 @@ class TestProcessGlobalPolicyIsExplicitNotInherited:
     process-global > fail-closed default). This is a deliberate,
     process-owner-level trust decision -- the reviewed real ordering
     (`set_security_config(trusted)` then a bare `get_client()`) is admitted
-    by design. It is NOT the same defect as issue #2356: that bug was one
-    caller silently inheriting a policy a DIFFERENT caller explicitly
-    authorized only for a specific server identity via `get_client(security=...)`
-    or the loader path. A process-global policy applies uniformly to every
+    by design. It is NOT the same defect as the per-transport recovery bug
+    covered above: that bug was one caller silently inheriting a policy a
+    DIFFERENT caller explicitly authorized only for a specific server
+    identity via `get_client(security=...)` or the loader path. A
+    process-global policy applies uniformly to every
     server identity in the process once set, regardless of whether any
     per-server policy was ever recorded, and is set through a distinct,
     dedicated API that has no production caller today."""
@@ -1066,11 +1067,10 @@ class TestProcessGlobalPolicyIsExplicitNotInherited:
 
 
 class TestRecoveryIsUnforgeable:
-    """The exact reproductions in the PR #2362 re-review verdict: recovery
-    must be a capability object, not a config-keyed lookup, so it cannot be
-    reached by a stored bound method, a subclass alias, or a proxy
-    reconstructed from persisted `mcp_config`. Every one of these must fail
-    closed (no prior policy recovered)."""
+    """Recovery must be a capability object, not a config-keyed lookup, so
+    it cannot be reached by a stored bound method, a subclass alias, or a
+    proxy reconstructed from persisted `mcp_config`. Every one of these must
+    fail closed (no prior policy recovered)."""
 
     def _reset(self):
         MCPConnectionPool._security = None

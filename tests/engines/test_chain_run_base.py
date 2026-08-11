@@ -25,9 +25,7 @@ from lionagi.engines.research import (
     ResearchEngine,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 class _EmittingFake:
@@ -61,9 +59,7 @@ def _stub_engine() -> _StubEngine:
     return _StubEngine()
 
 
-# ---------------------------------------------------------------------------
 # 1. ChainRun structural invariants
-# ---------------------------------------------------------------------------
 
 
 def test_chain_run_is_subclass_of_engine_run():
@@ -83,9 +79,7 @@ def test_hypothesis_run_subclasses_chain_run():
     assert issubclass(HypothesisRun, EngineRun)
 
 
-# ---------------------------------------------------------------------------
 # 2. collect/emit/find/events_of reside on ChainRun, not on the subclasses
-# ---------------------------------------------------------------------------
 
 
 def test_collect_implementation_lives_on_chain_run():
@@ -109,9 +103,7 @@ def test_events_of_implementation_lives_on_chain_run():
     assert "events_of" in ChainRun.__dict__
 
 
-# ---------------------------------------------------------------------------
 # 3. CodingRun collect+emit functional path
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -178,9 +170,7 @@ async def test_coding_run_emit_does_notify_for_non_chain_event():
     assert len(matching) == 1, f"expected 1 _Other notify; got {len(matching)}"
 
 
-# ---------------------------------------------------------------------------
 # 4. HypothesisRun collect+emit functional path
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -230,9 +220,7 @@ async def test_hypothesis_run_emit_does_notify_for_non_chain_event():
     assert len(matching) == 1
 
 
-# ---------------------------------------------------------------------------
 # 5. ChainRun._chain_event_cls correctness
-# ---------------------------------------------------------------------------
 
 
 def test_coding_run_chain_event_cls_is_coding_chain_event():
@@ -243,9 +231,7 @@ def test_hypothesis_run_chain_event_cls_is_chain_event():
     assert HypothesisRun._chain_event_cls is ChainEvent
 
 
-# ---------------------------------------------------------------------------
 # 6. store initialization from _event_prefix_map
-# ---------------------------------------------------------------------------
 
 
 def test_coding_run_store_initialised_with_event_prefix_keys():
@@ -265,9 +251,7 @@ def test_hypothesis_run_store_initialised_with_event_prefix_keys():
     assert set(run.store.keys()) == set(_EVENT_PREFIX.keys())
 
 
-# ---------------------------------------------------------------------------
 # 7. Research per-stage repair uplift
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -94,9 +94,7 @@ def _spawn_patches():
     )
 
 
-# ---------------------------------------------------------------------------
 # Multi-event poll -> N fires, each single-event
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -187,9 +185,7 @@ async def test_single_event_poll_behavior_unchanged():
     assert engine._global_inflight == 0
 
 
-# ---------------------------------------------------------------------------
 # Budget exhaustion mid-batch -> cursor stops before first undispatched event
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -290,9 +286,7 @@ async def test_global_slot_exhaustion_mid_batch_stops_cursor_before_undispatched
     assert engine._global_inflight == 0
 
 
-# ---------------------------------------------------------------------------
 # Draft-filtered events interleaved with dispatchable ones
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -324,11 +318,9 @@ async def test_filtered_event_between_dispatched_events_still_advances_cursor():
     )
 
 
-# ---------------------------------------------------------------------------
 # Cursor/re-listing regression: an event dropped for budget must reappear on
 # the next real github_poll() call once the persisted cursor reflects only
 # what was actually dispatched.
-# ---------------------------------------------------------------------------
 
 
 def _pr(number, updated, *, state="open", merged_at=None):
@@ -434,10 +426,8 @@ async def test_undispatched_event_is_relisted_on_next_poll(monkeypatch, caplog):
     assert [i.event["pr_number"] for i in items] == [2]
 
 
-# ---------------------------------------------------------------------------
 # Truncated merged-mode scan: no permanent skip, no duplicate dispatch
 # across two consecutive ticks.
-# ---------------------------------------------------------------------------
 
 
 def _closed_page(hour: int, base_number: int, *, merges: dict[int, str] | None = None):
@@ -535,10 +525,8 @@ async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(
     assert fired_prs == [1410, 1405]
 
 
-# ---------------------------------------------------------------------------
 # Observer self-health: _tick_github stamps last_healthy_poll_at /
 # poller_consecutive_401 from GithubPollResult.poll_status
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

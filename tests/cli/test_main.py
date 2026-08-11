@@ -209,7 +209,7 @@ def test_handle_play_shortcut_passthrough_for_non_play():
     assert result == argv
 
 
-# ─── ADR-0064 D3: `li play check` pre-flight artifact contract ───
+# ADR-0064 D3: `li play check` pre-flight artifact contract
 
 
 def test_play_check_no_args_prints_usage(capsys):
@@ -341,7 +341,7 @@ def test_play_check_playbook_without_contract(tmp_path, monkeypatch, capsys):
     assert "no `artifacts:` block declared" in out
 
 
-# ─── `li play <name> --help` surfaces forwarded global flags ───
+# `li play <name> --help` surfaces forwarded global flags
 
 
 def test_play_help_shows_common_flags(tmp_path, monkeypatch, capsys):
@@ -380,7 +380,7 @@ def test_play_flag_before_name_includes_usage(caplog):
     assert "Usage" in full_msg or "li play" in full_msg
 
 
-# ─── package-init laziness: lionagi.cli must not eagerly import main ───
+# package-init laziness: lionagi.cli must not eagerly import main
 
 
 def test_cli_package_init_is_lazy():

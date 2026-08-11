@@ -34,7 +34,7 @@ from lionagi.cli.kill import (
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 
-# ── Fixtures ───────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -131,7 +131,7 @@ async def _seed_play(
     return play_id
 
 
-# ── _pid_alive ─────────────────────────────────────────────────────────────────
+# _pid_alive
 
 
 def test_pid_alive_returns_false_for_nonexistent_pid():
@@ -156,7 +156,7 @@ def test_pid_alive_treats_permission_error_as_alive():
         assert _pid_alive(1234) is True
 
 
-# ── _terminate_pid ─────────────────────────────────────────────────────────────
+# _terminate_pid
 
 
 def test_terminate_pid_returns_already_dead_for_missing_pid():
@@ -208,7 +208,7 @@ def test_terminate_pid_escalates_to_sigkill(monkeypatch: pytest.MonkeyPatch):
     assert _signal.SIGKILL in sigs_sent
 
 
-# ── _terminate_pid identity checks ───────────────────────────────────────────
+# _terminate_pid identity checks
 
 
 def test_terminate_pid_identity_mismatch_no_signal_sent(
@@ -277,7 +277,7 @@ def test_terminate_pid_identity_match_sends_signal(
     assert result in ("sigterm", "sigkill")
 
 
-# ── A real, unreaped child ────────────────────────────────────────────────────
+# A real, unreaped child
 #
 # Everything below uses a process this test actually started. A SIGTERMed child
 # whose parent has not called wait() is a zombie: it holds its pid, so `kill -0`
@@ -695,7 +695,7 @@ async def test_do_kill_invocation_without_pid_create_time_does_not_signal(
         assert row["status"] == "running", "must not cancel a row whose kill was refused"
 
 
-# ── current_pid_markers (launch-time recording) ───────────────────────────────
+# current_pid_markers (launch-time recording)
 
 
 def test_current_pid_markers_records_own_pid():
@@ -751,7 +751,7 @@ async def test_kill_one_skips_recycled_pid_via_create_time(
         ] == "running", "must not cancel a recycled PID"
 
 
-# ── _resolve_entity ────────────────────────────────────────────────────────────
+# _resolve_entity
 
 
 async def test_resolve_entity_by_full_uuid(temp_db_path: Path):
@@ -800,7 +800,7 @@ async def test_resolve_entity_finds_show(temp_db_path: Path):
         assert entity_type == "show"
 
 
-# ── _persist_cancel ────────────────────────────────────────────────────────────
+# _persist_cancel
 
 
 async def test_persist_cancel_sets_status_cancelled(temp_db_path: Path):
@@ -901,7 +901,7 @@ async def test_persist_cancel_show_sets_aborted(temp_db_path: Path):
         assert row["status"] == "aborted"
 
 
-# ── _kill_one ──────────────────────────────────────────────────────────────────
+# _kill_one
 
 
 async def test_kill_one_no_pid(temp_db_path: Path):
@@ -961,7 +961,7 @@ async def test_kill_one_force_kill_uses_force_kill_reason(
         assert tr["reason_code"] == RunReasons.CANCELLED_FORCE_KILL
 
 
-# ── _do_kill (end-to-end) ─────────────────────────────────────────────────────
+# _do_kill (end-to-end)
 
 
 async def test_do_kill_by_full_id(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1005,7 +1005,7 @@ async def test_do_kill_non_running_returns_1(temp_db_path: Path):
     assert rc == 1
 
 
-# ── _do_kill_all_stale ────────────────────────────────────────────────────────
+# _do_kill_all_stale
 
 
 async def test_do_kill_all_stale_cancels_dead_pid(
@@ -1589,7 +1589,7 @@ async def test_do_kill_all_stale_process_vanishing_mid_check_does_not_abort_swee
             ] == "cancelled", "vanished processes are stale; BOTH rows must be swept"
 
 
-# ── cascade kill ───────────────────────────────────────────────────────────────
+# cascade kill
 
 
 async def test_list_running_children_show_behavior_is_unchanged(temp_db_path: Path):
@@ -1974,7 +1974,7 @@ async def test_do_kill_recursive_invocation_cancels_child_sessions(temp_db_path:
     }
 
 
-# ── CLI wiring smoke test ──────────────────────────────────────────────────────
+# CLI wiring smoke test
 
 
 def test_kill_subparser_registered():
@@ -2070,7 +2070,7 @@ def test_kill_all_stale_subparser_flags():
         Path(tmp_path).unlink(missing_ok=True)
 
 
-# ── plays and shows excluded from sweep ──────────────────────────────────────
+# plays and shows excluded from sweep
 
 
 async def test_do_kill_all_stale_does_NOT_touch_show_at_all(
@@ -2265,7 +2265,7 @@ class TestTerminatePidIdentityRevalidation:
         assert sent == [signal.SIGTERM, signal.SIGKILL]
 
 
-# ── Ambiguous short-id prefixes ────────────────────────────────────────────────
+# Ambiguous short-id prefixes
 #
 # A prefix that matches two rows must never resolve to "whichever came first":
 # `li kill` would then signal a process the caller never named.

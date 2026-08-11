@@ -14,7 +14,7 @@ import pytest
 
 from lionagi.cli.orchestrate import flow as flow_mod
 
-# ── Unit tests for the heartbeat loop logic ──────────────────────────────────
+# Unit tests for the heartbeat loop logic
 
 
 @pytest.mark.asyncio
@@ -514,7 +514,7 @@ async def test_heartbeat_does_not_fire_before_interval():
     assert fires == []
 
 
-# ── flow.py integration: _record_segment includes last_heartbeat_at ───────────
+# flow.py integration: _record_segment includes last_heartbeat_at
 
 
 def test_op_segment_schema_includes_heartbeat_field():

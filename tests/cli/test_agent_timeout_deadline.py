@@ -12,7 +12,7 @@ import pytest
 
 from lionagi.cli._providers import build_deadline_preamble
 
-# ── build_deadline_preamble unit tests ────────────────────────────────────────
+# build_deadline_preamble unit tests
 
 
 def test_preamble_contains_deadline_tags():
@@ -84,7 +84,7 @@ def test_preamble_sub_minute_timeout_clamps_to_1():
     assert "1 minute " in preamble
 
 
-# ── Integration: preamble prepended to prompt in _run_agent ──────────────────
+# Integration: preamble prepended to prompt in _run_agent
 #
 # Strategy: mock branch.operate at the *class* level using monkeypatch so we
 # avoid Pydantic's __setattr__ guard.  The spy records what instruction was
