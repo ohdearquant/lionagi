@@ -457,11 +457,6 @@ class TestMessengerBindUnknownAction:
         assert "Unknown action: bogus" in result
 
 
-# ---------------------------------------------------------------------------
-# Tool description stays consistent with wakeup's recipient handling
-# ---------------------------------------------------------------------------
-
-
 class TestMessengerWakeupDescription:
     def test_wakeup_list_wakes_first_name_only_and_says_so(self):
         """A list passed to wakeup reaches its first name only, and both

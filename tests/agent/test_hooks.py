@@ -85,11 +85,6 @@ async def test_guard_paths_allows_unrelated_path(tmp_path):
     assert result is None
 
 
-# ---------------------------------------------------------------------------
-# Glob deny patterns
-# ---------------------------------------------------------------------------
-
-
 async def test_guard_paths_glob_deny_blocks_key_file(tmp_path):
     """'*.key' deny pattern must block files whose name matches via fnmatch component matching."""
     hook = guard_paths(denied_paths=["*.key"])
@@ -124,10 +119,8 @@ async def test_guard_paths_glob_deny_blocks_dotenv(tmp_path):
         await hook("reader", "read", {"path": str(tmp_path / ".env")})
 
 
-# ---------------------------------------------------------------------------
 # GLOB_CHARS security: only "*?[" trigger fnmatch; "~{}" stay in substring mode
 # so patterns like "secret~" correctly block "mysecret~backup" via containment.
-# ---------------------------------------------------------------------------
 
 
 async def test_guard_paths_tilde_deny_uses_substring_mode(tmp_path):
@@ -149,11 +142,6 @@ async def test_guard_paths_tilde_deny_allows_unrelated(tmp_path):
     hook = guard_paths(denied_paths=["secret~"])
     result = await hook("reader", "read", {"path": str(tmp_path / "config.py")})
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# Canonical workspace containment: symlink escapes and DENIED_NAMES floor
-# ---------------------------------------------------------------------------
 
 
 async def test_guard_paths_blocks_direct_symlink_escaping_workspace(tmp_path):

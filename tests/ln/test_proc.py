@@ -12,10 +12,6 @@ import pytest
 
 from lionagi.ln._proc import aterminate_process_group, terminate_process_group
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _fake_proc(pid):
     """Sync-only fake process (subprocess.Popen-shaped)."""
@@ -39,9 +35,7 @@ def _fake_async_proc(pid, wait_delay: float = 0.0):
     return p
 
 
-# ---------------------------------------------------------------------------
 # pid-guard: must never signal pid <= 1
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("pid", [1, 0, -1, None])
@@ -113,11 +107,6 @@ def test_terminate_proc_group_never_signals_callers_group(monkeypatch):
 
     mock_killpg.assert_not_called()
     proc.kill.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Normal pid (> 1): killpg is called with the right signal
-# ---------------------------------------------------------------------------
 
 
 def test_terminate_sigkill_only():
@@ -224,11 +213,6 @@ async def test_aterminate_sigterm_no_sigkill_when_exits_fast():
     assert (4444, signal.SIGKILL) not in calls
 
 
-# ---------------------------------------------------------------------------
-# Already-dead process: ProcessLookupError is swallowed
-# ---------------------------------------------------------------------------
-
-
 def test_terminate_swallows_processlookuperror():
     """ProcessLookupError from killpg is swallowed; no exception propagates."""
     proc = _fake_proc(pid=2222)
@@ -285,11 +269,6 @@ async def test_aterminate_swallows_processlookuperror():
 
     with patch.object(proc_mod.os, "killpg", side_effect=ProcessLookupError):
         await aterminate_process_group(proc, grace=None)
-
-
-# ---------------------------------------------------------------------------
-# Custom sig_first parameter
-# ---------------------------------------------------------------------------
 
 
 def test_terminate_custom_sig_first():

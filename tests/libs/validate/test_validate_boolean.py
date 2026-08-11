@@ -16,7 +16,6 @@ class TestValidateBoolean:
 
     @pytest.mark.parametrize("value", [True, False])
     def test_boolean_inputs(self, value: bool):
-        """Test that boolean inputs are returned unchanged."""
         assert validate_boolean(value) is value
 
     @pytest.mark.parametrize("value", sorted(TRUE_VALUES))

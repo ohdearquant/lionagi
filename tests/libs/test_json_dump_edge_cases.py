@@ -123,7 +123,6 @@ def test_numeric_types():
 
 
 def test_cached_default_reuse():
-    """Test that cached default is reused for same parameters."""
     result1 = json_dumps(Path("/tmp/test1"))
     result2 = json_dumps(Path("/tmp/test2"))
 
@@ -132,7 +131,6 @@ def test_cached_default_reuse():
 
 
 def test_type_cache_in_default():
-    """Test that type cache works correctly in default function."""
     paths = [Path(f"/tmp/test{i}") for i in range(10)]
 
     for path in paths:
@@ -141,7 +139,6 @@ def test_type_cache_in_default():
 
 
 def test_non_serializable_without_safe_fallback():
-    """Test that non-serializable objects raise TypeError."""
 
     class NotSerializable:
         pass
@@ -153,7 +150,6 @@ def test_non_serializable_without_safe_fallback():
 
 
 def test_non_serializable_with_safe_fallback():
-    """Test that safe_fallback handles non-serializable objects."""
 
     class NotSerializable:
         pass

@@ -8,10 +8,6 @@ from pydantic import ValidationError
 
 from lionagi.tools.base import Prompt, Resource, ResourceCategory
 
-# ---------------------------------------------------------------------------
-# ResourceCategory enum
-# ---------------------------------------------------------------------------
-
 
 def test_resource_category_values():
     assert ResourceCategory.FRAMEWORK.value == "framework"
@@ -19,11 +15,6 @@ def test_resource_category_values():
     assert ResourceCategory.UTILITY.value == "utility"
     assert ResourceCategory.PROMPT.value == "prompt"
     assert ResourceCategory.OTHER.value == "other"
-
-
-# ---------------------------------------------------------------------------
-# Resource serializes category and rejects invalid category
-# ---------------------------------------------------------------------------
 
 
 def test_resource_category_serializes_and_rejects_invalid_category():
