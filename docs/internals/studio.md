@@ -682,9 +682,9 @@ the write adapters project. `scrub_text` catches secrets and paths by
 *shape*: known token prefixes (`sk-`, `ghp_`, JWT-shaped strings), header
 and `Bearer` forms, `KEY=value`/`key: value` assignments under a
 secret-marker name, and absolute POSIX/Windows paths (collapsed to their
-leaf filename, so a real path like `/Users/lion/My Project/notes/secret.txt`
-is matched and redacted as a whole, not just its first space-free
-segment). Shape-based matching alone misses a secret that doesn't look
+leaf filename, so a path containing spaces, such as
+`/home/someone/My Project/notes/secret.txt`, is matched and redacted as a
+whole rather than only its first space-free segment). Shape-based matching alone misses a secret that doesn't look
 like one — an arbitrary passphrase or short internal token echoed back
 verbatim from a run's own environment, which a Studio-launched run
 inherits from this server process. `known_secret_values` reads that
