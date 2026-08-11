@@ -34,7 +34,16 @@ All variables are optional; defaults are shown.
 | `LIONAGI_STUDIO_OPERATOR_CWD` | user home (`/workspace` in Docker) | Absolute execution root for Operator CLI providers |
 | `LIONAGI_HOME` | `~/.lionagi` | Base LionAGI data directory (holds `state.db`) |
 | `LIONAGI_SHOWS_ROOT` | `~/khive-work/shows` | Show artifact root |
+| `LIONAGI_STUDIO_MIRROR_CLAUDE` | `1` | Enable Studio's in-process transcript mirror |
+| `LIONAGI_STUDIO_MIRROR_SOURCE` | `both` | Transcript providers to mirror: `both`, `claude`, or `codex` |
+| `LIONAGI_STUDIO_MIRROR_CLAUDE_ROOT` | *(unset)* | Explicit Claude projects source root |
+| `LIONAGI_STUDIO_MIRROR_CODEX_ROOT` | *(unset)* | Explicit Codex sessions source root |
+| `LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT` | automatic | Read `~/.claude`/`~/.codex`; on by default only for the conventional `~/.lionagi` profile |
 | `CORS_ORIGINS` | `localhost:5173,localhost:3000` | Comma-separated allowed browser origins |
+
+Selecting a different `LIONAGI_HOME` creates an isolated Studio profile: its
+mirror does not read the ambient user transcript trees unless explicit roots
+are configured or `LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT=1` opts back in.
 
 ## Running
 

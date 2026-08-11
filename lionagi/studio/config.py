@@ -409,6 +409,37 @@ DISPATCH_RETENTION_DEAD_LETTER_DAYS: int = int(
 # the window below, so startup catches up the recent window only and never
 # backfills full history — which matters most for codex, whose rollout corpus
 # runs to tens of thousands of files.
+
+
+def _mirror_import_ambient_default() -> bool:
+    """Whether an unconfigured mirror may read the user's CLI transcript trees.
+
+    The conventional ``~/.lionagi`` profile shares the same user boundary as
+    ``~/.claude`` and ``~/.codex``. An explicitly selected ``LIONAGI_HOME`` is
+    isolated unless the operator opts back in. Resolution failures fail closed.
+    """
+    configured_home = os.environ.get("LIONAGI_HOME")
+    if configured_home is None:
+        return True
+    try:
+        selected = Path(configured_home).expanduser().resolve()
+        ambient = (Path.home() / ".lionagi").resolve()
+    except (OSError, RuntimeError):
+        return False
+    return selected == ambient
+
+
+def _optional_mirror_root(env_var: str) -> Path | None:
+    """Resolve an optional transcript root without echoing its value on error."""
+    raw = os.environ.get(env_var)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError):
+        raise ValueError(f"{env_var} could not be resolved") from None
+
+
 MIRROR_CLAUDE_ENABLED: bool = os.environ.get(
     "LIONAGI_STUDIO_MIRROR_CLAUDE", "1"
 ).strip().lower() not in ("0", "false", "no", "off", "")
@@ -419,6 +450,12 @@ _MIRROR_SOURCE_RAW: str = os.environ.get("LIONAGI_STUDIO_MIRROR_SOURCE", "both")
 MIRROR_SOURCE: str = (
     _MIRROR_SOURCE_RAW if _MIRROR_SOURCE_RAW in ("both", "claude", "codex") else "both"
 )
+MIRROR_CLAUDE_ROOT: Path | None = _optional_mirror_root("LIONAGI_STUDIO_MIRROR_CLAUDE_ROOT")
+MIRROR_CODEX_ROOT: Path | None = _optional_mirror_root("LIONAGI_STUDIO_MIRROR_CODEX_ROOT")
+MIRROR_IMPORT_AMBIENT: bool = os.environ.get(
+    "LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT",
+    "1" if _mirror_import_ambient_default() else "0",
+).strip().lower() not in ("0", "false", "no", "off", "")
 # Bounded display preview stored in messages.content for mirror-ingested rows
 # (Unicode code points, not bytes). 0 is valid (empty preview + pointer only).
 # Negative values are a configuration error — there is no "unbounded" sentinel.
