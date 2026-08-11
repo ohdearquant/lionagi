@@ -542,16 +542,15 @@ def test_a_stale_playbook_fingerprint_is_told_the_same_qualified_source(a_playbo
 def test_targeted_help_withholds_a_fingerprint_no_successful_call_can_carry():
     """`play.submit` requires a playbook, so its argument-free fingerprint is dead.
 
-    Every *successful* `play.submit` op names a playbook and therefore resolves a
-    schema that is not the argument-free one. The argument-free fingerprint is
-    accepted only by a call that omits the playbook, which then fails validation —
-    so its sole effect is to buy a round-trip on the way to a different error. The
-    catalog withheld it and targeted help returned it, so one contract had two
-    answers depending on which way you asked.
-
-    Withholding it is not silence — the answer names the parameter the fingerprint
-    varies with, so the caller knows to ask again with a playbook rather than to
-    retry with a stale string.
+    Every *successful* `play.submit` op names a playbook and resolves a
+    schema that is not the argument-free one -- that fingerprint is accepted
+    only by a call that omits the playbook, which then fails validation, so
+    its sole effect is to buy a round-trip on the way to a different error.
+    The catalog withheld it while targeted help returned it, so one contract
+    had two answers depending on which way you asked. Withholding it is not
+    silence: the answer names the parameter the fingerprint varies with, so
+    the caller knows to ask again with a playbook rather than retry with a
+    stale string.
     """
     answer = call(help="play.submit")
     assert "schema_fingerprint" not in answer
