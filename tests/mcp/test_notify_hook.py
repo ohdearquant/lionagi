@@ -576,18 +576,14 @@ def test_a_configuration_with_no_program_in_it_names_none(job, monkeypatch):
 def test_the_delivery_commands_own_output_is_still_never_kept(job, monkeypatch):
     """Naming the program changes nothing about what the command may say.
 
-    Its stdout and stderr are free text that can carry a credential the command
+    Its stdout/stderr are free text that can carry a credential the command
     obtained anywhere, so the record holds only fields this hook chose. That
-    invariant is unchanged; what changed is how it is kept. The output used to
-    be discarded at the pipe, which also discarded any way to tell one failure
-    from another, so every failed delivery recorded a bare exit code. It is now
-    read, matched against a closed vocabulary, and dropped — only the matched
-    name is stored.
-
-    So this pins the boundary rather than the mechanism: the stored key set is
-    fixed, and the value in the one new field comes from the closed set. A
-    future change that lets an unmatched failure contribute its own words fails
-    here instead of passing review.
+    invariant is unchanged; what changed is how it's kept: output used to be
+    discarded at the pipe, which also discarded any way to tell one failure
+    from another, so every failed delivery recorded a bare exit code. It is
+    now read, matched against a closed vocabulary, and dropped -- only the
+    matched name is stored, so a future change letting an unmatched failure
+    contribute its own words fails here instead of passing review.
     """
     seen: dict = {}
 

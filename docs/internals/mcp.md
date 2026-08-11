@@ -107,6 +107,32 @@ may still resolve a second later, true of any threshold — no value distinguish
 itself as uniquely correct here. Choosing the longest window this function will
 honour is a bet that a spawn which has outlived one is likelier stuck than slow.
 
+#### spawn-failure-per-op-error
+
+A submit whose child could not be started raises `SpawnError` (a `RuntimeError`),
+carrying the run_id. It didn't always: `_record_spawn_failure` has always raised
+for every `Popen` failure regardless of errno, but dispatch only caught `OpError`
+and the schema-projection errors, so a `SpawnError` escaped uncaught and took the
+whole batch down with it, including ops beside it that had already succeeded and
+the caller had no way to tell which run failed or why. Making it a per-op error
+lets the batch keep its other results, and gives the caller the run_id whose log
+holds the cause.
+
+A first version of that fix watched the freshly spawned child for a few seconds
+and converted an immediate non-zero exit into a refused submit. It was removed
+before merge on a measurement, not an opinion: ten real children spawned to die
+on their own arguments (e.g. an agent profile that doesn't exist), timed end to
+end on a loaded machine, took between 2.08 and 5.52 seconds to exit. A fixed
+window has to sit above the slowest case it's meant to catch, and every healthy
+submit pays that window regardless. At three seconds it would miss several of
+those ten while taxing every good submit; at six it would catch them at twice
+the tax. The distribution is a property of machine load, not of the defect, so
+no constant is right on both counts. What the watch was reaching for already
+exists on the read side instead: `status()` reports `possibly_orphaned` for a
+process that's gone with no end recorded, and returns `log_tail` in the same
+response — a caller probing once after submit learns the same thing without
+anyone paying for a window.
+
 #### kill-reason-codes
 
 `kill()` reason-code taxonomy (`lionagi/mcp/jobs.py`), grouped by what a caller

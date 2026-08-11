@@ -3,15 +3,16 @@
 """Every command the CLI offers is either registered or named absent.
 
 The privilege fence already guards the other direction: a verb cannot become
-reachable without someone writing its path into a reviewed list. Nothing guarded
-this one. A command could be added to the CLI and the catalog would simply not
-mention it, and silence reads the same as considered-and-declined -- which is the
-one thing the absent entries exist to distinguish. Twenty-three commands had
-accumulated that way before this test existed.
+reachable without someone writing its path into a reviewed list. Nothing
+guarded this one -- a command could be added to the CLI and the catalog
+would simply not mention it, and silence reads the same as
+considered-and-declined, which is the one thing the absent entries exist to
+distinguish. Twenty-three commands had accumulated that way before this
+test existed.
 
-The CLI surface is measured here rather than listed, because a list of command
-paths in a test is a second copy of the parser tree and would go stale in the
-same way the catalog did.
+The CLI surface is measured here rather than listed, since a list of
+command paths in a test is a second copy of the parser tree that would go
+stale the same way the catalog did.
 """
 
 from __future__ import annotations
