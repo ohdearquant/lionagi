@@ -487,11 +487,42 @@
       "progressRunning": "قيد التشغيل",
       "progressFailed": "فشل",
       "progressPending": "قيد الانتظار",
+      "progressEscalated": "تم التصعيد",
       "progressElapsed": "الوقت المنقضي",
       "expandGraph": "توسيع الرسم البياني للتنفيذ",
       "collapseGraph": "طي الرسم البياني للتنفيذ",
       "closeExpandedGraph": "إغلاق",
-      "nodeNoBranch": "لم يتم العثور على فرع لـ “{node}” — لم تبدأ هذه الخطوة بعد."
+      "nodeNoBranch": "لم يتم العثور على فرع لـ “{node}” — لم تبدأ هذه الخطوة بعد.",
+      "viewGraph": "Graph",
+      "viewList": "List",
+      "viewToggleLabel": "Graph or list view",
+      "selectedNode": "Selected: {node}",
+      "controls": {
+        "pause": "Pause",
+        "pausePhasePausing": "Pausing…",
+        "pausePhasePaused": "Paused",
+        "resume": "Resume gate",
+        "steer": "Steer",
+        "steerSend": "Send",
+        "steerPlaceholder": "Message to steer the run…",
+        "confirmYes": "Confirm",
+        "confirmCancel": "Cancel",
+        "proposeFailed": "Could not propose the command.",
+        "confirmFailed": "Could not confirm the command.",
+        "confirm": {
+          "pause": "Confirm pause?",
+          "resume": "Confirm resume?",
+          "message": "Confirm sending this message?"
+        },
+        "reason": {
+          "run-terminal": "This run has ended.",
+          "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "already-pause-requested": "A pause has already been requested.",
+          "not-paused": "The run is not paused.",
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-executable-path": "لا يوجد بعد أمر لتنفيذ هذا الإجراء."
+        }
+      }
     },
     "masterAria": "قائمة السجل",
     "detailAria": "تفاصيل العنصر"
