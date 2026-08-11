@@ -1571,7 +1571,6 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   useEffect(() => {
     if (!id || !sessionStreamEligible) return;
-    let cancelled = false;
     const stop = streamSession(id, (event) => {
       if (event.type === "heartbeat") return;
       if (event.type === "done") {
@@ -1580,11 +1579,13 @@ export default function RunDetail({ id }: RunDetailProps) {
         // The initial fetch's status/reason fields are now stale (the run
         // just finished) — refetch so the terminal status/verdict derivation
         // reflects the real outcome instead of the pre-completion snapshot.
-        // Guarded on id: if the viewer navigates to a different run before
-        // this resolves, it must not clobber that run's freshly-fetched state.
+        // setDone above flips this effect's eligibility and tears the
+        // subscription down before the response can arrive, so the merge must
+        // not be tied to this closure's lifecycle. The prev.id === fresh.id
+        // gate alone protects a viewer who navigated to a different run
+        // before it resolved.
         getSession(id)
           .then((fresh) => {
-            if (cancelled) return;
             setSession((prev) =>
               prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
             );
@@ -1603,7 +1604,6 @@ export default function RunDetail({ id }: RunDetailProps) {
       }
     });
     return () => {
-      cancelled = true;
       stop();
     };
   }, [id, sessionStreamEligible]);

@@ -112,20 +112,19 @@ describe("history/ — no Drawer overlay import (master-detail doctrine §4)", (
   }
 });
 
-// ─── SSE done-refetch stale-write race guard (MAJ-3) ─────────────────────────
+// ─── SSE done-refetch stale-write race guard ─────────────────────────────────
 // The 'done' handler refetches status/reason fields after streamSession
 // reports completion. Without a same-session guard, navigating A→B before
-// A's refetch resolves lets A's data clobber B's freshly-fetched state.
+// A's refetch resolves lets A's data clobber B's freshly-fetched state. The
+// guard is the prev.id merge gate, deliberately NOT the subscription's own
+// lifecycle: setDone tears the subscription down before the refetch can
+// resolve, so a closure-scoped cancel flag would always discard it (the
+// mounted regression "applies the terminal-status refetch…" pins that).
 
 describe("history/RunDetail.tsx — SSE done-refetch is guarded against a stale-session write", () => {
   it("the refetch merge is gated on prev.id matching the fetched session's id", () => {
     const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
     expect(src).toMatch(/prev\.id === fresh\.id/);
-  });
-
-  it("the streamSession effect cancels its refetch on cleanup", () => {
-    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
-    expect(src).toMatch(/cancelled = true/);
   });
 });
 
@@ -484,6 +483,64 @@ describe("history/RunDetail.tsx — hidden-count badge and show-implied toggle, 
 
       expect(container.textContent).toContain("live-op");
       expect(stopSignals).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  it("applies the terminal-status refetch that the done teardown races", async () => {
+    const [{ getSession, streamSession, streamSignals }, { default: RunDetail }] =
+      await Promise.all([import("@/lib/api"), import("./RunDetail")]);
+    let onSession: ((event: Record<string, unknown>) => void) | undefined;
+    const stopSession = vi.fn();
+    vi.mocked(getSession)
+      .mockResolvedValueOnce(minimalSession(null, "running") as never)
+      // Resolve the terminal refetch on a macrotask, the way a real network
+      // response arrives: after React has flushed the state update that
+      // tears the stream subscription down. A microtask-resolving mock lands
+      // before the teardown and cannot see this race.
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve(minimalSession(null, "completed") as never), 0),
+          ) as never,
+      );
+    vi.mocked(streamSession).mockImplementation((_id, listener) => {
+      onSession = listener;
+      return stopSession;
+    });
+    vi.mocked(streamSignals).mockImplementation(() => () => {});
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id="run-mount-1" />
+          </IntlProvider>,
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        onSession?.({ type: "done" });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+
+      // The subscription teardown DID run — the race this guards is real —
+      // and the refetch survived it: the pane shows the terminal status.
+      expect(stopSession).toHaveBeenCalled();
+      expect(container.textContent).toContain("Statuscompleted");
     } finally {
       act(() => root.unmount());
       container.remove();
