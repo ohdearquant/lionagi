@@ -340,6 +340,7 @@ describe("generic SSE retry policy", () => {
   });
 
   afterEach(() => {
+    delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -394,6 +395,42 @@ describe("generic SSE retry policy", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(new URL(urls[0]!, "http://studio.test").searchParams.get("after_seq")).toBe("0");
     expect(new URL(urls[1]!, "http://studio.test").searchParams.get("after_seq")).toBe("7");
+    close();
+  });
+
+  it("reconnects a session-message stream from the last server-issued cursor", async () => {
+    const urls: string[] = [];
+    const requests: RequestInit[] = [];
+    (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__ = "stream-token";
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      urls.push(url);
+      requests.push(init ?? {});
+      const cursor = urls.length === 1 ? "cursor-one" : "cursor-two";
+      const messageId = urls.length === 1 ? "message-one" : "message-two";
+      return Promise.resolve(
+        new Response(`id: ${cursor}\ndata: {"id":"${messageId}","branch_id":"branch-1"}\n\n`, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { streamSession } = await import("./api");
+
+    const events: Array<Record<string, unknown>> = [];
+    const close = streamSession("session-1", (event) => events.push(event));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(urls[0]!, "http://studio.test").searchParams.get("cursor")).toBeNull();
+    expect(new URL(urls[1]!, "http://studio.test").searchParams.get("cursor")).toBe("cursor-one");
+    expect(requests.map((request) => new Headers(request.headers).get("authorization"))).toEqual([
+      "Bearer stream-token",
+      "Bearer stream-token",
+    ]);
+    expect(events.map((event) => event.id)).toEqual(["message-one", "message-two"]);
     close();
   });
 });

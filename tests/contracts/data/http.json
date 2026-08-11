@@ -11530,6 +11530,24 @@
           "summary": "Stream Session",
           "parameters": [
             {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Opaque cursor from the last delivered session-message SSE frame",
+                "title": "Cursor"
+              },
+              "description": "Opaque cursor from the last delivered session-message SSE frame"
+            },
+            {
               "name": "session_id",
               "in": "path",
               "required": true,

@@ -233,7 +233,10 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 // studio endpoints: unnamed `data: <json>\n\n` frames, auto-reconnect after
 // 2s unless closed. Callers parse the JSON and call the returned closer on
 // their terminal "done" frame.
-function sseSubscribe(path: string | (() => string), onData: (data: string) => void): () => void {
+function sseSubscribe(
+  path: string | (() => string),
+  onData: (data: string, eventId?: string) => void,
+): () => void {
   const controller = new AbortController();
   let closed = false;
   const close = () => {
@@ -285,7 +288,12 @@ function sseSubscribe(path: string | (() => string), onData: (data: string) => v
               .filter((line) => line.startsWith("data:"))
               .map((line) => line.slice(5).replace(/^ /, ""))
               .join("\n");
-            if (data && !closed) onData(data);
+            const eventId = frame
+              .split("\n")
+              .filter((line) => line.startsWith("id:"))
+              .map((line) => line.slice(3).replace(/^ /, ""))
+              .at(-1);
+            if (data && !closed) onData(data, eventId || undefined);
           }
         }
       } catch {
@@ -1319,19 +1327,33 @@ export function streamSession(
   id: string,
   onEvent: (event: Record<string, unknown>) => void,
 ): () => void {
-  const close = sseSubscribe(`/api/sessions/${encodeURIComponent(id)}/stream`, (data) => {
-    let event: Record<string, unknown>;
-    try {
-      event = JSON.parse(data) as Record<string, unknown>;
-    } catch {
-      /* malformed chunk */
-      return;
-    }
-    if (event.type === "done") {
-      close();
-    }
-    onEvent(event);
-  });
+  let cursor: string | undefined;
+  const close = sseSubscribe(
+    () => {
+      const query = new URLSearchParams();
+      if (cursor) query.set("cursor", cursor);
+      const suffix = query.toString();
+      return `/api/sessions/${encodeURIComponent(id)}/stream${suffix ? `?${suffix}` : ""}`;
+    },
+    (data, eventId) => {
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(data) as Record<string, unknown>;
+      } catch {
+        /* malformed chunk */
+        return;
+      }
+      if (event.type === "done") {
+        close();
+      }
+      onEvent(event);
+      // Advance only after the consumer accepted this frame. If the callback
+      // throws, reconnecting from the prior cursor repeats rather than skips it.
+      if (eventId && event.type !== "heartbeat" && event.type !== "done") {
+        cursor = eventId;
+      }
+    },
+  );
   return close;
 }
 

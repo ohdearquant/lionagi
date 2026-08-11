@@ -921,9 +921,10 @@ async def test_get_session_messages_after_handles_branch_over_sqlite_variable_li
     build's default, per PRAGMA compile_options MAX_VARIABLE_NUMBER, is 32766 — 33000
     exceeds both so the test reproduces the failure regardless of build). The
     json_each-joined query has no per-message bind variable, so it must return every
-    id without error. Only the progression collection needs to be this large — the
-    corresponding message rows are irrelevant to the bind-limit failure itself, so
-    this seeds ids without materializing 33000 message rows (keeps the test fast)."""
+    materialized in-range rows without error. Only the progression collection needs
+    to be this large — the corresponding message rows are irrelevant to the
+    bind-limit failure itself, so this seeds ids without materializing 33000 message
+    rows (keeps the test fast)."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-huge")
     count = 33000
@@ -1006,6 +1007,161 @@ async def test_get_session_messages_after_message_shape_matches_expected_fields(
             "branch_id": "br-shape",
         }
     ]
+
+
+async def test_get_session_messages_after_uses_id_to_break_timestamp_ties(
+    patched_sessions_db,
+):
+    """Resuming after one row must not skip a later id with the same timestamp."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-tie")
+    await seed_branch(
+        db_path,
+        branch_id="br-tie",
+        session_id="sess-tie",
+        # Deliberately reverse progression order: stream order is the stable
+        # (created_at, id) key, not collection insertion order.
+        msg_ids=["m-b", "m-a"],
+    )
+    async with StateDB(db_path) as db:
+        for message_id in ("m-a", "m-b"):
+            await db.insert_message(
+                {
+                    "id": message_id,
+                    "created_at": 500.0,
+                    "content": {"text": message_id},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "assistant",
+                    "node_metadata": {},
+                }
+            )
+
+    result = await svc.get_session_messages_after("sess-tie", 500.0, after_id="m-a")
+
+    assert [message["id"] for message in result] == ["m-b"]
+
+
+async def test_get_session_messages_after_caps_each_database_read_at_500(
+    patched_sessions_db,
+):
+    """One SSE database read must stay bounded even when history is much larger."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-bounded")
+    message_ids = [f"bounded-{index:04d}" for index in range(501)]
+    await seed_branch(
+        db_path,
+        branch_id="br-bounded",
+        session_id="sess-bounded",
+        msg_ids=message_ids,
+    )
+    async with StateDB(db_path) as db:
+        for index, message_id in enumerate(message_ids):
+            await db.insert_message(
+                {
+                    "id": message_id,
+                    "created_at": 1000.0 + index,
+                    "content": {"text": message_id},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "assistant",
+                    "node_metadata": {},
+                }
+            )
+
+    result = await svc.get_session_messages_after("sess-bounded", 0.0)
+
+    assert len(result) == 500
+    assert result[0]["id"] == "bounded-0000"
+    assert result[-1]["id"] == "bounded-0499"
+
+
+async def test_session_message_stream_resumes_and_drains_before_done(monkeypatch):
+    """A terminal session must drain every bounded page before its done frame."""
+    from lionagi.studio.services import sessions as svc
+
+    calls: list[tuple[float, str | None]] = []
+
+    async def _exists(_session_id: str) -> bool:
+        return True
+
+    async def _after(
+        _session_id: str,
+        after_ts: float,
+        *,
+        after_id: str | None = None,
+        limit: int = svc.SESSION_MESSAGE_STREAM_BATCH,
+    ) -> list[dict]:
+        assert limit == svc.SESSION_MESSAGE_STREAM_BATCH
+        calls.append((after_ts, after_id))
+        if after_id == "message-a":
+            return [
+                {"id": "message-b", "timestamp": 100.0, "branch_id": "branch-1"},
+                {"id": "message-c", "timestamp": 101.0, "branch_id": "branch-1"},
+            ]
+        if after_id == "message-c":
+            return [{"id": "message-d", "timestamp": 102.0, "branch_id": "branch-1"}]
+        return []
+
+    async def _state(_session_id: str) -> dict:
+        return {"status": "completed", "updated_at": 1.0}
+
+    async def _unexpected_sleep(_delay: float) -> None:
+        pytest.fail("bounded backlog should drain and emit done without sleeping")
+
+    monkeypatch.setattr(svc, "session_exists", _exists)
+    monkeypatch.setattr(svc, "get_session_messages_after", _after)
+    monkeypatch.setattr(svc, "get_session_stream_state", _state)
+    monkeypatch.setattr(svc, "is_session_stream_done", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(svc.asyncio, "sleep", _unexpected_sleep)
+
+    cursor = svc._encode_session_stream_cursor("resume-session", 100.0, "message-a")
+    response = await svc.stream_session_route("resume-session", cursor=cursor)
+    frames = [frame async for frame in response.body_iterator]
+
+    data = [
+        json.loads(line[6:])
+        for frame in frames
+        for line in frame.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [event.get("id") or event.get("type") for event in data] == [
+        "message-b",
+        "message-c",
+        "message-d",
+        "done",
+    ]
+    assert calls == [(100.0, "message-a"), (101.0, "message-c"), (102.0, "message-d")]
+
+    frame_cursors = [
+        line[4:] for frame in frames for line in frame.splitlines() if line.startswith("id: ")
+    ]
+    assert [
+        svc._decode_session_stream_cursor(value, session_id="resume-session")
+        for value in frame_cursors
+    ] == [
+        (100.0, "message-b"),
+        (101.0, "message-c"),
+        (102.0, "message-d"),
+    ]
+
+
+async def test_session_message_stream_rejects_foreign_cursor_before_opening(monkeypatch):
+    from fastapi import HTTPException
+
+    from lionagi.studio.services import sessions as svc
+
+    async def _exists(_session_id: str) -> bool:
+        return True
+
+    monkeypatch.setattr(svc, "session_exists", _exists)
+    cursor = svc._encode_session_stream_cursor("other-session", 100.0, "message-a")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.stream_session_route("requested-session", cursor=cursor)
+
+    assert exc_info.value.status_code == 400
+    assert "different session" in str(exc_info.value.detail)
 
 
 # ---------------------------------------------------------------------------

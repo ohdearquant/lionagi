@@ -1,8 +1,12 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import asyncio
 import base64
 import json
+import math
 import time
 from typing import Any
 
@@ -386,6 +390,7 @@ async def list_project_counts() -> list[dict[str, Any]]:
 # responses window from the tail to avoid freezing the client.
 DEFAULT_MESSAGE_LIMIT = 200
 MAX_MESSAGE_LIMIT = 1000
+SESSION_MESSAGE_STREAM_BATCH = 500
 
 
 class MessageCursorError(ValueError):
@@ -414,6 +419,46 @@ def _decode_message_cursor(token: str, *, session_id: str, limit: int) -> dict[s
     if not isinstance(anchors, dict):
         raise MessageCursorError("message_cursor is missing branch_anchors")
     return anchors
+
+
+class SessionStreamCursorError(ValueError):
+    """A session-message stream cursor is malformed or belongs to another session."""
+
+
+def _encode_session_stream_cursor(session_id: str, created_at: float, message_id: str) -> str:
+    payload = {
+        "v": 1,
+        "session_id": session_id,
+        "created_at": created_at,
+        "message_id": message_id,
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_session_stream_cursor(token: str, *, session_id: str) -> tuple[float, str]:
+    if not token or len(token) > 4096:
+        raise SessionStreamCursorError("Malformed session stream cursor")
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except Exception as exc:
+        raise SessionStreamCursorError("Malformed session stream cursor") from exc
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        raise SessionStreamCursorError("Unsupported session stream cursor")
+    if payload.get("session_id") != session_id:
+        raise SessionStreamCursorError("Session stream cursor belongs to a different session")
+    created_at = payload.get("created_at")
+    message_id = payload.get("message_id")
+    if (
+        isinstance(created_at, bool)
+        or not isinstance(created_at, (int, float))
+        or not math.isfinite(created_at)
+        or not isinstance(message_id, str)
+        or not message_id
+    ):
+        raise SessionStreamCursorError("Malformed session stream cursor")
+    return float(created_at), message_id
 
 
 def _window_message_ids(
@@ -885,16 +930,33 @@ async def get_session_by_cc_id(cc_uid: str) -> dict[str, Any] | None:
     return await get_session(row["id"] if row else session_db_id(cc_uid))
 
 
-async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:
-    """Poll-friendly tail read for the SSE stream/signals endpoints. Joins via
-    json_each rather than binding every message id into an IN (...) clause,
-    which would blow past SQLite's 999 bound-variable limit at scale."""
+async def get_session_messages_after(
+    session_id: str,
+    after_ts: float,
+    *,
+    after_id: str | None = None,
+    limit: int = SESSION_MESSAGE_STREAM_BATCH,
+) -> list[dict[str, Any]]:
+    """Bounded, poll-friendly tail read for the session-message SSE endpoint.
+
+    Joins via json_each rather than binding every message id into an IN (...)
+    clause, which would blow past SQLite's bound-variable limit at scale. When
+    after_id is present, (created_at, id) is the stable collision-safe cursor.
+    """
     if not store_exists():
         return []
 
+    batch_limit = max(1, min(limit, SESSION_MESSAGE_STREAM_BATCH))
+    cursor_predicate = "m.created_at > ?"
+    params: list[Any] = [session_id, after_ts]
+    if after_id is not None:
+        cursor_predicate = "(m.created_at > ? OR (m.created_at = ? AND m.id > ?))"
+        params.extend((after_ts, after_id))
+    params.append(batch_limit)
+
     async with _open_db(store_path()) as db:
         cur = await db.execute(
-            """
+            f"""
             SELECT m.id, m.created_at, m.content, m.sender, m.role,
                    mt.lion_class AS lion_class_str, b.id AS branch_id
             FROM branches b
@@ -902,10 +964,11 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
             JOIN json_each(p.collection) je ON 1=1
             JOIN messages m ON m.id = je.value
             LEFT JOIN message_types mt ON m.lion_class = mt.type_id
-            WHERE b.session_id = ? AND m.created_at > ?
-            ORDER BY m.created_at
-            """,
-            (session_id, after_ts),
+            WHERE b.session_id = ? AND {cursor_predicate}
+            ORDER BY m.created_at, m.id
+            LIMIT ?
+            """,  # noqa: S608 -- predicate is selected from two module-owned constants
+            params,
         )
         rows = await cur.fetchall()
 
@@ -1023,26 +1086,57 @@ async def get_session_route(
     name="stream_session",
     response_class=None,
 )
-async def stream_session_route(session_id: str):
+async def stream_session_route(
+    session_id: str,
+    cursor: str | None = Query(
+        default=None,
+        description="Opaque cursor from the last delivered session-message SSE frame",
+    ),
+):
     # Pre-flight 404 guard: without it a non-existent session silently
     # returns no messages and waits 60s before "done" with no indication.
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
 
+    try:
+        after_ts, after_id = (
+            _decode_session_stream_cursor(cursor, session_id=session_id) if cursor else (0.0, None)
+        )
+    except SessionStreamCursorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     async def generate():
-        after_ts: float = 0.0
+        stream_after_ts = after_ts
+        stream_after_id = after_id
         last_heartbeat = time.monotonic()
 
         while True:
-            messages = await get_session_messages_after(session_id, after_ts)
+            messages = await get_session_messages_after(
+                session_id,
+                stream_after_ts,
+                after_id=stream_after_id,
+            )
 
             if messages:
                 for msg in messages:
-                    yield f"data: {json.dumps(msg)}\n\n"
-                    ts = msg.get("timestamp") or msg.get("created_at")
-                    if ts and ts > after_ts:
-                        after_ts = ts
+                    ts = msg.get("timestamp")
+                    if ts is None:
+                        ts = msg.get("created_at")
+                    message_id = msg.get("id")
+                    if not isinstance(ts, (int, float)) or not isinstance(message_id, str):
+                        continue
+                    frame_cursor = _encode_session_stream_cursor(
+                        session_id,
+                        float(ts),
+                        message_id,
+                    )
+                    yield f"id: {frame_cursor}\ndata: {json.dumps(msg)}\n\n"
+                    stream_after_ts = float(ts)
+                    stream_after_id = message_id
                 last_heartbeat = time.monotonic()
+                # A full page is not necessarily the tail. Drain subsequent
+                # bounded pages before checking terminal state or sleeping.
+                continue
             elif time.monotonic() - last_heartbeat >= 5.0:
                 yield 'data: {"type":"heartbeat"}\n\n'
                 last_heartbeat = time.monotonic()
