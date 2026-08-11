@@ -186,15 +186,15 @@ def resolve_mirrored_content(
     reconstruct: Callable[[dict[str, object], str, str], dict[str, object] | None] | None = None,
 ) -> ResolvedContent:
     """Recover a mirrored row's full content from its source pointer, verifying
-    every step (mirror_spec.md §5). Never raises; degrades to the stored preview
-    with a stable ``reason`` on any mismatch — a stale/moved/rotated source must
-    never silently return content from a different file.
+    every step (mirror_spec.md §5). Never raises; degrades to the stored
+    preview with a stable ``reason`` on any mismatch -- a stale/moved/rotated
+    source must never silently return content from a different file.
 
-    ``reconstruct(parsed_record, source_session_uid, message_id)`` re-runs the
-    owning adapter's mapper and returns the derived message's full content dict
-    (or ``None`` if no derived message matches ``message_id``). Adapters are not
-    wired to call this in this round (mirror_spec.md §6) — it is exercised
-    directly by tests and available for a later integration.
+    ``reconstruct(parsed_record, source_session_uid, message_id)`` re-runs
+    the owning adapter's mapper and returns the derived message's full
+    content dict, or None if no derived message matches ``message_id``.
+    Adapters aren't wired to call this yet; it's exercised directly by tests
+    and available for later integration.
     """
     stored_content = row.get("content") or {}
     node_metadata = row.get("node_metadata") or {}
