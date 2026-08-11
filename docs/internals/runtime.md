@@ -1261,8 +1261,9 @@ only while its declared target remains trusted, removing it on
 shortly after the subprocess spawns (e.g. an ndjson "system"/"init" event), making a stalled
 first chunk a reliable dead-worker signal. False for transports that buffer all output until
 the run completes, where a slow-but-healthy call is indistinguishable from a dead one until
-the whole result arrives. This flag gates `run.py`'s default liveness watchdog
-(`LIONAGI_WORKER_LIVENESS_TIMEOUT`).
+the whole result arrives. This flag gates `run.py`'s default first-output and
+between-chunk watchdogs (`LIONAGI_WORKER_LIVENESS_TIMEOUT` and
+`LIONAGI_WORKER_IDLE_TIMEOUT`).
 
 ### `connections/endpoint_config.py`
 

@@ -79,6 +79,10 @@ class AppSettings(BaseSettings, frozen=True):
     # the watchdog. See docs/internals/support-libs.md#config-liveness-timeouts
     LIONAGI_WORKER_LIVENESS_TIMEOUT: float = 120.0
 
+    # Maximum silence between chunks for early-streaming CLI run() turns;
+    # 0 disables. Longer than first-output because tool calls may be quiet.
+    LIONAGI_WORKER_IDLE_TIMEOUT: float = 300.0
+
     # Antigravity print-mode subprocess cap.
     # See docs/internals/support-libs.md#config-liveness-timeouts
     LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT: float = 3600.0

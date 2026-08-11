@@ -72,6 +72,13 @@ no first stream chunk within this window is retried once (fresh subprocess),
 then fails loud with `WorkerLivenessError` instead of hanging as a zombie
 "running" leg. `0` disables the watchdog (deterministic / test runs).
 
+`LIONAGI_WORKER_IDLE_TIMEOUT` is the between-chunk idle window for
+early-streaming CLI turns (default 300 seconds). It resets after every chunk.
+A miss after partial output raises `WorkerLivenessError` with reason
+`worker.stream_idle` without retrying the subprocess. `0` disables this window.
+Buffered transports receive neither default watchdog because silence is their
+normal behavior; callers may still opt in with per-run `idle_timeout`.
+
 `LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT` is the Antigravity print-mode subprocess
 cap (seconds). One hour is comfortably above expected caller deadlines while
 retaining a finite subprocess bound; deployments that need another ceiling
