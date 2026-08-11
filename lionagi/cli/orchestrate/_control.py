@@ -4,14 +4,9 @@
 
 Pure writers: resolve the target session (id/invocation id/play id/run id,
 same shapes `li o ctl status` accepts) and insert one row into
-session_controls. They do not wait for the control to apply — the poller in
-cli/orchestrate/flow.py `_execute_dag` (flow/play) and the turn-end drain in
-cli/agent.py (agent) are the consumers; use `li o ctl status <id>` to check
-whether it landed.
-
-Only context-mode `msg` is currently supported: the poller appends the message
-to shared flow context for operations not yet rendered. Operation-mode messages
-are unsupported. See ADR-0069 D1 and D3.
+session_controls; do not wait for it to apply. See
+``docs/internals/cli.md`` (`_control.py`) for consumer wiring and admission
+gating.
 """
 
 from __future__ import annotations
@@ -118,37 +113,9 @@ async def _enqueue_control_inner(
                 "deliver the steer",
                 EXIT_UNKNOWN,
             )
-        # Owning a run is not the same as consuming controls. The check above
-        # uses run_id as a proxy for "a lionagi runner owns this", and that
-        # proxy held only while the CLI agent runner was the sole caller that
-        # stamped one. Other callers persist through the same path, write the
-        # same kind, and supply their own run_id, so they pass that check while
-        # having no drain at all — the control would be admitted, never
-        # delivered, and never closed. Ask about the capability instead, and
-        # let the runner declare it when it starts the session.
-        #
-        # This refuses one row that used to be admitted and deserved to be: a
-        # CLI agent leg whose session row predates the declaration. It has a
-        # run_id and a real turn-end drain, and its control would have landed.
-        # That is deliberate and it is not a migration that was skipped.
-        #
-        # Which transitions replace an absent declaration, and when that
-        # refusal ends, are not described here on purpose: every attempt to
-        # state it in prose has been wrong, in a different way each time, while
-        # the meaning below has held. Read the resume cases in
-        # tests/cli/test_agent_steer.py instead. They are where that behaviour
-        # is stated in a form that fails when it stops being true, which a
-        # comment cannot do; they are not a claim that every transition is
-        # covered.
-        #
-        # Absence is still the right reading. Fields that happen to differ
-        # between producers are not capability: the embedded runner's run_id
-        # carries a distinguishing prefix today, but a naming convention is not
-        # a contract, and keying admission on the shape of an id is the same
-        # move as keying it on the presence of one — the proxy this check
-        # exists to retire. There is no field on a pre-existing row that says
-        # what the runner will DO, and inventing one from a prefix would
-        # re-admit the orphaned controls as soon as a producer renamed a run.
+        # run_id is not proof of a drain consumer — see docs/internals/cli.md
+        # (`_control.py`) for why `drains_controls` is the authoritative check
+        # and which session is grandfathered around it.
         if kind == "agent" and not _runner_drains_controls(session):
             return (
                 f"session {session_id[:8]} is run by something that does not "

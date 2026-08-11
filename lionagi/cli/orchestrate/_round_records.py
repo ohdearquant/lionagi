@@ -2,25 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Durable per-leg and per-round records for a manifest round.
 
-Two files answer two different questions, and both are written where a reader
-that shares nothing with the runner can find them:
-
-- ``{run_dir}/legs/{label}.json`` — what one leg was dispatched with, and how
-  it ended. The dispatch half is written at spawn, before the leg can do
-  anything, because it carries the leg's process group: the quiescence sweep
-  that a reaper performs reads its control domain from these files, never from
-  a live runner's memory, so a reaper that shared nothing with a dead runner
-  sweeps the same groups the runner would have.
-- ``{run_dir}/round.json`` — the round summary. Written at spawn with
-  ``round_state: pending_harvest`` and flipped to ``complete`` as the last act
-  of finalization, so a terminal status published by ANY writer at ANY point,
-  including one that knows nothing about manifest rounds, is observably
-  pending rather than silently incomplete.
-
-Every write lands by temp-file-plus-atomic-rename, and a writer that finds a
-COMPLETE leg record already present leaves it alone. First write wins, and
-``recorded_by`` names the winner, so even a mis-sequenced writer cannot
-produce two competing accounts of one leg.
+``{run_dir}/legs/{label}.json`` records what one leg was dispatched with and
+how it ended; ``{run_dir}/round.json`` records the round summary
+(``pending_harvest`` at spawn, flipped to ``complete`` as finalization's last
+act). Every write is temp-file-plus-atomic-rename, and first write wins for a
+COMPLETE leg record. See ``docs/internals/cli.md`` (`_round_records.py` /
+`_quiescence.py`) for why the dispatch half is written before the leg runs
+and what a reaper reconstructs from these files alone.
 """
 
 from __future__ import annotations
@@ -87,14 +75,11 @@ RECORDED_BY_ORPHAN_REAPER = "orphan-reaper"
 class LegDispatch:
     """The facts that exist before a leg can produce anything.
 
-    ``pgid`` is the leg's own process group and ``pid_create_time`` is when the
-    process leading it started, both read at spawn. That pairing is the reason
-    this record is written before the leg runs rather than at its end: a group
-    read after the leg is reaped can resolve to a stranger's, a sweep over a
-    domain nobody joined is indistinguishable from a clean sweep, and the start
-    time is the only thing that tells those two cases apart. A record whose
-    ``pid_create_time`` is None carries no identity, and a sweep must refuse to
-    signal on it rather than fall back to the bare group.
+    ``pgid`` (the leg's process group) and ``pid_create_time`` (when the
+    leading process started) are both read at spawn, before the leg runs —
+    a group id read later can belong to a different process the kernel has
+    since reissued it to. A record with ``pid_create_time is None`` carries
+    no identity; a sweep must refuse to signal on it.
     """
 
     label: str
@@ -261,17 +246,12 @@ class ControlGroupDomain:
 def control_group_domain(run_dir: Path | str) -> ControlGroupDomain:
     """Process groups a quiescence sweep must observe empty, read from disk.
 
-    Read from the run directory rather than from any live process's memory, so
-    a reaper that shared nothing with a dead runner sweeps the same domain the
-    runner would have.
-
-    A group is only included when the record also carries the start time of the
-    process that led it. Without that, the group id names whatever the kernel
-    has since put at that number, and observing it "not empty" would report a
-    stranger as this run's straggler while observing it empty would certify
-    nothing. Such a record contributes nothing to the domain, and it is counted
-    rather than dropped: a sweep cannot certify a group it was never told about,
-    and it must not pretend a bare number is a domain.
+    Read from the run directory, never a live process's memory. A group is
+    only included when its record also carries the start time of the process
+    that led it — otherwise the group id may name whatever the kernel has
+    since reissued it to, and observing it either empty or not would report a
+    false result. Such a record is counted as ``unpinned`` rather than
+    silently dropped, so a sweep never pretends a bare number is a domain.
     """
     groups: list[int] = []
     unpinned = 0
