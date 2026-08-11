@@ -75,14 +75,10 @@ def _clamp_codex_effort(effort: str, model: str | None) -> str:
     return effort
 
 
-# Claude: the Opus line accepts xhigh from 4.7 onward. Everything else clamps
-# to high. Claude has no ultra tier at all: ultra clamps to max for every model.
-#
-# This is an allow-list of exact model strings, so a new Opus release is absent
-# until it is added here, and its absence costs it xhigh silently -- the request
-# still succeeds, one tier lower, with nothing in the result saying so. Add new
-# Opus identifiers in the same change that makes them routable, both the bare
-# alias and the claude- prefixed form, since callers pass either.
+# Claude: only the Opus line (from 4.7 on) accepts xhigh; everything else clamps
+# to high, and there is no ultra tier (clamps to max). Allow-list of exact model
+# strings: a new Opus release silently loses xhigh until added here — both the
+# bare alias and the claude- prefixed form, since callers pass either.
 _CLAUDE_XHIGH_MODELS = frozenset(
     {
         "opus",
@@ -287,17 +283,10 @@ _EFFORT_SUFFIX_RE = re.compile(
 def split_effort_suffix(model: str) -> tuple[str, str] | None:
     """Split a bare model name into ``(name, effort)``, or None when it carries none.
 
-    The trailing-effort convention belongs to lionagi's own ``provider/model-effort``
-    grammar, which spends its single slash on the provider. So a slash still present
-    in the model name means the name was not written in that grammar: it is a literal
-    id from another vendor's catalogue, reached for instance through a codex config
-    profile that names its own ``model_provider``. Those ids end in whatever the
-    vendor chose, and a trailing word that happens to spell an effort level is part
-    of the id. Splitting it produces a model nobody serves, and the provider rejects
-    a name the caller never asked for.
-
-    Used by both places that would otherwise strip a suffix, so the rule is stated
-    once rather than drifting between them.
+    A model name containing "/" is a literal vendor id, not lionagi's own
+    ``provider/model-effort`` grammar, so it is never split even if it ends in
+    a word that spells an effort level. See
+    docs/internals/service-layer.md#effort-suffix-routing.
     """
     if "/" in model:
         return None
