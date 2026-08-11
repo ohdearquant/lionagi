@@ -305,9 +305,6 @@ def allocate_run(
     return run
 
 
-# ── Branch lookup (canonical + legacy fallback) ─────────────────────────
-
-
 def _branch_dirs() -> list[tuple[str | None, Path, str]]:
     """Every directory that can hold a branch file, with its run id and suffix.
 
@@ -365,9 +362,6 @@ def find_branch(branch_id: str) -> tuple[str | None, Path]:
     raise FileNotFoundError(f"No branch log found for id {branch_id!r}")
 
 
-# ── Last-branch pointer (with legacy schema compat) ─────────────────────
-
-
 def load_last_branch() -> tuple[str | None, str]:
     """Read the last-branch pointer; returns (run_id, branch_id), run_id=None for pre-run-scoped schema."""
     if not _LAST_BRANCH_POINTER.exists():
@@ -407,9 +401,6 @@ def save_last_branch_pointer(run_id: str, branch_id: str) -> None:
         )
 
 
-# ── Introspection ───────────────────────────────────────────────────────
-
-
 def list_runs(limit: int | None = None) -> list[RunDir]:
     """Return all runs under RUNS_ROOT, newest first (by mtime)."""
     if not RUNS_ROOT.exists():
@@ -433,8 +424,6 @@ def list_runs(limit: int | None = None) -> list[RunDir]:
         out.append(RunDir(run_id=d.name, state_root=d, artifact_root=artifact_root))
     return out
 
-
-# ── Live-persist lifecycle (absorbed from _persist.py) ──────────────────────
 
 _log = logging.getLogger("lionagi.cli")
 
@@ -695,17 +684,13 @@ async def _teardown_common(
                 str(entry.get("id", "")) for entry in missing
             ]
 
-    # Node-failure backstop: a DAG operation's invoke() raised
-    # and the executor recorded EventStatus.FAILED for it, but that per-node
-    # failure was folded into completed_operations right alongside genuine
-    # completions and never rolled up into the run's own status -- a run
-    # whose terminal (or any other) node died could still read as an
-    # ordinary clean completion. See lionagi/operations/flow.py's
-    # failed_operations tracking and _execute_dag's evidence collection.
-    # Runs before the completion-trust gate below: a run whose nodes all
-    # failed typically produces no artifacts or commits either, so the gate
-    # would otherwise demote it to "completed_empty" first and this failure
-    # evidence would never see a status that reflects it.
+    # Node-failure backstop: a DAG operation's invoke() can raise and be
+    # recorded EventStatus.FAILED while still folding into
+    # completed_operations alongside genuine completions, so a run whose
+    # terminal (or any) node died could otherwise read as a clean completion.
+    # Runs before the completion-trust gate below, since a fully-failed run
+    # usually has no artifacts/commits either and would otherwise be demoted
+    # to "completed_empty" before this evidence had a chance to apply.
     if failed_operation_evidence and final_status == "completed":
         from lionagi.state.reasons import RunReasons
 
@@ -717,11 +702,9 @@ async def _teardown_common(
         )
         final_evidence_refs = failed_operation_evidence
 
-    # Escalation backstop: a leg that gave up mid-run via EscalationRequest without
-    # an artifact contract must not read as a clean completion. Also runs ahead of
-    # the completion-trust gate for the same reason as the node-failure backstop
-    # above -- an escalated run with no evidence must not be demoted to
-    # "completed_empty" before this check has a chance to run.
+    # Escalation backstop: a leg that gave up mid-run via EscalationRequest with
+    # no artifact contract must not read as a clean completion. Same ordering
+    # reason as the node-failure backstop above.
     if escalated_evidence and final_status == "completed":
         from lionagi.state.reasons import RunReasons
 
@@ -734,18 +717,14 @@ async def _teardown_common(
         )
         final_evidence_refs = escalated_evidence
 
-    # Gate-rejection backstop: a gate node rejected mid-DAG and the
-    # executor short-circuited its dependent subtree to skipped instead of running
-    # those nodes against the rejected baseline. That is a correct, deliberate
-    # stop, not a failure -- status stays "completed" -- but the reason code must
-    # say so explicitly rather than reading identically to a clean pass. Runs
-    # before the completion-trust gate below, alongside the node-failure and
-    # escalation backstops: a gate-rejected run typically produces no artifacts
-    # or commits either (the rejected subtree never ran), and unlike those two
-    # backstops this one deliberately leaves final_status at "completed" instead
-    # of flipping to "failed" -- so it cannot rely on the trust gate's own
-    # `final_status == "completed"` guard to skip it and must run first so its
-    # evidence is in place before that gate's no-evidence check runs.
+    # Gate-rejection backstop: a gate node rejected mid-DAG and the executor
+    # short-circuited its dependent subtree to skipped instead of running those
+    # nodes against the rejected baseline. That's a correct, deliberate stop,
+    # not a failure -- status stays "completed" -- but the reason code must say
+    # so explicitly. Runs before the completion-trust gate for the same reason
+    # as the other two backstops, and unlike them leaves final_status at
+    # "completed" rather than flipping to "failed", so it must run first to
+    # place its evidence before the gate's no-evidence check.
     if gate_rejected_evidence and final_status == "completed":
         from lionagi.state.reasons import RunReasons
 
@@ -1221,20 +1200,17 @@ async def _reopen_session_for_resume(
 ) -> bool:
     """Return a resumed session to ``running`` so its next close is a real change.
 
-    A session's closing transition only announces itself when the status
-    actually changes. A resume adopts a session an earlier leg already took
-    terminal, so writing that same terminal status at the end is not a change:
-    the leg finishes without announcing anything, the completion notice never
-    arrives, and the job record never closes. Reopening first restores the
-    invariant the rest of the system reads off this column, which is that a
-    session marked terminal is not currently executing.
+    A closing transition only announces itself when the status actually
+    changes. A resume adopts a session an earlier leg already took terminal,
+    so writing that same terminal status at the end is a no-op: the leg
+    finishes silently and the job record never closes. Reopening first
+    restores the invariant the rest of the system reads off this column --
+    that a session marked terminal is not currently executing.
 
-    Reopening is the only sanctioned exit from a terminal status, so it carries
-    an override. That is not a formality to satisfy the guard: it is what makes
-    each reopening attributable. Declaring a terminal-to-running edge in the
-    session policy would have satisfied the guard too, and would have permitted
-    terminal exit for every writer in the system, while finality is exactly what
-    the reapers, the teardown guard and ``li wait`` all rest on.
+    Reopening is the only sanctioned exit from a terminal status and carries
+    an explicit override rather than a session-policy rule, so each reopening
+    stays attributable and terminal exit isn't opened to every writer --
+    finality is what the reapers, the teardown guard, and ``li wait`` all rest on.
     """
     from lionagi.cli.kill import current_pid_markers
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
@@ -1406,31 +1382,23 @@ async def setup_agent_persist(
             # markers. Nothing to do here for a row that was terminal.
             #
             # A resume that did NOT reopen adopts a row still reading running,
-            # and that row keeps whatever the earlier leg declared. Three
-            # representations reach here, not two: explicit True, explicit
-            # False, and no declaration at all on a row written before this
-            # field existed. The last one refuses like False at the admission
-            # gate, but it is a third state and not a spelling of the second —
-            # it means nobody ever answered the question, where False means a
-            # runner answered no.
+            # keeping whatever the earlier leg declared. Three states reach
+            # here: explicit True, explicit False, and no declaration (a row
+            # written before this field existed) -- the last refuses like
+            # False at the admission gate but means "nobody answered", not "no".
             #
-            # Of the three, only True is not benign. If that leg is genuinely
-            # alive, its declaration is the right answer: it is the one a
-            # control would reach. If it died without terminalizing, the row
-            # outlives it, and a declaration of True then admits a control for
-            # a drain that is gone. Nothing here can tell those apart — a row
-            # reading running is the only evidence available, and it is exactly
-            # the evidence a dead leg leaves behind. The stale-session doctor is
-            # what resolves it, after the fact.
+            # Only True is risky: if that leg is genuinely alive it's the right
+            # answer, but if it died without terminalizing, a stale True admits
+            # a control for a drain that's gone -- and a row reading running is
+            # the only evidence available either way. The stale-session doctor
+            # resolves it after the fact.
             #
-            # So this path is not made correct by leaving it alone; it is left
-            # alone because the alternative is worse. Writing the declaration
-            # here would mean a read-modify-write against a row a live leg may
-            # be updating, which is how the exited leg's process markers got
-            # restored over the live leg's once already. The narrower cost is
-            # the other direction: a row reading False, or carrying no
-            # declaration at all, keeps refusing controls even though this leg
-            # would drain them.
+            # This path is left alone deliberately, not because it's correct:
+            # writing the declaration here would be a read-modify-write against
+            # a row a live leg may be updating, the same race that once
+            # restored an exited leg's process markers over a live leg's.
+            # The narrower cost -- a row reading False or undeclared keeps
+            # refusing controls it could actually drain -- is the safer one.
         else:
             session_prog_id = str(uuid.uuid4())
             branch_prog_id = str(uuid.uuid4())

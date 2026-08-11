@@ -925,6 +925,21 @@ completion-trust check above has nothing to verify) but gave up mid-run via
 already made the run loud — an existing failure reason (including the artifact check above) is
 preserved untouched.
 
+**`_teardown_common` node-failure and gate-rejection backstops** — two more checks that run
+*before* the completion-trust gate and escalation backstop above, for the same reason: a DAG
+run whose nodes all failed, or whose dependent subtree was skipped after a gate rejection,
+typically produces no artifacts or commits either, so the trust gate would otherwise demote it
+to `completed_empty` before either backstop got a chance to apply. The node-failure backstop
+catches a DAG operation whose `invoke()` raised and was recorded `EventStatus.FAILED`, which
+folds into `completed_operations` alongside genuine completions and would otherwise never roll
+up into the run's own status. The gate-rejection backstop covers a gate node that rejected
+mid-DAG, whose dependent subtree the executor short-circuits to skipped rather than running
+against the rejected baseline — a correct, deliberate stop, not a failure, so status stays
+`completed` but the reason code must say so explicitly. Because it leaves status at
+`completed` instead of flipping to `failed` (unlike the other two backstops), it can't rely on
+the trust gate's own `final_status == "completed"` guard to skip it, and must run first so its
+evidence is already in place before that gate's no-evidence check runs.
+
 **`_teardown_common` pre_write_status snapshot** — the CAS-guard signal. Snapshot of the status
 this teardown itself observed when it started (before any status-changing write in this
 function) — this tells apart the two rejection causes in the CAS-miss/terminal-skip handling
@@ -977,6 +992,30 @@ already-open DB so every `Signal` emitted on this session's observer lands in
 under `status.py` above for the downstream consequence (usage metrics never recorded for those
 session kinds).
 
+**`_reopen_session_for_resume`** — a closing transition only announces itself when the status
+column actually changes. A resume adopts a session an earlier leg already left terminal, so
+writing that same terminal status again at the end is a no-op: the leg finishes silently and
+the job record never closes. This reopens the session to `running` first, restoring the
+invariant the rest of the system reads off that column (a session marked terminal is not
+currently executing), so the eventual re-close is a real transition. Reopening is the only
+sanctioned exit from a terminal status and carries an explicit override rather than a
+session-policy rule, so each reopening stays individually attributable instead of opening
+terminal-exit to every writer — finality is what the reapers, the teardown guard, and
+`li wait` all rest on.
+
+**`_reopen_session_for_resume` unresolved drain-declaration race** — when a resume does *not*
+reopen (the adopted row is still `running`), the row keeps whatever the earlier leg declared
+for whether its runner drains operator controls. Three states reach this point: explicit
+`True`, explicit `False`, and no declaration at all (a row written before the field existed,
+which refuses controls like `False` but means "nobody answered" rather than "no"). Only `True`
+is risky — if that leg is genuinely alive it's the right answer, but if it died without
+terminalizing, a stale `True` would admit a control for a drain that's gone, and a row reading
+`running` is the only evidence available either way; the stale-session doctor resolves it after
+the fact. This is left alone deliberately: writing the declaration here would be a
+read-modify-write against a row a live leg may be concurrently updating — the same race that
+once overwrote an exited leg's process markers with a live leg's — so the narrower failure mode
+(a `False`/undeclared row keeps refusing controls it could actually drain) is accepted instead.
+
 ## `mirror.py` — Claude transcript mirroring into StateDB
 
 **`_Lineage`** — cross-session conversation-lineage detection protocol. A continued
@@ -1026,12 +1065,71 @@ first-run startup, when the studio is creating the schema and checkpointing on a
 connection) is retried, not fatal. Opening it once outside the loop meant a single transient
 open error silently ended the in-process mirror for the whole life of the studio process.
 
-## `state.py` — `li state doctor`
+**`_peek_codex_head` rollout classification** — classifies a Codex rollout's first line without
+consuming the tail, into `"meta"` (parsed session_meta header), `"headerless"` (a complete
+first line that isn't one), or `"torn"` (the line is still being written, or unreadable).
+Completeness is decided by the trailing newline BEFORE any parse attempt: rollouts are
+append-only JSONL, so a line without its newline may still be arriving even if the bytes so far
+happen to parse; a newline-terminated line that fails to parse is permanently corrupt and
+settles as headerless. `_mirror_one_codex` defers on `"torn"` rather than reading the file under
+the path-stem identity, since the header's real UID could arrive next pass and split one
+rollout into two sessions.
+
+**`_mirror_one_codex` orchestrated-rollout absorption** — a rollout whose header names an
+originator in `SKIPPED_ORIGINATORS` (an orchestrator's own run, e.g. a lionagi agent leg)
+already has a session under the agent's name, so importing the rollout too would double it.
+`_mirror_one_codex` absorbs whatever an older mirror version may have imported, under either id
+the file was ever keyed by (a pre-header path-stem fallback, and the header's real UID), then
+marks the file `orchestrated` and never reads it again. State only commits once both absorption
+calls return, so a failed attempt leaves exactly what the next pass needs to retry.
+
+**`_absorb_backfill`** — a process-wide, provenance-driven counterpart to the per-file
+absorption above: it reads recorded session provenance rather than the rollout tree, so it also
+reaches rows whose backing files fall outside the current sweep window. Returns whether the
+sweep completed cleanly; `mirror_forever`/`_run` only stand down (stop calling it) on `True` —
+one bad pass must not retire the backfill for the process's whole lifetime. Errors are logged,
+never raised, since reconciliation must never take the mirror down.
+
+## `state.py` — `li state` inspect/prune/migrate state.db
 
 **`_doctor` per-row sweep** — the per-row repair sweep goes through the single guarded write
 path (ADR-0035): `expected_statuses={"running"}` re-asserts the CAS the old bulk `UPDATE` did
 inline, and routes the sweep through `update_status()` so it gets a `reason_code` + a
 `status_transitions` audit row instead of a raw column write.
+
+**`_doctor` session age vs process age** — a stale-`running` session isn't necessarily a dead
+process: a branch picked up again keeps its session's original `started_at` while the process
+serving it is new. The sweep checks the process itself (via the same PID-identity check the
+stale-kill sweep uses, not a second weaker rule) before calling a row stuck. A PID that's alive
+isn't proof either — the OS can hand a dead session's PID to an unrelated live process — so an
+"unverifiable" identity check result is skipped (leaves the row for a later pass) while a
+"zombie" result (process exited, not yet reaped) is swept.
+
+**`_collect_message_breakdown`** — messages by role and by age, the two axes a retention
+decision needs. A bare row count can't say whether pruning reclaims anything; the age histogram
+makes that visible before a prune runs. It reports counts only, never a content-size sum:
+summing `LENGTH(content)` over the messages table is the one query here with no useful index
+(measured ~57s against 1.68M rows, vs under 2s for everything else) — the reclaim command that
+actually touches those rows reports their size directly instead.
+
+**`_prune_candidates` / `_null_content_candidates`** — both re-run their operation's own
+selection predicate outside the operation's transaction, and print the recount beside the
+result as a cross-check: after a real run it must read zero, after a `--dry-run` preview it
+must match what the preview reported. Running inside the same transaction would read the
+operation's own uncommitted rows and agree by construction, so it deliberately runs outside it.
+
+**`_null_content`** — replaces old message *bodies* with a size-preserving marker; it exists
+because `li state prune` can't reach this content. Prune selects and deletes **sessions**, but
+message bytes live on **messages**, and a message any surviving progression still references is
+kept regardless of its own age — so a store can be almost entirely message content, have every
+message inside prune's keep-window, and give prune nothing to delete. `--dry-run` performs the
+real `UPDATE` and rolls it back rather than estimating, which makes a preview a **write** that
+holds the same lock for the same duration as the real operation, not a cheap read.
+
+**`_prune` / `_null_content` preview mechanics** — both route their dry-run through a
+`_PreviewOnlyError` raised after the real statements ran inside the transaction: the exception
+carries the real counts out and forces the transaction to unwind instead of commit, so a preview
+number can never drift from what the real operation would have measured.
 
 ## `monitor.py` — `li monitor` (dashboard + `li monitor run` wait primitive)
 
