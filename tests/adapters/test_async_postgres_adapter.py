@@ -5,9 +5,7 @@
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # check_async_postgres_available
-# ---------------------------------------------------------------------------
 
 
 def test_check_async_postgres_available_reports_missing_optional_dependency(
@@ -35,9 +33,7 @@ def test_check_async_postgres_available_true_when_dependencies_present(monkeypat
     assert result is True
 
 
-# ---------------------------------------------------------------------------
 # to_obj calls _ensure_table before delegating to parent
-# ---------------------------------------------------------------------------
 
 
 async def test_async_postgres_to_obj_ensures_table_for_dsn_before_delegating(

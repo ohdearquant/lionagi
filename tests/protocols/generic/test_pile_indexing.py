@@ -14,9 +14,7 @@ from lionagi._errors import ItemNotFoundError
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.pile import Pile, to_list_type
 
-# ---------------------------------------------------------------------------
 # Fixtures / helpers
-# ---------------------------------------------------------------------------
 
 
 class Item(Element):
@@ -81,9 +79,7 @@ def pile_5(five_items):
     return Pile(collections=five_items)
 
 
-# ---------------------------------------------------------------------------
 # 1. to_df / dump (pandas-dependent)
-# ---------------------------------------------------------------------------
 
 pandas_missing = importlib.util.find_spec("pandas") is None
 
@@ -181,9 +177,7 @@ class TestAsyncEdgeCases:
         assert item not in p
 
 
-# ---------------------------------------------------------------------------
 # 9. from_dict / to_dict serialization roundtrip
-# ---------------------------------------------------------------------------
 
 
 class TestSerializationRoundtrip:
@@ -227,6 +221,4 @@ class TestSerializationRoundtrip:
         assert isinstance(d["progression"], dict)
 
 
-# ---------------------------------------------------------------------------
 # 10. is_homogenous
-# ---------------------------------------------------------------------------

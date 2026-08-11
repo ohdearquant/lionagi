@@ -22,7 +22,7 @@ def message_manager():
 
 
 def test_clear_messages_no_system(message_manager):
-    """Test clearing messages when no system message exists"""
+    """Clearing messages when no system message exists"""
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
     message_manager.add_message(assistant_response="Response", sender="assistant", recipient="user")
 
@@ -32,7 +32,7 @@ def test_clear_messages_no_system(message_manager):
 
 
 def test_clear_messages_preserves_system(message_manager):
-    """Test clearing messages preserves system message"""
+    """Clearing messages preserves system message"""
     system = message_manager.add_message(system="Test system")
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
     message_manager.add_message(assistant_response="Response", sender="assistant", recipient="user")
@@ -44,7 +44,7 @@ def test_clear_messages_preserves_system(message_manager):
 
 
 async def test_async_add_message(message_manager):
-    """Test async message addition"""
+    """Async message addition"""
     msg = await message_manager.a_add_message(
         instruction="Test", sender="user", recipient="assistant"
     )
@@ -53,7 +53,7 @@ async def test_async_add_message(message_manager):
 
 
 async def test_async_clear_messages(message_manager):
-    """Test async clear messages"""
+    """Async clear messages"""
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
     assert len(message_manager.messages) == 1
 
@@ -62,7 +62,7 @@ async def test_async_clear_messages(message_manager):
 
 
 def test_last_response(message_manager):
-    """Test last_response property"""
+    """last_response property"""
     assert message_manager.last_response is None
 
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
@@ -80,7 +80,7 @@ def test_last_response(message_manager):
 
 
 def test_last_instruction(message_manager):
-    """Test last_instruction property"""
+    """last_instruction property"""
     assert message_manager.last_instruction is None
 
     instruction1 = message_manager.add_message(
@@ -98,7 +98,7 @@ def test_last_instruction(message_manager):
 
 
 def test_assistant_responses_property(message_manager):
-    """Test assistant_responses property"""
+    """assistant_responses property"""
     assert len(message_manager.assistant_responses) == 0
 
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
@@ -119,7 +119,7 @@ def test_assistant_responses_property(message_manager):
 
 
 def test_instructions_property(message_manager):
-    """Test instructions property"""
+    """Instructions property"""
     assert len(message_manager.instructions) == 0
 
     instruction1 = message_manager.add_message(
@@ -139,7 +139,7 @@ def test_instructions_property(message_manager):
 
 
 def test_action_requests_property(message_manager):
-    """Test action_requests property"""
+    """action_requests property"""
     assert len(message_manager.action_requests) == 0
 
     request1 = message_manager.add_message(
@@ -157,7 +157,7 @@ def test_action_requests_property(message_manager):
 
 
 def test_action_responses_property(message_manager):
-    """Test action_responses property"""
+    """action_responses property"""
     assert len(message_manager.action_responses) == 0
 
     request = message_manager.add_message(
@@ -174,7 +174,7 @@ def test_action_responses_property(message_manager):
 
 
 def test_actions_property(message_manager):
-    """Test actions property (both requests and responses)"""
+    """Actions property (both requests and responses)"""
     assert len(message_manager.actions) == 0
 
     request = message_manager.add_message(

@@ -48,7 +48,7 @@ def _dump(logger: DataLogger, tmp_path: Path, name: str = "out.json") -> tuple[i
     return fp.stat().st_size, json.loads(fp.read_text())
 
 
-# --- the reported case ------------------------------------------------------
+# the reported case
 
 
 def test_image_payload_is_not_written_to_the_log_file(tmp_path):
@@ -101,7 +101,7 @@ def test_redaction_survives_an_api_calling_event(tmp_path):
     assert call.payload["messages"][0]["content"][1]["image_url"]["url"] == PNG_URI
 
 
-# --- the knob ---------------------------------------------------------------
+# the knob
 
 
 def test_redaction_is_on_by_default():
@@ -174,7 +174,7 @@ async def test_async_dump_redacts(tmp_path):
     assert B64 not in fp.read_text()
 
 
-# --- the predicate ----------------------------------------------------------
+# the predicate
 
 
 @pytest.mark.parametrize(
