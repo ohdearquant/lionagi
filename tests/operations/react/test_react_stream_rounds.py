@@ -11,9 +11,7 @@ from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
 from lionagi.session.branch import Branch
 from lionagi.testing import LionAGIMockFactory
 
-# ============================================================================
 # Helper Functions and Fixtures
-# ============================================================================
 
 
 def make_mocked_branch_for_react():
@@ -49,14 +47,10 @@ async def async_search(query: str) -> str:
     return f"Search results for: {query}"
 
 
-# ============================================================================
 # 1. Tool Execution Flows
-# ============================================================================
 
 
-# ============================================================================
 # 2. Multi-Step Reasoning
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -211,9 +205,7 @@ async def test_max_extensions_clamped_to_100():
         assert result == "Done"
 
 
-# ============================================================================
 # 3. Integration Scenarios
-# ============================================================================
 
 
 @pytest.mark.asyncio

@@ -72,21 +72,8 @@ def pinned_member(
     ``("found", (pid, create_time, marker, marker_read))`` when a single process
     answered all of it, ``("gone", None)`` when the pid holds no live member of
     this group, and ``("unknown", None)`` when the reads could not be tied to one
-    process.
-
-    Group, start time and marker are three facts, each read by pid, and a pid
-    the OS reassigns between two of those reads answers the later ones as the
-    replacement process. A verdict assembled from those answers would describe
-    no process that ever existed, so the reads are bracketed by the start time:
-    read before, read again after, required to be unchanged. That is the value
-    that tells a recycled pid from the process that held it, and it is what
-    binds the other two to the same process. Failing the bracket is "unknown" —
-    a measurement that did not come off, never evidence about the group.
-
-    *marker_read* travels with the marker because a None marker alone does not
-    say which of two things happened. The environment read and held no marker,
-    and the environment could not be read at all, are the same None; only this
-    flag tells a member that was inspected from one that refused inspection.
+    process. Bracketed by a start-time re-read to rule out pid reuse mid-read;
+    see docs/internals/ln-primitives.md#process-group-identity for why.
     """
     state, created = process_create_time(pid)
     if state == "gone":
@@ -114,15 +101,10 @@ def live_group_members(
     """Live members of process group *pgid*, and whether the scan was complete.
 
     Returns ``(members, complete)`` where each member is ``(pid, create_time,
-    marker, marker_read)`` from :func:`pinned_member`, so a caller weighing a
-    member's marker against its age is weighing one process, not two readings.
-
-    A vanished-mid-scan process is simply not a live member; a process whose
-    group/identity couldn't be read leaves *complete* false (the group may hold
-    an unseen member) rather than being silently dropped. Zombies are excluded —
-    an unreaped corpse still counts as a group member to the kernel. A member
-    whose marker alone couldn't be read is still a seen member (*marker_read*
-    false), not a gap in membership.
+    marker, marker_read)`` from :func:`pinned_member`. ``complete`` is False
+    when a process's group/identity couldn't be read (the group may hold an
+    unseen member) rather than silently dropping it; zombies are excluded, but
+    a member whose marker alone couldn't be read still counts as seen.
     """
     import psutil
 
@@ -156,16 +138,10 @@ def group_member_pids(pgid: int) -> tuple[list[int], bool]:
     """Pids currently in group *pgid*, and whether the scan was complete.
 
     The marker-free membership read, for a caller asking only whether a group
-    is empty. It is a separate function rather than :func:`live_group_members`
-    with a field dropped because the marker has to be read INSIDE the identity
-    bracket to belong to the same process, so a read without it is a different
-    observation and not a cheaper version of the same one.
-
-    A caller may act on a non-empty answer without further identity work: a
-    process group id is not reissued while the group still has members, so a
-    group that answers with members is still the one whose id was recorded. An
-    incomplete scan is never emptiness — it is a member that may not have been
-    seen, which is exactly the case where signalling nothing is wrong.
+    is empty. Not a cheaper :func:`live_group_members` with a field dropped —
+    see docs/internals/ln-primitives.md#process-group-identity for why the
+    marker has to be read inside the same bracket. An incomplete scan is never
+    reported as emptiness.
     """
     import psutil
 
@@ -240,9 +216,8 @@ def kill_group_now(pgid: Any) -> bool:
 def _safe_pgid(proc: Any) -> int | None:
     """Return the process-group id to signal, or None when unsafe."""
     pid = getattr(proc, "pid", None)
-    # pid must be int > 1: pid==1 is init/session leader on CI (would SIGKILL
-    # the harness itself; also catches MagicMock.pid==1). Never signal our own
-    # group if a bad process double or non-isolated child leaks through.
+    # pid==1 is init/session leader (would SIGKILL the harness itself; also
+    # catches MagicMock.pid==1) — never signal it or our own group.
     if not (hasattr(os, "killpg") and hasattr(os, "getpgrp") and isinstance(pid, int) and pid > 1):
         return None
     try:

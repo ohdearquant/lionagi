@@ -15,10 +15,6 @@ from lionagi.tools.file.editor import (
     EditorTool,
 )
 
-# ---------------------------------------------------------------------------
-# EditorAction enum
-# ---------------------------------------------------------------------------
-
 
 def test_editor_action_write_value():
     assert EditorAction.write == "write"
@@ -28,11 +24,6 @@ def test_editor_action_write_value():
 def test_editor_action_edit_value():
     assert EditorAction.edit == "edit"
     assert EditorAction.edit.value == "edit"
-
-
-# ---------------------------------------------------------------------------
-# EditorRequest model
-# ---------------------------------------------------------------------------
 
 
 def test_editor_request_write_construction():
@@ -57,11 +48,6 @@ def test_editor_request_defaults():
     assert req.replace_all is False
 
 
-# ---------------------------------------------------------------------------
-# EditorResponse model
-# ---------------------------------------------------------------------------
-
-
 def test_editor_response_success():
     resp = EditorResponse(success=True, content="Written: /tmp/f.py")
     assert resp.success is True
@@ -72,11 +58,6 @@ def test_editor_response_failure():
     resp = EditorResponse(success=False, error="something went wrong")
     assert resp.success is False
     assert resp.content is None
-
-
-# ---------------------------------------------------------------------------
-# Write: basic
-# ---------------------------------------------------------------------------
 
 
 async def test_write_new_file(tmp_path):
@@ -129,11 +110,6 @@ async def test_write_dict_input_accepted(tmp_path):
     )
     assert resp.success is True
     assert target.read_text() == "pass\n"
-
-
-# ---------------------------------------------------------------------------
-# Edit: basic
-# ---------------------------------------------------------------------------
 
 
 async def test_edit_replaces_string(tmp_path):
@@ -240,9 +216,7 @@ async def test_edit_missing_new_string_field_fails(tmp_path):
     assert "new_string" in resp.error
 
 
-# ---------------------------------------------------------------------------
 # Security: path escape
-# ---------------------------------------------------------------------------
 
 
 async def test_write_relative_path_escape_rejected(tmp_path):
@@ -277,9 +251,7 @@ async def test_edit_path_escape_rejected(tmp_path):
     assert "escape" in resp.error.lower() or "workspace" in resp.error.lower()
 
 
-# ---------------------------------------------------------------------------
 # Security: symlink rejection
-# ---------------------------------------------------------------------------
 
 
 async def test_write_symlink_rejected(tmp_path):
@@ -317,9 +289,7 @@ async def test_edit_symlink_rejected(tmp_path):
     assert real.read_text() == "hello world\n"
 
 
-# ---------------------------------------------------------------------------
 # Security: denied filenames
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -357,11 +327,6 @@ async def test_edit_denied_filename_blocked(tmp_path):
     assert "protected" in resp.error.lower() or ".env" in resp.error
 
 
-# ---------------------------------------------------------------------------
-# to_tool
-# ---------------------------------------------------------------------------
-
-
 def test_to_tool_returns_tool_instance(tmp_path):
     tool = EditorTool(workspace_root=str(tmp_path))
     assert isinstance(tool.to_tool(), Tool)
@@ -385,11 +350,6 @@ async def test_to_tool_callable_executes(tmp_path):
     )
     assert result["success"] is True
     assert target.read_text() == "via tool\n"
-
-
-# ---------------------------------------------------------------------------
-# Edit requires both old_string and new_string
-# ---------------------------------------------------------------------------
 
 
 async def test_editor_tool_requires_old_and_new_strings_for_edit(tmp_path):

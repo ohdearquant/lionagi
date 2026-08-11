@@ -234,7 +234,8 @@ async def mirror_session(
     given together with ``max_preview_chars``, message content is bounded
     via ``bound_mirror_content`` with a resolvable pointer on
     ``node_metadata.mirror_source``; omitting them keeps the legacy
-    unbounded write. ``cwd`` is the transcript's own working directory --
+    unbounded write, for callers with no live transcript file behind the
+    events. ``cwd`` is the transcript's own working directory --
     the CLI's artifact root -- written to ``artifacts_path`` on create, and
     backfilled on an existing row that lacks one without overwriting one
     already set.

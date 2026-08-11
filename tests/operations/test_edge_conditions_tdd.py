@@ -17,9 +17,7 @@ from lionagi.protocols.graph.graph import Graph
 from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 
-# ============================================================================
 # TEST FIXTURES AND HELPERS
-# ============================================================================
 
 
 class ConditionalEdge(EdgeCondition):
@@ -88,9 +86,7 @@ def create_mock_branch(name: str = "TestBranch") -> Branch:
     return branch
 
 
-# ============================================================================
 # SPECIFICATION TESTS - Define Expected Behavior
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -323,9 +319,7 @@ async def test_spec_cascading_skip_propagation():
     )
 
 
-# ============================================================================
 # GUARD TESTS - Prevent Specific Regressions
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -438,9 +432,7 @@ async def test_guard_conditional_aggregation():
     )
 
 
-# ============================================================================
 # VALIDATION TESTS - Ensure Proper Error Handling
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -483,9 +475,7 @@ async def test_validation_circular_conditional_dependency():
         await flow(session, graph, verbose=False)
 
 
-# ============================================================================
 # BEHAVIORAL TESTS - Complex Scenarios
-# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -612,9 +602,7 @@ async def test_behavior_multi_level_conditions():
                 )
 
 
-# ============================================================================
 # PERFORMANCE TESTS - Ensure Efficiency
-# ============================================================================
 
 
 @pytest.mark.asyncio

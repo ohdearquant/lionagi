@@ -404,6 +404,57 @@ group."
   `all_terminal=true` (stop). `all_terminal` means every run has a recorded
   end, not that every run succeeded — read each entry's `outcome` for that.
 
+#### reservation-giveback
+
+`_discard_reservation()` (`lionagi/mcp/jobs.py`) gives a reserved run
+directory back after a submission fails before its job record is published.
+
+A submission that fails partway through writing has already left files
+behind, so removing only an empty directory would give the reservation back
+for some failures and not others. The files a submission writes into its own
+reservation are named by a fixed list and only those are ever removed — they
+are addressed as fixed names under the reservation directory, never through a
+path a caller handed in (a caller-named MCP config file lives wherever it
+lives and is never touched, whatever it points at).
+
+`rmdir` refuses a directory with anything in it, and that refusal stays the
+safety net rather than becoming a check taken beforehand: whatever this is
+asked to remove, a directory holding a run's state survives it. A removal
+that fails for any other reason leaves a directory nobody claimed, which is
+worth less than the error that sent us here, so it is swallowed rather than
+raised.
+
+The function returns whether the directory is actually gone afterward. When
+it is not, a marker (`RESERVATION_ROLLBACK_INCOMPLETE`) is left in what
+remains of it, so a directory found later under the jobs root with no job
+record reads as a giveback that could not run rather than one that
+succeeded — both otherwise look like the same empty absence of a job. The
+marker write is itself best-effort: `_discard_reservation_and_warn()` checks
+the marker's actual presence before logging, rather than assuming it landed
+just because the directory survived.
+
+#### write-job-publish
+
+`_write_job()` (`lionagi/mcp/jobs.py`) publishes a job record by writing a
+per-write-unique temp file in the same directory and calling `os.replace()`.
+`os.replace` is atomic on the same filesystem, so a concurrent reader
+(`status()` / `list_jobs()`) never observes a torn file, and a failed write
+leaves the previous record intact instead of a partial one. The temp name
+being unique per write means two writers to the same run (the pid-attach
+write in `submit()` and the terminal hook) never collide on the temp file
+itself. This makes each publish all-or-nothing; it does not serialize two
+writers, so a read-modify-write pair can still lose an update (last replace
+wins — see `_locked_job()` in [locked-job-contract](#locked-job-contract) for
+what does serialize writers).
+
+Non-finite floats are refused before the temp file is opened, so a refused
+record leaves neither a staging file nor a published one. `json.dumps` would
+otherwise write a non-finite float as the bare token `NaN` or `Infinity`,
+which only Python reads back — every non-Python reader of this record, and
+every strict JSON parser, would fail on it long after the run that wrote it.
+The start time already has a representation for "unreadable" (`null`), so
+nothing here encodes a sentinel this check would need to special-case.
+
 ### `mcp/_notify_hook.py`
 
 #### deliver-terminal-notice-two-callers

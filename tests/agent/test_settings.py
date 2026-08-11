@@ -51,11 +51,6 @@ def test_apply_hooks_rejects_shell_string_commands():
         apply_hooks_from_settings(AgentSpec.compose("implementer"), settings)
 
 
-# ---------------------------------------------------------------------------
-# A1: deep merge of global + project settings
-# ---------------------------------------------------------------------------
-
-
 def test_load_settings_deep_merges_global_and_project_settings(tmp_path, monkeypatch):
     home = tmp_path / "home"
     project = tmp_path / "project"
@@ -76,11 +71,6 @@ def test_load_settings_deep_merges_global_and_project_settings(tmp_path, monkeyp
     assert bash_hooks[0]["command"] == ["guard", "global"]
     assert bash_hooks[1]["command"] == ["guard", "local"]
     assert settings["permissions"]["mode"] == "rules"
-
-
-# ---------------------------------------------------------------------------
-# A2: cwd parent discovery
-# ---------------------------------------------------------------------------
 
 
 def test_load_settings_discovers_parent_project_settings_from_cwd(tmp_path, monkeypatch):
@@ -116,11 +106,6 @@ def test_load_settings_discovers_parent_of_explicit_project_dir(tmp_path, monkey
     assert settings["notifications"]["enabled"] is True
 
 
-# ---------------------------------------------------------------------------
-# A3: untrusted python hook rejected via explicit trusted_hook_modules
-# ---------------------------------------------------------------------------
-
-
 def test_apply_hooks_from_settings_rejects_untrusted_python_hook():
     settings = {"hooks": {"pre": {"bash": [{"python": "os:path"}]}}}
 
@@ -130,11 +115,6 @@ def test_apply_hooks_from_settings_rejects_untrusted_python_hook():
             settings,
             trusted_hook_modules={"lionagi.agent.hooks"},
         )
-
-
-# ---------------------------------------------------------------------------
-# A4: shell pre hook raises PermissionError on nonzero subprocess exit
-# ---------------------------------------------------------------------------
 
 
 async def test_shell_pre_hook_raises_permission_error_on_nonzero_exit(monkeypatch):
@@ -153,11 +133,6 @@ async def test_shell_pre_hook_raises_permission_error_on_nonzero_exit(monkeypatc
 
     with pytest.raises(PermissionError, match="blocked"):
         await hook("bash", "run", {"file_path": "test.py"})
-
-
-# ---------------------------------------------------------------------------
-# Timed-out hook subprocess termination: kills process group, awaits cleanup
-# ---------------------------------------------------------------------------
 
 
 async def test_pre_hook_timeout_kills_process_group(monkeypatch):
@@ -216,13 +191,11 @@ async def test_post_hook_timeout_kills_process_group(monkeypatch):
     assert killed, "Expected killpg to be called after post-hook timeout"
 
 
-# ---------------------------------------------------------------------------
 # aterminate_process_group must never signal the init/session process group.
 # A test double (or a not-yet-spawned proc) whose ``pid`` coerces to 1 via
 # __index__ would make os.killpg(1, ...) signal process group 1 — which on a
 # CI runner contains the test process itself, SIGKILLing the whole run. Only a
 # real child pid (> 1) may be signalled.
-# ---------------------------------------------------------------------------
 
 
 def test_kill_proc_group_ignores_unreal_pid(monkeypatch):

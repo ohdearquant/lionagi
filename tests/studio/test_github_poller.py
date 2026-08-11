@@ -518,9 +518,7 @@ def test_github_poll_respects_cursor_high_water_mark(monkeypatch):
     assert [i.event["pr_number"] for i in items] == [2]
 
 
-# ---------------------------------------------------------------------------
 # github_filter={"event": "pr_merged"} -- merged-PR mode
-# ---------------------------------------------------------------------------
 
 
 def test_github_poll_merged_mode_polls_closed_state(monkeypatch):
@@ -919,9 +917,7 @@ def test_github_poll_401_surviving_retry_logs_at_error_with_schedule_id_and_name
     assert "401" in msg
 
 
-# ---------------------------------------------------------------------------
 # Token caching — avoid a `gh auth token` shell-out on every poll
-# ---------------------------------------------------------------------------
 
 
 def test_github_poll_caches_working_token_across_polls(monkeypatch):
@@ -1075,9 +1071,7 @@ def test_github_poll_pagination_401_clears_cached_token(monkeypatch):
     assert gh_mod._cached_token is None
 
 
-# ---------------------------------------------------------------------------
 # GithubPollResult.poll_status — observer self-health signal
-# ---------------------------------------------------------------------------
 
 
 def test_github_poll_result_with_items_has_ok_status(monkeypatch):
@@ -1170,9 +1164,7 @@ def test_github_poll_result_default_poll_status_is_ok():
     assert result.poll_status == "ok"
 
 
-# ---------------------------------------------------------------------------
 # Scan reach: how far back a single merged-mode poll can actually see
-# ---------------------------------------------------------------------------
 
 
 def _all_merged(page):

@@ -13,9 +13,7 @@ import pytest
 
 import lionagi.state.db as state_db_mod
 
-# ---------------------------------------------------------------------------
 # subprocess.build_argv tests
-# ---------------------------------------------------------------------------
 
 
 def _minimal_schedule(**kwargs) -> dict:
@@ -114,9 +112,7 @@ def test_build_argv_flow_yaml_cleanup_on_spawn():
     assert not os.path.exists(tmp_path)
 
 
-# ---------------------------------------------------------------------------
 # Creation-time YAML validation tests
-# ---------------------------------------------------------------------------
 
 
 def test_validate_flow_yaml_spec_accepts_valid_spec():
@@ -288,9 +284,7 @@ def test_create_schedule_route_storage_failure_is_not_409(tmp_path, monkeypatch)
     assert r.status_code == 500
 
 
-# ---------------------------------------------------------------------------
 # Lifecycle / status parity test
-# ---------------------------------------------------------------------------
 
 
 def test_flow_yaml_lifecycle_parity_with_play():
@@ -333,9 +327,7 @@ def test_flow_yaml_lifecycle_parity_with_play():
             os.unlink(yaml_tmp)
 
 
-# ---------------------------------------------------------------------------
 # CLI parser tests
-# ---------------------------------------------------------------------------
 
 
 def test_cli_flow_yaml_choice_accepted():
@@ -351,9 +343,7 @@ def test_cli_flow_yaml_choice_accepted():
     assert args.action_kind == "flow_yaml"
 
 
-# ---------------------------------------------------------------------------
 # Persistence round-trip test
-# ---------------------------------------------------------------------------
 
 
 def test_flow_yaml_db_roundtrip():
@@ -404,9 +394,7 @@ def test_flow_yaml_db_roundtrip():
     asyncio.run(_run())
 
 
-# ---------------------------------------------------------------------------
 # Regression tests: tmp-file lifecycle under cancellation / exception
-# ---------------------------------------------------------------------------
 
 
 def test_spawn_and_wait_cancellation_cleans_tmp_file():
@@ -487,9 +475,7 @@ def test_fire_pre_spawn_exception_cleans_tmp_file():
     assert not os.path.exists(tmp_path), "tmp file must be removed after pre-spawn exception"
 
 
-# ---------------------------------------------------------------------------
 # Regression tests: legacy schedules table migration
-# ---------------------------------------------------------------------------
 
 
 def test_legacy_schedules_table_upgraded_and_flow_yaml_insert_succeeds():
@@ -623,9 +609,7 @@ def test_legacy_rebuild_yields_full_canonical_columns():
     asyncio.run(_run())
 
 
-# ---------------------------------------------------------------------------
 # Regression tests: PATCH validation
-# ---------------------------------------------------------------------------
 
 
 def test_update_schedule_rejects_patch_to_flow_yaml_without_yaml():

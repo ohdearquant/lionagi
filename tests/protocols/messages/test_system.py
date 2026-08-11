@@ -7,7 +7,7 @@ from lionagi.protocols.types import MessageRole, System
 
 
 def test_systemcontent_initialization():
-    """Test basic initialization of SystemContent dataclass"""
+    """Basic initialization of SystemContent dataclass"""
     # Default initialization
     content = SystemContent()
     assert content.system_message == "You are a helpful AI assistant. Let's think step by step."
@@ -25,7 +25,7 @@ def test_systemcontent_initialization():
 
 
 def test_systemcontent_slots():
-    """Test that SystemContent uses slots for memory efficiency"""
+    """SystemContent uses slots for memory efficiency."""
     content = SystemContent()
 
     assert not hasattr(content, "__dict__")
@@ -35,7 +35,7 @@ def test_systemcontent_slots():
 
 
 def test_systemcontent_rendered_without_datetime():
-    """Test rendered property without datetime"""
+    """Rendered property without datetime"""
     content = SystemContent(system_message="Test message")
 
     rendered = content.rendered
@@ -44,7 +44,7 @@ def test_systemcontent_rendered_without_datetime():
 
 
 def test_systemcontent_rendered_with_datetime():
-    """Test rendered property with datetime"""
+    """Rendered property with datetime"""
     content = SystemContent(system_message="Test message", system_datetime="2024-01-01T12:00")
 
     rendered = content.rendered
@@ -121,7 +121,7 @@ def test_systemcontent_from_dict_partial():
 
 
 def test_system_initialization():
-    """Test basic initialization of System"""
+    """Basic initialization of System"""
     system_msg = "Test system message"
     system = System(content=SystemContent(system_message=system_msg))
 
@@ -173,7 +173,7 @@ def test_system_with_custom_datetime():
 
 
 def test_system_update():
-    """Test updating System message"""
+    """Updating System message"""
     system = System(content={"system_message": "Initial message"})
 
     new_message = "Updated message"
@@ -210,7 +210,7 @@ def test_system_with_default_message():
 
 
 def test_system_str_representation():
-    """Test string representation of System"""
+    """String representation of System"""
     system = System(content={"system_message": "Test message"})
 
     str_repr = str(system)
@@ -221,7 +221,7 @@ def test_system_str_representation():
 
 
 def test_system_message_load():
-    """Test loading System from dictionary"""
+    """Loading System from dictionary"""
     protected_params = {
         "role": MessageRole.SYSTEM,
         "content": {"system_message": "Test message"},
@@ -310,7 +310,7 @@ def test_system_content_validator_with_invalid_type():
 
 
 def test_system_complete_workflow():
-    """Test complete workflow with System and SystemContent"""
+    """Complete workflow with System and SystemContent"""
     # Create system with datetime
     system = System(
         content={
@@ -337,7 +337,7 @@ def test_system_complete_workflow():
 
 
 def test_system_datetime_scenarios():
-    """Test all datetime scenarios in one comprehensive test"""
+    """All datetime scenarios in one comprehensive test"""
     # Scenario 1: datetime=True (auto-generate)
     sys1 = System(content={"system_message": "Test", "system_datetime": True})
     assert sys1.content.system_datetime is not None

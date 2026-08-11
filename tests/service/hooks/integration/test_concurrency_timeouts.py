@@ -209,7 +209,6 @@ class TestTimeoutBehavior:
             with pytest.raises(MyCancelled):
                 await hook_event.invoke()
 
-            # Should have attempted to set up timeout
             mock_fail_after.assert_called_once_with(1)
 
     @pytest.mark.anyio
@@ -261,7 +260,6 @@ class TestNoDeadlocks:
     @pytest.mark.anyio
     @pytest.mark.slow_timing
     async def test_nested_hook_calls_no_deadlock(self, patch_cancellation):
-        """Test that hooks calling other hooks don't deadlock."""
         hook_sleep = 0.01
         invoke_delay = 0.01
         # Upper bound: each event does hook + invoke (+ optional post-hook).

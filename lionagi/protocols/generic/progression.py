@@ -27,15 +27,10 @@ __all__ = (
 class _MembersDeque(deque):
     """A ``deque`` that keeps a bound membership ``set`` in sync on every mutation.
 
-    ``Progression.order`` is a public, directly-mutable deque: external code
-    (tests, third-party callers, ``Pile`` internals) mutates it in place —
-    ``p.order.append(x)``, ``p.order[0] = x``, ``p.order.popleft()``, etc. A
-    length-only staleness check (comparing ``len(order)`` across calls) cannot
-    detect a length-preserving external write (e.g. ``order[0] = x``, or a
-    ``popleft()`` paired with an ``append()``), so this class instead updates
-    the bound set eagerly, inside every mutating operation, using the same
-    duplicate-aware discard rule as the rest of ``Progression`` (an id is only
-    dropped from the set once no occurrence of it remains in the deque).
+    Needed because ``Progression.order`` is public and directly mutable
+    in place; a length-only staleness check can't see a length-preserving
+    write (``order[0] = x``, or ``popleft()`` + ``append()``). See
+    docs/internals/core.md, "Progression membership sync".
     """
 
     def __init__(self, iterable=(), /, members: set | None = None):
@@ -155,18 +150,11 @@ class Progression(Element, Ordering[T], Generic[T]):
         description="A human-readable identifier for the progression.",
     )
     _members: set[UUID] = PrivateAttr(default_factory=set)
-    # Length of `order` as of the last known-good `_members` sync, used only to
-    # detect that `order` was replaced wholesale (`p.order = deque(...)`).
-    #
-    # CRITICAL DESIGN RATIONALE: `order` is a public, directly-mutable deque,
-    # and external code (tests, third-party callers, `Pile` internals) is
-    # expected to mutate it in place rather than going through `Progression`'s
-    # methods. `order` is therefore always wrapped in a `_MembersDeque` (see
-    # above), which keeps `_members` correct on every such mutation, including
-    # length-preserving ones (`order[0] = x`, `popleft()` + `append()`) that a
-    # length-only staleness check cannot see. Public behavior — membership
-    # correctness after *any* direct `order` mutation — must never be
-    # narrowed to "only length-changing mutations are safe".
+    # Length of `order` as of the last known-good `_members` sync; detects
+    # wholesale replacement (`p.order = deque(...)`). See
+    # docs/internals/core.md, "Progression membership sync" — membership
+    # correctness after any direct `order` mutation must not be narrowed to
+    # "only length-changing mutations are safe".
     _order_len: int = PrivateAttr(default=0)
 
     def model_post_init(self, __context: Any) -> None:
@@ -182,15 +170,11 @@ class Progression(Element, Ordering[T], Generic[T]):
 
     def _ensure_synced(self) -> None:
         # Must be called before any read of, or incremental update to,
-        # `_members`/`_order_len`. `_MembersDeque` keeps `_members` correct on
-        # every direct mutation of `order` itself, but `order` can also be
-        # replaced wholesale (`p.order = deque(...)`, or a plain-deque copy
-        # produced by pydantic re-validation), or be a wrapper that belongs to
-        # (is bound to) a *different* `Progression` instance's `_members` set
-        # — ownership is checked by identity
+        # `_members`/`_order_len`. Ownership is checked by identity
         # (`order._members_ref is self._members`), not just type and length,
         # so a foreign or unbound wrapper of matching length can't silently
-        # pass as synced.
+        # pass as synced. See docs/internals/core.md, "Progression membership
+        # sync".
         order = self.order
         if (
             not isinstance(order, _MembersDeque)

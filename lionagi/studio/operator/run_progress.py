@@ -6,15 +6,10 @@ Resolves a human-supplied run reference (a run/session id, an id prefix, a
 name/playbook substring, or ``"current"``) to at most one session, then
 reports how far that run's operations have gotten. Every number here is a
 direct read of stored state — it reflects what the database recorded, not
-necessarily a live process (see the ``freshness`` field).
-
-Id/prefix resolution reuses ``lionagi.cli._util.fetch_unique_row`` — the same
-exact-id-then-prefix primitive ``li kill`` and ``cancel_run.py`` use — rather
-than a bespoke hex-only regex, so a reference this tool accepts and a
-reference ``cancel_run`` accepts resolve identically.
-
-``resolve_run`` is imported by ``run_findings.py`` so both read tools accept
-the same reference vocabulary.
+necessarily a live process (see the ``freshness`` field). ``resolve_run`` is
+also imported by ``run_findings.py``, ``resume_run.py``, and
+``rename_session.py`` so every tool accepts the same reference vocabulary --
+see docs/internals/studio.md ("Resolving a run reference").
 """
 
 from __future__ import annotations
@@ -142,18 +137,15 @@ async def _allowed_project() -> str | None:
     """The project this Operator turn is scoped to, or ``None`` when there is
     no turn identity to enforce at all.
 
-    Reads the same durable turn identity ``cancel_run.py``/``get_current_view``
-    use. Falls open (no restriction) only when the turn identity environment
-    is entirely absent — a real MCP subprocess always has it set (see
+    Falls open (no restriction) only when the turn identity environment is
+    entirely absent -- a real MCP subprocess always has it set (see
     ``engine.py::build_operator_branch``); tests and direct calls that omit
-    the whole identity get the pre-existing unscoped behavior rather than a
-    hard failure. When the identity *is* present -- a real turn exists --
-    but that turn's own context names no project, this raises
+    it get the pre-existing unscoped behavior. When the identity *is*
+    present but that turn's own context names no project, this raises
     :class:`MissingOwnerContextError` rather than falling open: a turn with
-    an owner but no declared project must never be treated as authorized
-    for every project's runs. A lookup failure for a present identity also
-    propagates rather than silently falling open, since that would defeat
-    the isolation this exists to provide.
+    an owner but no declared project must never be authorized for every
+    project's runs. A lookup failure for a present identity also propagates
+    rather than silently falling open.
     """
     import os
 
@@ -206,13 +198,9 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     Never guesses: an id prefix matching more than one session, or a
     name/playbook substring matching 2-``MAX_CANDIDATES`` sessions, comes
     back as candidates; more than ``MAX_CANDIDATES`` text matches come back
-    as the newest ``MAX_CANDIDATES`` plus ``truncated: True``.
-
-    Every arm -- exact id, ambiguous prefix, "current", and the text search
-    below -- is scoped to the calling turn's project (when it names one). A
-    foreign project's run is reported exactly like a nonexistent one, never
-    as e.g. an ambiguity candidate or a resolved id, which would themselves
-    confirm the id exists.
+    as the newest ``MAX_CANDIDATES`` plus ``truncated: True``. Every arm is
+    scoped to the calling turn's project (when it names one) -- see
+    docs/internals/studio.md ("Resolving a run reference").
     """
     from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
     from lionagi.state.db import StateDB
@@ -283,16 +271,13 @@ def _resolution_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
 # SESSION_TERMINAL_STATUSES branch below and counts as an op failure.
 _COMPLETED_STATUSES = frozenset({"completed"})
 
-# Per-node lifecycle lane, mirroring the ONLY existing "how far along is a DAG
-# run" projection this codebase has:
-# apps/studio/frontend/src/lib/operationGraph.ts::laneFor/buildNodeStatusesByName
-# (live SSE events) and lionagi/session/signal.py::lane_for (live Signal
-# objects). Neither is usable from a bounded, non-streaming read tool, so this
-# reimplements the same state machine over the persisted
-# ``session_signals`` rows both of those ultimately read from — the frontend
-# correlates a planned graph node's live status by its authored id, carried as
-# ``payload["name"]`` on every Node* signal, never by the runtime op_id (see
-# operationGraph.ts's own comment on this), which is why this keys on name too.
+# Per-node lifecycle lane, reimplementing over persisted ``session_signals``
+# rows the same state machine the live SSE view
+# (apps/studio/frontend/src/lib/operationGraph.ts::laneFor) and the in-run
+# Signal bus (lionagi/session/signal.py::lane_for) use, since neither is
+# usable from a bounded, non-streaming read tool. Keyed on the node's
+# authored id (``payload["name"]``), matching how the frontend correlates a
+# planned graph node to its live status -- never the runtime op_id.
 _NODE_KIND_TO_STATE: dict[str, str] = {
     "NodeQueued": "queued",
     "NodeStarted": "running",

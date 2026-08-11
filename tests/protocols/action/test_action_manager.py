@@ -303,9 +303,7 @@ def test_get_tool_schema_partial_list(populated_manager):
     assert "Tool brand_new_tool is not registered" in str(exc_info.value)
 
 
-# ---------------------------------------------------------------------------
 # Coverage gap: line 86 — duplicate Tool registration → name = tool.function
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterToolDuplicateToolObject:

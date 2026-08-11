@@ -74,7 +74,6 @@ class TestBroadcaster:
 
         callback = MagicMock()
 
-        # Should not raise error
         TestBroadcaster.unsubscribe(callback)
         assert TestBroadcaster.get_subscriber_count() == 0
 
@@ -155,7 +154,6 @@ class TestBroadcaster:
         TestBroadcaster.subscribe(failing_callback)
         TestBroadcaster.subscribe(successful_callback)
 
-        # Should not raise, but log the error
         await TestBroadcaster.broadcast(event)
 
         # Both callbacks should be attempted
@@ -174,7 +172,6 @@ class TestBroadcaster:
         TestBroadcaster.subscribe(failing_callback)
         TestBroadcaster.subscribe(successful_callback)
 
-        # Should not raise, but log the error
         await TestBroadcaster.broadcast(event)
 
         # Both callbacks should be attempted
@@ -188,7 +185,6 @@ class TestBroadcaster:
 
         event = SampleEvent()
 
-        # Should not raise error
         await TestBroadcaster.broadcast(event)
         assert TestBroadcaster.get_subscriber_count() == 0
 

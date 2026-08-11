@@ -21,9 +21,7 @@ import pytest
 
 from lionagi.cli._providers import AgentProfile, _parse_profile
 
-# ---------------------------------------------------------------------------
 # Unit tests: profile field parsing/validation
-# ---------------------------------------------------------------------------
 
 
 def test_parse_profile_timeout_valid():
@@ -61,9 +59,7 @@ def test_parse_profile_timeout_rejects_bool_and_float(raw_yaml, caplog):
     assert profile.timeout is None
 
 
-# ---------------------------------------------------------------------------
 # Integration: _run_agent precedence (explicit flag > profile > built-in default)
-# ---------------------------------------------------------------------------
 
 
 def _wire_agent_stubs(

@@ -18,9 +18,7 @@ import pytest
 
 from lionagi._errors import ConfigurationError
 
-# ---------------------------------------------------------------------------
 # _run_agent: fails before any spawn / run allocation
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

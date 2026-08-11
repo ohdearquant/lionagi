@@ -463,9 +463,7 @@ async def test_create_non_cron_empty_expr_still_accepted(temp_db_path):
     assert created["name"] == "create-interval-empty-cron-test"
 
 
-# ---------------------------------------------------------------------------
 # PATCH exclude_unset semantics + enable/startup dead-cron guards
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

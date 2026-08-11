@@ -31,9 +31,7 @@ def progression(elements):
     return Progression(order=[e.id for e in elements])
 
 
-# --------------------------------------------------------------------------
 # The container is not an iterator
-# --------------------------------------------------------------------------
 
 
 def test_next_on_pile_raises_type_error(pile):
@@ -69,9 +67,7 @@ def test_iter_returns_a_distinct_object(pile, progression):
     assert iter(progression) is not progression
 
 
-# --------------------------------------------------------------------------
 # An iterator taken from the container behaves like one
-# --------------------------------------------------------------------------
 
 
 def test_repeated_next_on_pile_iterator_advances(pile, elements):
@@ -112,9 +108,7 @@ def test_copy_does_not_inherit_a_traversal_position(pile, elements):
     assert list(copy.deepcopy(pile)) == [pile.collections[e.id] for e in elements]
 
 
-# --------------------------------------------------------------------------
 # Ordinary traversal is unchanged
-# --------------------------------------------------------------------------
 
 
 def test_for_loop_over_pile(pile, elements):

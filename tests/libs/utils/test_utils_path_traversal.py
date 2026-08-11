@@ -3,19 +3,15 @@
 
 """Attack-driven regression tests for create_path/acreate_path directory traversal.
 
-These tests verify that create_path and acreate_path refuse to create files
-outside the supplied base directory when filenames contain path-traversal
-components, absolute-path redirection, or symlink indirection.
-
-Issue: acreate_path only rejected backslashes. A
-caller could pass filename='../escape.txt' or 'sub/../../../escape.txt'
-and receive or create paths outside the intended base directory.
+Issue: acreate_path only rejected backslashes. A caller could pass
+filename='../escape.txt' or 'sub/../../../escape.txt' and receive or create
+paths outside the intended base directory.
 
 Fix: reject '.' and '..' filename components before mkdir; resolve and
 assert the candidate path stays within the resolved base directory. Both
-constructors share this containment check (_build_safe_path) so sync
-create_path and async acreate_path have equivalent symlink-containment
-semantics — the sync variant previously had none at all.
+constructors share this containment check (_build_safe_path), so the sync
+variant now has the same symlink-containment semantics as the async one -
+previously it had none at all.
 """
 
 from pathlib import Path

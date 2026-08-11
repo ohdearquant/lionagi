@@ -101,20 +101,17 @@ class CheckpointWriter:
     ) -> None:
         """Record one reactively spawned node's outcome, keyed by its own node id.
 
-        Spawned nodes never share the `ops` keyspace: a spawned child's branch
-        can carry a name identical to a planned agent_id's, which would
-        silently overwrite the planned entry if keyed the same way.
-
-        operation/assignee/instruction/parent_id/spawn_id (CHECKPOINT_VERSION 2)
-        are what resume needs to reconstruct the node into a fresh graph.
-        spawn_id must be restored alongside assignee, never alone — the
-        finalize-time scan raises if an assignee-bearing node lacks one. A
-        checkpoint predating this field set carries entries without
-        `operation`; resume refuses only the affected node(s), not the run.
-
-        context is the node's `parameters["context"]` (e.g. a team round's
-        `prior_team_messages`) — distinct from `instruction`, which for a team
-        round is generic boilerplate. None when there's no context payload.
+        Kept out of the `ops` keyspace so a spawned child's branch name can't
+        collide with and silently overwrite a planned `agent_id` entry.
+        `operation`/`assignee`/`instruction`/`parent_id`/`spawn_id`
+        (CHECKPOINT_VERSION 2) are what resume needs to rebuild the node into
+        a fresh graph; `spawn_id` must accompany `assignee` (the finalize-time
+        scan raises if one appears without the other) — a checkpoint
+        predating this field set has entries with no `operation`, and resume
+        refuses only those nodes, not the whole run. `context` is the node's
+        `parameters["context"]` (e.g. a team round's `prior_team_messages`),
+        distinct from `instruction` (generic boilerplate for a team round);
+        `None` when there's no context payload.
         """
         async with self._lock:
             entry = {

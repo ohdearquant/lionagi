@@ -30,9 +30,7 @@ def _clean_depth_env(monkeypatch):
     monkeypatch.delenv(SEAT_PROFILES_ENV, raising=False)
 
 
-# ---------------------------------------------------------------------------
 # _parse_depth
-# ---------------------------------------------------------------------------
 
 
 class TestParseDepth:
@@ -55,9 +53,7 @@ class TestParseDepth:
         assert _parse_depth("0") == 0
 
 
-# ---------------------------------------------------------------------------
 # inherited_depth — import-captured, not a live re-read
-# ---------------------------------------------------------------------------
 
 
 class TestInheritedDepth:
@@ -74,9 +70,7 @@ class TestInheritedDepth:
         assert inherited_depth() == 2
 
 
-# ---------------------------------------------------------------------------
 # stamp_agent_depth — seat vs non-seat vs no-profile
-# ---------------------------------------------------------------------------
 
 
 class TestStampAgentDepth:
@@ -114,9 +108,7 @@ class TestStampAgentDepth:
         assert os.environ[DEPTH_ENV] == str(depth)
 
 
-# ---------------------------------------------------------------------------
 # stamp_worker_depth — always parent+1, never a seat
-# ---------------------------------------------------------------------------
 
 
 class TestStampWorkerDepth:
@@ -137,9 +129,7 @@ class TestStampWorkerDepth:
         assert os.environ[DEPTH_ENV] == str(depth)
 
 
-# ---------------------------------------------------------------------------
 # Auto-resume recursion must not double-increment
-# ---------------------------------------------------------------------------
 
 
 def test_double_stamp_in_one_process_does_not_double_increment(monkeypatch):

@@ -90,13 +90,9 @@ class iModel:  # noqa: N801
 
                     provider = settings.LIONAGI_CHAT_PROVIDER
 
-            # Effort-suffixed model names ("gpt-5.6-luna-high") work at every
-            # construction site: strip the suffix and route it to the
-            # provider's effort kwarg. Gated twice so a real model name is not
-            # mangled — to providers that have an effort kwarg at all, and to
-            # names written in lionagi's own grammar rather than borrowed whole
-            # from another vendor's catalogue (see split_effort_suffix). An
-            # explicit effort kwarg always wins over the suffix.
+            # Effort-suffixed model names ("gpt-5.6-luna-high") are stripped and
+            # routed to the provider's effort kwarg here so it works at every
+            # construction site. See docs/internals/service-layer.md#effort-suffix-routing.
             from .providers import (
                 _CLAUDE_PROVIDER_NAMES,
                 PROVIDER_EFFORT_KWARG,
@@ -122,11 +118,10 @@ class iModel:  # noqa: N801
             kwargs["api_key"] = api_key
         if isinstance(endpoint, Endpoint):
             self.endpoint = endpoint
-            # A finished endpoint missed the window where these are lifted off
-            # the caller's config, so they are placed now. Refusing the ones
-            # that have nowhere to go is the point: dropping them silently
-            # hands the child a default environment and leaves the supervisor
-            # hearing nothing, which is indistinguishable from working.
+            # Runtime state (spawned-child hooks, env) that missed the normal
+            # config window is placed now; refused outright if it has nowhere
+            # to go, rather than silently dropped. See
+            # docs/internals/service-layer.md#runtime-state-adoption.
             adopt = getattr(self.endpoint, "adopt_runtime_state", None)
             unplaced = (
                 adopt(kwargs)
@@ -422,15 +417,12 @@ class iModel:  # noqa: N801
 
     def copy(self, share_session: bool = False, share_executor: bool = False) -> iModel:
         """Create a new iModel with the same config but a fresh ID. See
-        docs/internals/runtime.md for what state is/isn't shared with the copy."""
+        docs/internals/service-layer.md#copy-and-runtime-state for what state
+        is/isn't shared with the copy."""
         endpoint_cls = type(self.endpoint)
-        # Drain before the deep copy, not after. A runtime value that arrived
-        # after construction is still sitting in config.kwargs, so a deep copy
-        # takes it along: a child environment gets duplicated, and a bound
-        # callback is rebound to a copied receiver, leaving the caller's own
-        # supervisor to hear nothing from the copy's legs. Draining first means
-        # the copied config has nothing runtime-only in it and the live objects
-        # transfer whole, just below.
+        # Drain before the deep copy so no runtime-only state (child env, bound
+        # callbacks) rides along duplicated; see
+        # docs/internals/service-layer.md#copy-and-runtime-state.
         self.endpoint.drain_runtime_state()
         new_endpoint = endpoint_cls(
             config=self.endpoint.config.model_copy(deep=True),
@@ -480,11 +472,9 @@ class iModel:  # noqa: N801
         endpoint = Endpoint.from_dict(data.get("endpoint", {}))
 
         # openai_compatible=True: rehydrating a persisted iModel must never
-        # raise just because its provider isn't (or is no longer) registered
-        # -- the deserialized `endpoint` below is already a complete,
-        # authoritative config either way, this lookup only exists to recover
-        # a registered subclass and a freshly env-sourced API key when one
-        # applies.
+        # raise just because its provider isn't (or is no longer) registered.
+        # This lookup only recovers a registered subclass and a fresh
+        # env-sourced API key when one applies; `endpoint` is already complete.
         if e1 := match_endpoint(
             provider=endpoint.config.provider,
             endpoint=endpoint.config.endpoint,

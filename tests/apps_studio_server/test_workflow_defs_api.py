@@ -190,7 +190,7 @@ def test_route_registration():
     assert ("POST", "/workflow-defs/{def_id}/run") in paths
 
 
-# ─── gate-kind removal (workflow-exec Fork 1) ───────────────────────────────
+# gate-kind removal
 
 
 async def test_gate_kind_rejected_at_create(patched_svc):
@@ -239,7 +239,7 @@ async def test_gate_node_load_guard_names_the_node(patched_svc):
     assert "gate" in str(exc_info.value.detail)
 
 
-# ─── chat node config (WorkflowChatConfig) ──────────────────────────────────
+# chat node config (WorkflowChatConfig)
 
 
 def _spec_with_chat(config: dict[str, Any]) -> dict[str, Any]:
@@ -294,7 +294,7 @@ async def test_chat_node_no_model_passes(patched_svc):
     assert "id" in result
 
 
-# ─── edge condition field (WorkflowEdge.condition) ──────────────────────────
+# edge condition field (WorkflowEdge.condition)
 
 
 async def test_edge_condition_empty_string_raises(patched_svc):

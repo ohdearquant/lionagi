@@ -17,7 +17,7 @@ from lionagi.cli._providers import (
     build_chat_model,
 )
 
-# ── build_chat_model threads bypass kwarg ────────────────────────────────────
+# build_chat_model threads bypass kwarg
 
 
 def test_build_chat_model_bypass_applies_bypass_kwargs(monkeypatch):
@@ -80,7 +80,7 @@ def test_build_chat_model_bypass_claude_applies_permission_mode(monkeypatch):
     assert kwargs.get("permission_mode") == "bypassPermissions"
 
 
-# ── _run_agent threads bypass and warns for naked codex ──────────────────────
+# _run_agent threads bypass and warns for naked codex
 
 
 def _make_agent_mocks_with_bypass(monkeypatch, tmp_path, captured_kwargs: list):
@@ -277,7 +277,7 @@ async def test_run_agent_codex_with_yolo_no_warning(monkeypatch, tmp_path):
     assert not bypass_req_warns, f"Unexpected warning with yolo=True: {bypass_req_warns}"
 
 
-# ── partial output preserved on timeout ──────────────────────────────────────
+# partial output preserved on timeout
 
 
 @pytest.mark.asyncio
@@ -437,7 +437,7 @@ async def test_run_agent_timeout_empty_partial_returns_empty_string(monkeypatch,
     assert result == "", f"Expected empty string, got: {result!r}"
 
 
-# ── progress heartbeat fires during timeout runs ─────────────────────────────
+# progress heartbeat fires during timeout runs
 
 
 @pytest.mark.asyncio

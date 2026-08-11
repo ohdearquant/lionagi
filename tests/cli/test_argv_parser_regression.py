@@ -12,9 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Shared capture store — reset before each parametrized test invocation
-# ---------------------------------------------------------------------------
 
 _CAPTURED: dict[str, Any] = {}
 
@@ -23,11 +21,9 @@ def _reset() -> None:
     _CAPTURED.clear()
 
 
-# ---------------------------------------------------------------------------
 # Fake run functions
 # Each captures the positional and keyword arguments it receives so tests can
 # assert on flag values without executing any network/agent logic.
-# ---------------------------------------------------------------------------
 
 
 async def _fake_run_agent(
@@ -93,9 +89,7 @@ async def _fake_run_fanout(
     return "output", "completed"
 
 
-# ---------------------------------------------------------------------------
 # Helper: run main() with argv (strips 'uv run li' wrapper from build_argv output)
-# ---------------------------------------------------------------------------
 
 
 def _run_main_with_argv(argv: list[str]) -> int:
@@ -121,9 +115,7 @@ def _argv_without_wrapper(argv: list[str]) -> list[str]:
     return argv[3:]
 
 
-# ---------------------------------------------------------------------------
 # agent kind
-# ---------------------------------------------------------------------------
 
 HOSTILE_PROMPTS = ["--bypass", "--yolo", "--fast", "--verbose"]
 
@@ -209,9 +201,7 @@ class TestFanoutTerminalStatusExitCode:
         assert rc == 0
 
 
-# ---------------------------------------------------------------------------
 # flow kind
-# ---------------------------------------------------------------------------
 
 
 class TestFlowParserPromptInjection:
@@ -249,9 +239,7 @@ class TestFlowParserPromptInjection:
         assert c["verbose"] is False, f"verbose=True after hostile prompt {hostile!r}"
 
 
-# ---------------------------------------------------------------------------
 # fanout kind
-# ---------------------------------------------------------------------------
 
 
 class TestFanoutParserPromptInjection:
@@ -289,9 +277,7 @@ class TestFanoutParserPromptInjection:
         assert c["verbose"] is False, f"verbose=True after hostile prompt {hostile!r}"
 
 
-# ---------------------------------------------------------------------------
 # flow_yaml kind — prompt EXCLUDED from argv
-# ---------------------------------------------------------------------------
 
 
 class TestFlowYamlParserPromptExclusion:
@@ -374,9 +360,7 @@ class TestFlowYamlParserPromptExclusion:
                 os.unlink(tmp_yaml)
 
 
-# ---------------------------------------------------------------------------
 # Sentinel placement sanity: verify '--' is before positionals in argv shape
-# ---------------------------------------------------------------------------
 
 
 class TestSentinelPlacement:
@@ -488,9 +472,7 @@ class TestSentinelPlacement:
                 os.unlink(tmp_path)
 
 
-# ---------------------------------------------------------------------------
 # Regression pin: '-- --' and '-- trailing' pass through
-# ---------------------------------------------------------------------------
 
 
 class TestDoubleDashSentinelEdgeCases:
@@ -568,9 +550,7 @@ class TestDoubleDashSentinelEdgeCases:
             )
 
 
-# ---------------------------------------------------------------------------
 # Parser-level: template-rendered sentinel rejection
-# ---------------------------------------------------------------------------
 
 
 class TestTemplateRenderedSentinelRejection:

@@ -84,9 +84,7 @@ def _make_client(monkeypatch, db_path: Path) -> TestClient:
     return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
-# ---------------------------------------------------------------------------
 # Cost column on run/session lists
-# ---------------------------------------------------------------------------
 
 
 def test_runs_list_preserves_null_cost_as_unreported(tmp_path, monkeypatch):
@@ -147,9 +145,7 @@ def test_invalid_sort_returns_422(tmp_path, monkeypatch):
     assert r.status_code == 422
 
 
-# ---------------------------------------------------------------------------
 # Spend panel aggregate (/api/stats/spend)
-# ---------------------------------------------------------------------------
 
 
 def test_spend_stats_empty_db_is_unreported_not_zero(tmp_path, monkeypatch):
@@ -264,9 +260,7 @@ def test_spend_stats_missing_db_file_is_not_created_by_read(tmp_path, monkeypatc
     assert not db_path.exists()
 
 
-# ---------------------------------------------------------------------------
 # Per-dimension rollups (/api/stats/spend/rollup)
-# ---------------------------------------------------------------------------
 
 
 def test_rollup_by_project_sums_reported_and_counts_unreported_per_group(tmp_path, monkeypatch):

@@ -28,9 +28,7 @@ def _make_agents_root(tmp_path, monkeypatch):
     return root
 
 
-# ---------------------------------------------------------------------------
 # Test 1: yolo/fast_mode surface in get_agent() response
-# ---------------------------------------------------------------------------
 
 
 def test_get_agent_surfaces_yolo_and_fast_mode(tmp_path, monkeypatch):
@@ -59,9 +57,7 @@ def test_get_agent_surfaces_yolo_and_fast_mode(tmp_path, monkeypatch):
     assert result.get("fast_mode") is False
 
 
-# ---------------------------------------------------------------------------
 # Test 1b: lion_system surfaces in get_agent() response
-# ---------------------------------------------------------------------------
 
 
 def test_get_agent_surfaces_lion_system(tmp_path, monkeypatch):
@@ -98,9 +94,7 @@ def test_get_agent_surfaces_lion_system(tmp_path, monkeypatch):
     assert result.get("fast_mode") is False
 
 
-# ---------------------------------------------------------------------------
 # Tests 1c/1d/1e: absent bool fields emit CLI defaults
-# ---------------------------------------------------------------------------
 
 
 def test_get_agent_lion_system_defaults_true(tmp_path, monkeypatch):
@@ -190,9 +184,7 @@ def test_get_agent_fast_mode_defaults_false(tmp_path, monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
 # Test 2: update_agent() writes yolo field to disk and get_agent() reads it back
-# ---------------------------------------------------------------------------
 
 
 def test_update_agent_writes_yolo_field(tmp_path, monkeypatch):
@@ -225,9 +217,7 @@ def test_update_agent_writes_yolo_field(tmp_path, monkeypatch):
     assert fresh.get("yolo") is False
 
 
-# ---------------------------------------------------------------------------
 # Test 2b: update_agent() writes lion_system field to disk
-# ---------------------------------------------------------------------------
 
 
 def test_update_agent_writes_lion_system_field(tmp_path, monkeypatch):
@@ -259,9 +249,7 @@ def test_update_agent_writes_lion_system_field(tmp_path, monkeypatch):
     assert fresh.get("lion_system") is True
 
 
-# ---------------------------------------------------------------------------
 # Test 3: reasoning_effort → effort migration
-# ---------------------------------------------------------------------------
 
 
 def test_get_agent_migrates_reasoning_effort_to_effort(tmp_path, monkeypatch):
@@ -289,9 +277,7 @@ def test_get_agent_migrates_reasoning_effort_to_effort(tmp_path, monkeypatch):
     assert "reasoning_effort" not in result
 
 
-# ---------------------------------------------------------------------------
 # Test 4: model without provider prefix round-trips through update_agent()
-# ---------------------------------------------------------------------------
 
 
 def test_update_agent_canonicalises_model_with_provider(tmp_path, monkeypatch):

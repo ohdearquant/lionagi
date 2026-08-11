@@ -66,14 +66,11 @@ CodexApprovalMode = Literal[
 
 CodexColorMode = Literal["always", "never", "auto"]
 
-# The effort words lionagi itself produces. Deliberately a tuple of strings
-# and not a Literal on the request fields: codex reaches models other than
-# OpenAI's through the `model_providers` tables in ~/.codex/config.toml, and
-# each of those models carries its own effort vocabulary. The value is emitted
-# verbatim as `-c reasoning_effort=<val>` for the CLI to interpret, so codex
-# and the provider it is configured against are the authority on what is
-# valid — a closed set here would reject a working configuration before the
-# CLI ever saw it, and would need editing every time a model is added.
+# The effort words lionagi itself produces. Deliberately a tuple, not a
+# Literal on the request fields: codex reaches non-OpenAI models through
+# `model_providers` in ~/.codex/config.toml, each with its own effort
+# vocabulary, and the value is emitted verbatim as `-c reasoning_effort=<val>`
+# for codex to interpret — a closed set here would reject valid configs.
 CODEX_REASONING_EFFORTS: tuple[str, ...] = (
     "none",
     "minimal",
@@ -95,14 +92,10 @@ __all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
 _TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # The CLI's mid-stream retry announcement, e.g. "Reconnecting... 1/5 (stream
-# disconnected before completion: ...)". Anchored to the observed prefix on
-# purpose: a message that doesn't match falls through to the terminal-error
-# branch, so a wording change in the CLI degrades to the old (fail-closed)
-# behaviour rather than misclassifying a real failure as a notice. The
-# trailing "(" is load-bearing: the retry notice always carries a
-# parenthesized reason, and requiring it keeps terminal messages that merely
-# BEGIN with the retry prefix ("Reconnecting... 5/5 failed") on the terminal
-# path.
+# disconnected before completion: ...)". A non-matching message falls through
+# to the terminal-error branch (fail-closed on a CLI wording change). The
+# trailing "(" is load-bearing: it excludes terminal messages that merely
+# begin with the retry prefix, e.g. "Reconnecting... 5/5 failed".
 _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
 
 
@@ -258,20 +251,11 @@ class CodexCodeRequest(BaseModel):
     def _env_is_a_string_map(cls, value):
         """Reject a malformed environment without printing anything from it.
 
-        A child environment routinely holds credentials, and a pydantic
-        ValidationError quotes the whole rejected input into its message, so
-        letting the ordinary string check fail here would print every value in
-        the map beside the one bad entry. TypeError is the escape: pydantic
-        converts ValueError and AssertionError into validation errors and lets
-        anything else propagate untouched, so nothing from the mapping reaches
-        a traceback or a log line. It is also the right exception for a wrongly
-        typed mapping.
-
-        The value arrives wrapped when it came through a model-level validator,
-        which is what keeps it off that validator's error. This is the code that
-        needs to look at it, so this is where it is unwrapped; what the model
-        then stores is an ordinary mapping, kept out of dumps by ``exclude`` and
-        out of the request's representation by ``repr=False``.
+        TypeError is the escape from a pydantic ValidationError, which quotes
+        the whole rejected input — and a child environment routinely holds
+        credentials. Unwrapped here (from the ``Redacted`` a model-level
+        validator applied) since this is the code that needs to look at it;
+        see docs/internals/providers.md#cli-subprocess-lifecycle.
         """
         if isinstance(value, Redacted):
             value = value.reveal()
@@ -289,25 +273,18 @@ class CodexCodeRequest(BaseModel):
     @field_validator("on_spawn", mode="before")
     @classmethod
     def _unwrap_on_spawn(cls, value):
-        """Undo the wrapping a model-level validator applied.
+        """Undo the ``Redacted`` wrapping a model-level validator applied.
 
-        The callback is wrapped there for the same reason the environment is: a
-        BOUND callback carries its receiver into its own ``repr``, so a
-        supervisor holding a credential would print it from an error about some
-        unrelated field. Nothing but this validator needs the wrapper gone, and
-        pydantic rejects it outright as not callable if it survives — which is
-        the failure mode this method exists to prevent, and the one a test that
-        only checks for leaks would never see.
+        A bound callback carries its receiver into its own ``repr``, so a
+        supervisor holding a credential would print it from an unrelated
+        field's error if left wrapped past this point.
         """
         if isinstance(value, Redacted):
             value = value.reveal()
         if value is None or callable(value):
             return value
-        # Rejected HERE rather than handed back for pydantic to reject, because
-        # unwrapping is what re-exposes the value: pydantic renders a failing
-        # field's input, and an object with a credential-bearing __repr__ is
-        # exactly the shape this carrier exists to keep out of an error. A
-        # TypeError names the type and never the object.
+        # Rejected here, not handed back to pydantic: pydantic renders a
+        # failing field's input, which would re-expose the unwrapped value.
         raise TypeError(f"on_spawn must be callable, got {type(value).__name__}")
 
     # ── system prompt (order 40) ──────────────────────────────────
@@ -402,31 +379,12 @@ class CodexCodeRequest(BaseModel):
     def _resolve_config_profile(cls, values):
         """Turn a model that names a codex config profile into the profile.
 
-        Runs at the REQUEST level so both entry points reach it. The CLI
-        resolves this too, and did so alone for a while: a request built
-        through the library -- ``Branch(chat_model="codex/deepseek-flash")`` --
-        carried the profile NAME all the way to the spawn, codex read it as a
-        model id, and every leg died with an unsupported-model error naming a
-        model nobody had asked for.
-
-        Idempotent by construction, so the CLI path is unaffected: it has
-        already replaced the name with the profile's model id, and a real model
-        id carries dots or a slash, which the bare-name check rejects.
-
-        NOT a validator of its own, and that is deliberate. It has to run
-        before the effort clamp, whose ceilings are keyed on the model -- a
-        profile names a different model than the caller did, so clamping first
-        applies one model's ceiling to another's effort. Two ``mode="before"``
-        validators looked like the way to order that, and it is the wrong way:
-        pydantic runs them in REVERSE definition order, so the one written
-        first runs last. Written that way the clamp saw the profile NAME, and
-        the test that caught it is the one asserting a clamped OUTCOME rather
-        than that the effort survived. Called explicitly from the single
-        validator below, the order is stated rather than inherited.
-
-        Caller-supplied ``config_overrides`` WIN over the profile's. An
-        override passed at the call site is an explicit instruction; the
-        profile is a default sitting in a file.
+        Idempotent by construction: a real model id carries dots or a slash,
+        which the bare-name check rejects, so a CLI-resolved model passes
+        through unchanged. Not a validator of its own — called explicitly
+        from the validator below, before the effort clamp, since the clamp's
+        ceilings are keyed on the model. See
+        docs/internals/providers.md#codex-config-profile-resolution-and-effort-clamping.
         """
         from ._codex_profile import resolve_codex_config_profile
 
@@ -449,15 +407,12 @@ class CodexCodeRequest(BaseModel):
     def _resolve_profile_then_clamp_effort(cls, values):
         """Resolve a config-profile model, THEN clamp effort against it.
 
-        One validator running two steps in a written order, rather than two
-        validators relying on pydantic's. The clamp's ceilings are keyed on the
-        model id and a profile names a different model than the caller did, so
-        the sequence is load-bearing rather than cosmetic.
-
-        `values` is the raw constructor input, which omits `model` when the
-        caller relies on the field default (Pydantic v2 applies defaults
-        after `mode="before"` validators) — fall back to the field's own
-        default so the clamp is consistent either way.
+        One validator running two steps in a written order rather than relying
+        on pydantic's (reverse-definition) validator ordering — see
+        docs/internals/providers.md#codex-config-profile-resolution-and-effort-clamping.
+        `values` omits `model` when the caller relies on the field default
+        (Pydantic v2 applies defaults after `mode="before"` validators), so
+        fall back to the field's own default.
         """
         from lionagi.service.providers import _clamp_codex_effort
 
@@ -952,14 +907,11 @@ async def stream_codex_cli(
                     else obj.get("message", str(err))
                 )
                 # The CLI announces its OWN retry of a dropped provider stream
-                # as an error-typed event ("Reconnecting... 1/5 (...)") and then
-                # keeps going. Treating that notice as terminal kills the leg
-                # before the CLI's second attempt ever runs, so it is surfaced
-                # as a non-error chunk and the stream keeps consuming. A retry
-                # that ultimately fails produces a real terminal event (or the
-                # process exits), which still takes the branch below — and an
-                # unrecognized notice text fails toward terminal, the direction
-                # that loses a leg rather than the one that hangs it.
+                # as an error-typed event and keeps going; surfaced as a
+                # non-error chunk so the leg isn't killed before that retry
+                # runs. An unrecognized notice text falls through to the
+                # terminal branch below (fails toward losing the leg, not
+                # hanging it).
                 if (
                     typ == "error"
                     and isinstance(_err_message, str)
@@ -994,11 +946,6 @@ async def stream_codex_cli(
                 else:
                     if request.verbose_output:
                         log.error("Codex error: %s", session.result)
-                # The flag follows the classification above, so a consumer
-                # reading it sees the same verdict as one reading the metadata.
-                # Benign end-of-stream keeps `is_error` false: the type is
-                # "error" only because that is the event the CLI sends, and the
-                # three conditions above are what say it is not one.
                 sc = StreamChunk(
                     type="error",
                     content=session.result,
@@ -1160,11 +1107,8 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         async with contextlib.aclosing(stream_codex_cli(request_obj, **handlers)) as gen:
             async for item in gen:
                 if isinstance(item, CLISession):
-                    # The parser already yields an error chunk for a failed
-                    # turn, so without the guard a single failure is reported
-                    # twice — once as it happens and once as the session ends.
-                    # This is the session-terminal verdict; per-tool failures
-                    # have their own carriers and are not what this counts.
+                    # Turns the session's terminal verdict into a chunk — see
+                    # docs/internals/providers.md#a-session-terminal-error-must-be-turned-back-into-a-stream-chunk.
                     if item.is_error and not any(c.type == "error" for c in item.chunks):
                         yield StreamChunk(
                             type="error",

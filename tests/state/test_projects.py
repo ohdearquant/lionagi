@@ -45,7 +45,7 @@ async def _make_session(
     return session
 
 
-# ── register_project ──────────────────────────────────────────────────────────
+# register_project
 
 
 async def test_register_project_creates_row(db: StateDB):
@@ -89,7 +89,7 @@ async def test_register_project_updates_github_when_provided(db: StateDB):
     assert project["github"] == "https://github.com/org/repo"
 
 
-# ── create_project ─────────────────────────────────────────────────────────────
+# create_project
 
 
 async def test_create_project_studio_source(db: StateDB):
@@ -121,7 +121,7 @@ async def test_create_project_duplicate_raises(db: StateDB):
         await db.create_project("dup-proj")
 
 
-# ── list_projects ─────────────────────────────────────────────────────────────
+# list_projects
 
 
 async def test_list_projects_empty(db: StateDB):
@@ -156,7 +156,7 @@ async def test_list_projects_running_count(db: StateDB):
     assert proj["running_count"] == 1
 
 
-# ── get_project ───────────────────────────────────────────────────────────────
+# get_project
 
 
 async def test_get_project_none_for_missing(db: StateDB):
@@ -171,7 +171,7 @@ async def test_get_project_returns_dict(db: StateDB):
     assert result["name"] == "my-repo"
 
 
-# ── update_project ─────────────────────────────────────────────────────────────
+# update_project
 
 
 async def test_update_project_description(db: StateDB):
@@ -194,7 +194,7 @@ async def test_update_project_rejects_bad_column(db: StateDB):
         await db.update_project("safe", source="evil")
 
 
-# ── delete_project ─────────────────────────────────────────────────────────────
+# delete_project
 
 
 async def test_delete_project_studio_source(db: StateDB):
@@ -211,7 +211,7 @@ async def test_delete_project_non_studio_returns_false(db: StateDB):
     assert await db.get_project("auto-detected") is not None
 
 
-# ── auto-registration via create_session ──────────────────────────────────────
+# auto-registration via create_session
 
 
 async def test_create_session_auto_registers_project(db: StateDB):

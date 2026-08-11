@@ -35,7 +35,7 @@ from lionagi.cli.status import (
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 
-# ── Fixtures ────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -168,7 +168,7 @@ async def _set_fields(db: StateDB, table: str, id_: str, **fields) -> None:
     await db.execute(f"UPDATE {table} SET {sets} WHERE id = ?", (*fields.values(), id_))  # noqa: S608
 
 
-# ── Unit: _classify ───────────────────────────────────────────────────────
+# Unit: _classify
 
 
 def test_classify_session_success():
@@ -220,7 +220,7 @@ def test_classify_play_running_states(status):
     assert _classify("play", status) == (False, "running", EXIT_RUNNING)
 
 
-# ── Unit: _detect_degraded ──────────────────────────────────────────────────
+# Unit: _detect_degraded
 
 
 def test_detect_degraded_healthy_completed():
@@ -282,7 +282,7 @@ def test_detect_degraded_play_success_scoped_to_backing_session():
     assert degraded is True
 
 
-# ── Integration: entity resolution ──────────────────────────────────────────
+# Integration: entity resolution
 
 
 @pytest.mark.asyncio
@@ -398,7 +398,7 @@ async def test_resolve_agent_target_unknown_branch_shaped_id_returns_none(temp_d
     assert result is None
 
 
-# ── Integration: the mandated scenarios ──────────────────────────────────────
+# Integration: the mandated scenarios
 
 
 @pytest.mark.asyncio
@@ -619,7 +619,7 @@ async def test_cli_agent_status_resolves_printed_resume_id(temp_db_path: Path):
     assert view["branch_id"] == branch_id
 
 
-# ── Integration: degraded marker wired through _build_view ─────────────────
+# Integration: degraded marker wired through _build_view
 
 
 @pytest.mark.asyncio
@@ -665,7 +665,7 @@ async def test_view_not_degraded_for_imported_fs_mirror(temp_db_path: Path):
     assert view["degraded"] is False
 
 
-# ── Integration: --audit-degraded ────────────────────────────────────────────
+# Integration: --audit-degraded
 
 
 @pytest.mark.asyncio
@@ -713,7 +713,7 @@ async def test_audit_degraded_counts_sessions_and_plays(temp_db_path: Path):
     assert result["total_degraded"] == 3
 
 
-# ── Integration: argparse wiring / dispatch ─────────────────────────────────
+# Integration: argparse wiring / dispatch
 
 
 @pytest.mark.asyncio
@@ -788,7 +788,7 @@ def test_cli_play_status_help_subprocess():
     assert "audit-degraded" in result.stdout.lower()
 
 
-# ── pending_controls (ADR-0069 D1: session_controls transport) ─────────────
+# pending_controls (ADR-0069 D1: session_controls transport)
 
 
 @pytest.mark.asyncio
@@ -891,7 +891,7 @@ def test_cli_ctl_msg_help_subprocess():
     assert "text" in result.stdout.lower()
 
 
-# ── Integration: `li o ctl status` real argparse tree wiring ───────────────
+# Integration: `li o ctl status` real argparse tree wiring
 #
 # The tests above exercise `run_ctl_status()` with a hand-built
 # `argparse.Namespace` (test_run_ctl_status_dispatches_generic_lookup) or hit
@@ -1002,7 +1002,7 @@ def test_main_o_ctl_status_unknown_flag_is_argparse_error(temp_db_path: Path) ->
     assert exc_info.value.code == 2
 
 
-# ── Ambiguous short-id prefixes ─────────────────────────────────────────────
+# Ambiguous short-id prefixes
 #
 # Every status resolution stage (agent, play, generic) goes through the same
 # shared resolver, so a prefix matching two rows is reported, never guessed.

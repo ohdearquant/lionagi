@@ -74,7 +74,7 @@ async def test_result_event_with_model_usage_surfaces_it_on_result_chunk():
     """The CLI's "result" event carries a whole-agent-tree per-model
     ``modelUsage`` breakdown (includes Task-tool subagent spend) alongside
     the top-level-loop-only ``usage`` field. It must be forwarded verbatim
-    on the result chunk so _collect_branch_usage can prefer it (#2379)."""
+    on the result chunk so _collect_branch_usage can prefer it."""
     chunks = await _chunks_from_events(
         [
             _result_event(

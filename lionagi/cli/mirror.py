@@ -120,7 +120,7 @@ class _FileState:
     tool_names: dict[str, str] = field(default_factory=dict)
     project: str | None = None
     project_source: str | None = None
-    # Raw transcript cwd, the session's artifact root (issue #2848) -- unlike
+    # Raw transcript cwd, the session's artifact root -- unlike
     # `project`, never bucketed/fallen-back, just the directory as reported.
     cwd: str | None = None
     model: str | None = None
@@ -422,7 +422,7 @@ async def _attribute_idle(db, state: _FileState, cwd: str) -> None:
     Covers sessions mirrored before project/artifact-root attribution existed,
     which have no new events to trigger the normal (streamed-event) attribution
     path. The two backfills are independent: a row can already carry a project
-    from an earlier mirror pass while still missing artifacts_path (issue #2848's
+    from an earlier mirror pass while still missing artifacts_path (the
     dominant case), so each is only (re)written when actually missing.
     """
     from lionagi.state.claude_mirror import session_db_id

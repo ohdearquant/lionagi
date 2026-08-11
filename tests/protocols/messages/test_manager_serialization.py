@@ -21,7 +21,7 @@ def message_manager():
 
 
 def test_to_chat_msgs_basic(message_manager):
-    """Test conversion to chat messages"""
+    """Conversion to chat messages"""
     message_manager.add_message(
         instruction="Test instruction", sender="user", recipient="assistant"
     )
@@ -38,7 +38,7 @@ def test_to_chat_msgs_basic(message_manager):
 
 
 def test_to_chat_msgs_with_progression(message_manager):
-    """Test conversion to chat messages with specific progression"""
+    """Conversion to chat messages with specific progression"""
     msg1 = message_manager.add_message(instruction="First", sender="user", recipient="assistant")
     msg2 = message_manager.add_message(
         assistant_response="Second", sender="assistant", recipient="user"
@@ -50,7 +50,7 @@ def test_to_chat_msgs_with_progression(message_manager):
 
 
 def test_to_chat_msgs_empty_progression(message_manager):
-    """Test conversion with empty progression"""
+    """Conversion with empty progression"""
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
 
     chat_msgs = message_manager.to_chat_msgs(progression=[])
@@ -58,7 +58,7 @@ def test_to_chat_msgs_empty_progression(message_manager):
 
 
 def test_to_chat_msgs_invalid_progression(message_manager):
-    """Test conversion with invalid progression raises error"""
+    """Conversion with invalid progression raises error"""
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
 
     with pytest.raises(ValueError, match="invalid"):
@@ -66,7 +66,7 @@ def test_to_chat_msgs_invalid_progression(message_manager):
 
 
 def test_remove_last_instruction_tool_schemas(message_manager):
-    """Test removing tool schemas from last instruction"""
+    """Removing tool schemas from last instruction"""
     instruction = message_manager.add_message(
         instruction="Test",
         tool_schemas={"tool1": {}, "tool2": {}},
@@ -80,14 +80,14 @@ def test_remove_last_instruction_tool_schemas(message_manager):
 
 
 def test_remove_last_instruction_tool_schemas_no_instruction(message_manager):
-    """Test removing tool schemas when no instruction exists leaves state unchanged"""
+    """Removing tool schemas when no instruction exists leaves state unchanged"""
     initial_count = len(message_manager.messages)
     message_manager.remove_last_instruction_tool_schemas()
     assert len(message_manager.messages) == initial_count
 
 
 def test_concat_recent_action_responses_to_instruction(message_manager):
-    """Test concatenating action responses to instruction"""
+    """Concatenating action responses to instruction"""
     instruction = message_manager.add_message(instruction="Test", context=[], sender="user")
 
     request = message_manager.add_message(action_function="func", action_arguments={})
@@ -101,7 +101,7 @@ def test_concat_recent_action_responses_to_instruction(message_manager):
 
 
 def test_progression_property(message_manager):
-    """Test progression property"""
+    """Progression property"""
     msg1 = message_manager.add_message(instruction="First", sender="user", recipient="assistant")
     msg2 = message_manager.add_message(
         assistant_response="Second", sender="assistant", recipient="user"
@@ -112,7 +112,7 @@ def test_progression_property(message_manager):
 
 
 def test_message_manager_bool(message_manager):
-    """Test bool evaluation of message manager"""
+    """Bool evaluation of message manager"""
     assert not message_manager
 
     message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
@@ -120,7 +120,7 @@ def test_message_manager_bool(message_manager):
 
 
 def test_message_manager_contains(message_manager):
-    """Test contains operator for message manager"""
+    """Contains operator for message manager"""
     msg = message_manager.add_message(instruction="Test", sender="user", recipient="assistant")
 
     assert msg in message_manager
@@ -130,7 +130,7 @@ def test_message_manager_contains(message_manager):
 
 
 def test_message_manager_with_response_format(message_manager):
-    """Test message manager with response format"""
+    """Message manager with response format"""
     instruction = message_manager.add_message(
         instruction="Test",
         response_format=RequestModel,
@@ -147,7 +147,7 @@ def test_message_manager_with_response_format(message_manager):
 
 
 def test_message_manager_with_images(message_manager):
-    """Test message manager with images"""
+    """Message manager with images"""
     instruction = message_manager.add_message(
         instruction="Describe this image",
         images=["image1.png", "image2.jpg"],
@@ -160,7 +160,7 @@ def test_message_manager_with_images(message_manager):
 
 
 def test_message_manager_with_tool_schemas(message_manager):
-    """Test message manager with tool schemas"""
+    """Message manager with tool schemas"""
     tool_schemas = {
         "tool1": {"type": "function", "function": {"name": "tool1"}},
         "tool2": {"type": "function", "function": {"name": "tool2"}},
@@ -177,7 +177,7 @@ def test_message_manager_with_tool_schemas(message_manager):
 
 
 def test_complete_conversation_flow(message_manager):
-    """Test a complete conversation flow"""
+    """A complete conversation flow"""
     system = message_manager.add_message(system="You are a helpful assistant")
     assert message_manager.system == system
 

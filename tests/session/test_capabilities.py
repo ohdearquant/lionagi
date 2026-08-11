@@ -42,7 +42,7 @@ def _assistant(text: str) -> AssistantResponse:
     )
 
 
-# -- renderer ---------------------------------------------------------------
+# renderer
 
 
 def test_render_lists_names_and_schema():
@@ -52,7 +52,7 @@ def test_render_lists_names_and_schema():
     assert "claim" in prompt  # nested schema is shown
 
 
-# -- grant / revoke ---------------------------------------------------------
+# grant / revoke
 
 
 def test_grant_sets_runtime_and_prompt():
@@ -139,7 +139,7 @@ def test_grant_then_revoke_preserves_user_marker_text():
     assert "Base prompt." in sys_text
 
 
-# -- end-to-end: grant → emit → observe -------------------------------------
+# end-to-end: grant → emit → observe
 
 
 async def test_grant_then_emit_observed():

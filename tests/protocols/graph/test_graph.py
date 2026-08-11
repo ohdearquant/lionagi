@@ -73,7 +73,7 @@ def cyclic_graph():
 
 
 class TestGraphBasics:
-    """Test basic graph operations"""
+    """Basic graph operations"""
 
     def test_empty_graph_creation(self, empty_graph):
         assert len(empty_graph.internal_nodes) == 0
@@ -131,7 +131,7 @@ class TestGraphBasics:
 
 
 class TestGraphTraversal:
-    """Test graph traversal operations"""
+    """Graph traversal operations"""
 
     def test_get_heads(self, complex_graph):
         graph, nodes, _ = complex_graph
@@ -172,7 +172,7 @@ class TestGraphTraversal:
 
 
 class TestGraphModification:
-    """Test graph modification operations"""
+    """Graph modification operations"""
 
     def test_remove_node(self, simple_graph):
         graph, node1, node2, edge = simple_graph
@@ -190,7 +190,7 @@ class TestGraphModification:
 
 
 class TestGraphProperties:
-    """Test graph property checks"""
+    """Graph property checks"""
 
     def test_is_acyclic_true(self, complex_graph):
         graph, _, _ = complex_graph
@@ -202,7 +202,7 @@ class TestGraphProperties:
 
 
 class TestEdgeConditions:
-    """Test edge conditions"""
+    """Edge conditions"""
 
     @pytest.mark.asyncio
     async def test_edge_condition_true(self):
@@ -229,7 +229,7 @@ class TestEdgeConditions:
 
 
 class TestGraphContainment:
-    """Test graph containment operations"""
+    """Graph containment operations"""
 
     def test_contains_node(self, simple_graph):
         graph, node1, node2, _ = simple_graph

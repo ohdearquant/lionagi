@@ -22,9 +22,7 @@ from lionagi.work import (
     validate_form,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_form(
@@ -44,9 +42,7 @@ def _make_form(
     )
 
 
-# ---------------------------------------------------------------------------
 # WorkForm — Element inheritance
-# ---------------------------------------------------------------------------
 
 
 class TestWorkFormElement:
@@ -89,9 +85,7 @@ class TestWorkFormElement:
         assert form in s
 
 
-# ---------------------------------------------------------------------------
 # FieldSpec
-# ---------------------------------------------------------------------------
 
 
 class TestFieldSpec:
@@ -219,9 +213,7 @@ class TestFieldSpec:
         assert spec.coerce(False) is False
 
 
-# ---------------------------------------------------------------------------
 # WorkForm
-# ---------------------------------------------------------------------------
 
 
 class TestWorkForm:
@@ -335,9 +327,7 @@ class TestWorkFormTransitions:
                 assert result.status == to_status
 
 
-# ---------------------------------------------------------------------------
 # validate_form — FieldSpec checks
-# ---------------------------------------------------------------------------
 
 
 class TestValidateForm:
@@ -415,9 +405,7 @@ class TestValidateForm:
         assert result.status == "validated"
 
 
-# ---------------------------------------------------------------------------
 # validate_form — ruleset integration (Fix 2)
-# ---------------------------------------------------------------------------
 
 
 class TestValidateFormWithRuleset:
@@ -504,9 +492,7 @@ class TestValidateFormWithRuleset:
         assert result.status == "validated"
 
 
-# ---------------------------------------------------------------------------
 # fill_form
-# ---------------------------------------------------------------------------
 
 
 class TestFillForm:
@@ -562,9 +548,7 @@ class TestFillForm:
         assert result.values == {"name": "Bob", "age": 30, "active": True}
 
 
-# ---------------------------------------------------------------------------
 # Rule
-# ---------------------------------------------------------------------------
 
 
 class TestRuleRequired:
@@ -830,9 +814,7 @@ class TestRuleCustom:
         assert "RuntimeError" in err
 
 
-# ---------------------------------------------------------------------------
 # RuleSet
-# ---------------------------------------------------------------------------
 
 
 class TestRuleSet:
@@ -947,9 +929,7 @@ class TestRuleSet:
         assert rs.get("r1").field == "y"
 
 
-# ---------------------------------------------------------------------------
 # Integration: fill_form + RuleSet (standalone apply)
-# ---------------------------------------------------------------------------
 
 
 class TestFillFormWithRuleSetStandalone:

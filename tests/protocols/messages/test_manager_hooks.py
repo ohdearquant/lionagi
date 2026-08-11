@@ -197,8 +197,9 @@ def test_one_failing_sync_hook_does_not_prevent_others(mm: MessageManager):
 def test_sync_preflight_rejects_async_hook_before_pile_mutation(
     mm: MessageManager,
 ):
-    """R4-A MED-1 regression guard (also covered in test_manager_state.py).
-    Pinned here as part of the hooks contract suite.
+    """Regression guard for the async-hook-before-mutation contract (also
+    covered in test_manager_state.py). Pinned here as part of the hooks
+    contract suite.
     """
 
     async def async_hook(_msg):  # pragma: no cover — never invoked

@@ -5,12 +5,10 @@ and lion_class round-trips (both fully-qualified and legacy short names)."""
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Module-level Node subclasses
 # These classes MUST live here (module scope) so that their __module__ and
 # __qualname__ produce a valid importable fully-qualified name that
 # Element.from_dict can resolve via LION_CLASS_REGISTRY or import_module.
-# ---------------------------------------------------------------------------
 # Imported at module level; the import triggers no registration by itself
 # (Node.__pydantic_init_subclass__ fires only for *subclasses* of Node).
 from lionagi.protocols.graph.node import Node
@@ -76,22 +74,16 @@ class _LenBefore(Node):
     """Used for registry-length-stable test."""
 
 
-# ---------------------------------------------------------------------------
-# Autouse fixtures: registry isolation
-#
-# Two layers, because pollution happens at two times:
-#
-# 1. Import time — the module-level Node subclasses above are registered by
-#    Node.__pydantic_init_subclass__ the moment this file is imported, BEFORE
-#    any fixture runs.  A per-test snapshot can't see a pre-import state, so a
-#    module-scoped finalizer removes every registry entry whose class was
-#    defined in this module once the module's tests finish.  Without it, all
-#    test-only keys leak to later test modules on the same xdist worker.
-#
-# 2. Test time — individual tests mutate the registry (deleting keys,
-#    registering type()-created collisions).  A per-test snapshot/restore
-#    guarantees those mutations never outlive the test, even on failure.
-# ---------------------------------------------------------------------------
+# Autouse fixtures: registry isolation, in two layers because pollution
+# happens at two times. (1) Import time: the module-level Node subclasses
+# above register via Node.__pydantic_init_subclass__ the moment this file is
+# imported, before any fixture runs, so a per-test snapshot can't see a
+# pre-import state -- a module-scoped finalizer removes every registry entry
+# defined in this module once its tests finish, or test-only keys leak to
+# later modules on the same xdist worker. (2) Test time: individual tests
+# mutate the registry (deleting keys, registering type()-created
+# collisions); a per-test snapshot/restore keeps those mutations from
+# outliving the test, even on failure.
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -128,9 +120,7 @@ def _registry_snapshot():
         LION_CLASS_REGISTRY.update(registry_snapshot)
 
 
-# ---------------------------------------------------------------------------
 # 1. LION_CLASS_REGISTRY population via Node.__pydantic_init_subclass__
-# ---------------------------------------------------------------------------
 
 
 class TestNodeSubclassRegistration:
@@ -172,9 +162,7 @@ class TestNodeSubclassRegistration:
         assert node_full not in LION_CLASS_REGISTRY
 
 
-# ---------------------------------------------------------------------------
 # 2. get_class: hit (direct registry lookup)
-# ---------------------------------------------------------------------------
 
 
 class TestGetClassHit:
@@ -203,9 +191,7 @@ class TestGetClassHit:
         assert isinstance(inst, _InstantiateNode)
 
 
-# ---------------------------------------------------------------------------
 # 3. get_class: miss behavior (unknown name)
-# ---------------------------------------------------------------------------
 
 
 class TestGetClassMiss:
@@ -238,8 +224,7 @@ class TestGetClassMiss:
             get_class("lionagi.protocols.generic.element.NoSuchClass_xyz")
 
 
-# ---------------------------------------------------------------------------
-# 4. get_class: legacy short-name resolution via built-in modules
+# get_class: legacy short-name resolution via built-in modules.
 #
 # Persisted `lion_class` metadata predating the full-qualified-name
 # convention stores a bare class name (e.g. "Instruction") instead of a
@@ -247,7 +232,6 @@ class TestGetClassMiss:
 # scan, by importing the fixed set of built-in modules and looking the name
 # up as a module attribute (or, for Node subclasses, via LION_CLASS_REGISTRY
 # after that import triggers registration).
-# ---------------------------------------------------------------------------
 
 
 class TestGetClassShortNameFallback:
@@ -308,9 +292,7 @@ class TestGetClassShortNameFallback:
         assert result is Log
 
 
-# ---------------------------------------------------------------------------
 # 5. get_class: dotted-path import fallback (fully-qualified names)
-# ---------------------------------------------------------------------------
 
 
 class TestGetClassDottedPathFallback:
@@ -349,15 +331,12 @@ class TestGetClassDottedPathFallback:
             class_registry.get_class("broken.module.UniqueRegistryClass")
 
 
-# ---------------------------------------------------------------------------
-# 6. Duplicate-name handling: last writer wins (overwrite semantics — pinned)
+# Duplicate-name handling: last writer wins (overwrite semantics, pinned).
 #
 # Tests exercise the real registration hook (Node.__pydantic_init_subclass__)
 # by creating two classes with the same __name__ using type() in function
-# scope.  Because pydantic's __pydantic_init_subclass__ fires on each class
-# statement / type() call, both classes are registered under the same key
-# (their full-qualified name derives from __module__ + __qualname__).
-# The second registration silently overwrites the first — last-writer-wins.
+# scope, so both register under the same key (derived from __module__ +
+# __qualname__) and the second silently overwrites the first.
 #
 # NOTE: classes created with bare type() get __module__ == "abc" (pydantic's
 # ModelMetaclass construction runs through abc machinery, and the frame-based
@@ -365,7 +344,6 @@ class TestGetClassDottedPathFallback:
 # Two distinct type() calls sharing the same __name__ still collide on exactly
 # the same registry key — exactly the scenario we want.  The per-test snapshot
 # fixture restores these keys afterwards.
-# ---------------------------------------------------------------------------
 
 
 class TestDuplicateNameHandling:
@@ -440,9 +418,7 @@ class TestDuplicateNameHandling:
         assert len(LION_CLASS_REGISTRY) == size_before
 
 
-# ---------------------------------------------------------------------------
 # 7. Polymorphic round-trip (python mode)
-# ---------------------------------------------------------------------------
 
 
 class TestPolymorphicRoundTrip:
@@ -511,9 +487,7 @@ class TestPolymorphicRoundTrip:
         assert restored.id == inst.id
 
 
-# ---------------------------------------------------------------------------
 # 8. db-mode round-trip (node_metadata key)
-# ---------------------------------------------------------------------------
 
 
 class TestDbModeRoundTrip:
@@ -548,15 +522,13 @@ class TestDbModeRoundTrip:
         assert restored.content == "db-content-check"
 
 
-# ---------------------------------------------------------------------------
-# 9. Legacy short-name lion_class round-trip for built-in message classes
+# Legacy short-name lion_class round-trip for built-in message classes.
 #
 # HARD CONSTRAINT: old persisted `lion_class` strings must keep round-
 # tripping whether they store the fully-qualified dotted path
 # (e.g. "lionagi.protocols.messages.instruction.Instruction") or the bare
 # legacy short name (e.g. "Instruction"), for every built-in Element/Node
 # subclass that ships with lionagi.
-# ---------------------------------------------------------------------------
 
 
 def _short_name_round_trip(inst):
@@ -699,14 +671,12 @@ class TestLegacyShortNameMessageRoundTrip:
         assert restored.content == "plain node"
 
 
-# ---------------------------------------------------------------------------
-# 10. Message Pile round-trip with mixed full/short lion_class entries
+# Message Pile round-trip with mixed full/short lion_class entries.
 #
 # Branch/session state persists its message history as a Pile of messages;
 # Pile.from_dict / _validate_collections deserializes each item via
 # Element.from_dict. This exercises the whole stack (Pile -> Element.from_dict
 # -> get_class) the way a real Branch snapshot load would.
-# ---------------------------------------------------------------------------
 
 
 class TestMessagePileRoundTrip:

@@ -734,7 +734,7 @@ async def _teardown_common(
         )
         final_evidence_refs = escalated_evidence
 
-    # Gate-rejection backstop: a gate node rejected mid-DAG (issue #2860) and the
+    # Gate-rejection backstop: a gate node rejected mid-DAG and the
     # executor short-circuited its dependent subtree to skipped instead of running
     # those nodes against the rejected baseline. That is a correct, deliberate
     # stop, not a failure -- status stays "completed" -- but the reason code must

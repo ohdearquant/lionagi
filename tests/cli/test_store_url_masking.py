@@ -3,31 +3,26 @@
 
 """No operator-facing string names the store with its password still in it.
 
-A store URL is a credential when the store is a server. Every command that
-reports which store it consulted, and every refusal that says why it could not
-open one, prints that URL, and those strings land in terminal scrollback, CI
-logs and machine-mode JSON that gets stored.
+A store URL is a credential when the store is a server. Commands that report
+which store they consulted, or refuse to open one, print that URL, and those
+strings land in terminal scrollback, CI logs, and stored machine-mode JSON.
 
-Two channels carry the same secret and both are asserted here. The URL is the
-obvious one. The other is an exception's own message, which is a separate
-string built by separate code and is unaffected by masking the field beside it.
+Two channels carry the same secret: the URL itself, and an exception's own
+message, which is separate code and unaffected by masking the field beside it.
 
-The end-to-end tests run the real CLI in a subprocess and read **stdout and
-stderr separately**, because "it did not appear" is only worth something once
-you have said where you looked. Each of them also asserts the masked form is
-present, which is what distinguishes a command that ran and masked from a
-command that never reached the store at all: an early probe of this fix
-mistyped the invocation, got a clean password check from six commands that all
-answered "no such command", and read as a pass.
+The end-to-end tests run the real CLI in a subprocess and read stdout and
+stderr separately, so "it did not appear" says where. Each also asserts the
+masked form is present, to distinguish a command that ran and masked from one
+that never reached the store — an early probe of this fix mistyped the
+invocation, got a clean password check from commands that all answered "no
+such command", and read as a pass.
 
 A store URL with no scheme is read as a filesystem path, so a credential in
-one puts a password in a real path. That is both how it evades a masker that
-only parses URLs, and why the branch that looks like it has nothing to hide is
-the one that leaked. The shape reaches a store setting only through the ``./``
-spelling now, since a bare ``user:secret@host/db`` is refused before it
-resolves, so that is the spelling the store-setting arms use. The masker is
-still asked about the bare form directly: it is handed strings built by
-drivers and by older logs, not only strings that passed our own validation.
+one puts a password in a real path — evading a masker that only parses URLs.
+That shape reaches a store setting only through the ``./`` spelling, since a
+bare ``user:secret@host/db`` is refused before it resolves; the masker is
+still tested against the bare form directly, since it is handed strings built
+by drivers and older logs, not only strings that passed our own validation.
 """
 
 from __future__ import annotations
@@ -67,7 +62,7 @@ def _assert_masked(text: str, where: str) -> None:
     )
 
 
-# ── the masker itself ────────────────────────────────────────────────────────
+# the masker itself
 
 
 def test_a_url_with_no_scheme_is_masked_too():
@@ -116,7 +111,7 @@ def test_strings_with_no_credential_are_returned_unchanged(untouched):
     assert mask_db_url(untouched) == untouched
 
 
-# ── per sink ─────────────────────────────────────────────────────────────────
+# per sink
 
 
 def test_the_absent_store_refusal_names_a_masked_store(monkeypatch):
@@ -338,7 +333,7 @@ async def test_the_monitor_detail_masks_a_message_that_quotes_the_store(monkeypa
     _assert_masked(await _run_detail("some-entity"), "the monitor detail's error line")
 
 
-# ── end to end, both channels named ──────────────────────────────────────────
+# end to end, both channels named
 
 
 def _run_cli(args: list[str], url: str, cwd) -> subprocess.CompletedProcess:
