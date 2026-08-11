@@ -195,13 +195,6 @@ def test_multiple_entries_wire_independently():
     assert len(branch._hooks.handlers_for(HookPoint.USER_PROMPT_SUBMIT)) == 1
 
 
-# ---------------------------------------------------------------------------
-# Session-bus wiring: create_agent() always builds a standalone branch with
-# no HookBus yet; a configured UserPromptSubmit hook must still fire once
-# that branch joins a Session (the only thing that ever attaches a bus).
-# ---------------------------------------------------------------------------
-
-
 class _FakeStream:
     """Minimal async-read stand-in for a StreamReader: returns *data* on the
     first ``read()`` call, then EOF -- matches how ``_read_capped``'s
@@ -328,12 +321,10 @@ async def test_user_prompt_submit_hook_survives_reparent_to_another_session(monk
         )
 
 
-# ---------------------------------------------------------------------------
 # Cross-branch isolation: a session's HookBus is shared by every branch it
 # owns, so a branch-owned external handler must not fire for another
 # branch's event, and a reparented/removed branch must not leave a stale
 # registration behind on its old session's bus.
-# ---------------------------------------------------------------------------
 
 
 async def test_two_branches_with_different_hooks_do_not_observe_each_others_prompts(

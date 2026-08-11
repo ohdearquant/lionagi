@@ -13,10 +13,6 @@ from lionagi.tools.code.search import (
     SearchTool,
 )
 
-# ---------------------------------------------------------------------------
-# SearchAction enum
-# ---------------------------------------------------------------------------
-
 
 def test_search_action_grep_value():
     assert SearchAction.grep == "grep"
@@ -26,11 +22,6 @@ def test_search_action_grep_value():
 def test_search_action_find_value():
     assert SearchAction.find == "find"
     assert SearchAction.find.value == "find"
-
-
-# ---------------------------------------------------------------------------
-# SearchRequest model
-# ---------------------------------------------------------------------------
 
 
 def test_search_request_required_fields():
@@ -76,11 +67,6 @@ async def test_grep_with_explicit_null_coalesces_to_defaults(tmp_path):
     assert resp.count > 0
 
 
-# ---------------------------------------------------------------------------
-# SearchResponse model
-# ---------------------------------------------------------------------------
-
-
 def test_search_response_defaults():
     resp = SearchResponse(success=True)
     assert resp.content is None
@@ -92,11 +78,6 @@ def test_search_response_failure():
     resp = SearchResponse(success=False, error="oops")
     assert resp.success is False
     assert resp.error == "oops"
-
-
-# ---------------------------------------------------------------------------
-# Grep: basic match
-# ---------------------------------------------------------------------------
 
 
 async def test_grep_finds_matching_content(tmp_path):
@@ -127,11 +108,6 @@ async def test_grep_returns_search_response(tmp_path):
     assert isinstance(resp, SearchResponse)
 
 
-# ---------------------------------------------------------------------------
-# Grep: no matches (exit code 1, not an error)
-# ---------------------------------------------------------------------------
-
-
 async def test_grep_no_matches_returns_success(tmp_path):
     (tmp_path / "f.py").write_text("nothing here\n")
     tool = SearchTool()
@@ -144,11 +120,6 @@ async def test_grep_no_matches_returns_success(tmp_path):
     )
     assert resp.success is True
     assert resp.count == 0
-
-
-# ---------------------------------------------------------------------------
-# Grep: regex pattern
-# ---------------------------------------------------------------------------
 
 
 async def test_grep_regex_matches_function_defs(tmp_path):
@@ -165,11 +136,6 @@ async def test_grep_regex_matches_function_defs(tmp_path):
     assert resp.count >= 2
     assert "foo" in resp.content
     assert "bar" in resp.content
-
-
-# ---------------------------------------------------------------------------
-# Grep: include filter restricts file types
-# ---------------------------------------------------------------------------
 
 
 async def test_grep_include_filter_restricts_to_py(tmp_path):
@@ -190,11 +156,6 @@ async def test_grep_include_filter_restricts_to_py(tmp_path):
         assert ".py" in line
 
 
-# ---------------------------------------------------------------------------
-# Grep: max_results capping
-# ---------------------------------------------------------------------------
-
-
 async def test_grep_max_results_capped(tmp_path):
     for i in range(10):
         (tmp_path / f"f{i}.py").write_text("TOKEN\n")
@@ -209,11 +170,6 @@ async def test_grep_max_results_capped(tmp_path):
     )
     assert resp.success is True
     assert resp.count <= 3
-
-
-# ---------------------------------------------------------------------------
-# Find: glob matching
-# ---------------------------------------------------------------------------
 
 
 async def test_find_by_glob_finds_py_files(tmp_path):
@@ -249,11 +205,6 @@ async def test_find_no_matches_returns_success(tmp_path):
     assert resp.count == 0
 
 
-# ---------------------------------------------------------------------------
-# Find: max_results capping
-# ---------------------------------------------------------------------------
-
-
 async def test_find_max_results_capped(tmp_path):
     for i in range(10):
         (tmp_path / f"t{i}.py").write_text("")
@@ -270,11 +221,6 @@ async def test_find_max_results_capped(tmp_path):
     assert resp.count <= 2
 
 
-# ---------------------------------------------------------------------------
-# Dict input
-# ---------------------------------------------------------------------------
-
-
 async def test_dict_input_accepted(tmp_path):
     (tmp_path / "x.py").write_text("hello\n")
     tool = SearchTool()
@@ -287,11 +233,6 @@ async def test_dict_input_accepted(tmp_path):
     )
     assert resp.success is True
     assert resp.count > 0
-
-
-# ---------------------------------------------------------------------------
-# to_tool
-# ---------------------------------------------------------------------------
 
 
 def test_to_tool_returns_tool_instance():
@@ -317,11 +258,6 @@ async def test_to_tool_callable_executes(tmp_path):
     assert result["count"] > 0
 
 
-# ---------------------------------------------------------------------------
-# Grep timeout returns structured error
-# ---------------------------------------------------------------------------
-
-
 async def test_search_tool_grep_timeout_returns_structured_error(monkeypatch):
     import lionagi.tools.code.search as search_mod
 
@@ -341,11 +277,6 @@ async def test_search_tool_grep_timeout_returns_structured_error(monkeypatch):
     assert "timed out" in (resp.error or "").lower()
 
 
-# ---------------------------------------------------------------------------
-# Find nonzero exit with stderr returns error response
-# ---------------------------------------------------------------------------
-
-
 async def test_search_tool_find_stderr_nonzero_is_error(monkeypatch):
     import lionagi.tools.code.search as search_mod
 
@@ -362,11 +293,6 @@ async def test_search_tool_find_stderr_nonzero_is_error(monkeypatch):
 
     assert resp.success is False
     assert "permission denied" in (resp.error or "").lower()
-
-
-# ---------------------------------------------------------------------------
-# grep: FileNotFoundError and generic Exception (lines 103-108)
-# ---------------------------------------------------------------------------
 
 
 async def test_grep_file_not_found_returns_error(monkeypatch):
@@ -401,11 +327,6 @@ async def test_grep_generic_exception_returns_error(monkeypatch):
     assert resp.count == 0
 
 
-# ---------------------------------------------------------------------------
-# grep: exit code 2 (line 112)
-# ---------------------------------------------------------------------------
-
-
 async def test_grep_exit_code_2_returns_error(monkeypatch):
     import lionagi.tools.code.search as search_mod
 
@@ -420,11 +341,6 @@ async def test_grep_exit_code_2_returns_error(monkeypatch):
     )
     assert resp.success is False
     assert "invalid regex" in (resp.error or "")
-
-
-# ---------------------------------------------------------------------------
-# find: TimeoutExpired, FileNotFoundError, generic Exception (lines 132-139)
-# ---------------------------------------------------------------------------
 
 
 async def test_find_timeout_returns_error(monkeypatch):
@@ -481,11 +397,6 @@ async def test_find_generic_exception_returns_error(monkeypatch):
     assert "I/O error" in (resp.error or "")
 
 
-# ---------------------------------------------------------------------------
-# handle_request: unknown action fallback (line 174)
-# ---------------------------------------------------------------------------
-
-
 async def test_handle_request_unknown_action_returns_error():
     from unittest.mock import MagicMock
 
@@ -497,11 +408,6 @@ async def test_handle_request_unknown_action_returns_error():
     assert "Unknown action" in (resp.error or "")
 
 
-# ---------------------------------------------------------------------------
-# to_tool: custom system_tool_name triggers rename (line 192)
-# ---------------------------------------------------------------------------
-
-
 def test_to_tool_custom_system_tool_name():
     class CustomSearchTool(SearchTool):
         system_tool_name = "my_search"
@@ -511,11 +417,9 @@ def test_to_tool_custom_system_tool_name():
     assert t.func_callable.__name__ == "my_search"
 
 
-# ---------------------------------------------------------------------------
 # Regression: rc=-1 (subprocess launch failure) must be success=False
 # (_subprocess_sync returns rc=-1 on launch error; old code only checked
 # rc==2, so rc==-1 fell through to success=True)
-# ---------------------------------------------------------------------------
 
 
 async def test_grep_rc_minus1_is_failure_not_success(monkeypatch):

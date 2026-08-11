@@ -21,9 +21,6 @@ def _make_mock_db():
     return AsyncMock()
 
 
-# ── persist_message: one logical persistence event ───────────────────────────
-
-
 async def test_persist_message_appends_to_branch_progression():
     msg = {"id": "msg1", "role": "user", "content": "hi"}
     mock_db = _make_mock_db()
@@ -225,9 +222,6 @@ async def test_explicit_message_hook_retries_middle_transaction_failure(
     state_db_module._SHARED.pop(null_url, None)
 
 
-# ── persist_session_start: running status must carry a reason_code ─────────────
-
-
 class TestPersistSessionStartReasonCode:
     """persist_session_start must write a reason_code or the bus silently drops every provenance field."""
 
@@ -288,9 +282,6 @@ class TestPersistSessionStartReasonCode:
         assert row["provider"] == "openai"
         # A canonical "started" reason was recorded, not the deprecation default.
         assert row["status_reason_code"] == RunReasons.STARTED_OK
-
-
-# ── Singleton reuse: same instance returned across multiple firings ───────────
 
 
 async def test_shared_db_returns_same_instance(tmp_path, monkeypatch):
@@ -374,9 +365,6 @@ async def test_concurrent_hook_firings_use_same_instance(tmp_path, monkeypatch):
     # Cleanup
     await first.close()
     _db_module._SHARED.pop(db_url, None)
-
-
-# ── Lifecycle hook emission: SESSION_START / SESSION_END / BRANCH_CREATE ──────
 
 
 def _redirect_shared_db(monkeypatch, tmp_path):

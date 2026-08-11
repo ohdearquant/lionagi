@@ -94,11 +94,6 @@ class TestLCallFunction(unittest.IsolatedAsyncioTestCase):
             mock_sleep.assert_any_call(0.2)
 
 
-# =============================================================================
-# Synchronous lcall Tests (for improved coverage)
-# =============================================================================
-
-
 class TestLCallSyncFunction:
     @pytest.mark.unit
     def test_lcall_basic_usage(self):

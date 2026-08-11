@@ -86,12 +86,6 @@ def test_parse_external_hooks_multiple_events_and_matchers():
     assert events == {"PreToolUse", "SessionStart"}
 
 
-# ---------------------------------------------------------------------------
-# apply_hooks_from_settings: hooks_external lands on config.external_hooks,
-# never on config.hook_handlers (the legacy shape's storage).
-# ---------------------------------------------------------------------------
-
-
 def test_apply_hooks_from_settings_populates_external_hooks_field():
     settings = {
         "hooks_external": {
