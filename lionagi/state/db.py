@@ -128,11 +128,13 @@ DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 # whenever a migration changes the shape a reader would see -- a new table, a
 # rebuilt CHECK constraint, a column whose meaning changed. Version "1" is the
 # original shape, before the migrations now applied on open existed.
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 _DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 _ATTENTION_DISPOSITIONS_BACKFILL_KEY = "migration.attention_dispositions_backfill"
 _IMPORTED_ROLE_LABEL_BACKFILL_KEY = "migration.imported_role_label_backfill"
+_SESSION_ENDED_AT_BACKFILL_KEY = "migration.session_ended_at_backfill"
+_SESSION_ENDED_AT_BACKFILL_BATCH_SIZE = 500
 
 
 class SchemaTooNewError(RuntimeError):
@@ -1008,6 +1010,12 @@ class StateDB:
                 )
             )
 
+        # Historical terminal sessions can be numerous, so do not hold the
+        # schema transaction (or SQLite's writer lock) while repairing all of
+        # them. Each batch below commits independently; a crash leaves the
+        # durable completion marker absent and the next open resumes safely.
+        await self._backfill_session_ended_at_once()
+
     _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = _MIGRATION_COLUMNS
     _MIGRATION_INDEXES: dict[str, tuple[str, ...]] = _MIGRATION_INDEXES
 
@@ -1065,6 +1073,114 @@ class StateDB:
         )
         if claimed.rowcount:
             await self._backfill_dispatched_at(conn)
+
+    async def _backfill_session_ended_at_once(self) -> None:
+        """Repair historical terminal sessions in bounded, resumable batches.
+
+        The marker is written only after an empty probe. A crash between
+        batches therefore leaves already-repaired rows protected by the
+        ``ended_at IS NULL`` predicate and lets the next writable open finish
+        the remaining rows instead of mistaking partial work for completion.
+        """
+        # Completed databases take the ordinary read connection and return;
+        # opening StateDB must not consume an otherwise unrelated write
+        # transaction merely to discover a durable marker already exists.
+        async with self._read() as conn:
+            marker = (
+                await conn.execute(
+                    text("SELECT 1 FROM schema_meta WHERE key = :key"),
+                    {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
+                )
+            ).first()
+        if marker is not None:
+            return
+
+        while True:
+            async with self._tx() as conn:
+                await self._refuse_newer_schema(conn)
+                marker = (
+                    await conn.execute(
+                        text("SELECT 1 FROM schema_meta WHERE key = :key"),
+                        {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
+                    )
+                ).first()
+                if marker is not None:
+                    return
+
+                repaired = await self._backfill_session_ended_at_batch(conn)
+                if repaired:
+                    continue
+
+                await conn.execute(
+                    text(
+                        "INSERT INTO schema_meta (key, value) VALUES (:key, '1') "
+                        "ON CONFLICT (key) DO NOTHING"
+                    ),
+                    {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
+                )
+                return
+
+    async def _backfill_session_ended_at_batch(self, conn) -> int:
+        """Approximate at most one batch of missing historical end times."""
+        if self.dialect == "sqlite":
+            query = (
+                "SELECT id, created_at, updated_at, started_at, last_message_at "
+                "FROM sessions INDEXED BY idx_sessions_terminal_missing_end "
+                "WHERE ended_at IS NULL AND status IN "
+                "('completed','completed_empty','failed','timed_out','aborted','cancelled') "
+                "ORDER BY id LIMIT :limit"
+            )
+        else:
+            query = (
+                "SELECT id, created_at, updated_at, started_at, last_message_at "
+                "FROM sessions WHERE ended_at IS NULL AND status IN "
+                "('completed','completed_empty','failed','timed_out','aborted','cancelled') "
+                "ORDER BY id LIMIT :limit FOR UPDATE"
+            )
+        rows = (
+            (
+                await conn.execute(
+                    text(query),
+                    {"limit": _SESSION_ENDED_AT_BACKFILL_BATCH_SIZE},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        if not rows:
+            return 0
+
+        repairs = []
+        for row in rows:
+            evidence = [
+                value
+                for value in (
+                    row["updated_at"],
+                    row["last_message_at"],
+                    row["started_at"],
+                    row["created_at"],
+                )
+                if isinstance(value, int | float)
+            ]
+            # created_at is NOT NULL in every supported schema, but keep a
+            # defensive fallback for malformed hand-built legacy stores.
+            repairs.append(
+                {
+                    "id": row["id"],
+                    "ended_at": max(evidence) if evidence else time.time(),
+                }
+            )
+
+        await conn.execute(
+            text(
+                "UPDATE sessions SET ended_at = :ended_at, "
+                "ended_at_is_approximate = 1 "
+                "WHERE id = :id AND ended_at IS NULL AND status IN "
+                "('completed','completed_empty','failed','timed_out','aborted','cancelled')"
+            ),
+            repairs,
+        )
+        return len(rows)
 
     async def _backfill_dispatched_at(self, conn) -> None:
         """Stamp ``dispatched_at`` on pre-existing running rows, once.
@@ -1383,6 +1499,7 @@ class StateDB:
                               status          TEXT,
                               started_at      REAL,
                               ended_at        REAL,
+                              ended_at_is_approximate INTEGER NOT NULL DEFAULT 0,
                               last_message_at REAL,
                               current_phase   TEXT,
                               invocation_id   TEXT    REFERENCES invocations(id),
@@ -2392,19 +2509,35 @@ class StateDB:
             adr="ADR-0012",
         )
         now = time.time()
+        created_at = session.get("created_at", now)
+        updated_at = session.get("updated_at", now)
+        started_at = session.get("started_at")
+        last_message_at = session.get("last_message_at", session.get("started_at", now))
+        ended_at = session.get("ended_at")
+        ended_at_is_approximate = bool(session.get("ended_at_is_approximate", False))
+        if session.get("status") in SESSION_TERMINAL_STATUSES and ended_at is None:
+            evidence = [
+                value
+                for value in (updated_at, last_message_at, started_at, created_at)
+                if isinstance(value, int | float)
+            ]
+            ended_at = max(evidence) if evidence else now
+            ended_at_is_approximate = True
+
         # A row can be born terminal (e.g. `li state import` of a completed
         # run) without ever passing through _transition() or the admin CAS —
         # both of which derive duration_ms from started_at/ended_at. Derive
-        # it here too so a terminal insert is never the one path that skips
-        # duration centralization.
-        duration_ms = session.get("duration_ms")
+        # it here too when the end was measured. An approximate historical
+        # marker intentionally leaves duration unknown.
+        duration_ms = None if ended_at_is_approximate else session.get("duration_ms")
         if (
             duration_ms is None
             and session.get("status") in SESSION_TERMINAL_STATUSES
-            and isinstance(session.get("started_at"), int | float)
-            and isinstance(session.get("ended_at"), int | float)
+            and not ended_at_is_approximate
+            and isinstance(started_at, int | float)
+            and isinstance(ended_at, int | float)
         ):
-            duration_ms = max(0.0, (session["ended_at"] - session["started_at"]) * 1000)
+            duration_ms = max(0.0, (ended_at - started_at) * 1000)
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
@@ -2413,7 +2546,8 @@ class StateDB:
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
                        artifact_verification_json, source_kind,
-                       status, started_at, ended_at, last_message_at, invocation_id,
+                       status, started_at, ended_at, ended_at_is_approximate,
+                       last_message_at, invocation_id,
                        model, provider, effort, agent_hash,
                        project, project_source, duration_ms)
                        VALUES (:id, :cc_session_id, :run_id, :created_at, :node_metadata, :name, :user,
@@ -2421,7 +2555,8 @@ class StateDB:
                                :playbook_name, :agent_name, :invocation_kind, :show_topic,
                                :show_play_name, :artifacts_path, :artifact_contract_json,
                                :artifact_verification_json, :source_kind,
-                               :status, :started_at, :ended_at, :last_message_at, :invocation_id,
+                               :status, :started_at, :ended_at, :ended_at_is_approximate,
+                               :last_message_at, :invocation_id,
                                :model, :provider, :effort, :agent_hash,
                                :project, :project_source, :duration_ms)
                        ON CONFLICT (id) DO NOTHING"""
@@ -2434,14 +2569,14 @@ class StateDB:
                     "id": session["id"],
                     "cc_session_id": session.get("cc_session_id"),
                     "run_id": session.get("run_id"),
-                    "created_at": session.get("created_at", now),
+                    "created_at": created_at,
                     "node_metadata": session.get("node_metadata"),
                     "name": session.get("name"),
                     "user": session.get("user"),
                     "progression_id": session["progression_id"],
                     "first_msg_id": session.get("first_msg_id"),
                     "last_msg_id": session.get("last_msg_id"),
-                    "updated_at": session.get("updated_at", now),
+                    "updated_at": updated_at,
                     "playbook_name": session.get("playbook_name"),
                     "agent_name": session.get("agent_name"),
                     "invocation_kind": session.get("invocation_kind"),
@@ -2452,11 +2587,10 @@ class StateDB:
                     "artifact_verification_json": session.get("artifact_verification_json"),
                     "source_kind": session.get("source_kind", "live"),
                     "status": session.get("status"),
-                    "started_at": session.get("started_at"),
-                    "ended_at": session.get("ended_at"),
-                    "last_message_at": session.get(
-                        "last_message_at", session.get("started_at", now)
-                    ),
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                    "ended_at_is_approximate": int(ended_at_is_approximate),
+                    "last_message_at": last_message_at,
                     "invocation_id": session.get("invocation_id"),
                     "model": session.get("model"),
                     "provider": session.get("provider"),
@@ -6550,6 +6684,8 @@ class StateDB:
         d = dict(row)
         if "embedding" in d:
             d["embedding"] = _unpack_embedding(d["embedding"])
+        if "ended_at_is_approximate" in d:
+            d["ended_at_is_approximate"] = bool(d["ended_at_is_approximate"])
         for key in (
             "node_metadata",
             "content",

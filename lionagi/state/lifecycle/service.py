@@ -250,16 +250,19 @@ class SQLAlchemyLifecycleService:
         # ended_at/duration_ms from the same row read here, instead of each
         # writer computing it independently (or not at all).
         needs_duration_basis = (
-            command.entity_type == "session"
-            and command.to_status in policy.terminal_statuses
-            and {"started_at", "ended_at"}.isdisjoint(extra_guard)
+            command.entity_type == "session" and command.to_status in policy.terminal_statuses
         )
 
         async with self._db._tx() as conn:
             guard_cols = list(extra_guard)
-            fetch_cols = ["status", "updated_at", *guard_cols]
+            # A caller may guard one of the duration-basis columns. Keep the
+            # SELECT unique, but never let that guard disable the terminal-end
+            # invariant itself.
+            fetch_cols = list(dict.fromkeys(["status", "updated_at", *guard_cols]))
             if needs_duration_basis:
-                fetch_cols += ["started_at", "ended_at"]
+                fetch_cols.extend(
+                    col for col in ("started_at", "ended_at") if col not in fetch_cols
+                )
             select_cols = ", ".join(fetch_cols)
             sel = f"SELECT {select_cols} FROM {policy.table} WHERE id = :id"  # noqa: S608
             if self._db.dialect != "sqlite":

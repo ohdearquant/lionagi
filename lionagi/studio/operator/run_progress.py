@@ -463,10 +463,21 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
 
     started_at = run.get("started_at")
     ended_at = run.get("ended_at")
+    ended_at_is_approximate = bool(run.get("ended_at_is_approximate"))
     now = time.time()
-    elapsed_seconds = (
-        (ended_at if ended_at is not None else now) - started_at if started_at is not None else None
-    )
+    if started_at is None:
+        elapsed_seconds = None
+    elif run.get("status") not in SESSION_TERMINAL_STATUSES:
+        # Status is the lifecycle authority. A stale end left by a repaired
+        # or reactivated row must not freeze a run that is currently active.
+        elapsed_seconds = now - started_at
+    elif ended_at is None or ended_at_is_approximate:
+        # Historical terminal rows may not have been migrated yet (for
+        # example, a read-only store). Missing evidence is unknown duration,
+        # not a clock that keeps growing as if the run were still active.
+        elapsed_seconds = None
+    else:
+        elapsed_seconds = ended_at - started_at
 
     graph = run.get("graph")
     dag_progress: dict[str, Any] | None = None
@@ -492,6 +503,7 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
         "effectiveHealth": run.get("effective_health"),
         "startedAt": started_at,
         "endedAt": ended_at,
+        "endedAtApproximate": ended_at_is_approximate,
         "elapsedSeconds": elapsed_seconds,
         "opsTotal": ops_total,
         "opsCompleted": ops_completed,

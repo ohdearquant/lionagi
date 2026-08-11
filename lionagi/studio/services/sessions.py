@@ -258,6 +258,7 @@ async def list_sessions(
                 s.status,
                 s.started_at,
                 s.ended_at,
+                s.ended_at_is_approximate,
                 s.last_message_at,
                 s.invocation_id,
                 s.model,
@@ -304,6 +305,7 @@ async def list_sessions(
             "status": row["status"] or "completed",
             "started_at": row["started_at"],
             "ended_at": row["ended_at"],
+            "ended_at_is_approximate": bool(row["ended_at_is_approximate"]),
             # Caller (runs service) feeds this to staleness_check (ADR-0057 D6).
             "last_message_at": row["last_message_at"],
             # Optional parent skill orchestration.
@@ -672,11 +674,12 @@ async def get_session(
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
                       artifact_contract_json, artifact_verification_json,
-                      source_kind, status, started_at, ended_at, last_message_at,
+                      source_kind, status, started_at, ended_at,
+                      ended_at_is_approximate, last_message_at,
                       model, provider, effort, agent_hash, invocation_id,
                       node_metadata, project, project_source,
                       status_reason_code, status_reason_summary, status_evidence_refs,
-                      total_cost_usd, input_tokens, output_tokens
+                      total_cost_usd, input_tokens, output_tokens, duration_ms
                FROM sessions WHERE id = ?""",
             (session_id,),
         )
@@ -802,9 +805,10 @@ async def get_session(
 
     started_at = session_row["started_at"]
     ended_at = session_row["ended_at"]
-    duration_ms = (
-        (ended_at - started_at) * 1000 if started_at is not None and ended_at is not None else None
-    )
+    ended_at_is_approximate = bool(session_row["ended_at_is_approximate"])
+    duration_ms = None if ended_at_is_approximate else session_row["duration_ms"]
+    if duration_ms is None and started_at is not None and ended_at is not None:
+        duration_ms = (ended_at - started_at) * 1000
     status = session_row["status"] or "completed"
     artifact_contract = _parse_json_col(session_row["artifact_contract_json"])
     stored_verification = _parse_json_col(session_row["artifact_verification_json"])
@@ -835,6 +839,7 @@ async def get_session(
         "status": status,
         "started_at": started_at,
         "ended_at": ended_at,
+        "ended_at_is_approximate": ended_at_is_approximate,
         "duration_ms": duration_ms,
         # Full-session aggregate, not derived from the windowed page.
         "last_message_at": session_row["last_message_at"],

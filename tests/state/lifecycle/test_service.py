@@ -104,6 +104,29 @@ async def test_transition_applied_shape(db: StateDB) -> None:
 
 
 @pytest.mark.asyncio
+async def test_guarded_terminal_session_transition_still_stamps_end_and_duration(
+    db: StateDB, monkeypatch
+) -> None:
+    """A guard on an end-time basis column must not disable the invariant."""
+    sid = await _make_session(db, status="running")
+    await db.update_session(sid, started_at=100.0)
+    monkeypatch.setattr("lionagi.state.lifecycle.service.time.time", lambda: 112.5)
+    service = SQLAlchemyLifecycleService(db)
+
+    outcome = await service._transition(  # noqa: SLF001 - exercises guarded internal path
+        _command(entity_id=sid, to_status="completed"),
+        extra_guard={"started_at": 100.0},
+    )
+
+    assert outcome.result == "applied"
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at"] == 112.5
+    assert row["duration_ms"] == pytest.approx(12_500.0)
+    assert row["ended_at_is_approximate"] is False
+
+
+@pytest.mark.asyncio
 async def test_transition_conflict_shape_on_expected_statuses_mismatch(db: StateDB) -> None:
     sid = await _make_session(db, status="running")
     service = SQLAlchemyLifecycleService(db)

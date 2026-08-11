@@ -233,8 +233,9 @@ _TOOL_DESCRIPTIONS = {
     "run_progress": (
         "Report how one run is going: status, op totals split into "
         "completed/running/failed/pending (they always sum to the total), "
-        "which ops are running right now, elapsed time, and whether it has a "
-        "graph. Accepts a run id, an id prefix, a name or playbook substring "
+        "which ops are running right now, elapsed time when it is live or "
+        "measured (null for an unknown historical duration), and whether it "
+        "has a graph. Accepts a run id, an id prefix, a name or playbook substring "
         "(minimum 3 characters), or 'current' for the run the human is "
         "looking at. An ambiguous reference returns candidates instead of "
         "guessing. Every number is a direct database read taken when this "
