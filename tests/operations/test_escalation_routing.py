@@ -35,9 +35,7 @@ def _session(**ops):
     return session
 
 
-# ---------------------------------------------------------------------------
 # higher_tier: re-spawns the op
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -150,9 +148,7 @@ async def test_escalation_child_carries_readable_name_and_parent_pointer():
     assert spawned_signals[0].independent is True
 
 
-# ---------------------------------------------------------------------------
 # give_up: signals without re-spawning
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -203,9 +199,7 @@ async def test_escalation_give_up_emits_node_escalated_signal():
     assert isinstance(sig.escalation_request, EscalationRequest)
 
 
-# ---------------------------------------------------------------------------
 # Default route (no explicit route key) → higher_tier
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -231,9 +225,7 @@ async def test_escalation_default_route_is_higher_tier():
     assert result["spawned_operations"] >= 1
 
 
-# ---------------------------------------------------------------------------
 # Deduplication: same EscalationRequest object only processed once
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -262,9 +254,7 @@ async def test_escalation_request_deduplicated():
     assert len(escalated_signals) <= 1
 
 
-# ---------------------------------------------------------------------------
 # NodeEscalated.escalation_request is stored in a named field, not Signal.data
-# ---------------------------------------------------------------------------
 
 
 def test_node_escalated_request_not_in_data_field():
@@ -275,9 +265,7 @@ def test_node_escalated_request_not_in_data_field():
     assert sig.escalation_request is req
 
 
-# ---------------------------------------------------------------------------
 # SpawnRequest and EscalationRequest coexist without interference
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -312,9 +300,7 @@ async def test_spawn_and_escalation_coexist():
     assert len(result["escalated_operations"]) >= 1
 
 
-# ---------------------------------------------------------------------------
 # Bus-based emission path (observe fires _on_bus_escalation)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -340,15 +326,11 @@ async def test_escalation_via_result_extraction():
     assert escalated_signals[0].route == "give_up"
 
 
-# ---------------------------------------------------------------------------
 # Fire-and-forget signal delivery: observer failure never changes the flow
 # result, and the executor's detached-task set drains after the run.
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # Help-signal urgency: urgency="fyi" -> "notify" route, non-hanging
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

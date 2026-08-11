@@ -812,24 +812,21 @@ async def test_wait_and_list_agree_on_the_spawn_phase(sandbox, monkeypatch):
 async def test_a_spawn_that_starts_between_observations_returns_to_pending(sandbox, monkeypatch):
     """The bucket is a reading of the current record, never a latch.
 
-    This is what makes the bucket safe to put a live-but-slow spawn in: the row
-    leaves it the moment its phase advances, so the cost of a wrong guess is one
-    poll interval rather than a run written off. The claim is asserted across two
-    observations inside ONE wait, not across two calls — two calls would pass even
-    if a latch survived for the length of a call, which is exactly where a cache
-    would sit.
+    This is what makes the bucket safe for a live-but-slow spawn: the row
+    leaves it the moment its phase advances, so the cost of a wrong guess is
+    one poll interval, not a run written off. Asserted across two
+    observations inside ONE wait, not across two calls -- two calls would
+    pass even if a latch survived for the length of a call, exactly where a
+    cache would sit. The clock and the sleep are both driven rather than
+    waited on, since a wall-clock version would race its own deadline and a
+    flaky stickiness test is worse than none.
 
-    Both the clock and the sleep are driven rather than waited on. A wall-clock
-    version would either sleep for real or race its own deadline, and a flaky test
-    for a stickiness property is worse than no test: it fails for reasons unrelated
-    to stickiness and gets muted.
-
-    The pid moves with the phase, and it has to: a record claiming ``started`` with
-    no pid is not a running run to the classifier, it is an orphan, so a fixture
-    that only advanced the phase would be asserting a transition into a state it
-    cannot represent. Liveness is answered per-pid rather than by a flat ``False``
-    for the same reason — the source state needs a dead probe and the destination
-    state needs a live one, inside one test.
+    The pid moves with the phase, and has to: a record claiming ``started``
+    with no pid reads as an orphan, not a running run, to the classifier, so
+    a fixture that only advanced the phase would assert a transition into a
+    state it cannot represent. Liveness is answered per-pid rather than by a
+    flat ``False`` for the same reason -- the source state needs a dead
+    probe and the destination state needs a live one, inside one test.
     """
     import anyio
 

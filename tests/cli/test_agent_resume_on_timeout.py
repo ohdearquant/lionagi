@@ -25,9 +25,7 @@ import pytest
 
 from lionagi.cli._providers import AgentProfile, _parse_profile
 
-# ---------------------------------------------------------------------------
 # Unit tests: profile field parsing/validation
-# ---------------------------------------------------------------------------
 
 
 def test_parse_profile_resume_on_timeout_once():
@@ -58,9 +56,7 @@ def test_parse_profile_resume_on_timeout_rejects_non_once_values(raw_yaml, caplo
     assert profile.resume_on_timeout is False
 
 
-# ---------------------------------------------------------------------------
 # Integration: _run_agent auto-resume wiring
-# ---------------------------------------------------------------------------
 
 
 def _make_branch_json(tmp_path: Path) -> tuple[str, Path]:
@@ -445,14 +441,12 @@ async def test_profile_resume_on_timeout_opts_in(monkeypatch, tmp_path):
     assert status == "completed"
 
 
-# ---------------------------------------------------------------------------
 # Real-persistence regression: the ADR-0035 terminal-guard race between an
 # auto-resume leg's premature terminal stamp and the resumed leg's own
 # teardown. Unlike _wire_agent_stubs (which stubs teardown_agent_persist
 # entirely), these tests leave setup_agent_persist/teardown_agent_persist
 # wired to the real StateDB-backed implementation, so a wiring regression in
 # the defer_terminal plumbing shows up as a real TransitionRejectedError.
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

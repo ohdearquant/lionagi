@@ -711,7 +711,7 @@ async def test_recovery_never_double_fires_across_two_passes(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_tombstone_and_replace_schedule_run_refuses_when_dispatch_confirmed(tmp_path):
-    """The CAS predicate requires dispatched_at IS NULL, not just status='running': a launch confirmation landing between a recovery scan and this write means the row is no longer undispatched, and tombstoning it would flip an actually-launched run to 'failed' and fire a duplicate -- reviewer repro: dispatched_at already set must refuse (applied=False), inserting nothing."""
+    """The CAS predicate requires dispatched_at IS NULL, not just status='running': a launch confirmation landing between a recovery scan and this write means the row is no longer undispatched, and tombstoning it would flip an actually-launched run to 'failed' and fire a duplicate -- dispatched_at already set must refuse (applied=False), inserting nothing."""
     db_path = tmp_path / "state.db"
     sid = "sched-dispatched-race"
 
@@ -743,7 +743,7 @@ async def test_tombstone_and_replace_schedule_run_refuses_when_dispatch_confirme
 
 @pytest.mark.asyncio
 async def test_recovery_refire_is_noop_when_dispatch_confirmed_mid_race(tmp_path, monkeypatch):
-    """The reviewer-specified race: a concurrently-confirmed launch (dispatched_at stamped) lands after recovery's scan but before its atomic re-fire write; the strengthened CAS makes that write a no-op, leaving the live run completely untouched, and abandonment cancels only the doomed pre-spawn recovery invocation, never the live run's own."""
+    """A concurrently-confirmed launch (dispatched_at stamped) lands after recovery's scan but before its atomic re-fire write; the strengthened CAS makes that write a no-op, leaving the live run completely untouched, and abandonment cancels only the doomed pre-spawn recovery invocation, never the live run's own."""
     import lionagi.state.db as state_db_mod
 
     db_path = tmp_path / "state.db"
@@ -817,10 +817,8 @@ async def test_recovery_refire_is_noop_when_dispatch_confirmed_mid_race(tmp_path
     assert recovery_invocation["status_reason_code"] == RunReasons.CANCELLED_STALE_AUTO
 
 
-# ---------------------------------------------------------------------------
 # _reconcile_dispatched_orphans -- confirmed-dispatch rows the scheduler
-# never recorded an outcome for (#2755)
-# ---------------------------------------------------------------------------
+# never recorded an outcome for
 
 
 async def _seed_dispatched_run_with_session(

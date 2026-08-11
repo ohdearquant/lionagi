@@ -8,10 +8,6 @@ import tiktoken
 
 from lionagi.service.token_calculator import TokenCalculator, get_encoding_name
 
-# ---------------------------------------------------------------------------
-# get_encoding_name
-# ---------------------------------------------------------------------------
-
 
 class TestGetEncodingName:
     def test_valid_model_name_returns_encoding(self):
@@ -58,11 +54,6 @@ class TestGetEncodingName:
         """Arbitrary nonsense string falls back to o200k_base."""
         name = get_encoding_name("!@#$%^&*()")
         assert name == "o200k_base"
-
-
-# ---------------------------------------------------------------------------
-# TokenCalculator.tokenize
-# ---------------------------------------------------------------------------
 
 
 class TestTokenize:
@@ -196,11 +187,6 @@ class TestTokenize:
         assert result > 0
 
 
-# ---------------------------------------------------------------------------
-# TokenCalculator._calculate_chatitem
-# ---------------------------------------------------------------------------
-
-
 class TestCalculateChatitem:
     """_calculate_chatitem delegates to tokenize(), which resolves encoding_name first so decoder creation never fails."""
 
@@ -281,11 +267,6 @@ class TestCalculateChatitem:
         assert result > 0
 
 
-# ---------------------------------------------------------------------------
-# TokenCalculator._calculate_embed_item
-# ---------------------------------------------------------------------------
-
-
 class TestCalculateEmbedItem:
     """_calculate_embed_item always resolves encoding_name via tokenize(), so decoder creation never fails even with tokenizer-only calls."""
 
@@ -330,11 +311,6 @@ class TestCalculateEmbedItem:
         result = TokenCalculator._calculate_embed_item([["hello", "world"]], tokenizer)
         assert isinstance(result, int)
         assert result > 0
-
-
-# ---------------------------------------------------------------------------
-# TokenCalculator.calculate_message_tokens
-# ---------------------------------------------------------------------------
 
 
 class TestCalculateMessageTokens:
@@ -450,11 +426,6 @@ class TestCalculateMessageTokens:
         assert result > 200
 
 
-# ---------------------------------------------------------------------------
-# TokenCalculator.calculate_embed_token
-# ---------------------------------------------------------------------------
-
-
 class TestCalculateEmbedToken:
     def test_single_string_input(self):
         """Single string in the list should return positive token count."""
@@ -493,11 +464,6 @@ class TestCalculateEmbedToken:
         """
         result = TokenCalculator.calculate_embed_token([123, 456])
         assert result == 0
-
-
-# ---------------------------------------------------------------------------
-# Integration: tokenize standalone (works correctly)
-# ---------------------------------------------------------------------------
 
 
 class TestTokenizeStandalone:

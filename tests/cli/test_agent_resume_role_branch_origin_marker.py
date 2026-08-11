@@ -3,35 +3,29 @@
 
 """Regression: resuming a role-composed branch must not clobber its persisted
 system message even when the CURRENT invocation's profile no longer signals
-`role:` — either because a different, plain `-a` profile is supplied, or
-because the same profile file has since had its `role:` key removed.
+`role:` — either a different, plain `-a` profile is supplied, or the same
+profile file has since had its `role:` key removed.
 
 A prior guard derived "was this branch composed via create_agent?" from the
-profile reloaded for the *resuming* invocation (`has_role_key`). That is the
-wrong signal on a resumed leg: `has_role_key` describes only what was passed
-to this particular `-a`, not how the persisted branch was originally built.
-Resuming a role-composed branch under a mismatched profile made the guard
-treat it as a plain branch and call `branch.msgs.add_message(system=...)`,
-which replaces the branch's composed role header + policy block with the
-current profile's bare body.
+*resuming* invocation's profile (`has_role_key`) — the wrong signal, since
+that describes only what was passed to this `-a`, not how the persisted
+branch was built. Resuming a role-composed branch under a mismatched profile
+made the guard treat it as plain and call `branch.msgs.add_message(system=...)`,
+replacing the composed role header + policy block with the current profile's
+bare body. The fix stamps every create_agent-built branch with an immutable
+origin marker in `branch.metadata` (`CREATE_AGENT_BRANCH_ORIGIN_KEY`) that
+round-trips through save/resume, and consults that marker instead.
 
-The fix stamps every create_agent-built branch with an immutable origin
-marker in `branch.metadata` (`CREATE_AGENT_BRANCH_ORIGIN_KEY`) that
-round-trips through save/resume, and consults that marker — not the current
-profile — on any resumed/continued leg.
-
-A later guard additionally treated the *content* of a persisted system
-message as a provenance signal: if it contained one of the three headings
-`_render_policy_block` emits (`## Authority`, `## Operational Boundaries`,
-`## Escalation Conditions`), it was inferred to be create_agent-composed and
-the marker was backfilled. Those headings are ordinary user-authored prompt
-text and are not exclusive to create_agent, so a hand-written plain profile
-using e.g. `## Authority` was misclassified and a newly requested role's
-system prompt was silently dropped on resume. That content heuristic (and
-the backfill it drove) has been removed entirely: only the immutable
-`CREATE_AGENT_BRANCH_ORIGIN_KEY` marker counts as create_agent provenance. A
-markerless branch always gets the newly requested role's system prompt
-applied, regardless of what its persisted system message happens to contain.
+A later guard also inferred provenance from *content*: a persisted system
+message containing one of `_render_policy_block`'s three headings
+(`## Authority`, `## Operational Boundaries`, `## Escalation Conditions`) was
+treated as create_agent-composed and backfilled the marker. Those headings
+are ordinary prompt text, not exclusive to create_agent, so a hand-written
+profile using e.g. `## Authority` was misclassified and a newly requested
+role's system prompt was silently dropped on resume. That content heuristic
+and its backfill are gone: only the immutable marker counts as provenance,
+and a markerless branch always gets the newly requested role's system
+prompt applied regardless of its persisted content.
 """
 
 from __future__ import annotations

@@ -18,9 +18,7 @@ from lionagi.protocols.types import MessageRole
 MODES = ["python", "json", "db"]
 
 
-# ---------------------------------------------------------------------------
 # System
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -58,9 +56,7 @@ def test_system_python_mode_uses_metadata(system_msg):
     assert "node_metadata" not in d
 
 
-# ---------------------------------------------------------------------------
 # Instruction
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -97,9 +93,7 @@ def test_instruction_db_mode_uses_node_metadata(instruction_msg):
     assert "metadata" not in d
 
 
-# ---------------------------------------------------------------------------
 # AssistantResponse
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -132,9 +126,7 @@ def test_assistant_response_db_mode_uses_node_metadata(assistant_msg):
     assert "metadata" not in d
 
 
-# ---------------------------------------------------------------------------
 # ActionRequest
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -183,9 +175,7 @@ def test_action_request_with_response_id_roundtrip():
         assert restored.content.action_response_id == "resp-abc"
 
 
-# ---------------------------------------------------------------------------
 # ActionResponse
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -240,9 +230,7 @@ def test_action_response_with_error_roundtrip():
         assert restored.content.output is None
 
 
-# ---------------------------------------------------------------------------
 # Cross-mode parity: python and db modes produce equal restored objects
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

@@ -2,13 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Plugin trust: nothing executes before an explicit, content-pinned trust record.
 
-The trust record pins content, not just declaration, for every declared
-capability file — executable and consumed-as-instructions alike: the
-canonical-JSON manifest, plus every tool/provider target file, hook binary,
-agent profile file, playbook file, and pack data file the manifest declares.
-Any change to any of these reverts the plugin to ``changed`` and it stops
-loading until re-approved. Trust is recorded user-level
-(``~/.lionagi/settings.yaml``), never project-level.
+Content-pinned: any change to the manifest or a declared file reverts the
+plugin to ``changed`` and it stops loading until re-approved. Trust is
+recorded user-level (``~/.lionagi/settings.yaml``), never project-level.
+See docs/internals/plugin-runtime.md#trust-model for the full contract.
 """
 
 from __future__ import annotations
@@ -94,16 +91,11 @@ def _bundle_dir_present(bundle_path: str) -> bool:
 def gc_trust_records(discovered: list[DiscoveredPlugin]) -> list[str]:
     """Prune ``trusted_plugins`` entries whose bundle directory is confirmed gone.
 
-    Pruning is directory-presence, not manifest-parse-success: a plugin
-    whose ``plugin.yaml`` merely fails to parse right now (malformed edit in
-    progress, transient read error) is not the same as uninstalled, and its
-    trust record must survive untouched. Legacy records with no
-    ``bundle_path`` key fall back to a parsed-manifest-name check instead.
-
-    Not just tidiness: a lingering record for a genuinely-removed bundle
-    would silently trust a different bundle that later reappears under the
-    same name with content that happens to hash the same — the exact
-    resurrection content-pinning is meant to prevent.
+    Pruning is directory-presence, not manifest-parse-success — a plugin
+    whose manifest merely fails to parse right now is not "uninstalled".
+    Legacy records with no ``bundle_path`` key fall back to a
+    parsed-manifest-name check. See docs/internals/plugin-runtime.md#trust-model
+    for why presence (not parse success) is the bar.
 
     Returns the pruned names, sorted; never prunes silently. Idempotent.
     """

@@ -219,6 +219,81 @@ posting a coordinator-authored `wakeup` signal are side effects: the
 quiescence read, which is what prevents the same round from being
 double-injected.
 
+### `flow.py` — dividing a time budget across a DAG
+
+When a flow run carries a total time budget, each op needs to be told its own
+share of it — and that share has to be a bound computed before any op has
+run, not a measurement of how long ops actually take.
+
+`critical_path_depth(dep_indices)` is the longest dependency chain in the
+plan, in ops — how many ops the *dependencies alone* force to run one after
+another. It's a lower bound on wall-clock, not the bound: a concurrency cap
+can serialize ops this function considers parallel — under
+`--max-concurrent 1` it still reports the dependency-only depth even though
+the run is forced fully sequential, which is why `max_sequential_depth`
+below, not this function, is what actually sizes a budget. Dependencies
+point only backwards (op *i* may depend
+only on ops before it), so a single forward pass suffices; an out-of-range
+dependency index is ignored rather than raising, since a bad index in a
+budget hint shouldn't be able to take down a run.
+
+`max_sequential_depth(dep_indices, num_ops, max_concurrent)` is what actually
+sizes the budget. It has to be an upper bound rather than an estimate,
+because a simulated schedule (a ready-queue admitting `max_concurrent` ops at
+a time) only models the equal-duration case — give four ops a cap of two and
+let one of them run six times longer than the rest, and the other three
+serialize behind it into a chain of three, while a duration-blind simulation
+would have counted two. Unequal op durations are the normal case, not the
+corner, so exactness on the equal-duration schedule is the wrong thing to
+optimize for. Being a bound also fixes the error's direction: undercounting
+hands every op *more* time than the flow can actually afford and the flow
+overruns its deadline; overcounting only tells an op it has slightly less
+time than it might have had.
+
+Two things force ops into sequence, and the bound is the worse of the two:
+dependencies force a chain no capacity can shorten, and capacity forces the
+rest — a run of ops executing strictly one after another can contain at most
+one op from any set that started together, bounding it at
+`num_ops - max_concurrent + 1`. Neither can exceed `num_ops` (the
+everything-serializes case). `max_concurrent <= 0` reads as unbounded,
+matching how the executor itself interprets it; a plan whose dependency data
+doesn't describe all its ops falls back to `num_ops` (assume nothing
+overlaps, since nothing more can be said).
+
+`op_budget_share` divides the total budget by `max_sequential_depth`, not by
+`num_ops` — that's the whole point of computing the depth bound rather than
+just counting ops.
+
+`_build_budget_preambles` needs `deadline_epoch` — the instant the run's
+clock started, captured by the caller — and deliberately has no default for
+it. The obvious fallback, `now + total_budget`, would be wrong by however
+long the run has already been going, and wrong in the permissive direction
+(every op told it has more time than it actually does). Missing the instant
+therefore means no preamble at all: telling an op nothing is an honest
+failure, telling it a late deadline is not. A budgeted run that reaches this
+function with no deadline instant is a wiring error, not a configuration
+choice — the budget is still enforced on these ops, they're just never told
+about it, so this case logs a warning and returns no preambles rather than
+inventing a value.
+
+**`_hand_mcp_servers`** — a caller-named MCP server set is applied to every
+worker whose provider has a transport for it; a worker whose provider has
+none is warned about, naming the worker (`label`) since a run's workers can
+resolve different providers. `{}` (an explicit empty set) and `None` (no set
+at all) are different requests: `{}` means "apply no servers" and is applied
+as the whole set; `None` means there's nothing to hand over and the model
+keeps whatever it already had.
+
+**`collect_worker_artifacts`** — the worker roster comes from the artifact
+directories the run actually handed out, not a scan for non-empty ones, so a
+worker that wrote nothing is still a `reported` entry with empty `files`
+rather than being silently absent. A worker the run expected but that never
+registered a directory is emitted as `unregistered` rather than dropped
+(otherwise that failure looks identical to "the run just had fewer
+workers"). Per-entry `status`: `unreadable` (traversal raised), `missing`
+(the registered path is gone), `unregistered` (expected, no directory ever
+recorded), `reported` (looked, `files` is what was there).
+
 ### `flow.py` — reactive DAG orchestrator (`li o flow`)
 
 Artifact contract has two write classes to `artifact_contract_json`: `_build_dag`
@@ -252,6 +327,181 @@ spawns from a prior checkpoint generation, not just what the live executor
 spawned this generation — otherwise a resume that reconstructs every spawned
 node as already-terminal would report `n_spawned=0` and silently skip the
 `with_synthesis`-or-`n_spawned` gate in `_run_flow_inner`.
+
+### `_orchestration.py` — live-persist finalize and escalation-link teardown
+
+A DAG that already produced its result must not lose that result because a
+post-completion, best-effort teardown step raises. Three such steps run after
+a DAG finishes: posting to the team inbox, writing the session
+snapshot/resume pointer, and rendering the graph image. Each is guarded in
+its own try/except — sharing one try/except across all three would mean the
+first raise (the team post) skips the rest, so the snapshot and resume
+pointer would never get written even though the run itself succeeded.
+
+When any of these guarded steps fails, the session still ends with status
+`completed`, but its reason code becomes `COMPLETED_FINALIZE_ERROR` instead
+of `COMPLETED_OK`. That distinction has to survive the hop from the child
+session's record to the parent invocation's record —
+`_resolve_invocation_terminal_flow` must not flatten a degraded-but-not-failed
+child into a plain `COMPLETED_OK` at the invocation level, or a reader of the
+invocation loses the only signal that a teardown step misbehaved.
+
+Escalation-link teardown has its own hazard: `_execute_dag`'s cancellation
+path drains any in-flight escalation-link tasks before returning, and that
+drain must be bounded, not just guarded. `_drain_escalation_links_bounded`
+gives in-flight links a grace period to unwind on their own, then cancels
+whatever survived and awaits those survivors under a second, shorter grace
+window, abandoning (and logging) anything still alive after that. Both grace
+windows matter independently: a link task can swallow a first cancellation
+and only unwind on a second one, so a single unbounded `asyncio.gather()`
+with no drain machinery can hang forever on external cancellation. The bound
+has to hold on both routes into teardown — cancellation landing mid-`run_dag()`
+(caught by an except that also sets `_dag_cancelled`) and cancellation
+landing after `run_dag()` has already returned, inside the `finally` block's
+own drain `gather()` (where that except never runs, so `_dag_cancelled` stays
+`False`) — since only one of those two routes exercises the flag.
+### `_round_records.py` / `_quiescence.py` — proving a manifest round is idle
+
+A manifest round dispatches independent legs as subprocesses, each in its own
+process group. Two questions need durable, disk-based answers, because the
+observer that eventually has to answer them — a reaper, a cooperative
+finalizer — may share nothing with the process that ran the round: which
+process groups belong to this round, and are they still holding a live
+member.
+
+**`_round_records.py` answers the first question.** Two files per round:
+`{run_dir}/legs/{label}.json` records what one leg was dispatched with and
+how it ended; `{run_dir}/round.json` records the round summary. The dispatch
+half of a leg record — the leg's `pgid` and `pid_create_time` (the start time
+of the process that led it) — is written at spawn, before the leg can do
+anything. This ordering matters: a group id read only after the leg exits can
+by then belong to a different process the kernel has reissued that number to;
+pairing it with the start time is how a later reader tells "this run's group"
+from "some stranger who now has that number." A leg record missing
+`pid_create_time` carries no identity and must be excluded from a sweep
+entirely, not treated as a present-but-unpinned group. Every write lands by
+temp-file-plus-atomic-rename, and a writer that finds an already-`COMPLETE`
+leg record leaves it alone — first writer to complete a leg wins, and
+`recorded_by` names the winner. `round.json` starts as
+`round_state: pending_harvest` at spawn and is flipped to `complete` only as
+finalization's last act, so a terminal read at any point before that, by any
+writer, observes "pending" rather than something that looks silently done.
+
+`control_group_domain()` builds the sweep's domain by reading every leg
+record from disk (never a live runner's memory) and keeping only groups whose
+record carries both a `pgid` and a `pid_create_time`. A record missing either
+is counted as `unpinned` and excluded from the domain — a sweep cannot
+certify a group it was never told about, and a bare number pretending to be a
+domain is worse than an admitted gap. `ControlGroupDomain.complete` is false
+whenever anything was unpinned or unreadable, and a sweep over an incomplete
+domain must report `unproven`, never `quiet`.
+
+**`_quiescence.py` answers the second question** — is every recorded group
+empty — via `sweep_quiet()`. It classifies each group as `QUIET` (no live
+member), `BUSY` (a live member was pinned), or `UNPROVEN` (the process-table
+scan of that group didn't complete), then rolls the whole sweep into one
+verdict by a fixed precedence: `BUSY` beats `UNPROVEN` beats an incomplete
+domain beats `NO_DOMAIN` beats `QUIET`. An unread member is indistinguishable
+from an absent one, so scan-incompleteness is checked before the emptiness
+test even runs — a partial scan that happens to see nothing must never read
+as quiet.
+
+Two invariants matter when interpreting a `Quiescence`:
+
+- **Where the observer sits.** A reaper belongs to no recorded group, so its
+  predicate is absolute emptiness. A cooperative finalizer runs inside the
+  runner's own group and must exempt exactly its own pid via
+  `exempt_pgid`/`observer_pid` — nothing else. Passing an `exempt_pgid` the
+  observer isn't actually in would wrongly exempt that pid from a group it
+  doesn't lead.
+- **Group ids are not stable identities.** `getpgid(pid) != pgid` is the only
+  thing a scan reads, so a process that calls `setpgid(0, 0)` to leave its
+  recorded group — not limited to processes that call `setsid`, a narrower
+  class an earlier version of this doc named — becomes invisible to every
+  group-based check here, and no amount of re-scanning fixes it. A member
+  forked during the sweep can likewise be missed; identification and signal
+  are two syscalls, so a group observed empty was empty at the moment it was
+  read, not necessarily afterward.
+
+`enforce_quiet()` is the close-time counterpart. It signals only groups
+`sweep_quiet` pinned as `BUSY` — never `UNPROVEN`, since an incomplete scan
+says a member *may* exist but never who, and signalling on that risks hitting
+whatever process now holds a recycled pgid. For a group the observer sits
+outside, it kills the whole group (`kill_group_now`, which also catches a
+member that appeared after the scan); for the observer's own group it signals
+its pinned members individually and skips itself, since killing that group
+would kill the observer before it can publish a result. Sending a signal is
+not the verdict: `enforce_quiet` waits up to `settle` seconds
+(`_wait_for_delivery`) and then re-sweeps — the second sweep (`after`) is
+what a caller must trust, not the fact that something was signalled.
+`already_quiet` separately records whether anything needed signalling at
+all, so a caller can tell "the round genuinely finished clean" from "the
+round leaked and this had to clean up after it," even though both end in the
+same `QUIET` verdict.
+
+### `_control.py` — `li o ctl pause|resume|msg`
+
+Pure writers: resolve the target session and insert one row into
+`session_controls`, without waiting for it to apply. Two live consumers read
+that table: the poller in `flow.py`'s `_execute_dag` (flow/play runs) and the
+turn-end drain in `cli/agent.py` (agent runs). Only context-mode `msg` is
+supported today — the poller appends the message to shared flow context for
+operations not yet rendered; operation-mode messages are not (ADR-0069 D1,
+D3). `li o ctl status <id>` is how a caller checks whether an enqueued
+control actually landed.
+
+**Admission gating.** `pause`/`resume` are only accepted for `flow`/`play`
+sessions; `message` is additionally accepted for `agent` sessions. Within
+`agent`-kind sessions, `run_id` alone is not proof that something will drain
+the control — several producers stamp a `run_id` on the sessions they create
+without running the turn-end drain that would consume it. The authoritative
+signal is a `drains_controls` flag the runner declares in `node_metadata`
+when the session starts; its absence is read as `False` on purpose, since a
+runner that never declared draining is exactly the case admission must
+refuse. One exception is grandfathered deliberately: a pre-existing CLI
+agent-run session row that predates the `drains_controls` declaration is
+still admitted, because it does have a real turn-end drain. The precise set
+of session shapes/transitions this covers is intentionally not enumerated in
+prose — every attempt drifted out of date — see the resume cases in
+`tests/cli/test_agent_steer.py` for the executable version of that contract.
+
+The running-session check and the `session_controls` insert are two separate
+statements; a session can go terminal between them. The insert re-checks the
+running condition so it — not the earlier read — is what decides admission,
+avoiding a control queued against a run whose consumer has already exited.
+
+Landing time is a property of the consumer, not the verb: a flow/play poller
+renders queued context before the next op (~2s poll interval), while an
+agent leg only drains at its next turn boundary, which can be far later than
+2s into a long provider call.
+
+### `_finalize.py` — the exclusive claim over closing a manifest round
+
+Three different processes can arrive at the same round wanting to finish it:
+the runner itself at teardown, a reaper acting on a kill request, and a
+reaper sweeping up an orphan. Only one may act, and the primitive deciding
+that is a non-blocking `flock` on `{run_dir}/finalize.lock`. The kernel ties
+the lock's lifetime to the holding process, so a dead holder's claim vanishes
+with it — takeover *is* acquisition, and there is no stale-lock repair path
+because there is no separate repair path at all.
+
+Two properties matter:
+
+- **The descriptor must never reach a spawned leg.** A lock a leg inherited
+  would keep a dead runner's claim alive from inside a living child. Since
+  PEP 446, every descriptor Python opens is non-inheritable by default, so
+  the explicit `O_CLOEXEC` here is a statement of the requirement, not what
+  actually enforces it — the way to lose the property is to mark the
+  descriptor inheritable, which is what the module's test pins.
+- **The claim decides nothing by itself.** Every claimant arrives because of
+  something it observed *before* acquiring the lock, and the gap between
+  observing and acquiring is exactly where a live holder can finish,
+  publish, exit, and release the lock — turning what the claimant saw into
+  stale information. So the first act under the claim is always a re-read;
+  disposition comes only from that fresh read, never from what motivated the
+  attempt. This is why the module's functions take readers as arguments
+  rather than pre-observed state — there's no parameter through which a
+  caller could hand in what it saw earlier and have that trusted.
 
 ## `team.py` — `li team` persistent messaging (inbox pattern)
 
@@ -707,6 +957,21 @@ completion-trust check above has nothing to verify) but gave up mid-run via
 already made the run loud — an existing failure reason (including the artifact check above) is
 preserved untouched.
 
+**`_teardown_common` node-failure and gate-rejection backstops** — two more checks that run
+*before* the completion-trust gate and escalation backstop above, for the same reason: a DAG
+run whose nodes all failed, or whose dependent subtree was skipped after a gate rejection,
+typically produces no artifacts or commits either, so the trust gate would otherwise demote it
+to `completed_empty` before either backstop got a chance to apply. The node-failure backstop
+catches a DAG operation whose `invoke()` raised and was recorded `EventStatus.FAILED`, which
+folds into `completed_operations` alongside genuine completions and would otherwise never roll
+up into the run's own status. The gate-rejection backstop covers a gate node that rejected
+mid-DAG, whose dependent subtree the executor short-circuits to skipped rather than running
+against the rejected baseline — a correct, deliberate stop, not a failure, so status stays
+`completed` but the reason code must say so explicitly. Because it leaves status at
+`completed` instead of flipping to `failed` (unlike the other two backstops), it can't rely on
+the trust gate's own `final_status == "completed"` guard to skip it, and must run first so its
+evidence is already in place before that gate's no-evidence check runs.
+
 **`_teardown_common` pre_write_status snapshot** — the CAS-guard signal. Snapshot of the status
 this teardown itself observed when it started (before any status-changing write in this
 function) — this tells apart the two rejection causes in the CAS-miss/terminal-skip handling
@@ -759,6 +1024,30 @@ already-open DB so every `Signal` emitted on this session's observer lands in
 under `status.py` above for the downstream consequence (usage metrics never recorded for those
 session kinds).
 
+**`_reopen_session_for_resume`** — a closing transition only announces itself when the status
+column actually changes. A resume adopts a session an earlier leg already left terminal, so
+writing that same terminal status again at the end is a no-op: the leg finishes silently and
+the job record never closes. This reopens the session to `running` first, restoring the
+invariant the rest of the system reads off that column (a session marked terminal is not
+currently executing), so the eventual re-close is a real transition. Reopening is the only
+sanctioned exit from a terminal status and carries an explicit override rather than a
+session-policy rule, so each reopening stays individually attributable instead of opening
+terminal-exit to every writer — finality is what the reapers, the teardown guard, and
+`li wait` all rest on.
+
+**`_reopen_session_for_resume` unresolved drain-declaration race** — when a resume does *not*
+reopen (the adopted row is still `running`), the row keeps whatever the earlier leg declared
+for whether its runner drains operator controls. Three states reach this point: explicit
+`True`, explicit `False`, and no declaration at all (a row written before the field existed,
+which refuses controls like `False` but means "nobody answered" rather than "no"). Only `True`
+is risky — if that leg is genuinely alive it's the right answer, but if it died without
+terminalizing, a stale `True` would admit a control for a drain that's gone, and a row reading
+`running` is the only evidence available either way; the stale-session doctor resolves it after
+the fact. This is left alone deliberately: writing the declaration here would be a
+read-modify-write against a row a live leg may be concurrently updating — the same race that
+once overwrote an exited leg's process markers with a live leg's — so the narrower failure mode
+(a `False`/undeclared row keeps refusing controls it could actually drain) is accepted instead.
+
 ## `mirror.py` — Claude transcript mirroring into StateDB
 
 **`_Lineage`** — cross-session conversation-lineage detection protocol. A continued
@@ -808,12 +1097,71 @@ first-run startup, when the studio is creating the schema and checkpointing on a
 connection) is retried, not fatal. Opening it once outside the loop meant a single transient
 open error silently ended the in-process mirror for the whole life of the studio process.
 
-## `state.py` — `li state doctor`
+**`_peek_codex_head` rollout classification** — classifies a Codex rollout's first line without
+consuming the tail, into `"meta"` (parsed session_meta header), `"headerless"` (a complete
+first line that isn't one), or `"torn"` (the line is still being written, or unreadable).
+Completeness is decided by the trailing newline BEFORE any parse attempt: rollouts are
+append-only JSONL, so a line without its newline may still be arriving even if the bytes so far
+happen to parse; a newline-terminated line that fails to parse is permanently corrupt and
+settles as headerless. `_mirror_one_codex` defers on `"torn"` rather than reading the file under
+the path-stem identity, since the header's real UID could arrive next pass and split one
+rollout into two sessions.
+
+**`_mirror_one_codex` orchestrated-rollout absorption** — a rollout whose header names an
+originator in `SKIPPED_ORIGINATORS` (an orchestrator's own run, e.g. a lionagi agent leg)
+already has a session under the agent's name, so importing the rollout too would double it.
+`_mirror_one_codex` absorbs whatever an older mirror version may have imported, under either id
+the file was ever keyed by (a pre-header path-stem fallback, and the header's real UID), then
+marks the file `orchestrated` and never reads it again. State only commits once both absorption
+calls return, so a failed attempt leaves exactly what the next pass needs to retry.
+
+**`_absorb_backfill`** — a process-wide, provenance-driven counterpart to the per-file
+absorption above: it reads recorded session provenance rather than the rollout tree, so it also
+reaches rows whose backing files fall outside the current sweep window. Returns whether the
+sweep completed cleanly; `mirror_forever`/`_run` only stand down (stop calling it) on `True` —
+one bad pass must not retire the backfill for the process's whole lifetime. Errors are logged,
+never raised, since reconciliation must never take the mirror down.
+
+## `state.py` — `li state` inspect/prune/migrate state.db
 
 **`_doctor` per-row sweep** — the per-row repair sweep goes through the single guarded write
 path (ADR-0035): `expected_statuses={"running"}` re-asserts the CAS the old bulk `UPDATE` did
 inline, and routes the sweep through `update_status()` so it gets a `reason_code` + a
 `status_transitions` audit row instead of a raw column write.
+
+**`_doctor` session age vs process age** — a stale-`running` session isn't necessarily a dead
+process: a branch picked up again keeps its session's original `started_at` while the process
+serving it is new. The sweep checks the process itself (via the same PID-identity check the
+stale-kill sweep uses, not a second weaker rule) before calling a row stuck. A PID that's alive
+isn't proof either — the OS can hand a dead session's PID to an unrelated live process — so an
+"unverifiable" identity check result is skipped (leaves the row for a later pass) while a
+"zombie" result (process exited, not yet reaped) is swept.
+
+**`_collect_message_breakdown`** — messages by role and by age, the two axes a retention
+decision needs. A bare row count can't say whether pruning reclaims anything; the age histogram
+makes that visible before a prune runs. It reports counts only, never a content-size sum:
+summing `LENGTH(content)` over the messages table is the one query here with no useful index
+(measured ~57s against 1.68M rows, vs under 2s for everything else) — the reclaim command that
+actually touches those rows reports their size directly instead.
+
+**`_prune_candidates` / `_null_content_candidates`** — both re-run their operation's own
+selection predicate outside the operation's transaction, and print the recount beside the
+result as a cross-check: after a real run it must read zero, after a `--dry-run` preview it
+must match what the preview reported. Running inside the same transaction would read the
+operation's own uncommitted rows and agree by construction, so it deliberately runs outside it.
+
+**`_null_content`** — replaces old message *bodies* with a size-preserving marker; it exists
+because `li state prune` can't reach this content. Prune selects and deletes **sessions**, but
+message bytes live on **messages**, and a message any surviving progression still references is
+kept regardless of its own age — so a store can be almost entirely message content, have every
+message inside prune's keep-window, and give prune nothing to delete. `--dry-run` performs the
+real `UPDATE` and rolls it back rather than estimating, which makes a preview a **write** that
+holds the same lock for the same duration as the real operation, not a cheap read.
+
+**`_prune` / `_null_content` preview mechanics** — both route their dry-run through a
+`_PreviewOnlyError` raised after the real statements ran inside the transaction: the exception
+carries the real counts out and forces the transaction to unwind instead of commit, so a preview
+number can never drift from what the real operation would have measured.
 
 ## `monitor.py` — `li monitor` (dashboard + `li monitor run` wait primitive)
 

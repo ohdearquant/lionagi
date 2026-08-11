@@ -3,16 +3,15 @@
 """Drive a real ``python -m lionagi.mcp`` over stdio, the way a client does.
 
 Every other module under ``tests/mcp/`` exercises the Python objects beneath
-the transport, so a defect that lives in the wire shape — a key read from the
-op rather than from ``args``, a schema that only the projector sees — is
-invisible to all of them. This starts the server as a subprocess and speaks
-JSON-RPC to it: ``initialize``, ``notifications/initialized``, then
-``tools/call``, in that order, because the server refuses work before the
-handshake completes.
+the transport, so a defect in the wire shape itself (a key read from the op
+rather than from ``args``, a schema only the projector sees) is invisible to
+all of them. This starts the server as a subprocess and speaks JSON-RPC to
+it in handshake order: ``initialize``, ``notifications/initialized``, then
+``tools/call`` -- the server refuses work before the handshake completes.
 
-Every wait is bounded. A server that stops answering has to fail the test that
-is waiting on it rather than hang the suite, and the child is terminated on
-every exit path including an exception mid-conversation.
+Every wait is bounded, and the child is terminated on every exit path
+including an exception mid-conversation, so a server that stops answering
+fails the waiting test instead of hanging the suite.
 """
 
 from __future__ import annotations

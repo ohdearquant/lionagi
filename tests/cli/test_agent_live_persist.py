@@ -19,7 +19,7 @@ from lionagi.cli._runs import setup_agent_persist as _setup_live_persist
 from lionagi.cli._runs import teardown_agent_persist as _teardown_live_persist
 from lionagi.state.db import StateDB
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ def _aiosqlite_thread_count() -> int:
     )
 
 
-# ── _setup_live_persist: happy path + invariants ──────────────────────────────
+# _setup_live_persist: happy path + invariants
 
 
 async def test_setup_creates_session_branch_progression_rows(
@@ -109,7 +109,7 @@ async def test_setup_persists_system_message_when_branch_has_one(
     await _teardown_live_persist(ctx, status="completed")
 
 
-# ── _setup_live_persist: failure paths must close the DB ──────────────────────
+# _setup_live_persist: failure paths must close the DB
 
 
 async def test_setup_db_open_failure_disables_persist_no_thread_leak(
@@ -174,7 +174,7 @@ async def test_setup_create_session_failure_closes_db(
     monkeypatch.setattr(StateDB, "create_session", original_create)
 
 
-# ── Shared-db reuse + teardown cleanup (lifecycle-hook leak guard) ────────────
+# Shared-db reuse + teardown cleanup (lifecycle-hook leak guard)
 
 
 async def test_lifecycle_hooks_reuse_owned_db_no_shared_leak(temp_db_path: Path):
@@ -326,7 +326,7 @@ async def test_close_shared_db_rejects_stale_waiter(temp_db_path: Path):
     assert _aiosqlite_thread_count() == before, "stale-waiter open leaked an aiosqlite worker"
 
 
-# ── Resume path ───────────────────────────────────────────────────────────────
+# Resume path
 
 
 async def test_setup_resume_loads_existing_session_and_progression(
@@ -359,7 +359,7 @@ async def test_setup_resume_loads_existing_session_and_progression(
     await _teardown_live_persist(ctx2, status="completed")
 
 
-# ── Hook contract: best-effort + system_msg_id update ─────────────────────────
+# Hook contract: best-effort + system_msg_id update
 
 
 async def test_hook_dedupes_existing_messages_on_resume(
@@ -579,7 +579,7 @@ async def test_hook_updates_system_msg_id_when_system_replaced(
     await _teardown_live_persist(ctx, status="completed")
 
 
-# ── _teardown_live_persist: invariants ────────────────────────────────────────
+# _teardown_live_persist: invariants
 
 
 async def test_teardown_updates_session_bookmarks_and_status(
@@ -861,7 +861,7 @@ async def test_teardown_with_none_context_is_noop(temp_db_path: Path):
     await _teardown_live_persist(None, status="completed")  # MUST NOT raise
 
 
-# ── defer_terminal: auto-resume must not stamp a premature terminal status ────
+# defer_terminal: auto-resume must not stamp a premature terminal status
 
 
 async def test_teardown_defer_terminal_leaves_session_running(
@@ -916,7 +916,7 @@ async def test_teardown_non_resume_timeout_stamps_terminal_unchanged(
     assert s["ended_at"] is not None
 
 
-# ── ADR-0035 terminal-race: a second teardown must not crash past callers ─────
+# ADR-0035 terminal-race: a second teardown must not crash past callers
 
 
 async def test_teardown_already_terminal_session_reports_attempted_status(
@@ -1026,7 +1026,7 @@ async def test_teardown_concurrent_race_non_terminal_entry_returns_winner_status
     assert s["status"] == "completed"
 
 
-# ── End-to-end: no aiosqlite thread leak across setup+teardown ────────────────
+# End-to-end: no aiosqlite thread leak across setup+teardown
 
 
 async def test_setup_teardown_does_not_leak_aiosqlite_thread(
@@ -1064,16 +1064,16 @@ async def test_setup_teardown_does_not_leak_aiosqlite_thread(
         )
 
 
-# ── R5-A HIGH-2: NULL progression_id resume repair ────────────────────────────
+# NULL progression_id resume repair
 
 
 async def _legacy_db_with_nullable_progression(
     db_path: Path,
 ) -> StateDB:
     """Open a DB and rebuild branches+sessions tables with NULLABLE
-    progression_id, mimicking the legacy schema pre-PR. The current
-    schema declares those columns NOT NULL, so we can only reach the
-    repair path by relaxing the constraint in test setup.
+    progression_id, mimicking the legacy schema. The current schema
+    declares those columns NOT NULL, so we can only reach the repair
+    path by relaxing the constraint in test setup.
     """
     state = StateDB(db_path)
     await state.open()
@@ -1134,7 +1134,7 @@ async def test_setup_resume_repairs_null_branch_progression_id(
     so future hook calls dedupe correctly.
 
     Without repair, append_to_progression(None, msg_id) is a no-op and
-    branch history is silently lost (R5-A HIGH-2).
+    branch history is silently lost.
     """
     import uuid
 
@@ -1189,14 +1189,12 @@ async def test_setup_resume_repairs_null_branch_progression_id(
 async def test_repair_branch_progression_returns_existing_id_under_race(
     temp_db_path: Path,
 ):
-    """R6 HIGH-2: when two callers race to repair the same NULL
-    progression_id, the conditional UPDATE only lands one id. The
-    LOSER's repair call must return the WINNING id so the loser does
-    not keep using its locally-generated (orphan) progression.
-
-    Without this, the loser writes to an orphan progression while
-    branches.progression_id points elsewhere — same silent data loss
-    as the original HIGH-2.
+    """When two callers race to repair the same NULL progression_id, the
+    conditional UPDATE only lands one id. The loser's repair call must
+    return the winning id so the loser does not keep using its
+    locally-generated (orphan) progression — otherwise it writes to an
+    orphan progression while branches.progression_id points elsewhere,
+    the same silent data loss the repair exists to fix.
     """
     import uuid
 
@@ -1327,7 +1325,7 @@ async def test_setup_resume_repairs_null_session_progression_id(
     await _teardown_live_persist(ctx, status="completed")
 
 
-# ── ADR-0064: artifact contract snapshot and verification ─────────────────────
+# ADR-0064: artifact contract snapshot and verification
 
 
 async def test_setup_persists_artifact_contract(temp_db_path: Path):
@@ -1449,7 +1447,7 @@ async def test_teardown_verification_preserves_non_completed_reason(
     assert v["status"] == "failed"
 
 
-# ── Phantom 'failed' suppression: linked engine session is alive/completed ───
+# Phantom 'failed' suppression: linked engine session is alive/completed
 
 
 async def test_teardown_suppresses_failed_when_linked_engine_session_running(

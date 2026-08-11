@@ -60,27 +60,9 @@ async def flow_progress_signals(
         meta = node_edge_meta.setdefault(op_id, {})
         parent_id = meta.get("parent_id")
         depends_on = meta.get("depends_on", [])
-        # Prefer the authored node id so every lifecycle signal maps back to the
-        # designer DAG; fall back to the executor's name (engine's own ops, reactive spawns).
-        # Pin the first GENUINELY resolved name for this op_id so later
-        # started/completed/failed calls reuse it even if a branch-naming hook
-        # (spawn_branch_setup) later renames the operation's cloned branch --
-        # the branch name is a display concern, not the correlation key.
-        # Whether a name is a placeholder ("no reference_id / no branch bound
-        # yet", see flow.py's _display_name/_branch_display_name) is decided
-        # structurally by the producer and passed in via name_is_fallback --
-        # never inferred here by comparing against op_id's prefix, since a
-        # genuine authored name can coincide with that prefix by chance.
-        #
-        # name_is_fallback has no default: this is an internal seam with an
-        # enumerable, all-internal caller set (the four lifecycle producers in
-        # operations/flow.py, all of which already pass the bit explicitly).
-        # "Unknown provenance" isn't a real state a caller can be in here, so
-        # there is no safe value to default to -- treating an untagged call as
-        # fallback silently produced the exact split-identity bug this guards
-        # against for a caller whose first name happened to be authored.
-        # Requiring the keyword makes a caller that doesn't know its own
-        # provenance fail loudly (TypeError) instead of guessing wrong.
+        # Pin the first genuinely-resolved name per op_id (see
+        # docs/internals/core.md, engines/flow_signals.py) so later signals
+        # stay correlated even if the branch is later renamed.
         sig_name = meta.get("name")
         if sig_name is None:
             sig_name = name

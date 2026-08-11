@@ -15,7 +15,7 @@ from lionagi.cli.skill import resolve_skill_path
 from lionagi.service.hooks._types import HookEventTypes
 from lionagi.service.hooks.hook_registry import HookRegistry
 
-# ── Symlink containment ────────────────────────────────
+# Symlink containment
 
 
 class TestSkillSymlinkContainment:
@@ -86,7 +86,7 @@ class TestPlaybookSymlinkContainment:
         assert "symlink escape" in err or "outside" in err
 
 
-# ── HookRegistry alias both spellings ──────────────────
+# HookRegistry alias both spellings
 
 
 class TestHookRegistryAliases:
@@ -109,7 +109,7 @@ class TestHookRegistryAliases:
         assert HookEventTypes.PreEventCreate in reg._hooks
 
 
-# ── max_ops/max_agents zero remains valid ───────────────
+# max_ops/max_agents zero remains valid
 
 
 class TestMaxOpsZeroAccepted:
@@ -128,7 +128,7 @@ class TestMaxOpsZeroAccepted:
         assert err is not None
 
 
-# ── _clamp_claude_effort coverage ────────────────────
+# _clamp_claude_effort coverage
 
 
 class TestClampClaudeEffort:
@@ -153,7 +153,7 @@ class TestClampClaudeEffort:
             assert _clamp_claude_effort(effort, "claude/claude-opus-4-7") == effort
 
 
-# ── _handle_play_shortcut coverage ───────────────────
+# _handle_play_shortcut coverage
 
 
 class TestHandlePlayShortcut:
@@ -212,7 +212,7 @@ class TestHandlePlayShortcut:
         assert code == 1
 
 
-# ── _LazyStderrHandler re-binds stream ───────────────
+# _LazyStderrHandler re-binds stream
 
 
 class TestLazyStderrHandler:

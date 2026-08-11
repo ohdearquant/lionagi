@@ -275,9 +275,7 @@ async def test_empty_findings_raises():
         await eng.run("   ")
 
 
-# ---------------------------------------------------------------------------
 # Chain events must reach on_event exactly once
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

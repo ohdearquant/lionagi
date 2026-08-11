@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests verifying that Pile.adump and DataLogger.adump offload blocking I/O
+"""Verifying that Pile.adump and DataLogger.adump offload blocking I/O
 to a worker thread rather than blocking the event loop."""
 
 from __future__ import annotations
@@ -18,9 +18,7 @@ from lionagi.protocols.generic.log import DataLogger, DataLoggerConfig, Log
 from lionagi.protocols.generic.pile import Pile
 from lionagi.testing import MockElement
 
-# ---------------------------------------------------------------------------
 # Pile.adump
-# ---------------------------------------------------------------------------
 
 
 class TestPileAdump:
@@ -63,7 +61,7 @@ class TestPileAdump:
 
     @pytest.mark.asyncio
     async def test_adump_does_not_block_event_loop(self, pile_with_items, tmp_path):
-        """Verify that the event loop remains responsive during adump."""
+        """The event loop remains responsive during adump."""
         fp = tmp_path / "dump.json"
         sentinel = []
 
@@ -86,9 +84,7 @@ class TestPileAdump:
             await pile_with_items.adump(fp, obj_key="xml")
 
 
-# ---------------------------------------------------------------------------
 # DataLogger.adump
-# ---------------------------------------------------------------------------
 
 
 class TestDataLoggerAdump:
@@ -219,9 +215,7 @@ class TestDataLoggerAdump:
         assert len(dl.logs) == 3
 
 
-# ---------------------------------------------------------------------------
 # Pile.adump — write-failure data preservation
-# ---------------------------------------------------------------------------
 
 
 class TestPileAdumpWriteFailure:
@@ -243,9 +237,7 @@ class TestPileAdumpWriteFailure:
         assert len(p) == 4
 
 
-# ---------------------------------------------------------------------------
 # Concurrent-append survival tests
-# ---------------------------------------------------------------------------
 
 
 class TestAdumpConcurrentAppend:

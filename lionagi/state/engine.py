@@ -22,22 +22,14 @@ _log = logging.getLogger(__name__)
 def _busy_timeout_from_env() -> int:
     """The sqlite busy_timeout (ms) this deployment asked for, or the default.
 
-    The default of 5000 is sized for the test suite — a test that deliberately
-    holds a write lock should fail fast, not wait out a production-grade
-    timeout — and for years it was also silently the production value. On a
-    large store contended by more than one long-lived process, five seconds is
-    the difference between a write that waits and a write that reports
-    "database is locked" after having already waited as long as it was allowed
-    to. That is a deployment property, so it comes from the environment: a
-    daemon's launch config sets it high, the suite sets nothing and keeps the
-    fast failure.
-
-    An unusable value falls back to the default and says so. Refusing to start
-    over a malformed tuning knob would trade a slower lock wait for no daemon
-    at all, which is not a trade the knob's owner asked for. Zero and negative
-    values are refused the same way: busy_timeout=0 means "never wait", which
-    turns every momentary lock into an error and is never what a deployment
-    that bothered to set the variable wants.
+    The default (5000) is sized for the test suite -- a test holding a write
+    lock deliberately should fail fast, not wait out a production timeout --
+    and for years was silently also the production value. This is a
+    deployment property, read from the environment so a daemon's launch
+    config can set it high while the test suite sets nothing. An unusable,
+    zero, or negative value falls back to the default and logs a warning,
+    rather than refusing to start over a malformed tuning knob; zero would
+    mean "never wait", turning every momentary lock into an error.
     """
     raw = os.environ.get("LIONAGI_SQLITE_BUSY_TIMEOUT_MS")
     if raw is None:
@@ -65,21 +57,13 @@ _busy_timeout_announced = False
 
 
 def announce_busy_timeout() -> None:
-    """Say once per process what busy_timeout this process's connections use.
+    """Log once per process what busy_timeout this process's connections use,
+    and whether it came from the environment or the built-in default.
 
-    The value is a deployment property that lives in one config file's env
-    block, so it is set once per config and every new config that spawns a
-    lionagi process starts at the built-in default. Against a large contended
-    store that default is the difference between a write that waits and a write
-    that reports "database is locked", and until now nothing said which one was
-    in effect — it could only be inferred by reading the config that launched
-    the process, from outside the process.
-
-    The source is recomputed here rather than recorded when the module was
-    imported, so the line describes what is actually in effect at the moment a
-    connection is about to use it. That matters because the module attribute is
-    writable: tests retune it, and a provenance captured at import would keep
-    claiming the environment's answer after something else had replaced it.
+    Recomputed at call time rather than recorded at import, since
+    ``SQLITE_BUSY_TIMEOUT_MS`` is writable (tests retune it) and a
+    provenance captured at import would keep claiming the environment's
+    answer after something else replaced it.
     """
     global _busy_timeout_announced
     if _busy_timeout_announced:
@@ -262,20 +246,13 @@ def _mask_secret(secret: str) -> str:
 def mask_credentials(text: str) -> str:
     """Return *text* with the secret in every ``user:secret@`` masked.
 
-    For prose rather than for a URL: an error message that quotes the store it
-    failed to open carries the credential just as plainly as the URL field
-    beside it, and masking only the field closes one of two channels onto the
-    same secret.
-
-    Text is scanned rather than parsed because the strings that reach here are
-    not URLs and cannot be made into them. Two consequences worth stating: a
+    For prose rather than a URL -- an error message that quotes the store it
+    failed to open carries the credential as plainly as the URL field beside
+    it. A backstop, not the only control: text is scanned, not parsed, so a
     password containing a literal ``@`` is masked only up to that character,
-    and a secret passed as a bare argument rather than inside a URL is not
-    matched at all. Both are under-masking, so neither is a reason to skip the
-    pass, and both are why this is a backstop rather than the only control.
-
-    Masking is idempotent: the token it writes contains a space, and a space
-    cannot appear inside a secret this pattern will match.
+    and a secret passed as a bare argument (not inside a URL) isn't matched
+    at all. Masking is idempotent -- the token it writes contains a space,
+    which can't appear inside a secret this pattern matches.
     """
     return _CREDENTIAL_IN_TEXT.sub(lambda m: f"{m.group(1)}:{_mask_secret(m.group(2))}@", text)
 
@@ -283,14 +260,14 @@ def mask_credentials(text: str) -> str:
 def mask_db_url(url: str) -> str:
     """Return *url* with any password replaced by the first-6-chars mask.
 
-    The structured pass comes first, and text scanning is the fallback for the
-    URLs it cannot decompose. A string with no scheme parses as a path rather
-    than as a URL, so ``urlparse`` reports no password for it and the
-    credential would otherwise be returned verbatim by the function whose whole
-    job is to remove it. Such a value is refused as a store setting, which is
-    not a reason to drop the arm: what reaches here is whatever a caller was
-    handed, including a driver quoting its own connection string, an older log
-    line, and the ``./``-prefixed path that spelling makes acceptable.
+    Tries the structured `urlparse` pass first and falls back to text
+    scanning (``mask_credentials``) for URLs it can't decompose -- notably a
+    string with no scheme, which parses as a path rather than a URL, so
+    ``urlparse`` reports no password and would otherwise return the
+    credential verbatim. Such a value is refused as a store setting, but
+    what reaches this function includes whatever a caller was handed:
+    a driver's own quoted connection string, an older log line, a
+    ``./``-prefixed path.
     """
     try:
         parsed = urlparse(url)

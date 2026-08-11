@@ -6,10 +6,6 @@
 from lionagi.session.branch import Branch
 from lionagi.tools.coding import ALL_CODING_TOOLS, CodingToolkit
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_toolkit(tmp_path, notify=False):
     b = Branch()
@@ -23,11 +19,6 @@ def _tool_fn(tools, name):
         if t.func_callable.__name__ == name:
             return t.func_callable
     raise KeyError(f"tool '{name}' not found")
-
-
-# ---------------------------------------------------------------------------
-# Search: grep and find
-# ---------------------------------------------------------------------------
 
 
 async def test_search_grep_finds_pattern(tmp_path):
@@ -52,11 +43,6 @@ async def test_search_grep_no_matches(tmp_path):
         action="grep", pattern="XYZNOTFOUND", path=str(tmp_path)
     )
     assert result["success"] is True and result["total_matches"] == 0
-
-
-# ---------------------------------------------------------------------------
-# Context: status reports message count
-# ---------------------------------------------------------------------------
 
 
 async def test_context_status_empty_branch(tmp_path):
@@ -98,11 +84,6 @@ async def test_context_status_tracks_files_after_read(tmp_path):
     assert result["files_tracked"] == 1
 
 
-# ---------------------------------------------------------------------------
-# Context: evict removes from progression, not pile
-# ---------------------------------------------------------------------------
-
-
 async def test_context_evict_reduces_active_not_total(tmp_path):
     b = Branch()
     tk = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=ALL_CODING_TOOLS)
@@ -131,11 +112,6 @@ async def test_context_evict_invalid_range(tmp_path):
     result = await context(action="evict", start=5, end=3)
     assert result["success"] is False
     assert "Invalid range" in result["error"]
-
-
-# ---------------------------------------------------------------------------
-# file_state: mtime tracked after read, checked before edit
-# ---------------------------------------------------------------------------
 
 
 async def test_file_state_mtime_tracked_after_read(tmp_path):
@@ -186,9 +162,7 @@ async def test_file_state_allows_edit_when_mtime_matches(tmp_path):
     assert result["success"] is True
 
 
-# ---------------------------------------------------------------------------
 # Stale-read invalidation: evicting a reader-read result forces a re-read
-# ---------------------------------------------------------------------------
 
 
 async def test_stale_read_invalidation_forces_reread_after_evict(tmp_path):

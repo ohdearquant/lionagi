@@ -71,7 +71,7 @@ async def test_branch_emit_respects_gate():
     assert len(s.observer.by_type(Noticed)) == 2  # both recorded
 
 
-# -- MessageAdded: the full message stream on the one transport ---------------
+# MessageAdded: the full message stream on the one transport
 
 
 async def test_message_added_fires_for_every_message_type():

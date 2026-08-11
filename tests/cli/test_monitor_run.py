@@ -34,7 +34,7 @@ from lionagi.cli.monitor import (
 from lionagi.cli.status import EXIT_RUNNING, EXIT_UNKNOWN
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES, StateDB
 
-# ── Fixtures ────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -114,7 +114,7 @@ async def _set_fields(db: StateDB, table: str, id_: str, **fields: Any) -> None:
     await db.execute(f"UPDATE {table} SET {sets} WHERE id = ?", (*fields.values(), id_))
 
 
-# ── _split_watched_ids ───────────────────────────────────────────────────────
+# _split_watched_ids
 
 
 def test_split_watched_ids_multiple_positional_tokens():
@@ -141,7 +141,7 @@ def test_split_watched_ids_drops_empty_pieces():
     assert _split_watched_ids(["a,,b", ""]) == ["a", "b"]
 
 
-# ── _format_wait_line ────────────────────────────────────────────────────────
+# _format_wait_line
 
 
 def test_format_wait_line_contains_all_fields():
@@ -160,7 +160,7 @@ def test_format_wait_line_none_exit_code_renders_dash():
     assert "exit_code=-" in line
 
 
-# ── _resolve_schedule_run ────────────────────────────────────────────────────
+# _resolve_schedule_run
 
 
 @pytest.mark.asyncio
@@ -190,7 +190,7 @@ async def test_resolve_schedule_run_not_found_returns_none(temp_db_path: Path) -
         assert row is None
 
 
-# ── _resolve_watched_runs: bounded creation-grace retry ─────────────────────
+# _resolve_watched_runs: bounded creation-grace retry
 #
 # fire_now() hands a run_id to its caller before the fired occurrence row is
 # durably written (the fire itself runs as a background task) — resolving
@@ -250,7 +250,7 @@ async def test_resolve_watched_runs_gives_up_after_grace_period(temp_db_path: Pa
     assert unresolved == ["never-created"]
 
 
-# ── _poll_pending_once (the testable inner tick — no real sleeps needed) ────
+# _poll_pending_once (the testable inner tick — no real sleeps needed)
 
 
 @pytest.mark.asyncio
@@ -433,7 +433,7 @@ async def test_poll_pending_once_row_vanished_mid_wait_resolves_as_failure(
     assert "disappeared" in caplog.text.lower()
 
 
-# ── _advance_chains (the testable chain-follow tick — no real sleeps needed) ─
+# _advance_chains (the testable chain-follow tick — no real sleeps needed)
 #
 # Mirrors _poll_pending_once's testing style: direct calls with DB mutations
 # in between, driving the exact same pending/done/chain_state a real
@@ -677,7 +677,7 @@ async def test_advance_chains_multi_hop_chain_followed_to_final_link(
     assert child2_id in out
 
 
-# ── _dispatch_wait: bounded wait, no --follow ────────────────────────────────
+# _dispatch_wait: bounded wait, no --follow
 
 
 @pytest.mark.asyncio
@@ -897,7 +897,7 @@ async def test_dispatch_wait_keyboard_interrupt_after_tick_mutates_state_still_r
     assert exit_code == 1
 
 
-# ── _dispatch_wait: chain-following (li monitor run's default; --no-chain) ──
+# _dispatch_wait: chain-following (li monitor run's default; --no-chain)
 
 
 @pytest.mark.asyncio
@@ -1129,7 +1129,7 @@ async def test_dispatch_wait_deep_chain_follows_handoff_past_terminal_child(
     assert out.count(grandchild_id) == 1
 
 
-# ── _query_schedule_runs_since (the --follow baseline boundary, deterministic) ──
+# _query_schedule_runs_since (the --follow baseline boundary, deterministic)
 
 
 @pytest.mark.asyncio
@@ -1159,7 +1159,7 @@ async def test_query_schedule_runs_since_empty_when_nothing_newer(temp_db_path: 
     assert new_rows == []
 
 
-# ── _dispatch_wait: --follow (baseline-first tail behavior) ─────────────────
+# _dispatch_wait: --follow (baseline-first tail behavior)
 
 
 @pytest.mark.asyncio
@@ -1249,7 +1249,7 @@ async def test_dispatch_wait_follow_ignores_pre_existing_runs_reports_only_new(
     assert pre_existing_id not in out  # existed before baseline: never re-reported
 
 
-# ── argv parsing: `--run` flag form + `--interval`/`--follow` on the main parser ──
+# argv parsing: `--run` flag form + `--interval`/`--follow` on the main parser
 
 
 def test_add_monitor_subparser_run_flag_and_new_options():
@@ -1343,7 +1343,7 @@ def test_add_monitor_subparser_existing_dashboard_args_unaffected():
     assert args.watch
 
 
-# ── run_monitor_wait: the `li monitor run <id>...` positional entry point ───
+# run_monitor_wait: the `li monitor run <id>...` positional entry point
 
 
 @pytest.mark.asyncio
@@ -1438,10 +1438,10 @@ def test_run_monitor_wait_empty_string_token_rejected_as_usage_error():
     assert exc_info.value.code == 2
 
 
-# ── CLI wiring: `li monitor run --help` / `li monitor --help` subprocess ────
+# CLI wiring: `li monitor run --help` / `li monitor --help` subprocess
 
 
-# ── ADR-0035 regression: `li monitor run` output format is untouched ───────
+# ADR-0035 regression: `li monitor run` output format is untouched
 
 
 @pytest.mark.asyncio
@@ -1495,8 +1495,8 @@ def test_cli_monitor_help_still_shows_dashboard_usage():
     assert "--watch" in result.stdout
 
 
-# ── li monitor run: resolving agent session ids (issue: profile-typed agent
-# sessions previously errored with "schedule_run not found") ────────────────
+# li monitor run: resolving agent session ids. Profile-typed agent sessions
+# previously errored with "schedule_run not found".
 
 
 async def _make_agent_session(db: StateDB, *, status: str = "completed") -> str:
@@ -1587,7 +1587,7 @@ async def test_dispatch_wait_agent_session_still_running_returns_exit_running(
     assert exit_code == EXIT_RUNNING
 
 
-# ── li monitor run: linked_engine_session_id drill-in + bounded --max-wait ──
+# li monitor run: linked_engine_session_id drill-in + bounded --max-wait
 
 
 @pytest.mark.asyncio

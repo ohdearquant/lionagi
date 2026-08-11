@@ -171,7 +171,7 @@ class DispatchReasons:
     ACKED_CONSUMER = "dispatch.acked.consumer"
 
 
-# ── Validator ────────────────────────────────────────────────────────
+# Validator
 
 
 def _collect(*classes: type) -> frozenset[str]:
@@ -197,7 +197,7 @@ VALID_REASON_CODES: Final[frozenset[str]] = _collect(
 ) | {LEGACY_IMPORTED}
 
 
-# ── Validation helpers ───────────────────────────────────────────────
+# Validation helpers
 
 
 def validate_reason_code(code: str) -> str:
@@ -225,7 +225,7 @@ def validate_entity_type(entity_type: str) -> str:
     )
 
 
-# ── Table mapping ────────────────────────────────────────────────────
+# Table mapping
 # StateDB.update_status() uses this to resolve canonical entity_type
 # → physical table name for the UPDATE statement.
 

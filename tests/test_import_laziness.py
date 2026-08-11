@@ -3,21 +3,16 @@
 
 """Import-time laziness regression gate.
 
-Guards against a specific regression class: lazy-import work that gets
-silently undone by a new top-level import. ``lionagi/__init__.py`` uses a
-``_LAZY_MAP`` + ``__getattr__`` scheme (see ``lionagi.ln._lazy_init``) so a
-bare ``import lionagi`` stays cheap -- provider SDKs, the CLI command tree,
-and the flow engine are only pulled in once a caller actually touches them.
-
-It is easy for a future change (a stray top-level import added to satisfy a
-type checker, a convenience re-export, a "just import it eagerly" shortcut
-somewhere deep in the import graph) to defeat that laziness without anyone
-noticing, because the symptom only shows up as slower startup and heavier
-memory for every consumer of the package -- it does not raise or fail a
-normal unit test. This module runs ``import lionagi`` in a fresh subprocess
-(so no other test can have already warmed ``sys.modules``) and pins today's
-known-good set of modules and timing, so a regression trips CI immediately
-instead of shipping silently.
+``lionagi/__init__.py`` uses a ``_LAZY_MAP`` + ``__getattr__`` scheme (see
+``lionagi.ln._lazy_init``) so a bare ``import lionagi`` stays cheap --
+provider SDKs, the CLI command tree, and the flow engine load only once a
+caller touches them. A stray top-level import (added for a type checker, a
+convenience re-export, an eager shortcut deep in the import graph) can defeat
+that without failing any normal unit test -- the only symptom is slower
+startup and heavier memory for every consumer. This module runs ``import
+lionagi`` in a fresh subprocess (so no other test has warmed
+``sys.modules``) and pins the known-good module set and timing, so a
+regression trips CI immediately.
 """
 
 from __future__ import annotations

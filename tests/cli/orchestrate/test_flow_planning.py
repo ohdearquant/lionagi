@@ -400,7 +400,7 @@ async def test_workers_override_keeps_role_modes(tmp_path):
     assert "adversarial" in out  # role behaviour preserved, not stripped like --bare
 
 
-# ── pack routing ─────────────────────────────────────────────────────────
+# pack routing
 
 
 def _pack_env(tmp_path, orc, pack_yaml: str) -> SimpleNamespace:

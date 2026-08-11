@@ -11,10 +11,6 @@ from lionagi.agent.spec import AgentSpec, _resolve_permissions
 from lionagi.casts.profile import Profile
 from lionagi.session.branch import Branch
 
-# ---------------------------------------------------------------------------
-# _resolve_permissions
-# ---------------------------------------------------------------------------
-
 
 class TestResolvePermissions:
     def test_none(self):
@@ -52,11 +48,6 @@ class TestResolvePermissions:
             _resolve_permissions(42)
 
 
-# ---------------------------------------------------------------------------
-# AgentSpec.compose
-# ---------------------------------------------------------------------------
-
-
 class TestAgentSpecCompose:
     def test_basic(self):
         spec = AgentSpec.compose("analyst")
@@ -83,11 +74,6 @@ class TestAgentSpecCompose:
         assert spec.effort == "high"
 
 
-# ---------------------------------------------------------------------------
-# AgentSpec.coding preset
-# ---------------------------------------------------------------------------
-
-
 class TestAgentSpecCoding:
     def test_coding_preset(self):
         spec = AgentSpec.coding()
@@ -110,12 +96,6 @@ class TestAgentSpecCoding:
         spec = AgentSpec.coding(role="reviewer")
         assert spec.profile.role.name == "reviewer"
         assert "coding" in spec.tools
-
-
-# ---------------------------------------------------------------------------
-# Role -> Policy Binding Contract: fail-closed when a valid role has no
-# policy entry in the active pack; empty-but-present entry stays silent.
-# ---------------------------------------------------------------------------
 
 
 class TestRolePolicyBindingContract:
@@ -165,11 +145,6 @@ class TestRolePolicyBindingContract:
         assert "## Authority" not in msg
 
 
-# ---------------------------------------------------------------------------
-# AgentSpec.build_system_message
-# ---------------------------------------------------------------------------
-
-
 class TestAgentSpecSystemMessage:
     def test_contains_role_body(self):
         spec = AgentSpec.compose("analyst")
@@ -204,11 +179,6 @@ class TestAgentSpecSystemMessage:
         )
         msg = spec.build_system_message()
         assert "Be concise." in msg
-
-
-# ---------------------------------------------------------------------------
-# AgentSpec.emission_operable
-# ---------------------------------------------------------------------------
 
 
 class TestAgentSpecEmission:
@@ -259,11 +229,6 @@ class TestAgentSpecEmission:
         assert spec.emits == (Finding,)
 
 
-# ---------------------------------------------------------------------------
-# Hook methods
-# ---------------------------------------------------------------------------
-
-
 class TestAgentSpecHooks:
     def test_pre(self):
         spec = AgentSpec.compose("analyst")
@@ -300,11 +265,6 @@ class TestAgentSpecHooks:
 
         result = spec.pre("bash", h)
         assert result is spec
-
-
-# ---------------------------------------------------------------------------
-# Factory: create_agent with AgentSpec
-# ---------------------------------------------------------------------------
 
 
 class TestCreateAgentWithSpec:
@@ -360,11 +320,6 @@ class TestCreateAgentWithSpec:
         spec = AgentSpec.compose("analyst")
         await create_agent(spec, load_settings=False)
         assert calls == []
-
-
-# ---------------------------------------------------------------------------
-# YAML round-trip
-# ---------------------------------------------------------------------------
 
 
 class TestAgentSpecYaml:

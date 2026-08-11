@@ -29,11 +29,6 @@ def test_deny_all_rejects_any_tool():
         assert p.check(tool, action, args).behavior == "deny"
 
 
-# ---------------------------------------------------------------------------
-# Preset: read_only
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "tool,action,args",
     [
@@ -59,11 +54,6 @@ def test_read_only_denies(tool, action, args):
     assert p.check(tool, action, args).behavior == "deny"
 
 
-# ---------------------------------------------------------------------------
-# Preset: safe
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "cmd,expected",
     [
@@ -85,11 +75,6 @@ def test_safe_allows_non_bash():
     assert p.check("editor", "write", {"file_path": "/tmp/f.py"}).behavior == "allow"
 
 
-# ---------------------------------------------------------------------------
-# Custom rules: deny > allow > escalate ordering
-# ---------------------------------------------------------------------------
-
-
 def test_deny_beats_allow_when_both_match():
     p = PermissionPolicy(mode="rules", allow={"bash": ["git *"]}, deny={"bash": ["git *"]})
     assert p.check("bash", "run", {"command": "git status"}).behavior == "deny"
@@ -105,11 +90,6 @@ def test_default_deny_when_no_rule_matches():
     d = p.check("bash", "run", {"command": "pytest tests/"})
     assert d.behavior == "deny"
     assert "no matching rule" in d.reason
-
-
-# ---------------------------------------------------------------------------
-# fnmatch pattern matching
-# ---------------------------------------------------------------------------
 
 
 def test_fnmatch_wildcard_matches_any():
@@ -133,11 +113,6 @@ def test_shell_control_operator_denied():
     assert d.behavior == "deny"
 
 
-# ---------------------------------------------------------------------------
-# to_pre_hook
-# ---------------------------------------------------------------------------
-
-
 async def test_pre_hook_raises_on_deny():
     hook = PermissionPolicy.deny_all().to_pre_hook()
     with pytest.raises(PermissionError):
@@ -155,11 +130,6 @@ async def test_pre_hook_escalate_without_handler_raises():
         await hook("bash", "run", {"command": "uv run pytest"})
 
 
-# ---------------------------------------------------------------------------
-# Tool alias normalization
-# ---------------------------------------------------------------------------
-
-
 def test_tool_aliases_normalized_at_init():
     p = PermissionPolicy(
         mode="rules",
@@ -172,21 +142,11 @@ def test_tool_aliases_normalized_at_init():
     assert "reader" in p.escalate and "reader_tool" not in p.escalate
 
 
-# ---------------------------------------------------------------------------
-# Rules mode denies tool with no matching allow entry
-# ---------------------------------------------------------------------------
-
-
 def test_permission_policy_rules_default_denies_unmatched_tool():
     p = PermissionPolicy(mode="rules", allow={"reader": ["*"]})
     d = p.check("bash", "run", {"command": "pwd"})
     assert d.behavior == "deny"
     assert "no matching rule" in d.reason
-
-
-# ---------------------------------------------------------------------------
-# Shell control operator denied even under wildcard allow
-# ---------------------------------------------------------------------------
 
 
 def test_permission_policy_rejects_shell_control_before_wildcard_allow():

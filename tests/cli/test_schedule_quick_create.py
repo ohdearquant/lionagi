@@ -59,9 +59,7 @@ async def _get_or_none(name: str) -> dict | None:
         return await db.get_schedule_by_name(name)
 
 
-# ---------------------------------------------------------------------------
 # Per-kind happy paths
-# ---------------------------------------------------------------------------
 
 
 def test_quick_create_agent_at_trigger(temp_db_path, agent_profile, capsys):
@@ -192,9 +190,7 @@ def test_quick_create_command_argv_form(temp_db_path, agent_profile, monkeypatch
     assert row["action_command_args"] == ["full"]
 
 
-# ---------------------------------------------------------------------------
 # --once sugar
-# ---------------------------------------------------------------------------
 
 
 def test_quick_create_once_is_max_runs_one(temp_db_path, agent_profile):
@@ -227,9 +223,7 @@ def test_quick_create_once_and_max_runs_mutually_exclusive(temp_db_path, agent_p
     assert "mutually exclusive" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
 # Trigger validation failure surfaces -- each rejects with zero DB writes
-# ---------------------------------------------------------------------------
 
 
 def test_quick_create_bad_cron_expression_rejected(temp_db_path, agent_profile, capsys):
@@ -306,9 +300,7 @@ def test_quick_create_malformed_github_filter_rejected(temp_db_path, agent_profi
     assert "unknown key" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
 # Command target: never a shell string
-# ---------------------------------------------------------------------------
 
 
 def test_quick_create_command_requires_trailing_separator(temp_db_path, agent_profile, capsys):
@@ -329,9 +321,7 @@ def test_quick_create_command_rejects_single_shell_string_token(
     assert asyncio.run(_get_or_none("shell-like")) is None
 
 
-# ---------------------------------------------------------------------------
 # Name qualification: <project>/<name> when a project is detected
-# ---------------------------------------------------------------------------
 
 
 def test_quick_create_qualifies_name_with_detected_project(temp_db_path, agent_profile):
@@ -346,9 +336,7 @@ def test_quick_create_qualifies_name_with_detected_project(temp_db_path, agent_p
     assert row["action_project"] == "demo"
 
 
-# ---------------------------------------------------------------------------
 # Duplicate-name collisions (self and cross-owner-from-apply)
-# ---------------------------------------------------------------------------
 
 
 def test_quick_create_duplicate_name_rejected(temp_db_path, agent_profile, capsys):
@@ -403,9 +391,7 @@ schedules:
         asyncio.run(_apply())
 
 
-# ---------------------------------------------------------------------------
 # Additive compatibility: the legacy flat `create` form is untouched
-# ---------------------------------------------------------------------------
 
 
 def test_legacy_create_dispatch_unaffected_by_quick_create_kinds(monkeypatch):

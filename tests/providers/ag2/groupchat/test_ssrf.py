@@ -30,11 +30,6 @@ def _autogen_stubs() -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Unit-level: _assert_nlip_url_safe helper
-# ---------------------------------------------------------------------------
-
-
 class TestAssertNlipUrlSafe:
     """Direct tests for the shared SSRF guard helper."""
 
@@ -65,11 +60,6 @@ class TestAssertNlipUrlSafe:
         with patch("lionagi.providers.ag2.nlip.is_ssrf_safe", return_value=True):
             # Must not raise
             _assert_nlip_url_safe("https://nlip.example.com/")
-
-
-# ---------------------------------------------------------------------------
-# Integration: build_group_chat validates nlip_url before NlipRemoteAgent
-# ---------------------------------------------------------------------------
 
 
 class TestBuildGroupChatNlipUrlSSRF:
@@ -137,11 +127,6 @@ class TestBuildGroupChatNlipUrlSSRF:
                     # Stub autogen returns MagicMocks; any downstream error
                     # (AttributeError, etc.) is acceptable — the SSRF guard passed.
                     pass
-
-
-# ---------------------------------------------------------------------------
-# Integration: AG2GroupChatEndpoint.stream() blocks private nlip_url
-# ---------------------------------------------------------------------------
 
 
 class TestAG2GroupChatEndpointNlipUrlSSRF:

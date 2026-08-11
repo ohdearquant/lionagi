@@ -574,12 +574,9 @@ class OrchestrationEnv:
 def _hand_mcp_servers(imodel, servers: dict | None, *, label: str) -> None:
     """Give one worker's model the run's server set, or say it could not be given.
 
-    ``{}`` and ``None`` are different requests: ``{}`` is the caller asking for
-    no servers, applied as the whole (empty) set; ``None`` is there being
-    nothing to hand over, so the model keeps whatever it already had.
-
-    *label* names the worker, since a run's workers can resolve different
-    providers and a warning needs to say which one lost what.
+    ``{}`` (apply no servers) and ``None`` (nothing to hand over, keep
+    whatever the model already had) are different requests. See
+    ``docs/internals/cli.md`` (`_orchestration.py`).
     """
     if servers is None:
         return
@@ -1239,15 +1236,11 @@ def make_team_lifecycle_coordinator(
 def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
     """List what each worker actually wrote, one entry per worker the run expected.
 
-    The roster comes from directories the run handed out, not a scan for
-    non-empty ones — a worker that wrote nothing is still an entry (empty
-    ``files``), and an expected worker with no registered directory is
-    ``unregistered`` rather than silently dropped (which would look like
-    "fewer workers").
-
-    ``status``: ``unreadable`` (traversal raised), ``missing`` (path gone
-    after registration), ``unregistered`` (expected, never recorded), or
-    ``reported`` (looked — ``files`` is whatever was there).
+    ``status``: ``unreadable`` (traversal raised), ``missing`` (registered
+    path gone), ``unregistered`` (expected, no directory recorded),
+    ``reported`` (looked, ``files`` is what was there). See
+    ``docs/internals/cli.md`` (`_orchestration.py`) for why every expected
+    worker gets an entry rather than being dropped when empty/absent.
     """
     entries: list[dict] = []
     registered = env.worker_artifact_dirs

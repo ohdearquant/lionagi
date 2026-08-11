@@ -212,6 +212,7 @@ def _build_work_form(spec: dict, spec_path: str):
     raw_fields_raw = spec.get("fields")
     raw_values_raw = spec.get("values")
 
+    # Validate types: 'fields' and 'values' must be mappings when present.
     if raw_fields_raw is not None and not isinstance(raw_fields_raw, dict):
         raise ValueError(
             f"form spec {spec_path!r}: 'fields' must be a mapping, "
@@ -277,11 +278,12 @@ _HEARTBEAT_INTERVAL_S = 60
 
 
 class _ProgressReport:
-    """Heartbeat text distinguishing a working agent from a merely live one.
+    """Heartbeat text that distinguishes a working agent from a merely live one.
 
-    A bare elapsed-seconds timer only proves the event loop is scheduling;
-    counting assistant responses and action requests as they land says
-    whether work has actually happened since the run started.
+    A bare elapsed-seconds timer reports that the event loop is scheduling, which
+    a reader takes as evidence that work is happening. Assistant responses and
+    action requests are added to the branch as the stream arrives, so counting
+    them says whether anything has actually landed since the run started.
     """
 
     def __init__(self, branch, now: float):
@@ -341,11 +343,15 @@ def _report_mcp_resolution(
 ) -> None:
     """Say at spawn time what tool surface the leg is actually getting.
 
-    Silence is reserved for the one case where it is accurate: servers
-    resolved and handed over. ``forwarded`` must be the caller's answer to
-    "does this spawn hand the resolved set to the leg?", read off the request
-    that spawn actually built — never re-derived from the provider name, or
-    the message can end up contradicting the spawn.
+    The whole point of resolving here is that a leg starting without the
+    servers its instructions assume should be visible when it is launched
+    rather than inferred from its output an hour later. Silence is reserved
+    for the one case where it is accurate: servers resolved and handed over.
+
+    ``forwarded`` is the caller's answer to "does this spawn hand the resolved
+    set to the leg?", read off the request that spawn built. This function must
+    not re-derive it from the provider name: a second list here is what let the
+    message contradict the spawn.
     """
     from lionagi.cli._logging import warn
 
@@ -410,14 +416,15 @@ async def _drain_pending_steers(
 
     Called after a successful operate() and before the run finalizes. Each
     drain batch joins all pending steers (arrival order) into one continuation
-    turn; steers enqueued during a continuation are caught by the next
-    iteration. Continuations spend the leg's own wall clock — past *deadline*
-    the loop stops without consuming, so steering can never keep a leg alive
-    past its budget (teardown tombstones the remainder).
+    turn on the same branch; steers enqueued during a continuation are caught
+    by the next iteration. Continuations spend the leg's original wall clock:
+    past *deadline* the loop stops without consuming (teardown tombstones the
+    remainder), so steering can never keep a leg alive past its budget.
 
     *owner* names this leg on the rows it claims, so a concurrent leg and the
-    teardown can tell this leg's in-flight work from their own. Returns the
-    last continuation result, or None if nothing was consumed.
+    teardown can both tell this leg's in-flight work from their own.
+
+    Returns the last continuation result, or None if nothing was consumed.
     """
     if not live or not live.get("session_id"):
         return None
@@ -514,10 +521,18 @@ async def _drain_pending_steers(
 async def _tombstone_pending_steers(live: dict | None) -> None:
     """Finalize never-claimed session controls as rejected at run teardown.
 
-    Best-effort — a failure here logs and leaves the row visibly pending; the
-    status surface independently renders that as never-landed. See
-    docs/internals/agent.md#tombstone-unclaimed-steers for the claimed-row
-    and ordering rationale.
+    A steer enqueued while the run was live but never drained must not sit
+    pending forever. Best-effort: a failure here logs and leaves the row
+    visibly pending, since the status surface independently renders a pending
+    control on a terminal run as never-landed.
+
+    Only rows no consumer ever claimed are tombstoned, enforced at the write
+    rather than read off the snapshot -- a claimed row belongs to whichever
+    leg took it (still in its provider call, or dead between claim and apply),
+    and rejecting it would assert non-delivery that nothing here actually
+    knows, so it stays visible as claimed for an operator to resolve. Called
+    after teardown, so the terminal check at the top is what makes this hold
+    even when teardown failed to persist the transition it was asked for.
     """
     if not live or not live.get("session_id"):
         return
@@ -975,16 +990,14 @@ async def _run_agent(
     # invocation records are finalized externally and would never fire. Deferred
     # auto-resume legs unregister without firing; the recursed leg registers anew.
     #
-    # Persistence setup failing leaves no session entity to fire a terminal
-    # transition on, so the registered path below (register_flow_notify_scope)
-    # cannot be used; this run instead delivers its own terminal notice once
-    # its status is known, in the `finally` block below (see
-    # `_deliver_direct_notice` / `deliver_flow_notify_now`) — same
-    # resolution, same payload, run directly rather than registered for a
-    # transition that will never happen. The refusal record this run can
-    # still write applies only once delivery is actually attempted and
-    # genuinely cannot be completed (nothing configured to run, or the
-    # config itself is unusable), never merely because persistence failed.
+    # If persistence setup failed there's no session entity to fire a terminal
+    # transition on, so register_flow_notify_scope can't be used -- this run
+    # instead delivers the notice itself once its own terminal status is known,
+    # in the `finally` block below (see `deliver_flow_notify_now`): same
+    # resolution and payload, run directly instead of registered for a
+    # transition that will never happen. The refusal record this run can still
+    # write applies only when delivery is actually attempted and genuinely
+    # can't complete, never merely because persistence failed.
     _notify_scope_name: str | None = None
     _notify_session_id = live.get("session_id") if live else None
     if notify and _notify_session_id is not None:
@@ -1040,11 +1053,17 @@ async def _run_agent(
     async def _deliver_direct_notice() -> None:
         """Send this run's one terminal notice on the no-persistence route.
 
-        Reads ``_terminal_status`` at call time — not this run's answer
-        until every later line that can still change it has run. Shielded
-        and idempotent by flag. See
-        docs/internals/agent.md#direct-path-terminal-notice for the full
-        rationale.
+        No session entity ever existed for this run, so the registered path
+        was never reached and nothing else will ever deliver for it. *When*
+        this is called is the whole question: it reads ``_terminal_status`` at
+        call time, so it must run only after every line that can still change
+        that status has run.
+
+        Shielded, since a cancellation is exactly what's expected from the
+        teardown path that calls this, and the guarantee this exists to
+        provide is that a terminal notice arrives regardless. Idempotent by
+        flag (reached from both a ``finally`` and the ordinary tail) rather
+        than by relying on those two call sites never overlapping.
         """
         nonlocal _direct_notice_sent
 
@@ -1215,12 +1234,27 @@ async def _run_agent(
                 defer_terminal=will_auto_resume,
                 **telemetry_kw,
             )
-            # Tombstone sweep, ordered after teardown (skipped when auto-resume
-            # keeps the run alive — the resumed leg's drain consumes the steer
-            # instead). Opens its own StateDB connection rather than reusing
-            # `live`'s, which teardown has already closed. See
-            # docs/internals/agent.md#terminal-race-tombstone-ordering for why
-            # this ordering closes the terminal race.
+            # Terminal-race tombstone, ordered after the teardown above (skipped
+            # when auto-resume keeps the run alive -- the resumed leg's drain
+            # consumes the steer instead). This ordering leaves no gap for a
+            # control to slip through: the writer admits one only while the
+            # session reads 'running', so anything admitted lands before the
+            # transition and is visible to the sweep below, while anything
+            # arriving later is refused at the writer. Teardown can also fail
+            # and return the requested status without writing it, so the sweep
+            # re-reads the stored session and declines a non-terminal one
+            # rather than trusting call order.
+            #
+            # The `live` handle is closed by teardown's own `finally` by this
+            # point, so the sweep gets a fresh connection rather than the
+            # corpse -- a sweep that fails on a closed engine would otherwise
+            # turn this whole tombstone path into one log line while the rows
+            # it exists to close stay pending forever. Opened here (not inside
+            # the sweep) so callers supplying their own handle, including
+            # tests, keep doing so; it's still inside the sweep's must-not-raise
+            # boundary, since StateDB re-raises out of __aenter__ and an
+            # unguarded `async with` here would turn a completed run into a
+            # reported infrastructure exception.
             if not will_auto_resume and live:
                 from lionagi.state.db import StateDB
 

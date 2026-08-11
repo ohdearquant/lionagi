@@ -24,10 +24,6 @@ from lionagi.tools.khive_injection import (
     _extract_writeback_pairs,
 )
 
-# ---------------------------------------------------------------------------
-# Policy validation
-# ---------------------------------------------------------------------------
-
 
 def test_profile_id_required():
     with pytest.raises(ValueError, match="profile_id is required"):
@@ -54,11 +50,6 @@ def test_snapshot_id_construction_raises():
     policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1", snapshot_id="snap-1")
     with pytest.raises(ValueError, match="cannot honor policy.snapshot_id"):
         KhiveInjectionProvider(policy)
-
-
-# ---------------------------------------------------------------------------
-# Fixtures / helpers
-# ---------------------------------------------------------------------------
 
 
 def _khive_recall_response(result_id="abc123", content="a prior lesson"):
@@ -118,11 +109,6 @@ def patched_transport():
         yield call_tool
 
 
-# ---------------------------------------------------------------------------
-# Query construction
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_query_construction_uses_role_and_truncated_task_text(patched_transport):
     patched_transport.return_value = _mcp_result(_khive_recall_response())
@@ -138,11 +124,6 @@ async def test_query_construction_uses_role_and_truncated_task_text(patched_tran
     assert "role=implementer" in recall_call_ops
     assert "x" * 400 in recall_call_ops
     assert "x" * 401 not in recall_call_ops
-
-
-# ---------------------------------------------------------------------------
-# Cadence gating
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -195,11 +176,6 @@ async def test_disabled_policy_never_calls_transport(patched_transport):
     assert not patched_transport.called
 
 
-# ---------------------------------------------------------------------------
-# auto_feedback emitted in the same round-trip, explicit profile_id
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_auto_feedback_emitted_with_explicit_profile_id(patched_transport):
     patched_transport.return_value = _mcp_result(_khive_recall_response(result_id="the-first-id"))
@@ -234,11 +210,6 @@ async def test_no_auto_feedback_when_recall_empty(patched_transport):
     assert not any(op.startswith("brain.auto_feedback(") for op in ops_calls)
 
 
-# ---------------------------------------------------------------------------
-# Transport failure containment
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_transport_failure_returns_none_turn_proceeds():
     policy = KhiveInjectionPolicy(profile_id="implementer-recall-v1")
@@ -270,11 +241,6 @@ async def test_auto_feedback_failure_does_not_fail_the_turn(patched_transport):
 
     assert text is not None
     assert "a prior lesson" in text
-
-
-# ---------------------------------------------------------------------------
-# Compose
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -319,11 +285,6 @@ async def test_compose_not_called_when_disabled(patched_transport):
     assert not any(op.startswith("knowledge.compose(") for op in ops_calls)
 
 
-# ---------------------------------------------------------------------------
-# Token cap truncation
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_render_truncated_to_recall_max_tokens(patched_transport):
     huge_content = "lesson " * 5000
@@ -352,11 +313,6 @@ async def test_render_truncated_to_recall_max_tokens(patched_transport):
     )
     assert TokenCalculator.tokenize(body) <= 50
     assert len(text) < len(huge_content)
-
-
-# ---------------------------------------------------------------------------
-# Untrusted-content delimiter (recalled text is data, never an instruction)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -432,11 +388,6 @@ async def test_provide_uses_a_different_nonce_per_call(patched_transport):
     nonce1 = re.match(r'<untrusted-context nonce="([0-9a-f]+)"', text1).group(1)
     nonce2 = re.match(r'<untrusted-context nonce="([0-9a-f]+)"', text2).group(1)
     assert nonce1 != nonce2
-
-
-# ---------------------------------------------------------------------------
-# Namespace pinning (bench-arm contamination guard)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -531,11 +482,6 @@ async def test_no_namespace_kwarg_in_unpinned_writeback(patched_transport):
     ops = patched_transport.call_args_list[0].args[1]["ops"]
     assert ops.startswith("memory.remember(")
     assert "namespace=" not in ops
-
-
-# ---------------------------------------------------------------------------
-# Writeback pair extraction + salience cap
-# ---------------------------------------------------------------------------
 
 
 def _resp(function, output):
@@ -633,11 +579,6 @@ async def test_writeback_transport_failure_contained(patched_transport):
     assert records_written == 0
 
 
-# ---------------------------------------------------------------------------
-# Module-load purity: core lionagi import path stays clean without the mcp extra
-# ---------------------------------------------------------------------------
-
-
 class _TransportImportBlocker:
     """Meta-path finder that raises on any attempt to import the mcp transport,
     proving the import never happens rather than merely not being cached."""
@@ -720,10 +661,6 @@ def test_truncate_cap_semantics():
     assert _truncate("", 5) == ""
     assert _truncate("hi", 10_000) == "hi"
 
-
-# ---------------------------------------------------------------------------
-# Provenance in the rendered block: a bullet a reader can date
-# ---------------------------------------------------------------------------
 
 # Captured from a live `memory.recall`, trimmed to the fields the renderer
 # reads. The dates are in the two forms the store actually returns: an

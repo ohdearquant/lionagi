@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """The schedule verbs, end to end, through the real `li` subprocess.
 
-Nothing here mocks the child. The defect these verbs are exposed to is not in
-either half but in the seam: the dispatcher renders argv from a schema projected
-off one parser, and the child then parses those tokens with the parser it builds
-for itself. A test that stubs the subprocess asserts that the first half agrees
-with itself.
+Nothing here mocks the child. The defect these verbs are exposed to lives in
+the seam, not either half: the dispatcher renders argv from a schema
+projected off one parser, and the child parses those tokens with the parser
+it builds for itself -- a test that stubs the subprocess would only assert
+the first half agrees with itself.
 
-What is substituted is the Studio the child talks to — a real HTTP server on a
-loopback port, recording every request. That keeps the assertions about the
-request the child actually composed, and keeps the suite from writing to
-whatever schedule store the machine running it happens to have.
+What is substituted is the Studio the child talks to: a real HTTP server on
+a loopback port, recording every request. That keeps the assertions about
+the request the child actually composed, and keeps the suite from writing
+to whatever schedule store the machine running it happens to have.
 """
 
 from __future__ import annotations

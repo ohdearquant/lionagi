@@ -86,8 +86,10 @@ def db_health() -> dict[str, int | bool]:
     size_bytes = db_path.stat().st_size if db_path.exists() else 0
     wal_path = db_path.parent / (db_path.name + "-wal")
     wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
-    # Same threshold /api/stats applies, read through the same helper, so
-    # every reader doesn't have to re-derive the limit.
+    # The same threshold /api/stats applies, read through the same helper. A
+    # health payload that reports the size but not whether it is over the
+    # limit leaves every reader to re-derive the limit, and the health view
+    # that consumed this had no way to say "unhealthy" at all.
     size_alert, size_threshold_bytes = get_db_size_alert(size_bytes)
     return {
         "size_bytes": size_bytes,
@@ -314,9 +316,13 @@ _RUNTIME_LOCK_NAMES: frozenset[str] = frozenset({"job.lock", "finalize.lock"})
 # Directory names never on the path to a run directory, and routinely holding
 # more files than everything else in the tree combined.
 #
-# The cost of skipping them is what makes matching by name affordable: the
-# common answer is "not here", and reaching that answer costs a complete
-# traversal of whatever is under the root.
+# The cost of skipping them is what makes matching by name affordable. Matching
+# by suffix was fast for the wrong reason: a repository root almost always has a
+# dependency lockfile near the top, so the search hit one immediately and
+# stopped. Searching for names we write means the common answer is "not here",
+# and reaching that answer costs a complete traversal. Measured on one machine,
+# an unpruned walk of a projects directory took 100 seconds, against three
+# milliseconds for the suffix match it replaced.
 _UNSEARCHED_DIRS: frozenset[str] = frozenset(
     {
         ".git",
@@ -342,9 +348,12 @@ _UNSEARCHED_DIRS: frozenset[str] = frozenset(
 )
 
 
-# How long all the walks in one scan may take, in total. Nothing bounds a
-# single tree's own walk: a session's artifacts_path is routinely a whole
-# project directory, and the tree under it is whatever the user keeps there.
+# How long all the walks in one scan may take, in total. Pruning lowered the
+# per-tree constant but nothing bounds the work: a session's artifacts_path is
+# routinely a whole project directory, and the tree under it is whatever the
+# user happens to keep there. Measured against the live store, a full pass over
+# the 3780 artifact roots that exist on disk took 76 seconds, of which four
+# roots -- each a top-level directory -- accounted for 70.
 #
 # A ceiling on the scan rather than on each root, because the cost is
 # concentrated: a per-root limit generous enough for a normal tree still admits
@@ -361,12 +370,14 @@ _BUDGET_CHECK_INTERVAL = 64
 class _ScanBudget:
     """Wall-clock ceiling shared by every walk in a single scan.
 
-    Monotonic on purpose: a clock adjustment mid-scan must not extend or
+    Monotonic on purpose: a system clock adjustment mid-scan must not extend or
     collapse the ceiling, and this deadline is never compared against the
-    wall-clock ``cutoff`` timestamps.
+    ``cutoff`` timestamps, which are wall-clock by necessity.
 
-    Read at build time, not defaulted in the signature, so retuning the
-    module constant retunes the next scan rather than binding at import.
+    The ceiling is read when a budget is built rather than defaulted in the
+    signature, so that retuning the module constant retunes the next scan. A
+    default argument would have bound the value at import and left the constant
+    looking like a knob that does nothing.
     """
 
     def __init__(self, seconds: float | None = None) -> None:
@@ -402,13 +413,17 @@ def _find_stale_lock(
 ) -> _ScanResult:
     """Find a stale runtime lock under *root*.
 
-    Pass *cache* to share results across one scan: it avoids re-walking a
-    repeated artifact root. The cache is caller-owned and per-scan since a
-    scan is a snapshot at one ``cutoff``; a process-lifetime cache would
-    keep answering with a filesystem that has since moved on.
+    Pass *cache* to share results across one scan. Sessions repeat their
+    artifact roots heavily -- one root accounted for 152 of 500 recent sessions
+    on one machine -- and without a cache each of those repeats re-walks the
+    same tree to reach the same answer. The cache is deliberately caller-owned
+    and per-scan rather than module-level: a scan is a snapshot taken at one
+    ``cutoff``, so results are consistent within it, while a process-lifetime
+    cache would keep answering with a filesystem that has since moved on.
 
-    Pass *budget* to bound the whole scan; a truncated result is cached
-    like any other, since re-walking would only spend already-gone budget.
+    Pass *budget* to bound the whole scan. A truncated result is cached like any
+    other: within one scan the answer for a root does not improve by asking
+    again, and re-walking it would spend budget that is already gone.
     """
     key = (str(root), cutoff)
     if cache is not None and key in cache:
@@ -553,13 +568,17 @@ async def doctor(*, stale_hours: float = 1.0) -> dict[str, Any]:
 async def _code_identity_report() -> dict[str, Any]:
     """Which code this daemon is actually running, and whether it has fallen behind.
 
-    The daemon imports lionagi once at start into an editable-install working
-    tree, so which code runs is a property of whatever commit that checkout
-    sits on -- the version string can't show this, since a stale and current
-    tree report the same string.
+    The daemon imports lionagi once, at start. With an editable install that
+    import resolves to a working tree, so which code is running is a property of
+    whatever commit that checkout sits on — a property nothing else in this
+    report can see. The version string cannot distinguish them: a stale tree and
+    a current one report the same one.
 
-    Read fresh on every call, not cached at start: the read shells out to
-    git off the event loop, bounded by its own budget, so it never stalls.
+    Read fresh on every call rather than cached at start, because the answer this
+    is asked for is "is the tree still current", and a value captured at start
+    can only ever say it was current then. The read shells out to git, so it runs
+    off the event loop and its own budget bounds it; a daemon must not stall on
+    its own health check.
     """
     try:
         from lionagi.cli._code_identity import code_identity
@@ -1091,6 +1110,11 @@ async def prune_phantom_sessions(*, stale_hours: float = 1.0) -> int:
             actor="admin_prune",
         )
     return count
+
+
+# ---------------------------------------------------------------------------
+# Route handlers — admin area
+# ---------------------------------------------------------------------------
 
 
 @studio_route("/admin/doctor", method="GET", area="admin", name="doctor")

@@ -16,8 +16,6 @@ from lionagi.hooks import (
 )
 from lionagi.session.observer import SessionObserver
 
-# ── Transport recording ──────────────────────────────────────────────────────
-
 
 async def test_bound_emit_records_hooksignal_on_observer():
     # MESSAGE_ADD is intentionally suppressed from the HookSignal transport:
@@ -62,9 +60,6 @@ async def test_bind_and_unbind():
     bus.bind(None)  # unbind — subsequent emits record nowhere
     await bus.emit(HookPoint.API_POST_CALL, model="y")
     assert len(obs.by_type(HookSignal)) == 1
-
-
-# ── Dispatch discipline is preserved when bound ──────────────────────────────
 
 
 async def test_ordered_dispatch_unchanged_when_bound():
@@ -139,9 +134,6 @@ async def test_blocking_guard_records_pass_and_denial_before_reraising():
     }
 
 
-# ── Transport isolation ──────────────────────────────────────────────────────
-
-
 async def test_transport_failure_never_breaks_dispatch():
     class BrokenObserver:
         async def emit(self, *_a, **_k):
@@ -157,9 +149,6 @@ async def test_transport_failure_never_breaks_dispatch():
     # The broken transport must not turn a successful dispatch into a failure.
     await bus.emit(HookPoint.SESSION_START, session_id="s")
     assert calls == [1]
-
-
-# ── build_session_bus binds the observer ─────────────────────────────────────
 
 
 async def test_build_session_bus_binds_observer():

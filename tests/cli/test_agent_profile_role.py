@@ -25,9 +25,7 @@ import pytest
 
 from lionagi.cli._providers import _parse_profile
 
-# ---------------------------------------------------------------------------
 # Shared stub wiring (mirrors tests/cli/test_agent_profile_timeout.py)
-# ---------------------------------------------------------------------------
 
 
 def _wire_agent_stubs(monkeypatch, tmp_path: Path):
@@ -100,9 +98,7 @@ def _stub_profile(monkeypatch, name: str, text: str):
     return profile
 
 
-# ---------------------------------------------------------------------------
 # Item 1: role: reviewer -> create_agent path, reviewer policy block
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -150,11 +146,9 @@ async def test_profile_role_key_without_preset_flag(monkeypatch, tmp_path):
     assert "bash" in branch.acts.registry  # create_agent path, not bare Branch
 
 
-# ---------------------------------------------------------------------------
 # Falsy explicit `role:` values must fail closed, not silently default to
 # "implementer" (a role profile with role: "" / false / 0 must not silently
 # be granted implementer coding authority).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -221,9 +215,7 @@ async def test_profile_falsy_role_value_raises_on_resume_too(
         await _run_agent(None, "go", agent_name="falsy-role-profile", resume="deadbeef")
 
 
-# ---------------------------------------------------------------------------
 # Item 2: unknown role -> ValueError surfaces, not swallowed
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -241,9 +233,7 @@ async def test_profile_role_unknown_raises_value_error(monkeypatch, tmp_path):
         await _run_agent(None, "go", agent_name="ghost-role-profile")
 
 
-# ---------------------------------------------------------------------------
 # Item 4: profile without role: key -> byte-for-byte unchanged (bare Branch)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -281,14 +271,10 @@ async def test_profile_with_unrelated_frontmatter_keys_no_role_key(monkeypatch, 
     assert not {"bash", "reader", "editor", "search"}.intersection(branch.acts.registry.keys())
 
 
-# ---------------------------------------------------------------------------
 # Item 7: --preset coding with no -a is unaffected (default role implementer)
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # lion_system: false must propagate to the create_agent path (role: key)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

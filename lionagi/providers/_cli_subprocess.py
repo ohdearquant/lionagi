@@ -38,9 +38,9 @@ def spawned_pgid(pid: int) -> int:
     """The process group of a just-spawned child.
 
     Falls back to the child's own pid: every spawn here uses
-    ``start_new_session``, so the child leads its own group by construction and
-    that pid IS the group id whenever the read fails because the child has
-    already exited.
+    ``start_new_session``, so the child leads its own group and that pid IS
+    the group id whenever the read fails because the child has already
+    exited.
     """
     try:
         return os.getpgid(pid)
@@ -51,15 +51,8 @@ def spawned_pgid(pid: int) -> int:
 def spawned_create_time(pid: int) -> float | None:
     """When the process at *pid* started, or None if that cannot be established.
 
-    The pid and the group id are both recyclable: once a process is reaped the
-    kernel is free to hand its numbers to anything, so a reader that has only
-    those two integers cannot tell this child from a stranger that arrived
-    later. The start time is what binds them to one process, and it is readable
-    only here, while the child is known to exist.
-
-    None is not a claim. It means the probe found no process or errored, and a
-    consumer must treat it as "no identity was captured" rather than as a
-    statement about the child.
+    None means "no identity was captured," not a statement about the child.
+    See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     import psutil
 
@@ -76,17 +69,11 @@ def spawned_create_time(pid: int) -> float | None:
 class SpawnedProcess:
     """The identity of a CLI child, as read at the moment it came into being.
 
-    ``pid`` and ``pgid`` are the handles a later sweep signals. ``create_time``
-    is what makes them an identity rather than two integers the OS may have
-    reissued in the meantime, so a consumer that intends to act on this record
-    later must compare a live start-time read against it and refuse to signal
-    when they disagree or when this field is None.
-
-    The group is the initial one, and a process group is not a containment
-    boundary: a child or descendant that calls ``setsid()`` leaves it, and this
-    record then says nothing about that process. Callers who need "nothing the
-    leg started survives" must either require non-daemonizing CLIs or use a
-    platform containment primitive; the group alone will not give it to them.
+    A consumer acting on this later must re-verify ``create_time`` against a
+    live read and refuse to signal when they disagree or it is None — pid and
+    pgid are both recyclable. The group is the initial one and is not a
+    containment boundary: a descendant that calls ``setsid()`` leaves it.
+    See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
 
     pid: int
@@ -97,22 +84,9 @@ class SpawnedProcess:
 class Redacted:
     """A runtime-only value, wrapped so that nothing can print or serialize it.
 
-    ``repr=False`` on the field keeps a value out of a request's own
-    representation, and that is only one channel. Pydantic keeps the raw input
-    of a failing ``mode="before"`` validator on the error, and a model-level
-    validator holds the WHOLE raw mapping, so a request rejected for an
-    unrelated reason — an empty prompt, say — carries the child environment
-    along with the reason.
-
-    **Not a mapping, and that is the entire point.** A ``dict`` subclass with a
-    quiet ``__repr__`` closes the rendering channel and leaves the
-    serialization one wide open: ``str(err)`` and ``err.errors()`` go through
-    ``repr``, but ``err.json()`` walks the structure and writes out every key
-    and value, and ``err.json()`` is what a structured logger emits. Pydantic
-    has no structure to walk here, so all three channels get the same summary.
-
-    The real value stays reachable through :meth:`reveal` for the one validator
-    that has to look at it.
+    Deliberately not a mapping, so ``err.json()`` (which walks a structure)
+    has nothing to walk, same as ``repr()``-based channels.
+    See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
 
     __slots__ = ("_value", "_label")
@@ -135,15 +109,10 @@ class Redacted:
 def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
     """Reject a malformed environment without quoting anything out of it.
 
-    A string key is a variable NAME and naming it is what makes the error
-    actionable. A key of any other type is not a name, and printing it prints
-    whatever the caller put there — a tuple holding a token, for instance — so
-    those are reported by position and type only. Values are never printed at
-    all, whatever their type.
-
-    Raises TypeError rather than ValueError because pydantic converts
-    ValueError into a validation error that quotes the entire rejected input,
-    and lets anything else through untouched.
+    Values are never printed, whatever their type; non-string keys are
+    reported by position and type only, since printing one could print a
+    credential the caller embedded there. Raises TypeError, not ValueError —
+    pydantic quotes a ValueError's rejected input verbatim into the error.
     """
     named: list[str] = []
     unnamed: list[str] = []
@@ -161,15 +130,15 @@ def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
 
 
 def redact_runtime_fields_in_place(data) -> None:
-    """Wrap the runtime-only fields (``env``, ``on_spawn``) in a raw request
-    mapping so nothing can print or serialize them.
-
-    Must run at the top of every model-level ``mode="before"`` validator —
-    that is the one place pydantic keeps the WHOLE raw input on a failing
-    validator, and ``exclude``/``repr=False`` do not reach that channel since
-    they govern the model, which does not exist yet at that point. An
-    immutable mapping is refused (``TypeError``) rather than silently skipped;
-    see docs/internals/_cli_subprocess.md for why.
+    """Wrap ``env``/``on_spawn`` in a raw request mapping so nothing can print
+    or serialize them. Called at the top of every model-level
+    ``mode="before"`` validator, the one place that holds pydantic's WHOLE raw
+    input on a failing validation. Substitution must happen in place, since
+    pydantic keeps the object passed INTO the failing validator on the error —
+    handing back a sanitized copy changes nothing about what the error holds.
+    An immutable mapping is therefore refused (TypeError, not ValueError —
+    pydantic quotes a ValueError's input verbatim), not silently skipped.
+    See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     if not isinstance(data, Mapping):
         return
@@ -195,17 +164,12 @@ def redact_runtime_fields_in_place(data) -> None:
 def _kill_abandoned_spawn(task: asyncio.Future) -> None:
     """End the group of a child nobody is left to receive.
 
-    Runs as a done-callback: the coroutine that asked for the child has
-    already unwound by the time this fires, so there is nothing left to await
-    from.
-
-    A cancelled task is a known, logged hole here, not a handled case: a
-    cancellation landing inside the creation call leaves a child the OS has
-    made whose pid was never returned to anyone in this process, and nothing
-    recovers it later — ``on_spawn`` fires only once the creation call has
-    returned, which is precisely what did not happen. See
-    docs/internals/_cli_subprocess.md for why the pid cannot be captured
-    earlier and why this stays an open hole rather than being closed.
+    Runs as a done-callback since the awaiting coroutine has already unwound
+    by the time this fires. A cancellation landing inside the creation call
+    is a known, unclosed hole (logged, not silently passed over): the child
+    exists but its pid was never returned to this process, so only its
+    direct-child transport gets closed, never its group.
+    See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     if task.cancelled():
         log.warning(
@@ -223,13 +187,10 @@ def _kill_abandoned_spawn(task: asyncio.Future) -> None:
 
 
 def _end_group_with_evidence(proc: Any) -> str:
-    """End a child's group wherever its identity can be established.
-
-    Two facts establish that a recorded group id still belongs to this child,
-    covering different moments: while unreaped, its pid cannot have been
-    reissued, so the group id is provably still its own and no scan is
-    needed; once reaped, only a live member pins that id, which is what the
-    membership scan checks for.
+    """End a child's group wherever its identity can be established: while
+    unreaped (pid can't have been reissued, no scan needed) or, once reaped,
+    only if a live member still pins the group id.
+    See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     pgid = getattr(proc, "pid", None)
     if getattr(proc, "returncode", None) is None:
@@ -240,12 +201,10 @@ def _end_group_with_evidence(proc: Any) -> str:
 def _kill_group_if_occupied(pgid: Any) -> str:
     """End a process group if it can be shown to still hold someone.
 
-    Returns what happened, which the caller does not currently branch on but a
-    reader of the log needs: ``killed``, ``empty``, ``unproven`` or
-    ``no-group``. The unproven case is the one that matters — a process table
-    that could not be read completely and showed no members is not an empty
-    group, and it is the only outcome here where something may still be running
-    and nothing was done about it, so it says so rather than passing as clean.
+    Returns ``killed``/``empty``/``unproven``/``no-group`` for the log, not
+    for caller branching. ``unproven`` is the case that matters: a process
+    table read that failed and showed no members is not an empty group, and
+    is the only outcome where something may still be running unaddressed.
     """
     if not isinstance(pgid, int):
         return "no-group"
@@ -266,16 +225,14 @@ def _kill_group_if_occupied(pgid: Any) -> str:
 async def end_child_group(proc: Any, *, grace: float = 5.0) -> None:
     """End every member of the child's group, and survive being cancelled.
 
-    Drains the GROUP, not just the process: the graceful helper returns as
-    soon as the direct child is gone, but a descendant that ignores SIGTERM
-    outlives a parent that does not, so the group is read afterward and
-    killed if anyone is still in it. Every signal sent is conditioned on the
-    recorded group id still being this child's — either the child hasn't
-    been waited yet (pid not reissued) or the group answers with a live
-    member (an occupied group is never reissued); nothing else qualifies, and
-    a scan that can't prove the group is empty is treated as unproved, not
-    clean. See docs/internals/_cli_subprocess.md for the full rationale,
-    including why the fallback kill runs synchronously in a ``finally``.
+    Drains the GROUP, not just the process — a descendant ignoring SIGTERM can
+    outlive a parent that doesn't, so the group is read afterwards and killed
+    if still occupied. Escalation is keyed on that membership evidence, not on
+    whether the direct child died, since those are different facts. The
+    graceful helper (reached only on the not-yet-waited path, since it signals
+    the group id unconditionally) is backed by a synchronous kill in a
+    ``finally`` so a second cancellation can't interpose.
+    See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     swept = False
     try:
@@ -301,20 +258,13 @@ _POST_EXIT_DRAIN_GRACE = 10.0
 def observe_spawned(pid: int) -> SpawnedProcess:
     """Read pid, group and start time as one observation of one process.
 
-    The group and the start time are two facts read separately by pid, and a
-    pid the OS reassigns between them answers the later read as the replacement
-    process. A record assembled from those two answers would describe no
-    process that ever existed, so the group read is bracketed by the start
-    time: read before, read again after, required to be unchanged. A failed
-    bracket yields ``create_time=None``, which already means "no identity was
-    captured" and is what stops a consumer from signalling on it.
-
-    The bracket rejects a replacement arriving DURING the observation. It
-    cannot speak for one that arrived before the first read, and the window
-    where that is possible is a child that exits and is reaped between the
-    spawn call returning and the first probe. What covers that window is the
-    probe itself: a reaped pid holds no process and an exited-not-yet-reaped
-    one is a zombie, and :func:`spawned_create_time` answers None to both.
+    The group read is bracketed by a start-time read before and after,
+    required unchanged, since the pid could otherwise be reassigned mid-read
+    and the two facts would describe a process that never existed. A failed
+    bracket yields ``create_time=None`` ("no identity captured"). A pid
+    reassigned before the first probe is separately covered:
+    :func:`spawned_create_time` returns None for both a reaped pid and a
+    zombie.
     """
     created = spawned_create_time(pid)
     pgid = spawned_pgid(pid)
@@ -330,17 +280,11 @@ def _no_stderr_reason(
 ) -> str:
     """Why a nonzero exit came with no stderr to quote.
 
-    A child that failed silently and a capture that failed to read it are
-    different facts about different components, and the caller acts on them
-    differently: the first is the child's own report and there is nothing more
-    to find, the second means the report exists somewhere this process did not
-    look. Collapsing both into the exit code makes a broken instrument read
-    exactly like a quiet subprocess, which is the direction that hides the
-    instrument.
-
-    The drain error contributes its exception type and never its message: that
-    message can embed the bytes being read when it raised, and this string is
-    what a caller stores or forwards.
+    Distinguishes a child that failed silently from a capture that failed to
+    read it — the caller acts on those differently, and collapsing them makes
+    a broken instrument read like a quiet subprocess. The drain error
+    contributes only its exception type, never its message, which can embed
+    the bytes being read when it raised.
     """
     exited = f"CLI subprocess exited with code {rc}"
     if drain_error is not None:
@@ -360,27 +304,13 @@ async def ndjson_from_cli(
     tail_repair: Callable[[str], dict | None] | None = None,
     on_spawn: Callable[[SpawnedProcess], None | Awaitable[None]] | None = None,
 ) -> AsyncIterator[dict]:
-    """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles malformed final chunks.
-
-    ``stdin_data`` feeds text to the child over a pipe instead of the command
-    line, which is how an arbitrarily large prompt is delivered without
-    hitting the OS argument-length limit. It overrides ``stdin``: the child
-    always gets a pipe, the data is written by a task that runs concurrently
-    with the stdout/stderr readers below (a sequential write would deadlock as
-    soon as the data exceeds the pipe buffer and the child is blocked writing
-    output nobody is draining), and the pipe is closed afterwards so the child
-    sees EOF rather than waiting forever for more input.
-
-    ``on_spawn`` is called once with a :class:`SpawnedProcess` immediately
-    after the child exists, for a caller that must record the process identity
-    of a process it did not itself spawn. It may be a coroutine function; the
-    result is awaited before the first byte of output is read, so a recorder
-    that writes durably has finished writing before anything can consume the
-    stream. Its failure is deliberately not swallowed: a caller whose recording
-    fails has no record of a child that is now running, and continuing would
-    leave a live process outside whatever domain the record defines. The
-    exception propagates through the teardown below, which ends the group it
-    was called for.
+    """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
+    malformed final chunks. ``stdin_data`` overrides ``stdin`` and is written
+    concurrently with the stdout/stderr readers below, then closed so the
+    child sees EOF. ``on_spawn`` is awaited (may be a coroutine function)
+    before any output is read, and its failure is not swallowed — it
+    propagates through the teardown below, which ends the child's group.
+    See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # Every CLI provider spawns through here, so a secret the child must read
     # from its own environment is filled in one place rather than four. Purely
@@ -487,22 +417,12 @@ async def ndjson_from_cli(
         payload = stdin_data.encode() if isinstance(stdin_data, str) else stdin_data
         stdin_task = asyncio.create_task(_write_stdin(payload))
 
-    # stdout EOF requires EVERY holder of the pipe's write end to close it —
-    # not just the child. A CLI child that spawns its own long-lived helpers
-    # (MCP servers, daemons) leaks the write end into them, so when the child
-    # dies its orphans keep the pipe open and a plain read() waits forever: a
-    # finished leg whose artifacts are on disk reads as "running" for the rest
-    # of the caller's budget. Racing each read against the child's exit, then
-    # bounding the drain once it has exited, turns that hang into the normal
-    # end-of-stream path; teardown then ends the process group, which is what
-    # actually closes the orphans' copy of the pipe.
+    # Guards against orphan-held pipes leaving stdout open forever; see
+    # docs/internals/providers.md#cli-subprocess-lifecycle.
     async def _await_child_exit() -> int:
-        # proc.wait() alone cannot be the exit signal: on newer Pythons it does
-        # not complete until every pipe transport disconnects, which is exactly
-        # what an orphan-held pipe prevents. returncode is set at process exit
-        # regardless of pipe state, so the wait races against a returncode
-        # poll; wait()'s result is preferred when it does complete, because it
-        # is the canonical exit code (and the only one a test double carries).
+        # wait() alone can block on an orphan-held pipe on newer Pythons, so it
+        # races a returncode poll; wait()'s result wins when it completes, since
+        # it's the canonical exit code (and the only one a test double carries).
         wait_task = asyncio.create_task(proc.wait())
         try:
             while proc.returncode is None and not wait_task.done():
@@ -531,11 +451,9 @@ async def ndjson_from_cli(
             await asyncio.wait({read_task, exit_task}, return_when=asyncio.FIRST_COMPLETED)
             child_exited = exit_task.done()
         if child_exited and not read_task.done():
-            # The grace is per read, never a shared deadline: output the child
-            # buffered before exiting must survive a consumer that processes
-            # slowly between reads. Only a read that produces nothing for the
-            # whole grace ends the stream. wait_for cancels the read on
-            # timeout, so nothing is left pending.
+            # Grace is per read, not a shared deadline, so buffered output
+            # survives a slow consumer; only a read producing nothing for the
+            # whole grace ends the stream.
             try:
                 return await asyncio.wait_for(read_task, _POST_EXIT_DRAIN_GRACE)
             except asyncio.TimeoutError:
@@ -599,13 +517,9 @@ async def ndjson_from_cli(
             except asyncio.CancelledError:
                 raise
             err = b"".join(stderr_chunks).decode(errors="replace").strip()
-            # Emptiness is decided on what was captured, before the drain note
-            # is appended. Deciding it on the concatenated string instead lets
-            # the note itself count as output, so a truncated drain that
-            # captured nothing would report neither the exit code nor the fact
-            # that there was nothing to quote. No probe I built reaches that
-            # arm; this orders the two steps so its reachability stops
-            # mattering.
+            # Emptiness decided on what was captured, before the drain note is
+            # appended, so a truncated drain that captured nothing still gets
+            # a message instead of the note masquerading as output.
             if not err:
                 err = _no_stderr_reason(rc, stderr_unavailable, stderr_drain_error)
             if drain_truncated:

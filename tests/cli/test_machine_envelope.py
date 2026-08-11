@@ -49,7 +49,7 @@ def _one_object(out: str) -> dict:
     return json.loads(lines[0])
 
 
-# ── The envelope ────────────────────────────────────────────────────────────
+# The envelope
 
 
 def test_a_success_carries_data_and_no_error(capfd):
@@ -102,7 +102,7 @@ def test_a_malformed_envelope_is_refused_before_it_is_written(malformed):
         machine.validate_envelope(malformed)
 
 
-# ── The closed error vocabulary ─────────────────────────────────────────────
+# The closed error vocabulary
 
 
 def test_the_error_kinds_are_exactly_the_contract_set():
@@ -154,7 +154,7 @@ def test_an_unexpected_crash_becomes_an_envelope(capfd, monkeypatch):
     assert "something nobody anticipated" in envelope["error"]["message"]
 
 
-# ── Exactly one JSON object on stdout ───────────────────────────────────────
+# Exactly one JSON object on stdout
 
 
 def test_nothing_else_reaches_stdout(capfd, monkeypatch):
@@ -267,7 +267,7 @@ def test_one_object_on_stdout_end_to_end():
     assert envelope["contract_version"] == machine.CONTRACT_VERSION
 
 
-# ── D7: absence and failure do not share an encoding ────────────────────────
+# D7: absence and failure do not share an encoding
 
 
 def test_an_empty_read_and_a_failed_read_are_different_answers(tmp_path):
@@ -350,7 +350,7 @@ def test_no_runs_at_all_is_an_established_answer(capfd, monkeypatch, tmp_path):
     }
 
 
-# ── D8: which signal answers ────────────────────────────────────────────────
+# D8: which signal answers
 
 
 def test_a_refusal_still_exits_zero(capfd):
@@ -438,7 +438,7 @@ def test_78_survives_end_to_end_under_the_machine_flag():
     assert proc.stdout.strip() == ""
 
 
-# ── the machine path leaves SIGPIPE where the interpreter put it ────────────
+# the machine path leaves SIGPIPE where the interpreter put it
 
 
 def _sigpipe_disposition_after(*argv: str) -> str:

@@ -136,25 +136,20 @@ _IMPORTED_ROLE_LABEL_BACKFILL_KEY = "migration.imported_role_label_backfill"
 
 
 class SchemaTooNewError(RuntimeError):
-    """The database records a schema version this code does not understand.
+    """``schema_meta.version`` is higher than ``SCHEMA_VERSION``.
 
-    Raised by a writable open when ``schema_meta.version`` is higher than
-    ``SCHEMA_VERSION``. A writable open rewrites the database into the shape
-    this code applies and then stamps that shape into the version row; neither
-    step has established anything about a shape written by a later release, so
-    both are refused rather than performed blind. Read-only opens apply no
-    schema and are unaffected.
+    Raised only by a writable open, which would otherwise rewrite the database
+    into a shape this code understands and stamp that shape into the version
+    row — blind, since a later release's shape is unknown here. Read-only
+    opens apply no schema and are unaffected.
     """
 
 
 def state_db_file() -> Path | None:
-    """The local file a default ``StateDB()`` would open, if it opens one at all.
+    """The local file a default ``StateDB()`` would open, or None.
 
-    Resolved the same way ``StateDB.__init__`` resolves it, so the two cannot
-    disagree about which store is in play. Returns None when the configured
-    store is not a local file — a server, or an in-memory database — because
-    then there is no path to report and nothing a filesystem check can say
-    about it.
+    Resolved the same way ``StateDB.__init__`` resolves it. None when the
+    configured store is not a local file (server, or in-memory).
     """
     raw = settings.LIONAGI_STATE_DB_URL
     if raw is None:
@@ -174,53 +169,47 @@ def read_only_open_supported() -> bool:
     """Whether ``StateDB(readonly=True)`` can open the configured store at all.
 
     Read-only mode is SQLite-only: an ``mode=ro`` URI open of an existing
-    file, rejected by ``make_readonly_engine()`` for every other dialect.
-    ``StateDB.open()``'s read-only branch is not dialect-gated, so an
+    file. ``StateDB.open()``'s read-only branch is not dialect-gated, so an
     unconditional ``readonly=True`` fails at open rather than degrading on a
-    server-backed store. Callers that want read-only as an optimisation, not a
-    safety requirement, check this first and take the ordinary open where it's
-    unavailable. Callers that need read-only for safety must NOT rely on this:
-    it hands them a writable connection on the stores it returns False for.
+    server-backed store. Callers that want read-only as an optimisation
+    (not a safety requirement) check this first and fall back to the
+    ordinary open when it's unavailable; callers that need read-only for
+    safety must NOT use this, since it hands them a writable connection on
+    the stores it returns False for.
 
-    Not exactly the same set ``make_readonly_engine()`` accepts: it also
-    requires the ``sqlite+aiosqlite:///`` spelling, so an unrecognised driver
-    such as ``sqlite+pysqlite:///`` passes this check but still fails the
-    ordinary open too (a sync driver can't back an async engine) — broken
-    either way, only the exception differs.
+    Not exactly the set ``state_db_file()`` returns a path for: an
+    unrecognised sync driver spelling (e.g. ``sqlite+pysqlite:///``) also
+    fails the ordinary open, since a sync driver can't back an async engine,
+    so it's broken either way and only the exception differs.
     """
     return state_db_file() is not None
 
 
 def state_db_known_absent() -> bool:
-    """Whether the store a default ``StateDB()`` would open is known not to exist.
+    """Whether the store a default ``StateDB()`` would open is known absent.
 
-    Distinguishes "no store, so no record of anything" from "store exists but
-    something went wrong reading it" — callers act on each differently, so this
-    checks the store that will actually be opened rather than
-    ``DEFAULT_DB_PATH`` directly: when ``LIONAGI_STATE_DB_URL`` moves the store
-    elsewhere, the default path can be absent while every row being asked
-    about exists. Only a positive answer is confident; where existence isn't a
-    filesystem question this returns False and leaves the open attempt to give
-    the real answer.
+    Distinguishes "no store, so no record of anything" from "the store is
+    there and something went wrong reading it" — callers act differently on
+    each. Checks the store that will actually be opened (honoring
+    ``LIONAGI_STATE_DB_URL``), not the default path. Only a positive answer
+    is confident; where existence isn't a filesystem question this returns
+    False and leaves the open attempt to give the real answer.
     """
     path = state_db_file()
     return path is not None and not path.exists()
 
 
-# The single definition of which schedule_run statuses count as "fired and
-# resolved" for budget bookkeeping (max_runs, one-shot auto-disable). The
-# scheduler service layer must observe the same set — both its defaults and
-# this one point here so they cannot drift. 'timed_out' counts: a reaped run
-# fired and consumed real work. 'skipped' (never ran) and 'running' (not yet
-# resolved) do not; admission paths that need in-flight rows opt in
+# Schedule-run statuses counted as "fired and resolved" for budget bookkeeping
+# (max_runs, one-shot auto-disable). The scheduler service layer's defaults
+# must match this set. 'timed_out' counts: a reaped run consumed real work.
+# 'skipped' and 'running' don't; admission paths needing in-flight rows opt in
 # explicitly with ("running", *TERMINAL_RUN_STATUSES).
 TERMINAL_RUN_STATUSES: tuple[str, ...] = ("completed", "failed", "cancelled", "timed_out")
 
-# Lifecycle states that count as "a run actually executed", for health/evidence
-# reads that must not mistake a pending row for proof anything happened.
-# 'running' is included even though it isn't terminal -- it has started.
-# 'queued', 'waiting_dependency' and 'retry_wait' (ADR-0071's durable queue)
-# are pending, not evidence, exactly like 'skipped' already was.
+# Statuses counted as "a run actually executed", for health/evidence reads
+# that must not mistake a pending row for proof anything happened. 'running'
+# counts even though it isn't terminal — it has started. Queued/waiting
+# statuses are pending, not evidence, like 'skipped'.
 EXECUTED_RUN_STATUSES: tuple[str, ...] = ("running", *TERMINAL_RUN_STATUSES)
 
 _VALID_STATUS_SOURCES: frozenset[str] = frozenset({"executor", "agent", "admin", "system"})
@@ -259,12 +248,24 @@ _SESSION_COLUMNS = frozenset(
         "total_cost_usd",
         "num_turns",
         "duration_ms",
-        # Allowlisted here for exactly two writer classes (_build_dag and
-        # _execute_dag in cli/orchestrate/flow.py), both append-only and both
-        # frozen before the work they describe ever runs. No other writer may
-        # touch this column -- ADR-0064's anti-drift intent (no changes once
-        # what was expected has been acted on) still holds. Rationale for the
-        # DAG-flow exception: docs/internals/db.md.
+        # ADR-0064 documents artifact_contract_json as fixed at session
+        # creation for the single-agent case, where the full contract
+        # (playbook + agent profile) is already known at create_session time.
+        # DAG flows break that assumption: which role runs which leg is only
+        # known once planning finishes, which happens after create_session
+        # (see _build_dag in cli/orchestrate/flow.py). This column is
+        # allowlisted here for two writer classes, both append-only and both
+        # frozen before the work they describe ever runs: (1) _build_dag
+        # folds each planned leg's resolved role artifact_defaults in once,
+        # at DAG-build time, strictly before any leg starts executing; (2)
+        # _execute_dag folds a reactively spawned node's own entries in after
+        # that node completes, but what is expected of it (role defaults +
+        # its builder-stamped spawn_id) was frozen before it was ever
+        # queued, so this is still a "before work starts" declaration in
+        # substance — see the ADR-0064 "Reactive-spawn exception" paragraph.
+        # No other writer may touch this column; the anti-drift intent of
+        # ADR-0064 (no changes once what was expected has been acted on)
+        # still holds.
         "artifact_contract_json",
     }
 )
@@ -369,6 +370,7 @@ ADMIN_TRANSITION_TARGETS = frozenset({"failed", "aborted", "cancelled"})
 
 _SESSION_STATUSES = VALID_SESSION_STATUSES
 
+# Terminal-status vocabulary
 # Terminal-state definitions live here, with the record schema, rather than
 # in any one CLI surface — update_status() enforces them uniformly for
 # every entity_type at the single write path; `li wait` reads the same
@@ -383,7 +385,7 @@ TERMINAL_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 SESSION_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["session"]
 
 # Terminal branches.status values. branches has no lifecycle-policy entry of
-# its own (it never goes through update_status()'s ADR-0035 machinery) — but
+# its own (it never goes through update_status()'s status-integrity machinery) — but
 # every status finalize_branch() ever receives is a session final_status
 # passed straight through by cli/_runs.py teardown_persist(), so this IS
 # SESSION_TERMINAL_STATUSES, not a second hand-maintained list that could
@@ -420,6 +422,7 @@ EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     "play": frozenset({"ended_at"}),
 }
 
+# Status vocabulary (valid, not just terminal)
 # update_status() rejects any new_status outside its entity_type's set here —
 # the terminal-overwrite floor above stops a terminal record from moving;
 # this stops ANY record (terminal or not) from being written to a status
@@ -557,18 +560,17 @@ def _install_begin_immediate(sync_engine) -> None:
 async def _restore_foreign_keys(conn, driver) -> None:
     """Turn foreign-key enforcement back on after a legacy table rebuild.
 
-    Called from every rebuild's ``finally``, including failure paths. Two
-    things can leave a pooled connection with enforcement silently off:
-    ``PRAGMA foreign_keys`` is a no-op while a transaction is open, so a
-    rollback that itself failed leaves its transaction alive and the pragma
-    inert — any surviving transaction is closed first. And a write is not a
-    result: the setting is read back rather than assumed, and a connection
-    whose enforcement cannot be confirmed is invalidated.
-
-    Cancellation is handled separately rather than via a bare ``except
-    Exception``, which would catch the BaseException it arrives as and skip
-    both the read-back and the invalidation. The invalidation is shielded so
-    it completes before the cancellation is re-raised.
+    Called from every rebuild's ``finally``, including failure paths, since
+    those are the ones that need the care. Two things can leave a pooled
+    connection with enforcement silently off: ``PRAGMA foreign_keys`` is a
+    no-op while a transaction is open, so a failed rollback that leaves its
+    transaction alive makes the pragma inert (any surviving transaction is
+    closed first); and a write is not a result, so the setting is read back
+    rather than assumed, and a connection whose enforcement can't be
+    confirmed is invalidated so it's never handed out again. Cancellation is
+    handled separately (not via a blanket ``except Exception``, which would
+    swallow it) so the read-back/invalidation still runs, shielded, before
+    the cancellation is re-raised.
     """
     cancelled_exc = get_cancelled_exc_class()
 
@@ -627,12 +629,13 @@ class StateDB:
         # Per-(kind, name) lock to serialize version increment for save_definition.
         self._definition_locks: dict[tuple[str, str], Lock] = {}
         # Connection-wide write lock: every mutating method that can share the
-        # live-persistence connection must hold this lock during its write
-        # window. On SQLite it prevents concurrent coroutines from racing
-        # BEGIN IMMEDIATE on the same AsyncEngine (a single pooled
-        # connection). On PostgreSQL _tx() handles isolation natively and
-        # skips this lock (see the dialect check in _tx()), but it still
-        # serializes Python-side CAS in update_status.
+        # live-persistence connection must hold this lock during its write window.
+        #
+        # For SQLite: prevents concurrent coroutines from racing BEGIN IMMEDIATE
+        # on the same AsyncEngine (which shares a single connection in the pool).
+        # For PostgreSQL: _tx() uses engine.begin() which handles isolation
+        # natively, so the lock is a no-op for PG paths (they skip it via dialect
+        # check in _tx()), but it still serializes Python-side CAS in update_status.
         self._write_lock: Lock = Lock()
         # Lazily constructed: the unified lifecycle service that
         # StateDB.update_status() delegates its guarded read/CAS/history
@@ -685,6 +688,8 @@ class StateDB:
             ),
         )
 
+    # backward-compat path property
+
     @property
     def path(self) -> Path | None:
         if self.dialect == "sqlite":
@@ -694,6 +699,8 @@ class StateDB:
                 return Path(suffix)
             return Path(":memory:") if suffix == ":memory:" else None
         return None
+
+    # Connection lifecycle
 
     async def open(self) -> None:
         if self._engine is not None:
@@ -747,6 +754,8 @@ class StateDB:
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
+    # Internal connection helpers
+
     @asynccontextmanager
     async def _read(self):
         async with self._engine.connect() as conn:
@@ -763,6 +772,7 @@ class StateDB:
             async with self._engine.begin() as conn:
                 yield conn
 
+    # Public query surface (portable across both dialects)
     # Replaces direct `db.db.execute(...)` access from CLI/studio consumers.
     # Accepts the legacy qmark (?) form with a sequence of params, or named
     # (:name) SQL with a dict; SQLAlchemy translates the paramstyle per dialect.
@@ -857,6 +867,8 @@ class StateDB:
         row = await self._raw_sqlite_exec(f"PRAGMA wal_checkpoint({mode})", fetch=True)
         return tuple(row) if row is not None else None
 
+    # Schema management
+
     def _raise_if_schema_too_new(self, recorded: str | None) -> None:
         if recorded is None:
             return
@@ -942,7 +954,7 @@ class StateDB:
             # existing DBs created before the completion-trust gate carry a
             # 6-value CHECK on invocations.status that omits 'completed_empty'.
             await self._drop_legacy_invocations_status_check()
-            # ADR-0071 D2: existing DBs carry a 5-value CHECK on
+            # Existing DBs carry a 5-value CHECK on
             # schedule_runs.status and a NOT NULL schedule_id, from before
             # schedule_runs was generalized into the task-application entity.
             await self._drop_legacy_schedule_runs_check()
@@ -963,11 +975,12 @@ class StateDB:
             await self._backfill_imported_role_label_once(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
             # re-run on every open() because the rows are identity-stable.
-            # The version row is the exception: DO UPDATE, not DO NOTHING, or
-            # a migrated database keeps reporting the version it was created
-            # at. The update only ever raises the recorded version: a
-            # database stamped higher than SCHEMA_VERSION never reaches here,
-            # it is refused at open.
+            # The version row is the exception: the migrations above rewrite an
+            # older database into the current shape, so the stamp has to move
+            # with them. DO UPDATE, not DO NOTHING, or a migrated database keeps
+            # reporting the version it was created at. The update only ever
+            # raises the recorded version: a database stamped higher than
+            # SCHEMA_VERSION never reaches here, it is refused at open.
             await conn.execute(
                 text(
                     "INSERT INTO schema_meta (key, value) VALUES ('version', :version) "
@@ -1054,25 +1067,20 @@ class StateDB:
             await self._backfill_dispatched_at(conn)
 
     async def _backfill_dispatched_at(self, conn) -> None:
-        """Set the dispatch marker on running rows that predate its backfill.
+        """Stamp ``dispatched_at`` on pre-existing running rows, once.
 
-        ``dispatched_at`` is only stamped going forward, by
-        ``SchedulerEngine._mark_dispatched()``, so a pre-existing
-        ``status = 'running'`` row has ``dispatched_at IS NULL`` --
-        indistinguishable from a launch that genuinely never got confirmed.
-        Left alone, ``list_undispatched_schedule_runs()`` would treat every
-        such row as crashed-before-dispatch and re-fire it on the next daemon
-        startup, even one still genuinely executing across the restart.
-
-        Stamping ``dispatched_at`` to the row's own ``fired_at`` (NOT NULL by
-        schema) excludes these rows from that scan, the same "no signal to
-        distinguish, so don't auto-retry" resolution ``_backfill_action_cwd()``
-        applies to ``action_cwd``: a still-running row is left alone, and one
-        that actually crashed pre-migration falls through to
-        ``reap_stale_schedule_runs()``'s wall-clock deadline instead of being
-        auto-retried on ambiguous evidence. Scoped to ``schedule_id IS NOT
-        NULL`` to leave the leased ad-hoc task queue (its own dispatch/lease
-        model) untouched.
+        Without this, a ``status = 'running'`` row from before the column
+        existed has ``dispatched_at IS NULL`` -- indistinguishable from a
+        launch that never got confirmed, which ``list_undispatched_schedule_
+        runs()`` would then re-fire on the next daemon startup even though
+        it's still genuinely executing. Stamped to the row's own
+        ``fired_at`` (NOT NULL by schema) to exclude it from that scan,
+        matching ``_backfill_action_cwd()``'s "no signal, so don't
+        auto-retry" resolution; a row that actually crashed pre-migration
+        still falls through to ``reap_stale_schedule_runs()``'s wall-clock
+        deadline. Scoped to ``schedule_id IS NOT NULL`` to leave the ad-hoc
+        task queue's own dispatch/lease model untouched. See
+        docs/internals/state-db.md for the full backfill rationale.
         """
         await conn.execute(
             text(
@@ -1097,16 +1105,14 @@ class StateDB:
     async def _backfill_imported_role_label(self, conn) -> None:
         """Null out ``agent_name`` on rows imported from a desktop transcript.
 
-        ``agent_name`` is a role field; because the role tier sits ahead of
-        the prompt tier in ``resolve_display_name``, a row left with the
-        engine name in it would keep rendering the engine forever while new
-        imports render their prompt.
-
-        Scoped by ``source_kind``, not by the label's value: selecting on
-        ``agent_name = 'codex'`` would catch a live session legitimately
-        running a role of that name, whereas ``source_kind`` names the thing
-        that actually makes the field meaningless. Branch rows are reached
-        through their session because the branches table has no
+        The mirror used to write the engine name into ``agent_name`` (a role
+        field); stopping that write only fixes imports from here on, so
+        already-stored rows are backfilled here to avoid a permanent split
+        where old imports render the engine name and new ones render the
+        prompt (``resolve_display_name`` checks role before prompt). Scoped
+        by ``source_kind`` rather than the label's value, since a live
+        session can legitimately run a role literally named "codex". Branch
+        rows are reached through their session because branches has no
         ``source_kind`` of its own.
         """
         await conn.execute(
@@ -1136,35 +1142,23 @@ class StateDB:
         """Give every pre-existing attention-disposition row the shape the
         fencing/ordering added after it now assumes.
 
-        ``metadata.create_all()`` only creates *missing* tables, so a store
+        ``metadata.create_all()`` only creates missing tables, so a store
         that already had ``attention_dispositions`` /
-        ``attention_disposition_history`` gained the later ``revision`` /
-        ``sequence`` columns' ``ALTER TABLE ... DEFAULT`` placeholder (1 and
-        0) but never their real values. This runs once (via the
-        ``schema_meta`` claim in ``_backfill_attention_dispositions_once``)
-        to fill them in:
-
-        1. ``sequence`` is assigned in ``(created_at, id)`` order -- the same
-           tie-break ``_next_history_sequence`` would have used had the
-           column existed when each row was written -- so history reads that
-           depend on ``ORDER BY sequence`` see original append order instead
-           of raising on the missing column.
-        2. ``attention_dispositions.revision`` is raised from the placeholder
-           1 to the item_id's true operation count (its row count in
-           ``attention_disposition_history``), so a client that already
-           echoed back a revision from before this migration is not handed a
-           lower one that reads as a rollback.
-        3. ``attention_disposition_revisions`` is seeded for every
-           currently-active item_id at that same count, so the next PUT/
-           DELETE continues the ledger instead of restarting at 0 and
-           disagreeing with the row's own (just-backfilled) revision.
-        4. ``attention_disposition_revisions`` is also seeded for item_ids
-           that exist only in history -- acknowledged (or otherwise set)
-           and then undone (DELETE) before this migration -- whose latest
-           recorded transition is delete-shaped (``new_state == 'open'``).
-           Without this the fence has no row to check: a PUT that predates
-           the pre-migration DELETE and is replayed after upgrade would
-           recreate the disposition instead of being rejected.
+        ``attention_disposition_history`` gained the later ``revision``/
+        ``sequence``/``attention_disposition_revisions`` columns as inert
+        ``DEFAULT`` placeholders, never their real values. This runs once
+        (via the ``schema_meta`` claim in
+        ``_backfill_attention_dispositions_once``) to fill them in:
+        ``sequence`` is assigned in ``(created_at, id)`` order so
+        ``ORDER BY sequence`` reads see original append order;
+        ``revision`` is raised to the item_id's true history row count so a
+        client's already-echoed revision never reads as a rollback;
+        ``attention_disposition_revisions`` is seeded at that same count for
+        every active item_id, and also for item_ids that exist only in
+        history with a delete-shaped latest transition, so a pre-migration
+        PUT replayed after upgrade is rejected by the fence rather than
+        recreating the disposition. Full rationale in
+        docs/internals/state-db.md.
         """
         hist_rows = (
             (
@@ -1225,12 +1219,12 @@ class StateDB:
 
         Two processes cold-opening the same legacy DB can both observe the
         same stale CHECK and enter the identical DROP/CREATE/INSERT/RENAME
-        rebuild; SQLite's write lock serializes the two attempts, but the
-        loser can still surface an OperationalError (busy-timeout exceeded).
-        Mirrors the catch-and-reinspect guard in ``_reconcile_columns``: only
-        suppress the error when a fresh read of ``sqlite_master`` proves the
-        rebuild already landed -- via this process or a racing one --
-        otherwise re-raise.
+        rebuild. SQLite's write lock serializes the two attempts, but the
+        loser can still surface an OperationalError (busy-timeout exceeded
+        waiting for the write lock). Mirrors the catch-and-reinspect guard
+        in ``_reconcile_columns``: only suppress the error when a fresh read
+        of ``sqlite_master`` proves the rebuild already landed — via this
+        process or a racing one — otherwise re-raise.
 
         ``already_rebuilt`` takes the table's current ``sqlite_master.sql``
         (or ``None`` if the table is now missing) and returns whether the
@@ -1439,8 +1433,8 @@ class StateDB:
             _rebuild,
         )
 
-    # Substring present only in the current schedules CREATE SQL; its absence
-    # indicates a legacy DB whose action_kind CHECK needs rebuilding.
+    # Substring present only in the current schedules CREATE SQL;
+    # its absence indicates a legacy DB whose action_kind CHECK needs rebuilding.
     _LEGACY_SCHEDULES_FLOW_YAML_MARKER = "'flow_yaml'"
 
     async def _drop_legacy_action_kind_check(self) -> None:
@@ -1496,28 +1490,15 @@ class StateDB:
         rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
         create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
 
-        # ``schedules`` is an FK target (schedule_runs.schedule_id ON DELETE
-        # CASCADE): dropping it while `PRAGMA foreign_keys` is enforced
-        # cascades away every schedule_runs row that referenced it, even
-        # with the rows already safely copied into the new table first.
-        # `engine.begin()` opens its transaction before our first statement
-        # runs, and SQLite treats `PRAGMA foreign_keys` as a no-op inside a
-        # pending transaction -- so toggling it through a normal SQLAlchemy
-        # connection never actually takes effect. Go through the raw driver
-        # connection instead (same technique as
-        # ``_drop_legacy_invocations_status_check``) so the pragma flip is
-        # real autocommit, not swallowed by an open txn.
-        #
-        # The pragma flip itself must stay OUTSIDE any transaction (SQLite
-        # only honors it between transactions), but the CREATE/copy/DROP/
-        # RENAME/index sequence that follows needs its own explicit
-        # transaction: running those as independent autocommit statements
-        # would leave a failure between DROP and RENAME (cancellation, I/O
-        # error, a bad index statement) with only `schedules_new` on disk --
-        # `metadata.create_all` would then create a fresh *empty*
-        # `schedules` on the next open, stranding every original row.
-        # `BEGIN IMMEDIATE` gives the CREATE/copy/DROP/RENAME sequence that
-        # atomicity without reintroducing the pragma-inside-transaction bug.
+        # ``schedules`` is an FK target with ON DELETE CASCADE, so dropping it
+        # while foreign keys are enforced cascades away schedule_runs rows
+        # even after they're copied into the new table. `PRAGMA foreign_keys`
+        # is a no-op inside a pending transaction in SQLite, so it must be
+        # toggled through the raw driver connection (autocommit) rather than
+        # a normal SQLAlchemy connection -- see docs/internals/state-db.md
+        # for the failure this fixes and why the rebuild then needs its own
+        # explicit `BEGIN IMMEDIATE` transaction around CREATE/copy/DROP/
+        # RENAME/index rather than independent autocommit statements.
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
@@ -1615,8 +1596,15 @@ class StateDB:
         rebuild_table = _schedules_table.to_metadata(MetaData(), name="schedules_new")
         create_stmt = str(CreateTable(rebuild_table).compile(dialect=self._engine.dialect))
 
-        # Same FK-cascade / pragma-inside-transaction / atomicity rationale
-        # as `_drop_legacy_action_kind_check`'s rebuild, above.
+        # ``schedules`` is an FK target with ON DELETE CASCADE, so dropping it
+        # while foreign keys are enforced cascades away schedule_runs rows
+        # even after they're copied into the new table. `PRAGMA foreign_keys`
+        # is a no-op inside a pending transaction in SQLite, so it must be
+        # toggled through the raw driver connection (autocommit) rather than
+        # a normal SQLAlchemy connection -- see docs/internals/state-db.md
+        # for the failure this fixes and why the rebuild then needs its own
+        # explicit `BEGIN IMMEDIATE` transaction around CREATE/copy/DROP/
+        # RENAME/index rather than independent autocommit statements.
         async def _rebuild() -> None:
             async with self._engine.connect() as conn:
                 driver = (await conn.get_raw_connection()).driver_connection
@@ -1866,7 +1854,7 @@ class StateDB:
         )
 
     async def _backup_before_rebuild(self, label: str) -> None:
-        """Copy the on-disk state.db aside before an in-place table rebuild (ADR-0071 D2).
+        """Copy the on-disk state.db aside before an in-place table rebuild.
 
         No-op for in-memory databases and non-sqlite dialects, where there is no
         single database file to copy. Rollback path: stop the daemon, restore
@@ -1888,13 +1876,13 @@ class StateDB:
         backup_path = p.with_name(f"{p.name}.pre-{label}.{int(time.time())}.bak")
         shutil.copy2(p, backup_path)
 
-    # Substring present only in the post-ADR-0071 schedule_runs CREATE SQL
+    # Substring present only in the current schedule_runs CREATE SQL
     # (the widened status CHECK); its absence indicates a legacy DB whose
     # schedule_runs still carries the 5-value CHECK and a NOT NULL schedule_id.
     _LEGACY_SCHEDULE_RUNS_QUEUE_MARKER = "'waiting_dependency'"
 
     async def _drop_legacy_schedule_runs_check(self) -> None:
-        """Rebuild ``schedule_runs`` if it still carries the pre-ADR-0071 status CHECK.
+        """Rebuild ``schedule_runs`` if it still carries the legacy status CHECK.
 
         SQLite cannot widen a CHECK constraint nor drop a NOT NULL via ALTER
         TABLE, so this uses the same rename → CREATE new → INSERT SELECT →
@@ -2039,7 +2027,7 @@ class StateDB:
                         await driver.execute(idx_sql)
                     for trig_sql in trigger_sqls:
                         await driver.execute(trig_sql)
-                    # New ADR-0071 queue indexes: not part of the pre-rebuild
+                    # New queue indexes: not part of the pre-rebuild
                     # index set, so replaying index_sqls above never creates
                     # them. Create explicitly (idempotent) so a migrated DB ends
                     # up with the same indexes as a freshly-created one.
@@ -2183,6 +2171,8 @@ class StateDB:
             _rebuild,
         )
 
+    # Schema version
+
     async def schema_version(self) -> str | None:
         async with self._read() as conn:
             row = (
@@ -2191,6 +2181,8 @@ class StateDB:
                 .first()
             )
         return row["value"] if row else None
+
+    # Messages
 
     _UNKNOWN_TYPE_ID = 0
 
@@ -2298,6 +2290,8 @@ class StateDB:
         )
         return row["type_id"]
 
+    # Progressions
+
     async def create_progression(
         self, progression_id: str, collection: list[str] | None = None
     ) -> None:
@@ -2381,6 +2375,8 @@ class StateDB:
             {"v": message_id, "id": progression_id},
         )
 
+    # Sessions
+
     async def create_session(self, session: dict[str, Any]) -> None:
         _validate_session_status(session.get("status"))
         _validate_enum(
@@ -2400,7 +2396,7 @@ class StateDB:
         # run) without ever passing through _transition() or the admin CAS —
         # both of which derive duration_ms from started_at/ended_at. Derive
         # it here too so a terminal insert is never the one path that skips
-        # ADR-0035's duration centralization.
+        # duration centralization.
         duration_ms = session.get("duration_ms")
         if (
             duration_ms is None
@@ -2515,22 +2511,19 @@ class StateDB:
         """Point an existing session row at *invocation_id*.
 
         ``create_session``'s ``INSERT ... ON CONFLICT (id) DO NOTHING`` only
-        links a session to its invocation when the row is first inserted; a
-        resume reopens that same row instead, so its invocation_id would
-        otherwise never be recorded. This applies the same
-        sessions.invocation_id + invocations.session_count linkage to a row
-        that already exists, guarded so a repeat call (or one that finds the
-        link already current) does not double-count. Repointing away from a
-        prior invocation also decrements that invocation's count.
+        links a session to its invocation at first insert; a resume reopens
+        the same row instead, so its invocation_id would otherwise never be
+        recorded. Applies the same sessions.invocation_id +
+        invocations.session_count linkage to an existing row, guarded so a
+        repeat call doesn't double-count; repointing away from a prior
+        invocation also decrements that invocation's count.
 
         On PostgreSQL the prior-invocation read takes ``FOR UPDATE``: SQLite's
-        ``_tx()`` already serializes writers via its write lock plus ``BEGIN
-        IMMEDIATE``, but PostgreSQL at READ COMMITTED has no such
-        serialization — a second concurrent attach could read the same prior
-        invocation_id a first attach is about to repoint away from, then
-        decrement that stale value after the first attach has already moved
-        the row. Locking the row before reading it forces the second attach
-        to block until the first commits.
+        ``_tx()`` already serializes writers, but PostgreSQL at READ
+        COMMITTED doesn't, so without the row lock a second concurrent
+        attach could read the same prior invocation_id a first attach is
+        about to repoint away from and decrement a now-stale value. Locking
+        first forces the second attach to block until the first commits.
         """
         now = time.time()
         async with self._tx() as conn:
@@ -2635,51 +2628,42 @@ class StateDB:
         return [self._row_to_dict(row) for row in rows]
 
     async def delete_imported_session(self, session_id: str, *, require_source_kind: str) -> bool:
-        """Delete a mirror-imported session and everything the mirror wrote for it:
-        the session row, its branches, their progressions, the messages those
-        progressions hold, and the session's status-transition history. Returns
-        True only when a row was actually deleted.
+        """Delete a mirror-imported session and everything the mirror wrote for
+        it: the session row, its branches, their progressions, the messages
+        those progressions hold, and the session's status-transition history.
+        Returns True only when a row was actually deleted.
 
-        Fails closed on ownership twice over: the row's ``source_kind`` must
-        equal ``require_source_kind`` exactly AND that value must start with
-        ``imported_``. A live run's session is never eligible, and an importer
-        naming its own kind cannot reach a different importer's rows. The
-        kind is a mismatch guard rather than an authorization boundary: a
-        caller that names a valid imported kind tears down rows of that kind,
-        so every importer reconciles its own imports through this one method.
-        Anything a survivor still references is retained, not deleted:
-        messages held by an outside progression or pointed at by a surviving
-        session/branch, and target progressions a survivor's progression_id
-        names (together with their messages) — a reference someone else
-        holds is not this session's to destroy.
+        Fails closed on ownership twice: ``source_kind`` must equal
+        ``require_source_kind`` exactly, and that value must start with
+        ``imported_`` -- a live run's session is never eligible, and one
+        importer can't reach another's rows. A progression or message still
+        referenced by a surviving session/branch is retained, not deleted.
 
-        Concurrency: the retention checks and the deletes they authorise are
-        serialised against every writer that could create a new reference, so
-        a reference that appears after the check cannot be destroyed by the
-        delete. On SQLite the process write lock does this. On PostgreSQL a
-        transaction alone does not: at READ COMMITTED the check reads a
-        snapshot, and a concurrent writer could commit a new reference before
-        the delete runs against it. The table lock below closes that window,
-        taken NOWAIT under a bounded lock_timeout so a teardown that can't
-        hold what it needs gives up rather than queueing behind live writers
-        (both callers treat that as a row to revisit later) and so this
-        transaction cannot sit in a deadlock cycle with a writer that reaches
-        the same tables in another order — the guarantee is only that no
-        single lock-acquisition wait lasts long enough to become a detected
-        cycle on a server using PostgreSQL's default deadlock_timeout.
+        Concurrency: retention checks and the deletes they authorise are
+        serialised against every writer that could create a new reference
+        (SQLite: the process write lock; PostgreSQL: an EXCLUSIVE table lock,
+        since READ COMMITTED alone lets a concurrent writer commit a new
+        reference after the check runs). The lock is NOWAIT under a bounded
+        lock_timeout, so a teardown that can't get it gives up and is
+        revisited on a later sweep rather than queueing behind live writers
+        or risking a deadlock. See docs/internals/state-db.md for the full
+        locking rationale shared with the table-lock block below.
         """
         if not require_source_kind.startswith("imported_"):
             return False
         async with self._tx() as conn:
             if self.dialect != "sqlite":
-                # Closes the READ COMMITTED window SQLite's write lock closes
-                # for free: taken before the first read, so a reference that
-                # appears after the check cannot be destroyed by the delete.
-                # Locks branches/progressions/sessions in that order (not
-                # atomically) to match prune_old_data's own lock order and
-                # avoid a deadlock; NOWAIT + a 250ms lock_timeout make this
-                # rare teardown give up rather than block, and both callers
-                # retry on a later sweep. Full rationale: docs/internals/db.md.
+                # Table lock taken before the first read so the rest of the
+                # transaction can't observe a survivor's reference change
+                # underneath it (branches/progressions/sessions are the only
+                # tables that can hold one). lock_timeout bounds each
+                # acquisition wait against deadlock; NOWAIT makes the initial
+                # LOCK TABLE itself non-blocking, since it locks the three
+                # tables one at a time and a blocking wait there could close a
+                # cycle with prune_old_data's reverse lock order. See
+                # docs/internals/state-db.md for the full reasoning (the
+                # 250ms choice, why it's not a transaction deadline, and the
+                # retry-on-conflict contract both callers rely on).
                 await conn.execute(text("SET LOCAL lock_timeout = '250ms'"))
                 await conn.execute(
                     text("LOCK TABLE branches, progressions, sessions IN EXCLUSIVE MODE NOWAIT")
@@ -3084,29 +3068,39 @@ class StateDB:
         with. *table* is always a fixed literal ("sessions" or "invocations")
         supplied by this module, never caller input.
 
-        Contract, identical on both dialects: an absent key is unaffected. A
-        JSON null already present in the stored document -- top-level or
-        nested -- is data, not noise, and is never stripped; only keys the
-        *patch* itself sets to null are removed, matching RFC 7396
-        merge-patch semantics (native to sqlite's json_patch; reproduced on
-        postgres by subtracting exactly the patch's own null-valued keys
-        rather than running jsonb_strip_nulls over the whole document). A
-        patch value that is itself a JSON object is rejected before this SQL
-        runs (see _merge_node_metadata) rather than merged shallowly on one
-        dialect and recursively on the other.
+        Contract, identical on both dialects: an absent key is unaffected by
+        a patch that does not mention it. A JSON null already present in the
+        stored document -- at the top level or nested inside a stored object
+        or array -- is data, not noise, and is never stripped by the merge;
+        only keys the *patch* itself sets to null are removed, matching
+        RFC 7396 merge-patch semantics (this is what sqlite's json_patch does
+        natively, and what the postgres expression below reproduces by
+        subtracting exactly the patch's own null-valued keys instead of
+        running jsonb_strip_nulls over the whole merged document). A patch
+        value that is itself a JSON object is rejected before this SQL runs
+        (see _merge_node_metadata) rather than merged shallowly on one
+        dialect and recursively on the other -- no in-tree caller sends one
+        today (checked: identity markers, segment/control logs emit only
+        flat scalars and top-level arrays), and silent divergence on that
+        case is worse than a loud refusal. A malformed or non-object existing
+        value (not a dict -- an array, scalar, or on sqlite even non-JSON
+        text) is not silently discarded: it is preserved verbatim under
+        `_discarded_node_metadata` / `_discarded_at` in the merged result, so
+        the previous state is recoverable instead of destroyed. Postgres's
+        native `json` column can never hold non-JSON text (the driver
+        rejects it on write), so that half of the guard is sqlite-only in
+        practice; the non-object (array/scalar) half applies to both.
 
-        A malformed or non-object existing value (not a dict -- an array,
-        scalar, or on sqlite even non-JSON text) is preserved verbatim under
-        `_discarded_node_metadata` / `_discarded_at` rather than silently
-        discarded. Postgres's native `json` column can never hold non-JSON
-        text (the driver rejects it on write), so that half of the guard is
-        sqlite-only in practice; the non-object (array/scalar) half applies
-        to both. A JSON `null` (valid JSON, not SQL NULL) stored as the
-        *whole* node_metadata value is treated as SQL NULL -- an absent
-        object to merge into -- rather than a foreign shape to preserve:
-        SQLAlchemy's JSON bind type serializes a Python `None` passed as
-        node_metadata to the JSON null literal, so this is the column's
-        default on a large share of existing rows.
+        A JSON `null` (the 4-byte text "null", valid JSON but not SQL NULL)
+        stored as the *whole* node_metadata value is treated the same as SQL
+        NULL -- i.e. as an absent object to merge into, not as a foreign
+        shape to preserve under `_discarded_node_metadata`. This is not a
+        rare case: SQLAlchemy's JSON bind type serializes a Python `None`
+        passed as node_metadata (e.g. create_session() called without that
+        field) to the JSON null literal rather than an actual SQL NULL, so
+        this is the column's default value on a large share of existing
+        rows, confirmed by reading one back after a real create_session()
+        call.
         """
         if dialect == "sqlite":
             return (
@@ -3129,14 +3123,10 @@ class StateDB:
             )
         return (
             f"UPDATE {table} SET "  # noqa: S608
-            # jsonb `||` merges keys but keeps an explicit null (unlike sqlite's
-            # json_patch, which deletes the key per RFC 7396). Rather than
-            # jsonb_strip_nulls over the whole merged document -- which also
-            # strips nulls that were already in the stored value and had
-            # nothing to do with this patch -- subtract exactly the set of
-            # keys the *patch* itself set to null, computed from :patch alone.
-            # That reproduces RFC 7396 (null-in-patch deletes the key) without
-            # touching any null that predates this merge.
+            # jsonb `||` keeps an explicit null (unlike sqlite's json_patch,
+            # which deletes the key per RFC 7396); reproduce RFC 7396 by
+            # subtracting exactly the keys :patch itself set to null, rather
+            # than jsonb_strip_nulls which would also strip pre-existing nulls.
             "node_metadata = (("
             "  CASE"
             "    WHEN node_metadata IS NULL THEN '{}'::jsonb"
@@ -3159,13 +3149,10 @@ class StateDB:
         merge_invocation_node_metadata(): validate the patch, then run the
         single dialect-specific UPDATE for *table*.
 
-        A patch value that is itself a dict is rejected here, before any SQL
-        runs, on every dialect equally: sqlite's json_patch merges a nested
-        object recursively while postgres's `jsonb ||` replaces it shallowly,
-        and choosing one silently would make the two backends persist
-        different state from the same call. Raising is dialect-agnostic
-        because it only inspects the patch this call was given, not stored
-        state, so it adds no read before the write.
+        A nested-dict patch value is rejected here, before any SQL runs:
+        sqlite's json_patch merges nested objects recursively while
+        postgres's `jsonb ||` replaces them shallowly, so allowing one would
+        make the two backends persist different state from the same call.
         """
         for key, value in patch.items():
             if isinstance(value, dict):
@@ -3186,27 +3173,19 @@ class StateDB:
     async def merge_session_node_metadata(self, session_id: str, patch: dict[str, Any]) -> None:
         """Atomically merge *patch* into the session's node_metadata column.
 
-        Replaces the former get_session() + update_session(node_metadata=...)
-        pair: that was a read in one operation and a write in another, so two
-        concurrent callers could both read the same row and each write back a
-        patch that clobbered the other's. This runs as a single UPDATE, so
-        the merge is serialized by the database (the sqlite write lock for
-        that dialect; ordinary row-level MVCC locking on postgres) instead of
-        racing in Python.
+        Runs as a single UPDATE (serialized by the database) rather than a
+        get_session() + update_session(node_metadata=...) pair, which let two
+        concurrent callers each read the same row and clobber the other's
+        write.
         """
         await self._merge_node_metadata("sessions", session_id, patch)
 
     async def merge_invocation_node_metadata(
         self, invocation_id: str, patch: dict[str, Any]
     ) -> None:
-        """Atomically merge *patch* into the invocation's node_metadata column.
-
-        Same contract and same clobber this closes as
-        merge_session_node_metadata(), for the invocations table: a
-        get_invocation() + update_invocation(node_metadata=...) pair used to
-        let two concurrent callers each read the same row and write back a
-        patch that clobbered the other's.
-        """
+        """Atomically merge *patch* into the invocation's node_metadata
+        column. Same contract and same clobber this closes as
+        ``merge_session_node_metadata()``, for the invocations table."""
         await self._merge_node_metadata("invocations", invocation_id, patch)
 
     async def update_artifact_verification(
@@ -3238,17 +3217,16 @@ class StateDB:
         """Write attribution/provenance fields without touching updated_at.
 
         Project bucketing and conversation lineage describe where a session
-        came from, not whether it is live, so they must never move the
-        liveness clock (read by reconcile_session_status and the phantom
-        reaper). project and project_source are written together (the source
-        is meaningless alone). The session update and the projects-registry
-        upsert run as one locked write so neither can commit without the
-        other.
-
-        ``artifacts_path`` is written via ``COALESCE`` rather than a plain
-        assignment: a mirrored CLI session's artifact root is its transcript's
-        ``cwd``, a weaker signal than a launcher-set root, so a later, more
-        precise write must never be clobbered by an earlier guess.
+        came from, not whether it's live, so they must never move the
+        liveness clock that ``reconcile_session_status`` and the phantom
+        reaper read. ``project``/``project_source`` are written together
+        (source is meaningless alone); the session update and the
+        projects-registry upsert run as one locked write so neither commits
+        without the other. ``artifacts_path`` is written via ``COALESCE``,
+        not a plain assignment: a mirrored CLI session's artifact root (its
+        transcript's ``cwd``) is a weaker signal than a launcher-set root, so
+        a later, more precise write must never be clobbered by an earlier
+        guess.
         """
         sets: list[str] = []
         params: dict[str, Any] = {}
@@ -3281,6 +3259,8 @@ class StateDB:
             await conn.execute(node_meta_bind, params)
             if project:
                 await self._upsert_project_stmt(conn, project, project_source or "cwd_dir")
+
+    # Status reason model
 
     async def _route_status_change(
         self,
@@ -3359,35 +3339,27 @@ class StateDB:
     ) -> bool:
         """Atomically transition an entity's status and record the reason.
 
-        When *expected_statuses* is provided, the transition is only
-        performed if the current status is a member of that set. Pass
-        ``None`` inside the set to match a SQL NULL status (e.g. ``{None}``,
-        or ``{"running", None}`` to accept either).
+        ``expected_statuses``, if given, gates the transition on the current
+        status being a member of that set; pass ``None`` inside the set to
+        match a SQL NULL status. ``expected_updated_at``, if given, adds an
+        optimistic-lock version check requiring the row's ``updated_at`` to
+        still match (any status write bumps it) -- lets a caller distinguish
+        "still the stale row I read" from "someone already re-touched it"
+        when status membership alone can't (e.g. a reaper vs. a fresh claim
+        on the same reapable status). Returns True if applied, False if
+        skipped for either reason; callers that ignore the return value are
+        unaffected.
 
-        When *expected_updated_at* is provided, the guarded write additionally
-        requires the row's ``updated_at`` to still equal that value — an
-        optimistic-lock version check enforced by storage (same mechanism as
-        the ``previous_status`` compare-and-set). A concurrent writer that
-        touched the row (any status write bumps ``updated_at``) loses the
-        race and the transition is skipped, so a caller acting on a stale
-        snapshot — status membership alone can't distinguish "still stale"
-        from "just re-touched", e.g. a reaper vs. a fresh claim on the same
-        reapable status — refuses to act once the row has moved.
-
-        Returns ``True`` when applied, ``False`` when skipped because the
-        current status wasn't in *expected_statuses* or ``updated_at`` no
-        longer matched *expected_updated_at*.
-
-        ADR-0035 integrity floor: once an entity's status is terminal (per
-        TERMINAL_STATUSES_BY_ENTITY_TYPE), any write that would change it is
-        rejected and recorded in admin_events — a terminal record must not
-        silently move back to running or oscillate to a different terminal
-        value. A same-status write is not a transition and is allowed through
-        untouched, since callers rely on it to attach/refresh a reason code
-        on an already-terminal row. Pass override=True with override_actor
-        and override_justification for a deliberate operational repair that
-        does change the value; the repair is itself recorded in admin_events,
-        distinctly from an ordinary transition.
+        Integrity floor: once an entity's status is terminal (per
+        ``TERMINAL_STATUSES_BY_ENTITY_TYPE``), any write that would change it
+        is rejected and recorded in admin_events -- a terminal record must
+        not silently move back to running or to a different terminal value.
+        A same-status write is not a transition and passes through untouched
+        (callers rely on this to refresh a reason code on an already-terminal
+        row). Pass ``override=True`` with ``override_actor`` and
+        ``override_justification`` for a deliberate operational repair that
+        does change the value; it's recorded in admin_events distinctly from
+        an ordinary transition.
         """
         if source not in _VALID_STATUS_SOURCES:
             raise ValueError(
@@ -3613,6 +3585,8 @@ class StateDB:
             for r in rows
         ]
 
+    # Projects
+
     async def _upsert_project_stmt(
         self,
         conn,
@@ -3761,6 +3735,8 @@ class StateDB:
                 {"name": name},
             )
         return result.rowcount > 0
+
+    # Schedules
 
     async def create_schedule(self, schedule: dict[str, Any]) -> None:
         stmt, params = self._build_schedule_insert_stmt(schedule)
@@ -4049,13 +4025,15 @@ class StateDB:
 
         ``guard_cursor_forward`` makes the ``github_cursor`` assignment
         monotonic: the column moves only if the new value sorts above the
-        stored one. The scheduler passes it because a poll reads the cursor
-        at tick start and writes it back much later, so a stale write could
-        otherwise silently undo an operator's deliberate cursor move and make
-        a declined backlog eligible again. It is a per-column condition
-        rather than a row predicate because the same statement also carries
-        ``last_fired_at``/``next_fire_at``, which must land regardless of
-        whether the cursor is allowed to advance.
+        stored one. The scheduler passes it, because a poll reads the cursor
+        at tick start and writes it back much later, so its value is a
+        snapshot that an operator's deliberate cursor move can outrun. Without
+        the guard the stale write silently undoes that move, and a backlog the
+        operator had declined becomes eligible again.
+
+        It is a per-COLUMN condition rather than a row predicate on purpose:
+        the same statement carries ``last_fired_at``/``next_fire_at``, and
+        those must land whether or not the cursor is allowed to advance.
         """
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
         if bad:
@@ -4109,6 +4087,8 @@ class StateDB:
                 {"id": schedule_id},
             )
         return result.rowcount > 0
+
+    # Schedule Runs
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None:
         stmt, params = self._build_schedule_run_insert_stmt(run)
@@ -4202,11 +4182,15 @@ class StateDB:
         """Flip an undispatched orphan to a terminal status and insert its
         replacement occurrence row in one transaction, so a crash leaves
         either both writes durable or neither. The CAS also requires
-        ``dispatched_at IS NULL``: if a launch confirmation lands between the
-        recovery scan and this write, the row no longer qualifies as
+        ``dispatched_at IS NULL``: if a launch confirmation lands between
+        the recovery scan and this write, the row no longer qualifies as
         undispatched and the call is a no-op (returns ``False``, nothing
-        inserted) rather than tombstoning a run that actually launched --
-        something else already resolved it between the scan and this write.
+        inserted) rather than tombstoning a run that actually launched.
+
+        Returns ``False`` if the orphan's status no longer matches
+        *expected_orphan_status* or is no longer undispatched -- something
+        else already resolved it between the scan and this write, so there
+        is nothing to recover and no replacement should be created.
         """
         run_stmt, run_params = self._build_schedule_run_insert_stmt(replacement_run)
         now = time.time()
@@ -4409,19 +4393,19 @@ class StateDB:
         """Batched read of the run evidence a health verdict needs.
 
         Two independent top-1-per-schedule reads, each filtering to the rows
-        that qualify *before* ranking them -- ranking an unfiltered window and
-        filtering inside it can push a real execution out of the window
-        entirely once enough non-qualifying rows pile up in front of it,
-        silently manufacturing "never happened" out of "didn't fit in the
-        slice".
+        that qualify *before* ranking them -- ranking an unfiltered window
+        and then filtering inside it (the previous shape) can push a real
+        execution out of the window entirely once enough non-qualifying rows
+        pile up in front of it, which silently manufactures "never
+        happened" out of "didn't fit in the slice".
 
         A 'recorded' row is any top-level (chain_depth=0) schedule_runs row,
-        in any status -- proof the schedule's cursor has moved at least once,
-        whether or not anything actually ran. An 'executed' row is further
-        restricted to :data:`EXECUTED_RUN_STATUSES` (started or terminal) --
-        'skipped', 'queued', 'waiting_dependency' and 'retry_wait' move the
-        cursor, or sit waiting to, without a run happening, so none of them
-        may stand in for real evidence.
+        in any status -- proof the schedule's cursor has moved at least
+        once, whether or not anything actually ran. An 'executed' row is
+        further restricted to :data:`EXECUTED_RUN_STATUSES` (started or
+        terminal) -- 'skipped', 'queued', 'waiting_dependency' and
+        'retry_wait' move the cursor, or sit waiting to, without a run
+        happening, so none of them may stand in for real evidence.
         """
         if not schedule_ids:
             return {}
@@ -4468,18 +4452,18 @@ class StateDB:
         """Sum cost/token usage across every session a schedule has spawned.
 
         Joins schedule_runs to sessions through invocation_id and totals
-        total_cost_usd / (input_tokens + output_tokens), for the budget_usd /
-        budget_tokens pre-fire gate.
+        total_cost_usd / (input_tokens + output_tokens). Used for the
+        budget_usd / budget_tokens pre-fire gate: mirrors count_schedule_runs
+        but sums a spend column instead of counting rows.
 
         ``total_cost_usd`` is NULL when a session's cost was never reported
         (the engine that ran it doesn't price itself), not when the session
         was free -- COALESCE(...,0) on the sum is still the right headline
         total, but a schedule whose spawned sessions mostly went unreported
-        would otherwise read as cheap rather than unmeasured.
-        ``unreported_sessions`` counts terminal sessions
-        (SESSION_TERMINAL_STATUSES) with a NULL total_cost_usd; a
-        still-running session's cost is expected to be unknown until it
-        finishes and isn't counted as a gap.
+        would otherwise read as cheap rather than unmeasured. ``unreported_sessions``
+        counts terminal sessions (SESSION_TERMINAL_STATUSES) with a NULL
+        total_cost_usd; a still-running session's cost is expected to be
+        unknown until it finishes and isn't counted as a gap.
         """
         status_placeholders = ", ".join(
             f":status{i}" for i in range(len(SESSION_TERMINAL_STATUSES))
@@ -4506,14 +4490,16 @@ class StateDB:
         }
 
     # Threshold-alert metrics (studio-wide, not scoped to a single schedule's
-    # own runs -- unlike sum_schedule_spend above). Answers the members of
-    # lionagi.studio.scheduler.threshold.VALID_METRICS that a single
-    # aggregate query can answer, which is not all of them: p95_latency_ms
-    # needs a sorted sample (SQLite has no percentile function) and
+    # own runs -- unlike sum_schedule_spend above, which sums a single
+    # schedule's spawned sessions).
+    #
+    # The members of lionagi.studio.scheduler.threshold.VALID_METRICS that one
+    # aggregate query answers, which is not all of them: p95_latency_ms needs a
+    # sorted sample (SQLite has no percentile function) and
     # github_poll_healthy_age_minutes is a point-in-time gauge, so both are
-    # served by their own branches in metric_value below instead. The
-    # invariant is that every VALID_METRICS member is answered somewhere in
-    # metric_value, not that it is answered here.
+    # served by their own branches in metric_value below. The invariant is that
+    # every VALID_METRICS member is answered somewhere in metric_value, not
+    # that it is answered here.
     _THRESHOLD_METRIC_QUERIES: dict[str, str] = {
         "failed_sessions": (
             "SELECT COUNT(*) AS n FROM sessions "
@@ -4539,17 +4525,17 @@ class StateDB:
     async def metric_value(self, metric: str, window_start: float) -> float:
         """Aggregate a threshold-alert metric over [window_start, now).
 
-        ``failed_sessions``, ``total_cost_usd``, and
-        ``github_poll_consecutive_401`` are single-aggregate SQL queries;
-        ``p95_latency_ms`` needs a sorted sample (SQLite has no built-in
-        percentile function), so it fetches raw invocation durations and
-        computes the 95th percentile in Python. ``github_poll_healthy_age_minutes``
-        is a point-in-time gauge (minutes since the last healthy github_poll()
-        read) rather than a [window_start, now) aggregate, so ``window_start``
-        is accepted for signature parity but ignored -- "now" is read fresh
-        via ``time.time()`` inside this method instead, since recovering it
-        from ``window_start`` would also require ``window_minutes`` (not
-        available here).
+        ``failed_sessions``, ``total_cost_usd``, and ``github_poll_consecutive_401``
+        are single-aggregate SQL queries; ``p95_latency_ms`` needs a sorted sample
+        (SQLite has no built-in percentile function), so it fetches raw invocation
+        durations and computes the 95th percentile in Python.
+        ``github_poll_healthy_age_minutes`` is also handled specially: unlike every
+        other metric here, it is a point-in-time gauge (minutes since the last
+        healthy github_poll() read) rather than a [window_start, now) aggregate, so
+        ``window_start`` is accepted for signature parity but ignored -- "now" is
+        read fresh via ``time.time()`` inside this method instead of being threaded
+        through from the caller, since recovering it from ``window_start`` would
+        also require ``window_minutes`` (not available here).
         """
         if metric == "github_poll_healthy_age_minutes":
             async with self._read() as conn:
@@ -4706,12 +4692,12 @@ class StateDB:
         """Scheduler-fired occurrence rows confirmed dispatched (an external
         process was launched) but never reached a terminal status --
         distinct from ``list_undispatched_schedule_runs()``'s "never
-        launched" case. The dispatching process may have crashed before
-        recording its outcome, or the launched process may still be
-        genuinely alive; this method only surfaces candidates for
-        reconciliation, it does not itself decide liveness (see
-        ``SchedulerEngine._reconcile_dispatched_orphans``). Scoped to rows
-        with a linked invocation, the only case that carries
+        launched" case. The scheduler process that dispatched one of these
+        may have crashed before recording its outcome, or the process it
+        launched may still be genuinely alive and working; this method only
+        surfaces candidates for reconciliation, it does not itself decide
+        liveness (see ``SchedulerEngine._reconcile_dispatched_orphans``).
+        Scoped to rows with a linked invocation, the only case that carries
         independently-observable completion evidence today.
         """
         async with self._read() as conn:
@@ -4745,7 +4731,7 @@ class StateDB:
         return self._row_to_dict(row) if row else None
 
     async def get_schedule_run_by_invocation(self, invocation_id: str) -> dict[str, Any] | None:
-        """Look up the schedule_run that fired a given invocation (ADR-0070).
+        """Look up the schedule_run that fired a given invocation.
 
         invocation_id is 1:1 with schedule_runs in practice (each fire mints a
         fresh invocation), but the ORDER BY + LIMIT keeps this defensively
@@ -4782,6 +4768,8 @@ class StateDB:
                 .all()
             )
         return [self._row_to_dict(r) for r in rows]
+
+    # Invocations
 
     async def create_invocation(self, invocation: dict[str, Any]) -> None:
         status = invocation.get("status", "running")
@@ -4901,14 +4889,14 @@ class StateDB:
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         # Per invocation, take project/project_source from its latest-updated
-        # session via ROW_NUMBER() -- portable across sqlite and postgres,
-        # unlike a bare-columns-under-HAVING-MAX(updated_at) idiom.
+        # session. ROW_NUMBER() is portable; the old SQLite idiom (bare columns
+        # under HAVING MAX(updated_at)) is rejected by PostgreSQL.
         #
-        # Also surfaces the schedule_run that fired this invocation
-        # (exit_code, error_detail) so the UI can show why a scheduled run
-        # failed without a second round-trip; action_kind comes from the same
-        # subquery since it is a property of the fired occurrence, not a
-        # column on invocations. Unlike the sessions join above, this uses
+        # Also surface the schedule_run that fired this invocation (exit_code,
+        # error_detail) so the UI can show why a scheduled run failed without
+        # a second round-trip. action_kind comes from the same subquery: it is
+        # a property of the fired occurrence, not a column on invocations, and
+        # the lifecycle reaper's policy is per-kind. Unlike the sessions join above, this uses
         # correlated scalar subqueries rather than a ranked derived table:
         # ORDER BY + LIMIT/OFFSET on inv.updated_at narrows to the emitted
         # page first (sorting only invocations, not schedule_runs), and each
@@ -5014,6 +5002,8 @@ class StateDB:
             )
         return [self._row_to_dict(r) for r in rows]
 
+    # Artifacts
+
     async def insert_artifact(
         self,
         *,
@@ -5041,7 +5031,7 @@ class StateDB:
         if not name:
             raise ValueError("artifact name is required")
         if file_path is not None:
-            # Studio artifact file references (ADR-0077 delta 5) must stay
+            # Studio artifact file references must stay
             # relative and non-traversing before they can ever be served for
             # preview/download — reject absolute paths and `..` at write time
             # rather than trusting whatever recorded the reference.
@@ -5140,6 +5130,8 @@ class StateDB:
             )
         return self._row_to_dict(row) if row else None
 
+    # Admin events
+
     async def insert_admin_event(
         self,
         *,
@@ -5197,6 +5189,8 @@ class StateDB:
         async with self._read() as conn:
             rows = (await conn.execute(text(query), params)).mappings().all()
         return [self._row_to_dict(r) for r in rows]
+
+    # Branches
 
     async def create_branch(self, branch: dict[str, Any]) -> None:
         async with self._tx() as conn:
@@ -5267,28 +5261,18 @@ class StateDB:
     ) -> bool:
         """Guarded terminal-status write for one branch row (BRANCH_END).
 
-        Two-sided guard; both conditions must hold for the write to land:
-
-        - *status* itself must be a genuine terminal outcome
-          (``_BRANCH_TERMINAL_STATUSES`` == ``SESSION_TERMINAL_STATUSES`` —
-          every value BRANCH_END carries is a session final_status passed
-          through by cli/_runs.py teardown_persist()). A non-terminal
-          payload — e.g. the "running" the linked-engine reconciliation path
-          can produce when it suppresses a phantom "failed" back to
-          "running" — is rejected outright: this method never stamps a
-          branch "ended" with a non-terminal status, and returns False
-          without touching the row.
-        - the EXISTING row must still be in a legitimate pre-terminal state:
-          NULL (never touched) or "running" (the only two values a branch is
-          ever left in before its real terminal outcome lands; this method
-          itself never writes "running"). Any other existing value —
-          whichever terminal status it already holds — is immutable: a
-          run-level finalize must never flap a branch that already reached
-          its outcome, regardless of this call's own *status* argument.
-
-        A branch row that was never created (a DAG leg that never emitted a
-        first message) matches zero rows and is a harmless no-op. Returns
-        True when a row was actually updated.
+        Two-sided guard, both must hold for the write to land: *status*
+        itself must be a genuine terminal outcome (rejected outright
+        otherwise, e.g. the "running" that linked-engine reconciliation can
+        produce when suppressing a phantom "failed" -- this method never
+        stamps a branch "ended" with a non-terminal status); and the
+        existing row must still be NULL or "running" (the only pre-terminal
+        values a branch is ever left in). Any other existing value -- an
+        already-terminal status, whichever it is -- is immutable: a
+        run-level finalize must never flap a branch that already reached its
+        outcome. A branch row that was never created (a DAG leg that never
+        emitted a first message) matches zero rows and is a harmless no-op.
+        Returns True when a row was actually updated.
         """
         if status not in _BRANCH_TERMINAL_STATUSES:
             return False
@@ -5394,6 +5378,8 @@ class StateDB:
             rows = (await conn.execute(text(sql), params)).mappings().all()
         by_id = {r["id"]: self._row_to_dict(r) for r in rows}
         return [by_id[mid] for mid in message_ids if mid in by_id]
+
+    # Shows
 
     async def create_show(self, show: dict[str, Any]) -> None:
         _validate_enum(
@@ -5535,6 +5521,8 @@ class StateDB:
                     params,
                 )
 
+    # Plays
+
     async def create_play(self, play: dict[str, Any]) -> None:
         _validate_enum(
             "play status",
@@ -5670,6 +5658,8 @@ class StateDB:
                 stmt = stmt.bindparams(*bind_params)
             async with self._tx() as conn:
                 await conn.execute(stmt, params)
+
+    # Definitions
 
     async def save_definition(
         self,
@@ -5807,6 +5797,8 @@ class StateDB:
             )
         return [dict(r) for r in rows]
 
+    # Session signals
+
     async def insert_session_signal(
         self,
         *,
@@ -5905,6 +5897,8 @@ class StateDB:
                 }
             )
         return result
+
+    # Engine runs
 
     async def insert_engine_run(
         self,
@@ -6037,6 +6031,8 @@ class StateDB:
             result.append(d)
         return result
 
+    # Engine definitions
+
     async def create_engine_def(self, defn: dict[str, Any]) -> None:
         now = time.time()
         async with self._tx() as conn:
@@ -6161,6 +6157,8 @@ class StateDB:
             )
         return result.rowcount > 0
 
+    # Workflow definitions
+
     @staticmethod
     def _decode_workflow_def(row: Any) -> dict[str, Any]:
         d = dict(row)
@@ -6269,22 +6267,25 @@ class StateDB:
             )
         return result.rowcount > 0
 
+    # Session controls -- live-control transport
     # session_controls rows are written by `li o ctl pause|resume|msg` and
-    # consumed by the control poller in cli/orchestrate/flow.py's
-    # _execute_dag. Apply/stamp ordering is verb-classed by the poller:
-    # pause/resume call insert_session_control() then, once applied,
-    # finalize_session_control() directly (idempotent -- safe to re-apply on
-    # a poller crash); message calls mark_session_control_applying() before
-    # the non-idempotent apply, then finalize_session_control() carrying the
-    # claim it took, so a crash between the two leaves a visible
-    # 'applying:<owner>' row instead of a silent double-injection risk.
+    # consumed by the control poller task in cli/orchestrate/flow.py's
+    # _execute_dag. Apply/stamp
+    # ordering is verb-classed by the poller, not by these methods: pause/
+    # resume call insert_session_control() then, once applied against the
+    # executor, finalize_session_control() directly (idempotent — safe to
+    # re-apply on a poller crash). message calls mark_session_control_applying()
+    # before attempting the (non-idempotent) apply, then finalize_session_control()
+    # carrying the claim it took (a crash between the two leaves a visible
+    # 'applying:<owner>' row instead of a silent double-injection risk).
     #
     # A claimed row is never resolved by anything but its own claimant. A
-    # teardown that finds one leaves it standing: the alternative is writing
-    # a guess (a message whose consumer died between claim and apply may or
-    # may not have been delivered, and 'rejected' asserts it was not), where
-    # a visibly wedged queue carrying the owner and the claim's age is an
-    # honest degraded state an operator can resolve.
+    # teardown that finds one leaves it standing, because the alternative is
+    # writing a guess: a message whose consumer died between the claim and the
+    # apply may or may not have been delivered, and 'rejected' asserts it was
+    # not. A visibly wedged queue carrying the owner and the claim's age is an
+    # honest degraded state that an operator can resolve; a fabricated terminal
+    # result is not.
 
     async def insert_session_control(
         self,
@@ -6296,28 +6297,20 @@ class StateDB:
     ) -> str | None:
         """Queue a control verb for *session_id*; returns the new control id, or None.
 
-        The insert is conditional on the session still being 'running',
-        evaluated by the insert statement itself rather than by a caller that
-        read the status a moment earlier -- that closes the race against a
-        run tearing down between a caller-side check and the insert, which
-        could otherwise leave a control nobody ever consumes. An insert that
+        The admission condition (session still 'running') is evaluated by the
+        INSERT statement itself, not by a caller-side status check, to close
+        the race against a run tearing down between the two: an insert that
         commits was admitted against a running session and is visible to
-        that run's terminal sweep; one that arrives after terminalization
-        inserts nothing and returns None.
-
-        Evaluating the condition in the statement is enough on SQLite, whose
-        writers are serialised, but NOT enough on PostgreSQL: under READ
-        COMMITTED the EXISTS clause reads a snapshot, so an admission can
-        pass against a session another transaction is terminalizing and
-        commit after that run's sweep has already looked -- leaving a
-        pending row with no consumer (measured on PostgreSQL 16). So on
-        PostgreSQL the source of the insert takes a row lock on the session,
-        forcing a concurrent terminal transition to wait for the admission to
-        finish rather than passing it -- restoring the SQLite property that
-        whatever was admitted is committed before the status moves. The wait
-        is bounded by a single-statement insert.
-
-        Serialised through _tx() like the other append-only session logs.
+        that run's terminal sweep; one arriving after terminalization inserts
+        nothing and returns None. Evaluating the condition in the statement
+        is enough on SQLite (serialised writers), but not on PostgreSQL: at
+        READ COMMITTED the EXISTS clause reads a snapshot, so an admission
+        can pass and commit after the terminalizing transaction's sweep has
+        already looked, leaving a pending row with no consumer -- so on
+        PostgreSQL the insert's source takes a row lock on the session,
+        making a concurrent terminal transition wait for the admission to
+        finish rather than pass it. Serialised through ``_tx()`` like the
+        other append-only session logs.
         """
         control_id = uuid.uuid4().hex
         admit_source = (
@@ -6390,31 +6383,20 @@ class StateDB:
     ) -> str | None:
         """Claim a non-idempotent (message) control as mid-apply, before attempting it.
 
-        The stamp is a compare-and-set: only a row no consumer has claimed
-        (``result IS NULL``) moves to 'applying'. Returns the claim string
-        this call wrote, or None if another consumer got there first, so two
-        consumers reading the same pending row cannot both apply it — the
-        loser sees None and leaves the row alone. Returning a value rather
-        than raising keeps the ordinary "someone else got there first" case
-        off the error path.
-
-        The claim comes back because the claimant needs it to finish safely:
-        ``finalize_session_control(expect_claim=...)`` is what stops a slow
+        Compare-and-set: only a row no consumer has claimed (``result IS
+        NULL``) moves to 'applying'. Returns the claim string this call
+        wrote, or None if another consumer got there first (returning rather
+        than raising keeps that ordinary case off the error path). The
+        claim must be returned to the caller: it's what
+        ``finalize_session_control(expect_claim=...)`` needs to stop a slow
         consumer from overwriting an outcome someone else recorded while it
-        was working, and a caller can only pass a claim it holds. Rebuilding
-        the string at the call site instead is how the two drift apart, so
-        this is the only place it is constructed.
-
-        *owner* names the claimant, and the claim is stored as
-        ``applying:<owner>``, letting a second consumer tell "someone else
-        is mid-apply" from "I am mid-apply" — a bare 'applying' cannot
-        express that. A caller with no meaningful identity omits it and gets
-        the bare form. ``claimed_at`` is stamped either way, so a wedged
-        claim carries its own age.
-
-        ``applied_at`` stays NULL — the row remains "pending" until
-        ``finalize_session_control()`` runs, so a poller crash right after
-        this stamp is visible, not silently lost.
+        was working, and this is the only place the string is constructed
+        (rebuilding it at the call site would let the two drift apart).
+        *owner*, if given, is embedded (``applying:<owner>``) so a second
+        consumer can tell "someone else is mid-apply" from "I am mid-apply".
+        ``claimed_at`` is stamped either way, so a wedged claim carries its
+        own age. ``applied_at`` stays NULL until ``finalize_session_control()``
+        runs, so a poller crash right after this stamp is visible, not lost.
         """
         claim = f"applying:{owner}" if owner else "applying"
         async with self._tx() as conn:
@@ -6442,28 +6424,18 @@ class StateDB:
         """Stamp applied_at + a terminal *result* ('applied' or 'rejected:<reason>').
 
         With *expect_claim*, the write applies only while the row still
-        carries that exact claim string, and the return value says whether
-        it did — a write aimed at a row whose claim has moved on lands
-        nowhere instead of overwriting it. Without it the write is
-        unconditional, which is what the idempotent (pause/resume) path
-        wants.
-
-        With *only_if_unclaimed*, the write applies only while the row is
-        still pending. This is what a sweep wants: reading the pending rows
-        and then deciding from that snapshot is a check against a value that
-        can change before the write, and the window is exactly wide enough
-        for a consumer to claim the row and deliver it, after which an
-        unconditional write would record a delivered message as never
-        delivered. The two guards are alternatives, not a pair; asking for
-        both is a caller bug.
-
-        This is a compare-and-set between cooperating consumers and NOT an
-        authorization boundary — the claim string is stored in a column
-        every reader can see, so any caller that can reach this method can
-        also pass it. What the check rules out is a consumer writing an
-        outcome onto a row whose state it has not re-read, not a consumer
-        that means to; a caller able to call this method is equally able to
-        write the row directly.
+        carries that exact claim string (return value says whether it did),
+        so a write aimed at a row whose claim has moved on lands nowhere
+        instead of overwriting it; without it the write is unconditional,
+        which is what the idempotent (pause/resume) path wants. With
+        *only_if_unclaimed*, the write applies only while the row is still
+        pending -- what a sweep wants, since a consumer could otherwise claim
+        and deliver the row in the window between the sweep's read and its
+        write. The two guards are alternatives, not a pair; passing both is a
+        caller bug. This is a compare-and-set between cooperating consumers,
+        not an authorization boundary: the claim string is visible to any
+        reader, so what it rules out is a consumer overwriting a row it
+        hasn't re-read, not a consumer that means to write it.
         """
         if expect_claim is not None and only_if_unclaimed:
             raise ValueError(
@@ -6494,25 +6466,27 @@ class StateDB:
         """Close a control whose claimant never reported back; returns the stored result.
 
         The one thing that can end a claimed row, and it is deliberately not
-        automatic: nothing in the system can tell a consumer that died before
+        automatic. Nothing in the system can tell a consumer that died before
         delivering a message from one that died after, so the row waits for
         someone who can find out. This method is that person's write.
 
         Returns None when the row is not claimed, which covers both "already
-        terminal" and "never taken", so a caller cannot use it to overwrite
-        an outcome the consumer itself recorded, or to skip a row the
-        ordinary teardown sweep should be rejecting instead.
+        terminal" and "never taken", so a caller cannot use it to overwrite an
+        outcome the consumer itself recorded, or to skip a row that the ordinary
+        teardown sweep should be rejecting instead.
 
-        The claim it replaces is kept verbatim in the stored result, because
-        the record of who held a message and what a human then decided about
-        it is the whole value of leaving the row standing in the first place.
+        The claim it replaces is kept verbatim in the stored result, because the
+        record of who held a message and what a human then decided about it is
+        the whole value of leaving the row standing in the first place.
         """
-        # The read decides and the write checks that the decision still holds:
-        # on PostgreSQL the claimant can commit its own outcome between the
-        # two statements, so the compare-and-set below refuses to overwrite
-        # it, and the row count stops this returning a receipt for a write
-        # that never happened. SQLite serialises writers, so neither applies
-        # there.
+        # The read decides and the write checks that the decision still holds.
+        # On PostgreSQL the claimant can commit its own outcome between the two
+        # statements, so the compare-and-set below is what refuses to overwrite
+        # it -- and the row count is what stops this returning a receipt for a
+        # write that never happened. Locking the row on the read instead was
+        # tried and removed: the UPDATE takes the same row lock a moment later,
+        # so the lock changed no outcome and only made the refusal arrive by a
+        # different route. SQLite serialises writers, so neither applies there.
         async with self._tx() as conn:
             row = (
                 (
@@ -6569,6 +6543,8 @@ class StateDB:
                 pass
         return d
 
+    # Helpers
+
     @staticmethod
     def _row_to_dict(row: Any) -> dict[str, Any]:
         d = dict(row)
@@ -6604,6 +6580,7 @@ class StateDB:
         return d
 
 
+# Shared singleton accessor
 # One open StateDB connection is reused across all hook firings for a given
 # DB URL.  This avoids the per-firing connect + schema-check cost
 # and is the prerequisite for session-lifecycle hook wiring.

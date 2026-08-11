@@ -10,8 +10,6 @@ import inspect
 
 import pytest
 
-# ── Test 1: cancelled_exc_classes safe to call outside loop ──────────────────
-
 
 def test_cancelled_exc_safe_outside_loop():
     """cancelled_exc_classes() must not raise when called from a sync context (no running event loop)."""
@@ -41,9 +39,6 @@ def test_is_cancelled_false_for_non_cancel():
     assert is_cancelled(RuntimeError()) is False
 
 
-# ── Test 2: cache_cancelled_exc_class populates the cache ────────────────────
-
-
 async def test_cancelled_exc_cache_populated_after_explicit_cache():
     """cache_cancelled_exc_class() inside an event loop populates the module cache."""
     from lionagi.ln.concurrency import errors as _err_mod
@@ -62,9 +57,6 @@ async def test_cancelled_exc_cache_populated_after_explicit_cache():
     finally:
         # Restore original state
         _err_mod._CANCELLED_EXC_CLASS = original
-
-
-# ── Test 3: aggregation_sources in metadata, NOT in parameters ───────────────
 
 
 def test_aggregation_params_in_metadata_not_parameters():
@@ -130,9 +122,6 @@ def test_aggregation_params_in_metadata_not_parameters():
         assert "instruction" in params
 
 
-# ── Test 4: _on_bus_spawn is async ───────────────────────────────────────────
-
-
 def test_on_bus_spawn_is_async():
     """ReactiveExecutor._on_bus_spawn must be async so session.observe() emit gathers it as a coro."""
     from lionagi.operations.flow import ReactiveExecutor
@@ -140,9 +129,6 @@ def test_on_bus_spawn_is_async():
     assert inspect.iscoroutinefunction(ReactiveExecutor._on_bus_spawn), (
         "ReactiveExecutor._on_bus_spawn must be a coroutine function (async def)"
     )
-
-
-# ── Test 5: Session has hooks property returning HookBus ─────────────────────
 
 
 def test_session_has_hooks_property():
@@ -175,9 +161,6 @@ def test_session_hooks_identity_stable():
     bus2 = session.hooks
 
     assert bus1 is bus2, "session.hooks must return the same HookBus instance on repeated access"
-
-
-# ── Test 6: Branch gets hooks from session via include_branches ───────────────
 
 
 def test_branch_gets_hooks_from_session():
@@ -215,9 +198,6 @@ def test_branch_gets_hooks_when_added_after_bus_init():
 
     assert b1._hooks is bus
     assert b2._hooks is bus
-
-
-# ── Test 7: both execute() and execute_stream() use the public observer property ──
 
 
 def test_reactive_executor_uses_public_observer_property():
@@ -263,9 +243,6 @@ def test_reactive_executor_uses_public_observer_property():
         )
 
 
-# ── Test 8: _wait_for_dependencies reads aggregation_sources from metadata ────
-
-
 def test_flow_aggregation_wait_reads_metadata():
     """DependencyAwareExecutor._wait_for_dependencies reads aggregation_sources
     from operation.metadata (not operation.parameters).
@@ -294,9 +271,6 @@ def test_flow_aggregation_wait_reads_metadata():
     assert 'parameters.get("aggregation_sources"' not in source, (
         "_wait_for_dependencies must not read aggregation_sources from operation.parameters"
     )
-
-
-# ── Test 9: CLI error handler imports cancelled_exc_classes (not get_cancelled_exc_class) ──
 
 
 def test_error_handler_uses_cached_exc_class():
@@ -350,9 +324,6 @@ def test_error_handler_uses_cached_exc_class():
     )
 
 
-# ── Test 10: HookBus lifecycle — default hooks are registered ────────────────
-
-
 def test_hook_bus_lifecycle_integration():
     """Session.hooks returns a properly-wired bus with all DEFAULT_HOOKS registered.
 
@@ -402,9 +373,6 @@ def test_hook_bus_handlers_for_returns_shallow_copy():
     assert len(bus.handlers_for(HookPoint.SESSION_START)) == original_len, (
         "handlers_for() must return a shallow copy — mutating it must not affect the bus"
     )
-
-
-# ── Test 11: aggregation metadata survives graph round-trip ──────────────────
 
 
 def test_aggregation_metadata_survives_without_parameters_leak():

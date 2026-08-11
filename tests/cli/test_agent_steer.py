@@ -106,7 +106,7 @@ class _RecordingBranch:
         return f"turn-{len(self.calls)}"
 
 
-# ── enqueue gate ─────────────────────────────────────────────────────────────
+# enqueue gate
 
 
 @pytest.mark.anyio
@@ -216,7 +216,7 @@ async def test_msg_refused_for_terminal_agent_session(temp_db_path, capsys):
         assert await db.list_pending_session_controls(sid) == []
 
 
-# ── run-id addressing (the operator's actual handle for an agent leg) ──────
+# run-id addressing (the operator's actual handle for an agent leg)
 
 
 @pytest.mark.anyio
@@ -303,7 +303,7 @@ async def test_msg_by_full_session_id_unaffected_by_run_id_fallback(temp_db_path
         assert len(await db.list_pending_session_controls(sid)) == 1
 
 
-# ── turn-end drain ───────────────────────────────────────────────────────────
+# turn-end drain
 
 
 @pytest.mark.anyio
@@ -399,7 +399,7 @@ async def test_drain_without_live_session_is_noop(temp_db_path):
     assert branch.calls == []
 
 
-# ── terminal tombstone ───────────────────────────────────────────────────────
+# terminal tombstone
 
 
 @pytest.mark.anyio
@@ -495,7 +495,7 @@ async def test_drain_returns_quietly_when_there_is_no_persistence_at_all(caplog)
     assert "no database handle" not in caplog.text
 
 
-# ── at-most-once and the deadline boundary ───────────────────────────────────
+# at-most-once and the deadline boundary
 
 
 @pytest.mark.anyio
@@ -679,7 +679,7 @@ async def test_drain_does_not_start_a_continuation_after_the_deadline(temp_db_pa
         assert [r["result"] for r in pending] == [None]
 
 
-# ── claim ownership: a claimed row belongs to its claimant ───────────────────
+# claim ownership: a claimed row belongs to its claimant
 
 
 @pytest.mark.anyio
@@ -837,7 +837,7 @@ async def test_a_claim_whose_leg_died_stays_visible_rather_than_being_resolved(t
         assert ctl["claimed_at"] is not None
 
 
-# ── enqueue against a run that is terminalizing ──────────────────────────────
+# enqueue against a run that is terminalizing
 
 
 @pytest.mark.anyio
@@ -964,7 +964,7 @@ async def test_the_runner_sweeps_after_it_terminalizes_not_before(
         await db.__aexit__(None, None, None)
 
 
-# ── operator resolution of a wedged claim ────────────────────────────────────
+# operator resolution of a wedged claim
 
 
 @pytest.mark.anyio

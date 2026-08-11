@@ -39,9 +39,6 @@ async def _call(branch, **kw) -> dict:
     return await ContextTool().bind(branch).func_callable(**kw)
 
 
-# -- structural ------------------------------------------------------------
-
-
 async def test_unknown_action_returns_structured_error():
     res = await _call(_make_branch_with_messages(), action="bogus")
     assert res["success"] is False and "bogus" in res["error"]
@@ -67,9 +64,6 @@ async def test_get_messages_clamps_range():
 async def test_evict_invalid_range_returns_error():
     res = await _call(_make_branch_with_messages(), action="evict", start=10, end=5)
     assert res["success"] is False
-
-
-# -- non-destructive eviction ---------------------------------------------
 
 
 async def test_evict_is_non_destructive():
@@ -102,9 +96,6 @@ async def test_evict_action_results_keep_last_zero():
     assert res["success"] and res["removed"] == 6
 
 
-# -- browse + restore ------------------------------------------------------
-
-
 async def test_get_messages_all_shows_evicted():
     b = _build_branch()
     await _call(b, action="evict", start=2, end=5)
@@ -122,9 +113,6 @@ async def test_restore_pulls_back_in_chronological_order():
     assert len(b.progression) == active_after + 2
     order = [b.msgs.progression.index(u) for u in b.progression]
     assert order == sorted(order)  # view stays chronological
-
-
-# -- compact ---------------------------------------------------------------
 
 
 async def test_compact_collapses_tool_io_and_injects_summary():
@@ -156,9 +144,6 @@ async def test_compact_all_mode_collapses_more_than_tool_io():
         _build_branch(), action="compact", start=1, end=7, summary="s", mode="all"
     )
     assert res_all["compacted"] > res_io["compacted"]
-
-
-# -- compact auto=True (model-generated summary) ---------------------------
 
 
 async def test_compact_auto_generates_summary_via_model_call(monkeypatch):

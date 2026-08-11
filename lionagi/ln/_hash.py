@@ -45,7 +45,7 @@ def _do_init() -> None:
     PydanticBaseModel = BaseModel
 
 
-# --- Canonical Representation Generator ---
+# Canonical Representation Generator
 _PRIMITIVE_TYPES = (str, int, float, bool, type(None))
 _TYPE_MARKER_DICT = 0
 _TYPE_MARKER_LIST = 1

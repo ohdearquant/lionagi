@@ -34,7 +34,7 @@ def _frozen_datetime(fixed):
 
 
 class TestNodeConfigNewFields:
-    """Test new fields added to NodeConfig."""
+    """New fields added to NodeConfig."""
 
     def test_embedding_enabled_default(self):
         cfg = NodeConfig()
@@ -92,7 +92,7 @@ class TestNodeConfigNewFields:
 
 
 class TestNodeConfigNewProperties:
-    """Test new computed properties on NodeConfig."""
+    """New computed properties on NodeConfig."""
 
     def test_has_embedding_false_by_default(self):
         cfg = NodeConfig()

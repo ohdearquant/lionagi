@@ -13,10 +13,6 @@ import pytest
 from lionagi.ln._ssrf import is_ssrf_safe
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _mock_getaddrinfo(ip_str: str):
     family = socket.AF_INET6 if ":" in ip_str else socket.AF_INET
@@ -41,11 +37,6 @@ def _make_endpoint_with_url(base_url: str, *, allow_local_network: bool = False)
     return ep
 
 
-# ---------------------------------------------------------------------------
-# 1. is_ssrf_safe with allow_local=True — canonical loopback literals allowed
-# ---------------------------------------------------------------------------
-
-
 def test_localhost_allowed_with_allow_local():
     """'localhost' passes when allow_local=True (canonical literal)."""
     assert is_ssrf_safe("localhost", allow_local=True) is True
@@ -61,11 +52,9 @@ def test_ipv6_loopback_allowed_when_allow_local():
     assert is_ssrf_safe("::1", allow_local=True) is True
 
 
-# ---------------------------------------------------------------------------
 # 2. DNS rebinding rejection — Invariant A
 #    A non-canonical hostname that resolves to 127.0.0.1 must be rejected
 #    even with allow_local=True, because the raw hostname check fires first.
-# ---------------------------------------------------------------------------
 
 
 def test_dns_rebinding_external_hostname_resolving_to_loopback_rejected():
@@ -91,11 +80,9 @@ def test_dns_rebinding_loopback_label_resolving_to_loopback_rejected():
         assert is_ssrf_safe("loopback.example", allow_local=True) is False
 
 
-# ---------------------------------------------------------------------------
 # 3. Alternate encodings rejected — Invariant B
 #    Non-canonical spellings of the loopback address are not in the canonical
 #    set and are therefore rejected before DNS resolution.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -121,10 +108,8 @@ def test_alternate_loopback_encoding_rejected(encoding):
     assert is_ssrf_safe(encoding, allow_local=True) is False
 
 
-# ---------------------------------------------------------------------------
 # 4. Defense in depth: post-resolution loopback verification — Invariant C
 #    Even a canonical hostname resolving to a non-loopback IP is rejected.
-# ---------------------------------------------------------------------------
 
 
 def test_canonical_hostname_resolving_to_public_ip_rejected():
@@ -149,10 +134,8 @@ def test_canonical_hostname_resolving_to_imds_rejected():
         assert is_ssrf_safe("localhost", allow_local=True) is False
 
 
-# ---------------------------------------------------------------------------
 # 5. Public IPs rejected under allow_local=True — Invariant D
 #    allow_local is a loopback-only flag; public targets are not permitted.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -170,11 +153,6 @@ def test_public_ip_hostname_rejected_under_allow_local(ip):
     hostname check rejects it before any DNS resolution.
     """
     assert is_ssrf_safe(ip, allow_local=True) is False
-
-
-# ---------------------------------------------------------------------------
-# 6. Invariant E: IMDS / link-local / private / 0.0.0.0 blocked regardless
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -208,11 +186,6 @@ def test_private_ranges_still_blocked_when_allow_local(ip):
         assert is_ssrf_safe("internal.example", allow_local=True) is False
 
 
-# ---------------------------------------------------------------------------
-# 7. is_ssrf_safe default — loopback still blocked (backward compat)
-# ---------------------------------------------------------------------------
-
-
 def test_loopback_blocked_by_default():
     """Without allow_local=True, loopback is blocked (backward-compatible)."""
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo("127.0.0.1")):
@@ -222,11 +195,6 @@ def test_loopback_blocked_by_default():
 def test_localhost_blocked_by_default():
     """'localhost' is blocked when allow_local is not set (backward-compatible)."""
     assert is_ssrf_safe("localhost") is False
-
-
-# ---------------------------------------------------------------------------
-# 8. EndpointConfig.allow_local_network field
-# ---------------------------------------------------------------------------
 
 
 def test_endpoint_config_allow_local_network_defaults_false():
@@ -250,11 +218,6 @@ def test_endpoint_config_allow_local_network_can_be_set():
         allow_local_network=True,
     )
     assert config.allow_local_network is True
-
-
-# ---------------------------------------------------------------------------
-# 9. Endpoint._assert_ssrf_safe_url — integration with allow_local_network
-# ---------------------------------------------------------------------------
 
 
 def test_assert_ssrf_safe_url_blocks_localhost_by_default():
@@ -331,11 +294,6 @@ def test_assert_ssrf_safe_url_blocks_public_ip_even_with_allow_local():
     ep = _make_endpoint_with_url("http://8.8.8.8:11434/v1", allow_local_network=True)
     with pytest.raises(PermissionError, match="SSRF guard"):
         ep._assert_ssrf_safe_url()
-
-
-# ---------------------------------------------------------------------------
-# 10. Ollama EndpointConfig carries allow_local_network
-# ---------------------------------------------------------------------------
 
 
 def test_ollama_endpoint_config_carries_allow_local_network():

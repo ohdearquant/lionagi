@@ -8,9 +8,7 @@ from __future__ import annotations
 import inspect
 from dataclasses import fields
 
-# =============================================================================
 # AgentSpec
-# =============================================================================
 
 
 class TestAgentSpecPresets:
@@ -62,9 +60,7 @@ class TestAgentSpecPresets:
         assert len(spec.hook_handlers) == 0
 
 
-# =============================================================================
 # PermissionPolicy
-# =============================================================================
 
 
 class TestPermissionPolicyModes:
@@ -137,9 +133,7 @@ class TestPermissionPolicyModes:
         assert decision.behavior == "allow"
 
 
-# =============================================================================
 # Hooks
-# =============================================================================
 
 
 class TestHookSignatures:
@@ -202,9 +196,7 @@ class TestHookSignatures:
         assert "sink" not in param_names
 
 
-# =============================================================================
 # SandboxSession
-# =============================================================================
 
 
 class TestSandboxSessionAPI:
@@ -290,9 +282,7 @@ class TestSandboxSessionAPI:
         assert "base_branch" in param_names
 
 
-# =============================================================================
 # create_agent factory
-# =============================================================================
 
 
 class TestCreateAgentFactory:

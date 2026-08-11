@@ -11,9 +11,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Shared fake DB plumbing
-# ---------------------------------------------------------------------------
 
 
 class _FakeCursor:
@@ -37,9 +35,7 @@ class _FakeDB:
         pass
 
 
-# ---------------------------------------------------------------------------
 # list_definitions uses ONE DB connection for N definition files
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration

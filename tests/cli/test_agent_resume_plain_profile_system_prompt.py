@@ -8,13 +8,12 @@ A prior fix addressed a role/preset branch's create_agent-composed system
 message (role header + policy block) getting clobbered by a bare
 `add_message(system=profile.system_prompt)` on resume. That fix's guard —
 skip reapplication whenever the leg is a resume/continue-last — was
-unconditional though: it also disabled reapplication for *plain* profiles
-(no `role:` key), which never go through create_agent and never had a
-composed message to protect. `load_agent_profile(agent_name)` re-reads the
-profile file from disk on every `_run_agent` call, so editing a plain
-profile's body and then `-r`/`-c`-ing back into an existing branch is
-expected to pick up the edit on the next turn — for plain profiles there is
-no role/preset composition to protect in the first place.
+unconditional, so it also disabled reapplication for *plain* profiles (no
+`role:` key), which never go through create_agent and never had a composed
+message to protect. `load_agent_profile(agent_name)` re-reads the profile
+file from disk on every `_run_agent` call, so editing a plain profile and
+`-r`/`-c`-ing back into an existing branch should pick up the edit on the
+next turn.
 """
 
 from __future__ import annotations

@@ -20,7 +20,7 @@ from lionagi.state.db import (
     StateDB,
 )
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -47,7 +47,7 @@ async def _make_session(db: StateDB, *, status: str | None = None) -> dict:
     return session
 
 
-# ── Vocabulary ────────────────────────────────────────────────────────────────
+# Vocabulary
 
 
 def test_vocabulary_has_seven_values():
@@ -77,7 +77,7 @@ def test_admin_targets_exclude_completed_and_timed_out():
     assert ADMIN_TRANSITION_TARGETS == frozenset({"failed", "aborted", "cancelled"})
 
 
-# ── DB-level validation ───────────────────────────────────────────────────────
+# DB-level validation
 
 
 async def test_create_session_accepts_all_seven_statuses(db: StateDB):
@@ -105,7 +105,7 @@ async def test_update_session_rejects_unknown_status(db: StateDB):
         await db.update_session(s["id"], status="stale")
 
 
-# ── Legacy CHECK constraint rebuild ───────────────────────────────────────────
+# Legacy CHECK constraint rebuild
 
 
 async def test_drop_legacy_check_rebuilds_table(tmp_path: Path):
@@ -193,7 +193,7 @@ async def test_drop_legacy_check_is_idempotent(tmp_path: Path):
         await state2.close()
 
 
-# ── CLI exit-code map ─────────────────────────────────────────────────────────
+# CLI exit-code map
 
 
 def test_cli_exit_code_map_matches_adr0025():

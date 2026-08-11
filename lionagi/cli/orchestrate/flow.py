@@ -203,6 +203,7 @@ async def _persist_node_metadata_patch(db, session_id: str, patch: dict) -> None
     await db.merge_session_node_metadata(session_id, patch)
 
 
+# ── Artifact-contract text — shared by planned legs and spawned nodes ─────────
 # Shared by _build_dag and _execute_dag's decorate_instruction closure so
 # both use one namespacing rule instead of two copies drifting apart.
 
@@ -269,6 +270,7 @@ def _artifact_directive(run, node_id: str, leg_expected: list[dict]) -> str:
     return note
 
 
+# ── Control poller (ADR-0069 D1–D3: session-control transport) ──────────────
 # `li o ctl pause|resume|msg` enqueues a session_controls row from a separate
 # process; this poller is the only consumer, verb-specific apply/stamp order.
 
@@ -278,13 +280,15 @@ _CONTROL_POLL_INTERVAL = 2.0
 # tick here rather than let later controls overtake it in the DB.
 _CONTROL_UNSTAMPED = "unstamped"
 
-# Attributes an escalated leg's CLI transcript to this run instead of leaving
-# it unlinked/misattributed. The mirror may run in another process and lag
-# behind this run's completion, so the link write gets a few bounded retries
-# rather than firing once and giving up.
+# ── Escalation mirror linking — attributes an escalated leg's CLI transcript
+# back to this run instead of leaving it an unlinked, misattributed session.
+# The transcript mirror may run in another process and lag behind this run's
+# own completion, so the link write gets a few bounded retries rather than
+# firing once and giving up.
 _ESCALATION_LINK_RETRIES = 5
 _ESCALATION_LINK_RETRY_INTERVAL = 1.0
 
+# ── Team lifecycle (done-signal / wakeup rounds / quiescence) ───────────────
 # Driven by ReactiveExecutor's on_op_complete hook, not a poll loop (which
 # would race the executor's task-group teardown) — see TeamLifecycleCoordinator.
 
@@ -406,14 +410,11 @@ skip them.
 
 
 def critical_path_depth(dep_indices: list[list[int]]) -> int:
-    """Longest dependency chain in the plan, in ops — a lower bound on the
-    flow's wall clock (`max_sequential_depth` is what actually sizes the
-    budget). See docs/internals/flow.md for the full reasoning.
-
-    Dependencies point backwards (op i may only depend on ops before it), so
-    a single forward pass is enough; cycles are unreachable, and an entry
-    pointing outside the plan is ignored rather than raising: a bad index
-    should not be able to take down a run over a budget hint.
+    """Longest dependency chain in the plan, in ops — a lower bound on wall
+    clock, not the bound `max_sequential_depth` computes. See
+    ``docs/internals/cli.md`` (`flow.py` — dividing a time budget across a
+    DAG). Dependencies point only backwards, so a single forward pass
+    suffices; an out-of-range entry is ignored rather than raising.
     """
     if not dep_indices:
         return 0
@@ -426,15 +427,17 @@ def critical_path_depth(dep_indices: list[list[int]]) -> int:
 
 
 def max_sequential_depth(dep_indices: list[list[int]], num_ops: int, max_concurrent: int) -> int:
-    """Upper bound on the most ops that can end up running one after another;
-    this is what divides the flow's op budget. It has to be a bound, not an
-    estimate, because the quantity it describes depends on how long each op
-    runs and a budget is computed before any of them have. See
-    docs/internals/flow.md for the full reasoning.
+    """The most ops that can end up running one after another.
 
-    `max_concurrent <= 0` means unbounded, matching how the executor reads it.
-    A plan whose dependency data does not describe its ops gets `num_ops`, the
-    assumption that nothing overlaps, since nothing can be said about what does.
+    An upper bound, not an estimate — the error must undercount never, since
+    undercounting hands every op more time than the flow can afford. See
+    ``docs/internals/cli.md`` (`flow.py` — dividing a time budget across a
+    DAG) for why a simulated schedule is wrong and how the two forcing
+    mechanisms (dependencies, capacity) combine.
+
+    `max_concurrent <= 0` means unbounded, matching how the executor reads
+    it. A plan whose dependency data does not describe its ops gets
+    `num_ops` (assume nothing overlaps).
     """
     if num_ops <= 0:
         return 0
@@ -442,9 +445,13 @@ def max_sequential_depth(dep_indices: list[list[int]], num_ops: int, max_concurr
         return num_ops
     conc = max_concurrent if max_concurrent > 0 else num_ops
 
+    # Unbounded capacity: each pass clears one level of the dependency graph,
+    # so the pass count is exactly the longest chain.
     if conc >= num_ops:
         return critical_path_depth(dep_indices) or num_ops
 
+    # Worse of: the dependency chain, and capacity's forced remainder
+    # (num_ops - conc + 1), capped at the everything-serializes case.
     return min(num_ops, max(critical_path_depth(dep_indices), num_ops - conc + 1))
 
 
@@ -475,18 +482,11 @@ def _build_budget_preambles(
     """The per-op budget preambles for one flow, keyed by op index.
 
     `deadline_epoch` is an instant the caller captured when the run's clock
-    started, not a duration to add to now — deliberately not defaulted: the
-    obvious fallback, `now + total_budget`, would be wrong by however long
-    the run has already been going, silently and in the permissive direction
-    (every op told it has more time than it does). Missing the instant means
-    no preamble at all — telling an op nothing is the honest failure.
+    started, not a duration to add to now, and is deliberately not defaulted
+    (see ``docs/internals/cli.md`` — the obvious `now + total_budget`
+    fallback is silently wrong). Missing it means no preamble at all.
     """
     if total_budget and num_ops > 0 and deadline_epoch is None:
-        # A budgeted run that got this far without an instant is a wiring
-        # error rather than a configuration: the limit will still be enforced
-        # on these ops, they just will not be told about it. Staying silent is
-        # right about the value and wrong about the event, so name the event
-        # once and still refuse to invent the value.
         _warn(
             "flow has a total budget but no recorded deadline instant; "
             "its ops will be given no budget guidance"
@@ -717,6 +717,9 @@ def _flow_header_fn(w: dict, i: int, n: int) -> list[str]:
     return [f"  {w['id']} ({w['name']}){tag}  [{w['model']}]{dep_str}"]
 
 
+# ── Phase data containers ─────────────────────────────────────────────────────
+
+
 @dataclass
 class _PlanResult:
     """Planning output: resolved assignments and per-agent metadata."""
@@ -763,18 +766,19 @@ class _ExecResult:
     escalated_agent_ids: list[str] = field(default_factory=list)
 
 
+# ── Phase 1: build DAG ────────────────────────────────────────────────────────
+
+
 def _deps_from_built_graph(builder, label_by_node: dict[str, str]) -> dict[str, list[str]]:
     """Read each node's incoming edges out of the graph the executor walks.
 
-    A dependency list re-derived from what the planner declared describes
-    the *input* to the build step, not an observation of its *output* — the
-    builder can add or omit edges, and nothing downstream would notice the
-    two disagreeing.
-
-    `label_by_node` names nodes a reader already has a name for — plan steps,
-    by 1-based ordinal. A head outside it has no plan ordinal (spawned after
-    plan time); it falls back to its stamped spawn id, then the raw node id,
-    so an edge is never dropped for want of a name.
+    Reads the graph itself, not the planner's declared deps, so the reported
+    structure and the executed one are the same object — a re-derivation from
+    what was declared could silently drift from what the builder actually
+    wired. `label_by_node` names plan-time nodes by their 1-based ordinal; a
+    head outside it (a node with no plan ordinal, spawned after plan time) is
+    named by its stamped `spawn_id`, falling back to the raw node id so an
+    edge is never dropped for want of a name.
     """
     graph = builder.get_graph()
     nodes = getattr(graph, "internal_nodes", None)
@@ -980,6 +984,9 @@ async def _build_dag(
     )
 
 
+# ── Resume: pre-mark checkpoint-completed nodes ───────────────────────────────
+
+
 def _reconstruct_spawned_nodes(
     env: OrchestrationEnv,
     plan_result: _PlanResult,
@@ -1140,6 +1147,9 @@ def _apply_checkpoint_precompletion(
             "Pass --allow-degraded-context to run them against an empty "
             "branch instead."
         )
+
+
+# ── Phase 2: execution ────────────────────────────────────────────────────────
 
 
 async def _execute_dag(
@@ -1800,30 +1810,23 @@ async def _execute_dag(
                     await _drain_escalation_links_bounded()
                 else:
                     # Bounded by _ESCALATION_LINK_RETRIES * _ESCALATION_LINK_RETRY_INTERVAL
-                    # (a few seconds worst case) in the happy path — the outer
-                    # db/session teardown (teardown_persist) only runs after this
-                    # function returns, so draining here, not firing untracked, is
-                    # what keeps a late retry from writing into a store this run
-                    # has already closed.
+                    # (a few seconds worst case); draining here rather than
+                    # firing untracked keeps a late retry from writing into a
+                    # store teardown_persist is about to close.
                     #
-                    # A cancellation can also land on *this* task after
-                    # run_dag() already returned — the CancelScope shield above
-                    # only stops anyio-mediated cancellation, not a direct
-                    # cancel() on this task — so _dag_cancelled stays False and
-                    # this is the await that would otherwise take it. gather()
-                    # only settles its own cancellation once every child
-                    # actually finishes, so a link task that swallows the one
-                    # cancel it's handed (or blocks past it) would leave a bare
-                    # `await gather(...)` parked here forever — asyncio.shield
-                    # lets this await raise promptly instead of waiting on the
-                    # children, which keep running in the background for
-                    # _drain_escalation_links_bounded() to actually finish off.
-                    # Re-raise afterward so the caller still observes the
-                    # cancellation — unless the try body already raised a real
-                    # exception, in which case that exception is what the
-                    # caller was waiting on and must win; a cancellation that
-                    # only landed during this teardown drain must not silently
-                    # replace it.
+                    # A cancellation can land on *this* task after run_dag()
+                    # already returned (the CancelScope shield above only
+                    # stops anyio-mediated cancellation, not a direct
+                    # cancel()), so _dag_cancelled stays False and this await
+                    # would otherwise absorb it. asyncio.shield lets this
+                    # await raise promptly instead of blocking on gather()
+                    # until every child settles (a link task that swallows or
+                    # outlives its own cancel would otherwise park this await
+                    # forever) — the children keep running in the background
+                    # for _drain_escalation_links_bounded() to finish off.
+                    # Re-raised below unless the try body already raised a
+                    # real exception, which must win over a cancellation that
+                    # only landed during this teardown drain.
                     _in_flight_exc = sys.exc_info()[1]
                     try:
                         with contextlib.suppress(Exception):
@@ -1906,21 +1909,13 @@ async def _execute_dag(
         prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
         env._failed_operation_evidence = [*prior_failed_evidence, *failed_evidence]
 
-    # Lost-node evidence: a node in the fixed initial plan (node_ids /
-    # assignments, indexed 1:1) whose result never landed in
-    # operation_results at all -- distinct from a node that ran and failed
-    # (already caught above) or was legitimately never meant to run. Every
-    # other accounted-for fate is excluded explicitly: an edge-condition skip
-    # is named in skipped_operations; a leg that gave up via EscalationRequest
-    # is named in escalated_operations and already fails the run through the
-    # escalated-evidence backstop above with its own, more specific reason;
-    # a reactive/budget-refused spawn was never a planned node to begin with
-    # (dropped_spawns never touches node_ids). A cancelled run never reaches
-    # this line -- run_dag raises and the whole evidence block above is
-    # skipped -- so no separate check is needed for it. What remains here is
-    # a node the plan expected but execution never observed in any of those
-    # ways; treat it as a failure with its own evidence rather than letting
-    # it render as "(no response)" below.
+    # Lost-node evidence: a planned node (node_ids/assignments, 1:1) whose
+    # result never landed in operation_results, and whose absence isn't
+    # already explained by skipped_operations (edge-condition skip),
+    # escalated_operations (already handled above), or dropped_spawns (never
+    # a planned node). A cancelled run never reaches this line at all. What's
+    # left is a node the plan expected but never observed in any known way;
+    # treat it as its own failure rather than rendering "(no response)" below.
     skipped_op_ids = {str(x) for x in dag_result.get("skipped_operations", [])}
     observed_op_ids = {str(k) for k in op_results}
     lost_evidence = [
@@ -1934,17 +1929,13 @@ async def _execute_dag(
         prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
         env._failed_operation_evidence = [*prior_failed_evidence, *lost_evidence]
 
-    # Lost-spawn evidence: mirrors the lost-node check above, but for the
-    # reactive surface. spawned_ids (when the executor reports it) is the
-    # roster of every node _accept_node actually accepted into the graph --
-    # spawned_operations is only a running count and can't answer "which
-    # nodes were accepted" on its own. An accepted spawn that reached a
-    # terminal EventStatus (e.g. CANCELLED) without ever producing a result
-    # is absent from operation_results, failed_operations, and
-    # skipped_operations alike; without this check it would also read as a
-    # clean completion. A spawn the executor refused to accept in the first
-    # place (dropped_spawns) never enters spawned_ids, so it stays excluded
-    # here exactly as dropped_spawns already is above.
+    # Lost-spawn evidence: mirrors the lost-node check above for the reactive
+    # surface. spawned_ids is the roster _accept_node actually accepted
+    # (spawned_operations is only a running count, not a roster). An accepted
+    # spawn that reached a terminal EventStatus (e.g. CANCELLED) with no
+    # result would otherwise be absent from every known-outcome set and read
+    # as a clean completion. A spawn the executor refused (dropped_spawns)
+    # never enters spawned_ids, so it stays excluded here too.
     spawned_ids = {str(x) for x in dag_result.get("spawned_ids", [])}
     lost_spawn_ids = (
         spawned_ids - observed_op_ids - skipped_op_ids - escalated_op_ids - failed_op_ids
@@ -2117,6 +2108,9 @@ async def _execute_dag(
     )
 
 
+# ── Phase 3: synthesis ────────────────────────────────────────────────────────
+
+
 async def _synthesize(
     env: OrchestrationEnv,
     prompt: str,
@@ -2188,6 +2182,9 @@ async def _synthesize(
     }
     progress(f"Synthesis done ({t_synth_elapsed:.1f}s).")
     return synthesis_result
+
+
+# ── Phase 4: finalize ─────────────────────────────────────────────────────────
 
 
 def _finalize_flow(
@@ -2334,6 +2331,9 @@ def _finalize_flow(
             }
 
     return output
+
+
+# ── Public entry points ───────────────────────────────────────────────────────
 
 
 async def _run_flow(

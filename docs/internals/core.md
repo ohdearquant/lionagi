@@ -20,6 +20,20 @@ runs synchronously at the tail of every node's execution — the only
 race-free point for a caller's `inject()` against the task group's
 convergence; `cli/orchestrate/flow.py`'s team-round wakeup logic is wired here.
 
+**`flow.py`** gate-reject contract — a playbook-authored node opts into gate
+semantics by setting `operation.metadata["is_gate"] = True` (e.g. via
+`OperationGraphBuilder.add_operation(..., is_gate=True)`). Once that node
+completes, its result is inspected for a top-level `"gate_verdict"` key; if
+the value is the string `"reject"` (case-insensitive), every direct and
+transitive dependent of the gate is short-circuited to SKIPPED instead of
+running against the baseline the gate just rejected. A node that isn't
+marked `is_gate`, or a gate whose result has no `gate_verdict` key (or any
+value other than `"reject"`), changes nothing — flows with no gate nodes
+stay byte-identical to before. The veto is transitive and absolute: if any
+incoming edge traces back to a rejecting gate, the dependent is skipped
+regardless of any other otherwise-valid incoming path, and the skip reason
+propagates to that node's own dependents in turn.
+
 **`lndl_middle/lndl_middle.py`** — LNDL seam Middle (ADR-0024 §1-2): advances
 a branch one LNDL round per inner chat call, looping internally up to a round
 budget (default 3). Opt-in via `branch.operate(instruction=..., middle=lndl_middle)`;
@@ -35,6 +49,71 @@ identically-constructed Operatives may share one request/response model
 Never mutate a returned model class. `LIONAGI_OPERATIVE_MODEL_CACHE_SIZE=0`
 restores per-call classes (disables sharing). See also `models/_build_model.py`
 and `adapters/spec_adapters/pydantic_field.py` below — same cache, different layer.
+
+**Graph-entrypoint conformance suite** (`tests/operations/test_graph_entrypoint_conformance.py`) —
+pins every graph-shaped production surface in the shipped package to the
+`Session.flow`/streaming-kernel execution authority. A manifest classifies
+every graph-shaped function the suite can find: whether it delegates to
+`Session.flow` (directly or through an adapter), reaches the sanctioned
+streaming kernel, is itself the kernel, or is a pure builder/alias that never
+executes anything. The suite statically scans the real source tree for
+qualified `.flow`/`.flow_stream`/`.run_dag` calls, bare calls to a
+locally-imported kernel function, and executor/graph-builder construction
+sites, and fails (with file:line and reason) on anything not in the
+manifest — so a new graph entrypoint that isn't registered breaks the build
+instead of silently growing a second executor.
+
+The executor-construction scan recognizes a direct
+`DependencyAwareExecutor(...)`/`ReactiveExecutor(...)` call, an
+`from ... import X as Y` alias, a one-level-deep bare assignment alias, and a
+literal `getattr(<flow module>, "DependencyAwareExecutor")` lookup (only when
+the receiver statically denotes `lionagi.operations.flow`). Import provenance
+is tracked per lexical scope rather than as one flat module timeline: each
+function/lambda scope starts from a copy of its enclosing scope's provenance,
+first masks every name any local import, assignment, `for`/`async for`
+target, match-capture, or augmented assignment binds anywhere in the body
+(Python function scope isn't statement-ordered, so a name bound only inside
+an `if`/`try`/`for`/`match` is still a lexical local for the whole function),
+discards any parameter-shadowed name, then replays its own body's
+*unconditional* binding events on top of that masked copy. A binding nested
+inside `if`/`try`/`except`/`for`/`while`/`with`/`match`-case is conditional:
+it may only discard provenance (never establish or restore it), since a
+conditional import might not execute and trusting it risks a false positive
+either way. Class bodies get their own add-only environment
+(`_SinkVisitor.visit_ClassDef`). The scanner does not perform general
+data-flow analysis — resolution through a factory return value, a
+non-literal string argument, a multi-hop alias, or a binding inside a
+comprehension/walrus is untracked and is a known residual imprecision.
+
+`global`/`nonlocal` declarations are handled separately from ordinary
+masking, since they resolve against different target scopes: `global`
+overlays provenance from a pristine module-scope snapshot (skipping every
+intermediate function scope, including one whose own parameter shadows the
+name), while `nonlocal` resolves against the nearest enclosing function
+scope, which the ordinary lexical inheritance chain already reproduces. A
+`global`/`nonlocal` statement nested inside a class body does not count as a
+declaration of the surrounding function — a class body is its own namespace
+for this purpose. The scanner's governing invariant is zero false negatives:
+a missed executor-construction site is a coverage hole, while a spurious one
+only costs a review. Where closing a remaining false positive would require
+reasoning about whether a declared name's own binder form actually executes,
+that reasoning is deliberately not attempted — the scanner keeps the
+(possibly stale) inherited/overlaid provenance and reports a site. This is a
+documented conservative over-approximation, not a bug.
+
+Registering a manifest row is necessary but not sufficient: a row naming an
+`expected_target` must also name a `delegation_test` (the exact pytest node
+id of the test that asserts the delegation — call count, argument identity,
+or a mocked target reached), and a row with `persistence="required"` must
+name a `persistence_evidence` node id backed by a real StateDB write. Both
+are validated against real source, not just checked for non-emptiness, so a
+stale or nonexistent reference fails the suite. Known limitation: resolving
+a `delegation_test` id to a real test function does not check what that
+test's body actually asserts — a row can cite a real, passing test that
+exercises an entirely different code path than the one it's cited for. A
+weaker structural companion check (does the cited test's source at least
+mention a token from `expected_target`) catches the obvious case but is not
+a substitute for reading the cited test.
 
 ## `session/`
 
@@ -61,6 +140,28 @@ breaking field removal/rename; adding nullable fields is non-breaking.
   pinned into the terminal "escalated" lane — only a "blocked" urgency (default,
   matching historical give_up/higher_tier behavior) or an unaccompanied signal
   (no request attached) is treated as escalated.
+- `_extract_usage_dims` normalizes both provider usage shapes to "uncached
+  prompt tokens" for input. Anthropic-style: `input_tokens` already excludes
+  cache activity; cache reads/writes arrive separately as
+  `cache_read_input_tokens` / `cache_creation_input_tokens`. OpenAI-style:
+  `prompt_tokens` *includes* cached reads, split out under
+  `prompt_tokens_details.cached_tokens`, so it's subtracted here. `is_valid`
+  is False when an OpenAI-style report violates the token-count invariants (a
+  negative prompt total, or `cached_tokens` greater than `prompt_tokens`);
+  the returned numbers are still clamped into a safe, non-negative shape so a
+  caller that ignores validity still gets a sane aggregate, but a billing
+  consumer that checks `is_valid` can distinguish a genuine full-cache hit
+  from a provider sending garbage.
+- `_sum_model_usage` sums per-model whole-tree token counts from a
+  claude_code CLI `modelUsage` map; unlike the flat top-level `usage` field
+  (top-level-loop only), each entry here already includes descendant
+  subagent spend. An entry counts as valid only when it's a dict carrying
+  all four expected keys with non-negative-integer values — a genuinely
+  zero-usage model still reports the full shape, so a valid entry that sums
+  to zero is distinct from no valid entry at all. If any entry in the map is
+  malformed, the whole map is untrustworthy and `has_valid_entry` is False:
+  summing only the well-shaped entries would silently undercount whatever
+  the malformed entry actually spent.
 
 **`observer.py`** — `_PAYLOAD_BYTE_CAP` bounds the persisted `payload` JSON
 column in `session_signals`, not the SSE frame: the SSE generator wraps each
@@ -263,6 +364,24 @@ handler: a root-level `make_agent()` budget-out routes to partial-export
 instead of crashing; masking guard — a non-budget leaf anywhere in the group
 (including nested groups) must not be laundered into a partial, so it
 re-raises instead.
+
+**`flow_signals.py`** — `flow_progress_signals` turns executor node
+transitions into `NodeQueued`/`Started`/`Completed`/`Failed` session-bus
+signals for a live-rendered `Session.flow` DAG run (shared by the engine and
+Studio). `_on_progress` prefers the authored node id so every lifecycle
+signal maps back to the designer DAG, falling back to the executor's name
+for the engine's own ops and reactive spawns; it pins the first genuinely
+resolved name for an `op_id` so later started/completed/failed calls reuse
+it even if a branch-naming hook later renames the operation's cloned
+branch (the branch name is a display concern, not the correlation key).
+Whether a name is a placeholder is decided structurally by the producer and
+passed in via `name_is_fallback` — never inferred by comparing against the
+op_id's prefix, since a genuine authored name can coincide with that prefix
+by chance. `name_is_fallback` has no default: it's an internal seam with an
+enumerable, all-internal caller set (the four lifecycle producers in
+`operations/flow.py`), so an untagged call fails loudly (`TypeError`)
+instead of guessing wrong and reintroducing the split-identity bug this
+guards against.
 
 **`coding.py`** — `CodingChainEvent` `eid` prefixes (`W`/`P`/`T`/`V`/`K`) are
 namespaced against hypothesis engine's (`F`/`Q`/`E`/`H`/`X`/`R`/`C`/`A`) so
@@ -468,6 +587,58 @@ validation_alias="a_alias")`) is absent from `model_dump(exclude_unset=True)`
 even though it is a real, schema-covered field. Classifying it as "extra"
 would let a preprocessor set it by name and forward the raw, unvalidated
 value straight to the callable — a schema bypass.
+
+### Pile row serialization
+
+`Pile.dump`/`adump` write JSONL and CSV without a pandas dependency, via
+`_serialize_records` in `generic/pile.py`. JSONL is one compact JSON object
+per line, newline-terminated so `mode="a"` appends valid JSONL (matching the
+old `DataFrame.to_json(orient="records", lines=True)` output). CSV writes a
+header of every key seen across all rows, in first-appearance order; rows
+missing a key render that cell empty, as pandas did. Row values come from
+`to_dict(mode="json")` — lionagi's canonical orjson encoding (ISO datetimes,
+shortest round-trippable floats) — which is value-equal and round-trippable
+via `Element.from_dict`, but not byte-identical to the old pandas output for
+datetime and high-precision-float fields (pandas rendered epoch-ms datetimes
+and double-precision floats). `parquet` stays on the pandas `to_df` path
+since it needs a columnar engine; `_serialize_records` doesn't support it.
+
+### Progression membership sync
+
+`Progression.order` is a public, directly-mutable deque — tests, third-party
+callers, and `Pile` internals all mutate it in place (`p.order.append(x)`,
+`p.order[0] = x`, `p.order.popleft()`), not just through `Progression`'s own
+methods. `Progression` keeps an O(1) membership set (`_members`) in sync with
+that deque so `__contains__` doesn't have to scan.
+
+A naive staleness check comparing `len(order)` across calls misses any
+length-preserving external write — `order[0] = x`, or a `popleft()` paired
+with an `append()` — because the length is unchanged even though the
+contents are not. `generic/progression.py` solves this two ways:
+
+- `order` is always wrapped in a `_MembersDeque`, a `deque` subclass that
+  updates the bound `_members` set eagerly inside every mutating method
+  (`append`, `insert`, `__setitem__`, `__delitem__`, `extend`, ...), using a
+  duplicate-aware discard rule: an id is only dropped from the set once no
+  occurrence of it remains in the deque. `__imul__` with `n <= 0` clears the
+  set (every element is dropped); `n >= 1` only duplicates existing ids, so
+  the set of unique members is unchanged and needs no update. `rotate` and
+  `reverse` permute existing entries without changing which ids are present,
+  so neither touches the set.
+- `Progression._ensure_synced()` (called before any read of, or incremental
+  update to, `_members`/`_order_len`) additionally detects wholesale
+  replacement of `order` — `p.order = deque(...)`, or a plain-deque copy
+  produced by pydantic re-validation — and a wrapper that is bound to a
+  *different* `Progression` instance's `_members` set. Ownership is checked
+  by identity (`order._members_ref is self._members`), not just type and
+  length, so a foreign or unbound wrapper of matching length can't silently
+  pass as synced. Either case triggers `_rebuild_members()`, which rebuilds
+  `_members` from scratch and rebinds the wrapper.
+
+Public behavior — membership correctness after *any* direct `order`
+mutation, not just length-changing ones — must not be narrowed to a
+length-only check; that was tried and is exactly the case this design
+covers.
 
 ### Graph adjacency cache
 

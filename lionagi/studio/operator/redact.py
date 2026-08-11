@@ -138,28 +138,17 @@ def _leaf(match: re.Match[str]) -> str:
     return raw.rsplit(sep, 1)[-1] or "[redacted-path]"
 
 
-# `scrub_text`'s regexes above only catch a secret that is *shaped* like one
-# (a known prefix, a header, an "KEY=value" assignment). A run's own config
-# can carry a secret with none of those shapes -- an arbitrary passphrase, a
-# short internal token -- and such a value survives every pattern above
-# untouched if it is echoed back verbatim in a message, tool-call argument,
-# or error string. A Studio-launched run inherits this server process's
-# environment, so that environment *is* the run's own config; this treats
-# any environment value stored under a secret-marker key
-# (see `_SECRET_KEY_MARKERS`) as a literal string to strip out of every
-# projection, in addition to (not instead of) the shape-based patterns
-# above. Values under 4 characters are excluded: below that length a literal
-# match is far more likely to be incidental shared substring noise (a short
-# numeric id, a single word) than an actual secret worth destroying
-# unrelated context for.
+# Complement to the shape-based patterns below: catches a secret with no
+# recognizable shape by matching literal values from this process's own
+# environment (which a Studio-launched run inherits). See
+# docs/internals/studio.md ("Redaction"). Values under 4 characters are
+# excluded as more likely incidental substring noise than a real secret.
 _KNOWN_VALUE_MIN_LEN = 4
 
 
 def known_secret_values() -> frozenset[str]:
     """Literal secret values read from this process's own environment --
-    the config a Studio-launched run actually inherits. See the module
-    comment above `_KNOWN_VALUE_MIN_LEN` for why this exists alongside the
-    shape-based patterns in `scrub_text`, and the length cutoff chosen."""
+    the config a Studio-launched run actually inherits."""
     values: set[str] = set()
     for key, value in os.environ.items():
         if not value or len(value) < _KNOWN_VALUE_MIN_LEN:
@@ -208,15 +197,10 @@ _FIELD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 def fold_field_name(key: str) -> str:
     """Reduce a field name to the spelling the secret markers are written in.
 
-    Separators do not change which field a name refers to. HTTP headers arrive
-    as X-API-Key, config files write api.key, and our own records write
-    api_key, so every marker containing an underscore would otherwise match
-    only the last of those. Folding any run of non-alphanumeric characters to a
-    single underscore makes all the spellings compare equal.
-
-    This lives here, and not beside either caller, because both redaction
-    layers have to agree about it. When they disagreed, the same credential was
-    withheld on one path and served on the other.
+    Separators do not change which field a name refers to (``X-API-Key``,
+    ``api.key``, ``api_key`` all fold to the same spelling), so every marker
+    only needs one spelling. Shared by both redaction layers -- see
+    docs/internals/studio.md ("Redaction").
     """
     return _FIELD_SEPARATOR_RE.sub("_", key.lower())
 
@@ -229,15 +213,9 @@ _EXACT_SECRET_FIELD_NAMES = frozenset({"auth", "authentication", "bearer"})
 
 
 def is_secret_field_name(key: str) -> bool:
-    """Say whether a field name names a credential.
-
-    This is the whole rule, in one place, because two copies of it disagreed:
-    one carried the exact-match names above and the other did not, so a value
-    under an `auth` key was withheld on the session and artifact paths and
-    served on the tool-argument and manifest paths. Sharing the separator fold
-    alone was not enough — the vocabulary has to be shared too, or the same
-    class of gap simply moves to whichever name the two lists differ on.
-    """
+    """Say whether a field name names a credential. The single shared rule
+    every redaction path in this module uses -- see
+    docs/internals/studio.md ("Redaction")."""
     folded = fold_field_name(key)
     return folded in _EXACT_SECRET_FIELD_NAMES or any(
         marker in folded for marker in _SECRET_KEY_MARKERS
@@ -279,19 +257,12 @@ def redact_scalar(key: str, value: Any) -> Any:
 
 
 def redact_arguments(value: Any, *, parent_key: str = "") -> Any:
-    """Recursively redact secret- and absolute-path-shaped values. Used on
-    tool-call arguments and on artifact contract/verification payloads, the
-    two places a new Operator read tool could otherwise widen exposure
-    beyond what the existing tools already show.
+    """Recursively redact secret- and absolute-path-shaped values, used on
+    tool-call arguments and artifact contract/verification payloads.
 
-    ``parent_key`` carries the field name a container arrived under, because a
-    credential name has to cover what is nested beneath it and not only a scalar
-    sitting directly on it. Without it the name was consulted for scalars alone,
-    so ``{"auth": "..."}`` was withheld while ``{"auth": {"value": "..."}}`` was
-    served — the same split, across two shapes, that sharing the field-name rule
-    had just closed across two layers. The session and artifact projection
-    already judges the name before descending into a container; this is that
-    same step, on this path.
+    ``parent_key`` carries the field name a container arrived under, so a
+    credential name covers what is nested beneath it, not only a scalar
+    sitting directly on it -- see docs/internals/studio.md ("Redaction").
     """
     if isinstance(value, (dict, list)) and is_secret_field_name(parent_key):
         return "[redacted]"

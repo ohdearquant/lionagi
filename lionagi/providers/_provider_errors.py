@@ -79,19 +79,11 @@ class ProviderTeardownError(ProviderError):
 
 
 class ProviderPermissionError(ProviderError):
-    """The turn produced nothing because the CLI could not be granted a tool permission.
-
-    Separate from the adapter catch-all because the two demand opposite
-    responses. An adapter error carries no identified cause and tells a caller
-    nothing it can act on. This one names a configuration defect on THIS side
-    that a person can fix in one line, and it is not a provider fault at all:
-    the provider answered, and answered successfully. A headless CLI cannot
-    prompt for a permission, so a tool call it was not pre-granted is denied and
-    the turn returns empty.
-
-    Not retryable, and the distinction matters more here than elsewhere: an
-    unmodified retry reproduces this exactly, forever, while a consumer reading
-    it as a provider condition waits for an outage that is not happening.
+    """The turn produced nothing because the CLI could not be granted a tool
+    permission. Not a provider fault — a headless CLI can't prompt for a
+    permission, so a tool call it wasn't pre-granted is denied and the turn
+    returns empty. Not retryable: an unmodified retry reproduces this
+    exactly, forever, unlike an actual provider outage.
     """
 
 

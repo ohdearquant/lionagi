@@ -2,58 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """V0 behavior-preservation gate for the consolidation manifest.
 
-Each test loads the frozen baseline captured before any consolidation edit
-(``tests/contracts/data/*.json``, generated once by running the functions in
-``_capture.py`` against the pre-consolidation worktree) and compares it,
-field for field, against a fresh capture of the live code. A delta here means
-an observable public surface changed.
-
-A delta is therefore never routine, but it is not always wrong. Two cases:
-
-*Unintended* delta — a consolidation edit changed observable behavior it was
-supposed to preserve. Fix the code, not the baseline. This is the case the
-gate exists for and the common one.
-
-*Intended* delta — a change deliberately adds to or alters the public surface,
-and the baseline is now the stale description. Record it. Refusing to record
-an intended change does not preserve anything; it only leaves the gate red
-until someone refreshes the baseline anyway, with less care than this note
-asks for.
-
-Recording an intended delta requires all three, because a wholesale refresh is
-exactly how an unrelated regression gets laundered into the baseline:
-
-1. Regenerate to a scratch file and diff it against the committed baseline
-   *before* installing it. Read that diff as the change's own claim about its
-   surface, and confirm every line belongs to the intended change. This is the
-   step that catches a second, unnoticed delta riding along.
-2. Say in the commit message what moved and what did not — the counts that
-   changed, and the ones that stayed put.
-3. Where a count is also asserted as a literal in this file, update it by hand
-   and mutation-probe it: restore the old value, confirm the test goes red,
-   restore the new one. Those literals are a second, independent lock on facts
-   the JSON also carries; keep them hand-typed rather than derived from the
-   baseline, which would collapse two checks into one.
-
-A capture bug — where the baseline never described the code correctly — is
-fixed the same way and is not a third case.
-
-Two fields carry inherent host-state volatility and are excluded from the
-byte-for-byte comparison: the "agent status" specialized-CLI case includes a
-live session UUID and elapsed timers, and machine-mode "monitor"/"agent"
-cases report live run state. Their exit codes and envelope shape are still
-compared; their literal stdout is not.
-
-Waiver:
-  W-02: the "agent status" / "doctor --machine" / "handshake --machine" /
-    "runs --machine" cases carry live session, git-identity, and daemon
-    state that is non-deterministic across checkouts and wall clocks. These
-    -- and every other case captured by SPECIALIZED_CASES / MACHINE_CASES --
-    are redacted by default: only an argv listed in
-    _COMMITTABLE_SPECIALIZED_ARGV / _COMMITTABLE_MACHINE_ARGV, with a stated
-    reason, is compared byte-for-byte or committed as literal text below.
-    See test_new_case_defaults_closed_without_declaration for why this is a
-    population rule, not a list someone has to remember to grow.
+Compares a fresh capture of live public surfaces (HTTP routes, OpenAPI, CLI
+parser tree, MCP projections, machine-mode output, public imports) against
+the frozen baseline in ``tests/contracts/data/*.json``. A delta means an
+unintended behavior change (fix the code) or an intended one (update the
+baseline per the recorded procedure). See docs/internals/contracts.md for
+the full protocol, including the host-volatility redaction waiver.
 """
 
 from __future__ import annotations
@@ -71,18 +25,11 @@ from tests.contracts import _capture
 
 DATA_DIR = Path(__file__).parent / "data"
 
-# Case-level allowlist: the ONLY way a case's literal captured stdout/stderr
-# may be committed to this public repository. Each entry states why that
-# argv's output is safe -- static argparse usage/help/error text, derived
-# from this repo's own source, carrying no session/host/run state. A case
-# captured by SPECIALIZED_CASES / MACHINE_CASES (tests/contracts/_capture.py)
-# with no entry here is untrusted BY DEFAULT: excluded from the byte-for-byte
-# comparison below, and its committed fixture entry must carry the
-# redaction marker (test_volatile_fixture_cases_are_fully_redacted enforces
-# this against the live population, not a fixed list -- see
-# test_new_case_defaults_closed_without_declaration). Making a new case's
-# output committable requires adding a reasoned entry here: a deliberate,
-# reviewable diff, not something that happens by omission.
+# The ONLY way a case's literal captured stdout/stderr may be committed here:
+# each entry states why that argv's output is safe (static argparse text,
+# no session/host/run state). A case with no entry is untrusted by default
+# and redacted (see docs/internals/contracts.md and
+# test_new_case_defaults_closed_without_declaration).
 _COMMITTABLE_SPECIALIZED_ARGV: dict[tuple[str, ...], str] = {
     ("--help",): "top-level argparse usage/help text",
     ("wait",): "argparse usage + required-argument error",
@@ -115,12 +62,8 @@ _COMMITTABLE_MACHINE_ARGV: dict[tuple[str, ...], str] = {
 
 
 def _volatile_argv_for(file_name: str) -> set[tuple[str, ...]]:
-    """Every argv captured for *file_name* that is NOT declared committable
-    above -- derived from the live capture-case population in _capture.py,
-    not a hand-maintained denylist. A case appended to SPECIALIZED_CASES /
-    MACHINE_CASES with no matching committable-allowlist entry is
-    automatically volatile: excluded from byte-for-byte comparison and
-    required to be redacted in the committed fixture."""
+    """Argv captured for *file_name* not declared committable above --
+    derived from the live case population, not a hand-maintained denylist."""
     if file_name == "specialized":
         return set(_capture.SPECIALIZED_CASES) - set(_COMMITTABLE_SPECIALIZED_ARGV)
     if file_name == "machine":
@@ -143,21 +86,14 @@ def test_http_route_count_is_135():
 
 
 def _routes_by_key(payload: dict) -> dict[str, dict]:
-    """Project a ``capture_http()`` payload's routes into a dict keyed by
-    their actual identity, ``(methods, path)`` -- with the
-    registration-order-derived ``ordinal`` field dropped.
+    """Key routes by ``(methods, path)`` identity, dropping ``ordinal``.
 
-    ``ordinal`` reflects the position a route's decorator happened to run at
-    in *this* process, not a fact about the route: ``load_studio_route_modules``
-    imports each area module in a fixed order, but ``import_module`` on an
-    already-imported module is a no-op, so a route's real position depends on
-    whichever test in the same worker imported its owning service module
-    first (many tests import a single ``lionagi.studio.services.*`` module
-    directly to unit-test a handler, without going through ``create_app()``).
-    Comparing ``ordinal`` positionally turns one such incidental reordering
-    into a whole-file diff, since every route after the moved one shifts too.
-    Keying by identity instead means an actual added/removed/changed route
-    diffs as one entry.
+    ``ordinal`` reflects decorator-registration order in this process, which
+    varies with which test imported a service module first (many tests
+    import a single ``lionagi.studio.services.*`` module directly, bypassing
+    ``create_app()``). Comparing it positionally turns one incidental
+    reordering into a whole-file diff; keying by identity instead means only
+    an actual added/removed/changed route diffs.
     """
     by_key: dict[str, dict] = {}
     for route in payload["routes"]:
@@ -167,20 +103,11 @@ def _routes_by_key(payload: dict) -> dict[str, dict]:
 
 
 def _openapi_by_shape(payload: dict) -> dict:
-    """Project a ``capture_http()`` payload's openapi block for comparison,
-    with ``info.version`` dropped.
-
-    ``info.version`` is the application's own version string. Every release
-    bump changes it by design, and it describes the build rather than the
-    shape of the HTTP surface. Comparing it makes each version bump a
-    behavior-preservation failure on a pull request that changed no route --
-    and since the baseline is only meant to be regenerated when an
-    intentional route change lands, the two get coupled: either the version
-    is stale in the fixture, or every release carries a regenerated baseline
-    whose diff is indistinguishable from a real surface change. The package
-    version is asserted from the package metadata; this gate covers the
-    surface. Same reasoning as ``ordinal`` above: drop the field that is not
-    a fact about the routes.
+    """Openapi block with ``info.version`` dropped -- it's the app's build
+    version, bumped on every release regardless of route changes, and would
+    otherwise make every release a false behavior-preservation failure here.
+    Same reasoning as ``ordinal`` above: drop the field that is not a fact
+    about the routes.
     """
     openapi = payload["openapi"]
     info = {k: v for k, v in openapi.get("info", {}).items() if k != "version"}
@@ -247,17 +174,11 @@ def test_cli_surface_matches_baseline():
 def _assert_stderr_matches_baseline(
     argv: tuple[str, ...], got_stderr: str, exp_stderr: str
 ) -> None:
-    """Compare one case's live stderr against its frozen baseline, tolerating
-    only the argparse choice-quoting rendering difference (see
-    ``_capture.normalize_argparse_choice_quoting``) -- everything else,
-    including a changed/added/removed/renamed choice name, must still match
-    byte-for-byte.
-
-    A normalization that silently accepts a difference reads identically to
-    a byte-for-byte match that never needed it, so any case where
-    normalization was load-bearing announces itself via a pytest warning
-    (visible in the run's warnings summary even when the test passes)
-    instead of passing silently.
+    """Compare stderr against baseline, tolerating only the argparse
+    choice-quoting rendering difference (``_capture.normalize_argparse_choice_quoting``)
+    -- a changed/added/removed/renamed choice still fails byte-for-byte.
+    Warns (rather than passing silently) whenever normalization was load-bearing,
+    so the warnings summary shows every case that needed it.
     """
     if got_stderr == exp_stderr:
         return
@@ -295,15 +216,14 @@ def test_cli_specialized_paths_match_baseline():
 def test_normalize_argparse_choice_quoting_is_quoting_agnostic():
     """Property 1: the same choice list, quoted or bare, normalizes to the
     same fragment. Uses this project's own frozen baselines rather than a
-    synthetic example: ``specialized.json`` (captured on 3.10, quoted) and
-    ``specialized_py312.json`` (captured on 3.12, bare) are, for
-    ``bogus-unknown-command``, identical in every other respect (both
-    predate the 3.13 usage-line-wrap/metavar-collapse change -- unlike
-    specialized_py314.json, which also differs in wrapping and would make
-    this comparison conflate two unrelated rendering changes) -- so this
-    pair isolates exactly the quoting difference the normalizer targets.
-    This is also why the version map collapses (3, 10)-(3, 12) onto one
-    baseline file above."""
+    synthetic example: ``specialized.json`` (3.10, quoted) and
+    ``specialized_py312.json`` (3.12, bare) are, for
+    ``bogus-unknown-command``, identical in every other respect -- both
+    predate the 3.13 usage-line-wrap/metavar-collapse change, unlike
+    specialized_py314.json, which would conflate two unrelated rendering
+    changes -- so this pair isolates exactly the quoting difference the
+    normalizer targets. Also why the version map collapses (3, 10)-(3, 12)
+    onto one baseline file above."""
     quoted = {tuple(c["argv"]): c for c in _load("specialized")}[("bogus-unknown-command",)][
         "stderr"
     ]
@@ -627,20 +547,13 @@ def test_fixtures_carry_no_host_specific_state():
     )
 
 
-# `test_fixtures_carry_no_host_specific_state` above only catches leaks that
-# happen to match one of a few path patterns. That is a pattern-shaped check:
-# it says nothing about a captured field that leaks host state through some
-# other shape (a session id, a library version, a CVE posture, a directory
-# listing). The check below instead enumerates the *population* every
-# byte-for-byte comparison already excludes as volatile (_volatile_argv_for,
-# above -- derived from _COMMITTABLE_SPECIALIZED_ARGV / _COMMITTABLE_MACHINE_
-# ARGV, not a hand-written denylist) and requires every captured stream of
-# every case in that population to be either empty or carry the redaction
-# marker -- never literal captured text. A case's content having no
-# *currently visible* host-specific value is not an exemption: if it is
-# excluded from comparison, pinning its literal bytes has no oracle value
-# and is pure downside if the command ever starts reporting live state
-# through that field.
+# `test_fixtures_carry_no_host_specific_state` above only catches leaks
+# matching a few path patterns -- it says nothing about host state leaking
+# through some other shape (a session id, a library version, a directory
+# listing). The check below instead requires every case in the volatile
+# population (_volatile_argv_for) to carry either an empty stream or the
+# redaction marker, never literal captured text -- no currently-visible leak
+# is an exemption, since pinning volatile bytes has no oracle value.
 _REDACTION_MARKER_RE = re.compile(r"^\[redacted: .+\]$", re.DOTALL)
 
 
@@ -731,27 +644,13 @@ def test_new_case_becomes_committable_only_via_declaration(monkeypatch):
     assert _unredacted_fields("specialized", cases) == []
 
 
-# ── Differential check on committable streams ────────────────────────────
-#
-# A case-level committable declaration means a human read that command's
-# output once and judged it safe. That judgment decays: the SAME command can
-# grow env-, cwd-, or clock-derived content later (a new flag whose default
-# reads an env var, a banner that prints the working directory, a dependency
-# bump that starts stamping a timestamp) without ever leaving the allowlist.
-# A vocabulary/pattern check only catches shapes someone thought to list; it
-# also produces false accepts, since a real username or hostname can just
-# happen to collide with an ordinary CLI word already public in this repo's
-# own source (e.g. "admin", "runner").
-#
-# The property that actually matters: committable output must not depend on
-# the machine, the environment, or the clock at all. `differential_capture`
-# runs each committable case more than once under deliberately different
-# HOME/TMPDIR/USER/cwd and at two different wall-clock moments; anything
-# derived from any of those necessarily differs across the runs, and
-# genuinely static argparse usage/error text does not. A hostname is the one
-# thing that is identifying but constant on a given machine, so it cannot
-# show up as cross-run variance -- that gap is closed separately by
-# `known_machine_identity`, which redacts by known value rather than shape.
+# A committable declaration decays: the same command can grow env-, cwd-, or
+# clock-derived content later without ever leaving the allowlist. The checks
+# below re-verify the property that actually matters -- committable output
+# must not depend on the machine, environment, or clock at all -- via
+# `differential_capture` (see docs/internals/contracts.md). A hostname is
+# identifying but constant per machine, so it can't show up as cross-run
+# variance; that gap is closed separately by `known_machine_identity`.
 
 
 def _offending_fields(runs: list[dict]) -> list[str]:
@@ -769,19 +668,14 @@ def _offending_fields(runs: list[dict]) -> list[str]:
 
 def _identity_hits(text: str, identity: frozenset[str]) -> list[str]:
     """Whole-word/whole-path occurrences of a known machine-identity value in
-    *text*, INCLUDING a path root appearing as a prefix of a longer path
-    (e.g. identity value ``/Users/lion`` must hit inside
-    ``/Users/lion/some/deeper/path``, not just an exact standalone
-    occurrence) -- a value under a redacted root is exactly as identifying as
-    the root itself. Only the trailing boundary allows a `/` continuation;
-    a following word character still must not match, so a same-prefixed but
-    distinct name (``/Users/lionx``) is not misreported as a hit. The
-    leading boundary is unchanged and still word-bounded: a short real
-    username can legitimately be a substring of an unrelated CLI word (this
-    repo's own real capture hit this -- the checkout's username is a
-    substring of "lionagi", which appears throughout genuinely static help
-    text), and a raw substring match would misreport that collision as a
-    leak."""
+    *text*, including as a path-root prefix of a longer path (``/Users/lion``
+    must hit inside ``/Users/lion/deeper/path`` -- a value under a redacted
+    root is as identifying as the root itself), while a same-prefixed but
+    distinct name (``/Users/lionx``) is not a hit. Word-bounded on the
+    leading edge too: a short real username can legitimately be a substring
+    of an unrelated CLI word (this repo's checkout username is a substring
+    of "lionagi"), and a raw substring match would misreport that as a leak.
+    """
     return [v for v in identity if v and re.search(rf"(?<![\w/]){re.escape(v)}(?!\w)", text)]
 
 

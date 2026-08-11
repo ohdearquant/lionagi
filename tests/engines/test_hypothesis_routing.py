@@ -59,9 +59,6 @@ def _mute(eng, *stages):
     return calls
 
 
-# ── Defaults and overrides ────────────────────────────────────────────────
-
-
 def test_recursion_and_judge_defaults():
     eng = HypothesisEngine()
     assert eng.max_depth == 2
@@ -132,9 +129,6 @@ def test_judge_bar_escalates():
     assert "register decision" in _judge_bar(1)
     assert "correctness" in _judge_bar(2)
     assert "correctness" in _judge_bar(5)
-
-
-# ── Dedup gate routing ────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -222,9 +216,6 @@ async def test_orphan_dedup_verdict_notifies():
     assert any(e["type"] == "dedup_orphan" for e in events)
 
 
-# ── Filing queue ──────────────────────────────────────────────────────────
-
-
 def _seed_certified_run(eng):
     run = eng.new_run()
     f = run.collect(FindingPosted(description="stale checkpoint overwrites newer segment"))
@@ -283,9 +274,6 @@ def test_no_dedup_stage_means_empty_filing_queue():
     assert filing_queue(run) == []
 
 
-# ── Loud total failure ────────────────────────────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_all_stages_failing_raises_instead_of_empty_report():
     eng = HypothesisEngine(judge_model=None)
@@ -316,9 +304,6 @@ async def test_partial_progress_still_synthesizes():
     eng._synthesize = fake_synth
     out = await eng.run("seed finding")
     assert out == "PARTIAL-REPORT"
-
-
-# ── Dedup failure fail-open (a broken leg must not drop the finding) ───────
 
 
 @pytest.mark.asyncio
@@ -368,9 +353,6 @@ async def test_dedup_stage_exception_does_not_double_release_with_late_verdict()
     assert [s for s, _ in calls] == ["extract"]
 
 
-# ── Malformed dedup verdicts are rejected, never silently cleared ──────────
-
-
 @pytest.mark.parametrize("bad_verdict", ["uncertain", "Duplicate", "dupe", "NEW", ""])
 def test_dedup_checked_rejects_non_literal_verdicts(bad_verdict):
     with pytest.raises(pydantic.ValidationError):
@@ -381,9 +363,6 @@ def test_dedup_checked_rejects_non_literal_verdicts(bad_verdict):
 def test_dedup_checked_accepts_exact_literal_verdicts(good_verdict):
     d = DedupChecked(finding_ref="F-1", verdict=good_verdict)
     assert d.verdict == good_verdict
-
-
-# ── Local finding idempotence key (finding 12) ──────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -423,9 +402,6 @@ async def test_same_description_and_evidence_exact_repeat_still_dedups_locally()
     await run.emit(FindingPosted(description="CSR chosen for BFS", evidence="benchmark A"))
     await run.wait_quiescence()
     assert len(calls) == 1  # a byte-identical repeat is still a local no-op
-
-
-# ── Recursion bound derived from the indexed parent, not the emission ──────
 
 
 @pytest.mark.asyncio
@@ -624,9 +600,6 @@ async def test_question_gen_from_conclude_route_derived_via_result_chain():
     assert len(calls) == 1
 
 
-# ── Dedup exposes tools to non-CLI models (finding 13) ──────────────────────
-
-
 @pytest.mark.asyncio
 async def test_dedup_stage_passes_actions_true_when_tools_configured():
     eng = HypothesisEngine(dedup_repo="owner/repo", dedup_tools=("bash",), judge_model=None)
@@ -677,9 +650,6 @@ async def test_dedup_stage_no_tools_configured_does_not_force_actions():
     await eng._dedup(run, f)
 
     assert captured["actions"] is False
-
-
-# ── Effort-suffix precedence end-to-end ──
 
 
 @pytest.mark.asyncio
