@@ -472,3 +472,292 @@ had a chance to run. A handler-raised `CancelledError` cannot be nested in
 records either form. Cancellation of the emitter task remains a plain
 `CancelledError` and propagates, so a broken handler is visible without
 stopping unrelated schedules or swallowing scheduler shutdown.
+
+## lionagi/studio/operator/
+
+The Operator (ADR-0083) is a durable, human-gated chat surface over Studio:
+one long-lived conversation per project view, backed by SQLite
+(`store.py`'s `OperatorStore`), that can read run state and propose
+mutating actions but never executes one without an explicit human decision.
+The package splits into the durable store, a Branch-backed engine that
+drives one provider turn (`engine.py`), a coordinator that wires turns to
+proposals (`coordinator.py`), a set of MCP-exposed read/write tools
+(`application_mcp.py` plus the per-action adapters), and shared
+redaction/catalog helpers.
+
+### Turn identity and the propose/poll/execute pattern
+
+Every mutating tool in this package — `cancel_run`, `resume_run`,
+`rename_session`, `launch_playbook` (`application_mcp.py`), and the
+stdio permission bridge (`permission_mcp.py`) — follows the same shape.
+The tool reads its durable turn identity from three environment variables
+(`LIONAGI_OPERATOR_DB_PATH`, `LIONAGI_OPERATOR_CONVERSATION_ID`,
+`LIONAGI_OPERATOR_REQUEST_ID`) set by the daemon around the provider
+subprocess; a real MCP call always has them, and their absence is treated
+as a hard configuration error, not a soft fallback. The tool then resolves
+its target, builds a command payload, and calls `OperatorStore.create_proposal`
+with a `risk` tier (`mutate`/`execute`/`admin`) and an idempotency key
+derived from `canonical_hash` — the same command submitted twice (e.g. a
+retried HTTP request) reuses the first proposal rather than creating a
+second one. It polls `get_proposal` until the status leaves `pending`
+(expiring it past its deadline if needed) and returns a redacted result.
+The proposal only carries the *decision*; the actual state-changing act
+lives in a paired `execute_*_command` function
+(`execute_cancel_command`, `execute_resume_command`,
+`execute_rename_session_command`), invoked by the coordinator only once a
+human allows the proposal. This split matters for ownership: a command
+captures the project it resolved against at proposal time, but every
+`execute_*` function re-fetches the target row and re-checks that project
+match immediately before writing, because a human's approval window is a
+gap the target's project (or status) can change across. Re-checking only at
+resolution time would let a race during that gap either write to a run that
+changed ownership or silently no-op in a way the caller couldn't
+distinguish from success.
+
+`cancel_run` additionally reuses `lionagi.cli.kill`'s exact primitives
+(`_kill_one`, `_list_running_children`) so a cancellation from the Operator
+is indistinguishable from one issued through `li kill --recursive`: running
+children are signalled deepest-first so none are orphaned, and
+`_persist_cancel`'s guard against a non-`running` row means a race that lets
+the process finish naturally during the approval window degrades to
+`already_terminal` rather than a double- or wrong-run cancel. `resume_run`
+is a distinct operation from un-pausing: the session lifecycle policy
+(`lionagi/state/lifecycle/policy.py`) has no edge back out of a terminal
+status such as `cancelled`, so resuming never reopens the old run's status —
+it launches a new invocation that either continues an `agent` run's branch
+with a new instruction (`li agent -r`) or replays a `play`/`flow`/`show-play`
+run's persisted checkpoint (`li o flow --resume`), and the two argument
+shapes are mutually exclusive because the checkpoint owns the plan for the
+second kind. `rename_session` renames a run's own record; it is
+deliberately separate from renaming the Operator conversation itself
+(`OperatorStore.update_conversation`), since one conversation can discuss
+many runs across its life.
+
+### Resolving a run reference
+
+`run_progress.py::resolve_run` (reused by `run_findings.py`,
+`resume_run.py`, and `rename_session.py`) and `cancel_run.py`'s own
+`_resolve_run` both accept the same reference vocabulary: an exact run/session
+id, an 8+ hex id prefix, a name or playbook substring (minimum 3
+characters), or the literal `"current"`. Id/prefix resolution reuses
+`lionagi.cli._util.fetch_unique_row`, the same primitive `li kill` uses, so
+a reference this tool accepts resolves identically to one typed at the CLI.
+Every arm is scoped to the calling turn's own project — read from the
+turn's stored context, never accepted as an argument — and a foreign
+project's run is reported exactly like a nonexistent one (`{"found": False}`)
+rather than surfaced as an ambiguity candidate or a resolved id, either of
+which would itself disclose that the id exists. A turn with no owner
+mapping at all raises `MissingOwnerContextError` rather than falling back
+to matching every project's runs (both modules keep their own small copy
+of this check and error rather than sharing one, so each stays
+self-contained). Nothing is ever guessed: an ambiguous prefix or substring
+match returns candidates instead of picking one, capped at `MAX_CANDIDATES`
+(10) with a `truncated` flag when more existed.
+
+`"current"` resolves against the turn's own frozen context, not a
+later-reported live view — deliberately, because a cancellation or rename
+acting on a view reported *after* the instruction was sent could target a
+run the human was never looking at when they issued it. (Contrast this
+with `get_current_view`, below, which does prefer a later live report — a
+read has no such hazard.) The frontend's selection payload for this key is
+carried under `"s"` for mission/history views (`OperatorPanel.tsx`'s
+`selection` writer) and under `"sel"` for the library space; there is never
+a `runId`/`run_id`/`sessionId` key on the wire for the former, which is why
+`cancel_run._current_run_id` reads `"s"` specifically while
+`run_progress._resolve_current` also tries the longer names for the paths
+that do use them.
+
+### View freshness: observation count, not wall clock
+
+The Operator tracks "where is the human right now" (`space`, `route`,
+`selection`, `filters`) two ways: as a snapshot frozen onto each turn's
+context, and as an out-of-band report a page can send any time via
+`OperatorStore.record_view`. Ordering between a turn's frozen snapshot and
+a later view report — and between two view reports from the same page — is
+by `observation_seq`, an integer each page increments for the views it
+sends, never by server arrival time or a wall clock. Arrival order is
+wrong because a page can queue a report before an instruction is sent and
+have it land after; a wall clock is wrong because it can step backwards and
+leave a stale view holding the higher timestamp. The `observer_id` that
+travels with every count identifies which page produced it, because a
+count means nothing compared across pages — two browser tabs on one
+conversation are two independent counters, and a reload starts a new one.
+`record_view` gives each observer its own row for the same reason: a
+shared row would let a delayed report from an older navigation overwrite a
+newer page's high-water mark. A report that does not count higher than
+that observer's own stored count is discarded outright.
+
+`application_mcp.py::get_current_view` is the read side: it starts from the
+turn's frozen context and only swaps in the stored view when that view's
+`observation_seq` is both present and strictly greater than the turn's own
+— otherwise the turn's snapshot is the most defensible answer available.
+The response reports whether the returned context is `"turn"` (nothing
+newer confirmed) or `"live"` (a fresher report exists), but never echoes
+the raw sequence number itself, since a bare count invites exactly the
+cross-page comparison this mechanism exists to prevent. `OperatorViewReport`
+(`types.py`) requires both `observation_seq` and `observer_id` for this
+reason — a report that cannot say who saw it or where it fell in their
+sequence can never be ordered against anything, so it is rejected outright
+rather than stored with a misleading freshness label.
+
+### Model catalog, provider selection, and effort clamping
+
+`catalog.py` is the single source of truth `GET /operator/models` renders
+from and the coordinator validates every turn's selection against before
+it reaches a provider CLI; model ids and effort ceilings are grounded in
+the provider request models themselves (`ClaudeEffort` for `claude_code`,
+the codex effort-ceiling tables in `service/providers.py` for `codex`, and
+`resolve_agy_model` — which folds effort into the model name rather than
+taking a separate parameter — for `gemini_code`). `model_effort_choices`
+derives the efforts it offers for a given model from the same clamp
+functions the request-build path applies (`_clamp_claude_effort`,
+`_clamp_codex_effort`, `_clamp_gemini_effort`), rather than restating a
+second copy of the ceilings: an effort is offered only when clamping it
+for that model is a no-op. This matters because the request path clamps
+silently — a non-Opus Claude model turns `xhigh` into `high`, most Codex
+models turn `max`/`ultra` into `xhigh`, Gemini Pro has no Medium tier — and
+offering a value the request would silently change is worse than not
+offering it: the operator picks one level and a different one runs with
+nothing said. `resolve_selection` validates a client's requested
+`(provider, model, effort)` the same way: when a model is named, effort is
+checked against that specific model's ceiling rather than its provider's
+whole vocabulary, so a stale client can't pin an effort the request path
+would then quietly reduce.
+
+### Provider session identity vs. durable branch identity
+
+`OperatorStore` tracks two different kinds of continuity for a
+conversation, and conflating them was a real bug each fixes. A **provider
+session id** (`claim_resolved_pair`, `set_provider_session_id`) is a
+resumability token that belongs to the exact `(provider, model)` pair that
+created it — resuming a Claude session against Codex is meaningless.
+Before `claim_resolved_pair` existed, only an explicit pin change could
+invalidate a stored session; an *unpinned* conversation runs on whatever
+the environment resolves to, re-read every turn, so moving the
+process-wide default provider silently tried to resume a session that
+belonged to the old pair. `claim_resolved_pair` compares the pair about to
+run against the pair that last ran and drops the stored session (returning
+`None` to resume with) exactly when they differ. A `NULL` stored pair — no
+turn has recorded a resolution yet, true for every conversation alive when
+this shipped — is not treated as a mismatch, which would otherwise drop
+every live session once at upgrade. `clear_provider_model` removes an
+explicit pin (an omitted `model` on a turn means "keep the current pin",
+so there has to be a separate way to ask for "no pin"), and drops the
+provider session as a consequence of the pair changing, not as its own
+separate effect — clearing an already-unpinned conversation is a no-op.
+
+A **branch id** (`claim_branch_id`) is a different, longer-lived identity:
+the id every turn of a conversation builds its in-process `Branch` with.
+Before this existed, every turn constructed a brand-new `Branch()` with a
+fresh random id, so the CLI's own persistence path
+(`setup_agent_persist` in `lionagi/cli/_runs.py`) saw a never-before-seen
+id each time and created a new `sessions` row per turn instead of one row
+per conversation. Feeding back the same claimed id lets that existing
+"resume" logic run instead — it looks up the id in the `branches` table
+and appends to the existing session when found. `claim_branch_id` mints
+the id once (a fresh UUID) and persists it; every call after that returns
+the same value. It is race-safe the same way `claim_resolved_pair` is —
+wrapped in the store's `BEGIN IMMEDIATE` transaction, so two turns racing
+to claim the first id block against each other rather than minting two.
+Note that this only ever stores an identity, never a live `Branch` object:
+turns arrive as separate HTTP requests, the daemon restarts between them,
+and two browser tabs can drive one conversation at once, so no Python
+object can be assumed shared across turns.
+
+`fork_conversation` copies a source conversation's turns into a new,
+independent one, but only turns that reached a terminal status
+(`completed`/`failed`/`cancelled`) — a turn still streaming is left out, so
+forking mid-turn ends the fork at the last completed turn rather than
+copying a half-written one, and the source conversation keeps streaming
+untouched. `up_to_sequence`, when given, additionally caps the fork at an
+earlier point in history so a user can branch from any prior turn, not
+only the tip. The fork starts with no provider session of its own, so it
+never silently resumes the source's provider-side session.
+
+### Redaction
+
+`redact.py` is shared by every read tool (`run_detail`, `run_progress`,
+`run_findings`) and by the tool-argument/artifact payloads those tools and
+the write adapters project. `scrub_text` catches secrets and paths by
+*shape*: known token prefixes (`sk-`, `ghp_`, JWT-shaped strings), header
+and `Bearer` forms, `KEY=value`/`key: value` assignments under a
+secret-marker name, and absolute POSIX/Windows paths (collapsed to their
+leaf filename, so a real path like `/Users/lion/My Project/notes/secret.txt`
+is matched and redacted as a whole, not just its first space-free
+segment). Shape-based matching alone misses a secret that doesn't look
+like one — an arbitrary passphrase or short internal token echoed back
+verbatim from a run's own environment, which a Studio-launched run
+inherits from this server process. `known_secret_values` reads that
+environment directly and returns every value stored under a
+secret-marker-named key (4+ characters, to exclude incidental short
+matches), and `scrub_text` strips any of those literal values in addition
+to the shape-based patterns.
+
+Whether a *field name* itself means a credential is decided once, by
+`is_secret_field_name`, and every redaction path shares it — two divergent
+copies of this rule used to exist, and a value under an `auth` key was
+withheld on some projections and served on others. `fold_field_name`
+normalizes separators first (`X-API-Key`, `api.key`, and `api_key` all fold
+to the same spelling) so the marker list only needs one spelling per
+concept. A short, closed set of names (`auth`, `authentication`, `bearer`)
+is matched by exact equality rather than substring, because those words
+also occur inside unrelated field names (`author`, `authorized_keys_count`)
+that must not be redacted. `redact_arguments` applies the same field-name
+judgment recursively, carrying the parent key down into nested containers
+— without that, `{"auth": "..."}` was withheld while `{"auth": {"value":
+"..."}}` was served, the same field-name gap recurring one level down.
+Two independent byte caps (`cap_by_bytes` for a list of items,
+`cap_payload_by_bytes` for one payload) bound aggregate response size after
+redaction; `cap_by_bytes` fails closed on a single oversized item — an
+item that alone exceeds the limit is elided rather than admitted whole,
+so one huge newest item can't blank out every older, smaller one that
+would otherwise fit.
+
+### Bounded read projections: run_detail, run_progress, run_findings
+
+All three read tools report **why** a run couldn't be read, not just that
+it couldn't: `run_detail` returns `{"known": False, "source": "unavailable"}`
+when the configured store cannot honestly be opened read-only (checked
+both before and after the underlying carrier call, so a store that
+disappears mid-call is reported as unavailable rather than as an empty
+result), versus `{"known": False, "source": "store"}` when the store is
+fine but no run matches — `get_run` collapses both situations into a bare
+`None`, so `run_detail` runs its own preflight to tell them apart. Every
+free-text field goes through `scrub_text` and `project` through
+`public_project`; `manifest` (an unbounded mapping) goes through the
+recursive redactor plus a byte cap. These fields are redacted even though
+today's StateDB-backed carrier already fills most of them with safe
+placeholders, because the projection has to be safe for what the field
+names promise across every backing carrier (a manifest-backed builder
+elsewhere fills the same names from raw, untrusted manifest text), not
+just for the values one code path happens to supply right now.
+
+`run_progress` reports operation counts two ways depending on what the run
+has: for an ordinary run it counts branches by status; for a DAG run (one
+with a `graph`) it instead derives per-node state from the session's
+recorded lifecycle signals, because a planned node with no branch
+materialized yet would otherwise be invisible to a branch count. Node
+state is read from the same `NodeQueued`/`NodeStarted`/... signal kinds the
+frontend's live SSE view and the in-run `Signal` bus both use, replayed
+over persisted `session_signals` rows since a bounded read tool can't
+subscribe to a live stream. `skipped` folds into the `completed` bucket
+(the node will never run, but the edge condition that skipped it did what
+it was written to do) while still being counted separately in
+`skippedCount`, and `escalated` folds into `pending` while being counted in
+`escalatedCount` — both counts are always present, including as zero, so a
+caller can tell "nothing happened" from "the field doesn't exist yet."
+
+`run_findings` derives tool-call outcomes (`success`/`error`/`pending`)
+from message content via the same `_detect_status` heuristic
+`lionagi.studio.services.runs` already uses for the run-detail step list,
+since plain session messages carry no structured `ok: bool`. Every section
+here is bounded by a message *window* (the carrier is called with a fixed
+`message_limit`) before any byte cap ever applies — the byte cap almost
+never fires in practice, so `truncated` reports both, and the response
+carries `total` alongside `returned`/`items` so a caller can tell "the last
+50 of 50" from "the last 50 of 48,000." The `errors` section's `partial`
+flag propagates from the same window: branch and session status rows are
+read in full, but the tool-call-derived half of the errors list was built
+from a possibly-incomplete message window, and failing to say so would let
+"no errors found" silently mean "no errors observed in what we happened to
+load."
