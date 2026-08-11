@@ -15,6 +15,7 @@ VALID_ENTITY_TYPES: Final[frozenset[str]] = frozenset(
         "play",
         "invocation",
         "team",
+        "schedule",
         "schedule_run",
     }
 )
@@ -32,6 +33,7 @@ ENTITY_TABLE_ALIASES: Final[dict[str, str]] = {
     "plays": "play",
     "invocations": "invocation",
     "teams": "team",
+    "schedules": "schedule",
     "schedule_runs": "schedule_run",
 }
 
@@ -150,6 +152,10 @@ class ScheduleReasons:
     SKIPPED_MISSED_FIRE = "schedule.skipped.missed_fire"
     DEFERRED_CAPACITY = "schedule.deferred.capacity"
     BUDGET_EXHAUSTED = "schedule.budget.exhausted"
+    CREATED_REQUEST = "schedule.created.request"
+    ENABLED_REQUEST = "schedule.enabled.request"
+    DISABLED_REQUEST = "schedule.disabled.request"
+    DELETED_REQUEST = "schedule.deleted.request"
 
 
 class TeamReasons:
@@ -235,6 +241,7 @@ ENTITY_TYPE_TO_TABLE: Final[dict[str, str]] = {
     "play": "plays",
     "invocation": "invocations",
     "team": "teams",
+    "schedule": "schedules",
     "schedule_run": "schedule_runs",
 }
 

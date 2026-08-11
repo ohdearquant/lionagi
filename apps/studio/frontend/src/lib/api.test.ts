@@ -281,6 +281,38 @@ describe("fetchJson Authorization header", () => {
   });
 });
 
+describe("schedule lifecycle audit transport", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the operator's disable reason in the request body", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return Promise.resolve(
+          new Response(JSON.stringify({ ok: true, enabled: false }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    const { disableSchedule } = await import("./api");
+    await disableSchedule("sched/a", "Pause during credential rotation");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain("/api/schedules/sched%2Fa/disable");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      reason: "Pause during credential rotation",
+    });
+  });
+});
+
 describe("fetchJson HTML-fallback / no-backend guard", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();

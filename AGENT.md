@@ -194,13 +194,19 @@ li schedule create pr-review --trigger github \
     --action flow --model claude/sonnet \
     --prompt "Review PR #{{pr_number}}"               # GitHub poll schedule
 li schedule enable <name>                             # Enable
-li schedule disable <name>                            # Disable (no delete)
+li schedule disable <name> --reason "Paused for maintenance" # Disable (no delete)
 li schedule trigger <name>                            # Fire immediately
 li schedule delete <name>                             # Remove
 li schedule runs <name>                               # Execution history
 ```
 
 The CLI writes directly to `state.db` — Studio server does not need to be running for CRUD. Schedules only fire while the Studio server is running.
+
+Create, enable, disable, and delete append lifecycle rows to the canonical
+`status_transitions` audit ledger in the same transaction as the schedule
+mutation. Disable requires a reason. Schedule detail exposes the newest 50
+events and the last lifecycle change; schedules created before this audit was
+introduced return an empty history until their next real lifecycle change.
 
 **Trigger types**: `cron` (5-field), `interval` (seconds), `github_poll` (polls PR events, cursor-based, ETag-cached).
 

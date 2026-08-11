@@ -689,7 +689,9 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "last_alert_at",
         "last_fired_at",
         "last_healthy_poll_at",
+        "last_lifecycle_change",
         "last_status",
+        "lifecycle_history",
         "managed_by",
         "max_runs",
         "missed_fire_policy",
@@ -969,7 +971,10 @@ def test_schedules_disable_success_response_shape(tmp_path, monkeypatch):
     schedule_id = _create_gate_schedule(db_path)
     client = _make_client()
 
-    r = client.post(f"/api/schedules/{schedule_id}/disable")
+    r = client.post(
+        f"/api/schedules/{schedule_id}/disable",
+        json={"reason": "response-shape contract test"},
+    )
     assert r.status_code == 200
     assert r.json() == {"ok": True, "enabled": False}
 

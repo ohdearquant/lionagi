@@ -269,7 +269,7 @@ describe("SchedulesTable — keyboard interaction (mounted)", () => {
     expect(onOpen).toHaveBeenCalledWith("sched-1");
   });
 
-  it("Space on the toggle flips it without also opening the row", async () => {
+  it("Space on the toggle requires a reason before disabling without opening the row", async () => {
     await mount();
     const toggle = container.querySelector('button[aria-label="Disable schedule"]');
     expect(toggle).not.toBeNull();
@@ -279,8 +279,25 @@ describe("SchedulesTable — keyboard interaction (mounted)", () => {
 
     click(toggle!);
     await flush();
+    expect(api.disableSchedule).not.toHaveBeenCalled();
+    expect(onOpen).not.toHaveBeenCalled();
+
+    const reason = container.querySelector('input[name="disable-reason"]');
+    expect(reason).not.toBeNull();
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(reason, "Pause while rotating credentials");
+      reason?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const confirm = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Disable schedule",
+    );
+    expect(confirm).toBeTruthy();
+    click(confirm!);
+    await flush();
+
     expect(api.disableSchedule).toHaveBeenCalledTimes(1);
-    expect(api.disableSchedule).toHaveBeenCalledWith("sched-1");
+    expect(api.disableSchedule).toHaveBeenCalledWith("sched-1", "Pause while rotating credentials");
     expect(onOpen).not.toHaveBeenCalled();
   });
 });

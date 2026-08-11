@@ -11041,6 +11041,23 @@
                 }
               }
             }
+          },
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DisableScheduleRequest"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Body"
+                }
+              }
+            }
           }
         }
       },
@@ -12992,6 +13009,22 @@
         ],
         "title": "CreateScheduleRequest"
       },
+      "DisableScheduleRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "DisableScheduleRequest"
+      },
       "CreateWorkflowDefRequest": {
         "properties": {
           "name": {
@@ -14455,6 +14488,6 @@
         "title": "_DispositionBody"
       }
     },
-    "schema_count": 33
+    "schema_count": 34
   }
 }

@@ -469,8 +469,24 @@ export interface ScheduleRunSummary {
   error_detail: string | null;
 }
 
+export interface ScheduleLifecycleChange {
+  id: string;
+  entity_type: "schedule";
+  entity_id: string;
+  previous_status: "enabled" | "disabled" | null;
+  status: "enabled" | "disabled" | "deleted";
+  reason_code: string;
+  reason_summary: string | null;
+  source: string;
+  actor: string | null;
+  created_at: number;
+  metadata: { request_cwd?: string } | null;
+}
+
 export interface ScheduleDetail extends ScheduleSummary {
   recent_runs: ScheduleRunSummary[];
+  lifecycle_history: ScheduleLifecycleChange[];
+  last_lifecycle_change: ScheduleLifecycleChange | null;
 }
 
 // ─── Operator conversation protocol (ADR-0083 v1) ──────────────────────────

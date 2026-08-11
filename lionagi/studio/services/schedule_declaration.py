@@ -716,7 +716,13 @@ async def create_quick_schedule(
         "updated_at": now,
         **resolved.db_fields,
     }
-    await db.create_schedule(row)
+    await db.create_schedule(
+        row,
+        lifecycle_actor="cli",
+        lifecycle_source="operator",
+        lifecycle_reason_summary="Schedule created by the CLI quick-create command.",
+        lifecycle_metadata={"request_cwd": str(cwd.resolve())},
+    )
     resolved.qualified_name = qualified_name
     return schedule_id, resolved
 
@@ -898,7 +904,13 @@ async def apply_schedule_set(
         elif entry.action == "DISABLE":
             disables.append(entry.existing_id)
 
-    await db.apply_schedule_set(creates=creates, updates=updates, disables=disables)
+    await db.apply_schedule_set(
+        creates=creates,
+        updates=updates,
+        disables=disables,
+        lifecycle_actor=f"schedule-set:{owner_key}",
+        lifecycle_metadata={"request_cwd": str(manifest_dir.resolve())},
+    )
 
     return ApplyResult(
         plan=plan,

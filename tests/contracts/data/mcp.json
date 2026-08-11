@@ -2002,11 +2002,17 @@
             "type": "string",
             "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
             "x-positional": true
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why this schedule is being disabled (stored in its lifecycle audit).",
+            "x-flag": "--reason"
           }
         },
         "additionalProperties": false,
         "required": [
-          "id"
+          "id",
+          "reason"
         ],
         "x-positional-order": [
           "id"

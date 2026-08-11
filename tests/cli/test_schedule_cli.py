@@ -112,9 +112,12 @@ def test_schedule_enable_disable_trigger_delete_accept_id():
     sub = parser.add_subparsers(dest="command")
     add_schedule_subparser(sub)
     for action in ("enable", "disable", "trigger", "delete"):
-        args = parser.parse_args(["schedule", action, "sched-123"])
+        tail = ["--reason", "maintenance window"] if action == "disable" else []
+        args = parser.parse_args(["schedule", action, "sched-123", *tail])
         assert args.schedule_action == action
         assert args.id == "sched-123"
+        if action == "disable":
+            assert args.reason == "maintenance window"
 
 
 def test_schedule_limits_subcommand_registered():

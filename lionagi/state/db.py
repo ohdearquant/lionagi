@@ -45,6 +45,9 @@ from lionagi.state.lifecycle.models import (
 from lionagi.state.lifecycle.models import (
     ReasonRecord as _ReasonRecord,
 )
+from lionagi.state.lifecycle.models import (
+    TransitionCommand as _TransitionCommand,
+)
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService as _LifecycleService
 from lionagi.state.reasons import LEGACY_IMPORTED as _LEGACY_IMPORTED
 from lionagi.state.reasons import (
@@ -3738,10 +3741,59 @@ class StateDB:
 
     # Schedules
 
-    async def create_schedule(self, schedule: dict[str, Any]) -> None:
+    async def create_schedule(
+        self,
+        schedule: dict[str, Any],
+        *,
+        lifecycle_actor: str = "system",
+        lifecycle_source: str = "system",
+        lifecycle_reason_summary: str = "Schedule created.",
+        lifecycle_metadata: dict[str, Any] | None = None,
+    ) -> None:
         stmt, params = self._build_schedule_insert_stmt(schedule)
         async with self._tx() as conn:
             await conn.execute(stmt, params)
+            await self._append_schedule_lifecycle_in_tx(
+                conn,
+                schedule_id=schedule["id"],
+                previous_status=None,
+                status="enabled" if schedule.get("enabled", 1) else "disabled",
+                reason_code=_ScheduleReasons.CREATED_REQUEST,
+                reason_summary=lifecycle_reason_summary,
+                actor=lifecycle_actor,
+                source=lifecycle_source,
+                metadata=lifecycle_metadata,
+            )
+
+    async def _append_schedule_lifecycle_in_tx(
+        self,
+        conn: Any,
+        *,
+        schedule_id: str,
+        previous_status: str | None,
+        status: str,
+        reason_code: str,
+        reason_summary: str,
+        actor: str,
+        source: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        return await self._lifecycle_service().append_audit_in_transaction(
+            conn,
+            _TransitionCommand(
+                entity_type="schedule",
+                entity_id=schedule_id,
+                to_status=status,
+                reason=_ReasonRecord(
+                    code=reason_code,
+                    summary=reason_summary,
+                    metadata=metadata or {},
+                ),
+                actor=_ActorRecord(type=source, id=actor),  # type: ignore[arg-type]
+            ),
+            previous_status=previous_status,
+            require_actor=True,
+        )
 
     @staticmethod
     def _build_schedule_insert_stmt(schedule: dict[str, Any]):
@@ -3860,6 +3912,46 @@ class StateDB:
             )
         return self._row_to_dict(row) if row else None
 
+    async def list_schedule_lifecycle(
+        self, schedule_id: str, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Newest-first, bounded schedule lifecycle facts.
+
+        Legacy schedule rows intentionally return an empty list. Reading a
+        pre-audit schedule must never synthesize a creation transition from
+        its mutable ``created_at``/``updated_at`` columns.
+        """
+        if limit < 1 or limit > 200:
+            raise ValueError("schedule lifecycle limit must be between 1 and 200")
+        async with self._read() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, entity_type, entity_id, previous_status, status, "
+                            "reason_code, reason_summary, evidence_refs, source, actor, "
+                            "created_at, metadata FROM status_transitions "
+                            "WHERE entity_type = 'schedule' AND entity_id = :id "
+                            "ORDER BY created_at DESC, id DESC LIMIT :limit"
+                        ),
+                        {"id": schedule_id, "limit": limit},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for key in ("evidence_refs", "metadata"):
+                if isinstance(item.get(key), str):
+                    try:
+                        item[key] = json.loads(item[key])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            out.append(item)
+        return out
+
     async def get_schedule_by_name(self, name: str) -> dict[str, Any] | None:
         async with self._read() as conn:
             row = (
@@ -3894,6 +3986,8 @@ class StateDB:
         creates: list[dict[str, Any]],
         updates: list[tuple[str, dict[str, Any]]],
         disables: list[str],
+        lifecycle_actor: str = "schedule-set",
+        lifecycle_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Atomically commit a ScheduleSet reconciliation plan: every CREATE,
         UPDATE, and DISABLE lands in one transaction -- callers must have
@@ -3903,12 +3997,74 @@ class StateDB:
             for schedule in creates:
                 stmt, params = self._build_schedule_insert_stmt(schedule)
                 await conn.execute(stmt, params)
+                await self._append_schedule_lifecycle_in_tx(
+                    conn,
+                    schedule_id=schedule["id"],
+                    previous_status=None,
+                    status="enabled" if schedule.get("enabled", 1) else "disabled",
+                    reason_code=_ScheduleReasons.CREATED_REQUEST,
+                    reason_summary="Schedule created by ScheduleSet reconciliation.",
+                    actor=lifecycle_actor,
+                    source="operator",
+                    metadata=lifecycle_metadata,
+                )
             for schedule_id, fields in updates:
+                previous = None
+                if "enabled" in fields:
+                    previous = (
+                        (
+                            await conn.execute(
+                                text("SELECT enabled FROM schedules WHERE id = :id"),
+                                {"id": schedule_id},
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
                 stmt, params = self._build_update_schedule_stmt(schedule_id, fields)
                 await conn.execute(stmt, params)
+                if previous is not None and bool(previous["enabled"]) != bool(fields["enabled"]):
+                    target_enabled = bool(fields["enabled"])
+                    await self._append_schedule_lifecycle_in_tx(
+                        conn,
+                        schedule_id=schedule_id,
+                        previous_status="enabled" if previous["enabled"] else "disabled",
+                        status="enabled" if target_enabled else "disabled",
+                        reason_code=(
+                            _ScheduleReasons.ENABLED_REQUEST
+                            if target_enabled
+                            else _ScheduleReasons.DISABLED_REQUEST
+                        ),
+                        reason_summary="Schedule state changed by ScheduleSet reconciliation.",
+                        actor=lifecycle_actor,
+                        source="operator",
+                        metadata=lifecycle_metadata,
+                    )
             for schedule_id in disables:
+                previous = (
+                    (
+                        await conn.execute(
+                            text("SELECT enabled FROM schedules WHERE id = :id"),
+                            {"id": schedule_id},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
                 stmt, params = self._build_update_schedule_stmt(schedule_id, {"enabled": 0})
                 await conn.execute(stmt, params)
+                if previous is not None and bool(previous["enabled"]):
+                    await self._append_schedule_lifecycle_in_tx(
+                        conn,
+                        schedule_id=schedule_id,
+                        previous_status="enabled",
+                        status="disabled",
+                        reason_code=_ScheduleReasons.DISABLED_REQUEST,
+                        reason_summary="Schedule omitted from the applied ScheduleSet.",
+                        actor=lifecycle_actor,
+                        source="operator",
+                        metadata=lifecycle_metadata,
+                    )
 
     async def list_schedules(
         self,
@@ -3998,13 +4154,56 @@ class StateDB:
     )
 
     async def update_schedule(
-        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
+        self,
+        schedule_id: str,
+        *,
+        guard_cursor_forward: bool = False,
+        lifecycle_actor: str = "system",
+        lifecycle_source: str = "system",
+        lifecycle_reason_code: str | None = None,
+        lifecycle_reason_summary: str | None = None,
+        lifecycle_metadata: dict[str, Any] | None = None,
+        **fields: Any,
     ) -> None:
         stmt, params = self._build_update_schedule_stmt(
             schedule_id, fields, guard_cursor_forward=guard_cursor_forward
         )
         async with self._tx() as conn:
+            previous_enabled: bool | None = None
+            if "enabled" in fields:
+                row = (
+                    (
+                        await conn.execute(
+                            text("SELECT enabled FROM schedules WHERE id = :id"),
+                            {"id": schedule_id},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if row is not None:
+                    previous_enabled = bool(row["enabled"])
             await conn.execute(stmt, params)
+            target_enabled = bool(fields.get("enabled"))
+            if previous_enabled is not None and previous_enabled != target_enabled:
+                status = "enabled" if target_enabled else "disabled"
+                await self._append_schedule_lifecycle_in_tx(
+                    conn,
+                    schedule_id=schedule_id,
+                    previous_status="enabled" if previous_enabled else "disabled",
+                    status=status,
+                    reason_code=lifecycle_reason_code
+                    or (
+                        _ScheduleReasons.ENABLED_REQUEST
+                        if target_enabled
+                        else _ScheduleReasons.DISABLED_REQUEST
+                    ),
+                    reason_summary=lifecycle_reason_summary
+                    or f"Schedule {status} by an internal state update.",
+                    actor=lifecycle_actor,
+                    source=lifecycle_source,
+                    metadata=lifecycle_metadata,
+                )
 
     @classmethod
     def _build_update_schedule_stmt(
@@ -4080,8 +4279,39 @@ class StateDB:
             stmt = stmt.bindparams(*bind_params)
         return stmt, params
 
-    async def delete_schedule(self, schedule_id: str) -> bool:
+    async def delete_schedule(
+        self,
+        schedule_id: str,
+        *,
+        lifecycle_actor: str = "system",
+        lifecycle_source: str = "system",
+        lifecycle_reason_summary: str = "Schedule deleted.",
+        lifecycle_metadata: dict[str, Any] | None = None,
+    ) -> bool:
         async with self._tx() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT enabled FROM schedules WHERE id = :id"),
+                        {"id": schedule_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return False
+            await self._append_schedule_lifecycle_in_tx(
+                conn,
+                schedule_id=schedule_id,
+                previous_status="enabled" if row["enabled"] else "disabled",
+                status="deleted",
+                reason_code=_ScheduleReasons.DELETED_REQUEST,
+                reason_summary=lifecycle_reason_summary,
+                actor=lifecycle_actor,
+                source=lifecycle_source,
+                metadata=lifecycle_metadata,
+            )
             result = await conn.execute(
                 text("DELETE FROM schedules WHERE id = :id"),
                 {"id": schedule_id},

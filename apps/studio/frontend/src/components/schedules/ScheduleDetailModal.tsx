@@ -427,6 +427,37 @@ export default function ScheduleDetailModal({
                 placeholder={t("descriptionPlaceholder")}
               />
 
+              <SectionLabel className="mt-1 border-t border-edge pt-3">
+                {t("lastLifecycleChange")}
+              </SectionLabel>
+              {detail.last_lifecycle_change ? (
+                <div className="rounded border border-edge bg-surface-overlay px-3 py-2 text-meta">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <StatusPill value={detail.last_lifecycle_change.status} />
+                    <span className="text-content-secondary">
+                      {new Date(toMs(detail.last_lifecycle_change.created_at)).toLocaleString(
+                        locale,
+                      )}
+                    </span>
+                    <span className="font-data text-content-muted">
+                      {detail.last_lifecycle_change.actor ?? t("unknownActor")}
+                    </span>
+                  </div>
+                  {detail.last_lifecycle_change.reason_summary && (
+                    <p className="mt-1 text-content-secondary">
+                      {detail.last_lifecycle_change.reason_summary}
+                    </p>
+                  )}
+                  {detail.last_lifecycle_change.metadata?.request_cwd && (
+                    <p className="mt-1 truncate font-data text-content-muted">
+                      {detail.last_lifecycle_change.metadata.request_cwd}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-meta text-content-muted">{t("noLifecycleHistory")}</p>
+              )}
+
               {/* Trigger */}
               <SectionLabel className="mt-1 border-t border-edge pt-3">
                 {t("sectionTrigger")}

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, get_args
 
 from sqlalchemy import JSON, bindparam, text
 
-from ..reasons import VALID_REASON_CODES
+from ..reasons import VALID_ENTITY_TYPES, VALID_REASON_CODES
 from . import LifecycleNotFoundError, LifecycleValidationError
 from .callbacks import (
     DEFAULT_TERMINAL_CALLBACKS,
@@ -145,15 +145,71 @@ class SQLAlchemyLifecycleService:
                 "already has an initial (previous_status=NULL) history row"
             )
 
-        transition_id = uuid.uuid4().hex
         now = time.time()
+        return await self.append_audit_in_transaction(
+            connection,
+            TransitionCommand(
+                entity_type=command.entity_type,
+                entity_id=command.entity_id,
+                to_status=command.status,
+                reason=command.reason,
+                actor=command.actor,
+            ),
+            previous_status=None,
+            created_at=now,
+        )
+
+    async def append_audit_in_transaction(
+        self,
+        connection: AsyncConnection,
+        command: TransitionCommand,
+        *,
+        previous_status: str | None,
+        created_at: float | None = None,
+        require_actor: bool = False,
+    ) -> str:
+        """Append one transition fact through the canonical lifecycle ledger.
+
+        This is the audit-only counterpart to :meth:`transition`: callers
+        whose source row does not expose a textual ``status`` column (notably
+        schedules, whose lifecycle is represented by ``enabled``) perform
+        their guarded row mutation in the same transaction, then call this
+        primitive. It deliberately shares the validation and INSERT shape
+        used by managed status transitions instead of creating a parallel log.
+        """
+        if (
+            command.entity_type not in VALID_ENTITY_TYPES
+            and command.entity_type not in self._registry
+        ):
+            raise LifecycleValidationError(
+                f"invalid audited entity_type: {command.entity_type!r}; must be one of "
+                f"{sorted(VALID_ENTITY_TYPES | self._registry.entity_types())}"
+            )
+        if not command.entity_id:
+            raise LifecycleValidationError("audited transition entity_id must be non-empty")
+        if not command.to_status:
+            raise LifecycleValidationError("audited transition status must be non-empty")
+        if command.reason.code not in VALID_REASON_CODES:
+            raise LifecycleValidationError(
+                f"invalid reason_code: {command.reason.code!r}; must be one of "
+                "the codes registered in lionagi.state.reasons.VALID_REASON_CODES"
+            )
+        if require_actor and not command.actor.id:
+            raise LifecycleValidationError("audited transition actor.id must be non-empty")
+        if command.actor.type not in get_args(ActorType):
+            raise LifecycleValidationError(
+                f"invalid actor type: {command.actor.type!r}; must be one of "
+                f"{sorted(get_args(ActorType))}"
+            )
+
+        transition_id = uuid.uuid4().hex
         await connection.execute(
             text(
                 "INSERT INTO status_transitions "
                 "(id, entity_type, entity_id, previous_status, status, "
                 " reason_code, reason_summary, evidence_refs, "
                 " source, actor, created_at, metadata) "
-                "VALUES (:id, :entity_type, :entity_id, NULL, :status, "
+                "VALUES (:id, :entity_type, :entity_id, :previous_status, :status, "
                 " :reason_code, :reason_summary, :evidence_refs, "
                 " :source, :actor, :created_at, :metadata)"
             ).bindparams(
@@ -164,13 +220,14 @@ class SQLAlchemyLifecycleService:
                 "id": transition_id,
                 "entity_type": command.entity_type,
                 "entity_id": command.entity_id,
-                "status": command.status,
+                "previous_status": previous_status,
+                "status": command.to_status,
                 "reason_code": command.reason.code,
                 "reason_summary": command.reason.summary,
                 "evidence_refs": _json_list(command.reason.evidence_refs),
                 "source": command.actor.type,
                 "actor": command.actor.id,
-                "created_at": now,
+                "created_at": time.time() if created_at is None else created_at,
                 "metadata": dict(command.reason.metadata),
             },
         )
@@ -535,33 +592,9 @@ class SQLAlchemyLifecycleService:
         if result.rowcount == 0:
             return None
 
-        transition_id = uuid.uuid4().hex
-        await conn.execute(
-            text(
-                "INSERT INTO status_transitions "
-                "(id, entity_type, entity_id, previous_status, status, "
-                " reason_code, reason_summary, evidence_refs, "
-                " source, actor, created_at, metadata) "
-                "VALUES (:id, :entity_type, :entity_id, :previous_status, :status, "
-                " :reason_code, :reason_summary, :evidence_refs, "
-                " :source, :actor, :created_at, :metadata)"
-            ).bindparams(
-                bindparam("evidence_refs", type_=JSON),
-                bindparam("metadata", type_=JSON),
-            ),
-            {
-                "id": transition_id,
-                "entity_type": command.entity_type,
-                "entity_id": command.entity_id,
-                "previous_status": previous_status,
-                "status": command.to_status,
-                "reason_code": command.reason.code,
-                "reason_summary": command.reason.summary,
-                "evidence_refs": _json_list(command.reason.evidence_refs),
-                "source": command.actor.type,
-                "actor": command.actor.id,
-                "created_at": now,
-                "metadata": dict(command.reason.metadata),
-            },
+        return await self.append_audit_in_transaction(
+            conn,
+            command,
+            previous_status=previous_status,
+            created_at=now,
         )
-        return transition_id

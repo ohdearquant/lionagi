@@ -14,8 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from fastapi import HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
@@ -29,6 +29,30 @@ _log = logging.getLogger(__name__)
 
 class NameConflictError(Exception):
     """Raised when a schedule name already exists."""
+
+
+def _request_lifecycle_identity(request: Request | None) -> tuple[str, str | None]:
+    """Resolve the same lightweight request identity used by Studio writes.
+
+    The actor header already identifies attention-disposition deletes. Schedule
+    lifecycle writes reuse it, and additionally retain the submitting process's
+    resolved cwd when the CLI provides one. Both values are bounded and control
+    characters are rejected before they reach the durable audit ledger.
+    """
+
+    def _safe_header(name: str, *, limit: int) -> str | None:
+        value = (request.headers.get(name) or "").strip() if request is not None else ""
+        if not value or len(value) > limit or any(ord(char) < 32 for char in value):
+            return None
+        return value
+
+    return _safe_header("x-lionagi-actor", limit=256) or "operator", _safe_header(
+        "x-lionagi-cwd", limit=4096
+    )
+
+
+def _lifecycle_metadata(request_cwd: str | None) -> dict[str, str]:
+    return {"request_cwd": request_cwd} if request_cwd is not None else {}
 
 
 # schedules columns declared NOT NULL — a PATCH that explicitly sets one of
@@ -467,6 +491,7 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         row = await db.get_schedule(schedule_id)
         if not row:
             return None
+        lifecycle_history = await db.list_schedule_lifecycle(schedule_id)
         runs = await db.list_schedule_runs(schedule_id, limit=10)
         if row.get("max_runs"):
             used = await db.count_schedule_runs(schedule_id, chain_depth=0)
@@ -479,6 +504,8 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         evidence = (await db.schedule_health_evidence([schedule_id]))[schedule_id]
         row.update(compute_schedule_health(row, evidence, now=time.time()))
     row["recent_runs"] = runs
+    row["lifecycle_history"] = lifecycle_history
+    row["last_lifecycle_change"] = lifecycle_history[0] if lifecycle_history else None
     return row
 
 
@@ -489,7 +516,9 @@ async def get_schedule_by_name(name: str) -> dict[str, Any] | None:
         return await db.get_schedule_by_name(name)
 
 
-async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
+async def create_schedule(
+    data: dict[str, Any], *, actor: str = "operator", request_cwd: str | None = None
+) -> dict[str, Any]:
     if not data.get("name"):
         raise ValueError("Schedule name is required")
     if not data.get("trigger_type"):
@@ -577,7 +606,13 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
     }
     async with StateDB() as db:
         try:
-            await db.create_schedule(schedule)
+            await db.create_schedule(
+                schedule,
+                lifecycle_actor=actor,
+                lifecycle_source="operator",
+                lifecycle_reason_summary="Schedule created through Studio.",
+                lifecycle_metadata=_lifecycle_metadata(request_cwd),
+            )
         except (sqlite3.IntegrityError, SAIntegrityError) as exc:
             raise NameConflictError(f"Schedule name {data['name']!r} already exists") from exc
     return {"id": schedule_id, "name": data["name"], "created_at": now}
@@ -672,12 +707,22 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
     return True
 
 
-async def delete_schedule(schedule_id: str) -> bool:
+async def delete_schedule(
+    schedule_id: str, *, actor: str = "operator", request_cwd: str | None = None
+) -> bool:
     async with StateDB() as db:
-        return await db.delete_schedule(schedule_id)
+        return await db.delete_schedule(
+            schedule_id,
+            lifecycle_actor=actor,
+            lifecycle_source="operator",
+            lifecycle_reason_summary="Schedule deleted through Studio.",
+            lifecycle_metadata=_lifecycle_metadata(request_cwd),
+        )
 
 
-async def enable_schedule(schedule_id: str) -> bool:
+async def enable_schedule(
+    schedule_id: str, *, actor: str = "operator", request_cwd: str | None = None
+) -> bool:
     async with StateDB() as db:
         schedule = await db.get_schedule(schedule_id)
         if not schedule:
@@ -698,7 +743,14 @@ async def enable_schedule(schedule_id: str) -> bool:
                     f"{max_runs} limit ({used} terminal run(s) recorded). "
                     "Increase or clear max_runs before re-enabling."
                 )
-        await db.update_schedule(schedule_id, enabled=1)
+        await db.update_schedule(
+            schedule_id,
+            enabled=1,
+            lifecycle_actor=actor,
+            lifecycle_source="operator",
+            lifecycle_reason_summary="Schedule enabled through Studio.",
+            lifecycle_metadata=_lifecycle_metadata(request_cwd),
+        )
 
     # A long-disabled schedule's next_fire_at may be stale; recompute now so
     # re-enabling only fires immediately if the *current* interpretation says so.
@@ -708,12 +760,28 @@ async def enable_schedule(schedule_id: str) -> bool:
     return True
 
 
-async def disable_schedule(schedule_id: str) -> bool:
+async def disable_schedule(
+    schedule_id: str,
+    *,
+    reason: str | None = "Schedule disabled by a direct service call.",
+    actor: str = "operator",
+    request_cwd: str | None = None,
+) -> bool:
     async with StateDB() as db:
         schedule = await db.get_schedule(schedule_id)
         if not schedule:
             return False
-        await db.update_schedule(schedule_id, enabled=0)
+        reason = (reason or "").strip()
+        if not reason:
+            raise ValueError("A reason is required to disable a schedule")
+        await db.update_schedule(
+            schedule_id,
+            enabled=0,
+            lifecycle_actor=actor,
+            lifecycle_source="operator",
+            lifecycle_reason_summary=reason,
+            lifecycle_metadata=_lifecycle_metadata(request_cwd),
+        )
     return True
 
 
@@ -862,6 +930,20 @@ class UpdateScheduleRequest(BaseModel):
     threshold_config: dict | None = None
 
 
+class DisableScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("reason must not be blank")
+        return value
+
+
 # ---------------------------------------------------------------------------
 # Route handlers — schedules area
 # ---------------------------------------------------------------------------
@@ -912,9 +994,15 @@ async def get_schedule_route(schedule_id: str) -> dict[str, Any]:
     status_code=201,
     name="create_schedule",
 )
-async def create_schedule_route(body: CreateScheduleRequest) -> dict[str, Any]:
+async def create_schedule_route(
+    body: CreateScheduleRequest,
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
+    actor, request_cwd = _request_lifecycle_identity(request)
     try:
-        return await create_schedule(body.model_dump(exclude_none=True))
+        return await create_schedule(
+            body.model_dump(exclude_none=True), actor=actor, request_cwd=request_cwd
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except NameConflictError as exc:
@@ -949,8 +1037,12 @@ async def update_schedule_route(schedule_id: str, body: UpdateScheduleRequest) -
     area="schedules",
     name="delete_schedule",
 )
-async def delete_schedule_route(schedule_id: str) -> dict[str, Any]:
-    ok = await delete_schedule(schedule_id)
+async def delete_schedule_route(
+    schedule_id: str,
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
+    actor, request_cwd = _request_lifecycle_identity(request)
+    ok = await delete_schedule(schedule_id, actor=actor, request_cwd=request_cwd)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     return {"ok": True}
@@ -962,9 +1054,13 @@ async def delete_schedule_route(schedule_id: str) -> dict[str, Any]:
     area="schedules",
     name="enable_schedule",
 )
-async def enable_schedule_route(schedule_id: str) -> dict[str, Any]:
+async def enable_schedule_route(
+    schedule_id: str,
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
+    actor, request_cwd = _request_lifecycle_identity(request)
     try:
-        ok = await enable_schedule(schedule_id)
+        ok = await enable_schedule(schedule_id, actor=actor, request_cwd=request_cwd)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
@@ -978,8 +1074,21 @@ async def enable_schedule_route(schedule_id: str) -> dict[str, Any]:
     area="schedules",
     name="disable_schedule",
 )
-async def disable_schedule_route(schedule_id: str) -> dict[str, Any]:
-    ok = await disable_schedule(schedule_id)
+async def disable_schedule_route(
+    schedule_id: str,
+    request: Request = None,  # type: ignore[assignment]
+    body: DisableScheduleRequest | None = None,
+) -> dict[str, Any]:
+    actor, request_cwd = _request_lifecycle_identity(request)
+    try:
+        ok = await disable_schedule(
+            schedule_id,
+            reason=body.reason if body is not None else None,
+            actor=actor,
+            request_cwd=request_cwd,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     return {"ok": True, "enabled": False}

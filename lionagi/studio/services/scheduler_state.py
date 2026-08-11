@@ -115,6 +115,11 @@ class _DBSchedulerStateService:
     async def update_schedule(
         self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
     ) -> None:
+        if "enabled" in fields and not fields["enabled"]:
+            fields.setdefault("lifecycle_actor", "scheduler")
+            fields.setdefault(
+                "lifecycle_reason_summary", "Scheduler automatically disabled the schedule."
+            )
         async with StateDB() as db:
             await db.update_schedule(
                 schedule_id, guard_cursor_forward=guard_cursor_forward, **fields

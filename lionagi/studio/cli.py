@@ -767,16 +767,23 @@ def _base_url() -> str:
 
 def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
     """Minimal HTTP helper — no extra deps beyond stdlib urllib."""
+    import getpass
     import urllib.error
     import urllib.request
 
     url = f"{_base_url()}/api/schedules{path}"
     data = json.dumps(body).encode() if body is not None else None
+    headers = {
+        "X-Lionagi-Actor": f"cli:{getpass.getuser()}",
+        "X-Lionagi-Cwd": str(Path.cwd().resolve()),
+    }
+    if data:
+        headers["Content-Type"] = "application/json"
     req = urllib.request.Request(  # noqa: S310
         url,
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"} if data else {},
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
@@ -1070,7 +1077,7 @@ def _cmd_enable(args: argparse.Namespace) -> int:
 
 
 def _cmd_disable(args: argparse.Namespace) -> int:
-    result = _api(f"/{args.id}/disable", method="POST")
+    result = _api(f"/{args.id}/disable", method="POST", body={"reason": args.reason})
     if result is None:
         return 1
     print(f"Disabled: {args.id}")
@@ -2236,6 +2243,12 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         p.add_argument(
             "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
         )
+        if sub_name == "disable":
+            p.add_argument(
+                "--reason",
+                required=True,
+                help="Why this schedule is being disabled (stored in its lifecycle audit).",
+            )
 
     # trigger
     trigger_p = sched_sub.add_parser(
