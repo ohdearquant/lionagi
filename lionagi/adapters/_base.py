@@ -131,7 +131,11 @@ def _redact_url(value: str) -> str:
 
 def _redact_value(key: str, value: Any) -> Any:
     key_lower = key.lower()
-    if key_lower in _SENSITIVE_KEYS:
+    # The legacy exact-match set stays for the names the shared predicate does
+    # not classify (url/uri/dsn and friends); the predicate carries the
+    # credential vocabulary and separator folds, so a field Studio's richer
+    # projections withhold is withheld on this error path too.
+    if key_lower in _SENSITIVE_KEYS or is_secret_field_name(key):
         if isinstance(value, str):
             return _redact_url(value) if "://" in value else "***"
         if isinstance(value, dict):
