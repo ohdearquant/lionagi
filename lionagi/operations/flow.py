@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 UNLIMITED_CONCURRENCY = int(os.environ.get("LIONAGI_MAX_CONCURRENCY", "10000"))
 
-# Gate-reject contract (issue #2860). A playbook-authored node opts into gate
+# Gate-reject contract. A playbook-authored node opts into gate
 # semantics by setting ``operation.metadata["is_gate"] = True`` (e.g. via
 # ``OperationGraphBuilder.add_operation(..., is_gate=True)``). Once that node
 # completes, its result is inspected for a top-level ``"gate_verdict"`` key;
