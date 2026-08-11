@@ -101,6 +101,25 @@ describe("projectIntervalFires — bounded calendar projection", () => {
       first + 14 * 13 * MIN,
     ]);
   });
+
+  // The output-shape tests above cannot distinguish the bucket-jump algorithm
+  // from one that steps a single interval at a time and dedupes afterwards —
+  // both produce identical fires. This fixture makes the work itself the
+  // assertion: a one-second schedule projected across a decade is ~315 million
+  // steps for the occurrence-walking algorithm (well past the test timeout)
+  // and ~3,700 bucket jumps for the bounded one. A refactor that regresses to
+  // O(occurrences) fails here by timing out, not by changing output.
+  it("projects a decade of one-second firings in bucket-count work, not occurrence-count work", () => {
+    const start = new Date(2026, 0, 1, 0, 0, 0, 0).getTime();
+    const end = new Date(2036, 0, 1, 0, 0, 0, 0).getTime() - 1;
+
+    const fires = projectIntervalFires(start, 1_000, start, end, "day");
+
+    // 2026-01-01 through 2035-12-31 inclusive: 3,652 calendar days.
+    expect(fires).toHaveLength(3_652);
+    expect(fires[0]).toBe(start);
+    expect(fires.every((atMs) => new Date(atMs).getHours() === 0)).toBe(true);
+  }, 5_000);
 });
 
 function fire(atMs: number, s: ScheduleSummary) {
