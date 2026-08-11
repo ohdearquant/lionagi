@@ -1,7 +1,11 @@
 # ADR-0110: Deterministic manifest fan-out — legs from briefs, no planner
 
-- **Status**: Proposed
+- **Status**: Accepted (2026-08-11; see Amendment 1)
 - **Kind**: Aspirational (records the target state)
+- **Implementation-status**: partial — the manifest schema v1 loader (#2808) and the
+  quiescence proof before publishing a round complete (#2814) are on main
+  (`lionagi/cli/orchestrate/_manifest.py`, `_quiescence.py`, `_checkpoint.py`,
+  `_round_records.py`); remaining clauses have not been re-verified clause by clause
 - **Area**: orchestration
 - **Date**: 2026-08-03
 - **Relations**: extends ADR-0106 (machine result contract — D6 here names one
@@ -12,6 +16,19 @@
   identity-verified reads and its rule that only positive evidence of a gone
   process admits a terminal transition are what D3's reaper path is built on,
   and D3's finalization claim decides which of them a late arrival still owes)
+
+## Amendment 1 (2026-08-11) — the record catches up with the code
+
+This ADR was authored `Proposed` on 2026-08-03 and its core implementation merged the
+same day: the manifest schema v1 loader landed in #2808 (2026-08-03) and the
+quiescence gate — proving a manifest round quiet before publishing it complete — landed
+in #2814 (2026-08-04). The modules named by D1 exist on main
+(`lionagi/cli/orchestrate/_manifest.py`, `_quiescence.py`, `_checkpoint.py`,
+`_round_records.py`). The status flip to Accepted records that the decision has been
+in effect since then; it changes nothing in the decision text. Clauses beyond the
+D1 core have not been re-verified individually — the `Implementation-status` header
+field says `partial` for that reason and should be advanced as each clause is
+confirmed shipped.
 
 ## Context
 
