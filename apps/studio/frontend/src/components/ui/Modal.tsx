@@ -28,14 +28,21 @@ export default function Modal({
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   const titleId = useId();
+  // Captured during the first render: child effects run before this component's
+  // mount effect, so by effect time a self-focusing child has already moved
+  // focus into the dialog and the original trigger would be unrecoverable.
+  const previouslyFocusedRef = useRef<HTMLElement | null | undefined>(undefined);
+  if (previouslyFocusedRef.current === undefined) {
+    previouslyFocusedRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
 
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
 
   useEffect(() => {
-    const previouslyFocused =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previouslyFocused = previouslyFocusedRef.current ?? null;
     const dialog = dialogRef.current;
     const focusableSelector = [
       "button:not([disabled])",
@@ -83,7 +90,11 @@ export default function Modal({
       }
     };
 
-    (focusableElements()[0] ?? dialog)?.focus();
+    // A child may have focused its own field in its mount effect (which runs
+    // before this one); only claim focus when nothing inside holds it yet.
+    if (!dialog?.contains(document.activeElement)) {
+      (focusableElements()[0] ?? dialog)?.focus();
+    }
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);

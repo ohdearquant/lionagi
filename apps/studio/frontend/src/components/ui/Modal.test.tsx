@@ -1,7 +1,23 @@
-import { act } from "react";
+import { act, useEffect, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Modal from "./Modal";
+
+/** Mirrors callers like CreateScheduleModal that focus their own first field
+ *  in a mount effect, which runs before Modal's own mount effect. */
+function SelfFocusingChild() {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    wrapRef.current?.querySelector("input")?.focus();
+  }, []);
+  return (
+    <form>
+      <div ref={wrapRef}>
+        <input aria-label="Schedule name" />
+      </div>
+    </form>
+  );
+}
 
 describe("Modal keyboard and screen-reader behavior", () => {
   let container: HTMLDivElement;
@@ -64,6 +80,27 @@ describe("Modal keyboard and screen-reader behavior", () => {
 
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(onClose).toHaveBeenCalledOnce();
+
+    await act(async () => root.render(<div />));
+    expect(document.activeElement).toBe(launch);
+    launch.remove();
+  });
+
+  it("leaves focus with a child that focused its own field on mount", async () => {
+    const launch = document.createElement("button");
+    document.body.appendChild(launch);
+    launch.focus();
+
+    await act(async () => {
+      root.render(
+        <Modal title="New schedule" closeLabel="Close" onClose={vi.fn()}>
+          <SelfFocusingChild />
+        </Modal>,
+      );
+    });
+
+    const active = document.activeElement as HTMLElement | null;
+    expect(`${active?.tagName}:${active?.getAttribute("aria-label")}`).toBe("INPUT:Schedule name");
 
     await act(async () => root.render(<div />));
     expect(document.activeElement).toBe(launch);
