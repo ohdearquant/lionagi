@@ -208,7 +208,7 @@ mutation view lying.
 
 | # | Delta | Size | Issue |
 |---|---|---|---|
-| 1 | Amend the ADR-0082 D6 negative-capability test to assert the client's mutating methods equal the tier-1/tier-2 allowlist exactly, failing in both directions. | S | (filled at issue-open time) |
+| 1 | Amend the ADR-0082 D6 negative-capability test to assert the client's mutating methods equal the tier-2 allowlist exactly, failing in both directions. Tier 1 contributes no mutating methods, so it is not part of that population. | S | (filled at issue-open time) |
 | 2 | Declare response models on the routes any tier-3 capability calls, so a second client codes against a schema. | L | (filled at issue-open time) |
 | 3 | Separate read authorization from mutation authorization so an observer token can be issued to the editor. | M | (filled at issue-open time) |
 | 4 | Close ADR-0082 delta 3 (stream retry/backoff/resume with a visible recoverable state) so D5's constraint can be lifted. | M | (filled at issue-open time) |
