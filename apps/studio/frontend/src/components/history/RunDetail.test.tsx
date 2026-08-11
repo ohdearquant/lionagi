@@ -2147,13 +2147,17 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
     }
   });
 
-  it("row 3: a single-node run with no edges opens on the list", async () => {
+  it("row 3: a single-node run with no edges opens on the list, and offers no graph tab to switch to — a graph with no edges is not a canvas worth exposing at all", async () => {
     const { container, unmount } = await mountRunDetail(sessionWithBranches(singleNodeGraph));
     try {
       expect(container.querySelector('[data-testid="worker-canvas"]')).toBeNull();
       expect(container.querySelector("#run-branches")).not.toBeNull();
-      const listTab = container.querySelector('[data-testid="run-detail-view-list"]');
-      expect(listTab?.getAttribute("aria-selected")).toBe("true");
+      // No view toggle at all — there is nothing to switch to. Before the
+      // resolved-graph consolidation, canRenderGraph (looser than
+      // hasResolvableGraph) still exposed a clickable Graph tab here, and
+      // selecting it rendered a single disconnected node with no edges.
+      expect(container.querySelector('[data-testid="run-detail-view-graph"]')).toBeNull();
+      expect(container.querySelector('[data-testid="run-detail-view-list"]')).toBeNull();
     } finally {
       unmount();
     }
@@ -2234,6 +2238,154 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
       expect(indicator?.textContent).toContain("A");
     } finally {
       unmount();
+    }
+  });
+
+  it("row 3 (runtime path): an opGraph with nodes but no edges falls back to the list, same as an edgeless authored graph", async () => {
+    const { streamSignals } = await import("@/lib/api");
+    vi.mocked(streamSignals).mockImplementationOnce((_id, cb) => {
+      cb(sig({ id: "e1", op_id: "op-a", kind: "NodeStarted", payload: { name: "A" } }));
+      return () => {};
+    });
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(null));
+    try {
+      expect(container.querySelector('[data-testid="op-graph-node"]')).toBeNull();
+      expect(container.querySelector("#run-branches")).not.toBeNull();
+      expect(container.querySelector('[data-testid="run-detail-view-graph"]')).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 4 (authored path): selecting a node renders its detail card in place, in the graph view", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      // The mocked WorkerCanvas doesn't render ReactFlow's own node markup —
+      // handleDagPanelClick delegates on the raw DOM shape ReactFlow produces
+      // (`.react-flow__node[data-id]`), so a synthetic one exercises the same
+      // delegation the real graph relies on.
+      const canvas = container.querySelector('[data-testid="worker-canvas"]');
+      const panel = canvas?.parentElement;
+      expect(panel).not.toBeNull();
+      const fakeNode = document.createElement("div");
+      fakeNode.className = "react-flow__node";
+      fakeNode.dataset.id = "A";
+      panel!.appendChild(fakeNode);
+      await act(async () => {
+        fakeNode.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(document.getElementById("step-A")).not.toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 4 (runtime path): OperationGraphSection has a node click handler, and selecting a node renders its detail card in place", async () => {
+    const { streamSignals } = await import("@/lib/api");
+    vi.mocked(streamSignals).mockImplementationOnce((_id, cb) => {
+      cb(sig({ id: "e1", op_id: "op-a", kind: "NodeStarted", payload: { name: "A" } }));
+      cb(
+        sig({
+          id: "e2",
+          op_id: "op-b",
+          kind: "NodeStarted",
+          payload: { name: "B", parent_id: "op-a" },
+        }),
+      );
+      return () => {};
+    });
+    const session = {
+      ...sessionWithBranches(null),
+      branches: [{ id: "branch-b", name: "B", created_at: 0, messages: [] }],
+    };
+    const { container, unmount } = await mountRunDetail(session);
+    try {
+      // An opGraph with a real edge is a resolvable graph, so this defaults
+      // to the graph view without needing to click a tab.
+      const nodeCard = Array.from(
+        container.querySelectorAll<HTMLElement>('[data-testid="op-graph-node"]'),
+      ).find((el) => el.textContent?.includes("B"));
+      expect(nodeCard).toBeTruthy();
+      await act(async () => {
+        nodeCard?.click();
+      });
+      expect(document.getElementById("step-B")).not.toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("row 6 (D6 URL-addressability): a URL carrying a selected node restores that selection on load", async () => {
+    window.history.replaceState(null, "", "/?node=A");
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      expect(document.getElementById("step-A")).not.toBeNull();
+      const indicator = container.querySelector('[data-testid="run-detail-selected-node"]');
+      expect(indicator?.textContent).toContain("A");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("coupled minor: changing the run id clears the previous run's selected node", async () => {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    const runOne = sessionWithBranches(edgedGraph);
+    const runTwo = {
+      ...sessionWithBranches(edgedGraph),
+      id: "run-mount-view-2",
+      branches: [{ id: "branch-c", name: "C", created_at: 0, messages: [] }],
+    };
+    vi.mocked(getSession).mockImplementation(
+      async (id: string) => (id === "run-mount-view-2" ? runTwo : runOne) as never,
+    );
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id="run-mount-view" />
+          </IntlProvider>,
+        );
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const canvas = container.querySelector('[data-testid="worker-canvas"]');
+      const panel = canvas?.parentElement;
+      const fakeNode = document.createElement("div");
+      fakeNode.className = "react-flow__node";
+      fakeNode.dataset.id = "A";
+      panel!.appendChild(fakeNode);
+      await act(async () => {
+        fakeNode.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(
+        container.querySelector('[data-testid="run-detail-selected-node"]')?.textContent,
+      ).toContain("A");
+
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id="run-mount-view-2" />
+          </IntlProvider>,
+        );
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(container.querySelector('[data-testid="run-detail-selected-node"]')).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
     }
   });
 });

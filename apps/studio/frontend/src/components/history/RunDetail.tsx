@@ -138,6 +138,7 @@ export type RunDetailView = "graph" | "list";
 
 const RUN_DETAIL_VIEW_STORAGE_KEY = "studio.runDetail.view";
 const RUN_DETAIL_VIEW_QUERY_KEY = "view";
+const RUN_DETAIL_NODE_QUERY_KEY = "node";
 
 // localStorage can throw (private-browsing quotas) or simply be absent from
 // a test/SSR environment's window shim — never let a preference read/write
@@ -1767,6 +1768,25 @@ export default function RunDetail({ id }: RunDetailProps) {
     url.searchParams.set(RUN_DETAIL_VIEW_QUERY_KEY, next);
     window.history.replaceState(window.history.state, "", url);
   }, []);
+  // ADR-0113 D6: the selected node is URL-addressable the same way `view`
+  // is — read once at mount (never re-read after) and restored against the
+  // first session load's branches. `initialNodeAppliedRef` bounds that
+  // restore to the run that was live when the component first mounted, so
+  // a later run swap (the Fleet view keeps this component mounted and only
+  // changes `id`) never re-applies a stale deep link onto the new run.
+  const [initialUrlNodeKey] = useState<string | null>(() =>
+    typeof window === "undefined"
+      ? null
+      : new URLSearchParams(window.location.search).get(RUN_DETAIL_NODE_QUERY_KEY),
+  );
+  const initialNodeAppliedRef = useRef(false);
+  const writeSelectedNodeToUrl = useCallback((key: string | null) => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (key) url.searchParams.set(RUN_DETAIL_NODE_QUERY_KEY, key);
+    else url.searchParams.delete(RUN_DETAIL_NODE_QUERY_KEY);
+    window.history.replaceState(window.history.state, "", url);
+  }, []);
   // ADR-0113 D4/row 9: whether THIS client has asked this run to pause.
   // There is no session-level "paused"/"pausing" status column yet (only
   // per-node NodeExecStatus models it) — the pause gate is enforced by the
@@ -1807,6 +1827,17 @@ export default function RunDetail({ id }: RunDetailProps) {
     setOlderLoadFailed(false);
     setOlderCursor(null);
     initialScrollDoneRef.current = false;
+    // The Fleet view keeps this component mounted and swaps `id` — the
+    // selection is scoped to the run it was made on, so a run switch must
+    // drop it rather than let it read as the new run's selection.
+    // `initialNodeAppliedRef` only flips true once the FIRST run's session
+    // has resolved (below), so this leaves the deep-link restore below
+    // untouched on that very first load.
+    if (initialNodeAppliedRef.current) {
+      setSelectedStepKey(null);
+      setUnmatchedNodeId(null);
+      writeSelectedNodeToUrl(null);
+    }
     getSession(id)
       .then((s) => {
         setSession(s);
@@ -1822,14 +1853,27 @@ export default function RunDetail({ id }: RunDetailProps) {
         ) {
           setDone(true);
         }
-        if (s.branches.length <= 3) {
-          setExpandedSteps(new Set(s.branches.map((b) => b.name || b.id.slice(0, 8))));
-        } else {
-          const first = s.branches[0];
-          if (first) {
-            setExpandedSteps(new Set([first.name || first.id.slice(0, 8)]));
+        const branchExpansion =
+          s.branches.length <= 3
+            ? new Set(s.branches.map((b) => b.name || b.id.slice(0, 8)))
+            : s.branches[0]
+              ? new Set([s.branches[0].name || s.branches[0].id.slice(0, 8)])
+              : null;
+        // Restore a deep-linked node selection against THIS run's branches,
+        // once only, ever — a later run swap must not reapply it (see the
+        // clear-on-id-change block above).
+        if (!initialNodeAppliedRef.current) {
+          initialNodeAppliedRef.current = true;
+          if (initialUrlNodeKey) {
+            const match = matchGraphNodeToBranch(initialUrlNodeKey, s.branches);
+            if (match) {
+              const key = stepKeyForBranch(match);
+              branchExpansion?.add(key);
+              setSelectedStepKey(key);
+            }
           }
         }
+        if (branchExpansion) setExpandedSteps(branchExpansion);
         const graph = (s as unknown as Record<string, unknown>).graph as
           | { nodes: WorkerGraph["nodes"]; edges?: WorkerGraph["edges"] | null }
           | null
@@ -1846,7 +1890,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         }
       })
       .catch((e: unknown) => setError(String(e)));
-  }, [id]);
+  }, [id, initialUrlNodeKey, writeSelectedNodeToUrl]);
 
   useEffect(() => {
     if (!id || !resumeWatch || resumeWatch.run_id !== id) return;
@@ -1962,15 +2006,21 @@ export default function RunDetail({ id }: RunDetailProps) {
   // cross-view selection (ADR-0113 D6). Collapsing does not clear the
   // selection: closing a card is not the same act as selecting a different
   // one.
-  const handleToggleExpand = useCallback((stepId: string, next: boolean) => {
-    setExpandedSteps((prev) => {
-      const updated = new Set(prev);
-      if (next) updated.add(stepId);
-      else updated.delete(stepId);
-      return updated;
-    });
-    if (next) setSelectedStepKey(stepId);
-  }, []);
+  const handleToggleExpand = useCallback(
+    (stepId: string, next: boolean) => {
+      setExpandedSteps((prev) => {
+        const updated = new Set(prev);
+        if (next) updated.add(stepId);
+        else updated.delete(stepId);
+        return updated;
+      });
+      if (next) {
+        setSelectedStepKey(stepId);
+        writeSelectedNodeToUrl(stepId);
+      }
+    },
+    [writeSelectedNodeToUrl],
+  );
 
   // Graph-node drill-down. ReactFlow renders each node wrapper with a
   // `data-id` attribute (its own internals, not StepNode/WorkerCanvas
@@ -1982,14 +2032,16 @@ export default function RunDetail({ id }: RunDetailProps) {
       if (!match) {
         setUnmatchedNodeId(nodeId);
         setSelectedStepKey(null);
+        writeSelectedNodeToUrl(null);
         return;
       }
       setUnmatchedNodeId(null);
       const key = stepKeyForBranch(match);
       setExpandedSteps((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
       setSelectedStepKey(key);
+      writeSelectedNodeToUrl(key);
     },
-    [session],
+    [session, writeSelectedNodeToUrl],
   );
 
   const handleDagPanelClick = useCallback(
@@ -2174,6 +2226,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   const steps = useMemo(
     () => (session ? buildRunSteps(session, sessionStatus, segments) : []),
     [session, sessionStatus, segments],
+  );
+  // ADR-0113 D1/D6: the graph view's in-place node detail is the SAME
+  // RunStepCard the list renders for the same step — no separate detail
+  // shape to keep in sync with it.
+  const selectedGraphStep = useMemo(
+    () => (selectedStepKey ? (steps.find((s) => s.step === selectedStepKey) ?? null) : null),
+    [steps, selectedStepKey],
   );
 
   // Run-wide known file surface (union across every step/agent branch) —
@@ -2362,18 +2421,18 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   // ADR-0113 D1/D6: a graph with edges is the default view; anything with no
   // edges to draw (including "no graph at all") opens on the list.
-  // shouldRenderAuthoredGraph decides whether a graph CAN render at all —
-  // canRenderGraph mirrors that same branch so the toggle only offers a
-  // graph tab when there is a graph to show in it.
-  const canRenderGraph = Boolean(
-    (runGraph && shouldRenderAuthoredGraph(runGraph, opGraph)) || opGraph.nodes.length > 0,
-  );
+  // hasResolvableGraph is the single source of truth for "is there a graph
+  // worth rendering" — tab visibility, the default-view resolution below,
+  // and the render branch further down all gate on this SAME call, so they
+  // cannot disagree about a single-node or edgeless graph the way two
+  // separately-maintained predicates could.
+  const canRenderGraph = hasResolvableGraph(runGraph, opGraph);
   const view: RunDetailView =
     userView ??
     resolveInitialView({
       urlView: initialUrlView,
       storedPreference: initialStoredView,
-      hasResolvableGraph: hasResolvableGraph(runGraph, opGraph),
+      hasResolvableGraph: canRenderGraph,
     });
   const effectiveView: RunDetailView = canRenderGraph ? view : "list";
 
@@ -2509,15 +2568,6 @@ export default function RunDetail({ id }: RunDetailProps) {
           {progressCounts && (
             <ProgressSummaryBar counts={progressCounts} elapsedLabel={elapsedLabel} t={t} />
           )}
-          {unmatchedNodeId && (
-            <div
-              role="status"
-              data-testid="run-dag-unmatched-node"
-              className="mt-2 rounded border border-edge bg-surface-overlay px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary"
-            >
-              {t("nodeNoBranch", { node: unmatchedNodeId })}
-            </div>
-          )}
           {/* A fan-out of dozens of workers cannot be legible in the same
               280px that fits a five-step pipeline — the panel takes its height
               from the laid-out graph's bounding box so fitView has room to
@@ -2596,9 +2646,43 @@ export default function RunDetail({ id }: RunDetailProps) {
         opGraph.nodes.length > 0 && (
           <div id="run-dag" className="scroll-mt-4">
             <SectionHeader label={t("sectionExecutionGraph")} count={opGraph.nodes.length} />
-            <OperationGraphSection state={opGraph} live={live && !done} />
+            <OperationGraphSection
+              state={opGraph}
+              live={live && !done}
+              onNodeClick={handleGraphNodeClick}
+            />
           </div>
         )
+      )}
+      {/* ADR-0113 D1/D6: a node selected in EITHER graph path (authored via
+          handleDagPanelClick, runtime via OperationGraphSection's onNodeClick)
+          expands in place here — the same RunStepCard the list view shows for
+          that step, not a second detail shape. A click that resolved no
+          branch gets the same explicit no-branch state regardless of which
+          graph produced it. */}
+      {effectiveView === "graph" && unmatchedNodeId && (
+        <div
+          role="status"
+          data-testid="run-dag-unmatched-node"
+          className="mt-2 rounded border border-edge bg-surface-overlay px-3 py-1.5 font-mono text-[length:var(--t-xs)] text-content-secondary"
+        >
+          {t("nodeNoBranch", { node: unmatchedNodeId })}
+        </div>
+      )}
+      {effectiveView === "graph" && selectedGraphStep && (
+        <div className="mt-2 scroll-mt-4">
+          <RunStepCard
+            step={selectedGraphStep}
+            expanded
+            onToggleExpand={handleToggleExpand}
+            runId={session.id}
+            artifactRoot={session.artifacts_path}
+            runFiles={runFiles}
+            onLoadOlder={handleLoadOlder}
+            olderMessagesRemaining={hiddenOlderCount}
+            loadingOlder={loadingOlder}
+          />
+        </div>
       )}
       {/* Scroll-up trigger: reaching the top of the conversation loads the
           next older page, same handler as the explicit button below. Kept
