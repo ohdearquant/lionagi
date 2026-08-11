@@ -205,6 +205,8 @@ its area block.
   lifecycle and terminal notification (sequential number; see Numbering)
 - [ADR-0109](ADR-0109-mirrored-session-idleness-is-not-completion.md) — A mirrored session's
   idleness is not its completion (sequential number; see Numbering)
+- [ADR-0116](ADR-0116-normalized-progression-membership-and-online-cutover.md) — Normalized
+  progression membership and online cutover (sequential number; see Numbering)
 
 ### cli-surface (0062-0067)
 

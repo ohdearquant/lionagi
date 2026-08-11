@@ -197,6 +197,10 @@ does not require editors or version-control systems to become database clients.
 
 ### D3 — Progression order is a JSON collection
 
+> **Proposed successor:** ADR-0116 defines a normalized ordered-membership target and online
+> cutover protocol. This accepted clause remains the binding storage contract until that
+> aspirational record is accepted with its first dependent implementation.
+
 Message order remains a JSON collection on a progression rather than a message-order join table.
 
 **The contract.**
