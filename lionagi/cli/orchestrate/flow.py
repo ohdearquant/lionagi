@@ -1961,7 +1961,7 @@ async def _execute_dag(
         prior_failed_evidence = getattr(env, "_failed_operation_evidence", None) or []
         env._failed_operation_evidence = [*prior_failed_evidence, *lost_spawn_evidence]
 
-    # Gate-reject evidence (issue #2860): a mid-DAG gate node returned a
+    # Gate-reject evidence: a mid-DAG gate node returned a
     # REJECT verdict and the executor short-circuited its dependent subtree
     # to skipped rather than let it run against the rejected baseline. This
     # names the rejecting gate(s), not the (possibly many) skipped

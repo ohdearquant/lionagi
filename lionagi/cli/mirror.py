@@ -416,8 +416,8 @@ async def _attribute_idle(db, state: _FileState, cwd: str) -> None:
     Covers sessions mirrored before project/artifact-root attribution existed,
     which have no new events to trigger the normal (streamed-event) attribution
     path. The two backfills are independent: a row can already carry a project
-    from an earlier mirror pass while still missing artifacts_path, so each is
-    only (re)written when actually missing.
+    from an earlier mirror pass while still missing artifacts_path (the
+    dominant case), so each is only (re)written when actually missing.
     """
     from lionagi.state.claude_mirror import session_db_id
 

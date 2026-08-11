@@ -3,11 +3,18 @@
 - **Status**: Proposed | Accepted | Superseded by ADR-NNNN
 - **Kind**: Retrospective (records what IS) | Aspirational (records the target state)
   — never both in one document; a delta between a retrospective truth and an
-  aspirational target is an ISSUE, not a section that blurs the two.
-- **Area**: <exactly one of the 16 ratified areas: core-data-model,
+  aspirational target is an ISSUE, not a section that blurs the two. Kind describes
+  what the document IS and never changes as code lands; implementation state lives
+  in the separate field below.
+- **Implementation-status**: not-started | partial (name what landed and what
+  remains, per decision clause) | implemented — optional for Retrospective records
+  (they describe shipped code by definition), required for Aspirational ones.
+  Orthogonal to both Status and Kind, and mutable: update it as code lands, without
+  a formal amendment.
+- **Area**: <exactly one of the 17 ratified areas: core-data-model,
   messages-context, actions-tools, session-branch, operations, service-providers,
   orchestration, agent-roles, hooks, utilities, persistence-state, cli-surface,
-  scheduling-control-plane, studio, governance, substrates>
+  scheduling-control-plane, studio, governance, substrates, cli-orchestration>
 - **Date**: YYYY-MM-DD
 - **Relations**: supersedes v0-NNNN[, v0-NNNN…] | extends ADR-NNNN | none
   — every v0 ADR referenced gets an explicit disposition in the corpus index:
