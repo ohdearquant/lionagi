@@ -155,9 +155,9 @@ def test_internal_identifier_in_notebook_markdown_is_rejected(public_repo: Path)
 def test_python_lambda_without_space_in_python_source_is_accepted(
     public_repo: Path, relative_path: Path, source: str
 ) -> None:
-    # Regression for #2149: the .py handling added to close the gap must not
-    # trip on Python's own zero-arg `lambda:` closure syntax written as real
-    # code (as opposed to a leaked namespace identifier in a comment/string).
+    # The .py handling added to close the notebook-only gap must not trip on
+    # Python's own zero-arg `lambda:` closure syntax written as real code (as
+    # opposed to a leaked namespace identifier in a comment/string).
     (public_repo / relative_path).write_text(source)
 
     result = _run_hygiene(public_repo)
@@ -174,10 +174,10 @@ def test_python_lambda_without_space_in_python_source_is_accepted(
     ],
 )
 def test_internal_identifier_in_python_source_is_rejected(public_repo: Path, source: str) -> None:
-    # Regression for #2149: a leaked internal namespace identifier in a .py
-    # comment, string literal, or docstring under docs/notebooks/cookbooks
-    # must fail the gate -- previously the `-g '!*.py'` exclusion let it
-    # through silently with no replacement scan.
+    # A leaked internal namespace identifier in a .py comment, string
+    # literal, or docstring under docs/notebooks/cookbooks must fail the
+    # gate -- a prior `-g '!*.py'` exclusion let it through silently with no
+    # replacement scan.
     (public_repo / "cookbooks" / "example.py").write_text(source)
 
     result = _run_hygiene(public_repo)
@@ -216,9 +216,9 @@ def test_internal_identifier_in_fstring_literal_segment_is_rejected(
     ],
 )
 def test_bare_founder_name_mention_is_rejected(public_repo: Path, content: str) -> None:
-    # Regression for #2150: the founder-name check previously only matched
-    # the possessive "Ocean's" and missed bare mentions -- exactly the leak
-    # shape #2115 hand-fixed throughout docs/_archive/.
+    # The founder-name check previously only matched the possessive form and
+    # missed bare mentions -- the same leak shape once hand-fixed throughout
+    # docs/_archive/.
     (public_repo / "docs" / "example.md").write_text(content)
 
     result = _run_hygiene(public_repo)
@@ -289,9 +289,9 @@ def test_geographic_ocean_prose_is_accepted(public_repo: Path) -> None:
     ],
 )
 def test_founder_public_byline_is_not_rejected(public_repo: Path, content: str) -> None:
-    # False-positive guard for #2150: the founder's own public credit lines
-    # (author bylines, the mkdocs.yml copyright notice) must keep passing
-    # once the check widens past the possessive-only pattern.
+    # False-positive guard: the founder's own public credit lines (author
+    # bylines, the mkdocs.yml copyright notice) must keep passing once the
+    # check widens past the possessive-only pattern.
     (public_repo / "docs" / "example.md").write_text(content)
 
     result = _run_hygiene(public_repo)
