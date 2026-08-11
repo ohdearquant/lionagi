@@ -47,6 +47,10 @@ no instruction. Either way it launches a new invocation rather than
 reopening the old run's status, and works on a run in any status, including
 a cancelled one.
 
+launch_agent runs one agent profile against a prompt through the same
+human-confirmed durable proposal; call list_agents first, because it needs an
+exact existing agent name.
+
 Every turn tells you which Studio view the human is on, including the route
 and any selection or filters, and get_current_view re-reads it on demand. Use
 it instead of asking, and never say you cannot tell what they are looking at.
@@ -74,6 +78,7 @@ _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__navigate",
     "mcp__studio_operator__prefill_schedule",
     "mcp__studio_operator__launch_playbook",
+    "mcp__studio_operator__launch_agent",
     "mcp__studio_operator__run_progress",
     "mcp__studio_operator__run_findings",
     "mcp__studio_operator__run_detail",

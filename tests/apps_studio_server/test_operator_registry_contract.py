@@ -45,6 +45,11 @@ PRE_EXISTING_TOOL_NAMES = frozenset(
         "navigate",
         "prefill_schedule",
         "launch_playbook",
+        # Not read-only like the NEWLY_ADDED_TOOL_NAMES set below -- launch_agent
+        # writes a durable proposal, same as launch_playbook, so it belongs with
+        # the other write-shaped launch tool rather than in the read-only
+        # exerciser suite.
+        "launch_agent",
         "run_progress",
         "run_findings",
         "cancel_run",

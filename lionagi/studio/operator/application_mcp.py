@@ -147,6 +147,25 @@ class LaunchPlaybookInput(_StrictInput):
     note: str = Field(default="", max_length=500)
 
 
+class LaunchAgentInput(_StrictInput):
+    # The launch service accepts a launch with action_kind == "agent" and no
+    # action_agent at all -- it only rejects a leading '-' when the field is
+    # present. Requiring `agent` here, not there, is what actually closes
+    # that hole for the Operator's one entry point into that code path.
+    agent: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+    prompt: str = Field(min_length=1, max_length=32_768)
+    note: str = Field(default="", max_length=500)
+
+    # No `model` field: model routing is a per-role decision made in the agent
+    # profile, and letting a caller override it here would silently defeat
+    # that routing. action_model stays unset so the profile's own choice
+    # applies, exactly as if the field were never in the launch payload.
+
+
 class _NavigateEffect(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -173,6 +192,7 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "navigate": NavigateInput,
     "prefill_schedule": PrefillScheduleInput,
     "launch_playbook": LaunchPlaybookInput,
+    "launch_agent": LaunchAgentInput,
     "run_progress": RunProgressInput,
     "run_findings": RunFindingsInput,
     "run_detail": RunDetailInput,
@@ -229,6 +249,12 @@ _TOOL_DESCRIPTIONS = {
     "launch_playbook": (
         "Propose launching one named Studio playbook. This blocks until the "
         "human explicitly allows or denies the exact durable proposal."
+    ),
+    "launch_agent": (
+        "Propose launching one agent profile with a prompt. This blocks "
+        "until the human explicitly allows or denies the exact durable "
+        "proposal. Call list_agents first: this needs an exact existing "
+        "agent name."
     ),
     "run_progress": (
         "Report how one run is going: status, op totals split into "
@@ -1064,6 +1090,49 @@ async def launch_playbook(arguments: dict[str, Any]) -> dict[str, Any]:
         await asyncio.sleep(0.1)
 
 
+async def launch_agent(arguments: dict[str, Any]) -> dict[str, Any]:
+    args = LaunchAgentInput.model_validate(arguments)
+    store, conversation_id, request_id = _identity()
+    command = {
+        "action_kind": "agent",
+        "action_agent": args.agent,
+        "action_prompt": args.prompt,
+    }
+    stable = store.canonical_hash(
+        {
+            "requestId": request_id,
+            "tool": "launch_agent",
+            "command": command,
+        }
+    )
+    summary = f"Launch agent '{args.agent}'"
+    if args.note:
+        summary += f" — {args.note}"
+    # No target_version: coordinator._verify_application_target only knows how
+    # to re-check a "play" target against resolve_playbook_version, and raises
+    # ApplicationTargetConflictError for any other action_kind once a version
+    # is set. There is no agent-profile equivalent of playbook fingerprinting,
+    # and passing one here would make every agent launch fail at approval time.
+    proposal = await store.create_proposal(
+        conversation_id,
+        request_id,
+        command_type="launch",
+        command=command,
+        risk="execute",
+        summary=summary,
+        idempotency_key=f"operator-app:{stable}",
+    )
+    while True:
+        proposal = await store.get_proposal(proposal["id"])
+        status = proposal["status"]
+        if status == "pending" and proposal["expiresAt"] <= time.time():
+            proposal = await store.expire_proposal(proposal["id"])
+            status = proposal["status"]
+        if status in {"succeeded", "failed", "cancelled", "expired", "conflict"}:
+            return _redacted_launch_result(proposal)
+        await asyncio.sleep(0.1)
+
+
 _TOOL_HANDLERS = {
     "list_recent_runs": list_recent_runs,
     "run_stats": run_stats,
@@ -1074,6 +1143,7 @@ _TOOL_HANDLERS = {
     "navigate": navigate,
     "prefill_schedule": prefill_schedule,
     "launch_playbook": launch_playbook,
+    "launch_agent": launch_agent,
     "run_progress": run_progress,
     "run_findings": run_findings,
     "run_detail": run_detail,

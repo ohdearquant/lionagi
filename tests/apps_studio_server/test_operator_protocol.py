@@ -176,6 +176,7 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
         "mcp__studio_operator__navigate",
         "mcp__studio_operator__prefill_schedule",
         "mcp__studio_operator__launch_playbook",
+        "mcp__studio_operator__launch_agent",
         "mcp__studio_operator__run_progress",
         "mcp__studio_operator__run_findings",
         "mcp__studio_operator__run_detail",
@@ -210,6 +211,7 @@ _REQUIRED_OPERATOR_TOOLS = frozenset(
         "navigate",
         "prefill_schedule",
         "launch_playbook",
+        "launch_agent",
         "run_progress",
         "run_findings",
         "run_detail",
@@ -619,6 +621,121 @@ async def test_application_mcp_playbook_mutation_after_proposal_conflicts_before
     assert failed_result["payload"]["ok"] is False
     assert failed_result["payload"]["error"]["code"] == "stale_context"
     assert await _audit_decisions(proposal["id"]) == ["confirmed", "failed"]
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+    await coordinator.shutdown()
+
+
+def test_launch_agent_input_rejects_missing_or_empty_agent():
+    from pydantic import ValidationError
+
+    from lionagi.studio.operator.application_mcp import LaunchAgentInput
+
+    with pytest.raises(ValidationError):
+        LaunchAgentInput.model_validate({"prompt": "do the thing"})
+    with pytest.raises(ValidationError):
+        LaunchAgentInput.model_validate({"agent": "", "prompt": "do the thing"})
+
+
+def test_launch_agent_input_rejects_missing_or_empty_prompt():
+    from pydantic import ValidationError
+
+    from lionagi.studio.operator.application_mcp import LaunchAgentInput
+
+    with pytest.raises(ValidationError):
+        LaunchAgentInput.model_validate({"agent": "researcher"})
+    with pytest.raises(ValidationError):
+        LaunchAgentInput.model_validate({"agent": "researcher", "prompt": ""})
+
+
+@pytest.mark.asyncio
+async def test_application_mcp_launch_agent_blocks_on_real_durable_human_proposal(
+    tmp_path, monkeypatch
+):
+    """Mirrors `test_application_mcp_launch_blocks_on_real_durable_human_proposal`
+    above, but for `launch_agent`: same real coordinator, same allow path, same
+    durable proposal gate, with `action_kind == "agent"` and no playbook version
+    to resolve or re-check."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.application_mcp import launch_agent
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB():
+        pass
+    calls = []
+
+    async def execute(command_type, command):
+        calls.append((command_type, command))
+        return {
+            "invocation_id": "inv-1",
+            "action_kind": "agent",
+            "href": "/invocations/inv-1",
+        }
+
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(
+        store=store,
+        engine_factory=ScriptedEngine,
+        command_executor=execute,
+    )
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="launch the researcher agent",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    task = asyncio.create_task(
+        launch_agent({"agent": "researcher", "prompt": "summarize open PRs", "note": "ad hoc"})
+    )
+    proposal = await _wait_proposal(store, accepted["requestId"])
+    assert not task.done()
+    assert proposal["commandType"] == "launch"
+    assert proposal["command"] == {
+        "action_kind": "agent",
+        "action_agent": "researcher",
+        "action_prompt": "summarize open PRs",
+    }
+    # Unlike launch_playbook, there is no agent-profile fingerprint to pin: a
+    # non-None target_version here would make coordinator._verify_application_target
+    # reject the proposal at approval time for any action_kind other than "play".
+    assert proposal["targetVersion"] is None
+
+    decision = await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=proposal["targetVersion"],
+    )
+    result = await asyncio.wait_for(task, timeout=2)
+    assert decision["status"] == "succeeded"
+    assert calls == [
+        (
+            "launch",
+            {
+                "action_kind": "agent",
+                "action_agent": "researcher",
+                "action_prompt": "summarize open PRs",
+            },
+        )
+    ]
+    assert result == {
+        "status": "succeeded",
+        "proposalId": proposal["id"],
+        "result": {
+            "invocation_id": "inv-1",
+            "action_kind": "agent",
+            "href": "/invocations/inv-1",
+        },
+        "errorCode": None,
+    }
     await store.finish_turn(accepted["requestId"], outcome="completed")
     await coordinator.shutdown()
 
