@@ -15,9 +15,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import lionagi.state.db as state_db_mod
 
-# ---------------------------------------------------------------------------
 # Shared fixture helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_client(tmp_path, monkeypatch):
@@ -31,9 +29,7 @@ def _make_client(tmp_path, monkeypatch):
     return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765"), db_path
 
 
-# ---------------------------------------------------------------------------
 # Auth tests
-# ---------------------------------------------------------------------------
 
 
 def test_maintenance_requires_auth_when_token_missing(tmp_path, monkeypatch):
@@ -78,9 +74,7 @@ def test_maintenance_passes_with_correct_token(tmp_path, monkeypatch):
     assert resp.status_code == 200
 
 
-# ---------------------------------------------------------------------------
 # Closed schema: extra fields must be rejected and must not reach service
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -123,9 +117,7 @@ def test_maintenance_rejects_extra_fields_without_calling_service(tmp_path, monk
     assert calls == [], f"Service functions were called despite 422: {calls}"
 
 
-# ---------------------------------------------------------------------------
 # Allowlist / injection rejection
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -163,9 +155,7 @@ def test_maintenance_missing_action_field_returns_422(tmp_path, monkeypatch):
     assert resp.status_code == 422
 
 
-# ---------------------------------------------------------------------------
 # Success paths (service layer monkeypatched)
-# ---------------------------------------------------------------------------
 
 
 def test_maintenance_vacuum_success(tmp_path, monkeypatch):
@@ -226,9 +216,7 @@ def test_maintenance_prune_success(tmp_path, monkeypatch):
     assert data["runs_pruned"] == 1
 
 
-# ---------------------------------------------------------------------------
 # Live path — existing initialized DB
-# ---------------------------------------------------------------------------
 
 
 def test_maintenance_vacuum_live_existing_db(tmp_path, monkeypatch):
@@ -268,9 +256,7 @@ async def _async_list_events(db_path, *, action):
         return await db.list_admin_events(action=action, limit=5)
 
 
-# ---------------------------------------------------------------------------
 # Live path — DB absent should return graceful responses
-# ---------------------------------------------------------------------------
 
 
 def test_maintenance_vacuum_db_absent(tmp_path, monkeypatch):
@@ -294,9 +280,7 @@ def test_maintenance_checkpoint_db_absent(tmp_path, monkeypatch):
     assert data["busy"] is None
 
 
-# ---------------------------------------------------------------------------
 # Lock-contention → 409 with structured detail
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("action", ["vacuum", "checkpoint", "prune"])

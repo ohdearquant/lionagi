@@ -13,9 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Helpers (mirrors tests/cli/test_engine_emission_diagnostics.py)
-# ---------------------------------------------------------------------------
 
 
 def _build_args(**kwargs) -> argparse.Namespace:
@@ -58,9 +56,7 @@ class MockStateDB:
         self.update_calls.append({"run_id": run_id, "status": status, "error": error})
 
 
-# ---------------------------------------------------------------------------
 # Engine CLI: _total_agent_failure → status='failed', errors in error column
-# ---------------------------------------------------------------------------
 
 
 async def test_total_agent_failure_written_to_db_as_failed(monkeypatch):
@@ -206,12 +202,10 @@ async def test_engine_without_total_agent_failure_attr_stays_completed(monkeypat
     assert completed[0]["error"] is None
 
 
-# ---------------------------------------------------------------------------
 # INTEGRATION: real Engine subclass whose _run() drives every agent to error
 # — verifies the full Engine.run() → CLI read-site handoff for the total
 # agent-failure signal (the same integration shape as the emission-failure
 # test in test_engine_emission_diagnostics.py).
-# ---------------------------------------------------------------------------
 
 
 async def _build_all_agents_failed_engine():

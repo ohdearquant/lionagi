@@ -6,9 +6,7 @@ import pytest
 
 from lionagi.testing import LionAGIMockFactory
 
-# =============================================================================
 # Orchestration Guide (orchestration-guide.md)
-# =============================================================================
 
 
 class TestOrchestrationGuide:
@@ -141,9 +139,7 @@ class TestOrchestrationGuide:
         assert branch_a.chat_model is not branch_b.chat_model
 
 
-# =============================================================================
 # Self-Improvement (self-improvement.md)
-# =============================================================================
 
 
 class TestSelfImprovement:
@@ -255,9 +251,7 @@ class TestSelfImprovement:
         assert MessageRole is not None
 
 
-# =============================================================================
 # Pattern Selection (pattern-selection.md)
-# =============================================================================
 
 
 class TestPatternSelection:
@@ -334,9 +328,7 @@ class TestPatternSelection:
         assert "text" in params
 
 
-# =============================================================================
 # Claude Code Usage (claude-code-usage.md)
-# =============================================================================
 
 
 class TestClaudeCodeUsage:

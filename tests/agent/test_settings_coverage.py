@@ -16,10 +16,6 @@ from lionagi.agent.settings import (
 )
 from lionagi.agent.spec import AgentSpec
 
-# ---------------------------------------------------------------------------
-# _import_hook: untrusted module raises, no colon returns None, ImportError
-# ---------------------------------------------------------------------------
-
 
 def test_import_hook_no_colon_returns_none():
     result = _import_hook("lionagi.agent.hooks", trusted_hook_modules={"lionagi.agent.hooks"})
@@ -53,11 +49,6 @@ def test_import_hook_nonexistent_module_in_trusted_set_returns_none():
         trusted_hook_modules={"lionagi.agent.hooks_nonexistent"},
     )
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _resolve_hook_spec: string shorthand, dict without python/command → None
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_hook_spec_string_shorthand_trusted():
@@ -98,11 +89,6 @@ def test_resolve_hook_spec_dict_command_returns_callable():
         trusted_hook_modules={"lionagi.agent.hooks"},
     )
     assert callable(result)
-
-
-# ---------------------------------------------------------------------------
-# _make_shell_hook: post hook path exercised
-# ---------------------------------------------------------------------------
 
 
 async def test_make_shell_post_hook_runs_and_returns_none(monkeypatch):
@@ -162,11 +148,6 @@ async def test_make_shell_pre_hook_nonzero_empty_stderr_uses_fallback(monkeypatc
     hook = _make_shell_hook(["guard"], "pre", "bash")
     with pytest.raises(PermissionError, match="Hook blocked"):
         await hook("bash", "run", {})
-
-
-# ---------------------------------------------------------------------------
-# apply_hooks_from_settings: non-list hook_specs wrapped, all phases wired
-# ---------------------------------------------------------------------------
 
 
 def test_apply_hooks_from_settings_wraps_single_dict_in_list():

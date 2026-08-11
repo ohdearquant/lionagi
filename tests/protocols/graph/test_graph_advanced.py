@@ -11,7 +11,7 @@ from .helpers import create_test_node
 
 @pytest.mark.slow
 class TestGraphPerformance:
-    """Test graph performance with large datasets"""
+    """Graph performance with large datasets"""
 
     def test_large_graph_creation(self):
         graph = Graph()
@@ -115,7 +115,7 @@ class TestGraphPerformance:
 
 @pytest.mark.asyncio
 class TestGraphConcurrency:
-    """Test concurrent graph operations"""
+    """Concurrent graph operations"""
 
     async def test_concurrent_node_additions(self):
         graph = Graph()
@@ -193,7 +193,7 @@ class TestGraphConcurrency:
 
 
 class TestGraphAdvancedOperations:
-    """Test advanced graph operations"""
+    """Advanced graph operations"""
 
     def test_graph_merge(self):
         # Create first graph

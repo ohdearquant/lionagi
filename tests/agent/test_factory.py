@@ -12,18 +12,9 @@ from lionagi.agent.factory import create_agent
 from lionagi.agent.spec import AgentSpec
 from lionagi.session.branch import Branch
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 async def _make(config: AgentSpec) -> Branch:
     return await create_agent(config, load_settings=False)
-
-
-# ---------------------------------------------------------------------------
-# Default config
-# ---------------------------------------------------------------------------
 
 
 async def test_create_agent_default_config_returns_branch():
@@ -46,11 +37,6 @@ async def test_create_agent_default_no_coding_tools():
         "subagent",
     }
     assert not coding_tools.intersection(branch.acts.registry.keys())
-
-
-# ---------------------------------------------------------------------------
-# Coding preset
-# ---------------------------------------------------------------------------
 
 
 # Lean default plus context — sandbox/subagent are opt-in, not registered by default.
@@ -81,11 +67,6 @@ async def test_create_agent_coding_all_tools_async():
     branch = await _make(config)
     for name, tool in branch.acts.registry.items():
         assert asyncio.iscoroutinefunction(tool.func_callable), f"Tool '{name}' is not async"
-
-
-# ---------------------------------------------------------------------------
-# Permissions wired as preprocessor
-# ---------------------------------------------------------------------------
 
 
 async def test_create_agent_with_permissions_sets_preprocessor():
@@ -274,11 +255,6 @@ async def test_create_agent_standalone_permissions_recheck_user_mutated_args():
         await bash_tool.preprocessor({"action": "run", "command": "echo ok"})
 
 
-# ---------------------------------------------------------------------------
-# load_settings=False — no side effects
-# ---------------------------------------------------------------------------
-
-
 async def test_create_agent_load_settings_false_no_side_effects(monkeypatch):
     """load_settings=False must not read .lionagi/settings.yaml."""
     called = []
@@ -356,11 +332,6 @@ async def test_create_agent_autoloads_project_mcp_when_trusted(tmp_path, monkeyp
     assert security_seen == [MCPSecurityConfig.trusted()]
 
 
-# ---------------------------------------------------------------------------
-# Hooks wired into tools
-# ---------------------------------------------------------------------------
-
-
 async def test_pre_hook_registered_on_tool():
     config = AgentSpec.coding()
     calls = []
@@ -397,11 +368,6 @@ async def test_post_hook_registered_on_tool():
     assert "reader" in calls
 
 
-# ---------------------------------------------------------------------------
-# Model string parsed into provider / model / effort / yolo kwargs
-# ---------------------------------------------------------------------------
-
-
 async def test_create_agent_parses_model_provider_effort_and_yolo_kwargs(monkeypatch):
     import lionagi.cli._providers as providers_mod
     import lionagi.service.imodel as imodel_mod
@@ -428,11 +394,6 @@ async def test_create_agent_parses_model_provider_effort_and_yolo_kwargs(monkeyp
     assert captured.get("stream") is True
 
 
-# ---------------------------------------------------------------------------
-# trust_project_settings=False prevents project settings from loading
-# ---------------------------------------------------------------------------
-
-
 async def test_create_agent_does_not_load_project_settings_without_trust(tmp_path, monkeypatch):
     import lionagi.agent.settings as settings_mod
 
@@ -454,11 +415,6 @@ async def test_create_agent_does_not_load_project_settings_without_trust(tmp_pat
     assert calls == [False], f"load_settings called with include_project={calls}"
 
 
-# ---------------------------------------------------------------------------
-# _chain_post_hooks ignores non-dict hook returns; dict returns update result
-# ---------------------------------------------------------------------------
-
-
 async def test_agent_post_hooks_ignore_non_dict_results_and_keep_previous_result():
     """Non-dict hook return is ignored; a subsequent dict return is applied."""
     from lionagi.agent.factory import _chain_post_hooks
@@ -476,12 +432,10 @@ async def test_agent_post_hooks_ignore_non_dict_results_and_keep_previous_result
     assert final == {"ok": 2}
 
 
-# ---------------------------------------------------------------------------
 # model spec without "/" — provider resolves from settings default, not the
 # bare model string (a bare model used to become its own garbage provider,
 # which construction never rejected — it silently fell through to a generic
 # Endpoint and only failed later with a missing-API-key error).
-# ---------------------------------------------------------------------------
 
 
 async def test_create_agent_model_without_slash_uses_settings_default_provider(monkeypatch):
@@ -548,12 +502,10 @@ async def test_create_agent_backends_alias_unaffected(monkeypatch):
     assert captured.get("model") == "sonnet"
 
 
-# ---------------------------------------------------------------------------
 # spec.cwd forwarded into the CLI provider request's repo/workspace field —
 # every CLI provider's request model runs its subprocess against `repo`
 # (defaults to the calling process cwd), so a workspace assigned via
 # spec.cwd must reach it or the agent silently runs in the host cwd instead.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -596,11 +548,6 @@ async def test_create_agent_no_cwd_does_not_set_repo_kwarg(monkeypatch):
     assert "repo" not in captured
 
 
-# ---------------------------------------------------------------------------
-# system_prompt without lion_system (line 104)
-# ---------------------------------------------------------------------------
-
-
 async def test_create_agent_system_prompt_without_lion_system():
     config = AgentSpec.compose("implementer", system_prompt="You are a helpful assistant.")
     config.lion_system = False
@@ -608,11 +555,6 @@ async def test_create_agent_system_prompt_without_lion_system():
     sys_msg = branch.msgs.system
     assert sys_msg is not None
     assert "helpful assistant" in sys_msg.rendered
-
-
-# ---------------------------------------------------------------------------
-# _apply_permissions: non-PermissionPolicy non-dict → returns early (lines 127-130)
-# ---------------------------------------------------------------------------
 
 
 async def test_apply_permissions_invalid_type_returns_early():
@@ -624,21 +566,11 @@ async def test_apply_permissions_invalid_type_returns_early():
     assert config.hook_handlers.get("security_pre:*", []) == []
 
 
-# ---------------------------------------------------------------------------
-# _chain_pre_hooks: no hooks → returns None (line 158)
-# ---------------------------------------------------------------------------
-
-
 def test_chain_pre_hooks_no_hooks_returns_none():
     from lionagi.agent.factory import _chain_pre_hooks
 
     result = _chain_pre_hooks("tool", [], [])
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _chain_pre_hooks: hook returns dict → args updated (line 165)
-# ---------------------------------------------------------------------------
 
 
 async def test_chain_pre_hooks_dict_return_updates_args():
@@ -653,11 +585,6 @@ async def test_chain_pre_hooks_dict_return_updates_args():
     assert result["cmd"] == "ls"
 
 
-# ---------------------------------------------------------------------------
-# _chain_post_hooks: non-dict initial result bypasses hooks (line 176)
-# ---------------------------------------------------------------------------
-
-
 async def test_chain_post_hooks_non_dict_result_returned_unchanged():
     from lionagi.agent.factory import _chain_post_hooks
 
@@ -667,11 +594,6 @@ async def test_chain_post_hooks_non_dict_result_returned_unchanged():
     chained = _chain_post_hooks("tool", [hook])
     result = await chained("plain string result")
     assert result == "plain string result"
-
-
-# ---------------------------------------------------------------------------
-# standalone tools: reader, editor, search registration (lines 196, 206-228)
-# ---------------------------------------------------------------------------
 
 
 async def test_create_agent_registers_standalone_reader():
@@ -704,11 +626,6 @@ async def test_attach_hooks_adds_postprocessor_for_standalone_tool():
     assert tool.postprocessor is not None
 
 
-# ---------------------------------------------------------------------------
-# _register_coding_tools: malformed key (line 243) and error phase (lines 253-254)
-# ---------------------------------------------------------------------------
-
-
 async def test_register_coding_tools_skips_malformed_keys():
     config = AgentSpec.coding()
     config.hook_handlers["malformed_no_colon"] = [lambda *a: None]
@@ -726,11 +643,6 @@ async def test_register_coding_tools_error_hook_wired():
     config.on_error("bash", my_error)
     branch = await _make(config)
     assert isinstance(branch, Branch)
-
-
-# ---------------------------------------------------------------------------
-# _load_mcp: explicit mcp_config_path (lines 279-281)
-# ---------------------------------------------------------------------------
 
 
 async def test_load_mcp_explicit_config_path_used(tmp_path, monkeypatch):
@@ -752,11 +664,6 @@ async def test_load_mcp_explicit_config_path_used(tmp_path, monkeypatch):
     await create_agent(config, load_settings=False)
 
     assert calls == [str(mcp_file)]
-
-
-# ---------------------------------------------------------------------------
-# _load_mcp: trust_project_settings + .lionagi dir stops search (line 291)
-# ---------------------------------------------------------------------------
 
 
 async def test_load_mcp_breaks_at_lionagi_dir(tmp_path, monkeypatch):
@@ -787,14 +694,7 @@ async def test_load_mcp_breaks_at_lionagi_dir(tmp_path, monkeypatch):
     assert calls and calls[0] == str(mcp_file)
 
 
-# ---------------------------------------------------------------------------
 # Search tool workspace containment wiring (regression)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Forwarding AgentSpec MCP fields into the claude_code CLI's own request
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)

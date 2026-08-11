@@ -609,31 +609,14 @@ def _await_vite_ready_url(
 ) -> str | None:
     """Read Vite's startup banner for the address it actually bound.
 
-    Loopback hosts read the `Local:` line. Non-loopback hosts (a LAN IP, or
-    the `0.0.0.0`/`::` wildcard) read `Network:` instead, since that is the
-    address reachable from outside this machine. When Vite reports more than
-    one matching line (multiple interfaces), the first one wins and a note is
-    printed saying so — callers get a single deterministic URL either way.
-
-    Returns None on failure and prints one of three distinct, actionable
-    warnings so a crashed Vite doesn't read the same as a slow one:
-
-    - the process exited early (exit code included);
-    - its output stream ended without matching a readiness line while the
-      process is still running (unexpected format);
-    - it genuinely never produced a matching line before `timeout`.
-
-    Every case includes the last `_STARTUP_TAIL_LINES` of captured output
-    (stdout merged with stderr — see `_launch_vite_dev`) so "check the Vite
-    output" is something the warning can actually show, not just say.
-
-    Callers must not construct a guessed URL from the requested host/port
-    on the failure path, since nothing may be listening there.
-
-    A background thread keeps draining stdout for the life of the process so
-    Vite never blocks on a full pipe buffer; once this function returns, that
-    thread stops parsing (the `done` flag below) and only drains. It is a
-    daemon thread and needs no explicit join — it exits with the process.
+    Loopback hosts read the `Local:` line; non-loopback hosts (LAN IP, or the
+    `0.0.0.0`/`::` wildcard) read `Network:` instead, since that's what's
+    reachable from outside this machine. Returns None on failure, printing
+    one of three distinct warnings (early exit, stream EOF while still
+    running, or a genuine timeout) each with the last `_STARTUP_TAIL_LINES`
+    of captured output. Callers must not construct a guessed URL on the
+    failure path. See docs/internals/studio.md for the background drain
+    thread's lifecycle.
     """
     parse = _parse_vite_network_url if _host_wants_lan_url(host) else _parse_vite_local_url
     hits: queue.Queue[object] = queue.Queue()
@@ -1520,17 +1503,12 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return EXIT_EXPORT_PARTIAL if has_blocked else 0
 
 
-# ---------------------------------------------------------------------------
-# Typed quick-create — `li schedule create <kind> <name> ...`
-#
-# Dispatched from cli/main.py *before* the legacy `sched_sub` argparse tree
-# (a reserved kind token right after "create", mirroring how `agent status` /
-# `monitor run` / `wait` are special-cased there) so the existing flat
-# `li schedule create NAME --cron ... --prompt ...` form is untouched.
-# Compiles straight into a ScheduleMember and runs it through the identical
-# resolve_member()/create_quick_schedule() path a ScheduleSet member uses —
-# no forked validation, per the schedule-declaration design.
-# ---------------------------------------------------------------------------
+# Typed quick-create — `li schedule create <kind> <name> ...`. Dispatched from
+# cli/main.py before the legacy `sched_sub` argparse tree (a reserved kind
+# token right after "create"), leaving the flat `li schedule create NAME
+# --cron ... --prompt ...` form untouched. Compiles into a ScheduleMember and
+# runs it through the same resolve_member()/create_quick_schedule() path a
+# ScheduleSet member uses.
 
 QUICK_CREATE_KINDS = ("agent", "flow", "playbook", "command")
 

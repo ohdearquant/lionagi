@@ -5,32 +5,10 @@
 A bounded, single-run counterpart to ``run_progress``/``run_findings`` --
 unlike those two, this tool takes a bare run/session id rather than a
 resolvable reference (no ``resolve_run`` indirection), and projects the
-carrier's own detail fields directly rather than deriving a progress or
-findings summary from them.
-
-Carrier: ``lionagi.studio.services.runs.get_run``, called directly. That
-function already resolves its own store access correctly (through
-``sessions.get_session`` -> ``_open_db``, never through ``StateDB``), so this
-module never constructs a ``StateDB`` itself.
-
-Availability is reported as a ``known``/``source`` pair rather than a bare
-``None``, because ``get_run`` collapses two different situations into the
-same ``None`` return: the store could not be read at all, and the store was
-read fine but no run matched. Those need different answers, so this module
-runs its own preflight (mirroring the ``state_db_known_absent()``/
-``read_only_open_supported()`` pairing every other bounded-read path in this
-package already checks before opening a connection) both before calling the
-carrier and again after a ``None``, so a store that disappears between the
-two calls is reported as unavailable rather than as an empty result.
-
-Redaction reuses the existing helpers in ``redact.py`` exactly as
-``run_progress``/``run_findings`` do -- free-text identifier fields
-(``name``, ``playbook_name``, ``agent_name``, ``model``, ``worker_name``) are
-passed through ``scrub_text``, matching ``run_progress.py``'s own treatment
-of the same fields; ``project`` goes through ``public_project``;
-``status_reason_summary`` goes through ``redact_scalar`` with a manually
-derived truncation flag, since ``redact_scalar`` reports no clipping signal
-of its own.
+carrier's (``lionagi.studio.services.runs.get_run``) own detail fields
+directly. See docs/internals/studio.md ("Bounded read projections") for the
+``known``/``source`` availability contract and the redaction rules shared
+with ``run_progress``/``run_findings``.
 """
 
 from __future__ import annotations
@@ -83,17 +61,12 @@ def _scrub(value: Any) -> Any:
 def _summary(raw: Any) -> tuple[Any, bool]:
     """Redact ``status_reason_summary`` and say truthfully whether it clipped.
 
-    ``redact_scalar`` applies the cap to ``scrub_text(value)``, not to the raw
-    value, and scrubbing moves the length in both directions -- an absolute
-    path collapses to its leaf, a secret header expands to a marker. Deriving
-    the flag from the raw length therefore describes a different string than
-    the one that was actually capped, and the two disagree whenever scrubbing
-    carries the length across the cap.
-
-    The cap clipped exactly when the output sits at the cap while the scrubbed
-    input ran past it. Testing that, rather than testing the raw length, also
-    keeps the secret-value path honest: there ``redact_scalar`` substitutes a
-    short marker instead of slicing, so nothing was truncated.
+    Truncation is detected against the *scrubbed* input, not the raw value:
+    scrubbing changes length in both directions (a path collapses to its
+    leaf, a header expands to a marker), so the cap clipped exactly when the
+    output sits at the cap while the scrubbed input ran past it. This also
+    keeps the secret-value path honest, where ``redact_scalar`` substitutes a
+    short marker instead of slicing -- nothing was truncated there.
     """
     redacted = redact_scalar("status_reason_summary", raw)
     if not isinstance(raw, str) or not isinstance(redacted, str):
@@ -104,25 +77,13 @@ def _summary(raw: Any) -> tuple[Any, bool]:
 def _project(run: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Redact and rename ``get_run``'s detail fields for the Operator surface.
 
-    Returns ``(fields, truncated)``, where ``truncated`` is the aggregate over
-    every field bounded here: the capped ``status_reason_summary`` and the
-    byte-capped ``manifest``.
-
-    ``cwd``, ``state_root``, ``artifact_root``, ``manifest``, ``task`` and
-    ``error`` are shown by no other Operator tool, and they are the fields
-    shaped to carry filesystem layout and arbitrary payloads. On the carrier
-    this module actually calls they are not yet dangerous: ``get_run``'s
-    StateDB path constant-fills ``task``/``error``/``cwd``/``manifest`` with
-    ``""``/``None``/``None``/``{}`` and already runs both roots through
-    ``public_path``. They are redacted here anyway because that is a property
-    of the carrier, not of this projection -- ``runs.py``'s own manifest-backed
-    builder fills the same field names from raw manifest text (``task`` from
-    ``manifest["prompt"]``, ``error`` from ``manifest["error"]``), so the
-    projection has to be safe for the values the field names promise rather
-    than for the placeholders one code path happens to supply today. The
-    path-shaped and free-text fields go through ``scrub_text`` like every
-    other free-text field here; ``manifest`` goes through the recursive
-    redactor and a byte cap because it is an unbounded mapping.
+    Returns ``(fields, truncated)``, the aggregate over every field bounded
+    here (``status_reason_summary`` and ``manifest``). ``cwd``, ``state_root``,
+    ``artifact_root``, ``manifest``, ``task`` and ``error`` carry filesystem
+    layout and arbitrary payloads and are shown by no other Operator tool;
+    they are redacted for what the field names promise across every backing
+    carrier, not just the safe placeholders today's StateDB carrier happens
+    to fill -- see docs/internals/studio.md ("Bounded read projections").
     """
     raw_summary = run.get("status_reason_summary")
     redacted_summary, summary_truncated = _summary(raw_summary)

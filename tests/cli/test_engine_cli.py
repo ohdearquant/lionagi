@@ -16,9 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 def _build_args(**kwargs) -> argparse.Namespace:
@@ -40,9 +38,7 @@ def _build_args(**kwargs) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
-# ---------------------------------------------------------------------------
 # Subparser registration
-# ---------------------------------------------------------------------------
 
 
 def test_add_engine_subparser_registers_engine_command():
@@ -122,9 +118,7 @@ def test_engine_run_accepts_model_and_depth_flags():
     assert args.max_depth == 5
 
 
-# ---------------------------------------------------------------------------
 # Coding kind: missing --test-cmd → exit 1
-# ---------------------------------------------------------------------------
 
 
 async def test_coding_without_test_cmd_returns_1(monkeypatch):
@@ -140,9 +134,7 @@ async def test_coding_without_test_cmd_returns_1(monkeypatch):
     assert result == 1
 
 
-# ---------------------------------------------------------------------------
 # Successful engine run (mocked engine)
-# ---------------------------------------------------------------------------
 
 
 async def test_successful_engine_run_returns_0(monkeypatch, capsys):
@@ -197,9 +189,7 @@ async def test_engine_failure_returns_1(monkeypatch):
     assert result == 1
 
 
-# ---------------------------------------------------------------------------
 # Pydantic model result — CodeResultRecorded real shape
-# ---------------------------------------------------------------------------
 
 
 async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
@@ -248,9 +238,7 @@ async def test_code_result_recorded_shape_serialized(monkeypatch, capsys):
     # in export_dir persistence tests below).
 
 
-# ---------------------------------------------------------------------------
 # export_dir persistence — sourced from args, not result model
-# ---------------------------------------------------------------------------
 
 
 async def test_export_dir_persisted_from_args_coding(monkeypatch, capsys):
@@ -453,9 +441,7 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
     assert completed[0]["export_dir"] is None
 
 
-# ---------------------------------------------------------------------------
 # Cancellation handling — BaseException paths
-# ---------------------------------------------------------------------------
 
 
 async def test_cancelled_error_marks_row_cancelled(monkeypatch):
@@ -583,9 +569,7 @@ async def test_keyboard_interrupt_marks_row_cancelled(monkeypatch):
     assert close_count[0] == 1
 
 
-# ---------------------------------------------------------------------------
 # StateDB persistence paths
-# ---------------------------------------------------------------------------
 
 
 async def test_db_insert_called_on_success(monkeypatch, capsys):
@@ -683,9 +667,7 @@ async def test_no_persist_skips_db(monkeypatch, capsys):
     assert not db_opened, "StateDB.open() was called despite --no-persist"
 
 
-# ---------------------------------------------------------------------------
 # Import-failure closes the DB
-# ---------------------------------------------------------------------------
 
 
 async def test_import_failure_closes_db(monkeypatch):
@@ -743,9 +725,7 @@ async def test_import_failure_closes_db(monkeypatch):
     assert any(c["status"] == "failed" for c in update_calls)
 
 
-# ---------------------------------------------------------------------------
 # run_engine dispatch (synchronous entry point)
-# ---------------------------------------------------------------------------
 
 
 def test_run_engine_dispatches_run_subcommand(monkeypatch):
@@ -790,9 +770,7 @@ def test_run_engine_unknown_subcommand_returns_1(monkeypatch):
     assert rc == 1
 
 
-# ---------------------------------------------------------------------------
 # Main entrypoint: 'engine' command is routed in main()
-# ---------------------------------------------------------------------------
 
 
 def test_main_routes_engine_command(monkeypatch):
@@ -831,9 +809,7 @@ def test_main_routes_engine_command(monkeypatch):
     assert run_engine_calls[0].command == "engine"
 
 
-# ---------------------------------------------------------------------------
 # Signal persistence integration: engine run → session_signals table
-# ---------------------------------------------------------------------------
 
 
 async def test_engine_run_signals_land_in_session_signals(tmp_path):

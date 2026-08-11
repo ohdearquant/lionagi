@@ -3,17 +3,17 @@
 
 """Reclaiming a message body has to stay distinguishable from never having one.
 
-The prune selects sessions. The bytes live on messages, and a message any
-surviving progression still names is kept whatever its age, so a store can be
-almost entirely message content, have every message inside the keep-window, and
-give a prune nothing to delete. This command selects on the axis the bytes are
-actually on.
+The prune selects sessions, but the bytes live on messages, and a message any
+surviving progression still names is kept whatever its age — so a store can
+be almost entirely message content, with every message inside the
+keep-window, and give a prune nothing to delete. This command selects on the
+axis the bytes are actually on.
 
-The condition that shapes it: an emptied body is indistinguishable from a turn
-that genuinely produced nothing, and nothing downstream has a second source for
-that distinction, so the two would collapse into one state permanently. A
-reclaimed body therefore carries a marker, and the arms that matter most here
-assert the difference is visible AT THE CONSUMER rather than at the writer --
+An emptied body is otherwise indistinguishable from a turn that genuinely
+produced nothing, and nothing downstream has a second source for that
+distinction, so the two would collapse into one state permanently. A
+reclaimed body therefore carries a marker, and the tests that matter most
+here assert the difference is visible at the consumer, not just the writer —
 the writer knowing what it wrote is not the property anyone depends on.
 
 No LLM and no network: these run against a temp SQLite file.

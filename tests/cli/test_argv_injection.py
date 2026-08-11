@@ -10,9 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _schedule(**kwargs) -> dict:
@@ -32,9 +30,7 @@ def _schedule(**kwargs) -> dict:
     return base
 
 
-# ---------------------------------------------------------------------------
 # subprocess.build_argv — action_model validation
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvActionModelInjection:
@@ -192,9 +188,7 @@ class TestBuildArgvActionModelInjection:
                 os.unlink(tmp)
 
 
-# ---------------------------------------------------------------------------
 # subprocess.build_argv — action_extra_args validation
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvExtraArgsInjection:
@@ -252,9 +246,7 @@ class TestBuildArgvExtraArgsInjection:
         assert tmp is None
 
 
-# ---------------------------------------------------------------------------
 # subprocess.build_argv — identifier fields (action_agent/project/playbook)
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvIdentifierInjection:
@@ -295,9 +287,7 @@ class TestBuildArgvIdentifierInjection:
         assert tmp is None
 
 
-# ---------------------------------------------------------------------------
 # build_argv structural: -- sentinel and positional ordering
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvSentinelStructure:
@@ -503,9 +493,7 @@ class TestBuildArgvSentinelStructure:
         )
 
 
-# ---------------------------------------------------------------------------
 # service layer — create_schedule validation
-# ---------------------------------------------------------------------------
 
 
 class TestCreateScheduleInjectionRejection:
@@ -604,9 +592,7 @@ class TestCreateScheduleInjectionRejection:
         assert "id" in result
 
 
-# ---------------------------------------------------------------------------
 # service layer — update_schedule (PATCH) validation
-# ---------------------------------------------------------------------------
 
 
 class TestUpdateScheduleInjectionRejection:
@@ -721,9 +707,7 @@ class TestUpdateScheduleInjectionRejection:
         assert not write_called["value"], "DB write must not be called when validation rejects"
 
 
-# ---------------------------------------------------------------------------
 # action_prompt == '--' sentinel rejection
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvPromptSentinelRejection:
@@ -834,9 +818,7 @@ class TestBuildArgvPromptSentinelRejection:
             asyncio.run(_go())
 
 
-# ---------------------------------------------------------------------------
 # cli/main.py — pre-parse verbose scan must be sentinel-aware
-# ---------------------------------------------------------------------------
 
 
 class TestMainVerboseScanSentinelAware:
@@ -947,10 +929,8 @@ class TestMainVerboseScanSentinelAware:
         )
 
 
-# ---------------------------------------------------------------------------
 # build_argv — template injection: rendered prompt must be validated post-render
 # (order-of-operations bypass)
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvTemplateInjection:
@@ -1027,9 +1007,7 @@ class TestBuildArgvTemplateInjection:
             build_argv(_schedule(action_prompt="--"), {})
 
 
-# ---------------------------------------------------------------------------
 # CWE-918 github_repo path manipulation — validator unit tests
-# ---------------------------------------------------------------------------
 
 
 class TestGithubRepoValidatorUnit:
@@ -1159,9 +1137,7 @@ class TestGithubRepoValidatorUnit:
         _validate_github_repo(f"owner/{name}")  # must not raise
 
 
-# ---------------------------------------------------------------------------
 # CWE-918 github_repo — service boundary (create and update)
-# ---------------------------------------------------------------------------
 
 
 class TestGithubRepoServiceValidation:
@@ -1170,7 +1146,7 @@ class TestGithubRepoServiceValidation:
     def _run(self, coro):
         return asyncio.run(coro)
 
-    # -- create_schedule --
+    # create_schedule
 
     def test_create_path_traversal_raises(self):
         """create_schedule raises ValueError for '../../other-endpoint'."""
@@ -1299,7 +1275,7 @@ class TestGithubRepoServiceValidation:
             )
         assert "id" in result
 
-    # -- update_schedule --
+    # update_schedule
 
     def _mock_db(self, existing: dict):
         class _MockDB:

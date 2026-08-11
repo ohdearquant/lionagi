@@ -183,9 +183,7 @@ async def test_branch_operate_ignores_caller_supplied_operative():
     assert result.action_responses[0].output == 3
 
 
-# ---------------------------------------------------------------------------
 # Edge cases for prepare_operate_kw (P0)
-# ---------------------------------------------------------------------------
 
 from lionagi.operations.operate.operate import prepare_operate_kw
 
@@ -227,9 +225,7 @@ async def test_operate_handle_validation_raise_reports_expected_model(monkeypatc
         )
 
 
-# ---------------------------------------------------------------------------
 # Additional prepare_operate_kw coverage — field_models
-# ---------------------------------------------------------------------------
 
 import warnings
 
@@ -327,9 +323,7 @@ def test_prepare_operate_kw_snapshot_dir_alone_triggers_run_param():
     assert chat_param.snapshot_dir == "/var/folders/branches"
 
 
-# ---------------------------------------------------------------------------
 # operate() function direct tests — various branches
-# ---------------------------------------------------------------------------
 
 from lionagi.operations.operate.operate import operate
 from lionagi.operations.types import ChatParam
@@ -476,9 +470,7 @@ async def test_operate_with_field_models_builds_operative():
     assert result == {"label": "test_value"}
 
 
-# ---------------------------------------------------------------------------
 # TypeError raised at new boundary (_specs_from_fields) before model call.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -506,10 +498,8 @@ async def test_operate_invalid_field_models_raises_before_model_call():
         )
 
 
-# ---------------------------------------------------------------------------
 # Lock-in: reason=True alone (no response_format / actions / field_models)
 # takes the Operative-construction branch (operate.py:252).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

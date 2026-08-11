@@ -17,9 +17,7 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 from lionagi.state.claude_mirror import session_db_id  # noqa: E402
 from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Shared test data
-# ---------------------------------------------------------------------------
 
 
 def dag_metadata() -> dict:
@@ -35,9 +33,7 @@ def dag_metadata() -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
 # Fixtures and helpers
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -97,9 +93,7 @@ async def overwrite_session_node_metadata(db_path: Path, session_id: str, raw: s
         await db.commit()
 
 
-# ---------------------------------------------------------------------------
 # Test 1.1 — falsy / unparseable inputs return None
-# ---------------------------------------------------------------------------
 
 
 def test_graph_from_metadata_none_empty_and_invalid_json_return_none():
@@ -110,9 +104,7 @@ def test_graph_from_metadata_none_empty_and_invalid_json_return_none():
     assert _graph_from_metadata("{not-json") is None
 
 
-# ---------------------------------------------------------------------------
 # Test 1.2 — non-dict root and empty operations list return None
-# ---------------------------------------------------------------------------
 
 
 def test_graph_from_metadata_rejects_non_dict_and_missing_operations():
@@ -123,9 +115,7 @@ def test_graph_from_metadata_rejects_non_dict_and_missing_operations():
     assert _graph_from_metadata(json.dumps({"agents": [], "operations": []})) is None
 
 
-# ---------------------------------------------------------------------------
 # Test 1.3 — valid DAG: correct node fields and dependency edge
-# ---------------------------------------------------------------------------
 
 
 def test_graph_from_metadata_builds_nodes_and_dependency_edges():
@@ -161,9 +151,7 @@ def test_graph_from_metadata_builds_nodes_and_dependency_edges():
     ]
 
 
-# ---------------------------------------------------------------------------
 # Test 1.4 — malformed agents/operations entries are silently filtered
-# ---------------------------------------------------------------------------
 
 
 def test_graph_from_metadata_filters_malformed_agents_and_operations():
@@ -194,9 +182,7 @@ def test_graph_from_metadata_filters_malformed_agents_and_operations():
     assert graph["edges"] == []
 
 
-# ---------------------------------------------------------------------------
 # Test 1.5 — unknown agent_id yields blank role and assignment
-# ---------------------------------------------------------------------------
 
 
 def test_graph_from_metadata_unknown_agent_uses_blank_role_and_assignment():
@@ -217,9 +203,7 @@ def test_graph_from_metadata_unknown_agent_uses_blank_role_and_assignment():
     assert graph["edges"] == []
 
 
-# ---------------------------------------------------------------------------
 # Test 1.6 — string depends_on must not produce character-level edges
-# ---------------------------------------------------------------------------
 
 
 def test_graph_from_metadata_malformed_depends_on_does_not_create_character_edges():
@@ -238,9 +222,7 @@ def test_graph_from_metadata_malformed_depends_on_does_not_create_character_edge
     assert graph["edges"] == []
 
 
-# ---------------------------------------------------------------------------
 # Test 1.7 — get_session: valid DAG metadata → full graph in response
-# ---------------------------------------------------------------------------
 
 
 async def test_get_session_returns_graph_from_session_node_metadata(patched_sessions_db):
@@ -270,9 +252,7 @@ async def test_get_session_returns_graph_from_session_node_metadata(patched_sess
     ]
 
 
-# ---------------------------------------------------------------------------
 # Test 1.8 — get_session: null metadata → graph is None, duration is None
-# ---------------------------------------------------------------------------
 
 
 async def test_get_session_returns_none_graph_for_null_node_metadata(patched_sessions_db):
@@ -295,9 +275,7 @@ async def test_get_session_returns_none_graph_for_null_node_metadata(patched_ses
     assert result["source_kind"] == "live"
 
 
-# ---------------------------------------------------------------------------
 # Artifact verification display state
-# ---------------------------------------------------------------------------
 
 
 ARTIFACT_CONTRACT = {"expected": [{"id": "report", "path": "REPORT.md", "required": True}]}
@@ -425,9 +403,7 @@ async def test_get_session_keeps_verification_null_when_no_contract_exists(patch
     assert result["artifact_verification_json"] is None
 
 
-# ---------------------------------------------------------------------------
 # Test 1.8a — get_session_by_cc_id: legacy rows fall back to deterministic id
-# ---------------------------------------------------------------------------
 
 
 async def test_get_session_by_cc_id_falls_back_for_legacy_row(patched_sessions_db):
@@ -443,9 +419,7 @@ async def test_get_session_by_cc_id_falls_back_for_legacy_row(patched_sessions_d
     assert result["name"] == "Test Session"
 
 
-# ---------------------------------------------------------------------------
 # Test 1.9 — get_session: corrupt raw metadata → graph is None, no exception
-# ---------------------------------------------------------------------------
 
 
 async def test_get_session_returns_none_graph_for_raw_invalid_node_metadata(patched_sessions_db):
@@ -460,9 +434,7 @@ async def test_get_session_returns_none_graph_for_raw_invalid_node_metadata(patc
     assert result["graph"] is None
 
 
-# ---------------------------------------------------------------------------
 # Test 1.10 — get_session: branch + ordered messages + DAG graph together
-# ---------------------------------------------------------------------------
 
 
 async def test_get_session_orders_branch_messages_and_keeps_dag_graph(patched_sessions_db):
@@ -537,11 +509,6 @@ async def test_get_session_orders_branch_messages_and_keeps_dag_graph(patched_se
     )
 
 
-# ===========================================================================
-# Round 2 helpers
-# ===========================================================================
-
-
 async def seed_branch(
     db_path: Path,
     *,
@@ -572,9 +539,7 @@ async def seed_branch(
     return prog_id
 
 
-# ---------------------------------------------------------------------------
 # Tests 3.1–3.6 — list_sessions
-# ---------------------------------------------------------------------------
 
 
 async def test_list_sessions_returns_empty_when_db_absent(patched_sessions_db):
@@ -770,9 +735,7 @@ async def test_list_sessions_branch_and_message_counts(patched_sessions_db):
     assert row["message_count"] == 2
 
 
-# ---------------------------------------------------------------------------
 # Tests 4.1–4.5 — get_session_messages_after
-# ---------------------------------------------------------------------------
 
 
 async def test_get_session_messages_after_returns_empty_when_db_absent(patched_sessions_db):
@@ -1008,9 +971,7 @@ async def test_get_session_messages_after_message_shape_matches_expected_fields(
     ]
 
 
-# ---------------------------------------------------------------------------
 # Tests 5.1–5.3 — session_exists
-# ---------------------------------------------------------------------------
 
 
 async def test_session_exists_returns_true_for_existing_session(patched_sessions_db):
@@ -1034,9 +995,7 @@ async def test_session_exists_returns_false_when_db_file_absent(patched_sessions
     assert await svc.session_exists("any-id") is False
 
 
-# ---------------------------------------------------------------------------
 # Message pagination — detail responses window from the progression tail
-# ---------------------------------------------------------------------------
 
 
 async def seed_paginated_session(db_path: Path, *, count: int = 10) -> list[str]:
@@ -1129,9 +1088,7 @@ async def test_get_session_limit_clamped_to_max(patched_sessions_db):
     assert branch["message_total"] == 5
 
 
-# ---------------------------------------------------------------------------
 # message_cursor — stable pagination under concurrent progression appends
-# ---------------------------------------------------------------------------
 
 
 async def test_get_session_cursor_pages_are_stable_under_concurrent_appends(patched_sessions_db):
@@ -1237,9 +1194,7 @@ async def test_get_session_rejects_cursor_from_a_different_session(patched_sessi
         await svc.get_session("sess-paged", message_limit=1, message_cursor=foreign_cursor)
 
 
-# ---------------------------------------------------------------------------
 # Action-stat aggregation must match the canonical persisted lion_class values
-# ---------------------------------------------------------------------------
 
 
 async def test_get_session_action_stats_match_canonical_fully_qualified_lion_class(

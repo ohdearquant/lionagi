@@ -257,9 +257,7 @@ def test_import_non_posix_fallback_refuses_symlinked_lionagi_directory(
     assert (project_dir / ".lionagi").is_symlink()
 
 
-# ---------------------------------------------------------------------------
 # `li hooks trust`
-# ---------------------------------------------------------------------------
 
 
 def test_trust_lists_and_records_pending_commands(capsys, tmp_path, monkeypatch):
@@ -384,9 +382,7 @@ def test_trust_rejects_various_malformed_argv_shapes(capsys, tmp_path, bad_comma
     assert compute_command_hash(bad_command) not in trusted
 
 
-# ---------------------------------------------------------------------------
 # Content-pinned trust records (Issue 3 fix), exercised through the CLI.
-# ---------------------------------------------------------------------------
 
 
 def test_trust_rejects_unresolvable_executable_instead_of_recording_it(capsys, tmp_path):

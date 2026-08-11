@@ -29,10 +29,6 @@ from lionagi.providers._provider_errors import (
     classify_provider_error,
 )
 
-# ---------------------------------------------------------------------------
-# Quota patterns
-# ---------------------------------------------------------------------------
-
 
 def test_classify_usage_limit_reached_returns_quota_error():
     err = classify_provider_error("You've hit your usage limit reached. Please wait.")
@@ -67,11 +63,6 @@ def test_classify_quota_in_stderr_tail():
     assert isinstance(err, ProviderQuotaError)
 
 
-# ---------------------------------------------------------------------------
-# Auth patterns
-# ---------------------------------------------------------------------------
-
-
 def test_classify_invalid_api_key_returns_auth_error():
     err = classify_provider_error("Error: invalid_api_key provided")
     assert isinstance(err, ProviderAuthError)
@@ -95,11 +86,6 @@ def test_classify_401_unauthorized_returns_auth_error():
 def test_classify_auth_case_insensitive():
     err = classify_provider_error("INVALID API KEY")
     assert isinstance(err, ProviderAuthError)
-
-
-# ---------------------------------------------------------------------------
-# Context-length patterns
-# ---------------------------------------------------------------------------
 
 
 def test_classify_context_window_exceeded_returns_context_error():
@@ -158,11 +144,6 @@ def test_classify_prompt_is_too_long_returns_context_error():
     assert err.retryable is False
 
 
-# ---------------------------------------------------------------------------
-# Quota — date-formatted retry time (real cohort gap: no digit after "at")
-# ---------------------------------------------------------------------------
-
-
 def test_classify_usage_limit_with_date_formatted_retry_time():
     err = classify_provider_error(
         "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
@@ -179,20 +160,10 @@ def test_classify_hit_your_usage_limit_returns_quota_error():
     assert isinstance(err, ProviderQuotaError)
 
 
-# ---------------------------------------------------------------------------
-# Capacity patterns
-# ---------------------------------------------------------------------------
-
-
 def test_classify_model_at_capacity_returns_capacity_error():
     err = classify_provider_error("Selected model is at capacity. Please try a different model.")
     assert isinstance(err, ProviderCapacityError)
     assert err.retryable is True
-
-
-# ---------------------------------------------------------------------------
-# Unsupported model/tool patterns
-# ---------------------------------------------------------------------------
 
 
 def test_classify_unsupported_model_for_account_returns_unsupported_error():
@@ -229,11 +200,6 @@ def test_agy_wrapped_stream_disconnect_stays_retryable():
     assert err.retryable is True
 
 
-# ---------------------------------------------------------------------------
-# Safety patterns
-# ---------------------------------------------------------------------------
-
-
 def test_classify_cybersecurity_safety_block_returns_safety_error():
     err = classify_provider_error(
         "This content was flagged for possible cybersecurity risk. If this "
@@ -241,11 +207,6 @@ def test_classify_cybersecurity_safety_block_returns_safety_error():
     )
     assert isinstance(err, ProviderSafetyError)
     assert err.retryable is False
-
-
-# ---------------------------------------------------------------------------
-# Stream-disconnect patterns
-# ---------------------------------------------------------------------------
 
 
 def test_classify_stream_disconnected_returns_stream_disconnect_error():
@@ -261,11 +222,6 @@ def test_classify_agy_loop_closed_teardown_is_retryable():
     err = classify_provider_error("agy teardown failed: Event loop is closed")
     assert isinstance(err, ProviderTeardownError)
     assert err.retryable is True
-
-
-# ---------------------------------------------------------------------------
-# Adapter catch-all (agy) — only fires when nothing more specific matches
-# ---------------------------------------------------------------------------
 
 
 def test_classify_agy_generic_error_status_returns_adapter_error():
@@ -289,11 +245,6 @@ def test_classify_agy_quota_message_still_wins_over_adapter_catchall():
     assert isinstance(err, ProviderQuotaError)
 
 
-# ---------------------------------------------------------------------------
-# Unmatched → base ProviderError (not a subclass)
-# ---------------------------------------------------------------------------
-
-
 def test_classify_unknown_returns_base_provider_error():
     err = classify_provider_error("Some random failure with no known pattern")
     assert type(err) is ProviderError
@@ -302,11 +253,6 @@ def test_classify_unknown_returns_base_provider_error():
 def test_classify_empty_string_returns_base_provider_error():
     err = classify_provider_error("")
     assert type(err) is ProviderError
-
-
-# ---------------------------------------------------------------------------
-# All classes are RuntimeError-compatible
-# ---------------------------------------------------------------------------
 
 
 def test_provider_error_is_runtime_error():
@@ -337,11 +283,6 @@ def test_emission_error_is_runtime_error():
 def test_classify_result_is_runtime_error():
     err = classify_provider_error("usage limit reached")
     assert isinstance(err, RuntimeError)
-
-
-# ---------------------------------------------------------------------------
-# retryable classification — the machine-readable retry/non-retry split
-# ---------------------------------------------------------------------------
 
 
 def test_base_provider_error_defaults_to_non_retryable():
@@ -375,11 +316,6 @@ def test_transient_classes_are_retryable(cls):
 def test_permanent_classes_are_non_retryable(cls):
     assert cls.retryable is False
     assert cls("msg").retryable is False
-
-
-# ---------------------------------------------------------------------------
-# Attrs preserved correctly
-# ---------------------------------------------------------------------------
 
 
 def test_provider_error_attrs_stored():

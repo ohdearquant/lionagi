@@ -44,9 +44,7 @@ async def _init_db(db_path: Path) -> None:
         pass  # opens + applies schema (creates the attention tables too)
 
 
-# ---------------------------------------------------------------------------
 # Unit-level: service functions directly (no HTTP)
-# ---------------------------------------------------------------------------
 
 
 def test_upsert_creates_pending_row(tmp_path, monkeypatch):
@@ -661,9 +659,7 @@ def test_attention_dispositions_upgrade_from_pre_revision_store(tmp_path, monkey
     assert recreated["state"] == "acknowledged"
 
 
-# ---------------------------------------------------------------------------
 # HTTP-level: routes
-# ---------------------------------------------------------------------------
 
 
 def test_http_put_get_delete_roundtrip(tmp_path, monkeypatch):

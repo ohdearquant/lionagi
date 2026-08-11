@@ -1,20 +1,18 @@
 """The studio services open the store the daemon serves.
 
-Every service in this layer used to name ``DEFAULT_DB_PATH`` at import. That is
-the right file until ``LIONAGI_STATE_DB_URL`` moves the store, and then it is a
-different database from the one the daemon writes: the routes report on rows
-nobody is serving, and SQLite creates the unrelated file on connect if it is
-not already there.
+Every service in this layer used to name ``DEFAULT_DB_PATH`` at import.
+That is the right file until ``LIONAGI_STATE_DB_URL`` moves the store, and
+then it is a different database from the one the daemon writes: the routes
+report on rows nobody is serving, and SQLite creates the unrelated file on
+connect if it is not already there.
 
-Two things are worth pinning. The first is that nothing changes for a
-deployment that has not moved anything, since that is what makes changing every
-service at once safe. The second is that a health answer and a data answer come
-from the same store, because two services resolving separately is the defect
-this replaces rather than a smaller version of it.
+Two things are pinned: a deployment that has not moved anything sees no
+change, and a health answer and a data answer come from the same store
+(two services resolving separately was the original defect).
 
-The default path is present and wrong in these tests, not absent. A service
-still reading it would then answer from an empty database instead of raising,
-which is the failure that has to be visible here.
+The default path is present and wrong in these tests, not absent, so a
+service still reading it answers from an empty database instead of
+raising -- that silent-wrong-answer failure is what must stay visible.
 """
 
 from __future__ import annotations

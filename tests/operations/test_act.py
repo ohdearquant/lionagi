@@ -19,9 +19,7 @@ from lionagi.operations.types import ActionParam
 from lionagi.protocols.messages import ActionRequest
 from lionagi.session.branch import Branch
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_branch_with_tool(tool_fn=None):
@@ -38,9 +36,7 @@ def _make_branch_with_tool(tool_fn=None):
     return branch
 
 
-# ---------------------------------------------------------------------------
 # _act() — happy paths
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -83,9 +79,7 @@ async def test_act_basemodel_with_function_and_arguments():
     assert result.output == 10
 
 
-# ---------------------------------------------------------------------------
 # _act() — error paths
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -355,9 +349,7 @@ async def test_act_verbose_logging(caplog):
     assert result.output == 5
 
 
-# ---------------------------------------------------------------------------
 # act() — strategy dispatch
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -420,9 +412,7 @@ async def test_act_invalid_strategy_raises():
         await act(branch, {"function": "x", "arguments": {}}, action_param)
 
 
-# ---------------------------------------------------------------------------
 # prepare_act_kw
-# ---------------------------------------------------------------------------
 
 
 def test_prepare_act_kw_returns_correct_structure():
@@ -445,9 +435,7 @@ def test_prepare_act_kw_defaults():
     assert kw["action_param"].suppress_errors is True
 
 
-# ---------------------------------------------------------------------------
 # _sequential_act() directly
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

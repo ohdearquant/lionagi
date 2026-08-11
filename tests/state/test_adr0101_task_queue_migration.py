@@ -73,7 +73,7 @@ async def _make_schedule_run(db: StateDB, *, status: str = "running") -> tuple[s
     return sched_id, run_id
 
 
-# ── 1. Migration idempotence ─────────────────────────────────────────────────
+# 1. Migration idempotence
 
 
 async def test_migration_idempotent_on_already_migrated_db(tmp_path):
@@ -370,7 +370,7 @@ async def test_migration_adds_lease_attempts_column_to_legacy_db(tmp_path):
         await state.close()
 
 
-# ── 2. Backup before rebuild ─────────────────────────────────────────────────
+# 2. Backup before rebuild
 
 
 async def test_backup_created_before_rebuild(tmp_path):
@@ -516,7 +516,7 @@ async def test_backup_not_created_when_no_rebuild_needed(tmp_path):
     assert backups == []
 
 
-# ── 3. Transition-vocab enforcement via the CAS transition store ────────────
+# 3. Transition-vocab enforcement via the CAS transition store
 
 
 @pytest.fixture
@@ -683,7 +683,7 @@ async def test_transition_rejects_unknown_patch_column(db: StateDB) -> None:
     assert row["status"] == "running"  # rejected before any SQL ran
 
 
-# ── 4. Load-bearing: schedule-spawned runs stay byte-identical ──────────────
+# 4. Load-bearing: schedule-spawned runs stay byte-identical
 #
 # Golden values captured by running the ORIGINAL (pre-ADR-0071) codebase
 # through the exact same operations below (create_schedule_run then

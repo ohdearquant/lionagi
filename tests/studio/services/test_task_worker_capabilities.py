@@ -1,17 +1,11 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0071 D5: capability-class matching in the claim loop.
+"""ADR-0071: capability-class matching in the claim loop.
 
-Covers the workers-registry heartbeat upsert, the subset-match claim rule
-(eligibility∪serialization tokens), execution_target matching (including the
-NULL/empty = claimable-by-any case), heartbeat-TTL claim eligibility (and its
-non-interference with lease-expiry recovery), serialization-class
-concurrency admission, affinity-class candidate ordering, cross-dialect JSON
-normalization (SQLite string vs. Postgres native value), and the keyset-paged
-claim scan (a persistent prefix of ineligible older rows must never hide a
-later eligible row). D3's original claim-race/lease/vocabulary tests live
-untouched in test_task_worker.py.
+The keyset-paged claim scan must never let a persistent prefix of ineligible
+older rows hide a later eligible row. Original claim-race/lease/vocabulary
+tests live in test_task_worker.py.
 """
 
 from __future__ import annotations
@@ -59,7 +53,7 @@ async def _status_of(db: StateDB, run_id: str) -> dict:
     return await db.fetch_one("SELECT status, leased_by FROM schedule_runs WHERE id = ?", (run_id,))
 
 
-# ── 1. Heartbeat registry upsert ─────────────────────────────────────────
+# Heartbeat registry upsert
 
 
 async def test_register_heartbeat_writes_a_worker_row(db: StateDB) -> None:
@@ -90,7 +84,7 @@ async def test_register_heartbeat_upserts_not_duplicates(db: StateDB) -> None:
     assert rows[0]["last_heartbeat_at"] == later
 
 
-# ── 2. Subset-match claim rule ───────────────────────────────────────────
+# Subset-match claim rule
 
 
 async def test_matching_capability_worker_claims(db: StateDB) -> None:
@@ -128,7 +122,7 @@ async def test_extra_advertised_capabilities_still_claims(db: StateDB) -> None:
     assert row["status"] == "completed"
 
 
-# ── 3. Execution-target matching ─────────────────────────────────────────
+# Execution-target matching
 
 
 async def test_execution_target_mismatch_not_claimed(db: StateDB) -> None:
@@ -169,7 +163,7 @@ async def test_null_execution_target_claimable_by_any_worker(db: StateDB) -> Non
     assert row["status"] == "completed"
 
 
-# ── 4. Heartbeat-TTL claim eligibility ───────────────────────────────────
+# Heartbeat-TTL claim eligibility
 
 
 async def test_stale_heartbeat_worker_skipped_for_new_claims(db: StateDB) -> None:
@@ -246,7 +240,7 @@ async def test_stale_workers_inflight_lease_still_recovers_via_reap(db: StateDB)
     assert row["leased_by"] is None
 
 
-# ── 5. Serialization-class concurrency admission ─────────────────────────
+# Serialization-class concurrency admission
 
 
 async def test_serialization_tasks_share_concurrency_key(db: StateDB) -> None:
@@ -337,7 +331,7 @@ async def test_eligibility_and_affinity_tasks_never_serialize(db: StateDB) -> No
     assert (await _status_of(db, run_id_2))["status"] == "completed"
 
 
-# ── 6. Affinity-class ordering ───────────────────────────────────────────
+# Affinity-class ordering
 
 
 async def test_affinity_matched_task_preferred_over_earlier_plain_task(db: StateDB) -> None:
@@ -387,7 +381,7 @@ async def test_affinity_ordering_does_not_starve_plain_tasks(db: StateDB) -> Non
     assert (await _status_of(db, run_id_affinity))["status"] == "completed"
 
 
-# ── 7. No eligible worker => stays queued ────────────────────────────────
+# No eligible worker => stays queued
 
 
 async def test_no_eligible_worker_task_remains_queued_across_ticks(db: StateDB) -> None:
@@ -402,7 +396,7 @@ async def test_no_eligible_worker_task_remains_queued_across_ticks(db: StateDB) 
     assert row["leased_by"] is None
 
 
-# ── 8. Cross-dialect JSON normalization ──────────────────────────────────
+# Cross-dialect JSON normalization
 
 
 def test_normalize_json_list_null_and_empty():
@@ -492,8 +486,7 @@ async def test_sqlite_backed_claim_still_works_after_normalization_change(db: St
     assert (await _status_of(db, run_id))["status"] == "completed"
 
 
-# ── 9. Keyset-paged claim scan (no starvation behind a long ineligible
-#      prefix) ────────────────────────────────────────────────────────────
+# Keyset-paged claim scan (no starvation behind a long ineligible prefix)
 
 
 async def test_eligible_row_behind_a_long_ineligible_prefix_is_still_claimed(

@@ -10,10 +10,6 @@ import pytest
 from lionagi.session.branch import Branch
 from lionagi.tools.coding import CodingToolkit
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_toolkit(tmp_path, notify=False):
     b = Branch()
@@ -27,11 +23,6 @@ def _tool_fn(tools, name):
         if t.func_callable.__name__ == name:
             return t.func_callable
     raise KeyError(f"tool '{name}' not found")
-
-
-# ---------------------------------------------------------------------------
-# Bind
-# ---------------------------------------------------------------------------
 
 
 def test_bind_returns_lean_default(tmp_path):
@@ -78,11 +69,6 @@ def test_bind_tool_names_opt_in_extras(tmp_path):
         CodingToolkit(workspace_root=str(tmp_path), tools=["reader", "nope"])
 
 
-# ---------------------------------------------------------------------------
-# Reader
-# ---------------------------------------------------------------------------
-
-
 async def test_reader_read_returns_numbered_lines(tmp_path):
     (tmp_path / "f.py").write_text("alpha\nbeta\ngamma\n")
     _, _, tools = _make_toolkit(tmp_path)
@@ -109,11 +95,6 @@ async def test_reader_binary_file_rejected(tmp_path):
     assert "inary" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Editor: write
-# ---------------------------------------------------------------------------
-
-
 async def test_editor_write_new_file(tmp_path):
     target = tmp_path / "new.py"
     _, _, tools = _make_toolkit(tmp_path)
@@ -129,11 +110,6 @@ async def test_editor_write_creates_parent_dirs(tmp_path):
     _, _, tools = _make_toolkit(tmp_path)
     result = await _tool_fn(tools, "editor")(action="write", file_path=str(target), content="x=1\n")
     assert result["success"] is True and target.exists()
-
-
-# ---------------------------------------------------------------------------
-# Editor: read-before-write guard
-# ---------------------------------------------------------------------------
 
 
 async def test_editor_read_guard_blocks_unread_existing_file(tmp_path):
@@ -189,11 +165,6 @@ async def test_editor_relative_edit_after_read_succeeds(tmp_path):
     assert f.read_text() == "goodbye world\n"
 
 
-# ---------------------------------------------------------------------------
-# Editor: multiple matches
-# ---------------------------------------------------------------------------
-
-
 async def test_editor_multiple_matches_fails_without_replace_all(tmp_path):
     f = tmp_path / "dup.py"
     f.write_text("foo\nfoo\nbar\n")
@@ -226,11 +197,6 @@ async def test_editor_multiple_matches_succeeds_with_replace_all(tmp_path):
     assert f.read_text().count("baz") == 2
 
 
-# ---------------------------------------------------------------------------
-# Bash
-# ---------------------------------------------------------------------------
-
-
 async def test_bash_echo_returns_stdout(tmp_path):
     _, _, tools = _make_toolkit(tmp_path)
     result = await _tool_fn(tools, "bash")(command="/bin/echo hello")
@@ -248,11 +214,6 @@ async def test_bash_shell_control_rejected(tmp_path):
     result = await _tool_fn(tools, "bash")(command="echo hi; echo there")
     assert result["return_code"] == -1
     assert "Shell control" in result["stderr"] or "rejected" in result["stderr"]
-
-
-# ---------------------------------------------------------------------------
-# Search: workspace containment
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -274,11 +235,6 @@ async def test_search_rejects_path_outside_workspace(tmp_path, action, pattern):
     assert "escapes workspace" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Reader rejects workspace escape
-# ---------------------------------------------------------------------------
-
-
 async def test_coding_toolkit_reader_rejects_workspace_escape(tmp_path):
     """ReaderTool rejects paths that escape the workspace root."""
     secret = tmp_path.parent / "secret.txt"
@@ -289,11 +245,6 @@ async def test_coding_toolkit_reader_rejects_workspace_escape(tmp_path):
 
     assert result["success"] is False
     assert "escape" in result["error"].lower() or "workspace" in result["error"].lower()
-
-
-# ---------------------------------------------------------------------------
-# Editor reports ambiguous replacement without writing
-# ---------------------------------------------------------------------------
 
 
 async def test_coding_toolkit_editor_reports_ambiguous_replacement_without_writing(
@@ -315,11 +266,6 @@ async def test_coding_toolkit_editor_reports_ambiguous_replacement_without_writi
     assert result["success"] is False
     # File must be unchanged
     assert target.read_text() == "a\na\n"
-
-
-# ---------------------------------------------------------------------------
-# Schema equivalence: CodingToolkit uses canonical file/ schemas (anti-divergence)
-# ---------------------------------------------------------------------------
 
 
 def test_reader_request_schema_is_canonical():
@@ -356,11 +302,6 @@ def test_canonical_reader_request_has_open_action():
 
     assert hasattr(ReaderAction, "open"), "ReaderAction must include the 'open' member"
     assert ReaderAction.open.value == "open"
-
-
-# ---------------------------------------------------------------------------
-# Reader: open action (docling not required — validate error path without it)
-# ---------------------------------------------------------------------------
 
 
 async def test_reader_open_unsupported_extension_fails(tmp_path):
@@ -417,11 +358,6 @@ async def test_reader_open_caches_and_read_serves_from_cache(tmp_path, monkeypat
     assert "line two" in read_result["content"]
 
 
-# ---------------------------------------------------------------------------
-# Schema validation: path is required in LLM-facing schema (anti-drift)
-# ---------------------------------------------------------------------------
-
-
 def test_coding_toolkit_reader_schema_requires_path(tmp_path):
     """LLM-facing reader schema must mark 'path' as required to guard against schema drift."""
     _, _, tools = _make_toolkit(tmp_path)
@@ -440,11 +376,6 @@ def test_coding_toolkit_reader_request_options_raises_without_path(tmp_path):
     reader_tool = next(t for t in tools if t.func_callable.__name__ == "reader")
     with pytest.raises(ValidationError):
         reader_tool.request_options(action="read")
-
-
-# ---------------------------------------------------------------------------
-# Error shape equivalence: CodingToolkit open vs ReaderTool for empty path
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("action", ["open", "read", "list_dir"])
@@ -471,11 +402,6 @@ async def test_empty_path_exactly_matches_reader_tool(tmp_path, action):
     assert actual == expected
 
 
-# ---------------------------------------------------------------------------
-# Docling smoke: real import path for 'open' action is reachable
-# ---------------------------------------------------------------------------
-
-
 def test_docling_import_is_available():
     """Confirm docling is installed so the 'open' action's real code path is exercisable."""
     from docling.document_converter import DocumentConverter  # noqa: F401
@@ -496,11 +422,6 @@ async def test_reader_open_real_html_fixture(tmp_path):
     # Cache populated — subsequent read should serve from cache
     read_result = await reader_fn(action="read", path=str(html_file), offset=0, limit=10)
     assert read_result["success"] is True
-
-
-# ---------------------------------------------------------------------------
-# Equivalence: nonexistent PDF and offset-beyond-cache for CodingToolkit vs ReaderTool
-# ---------------------------------------------------------------------------
 
 
 async def test_open_nonexistent_pdf_equivalence(tmp_path):

@@ -12,10 +12,6 @@ from lionagi.ln._utils import (
     now_utc,
 )
 
-# =============================================================================
-# now_utc() Tests
-# =============================================================================
-
 
 class TestNowUtc:
     @pytest.mark.unit
@@ -24,11 +20,6 @@ class TestNowUtc:
         assert result is not None
         assert hasattr(result, "year")
         assert hasattr(result, "month")
-
-
-# =============================================================================
-# acreate_path() Async Tests
-# =============================================================================
 
 
 class TestAcreatePath:
@@ -186,11 +177,6 @@ class TestAcreatePath:
         assert result.parent.name == "structure"
 
 
-# =============================================================================
-# get_bins() Tests
-# =============================================================================
-
-
 class TestGetBins:
     @pytest.mark.unit
     def test_get_bins_basic(self):
@@ -256,11 +242,6 @@ class TestGetBins:
             assert bin_length < upper  # Note: < not <=, based on source code logic
 
 
-# =============================================================================
-# import_module() Tests
-# =============================================================================
-
-
 class TestImportModule:
     @pytest.mark.unit
     def test_import_module_package_only(self):
@@ -296,11 +277,6 @@ class TestImportModule:
     def test_import_module_invalid_module_raises(self):
         with pytest.raises(ImportError, match="Failed to import"):
             import_module("os", "nonexistent_module_xyz")
-
-
-# =============================================================================
-# is_import_installed() Tests
-# =============================================================================
 
 
 class TestIsImportInstalled:

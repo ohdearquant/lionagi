@@ -25,7 +25,7 @@ from lionagi.cli.state import (
 )
 from lionagi.state.db import StateDB
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -118,7 +118,7 @@ async def _seed_session_with_messages(
     return sid, msg_ids
 
 
-# ── _format_bytes ─────────────────────────────────────────────────────────────
+# _format_bytes
 
 
 def test_format_bytes_handles_each_unit():
@@ -129,7 +129,7 @@ def test_format_bytes_handles_each_unit():
     assert "TiB" in _format_bytes(2 * 1024**4)
 
 
-# ── _list_sessions (li state ls) ──────────────────────────────────────────────
+# _list_sessions (li state ls)
 
 
 async def test_ls_prints_empty_message_when_no_sessions(
@@ -188,7 +188,7 @@ async def test_ls_status_filter(
     assert "open" not in out
 
 
-# ── _print_stats (li state stats) ─────────────────────────────────────────────
+# _print_stats (li state stats)
 
 
 async def test_stats_reports_no_db_message_when_missing(
@@ -232,7 +232,7 @@ async def test_stats_reports_row_counts_and_pragmas(
     assert "busy_timeout" in out
 
 
-# ── _checkpoint (li state checkpoint) ─────────────────────────────────────────
+# _checkpoint (li state checkpoint)
 
 
 async def test_checkpoint_returns_summary_string(temp_db_path: Path):
@@ -257,7 +257,7 @@ async def test_checkpoint_each_mode_runs(temp_db_path: Path, mode: str):
     assert "log_pages=" in result
 
 
-# ── _vacuum (li state vacuum) ─────────────────────────────────────────────────
+# _vacuum (li state vacuum)
 
 
 async def test_vacuum_runs_without_error(temp_db_path: Path):
@@ -274,7 +274,7 @@ async def test_vacuum_runs_without_error(temp_db_path: Path):
     assert n == 1
 
 
-# ── _prune (li state prune) ───────────────────────────────────────────────────
+# _prune (li state prune)
 
 
 async def test_prune_dry_run_does_not_delete(temp_db_path: Path):
@@ -587,7 +587,7 @@ async def test_dry_run_message_count_is_the_count_the_real_prune_deletes(
         assert (await db.get_session(keeper_sid)) is not None
 
 
-# ── _doctor (li state doctor) ────────────────────────────────────────────────
+# _doctor (li state doctor)
 
 
 async def test_doctor_dry_run_does_not_modify_status(temp_db_path: Path):
@@ -854,7 +854,7 @@ async def test_doctor_with_failed_new_status(temp_db_path: Path):
     assert s["status"] == "failed"
 
 
-# ── _import_one_run: a row born terminal must carry a real duration_ms ────────
+# _import_one_run: a row born terminal must carry a real duration_ms
 
 
 async def test_import_of_a_completed_run_derives_duration_ms(temp_db_path: Path, tmp_path: Path):

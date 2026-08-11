@@ -31,19 +31,10 @@ class AgenticHandlersMixin:
 
     @classmethod
     def take_supplied_runtime_state(cls, config, kwargs: dict) -> dict:
-        """Lift the declared runtime values off the caller's OWN objects.
-
-        Called before ``Endpoint.__init__``, which copies a supplied
-        ``EndpointConfig`` with ``model_copy(deep=True)``. A deep copy of a
-        bound method copies its receiver too, so the callback that reaches the
-        CLI would notify a copy of the supervisor while the real one — the
-        thing that owns the durable process accounting — hears nothing, and
-        every wiring check still passes. Reading the values here, from the
-        object the caller handed in, is what preserves identity.
-
-        Nothing is mutated: the copy still happens and the copied values are
-        still removed from the serialized config afterwards. This only decides
-        which of the two the endpoint ends up holding.
+        """Lift the declared runtime values off the caller's OWN objects,
+        before ``Endpoint.__init__`` deep-copies the supplied config and
+        silently rebinds any callback to a copy of its receiver.
+        See docs/internals/providers.md#runtime-only-endpoint-state-kept-out-of-serialization.
         """
         taken: dict[str, object] = {}
         source = getattr(config, "kwargs", None)
@@ -61,23 +52,13 @@ class AgenticHandlersMixin:
     def adopt_runtime_state(self, kwargs: dict) -> tuple[str, ...]:
         """Take declared runtime values onto an endpoint already built.
 
-        The constructor route lifts these off the caller's config before the
-        endpoint exists. A caller who hands over an endpoint INSTANCE has
-        missed that window entirely: the endpoint was built without them, and
-        the values arrive beside an object that is finished. They are written
-        here instead of dropped, which is what happened before and is the worst
-        of the three options — a child would inherit the wrong environment and
-        no supervisor would hear about it, with nothing raised and nothing
-        logged.
-
-        Writing onto the supplied instance rather than a copy is deliberate and
-        matches what the same branch already does with ``provider`` and
-        ``base_url``: the caller handed this object over to be configured. A
-        ``None`` is not a value here, it is the absence of one, and it must not
-        erase state the endpoint was built with.
-
-        Returns the names it could not place, so the caller can refuse rather
-        than let them evaporate.
+        For a caller handing over a finished ``Endpoint`` instance rather than
+        a config, who has missed the constructor's lift-before-copy window.
+        Writes onto the supplied instance, not a copy — matching ``provider``
+        and ``base_url`` on the same branch. ``None`` here means absence, not
+        a value, and must not erase existing state. Returns the names it
+        could not place, so the caller can refuse rather than let them
+        evaporate silently.
         """
         placed = set()
         for name in self._runtime_state_fields:
@@ -104,19 +85,13 @@ class AgenticHandlersMixin:
     def _init_runtime_state(self, supplied: dict | None = None) -> None:
         """Move declared runtime state out of the serializable endpoint config.
 
-        ``iModel(**kwargs)`` forwards anything it does not recognise into
-        ``EndpointConfig.kwargs``, which is a supported way to configure an
-        endpoint and also the thing ``Endpoint.to_dict`` serializes — so it
-        reaches ``iModel.to_dict``, ``Branch.to_dict``, and from there the run
-        snapshots written to disk. A child environment left there is a
-        credential in a saved file, and a callback left there is a function in a
-        structure something is about to JSON-encode.
-
-        Holding it here instead keeps the same configuration route working while
-        the value stays in memory. It also survives ``iModel.copy``, which deep
-        copies the config and then calls ``copy_runtime_state_to``: a deep copy
-        of a bound callback rebinds it to a copied receiver, so the original
-        supervisor would quietly stop hearing from the copy's legs.
+        ``EndpointConfig.kwargs`` reaches ``iModel.to_dict``, ``Branch.to_dict``,
+        and the run snapshots written to disk, so a child environment or
+        callback left there is a credential or a live object about to be
+        JSON-encoded. Holding it in memory here instead keeps the same
+        configuration route working; ``copy_runtime_state_to`` (used by
+        ``iModel.copy``) copies it shallowly for the same reason.
+        See docs/internals/providers.md#runtime-only-endpoint-state-kept-out-of-serialization.
         """
         self._runtime_state: dict[str, object] = {}
         self.drain_runtime_state()
@@ -129,33 +104,20 @@ class AgenticHandlersMixin:
     def drain_runtime_state(self) -> None:
         """Move declared runtime values out of the serializable config.
 
-        Called wherever the config is about to be READ rather than only at
-        construction, because construction is not the only way these values
-        get in. ``EndpointConfig.update()`` puts unknown keys straight back
-        into ``kwargs``, and ``iModel.from_dict()`` assigns a hydrated config
-        over the specialized one. Both are public routes and both bypass a
-        drain that happens once.
-
-        Draining keeps the value working while taking it out of what gets
-        written down: the value moves to ``_runtime_state``, which
-        ``create_payload`` reads at the same precedence ``config.kwargs`` had.
-
-        Serialization is the only place this is called from besides
-        construction, and deliberately so. ``create_payload`` reads
-        ``config.kwargs`` directly, so a value sitting there still works
-        without being drained first, and a drain on that path was measured to
-        change no observable behaviour. Writing it down is what makes a
-        credential durable, so that is where the drain belongs.
+        Called wherever the config could be re-populated after construction
+        (``EndpointConfig.update()``, ``iModel.from_dict()``) and again before
+        serialization — not on the ``create_payload`` read path, since a value
+        still sitting in ``config.kwargs`` there works fine unread; writing it
+        down is what makes a credential durable, so that's where draining
+        belongs.
         """
         for name in self._runtime_state_fields:
             if name in self.config.kwargs:
                 self._runtime_state[name] = self.config.kwargs.pop(name)
 
     def to_dict(self, **kwargs):
-        """Drain before serializing. A child environment reaching a run
-        snapshot is a credential in a saved file, and the value that got there
-        after construction is the same credential as the one that was there
-        before it."""
+        """Drain before serializing, so a child environment can't reach a run
+        snapshot as a credential in a saved file."""
         self.drain_runtime_state()
         return super().to_dict(**kwargs)
 
@@ -208,17 +170,12 @@ class AgenticHandlersMixin:
     def _carried_runtime_state(self, request, req_dict: dict) -> dict:
         """Values from ``_runtime_state_fields`` that the rebuild would lose.
 
-        The request model is rebuilt here from ``to_dict(request)``, which goes
-        through ``model_dump()`` and so omits every field declared
-        ``exclude=True``. For a field that only shapes serialization that is
-        harmless, but the fields named in ``_runtime_state_fields`` carry live
-        objects the process needs — a child environment, a spawn callback — and
-        losing them hands the CLI a request whose runtime wiring silently
-        reverted to its defaults. The names are declared rather than derived
-        from ``exclude``, because most excluded fields genuinely have nothing to
-        carry and a rule that swept them all in would change unrelated
-        behaviour. Anything already in ``req_dict`` came from an explicit kwarg
-        or from the endpoint config and keeps precedence.
+        ``to_dict(request)`` goes through ``model_dump()``, which omits every
+        ``exclude=True`` field — harmless for most, but the runtime-state
+        fields carry live objects (env, spawn callback) whose loss would
+        silently revert the CLI request's wiring to defaults. Anything already
+        in ``req_dict`` (explicit kwarg or endpoint config) keeps precedence.
+        See docs/internals/providers.md#runtime-only-endpoint-state-kept-out-of-serialization.
         """
         model = self._request_model
         if model is None or not isinstance(request, model):

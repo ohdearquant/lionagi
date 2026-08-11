@@ -34,7 +34,7 @@ def db_path(tmp_path: Path) -> Path:
     return tmp_path / "shared.db"
 
 
-# ── Multi-connection: concurrent insert_message ──────────────────────────────
+# Multi-connection: concurrent insert_message
 
 
 async def test_two_connections_can_insert_concurrently(db_path: Path):
@@ -93,7 +93,7 @@ async def test_concurrent_resolve_lion_class_no_unique_error(db_path: Path):
         await db2.close()
 
 
-# ── busy_timeout: long-held lock surfaces sensibly ────────────────────────────
+# busy_timeout: long-held lock surfaces sensibly
 
 
 async def test_busy_timeout_eventually_returns_locked_error(
@@ -132,7 +132,7 @@ async def test_busy_timeout_eventually_returns_locked_error(
         await db2.close()
 
 
-# ── fanout: reads must not queue behind a held writer lock ──────────────────
+# fanout: reads must not queue behind a held writer lock
 
 
 async def test_many_concurrent_reads_survive_a_held_write_lock(db_path: Path):
@@ -167,7 +167,7 @@ async def test_many_concurrent_reads_survive_a_held_write_lock(db_path: Path):
         await db.close()
 
 
-# ── save_definition under contention ──────────────────────────────────────────
+# save_definition under contention
 
 
 async def test_concurrent_save_definition_same_key_serialized(

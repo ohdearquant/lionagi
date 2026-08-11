@@ -21,10 +21,6 @@ from lionagi.providers.google.gemini_code import (
     stream_gemini_cli,
 )
 
-# ---------------------------------------------------------------------------
-# argv construction
-# ---------------------------------------------------------------------------
-
 
 class TestCmdArgs:
     """as_cmd_args must emit json output-format + a resolved agy model name."""
@@ -105,7 +101,7 @@ class TestCmdArgs:
     def test_explicit_print_timeout_accepts_subnanosecond_fraction_at_go_max(self):
         """Go's time.ParseDuration truncates fractions smaller than a nanosecond,
         so a `.1ns` excess sitting on top of int64's max is still parseable by
-        `agy` and must not be rejected here (#2689)."""
+        `agy` and must not be rejected here."""
         explicit = "9223372036854775807.1ns"
         args = GeminiCodeRequest(prompt="hi", print_timeout=explicit).as_cmd_args()
 
@@ -161,11 +157,6 @@ class TestCmdArgs:
         assert int(emitted.removesuffix("s")) >= 1
 
 
-# ---------------------------------------------------------------------------
-# Subprocess error surfacing
-# ---------------------------------------------------------------------------
-
-
 class TestSubprocessErrorSurfacing:
     """When agy exits nonzero, ndjson_from_cli raises RuntimeError; it propagates."""
 
@@ -182,11 +173,6 @@ class TestSubprocessErrorSurfacing:
             with pytest.raises(RuntimeError, match="authentication required"):
                 async for _ in stream_gemini_cli(GeminiCodeRequest(prompt="hi")):
                     pass
-
-
-# ---------------------------------------------------------------------------
-# Endpoint _call session mapping
-# ---------------------------------------------------------------------------
 
 
 class TestEndpointCall:
@@ -220,11 +206,6 @@ class TestEndpointCall:
         )
 
 
-# ---------------------------------------------------------------------------
-# Default model
-# ---------------------------------------------------------------------------
-
-
 class TestDefaultModel:
     """GeminiCodeRequest default model must be the latest flash family."""
 
@@ -235,11 +216,6 @@ class TestDefaultModel:
     def test_explicit_model_is_preserved(self):
         req = GeminiCodeRequest(prompt="hello", model="gemini-2.5-pro")
         assert req.model == "gemini-2.5-pro"
-
-
-# ---------------------------------------------------------------------------
-# BACKENDS default model
-# ---------------------------------------------------------------------------
 
 
 class TestBackendsDefaultModel:
@@ -254,11 +230,6 @@ class TestBackendsDefaultModel:
         assert "gemini-3.5-flash" in BACKENDS["gemini_code"]
 
 
-# ---------------------------------------------------------------------------
-# CLI_PROVIDERS includes gemini variants
-# ---------------------------------------------------------------------------
-
-
 class TestCliProvidersSet:
     """gemini_code, gemini-cli, gemini_cli, gemini-code must be in CLI_PROVIDERS."""
 
@@ -267,11 +238,6 @@ class TestCliProvidersSet:
 
         for name in ("gemini_code", "gemini-code", "gemini_cli", "gemini-cli"):
             assert name in CLI_PROVIDERS, f"{name!r} not in CLI_PROVIDERS"
-
-
-# ---------------------------------------------------------------------------
-# Run.py error message improvement
-# ---------------------------------------------------------------------------
 
 
 class TestRunErrorMessage:

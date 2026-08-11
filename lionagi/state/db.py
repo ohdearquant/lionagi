@@ -3383,7 +3383,7 @@ class StateDB:
 
         ``artifacts_path`` is written via ``COALESCE`` rather than a plain
         assignment: a mirrored CLI session's artifact root is its transcript's
-        ``cwd``, a weaker signal than a launcher-set root (issue #2848), so a
+        ``cwd``, a weaker signal than a launcher-set root, so a
         later, more precise write must never be clobbered by an earlier guess.
         """
         sets: list[str] = []

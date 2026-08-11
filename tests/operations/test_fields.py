@@ -13,9 +13,7 @@ from lionagi.operations.fields import (
     get_default_field,
 )
 
-# ---------------------------------------------------------------------------
 # Instruct.handle — lines 119-137
-# ---------------------------------------------------------------------------
 
 
 class TestInstructHandle:
@@ -68,9 +66,7 @@ class TestInstructHandle:
         assert isinstance(result, Instruct)
 
 
-# ---------------------------------------------------------------------------
 # ActionRequestModel.create — lines 235-297
-# ---------------------------------------------------------------------------
 
 
 class TestActionRequestModelCreate:
@@ -148,9 +144,7 @@ class TestActionRequestModelCreate:
         assert result == []
 
 
-# ---------------------------------------------------------------------------
 # _get_default_fields listable/nullable chaining — lines 387-401
-# ---------------------------------------------------------------------------
 
 
 class TestGetDefaultFieldChaining:

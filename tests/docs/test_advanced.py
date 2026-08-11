@@ -7,9 +7,7 @@ import pytest
 from lionagi.testing import LionAGIMockFactory
 
 
-# ===================================================================
 # Performance (performance.md)
-# ===================================================================
 class TestPerformance:
     """Patterns from performance.md: concurrency utilities, rate limiting."""
 
@@ -73,9 +71,7 @@ class TestPerformance:
         assert model is not None
 
 
-# ===================================================================
 # Observability (observability.md)
-# ===================================================================
 class TestObservability:
     """Patterns from observability.md: logging, hooks, message inspection."""
 
@@ -163,9 +159,7 @@ class TestObservability:
         assert mocked_branch.logs is not None
 
 
-# ===================================================================
 # Error Handling (error-handling.md)
-# ===================================================================
 class TestErrorHandling:
     """Patterns from error-handling.md: rate limiting, provider fallback."""
 
@@ -224,9 +218,7 @@ class TestErrorHandling:
         assert r3.execution.response == "third attempt"
 
 
-# ===================================================================
 # Flow Composition (flow-composition.md)
-# ===================================================================
 class TestFlowComposition:
     """Patterns from flow-composition.md: Builder, Graph, Session orchestration."""
 
@@ -294,9 +286,7 @@ class TestFlowComposition:
         assert inspect.iscoroutinefunction(session.flow)
 
 
-# ===================================================================
 # Custom Operations (custom-operations.md)
-# ===================================================================
 class TestCustomOperations:
     """Patterns from custom-operations.md: register_operation, operation decorator."""
 

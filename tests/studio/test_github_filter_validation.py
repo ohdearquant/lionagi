@@ -33,9 +33,7 @@ def _create_data(**overrides) -> dict:
     return base
 
 
-# ---------------------------------------------------------------------------
 # _svc_validate_github_filter — pure logic
-# ---------------------------------------------------------------------------
 
 
 def test_validate_github_filter_none_is_noop():
@@ -96,9 +94,7 @@ def test_validate_github_filter_rejects_non_bool_same_repo_only():
         _svc_validate_github_filter({"same_repo_only": 1})
 
 
-# ---------------------------------------------------------------------------
 # create_schedule / update_schedule — validation fires before any DB write
-# ---------------------------------------------------------------------------
 
 
 def test_create_schedule_rejects_unknown_github_filter_key():

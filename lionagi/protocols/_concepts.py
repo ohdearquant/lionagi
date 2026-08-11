@@ -50,19 +50,10 @@ class Sendable(ABC):  # noqa: B024
 class Observable(Protocol):
     """A thing with durable identity that a Pile can hold and observe.
 
-    Structural (protocol) admission contract: an object conforms by exposing an
-    ``id``, whether or not it inherits anything. ``isinstance(obj, Observable)``
-    is true for any object with an ``id`` attribute. This is the duck-typed
-    contract the Pile, Session, SessionObserver, and reactive event layers are
-    built on -- identity by capability, not by inheritance.
-
-    Intentional design, not a defect: admission is structural on purpose. A
-    2026-07 change briefly made it nominal (isinstance required inheriting this
-    class); that was a regression and is reverted here. A later reader or audit
-    that sees a duck-typed object satisfy ``isinstance(obj, Observable)`` -- or
-    that Pile admits an object which does not inherit ``Observable`` -- is
-    looking at the designed behavior, guarded by
-    ``tests/protocols/test_observable_protocol.py``. Do not "fix" it back to
+    Admission is structural, not nominal: any object exposing ``id`` satisfies
+    ``isinstance(obj, Observable)``, whether or not it inherits this class.
+    This is intentional (see CLAUDE.md, "Key Design Patterns") and guarded by
+    ``tests/protocols/test_observable_protocol.py`` -- do not narrow it to
     inheritance-only admission.
     """
 

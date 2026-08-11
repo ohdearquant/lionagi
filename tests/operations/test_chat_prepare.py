@@ -12,9 +12,7 @@ from lionagi.protocols.messages.assistant_response import AssistantResponseConte
 from lionagi.protocols.messages.instruction import InstructionContent
 from lionagi.session.branch import Branch
 
-# ---------------------------------------------------------------------------
 # _prepare_run_kwargs merges consecutive AssistantResponse messages
-# ---------------------------------------------------------------------------
 
 
 def test_prepare_run_kwargs_collapses_consecutive_assistant_messages():
@@ -59,12 +57,6 @@ def test_prepare_run_kwargs_kw_contains_messages_key():
 
     assert "messages" in kw
     assert isinstance(kw["messages"], list)
-
-
-# ---------------------------------------------------------------------------
-# Fail-loud guard (issue #2308): a non-empty instruction must never silently
-# vanish from the outgoing message list.
-# ---------------------------------------------------------------------------
 
 
 def test_prepare_run_kwargs_raises_when_real_instruction_renders_empty(monkeypatch):
@@ -143,7 +135,6 @@ def test_prepare_run_kwargs_allows_empty_render_when_no_instruction_text(monkeyp
     assert kw["messages"] == []
 
 
-# ---------------------------------------------------------------------------
 # The premise the guard rests on: the current turn is the LAST assembled entry.
 #
 # The guard reads the current turn's render by index, which is only the current
@@ -158,7 +149,6 @@ def test_prepare_run_kwargs_allows_empty_render_when_no_instruction_text(monkeyp
 # These pin the premise itself, one per assembly branch, through the public
 # return: with every entry rendering normally, the last outgoing message is the
 # current turn's.
-# ---------------------------------------------------------------------------
 
 
 def test_current_turn_is_last_message_without_system():

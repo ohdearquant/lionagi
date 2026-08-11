@@ -18,10 +18,6 @@ from lionagi.tools.code.check import (
     _ruff_check_sync,
 )
 
-# ---------------------------------------------------------------------------
-# CodeDiagnostic model
-# ---------------------------------------------------------------------------
-
 
 def test_code_diagnostic_as_text_no_fix():
     d = CodeDiagnostic(file="foo.py", line=10, col=5, code="F401", message="unused import")
@@ -45,11 +41,6 @@ def test_code_diagnostic_severity_default():
     assert d.severity == "warning"
 
 
-# ---------------------------------------------------------------------------
-# CodeCheckRequest model
-# ---------------------------------------------------------------------------
-
-
 def test_check_request_required_paths():
     req = CodeCheckRequest(paths=["foo.py"])
     assert req.paths == ["foo.py"]
@@ -64,11 +55,6 @@ def test_check_request_max_diagnostics_bounds():
         CodeCheckRequest(paths=["x.py"], max_diagnostics=501)
 
 
-# ---------------------------------------------------------------------------
-# CodeCheckResponse model
-# ---------------------------------------------------------------------------
-
-
 def test_check_response_ok():
     resp = CodeCheckResponse(status="ok", summary="No issues found.", tool="ruff")
     assert resp.status == "ok"
@@ -80,10 +66,6 @@ def test_check_response_unavailable():
     assert resp.status == "unavailable"
     assert resp.diagnostics == []
 
-
-# ---------------------------------------------------------------------------
-# _ruff_check_sync: integration tests (skip if ruff absent)
-# ---------------------------------------------------------------------------
 
 _ruff_available = shutil.which("ruff") is not None
 ruff_required = pytest.mark.skipif(not _ruff_available, reason="ruff binary not in PATH")
@@ -149,11 +131,6 @@ def test_ruff_check_unavailable_when_no_binary(monkeypatch):
     assert "uv add" in resp.summary
 
 
-# ---------------------------------------------------------------------------
-# CodeCheckTool class
-# ---------------------------------------------------------------------------
-
-
 def test_to_tool_returns_tool():
     t = CodeCheckTool()
     assert isinstance(t.to_tool(), Tool)
@@ -186,11 +163,6 @@ async def test_handle_request_unsupported_tool():
     )
     assert resp.status == "unavailable"
     assert "ruff" in resp.summary
-
-
-# ---------------------------------------------------------------------------
-# Composability: edit a file → code_check on the same file
-# ---------------------------------------------------------------------------
 
 
 @ruff_required
@@ -233,9 +205,7 @@ def test_as_text_format_matches_file_line_col(tmp_path):
         assert parts[1].strip().isdigit()
 
 
-# ---------------------------------------------------------------------------
 # Boundary / security tests
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_check_paths_rejects_outside_workspace(tmp_path):

@@ -71,9 +71,7 @@ def lookup(query: str) -> str:
     return f"result for {query}"
 
 
-# ---------------------------------------------------------------------------
 # _classify_round — pure-function unit tests (no branch, no async)
-# ---------------------------------------------------------------------------
 
 
 class TestClassifyRound:
@@ -167,13 +165,11 @@ class TestClassifyRound:
         assert [call.name for call in pending] == ["a", "b"]
 
 
-# ---------------------------------------------------------------------------
 # _render_target_spec — the target schema summary injected into round-1
 # guidance (LNDL_SYSTEM_PROMPT rule 5: "Use the EXACT spec names declared in
 # the schema you are given"). Without this, stripping native response_format
 # from the round chat call leaves a real model with no idea what fields to
 # fill.
-# ---------------------------------------------------------------------------
 
 
 class TestRenderTargetSpec:
@@ -200,9 +196,7 @@ class TestRenderTargetSpec:
         assert spec == "Specs: findings(list[Finding: name, score]), scores(dict[str, float])"
 
 
-# ---------------------------------------------------------------------------
 # _run_round_chat — CLI vs API dispatch
-# ---------------------------------------------------------------------------
 
 
 class TestRunRoundChatDispatch:
@@ -294,9 +288,7 @@ class TestRunRoundChatDispatch:
         assert "OUT{" in result
 
 
-# ---------------------------------------------------------------------------
 # Full Middle loop — round-outcome scenarios, end to end
-# ---------------------------------------------------------------------------
 
 
 class TestSuccessScenarios:

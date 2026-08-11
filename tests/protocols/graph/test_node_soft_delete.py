@@ -250,14 +250,14 @@ class TestDeleteRestoreCycle:
         )
         a = cls(content={"status": "active"})
 
-        # --- initial state: real fields at defaults ---
+        # initial state: real fields at defaults
         assert a.version == 0
         assert a.updated_at is None
         assert a.is_deleted is False
         assert a.deleted_at is None
         assert a.content_hash is None
 
-        # --- touch once ---
+        # touch once
         a.touch(by="alice")
         assert a.version == 1
         assert a.updated_at is not None
@@ -265,14 +265,14 @@ class TestDeleteRestoreCycle:
         assert a.content_hash is not None
         hash_v1 = a.content_hash
 
-        # --- soft_delete ---
+        # soft_delete
         a.soft_delete(by="bob")
         assert a.is_deleted is True
         assert a.deleted_at is not None
         assert a.metadata["deleted_by"] == "bob"
         assert a.version == 2  # touch was called inside soft_delete
 
-        # --- restore ---
+        # restore
         a.restore(by="carol")
         assert a.is_deleted is False
         assert a.deleted_at is None
@@ -280,7 +280,7 @@ class TestDeleteRestoreCycle:
         assert a.version == 3  # touch was called inside restore
         assert a.metadata["updated_by"] == "carol"
 
-        # --- content change + rehash ---
+        # content change + rehash
         a.content = {"status": "updated"}
         a.touch(by="dave")
         assert a.version == 4

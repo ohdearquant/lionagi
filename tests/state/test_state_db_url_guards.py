@@ -76,7 +76,7 @@ async def _seed_engine_def(name: str) -> str:
     return def_id
 
 
-# ── the helpers themselves ────────────────────────────────────────────────
+# the helpers themselves
 
 
 def test_state_db_file_follows_the_url(moved_sqlite_url, absent_default, tmp_path):
@@ -105,7 +105,7 @@ def test_known_absent_is_false_for_an_in_memory_url(absent_default, monkeypatch)
     assert state_db_known_absent() is False
 
 
-# ── shape 1: a SQLite store moved off the default path ────────────────────
+# shape 1: a SQLite store moved off the default path
 
 
 async def test_engine_defs_are_found_in_a_moved_store(moved_sqlite_url):
@@ -169,7 +169,7 @@ async def test_engine_def_absent_from_a_moved_store_still_reads_as_absent(
     assert await svc.get_engine_def_by_name("never-created") is None
 
 
-# ── shape 2: a URL that is not a local file ───────────────────────────────
+# shape 2: a URL that is not a local file
 
 
 async def test_a_server_url_does_not_answer_from_the_filesystem(absent_default, monkeypatch):
@@ -187,7 +187,7 @@ async def test_a_server_url_does_not_answer_from_the_filesystem(absent_default, 
         await svc.list_engine_defs()
 
 
-# ── the shared readonly seam ──────────────────────────────────────────────────
+# the shared readonly seam
 # Several reporting commands stopped guarding for themselves and now go through
 # one helper. That concentrates the same question in one place: if the helper
 # asks the filesystem while opening the configured store, every reader that
@@ -233,7 +233,7 @@ def test_the_absent_reason_names_the_store_that_was_consulted(moved_sqlite_url, 
     assert "moved" in detail
 
 
-# ── the open mode a schedules read route asks for ─────────────────────────────
+# the open mode a schedules read route asks for
 # Which stores the predicate answers True for is pinned above, beside the
 # predicate. What is left to check here is that a schedules read route actually
 # routes through it, since a route that hardcoded True would pass every one of
@@ -281,7 +281,6 @@ def test_a_store_with_no_file_reports_no_size_rather_than_zero(absent_default, m
     assert sizes["wal_size_bytes"] is None
 
 
-# ---------------------------------------------------------------------------
 # Read-only mode is SQLite-only, so asking for it unconditionally is not a
 # degradation on a server-backed store, it is a failure to open at all. These
 # pin the predicate and the two shapes the failure used to take.

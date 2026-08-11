@@ -133,9 +133,7 @@ def _run_status_calls(svc: AsyncMock, status: str) -> list:
     ]
 
 
-# ---------------------------------------------------------------------------
 # Pre-dispatch refusal: unresolvable execution root
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -231,9 +229,7 @@ async def test_unbuildable_action_args_leave_the_cursor_unmoved():
     assert failed[0].kwargs["reason_code"] == RunReasons.FAILED_EXCEPTION
 
 
-# ---------------------------------------------------------------------------
 # Post-dispatch failure: at-most-once is preserved
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -284,9 +280,7 @@ async def test_successful_run_advances_the_cursor():
     assert advanced == [FIRST_EVENT_AT, SECOND_EVENT_AT]
 
 
-# ---------------------------------------------------------------------------
 # Cancellation: which side of the split it lands on depends on the process
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -354,9 +348,7 @@ async def test_cancellation_after_launch_still_records_a_cancelled_run():
     assert fields["github_cursor"] == FIRST_EVENT_AT
 
 
-# ---------------------------------------------------------------------------
 # The refusal is not always a property of the schedule: bounded retry
-# ---------------------------------------------------------------------------
 
 
 def _poison_command_schedule(**overrides) -> dict:
@@ -465,9 +457,7 @@ async def test_event_specific_argv_failure_progresses_at_the_limit(_command_allo
     assert cleared[0].kwargs["predispatch_refusal_event"] is None
 
 
-# ---------------------------------------------------------------------------
 # Committed occurrence, no launch: the row stays in the recovery lane
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -3,32 +3,22 @@
 
 """CLI contract goldens for `li agent`, `li schedule`, and `li monitor`.
 
-These three commands are the CLI surfaces that spawn or observe other
-processes (subagents, scheduled fires, running entities). The regression
-class this module guards against: a spawn-forwarding surface silently
-accepting invalid input (bad flag, missing required argument, unreachable
-backend) instead of failing loudly with a clear diagnostic and a nonzero
-exit code, and CLI flag/exit-code drift going unnoticed because nothing
-pins the actual `--help` surface or the current, empirically observed
-error shape.
+These are the CLI surfaces that spawn or observe other processes (subagents,
+scheduled fires, running entities). Guards against: a spawn-forwarding
+surface silently accepting invalid input instead of failing loudly with a
+nonzero exit code, and CLI flag/exit-code drift going unnoticed.
 
-Everything here is invoked out-of-process via `sys.executable -m
-lionagi.cli.main ...` (the real `li` entrypoint per `[project.scripts]` in
-pyproject.toml is `lionagi.cli.main:main`), so these tests see exactly what
-an external caller of the installed `li` binary sees: real exit codes, real
-stdout/stderr, no patched internals.
+Invoked out-of-process via `sys.executable -m lionagi.cli.main ...` (the
+real `li` entrypoint is `lionagi.cli.main:main`), so these tests see exactly
+what an external caller of the installed `li` binary sees.
 
-Flag-set goldens compare *sorted flag lists* extracted from `--help` output,
-not full help text — full text (wrapped descriptions, epilogs, examples)
-churns on every wording tweak; the flag set is the actual contract external
-callers and scheduled actions depend on.
+Flag-set goldens compare *sorted flag lists* from `--help`, not full help
+text — full text churns on wording tweaks; the flag set is the actual
+contract callers depend on.
 
-Anything that requires a live Studio daemon (`li studio`) with real
-scheduled/session data is skipped with a reason rather than mocked — mocking
-the daemon would just be testing the mock. Where an error path can be
-triggered deterministically without a daemon (unreachable Studio URL,
-absent state.db) by pointing the command at an empty/unreachable target via
-env vars, that is exercised directly: it's cheap, hermetic, and real.
+Anything needing a live Studio daemon is skipped with a reason rather than
+mocked. Error paths triggerable without a daemon (unreachable Studio URL,
+absent state.db) are exercised directly instead.
 """
 
 from __future__ import annotations
@@ -108,7 +98,7 @@ def test_scheduled_cli_inherits_invocation_from_environment(
     )
 
 
-# --- goldens: sorted flag sets, pinned from the actual parser definitions ---
+# goldens: sorted flag sets, pinned from the actual parser definitions
 
 AGENT_HELP_FLAGS = [
     "--agent",
