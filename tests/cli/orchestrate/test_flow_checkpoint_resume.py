@@ -41,7 +41,7 @@ from lionagi.protocols.types import EventStatus
 from lionagi.session.signal import NodeCompleted, NodeFailed
 from lionagi.state.db import StateDB
 
-# ── Fixtures ────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -196,7 +196,7 @@ def _asyncio_coro(value):
     return _inner()
 
 
-# ── CheckpointWriter: atomic write + schema ──────────────────────────────────
+# CheckpointWriter: atomic write + schema
 
 
 async def test_checkpoint_writer_record_writes_valid_schema_no_leftover_tmp(tmp_path: Path):
@@ -361,7 +361,7 @@ async def test_checkpoint_writer_record_spawned_captures_context_payload(tmp_pat
     assert data["spawned"][0]["context"] == context_payload
 
 
-# ── _apply_checkpoint_precompletion ──────────────────────────────────────────
+# _apply_checkpoint_precompletion
 
 
 def test_apply_checkpoint_precompletion_marks_completed_ops_and_flags_degraded():
@@ -531,7 +531,7 @@ def test_apply_checkpoint_precompletion_refuses_when_spawned_entries_present():
     assert nodes["n-worker"].execution.status is None
 
 
-# ── _reconstruct_spawned_nodes: sound resume-after-partial-reactive-run ─────
+# _reconstruct_spawned_nodes: sound resume-after-partial-reactive-run
 #
 # These use a REAL OperationGraphBuilder/Graph (not the dict-backed _FakeNode
 # fixtures above) because reconstruction adds real Operation nodes and Edge
@@ -966,7 +966,7 @@ def test_apply_checkpoint_precompletion_reconstructs_valid_spawned_entry_without
     assert child_node.metadata["reference_id"] == "spawn-9"
 
 
-# ── _execute_dag: checkpoint write correctness ───────────────────────────────
+# _execute_dag: checkpoint write correctness
 
 
 async def test_checkpoint_captures_nonempty_executor_flow_context_on_completion(tmp_path: Path):
@@ -1578,7 +1578,7 @@ async def test_resumed_run_with_only_restored_spawns_triggers_synthesis(tmp_path
     synthesize_mock.assert_called_once()
 
 
-# ── Spawn-id sequence: resume must not reissue a restored spawn's id ────────
+# Spawn-id sequence: resume must not reissue a restored spawn's id
 
 
 def test_role_node_builder_start_seeds_first_spawn_id_past_restored_ordinal():
@@ -1717,7 +1717,7 @@ async def test_execute_dag_seeds_spawn_sequence_past_gap_in_restored_ordinals(tm
     assert role_node_builder_mock.call_args.kwargs["start"] == 4
 
 
-# ── Resume sequencing: planner skipped, finalization tail still runs ────────
+# Resume sequencing: planner skipped, finalization tail still runs
 
 
 async def test_resume_skips_planner_and_still_calls_finalize_with_zero_pending_ops(tmp_path: Path):
@@ -2019,7 +2019,7 @@ async def test_resume_missing_artifact_still_flips_status_to_failed(
     assert s["status_reason_code"] == "run.failed.missing_artifact"
 
 
-# ── resolve_checkpoint_target ────────────────────────────────────────────────
+# resolve_checkpoint_target
 
 
 async def test_resolve_checkpoint_target_exact_run_id(
@@ -2141,7 +2141,7 @@ async def test_resolve_checkpoint_target_falls_back_to_session_run_id(
     await stop_live_persist(env, status="completed")
 
 
-# ── CLI wiring: `li o flow --resume` argparse + dispatch ────────────────────
+# CLI wiring: `li o flow --resume` argparse + dispatch
 
 
 def _parse_flow_args(argv: list[str]) -> argparse.Namespace:

@@ -30,7 +30,7 @@ def _label_counts(builder: OperationGraphBuilder) -> Counter:
     return Counter(tuple(e.label or []) for e in builder.graph.internal_edges.values())
 
 
-# ── flow.py ───────────────────────────────────────────────────────────────────
+# flow.py
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_flow_dag_preserves_declared_dependency_chain(tmp_path):
     assert str(edge.tail) == str(dag_state.node_ids[1])
 
 
-# ── fanout.py ─────────────────────────────────────────────────────────────────
+# fanout.py
 
 
 def test_fanout_node_construction_builds_a_fan():
