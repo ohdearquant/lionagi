@@ -182,6 +182,39 @@ class TestPageBoundsTheWork:
 
 
 class TestFiltersApplyInSql:
+    def test_sparse_status_filter_keeps_the_indexed_column_sargable(self):
+        from lionagi.studio.services import sessions as sessions_svc
+
+        clause, params = sessions_svc.SessionFilter(statuses={"running"}).where()
+
+        assert "COALESCE" not in clause
+        assert "s.status IN (?)" in clause
+        assert "s.status IS NULL" not in clause
+        assert params == ["running"]
+
+        completed_clause, _ = sessions_svc.SessionFilter(statuses={"completed"}).where()
+        assert "s.status IN (?)" in completed_clause
+        assert "s.status IS NULL" in completed_clause
+
+    def test_recent_status_page_plan_seeks_without_temp_sort(self, seeded):
+        from lionagi.studio.services import sessions as sessions_svc
+
+        db_path, _ = seeded
+        clause, params = sessions_svc.SessionFilter(statuses={"running"}).where()
+        sql = sessions_svc._session_page_sql(clause, sessions_svc._SESSION_SORTS["recent"])
+        conn = sqlite3.connect(str(db_path))
+        try:
+            plan = conn.execute(
+                "EXPLAIN QUERY PLAN " + sql,
+                [*params, 21, 0],
+            ).fetchall()
+        finally:
+            conn.close()
+        details = [str(row[3]) for row in plan]
+
+        assert any("SEARCH s USING INDEX idx_sessions_status_updated_id" in row for row in details)
+        assert not any("USE TEMP B-TREE" in row for row in details), details
+
     def test_status_filter_matches_python_semantics(self, client):
         r = client.get("/api/runs/", params={"status": "running", "per_page": 100})
         assert r.status_code == 200
@@ -209,6 +242,20 @@ class TestFiltersApplyInSql:
         body = client.get("/api/runs/", params={"playbook": "BOOK-1", "per_page": 100}).json()
         assert body["runs"]
         assert all("book-1" in run["playbook_name"] for run in body["runs"])
+
+    def test_contains_search_discloses_and_applies_a_candidate_cap(self, client):
+        from lionagi.studio.services import sessions as sessions_svc
+
+        clause, params = sessions_svc.SessionFilter(search="run").where()
+        assert "ORDER BY recent.updated_at DESC, recent.id DESC LIMIT ?" in clause
+        assert params[0] == sessions_svc.MAX_SESSION_SEARCH_CANDIDATES
+
+        body = client.get("/api/runs/", params={"search": "run", "per_page": 5}).json()
+        assert body["search"] == {
+            "mode": "bounded_contains",
+            "bounded_slow_path": True,
+            "candidate_limit": sessions_svc.MAX_SESSION_SEARCH_CANDIDATES,
+        }
 
     def test_tag_filter_and_composes(self, seeded, client):
         _, ids = seeded
@@ -255,6 +302,82 @@ class TestBoundedAnswersSaySo:
         body = client.get("/api/sessions/", params={"limit": 100}).json()
         assert len(body["sessions"]) == 25
         assert body["truncated"] is False
+
+    def test_sessions_listing_can_skip_exact_total_and_discloses_search_cost(self, client):
+        body = client.get(
+            "/api/sessions/",
+            params={"limit": 5, "include_total": False},
+        ).json()
+
+        assert body["total"] is None
+        assert body["total_exact"] is False
+        assert body["search"] == {"mode": "none", "bounded_slow_path": False}
+
+
+class TestSeekableSessionCursor:
+    def test_cursor_page_is_stable_when_a_newer_row_is_inserted(self, seeded):
+        import asyncio
+
+        from lionagi.studio.services import sessions as sessions_svc
+
+        db_path, _ = seeded
+        first = asyncio.run(sessions_svc.list_sessions_page(limit=5))
+        assert first.next_cursor
+
+        conn = sqlite3.connect(str(db_path))
+        now = time.time() + 10_000
+        progression_id = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO progressions (id, created_at, collection) VALUES (?, ?, '[]')",
+            (progression_id, now),
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, progression_id, updated_at, name, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, now, progression_id, now, "newer", "running"),
+        )
+        conn.commit()
+        conn.close()
+
+        second = asyncio.run(sessions_svc.list_sessions_page(limit=5, cursor=first.next_cursor))
+
+        first_ids = {row["id"] for row in first.items}
+        second_ids = {row["id"] for row in second.items}
+        assert first_ids.isdisjoint(second_ids)
+        assert session_id not in second_ids
+        assert second.items[0]["updated_at"] <= first.items[-1]["updated_at"]
+
+    def test_cursor_is_bound_to_its_filter_contract(self, seeded):
+        import asyncio
+
+        from lionagi.studio.services import sessions as sessions_svc
+
+        first = asyncio.run(
+            sessions_svc.list_sessions_page(
+                limit=2,
+                where=sessions_svc.SessionFilter(statuses={"running"}),
+            )
+        )
+        assert first.next_cursor
+
+        with pytest.raises(sessions_svc.SessionListCursorError):
+            asyncio.run(
+                sessions_svc.list_sessions_page(
+                    limit=2,
+                    cursor=first.next_cursor,
+                    where=sessions_svc.SessionFilter(statuses={"completed"}),
+                )
+            )
+
+    def test_deep_offset_compatibility_path_is_refused(self, client):
+        from lionagi.studio.services import sessions as sessions_svc
+
+        response = client.get(
+            "/api/sessions/",
+            params={"offset": sessions_svc.MAX_SESSION_OFFSET + 1},
+        )
+        assert response.status_code == 422
 
     def test_admin_health_reports_scan_coverage(self, client):
         body = client.get("/api/admin/health").json()

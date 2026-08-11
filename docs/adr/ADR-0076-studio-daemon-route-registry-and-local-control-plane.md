@@ -308,10 +308,16 @@ contracts are distinct:
 
 | Endpoint | Cursor/source | Poll/heartbeat | Terminal and miss semantics |
 |---|---|---|---|
-| `/api/sessions/{id}/stream` | local `after_ts`, messages after timestamp | poll 0.5s; heartbeat after 5s idle | preflight 404; `done` only after terminal status is stable more than 60s |
-| `/api/sessions/{id}/signals` | persisted per-session `seq`, starting at 0 | rows limited to 500 per poll; poll 0.5s; heartbeat after 5s | preflight 404; same 60s stable terminal test |
+| `/api/sessions/{id}/stream` | opaque composite `(created_at,id)` `cursor`; detail returns the initial snapshot high-water | daemon-local per-session broker polls at 0.5s with batches capped at 500; heartbeat after 5s idle | preflight 404; bounded subscriber queues emit `resync`; `done` only after terminal status is stable more than 60s and the tail is caught up |
+| `/api/sessions/{id}/signals` | persisted per-session `seq` via `after_seq`; detail returns the initial snapshot high-water | the same per-session broker and retained connection; rows capped at 500 per read; heartbeat after 5s | preflight 404; bounded subscriber queues emit `resync`; same caught-up and 60s-stable terminal test |
 | `/api/shows/{topic}/stream` | in-memory `(mtime,size)` map over sorted files | scan every 0.5s; no heartbeat | route preflight 404; generator emits `done` on invalid/missing directory or terminal DB status after 60s without file change |
 | `/api/leo/sessions/{id}/messages` | one in-memory turn, no replay cursor | no heartbeat/reconnect state | missing/expired session 404; concurrent turn 409; model error emits `error` then `done`; success emits effects, `text`, then `done` |
+
+The message and signal brokers are daemon-local: viewers of one session share one database
+tail read and one retained connection, while each subscriber owns a bounded queue. Detail data
+and both initial high-water values are selected in one read transaction, so a row committed
+after that snapshot remains strictly after the cursor and is delivered by the tail. The retained
+connection does not retain a read transaction between polls, so it does not pin a WAL snapshot.
 
 The 0.5-second polls, 5-second heartbeats, and 60-second stability windows are shipped
 compatibility values. Their qualitative reasons are fast local feedback, keeping idle
@@ -321,8 +327,10 @@ each database read while allowing replay to advance over repeated polls; no reco
 measurement selects exactly 500.
 
 Fetch-based consumers are required when bearer auth is enabled because native
-`EventSource` cannot attach the authorization header. There is no `id:` field,
-`Last-Event-ID` handling, universal cursor, common error envelope, or central replay log.
+`EventSource` cannot attach the authorization header. Message and signal frames carry an `id:`
+whose value is reapplied through their endpoint-specific query parameter on reconnect. There is
+no native `Last-Event-ID` header handling, universal cursor, common error envelope, or central
+replay log.
 
 ## Consequences
 

@@ -34,6 +34,7 @@ vi.mock("@/lib/api", async () => {
   return {
     ...actual,
     getSession: vi.fn(),
+    getSessionStatistics: vi.fn().mockRejectedValue(new Error("statistics unavailable in test")),
     getInvocation: vi.fn(),
     streamSession: vi.fn(() => () => {}),
     streamSignals: vi.fn(() => () => {}),
@@ -2349,10 +2350,13 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
     try {
       // An opGraph with a real edge is a resolvable graph, so this defaults
       // to the graph view without needing to click a tab.
-      const nodeCard = Array.from(
-        container.querySelectorAll<HTMLElement>('[data-testid="op-graph-node"]'),
-      ).find((el) => el.textContent?.includes("B"));
-      expect(nodeCard).toBeTruthy();
+      let nodeCard: HTMLElement | undefined;
+      await vi.waitFor(() => {
+        nodeCard = Array.from(
+          container.querySelectorAll<HTMLElement>('[data-testid="op-graph-node"]'),
+        ).find((el) => el.textContent?.includes("B"));
+        expect(nodeCard).toBeTruthy();
+      });
       await act(async () => {
         nodeCard?.click();
       });

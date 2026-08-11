@@ -30,6 +30,7 @@ const getSessionMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({
   ApiError: MockApiError,
   getSession: getSessionMock,
+  getSessionStatistics: vi.fn().mockRejectedValue(new Error("statistics unavailable in test")),
   getInvocation: vi.fn().mockRejectedValue(new Error("no invocation in this test")),
   streamSession: vi.fn(() => () => {}),
   streamSignals: vi.fn(() => () => {}),

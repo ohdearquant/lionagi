@@ -517,6 +517,7 @@ async def list_runs(
     search: str | None = None,
     limit: int = _sessions_svc.MAX_SESSION_PAGE,
     offset: int = 0,
+    cursor: str | None = None,
     sort: str = "recent",
 ) -> list[dict[str, Any]]:
     """One page of runs. Filters are applied in SQL so the page is selected
@@ -532,7 +533,15 @@ async def list_runs(
         tags=tag,
         search=search,
     )
-    sessions = await _sessions_svc.list_sessions(limit=limit, offset=offset, where=where, sort=sort)
+    sessions = (
+        await _sessions_svc.list_sessions_page(
+            limit=limit,
+            offset=offset,
+            cursor=cursor,
+            where=where,
+            sort=sort,
+        )
+    ).items
     now = time.time()
     out = []
     snapshot: str | None = None
@@ -550,6 +559,55 @@ async def list_runs(
     for r in out:
         r["tags"] = tagmap.get(r["id"], [])
     return out
+
+
+async def list_runs_page(
+    playbook: str | None = None,
+    status: str | list[str] | None = None,
+    project: str | None = None,
+    project_null: bool = False,
+    tag: list[str] | None = None,
+    *,
+    search: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    cursor: str | None = None,
+    sort: str = "recent",
+) -> tuple[list[dict[str, Any]], _sessions_svc.SessionPage]:
+    """Run projection plus the seekable session-page envelope it came from."""
+    from . import run_tags
+
+    where = _sessions_svc.SessionFilter(
+        playbook=playbook,
+        statuses=_normalize_status_filter(status),
+        project=project,
+        project_null=project_null,
+        tags=tag,
+        search=search,
+    )
+    page = await _sessions_svc.list_sessions_page(
+        limit=limit,
+        offset=offset,
+        cursor=cursor,
+        where=where,
+        sort=sort,
+    )
+    now = time.time()
+    rows: list[dict[str, Any]] = []
+    snapshot: str | None = None
+    for session in page.items:
+        alive: bool | None = None
+        if session.get("status") == "running":
+            if snapshot is None:
+                from .admin import _ps_snapshot
+
+                snapshot = _ps_snapshot()
+            alive = _session_liveness(session, snapshot)
+        rows.append(_run_row(session, now, process_alive=alive))
+    tagmap = await run_tags.tags_for_sessions([row["id"] for row in rows])
+    for row in rows:
+        row["tags"] = tagmap.get(row["id"], [])
+    return rows, page
 
 
 def _status_ended_at_mismatch(run: dict[str, Any]) -> bool:
@@ -599,7 +657,10 @@ async def get_run(
     plus detail-only fields. Fields absent from DB return None/""/{} to keep
     the frontend contract unchanged."""
     session = await _sessions_svc.get_session(
-        run_id, message_limit=message_limit, message_cursor=message_cursor
+        run_id,
+        message_limit=message_limit,
+        message_cursor=message_cursor,
+        include_stats=True,
     )
     if session is None:
         return None
@@ -740,7 +801,17 @@ async def list_runs_route(
     ),
     search: str | None = Query(
         default=None,
-        description="Case-insensitive contains match on session name or agent name",
+        description=(
+            "Explicit bounded slow mode: case-insensitive contains match on session or agent name"
+        ),
+    ),
+    cursor: str | None = Query(
+        default=None,
+        description="Opaque continuation cursor; requires page=1 and recent sort",
+    ),
+    include_total: bool = Query(
+        default=True,
+        description="Compute the exact matching total; disable on latency-sensitive reads",
     ),
     sort: str = Query(
         default="recent",
@@ -749,6 +820,17 @@ async def list_runs_route(
 ) -> dict[str, Any]:
     if sort not in _sessions_svc._SESSION_SORTS:
         raise HTTPException(status_code=422, detail="sort must be one of: recent, cost")
+    offset = (page - 1) * per_page
+    if offset > _sessions_svc.MAX_SESSION_OFFSET:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"page exceeds the bounded OFFSET compatibility path "
+                f"({_sessions_svc.MAX_SESSION_OFFSET} rows); use cursor"
+            ),
+        )
+    if cursor is not None and page != 1:
+        raise HTTPException(status_code=422, detail="cursor requires page=1")
     where = _sessions_svc.SessionFilter(
         playbook=playbook,
         statuses=_normalize_status_filter(status),
@@ -757,19 +839,48 @@ async def list_runs_route(
         tags=tag,
         search=search,
     )
-    runs = await list_runs(
-        playbook=playbook,
-        status=status,
-        project=project,
-        project_null=project_null,
-        tag=tag,
-        search=search,
-        limit=per_page,
-        offset=(page - 1) * per_page,
-        sort=sort,
+    try:
+        runs, selected_page = await list_runs_page(
+            playbook=playbook,
+            status=status,
+            project=project,
+            project_null=project_null,
+            tag=tag,
+            search=search,
+            limit=per_page,
+            offset=offset,
+            cursor=cursor,
+            sort=sort,
+        )
+    except _sessions_svc.SessionListCursorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    total = await _sessions_svc.count_sessions(where) if include_total else None
+    if total is not None:
+        response = paginate_runs(runs, page=page, per_page=per_page, total=total)
+    else:
+        response = {
+            "runs": runs,
+            "page": page,
+            "per_page": per_page,
+            "total": None,
+            "total_pages": None,
+            "has_next": selected_page.has_more,
+            "has_prev": cursor is not None or page > 1,
+        }
+    response.update(
+        {
+            "total_exact": include_total,
+            "next_cursor": selected_page.next_cursor,
+            "search": {
+                "mode": "bounded_contains" if search else "none",
+                "bounded_slow_path": bool(search),
+                "candidate_limit": (
+                    _sessions_svc.MAX_SESSION_SEARCH_CANDIDATES if search else None
+                ),
+            },
+        }
     )
-    total = await _sessions_svc.count_sessions(where)
-    return paginate_runs(runs, page=page, per_page=per_page, total=total)
+    return response
 
 
 # Registered before /runs/{run_id} so the literal path is not captured as a run id.

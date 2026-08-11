@@ -25,8 +25,21 @@ import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
-import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
-import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
+import {
+  ApiError,
+  getInvocation,
+  getSession,
+  getSessionStatistics,
+  streamSession,
+  streamSignals,
+} from "@/lib/api";
+import type {
+  SessionDetail,
+  SessionBranch,
+  SessionMessage,
+  SessionStatistics,
+  SignalEvent,
+} from "@/lib/api";
 import {
   buildNodeStatusesByName,
   buildOperationGraph,
@@ -369,6 +382,21 @@ export function mergeCompletedSession(
     if (!previousIds.has(freshBranch.id)) branches.push(freshBranch);
   }
   return { ...previous, ...fresh, branches };
+}
+
+export function mergeSessionStatistics(
+  session: SessionDetail,
+  statistics: SessionStatistics,
+): SessionDetail {
+  return {
+    ...session,
+    message_stats: statistics.message_stats,
+    message_stats_loaded: true,
+    branches: session.branches.map((branch) => {
+      const exact = statistics.branches[branch.id];
+      return exact ? { ...branch, ...exact } : branch;
+    }),
+  };
 }
 
 // The BranchesSection identity every branch renders under (RunStepCard's
@@ -1839,6 +1867,7 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   useEffect(() => {
     if (!id) return;
+    let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
     setSession(null);
     setRunGraph(null);
@@ -1870,6 +1899,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     }
     getSession(id)
       .then((s) => {
+        if (cancelled) return;
         setSession(s);
         setOlderCursor(s.message_next_cursor ?? null);
         const ss = (s.status ?? "").toLowerCase();
@@ -1918,8 +1948,26 @@ export default function RunDetail({ id }: RunDetailProps) {
             edges: resolveGraphEdges(graph.nodes, graph.edges),
           });
         }
+        void getSessionStatistics(id)
+          .then((statistics) => {
+            if (cancelled) return;
+            setSession((previous) =>
+              previous?.id === statistics.session_id
+                ? mergeSessionStatistics(previous, statistics)
+                : previous,
+            );
+          })
+          .catch(() => {
+            // Lifetime aggregates are supplementary; the bounded detail and
+            // live tail remain usable when this explicit slow read fails.
+          });
       })
-      .catch((e: unknown) => setError(String(e)));
+      .catch((e: unknown) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id, initialUrlNodeKey, writeSelectedNodeToUrl]);
 
   useEffect(() => {
@@ -1963,60 +2011,88 @@ export default function RunDetail({ id }: RunDetailProps) {
     };
   }, [id, resumeWatch]);
 
+  const activeSessionId = session?.id;
+  const messageStreamCursor = session?.stream_cursors?.messages;
+  const signalStreamCursor = session?.stream_cursors?.signals;
+
   useEffect(() => {
-    if (!id) return;
+    if (!id || activeSessionId !== id) return;
     let cancelled = false;
-    const stop = streamSession(id, (event) => {
-      if (event.type === "heartbeat") return;
-      if (event.type === "done") {
-        setDone(true);
-        setLive(false);
-        // The initial fetch's status/reason fields are now stale (the run
-        // just finished) — refetch so the terminal status/verdict derivation
-        // reflects the real outcome instead of the pre-completion snapshot.
-        // Guarded on id: if the viewer navigates to a different run before
-        // this resolves, it must not clobber that run's freshly-fetched state.
-        getSession(id)
-          .then((fresh) => {
-            if (cancelled) return;
-            setSession((prev) =>
-              prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
-            );
-          })
-          .catch(() => {});
-        return;
-      }
-      setLive(true);
-      if (isSessionMessageEvent(event)) {
-        const msg = event as unknown as SessionMessage;
-        setSession((prev) => {
-          if (!prev) return prev;
-          const branchId = String(event.branch_id);
-          return appendStreamedMessage(prev, branchId, msg);
-        });
-      }
-    });
+    const stop = streamSession(
+      id,
+      (event) => {
+        if (event.type === "heartbeat") return;
+        if (event.type === "resync") {
+          getSession(id)
+            .then((fresh) => {
+              if (!cancelled) setSession(fresh);
+            })
+            .catch(() => {});
+          return;
+        }
+        if (event.type === "done") {
+          setDone(true);
+          setLive(false);
+          // The initial fetch's status/reason fields are now stale (the run
+          // just finished) — refetch so the terminal status/verdict derivation
+          // reflects the real outcome instead of the pre-completion snapshot.
+          // Guarded on id: if the viewer navigates to a different run before
+          // this resolves, it must not clobber that run's freshly-fetched state.
+          getSession(id)
+            .then((fresh) => {
+              if (cancelled) return;
+              setSession((prev) =>
+                prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
+              );
+            })
+            .catch(() => {});
+          return;
+        }
+        setLive(true);
+        if (isSessionMessageEvent(event)) {
+          const msg = event as unknown as SessionMessage;
+          setSession((prev) => {
+            if (!prev) return prev;
+            const branchId = String(event.branch_id);
+            return appendStreamedMessage(prev, branchId, msg);
+          });
+        }
+      },
+      messageStreamCursor,
+    );
     return () => {
       cancelled = true;
       stop();
     };
-  }, [id]);
+  }, [activeSessionId, id, messageStreamCursor]);
 
   useEffect(() => {
-    if (!id) return;
-    const stop = streamSignals(id, (event) => {
-      if ("type" in event) return;
-      const sig = event as SignalEvent;
-      setSignalEvents((prev) => {
-        if (prev.some((e) => e.id === sig.id)) return prev;
-        return [...prev, sig];
-      });
-    });
+    if (!id || activeSessionId !== id) return;
+    const stop = streamSignals(
+      id,
+      (event) => {
+        if ("type" in event) {
+          if (event.type === "resync") {
+            setSignalEvents([]);
+            getSession(id)
+              .then((fresh) => setSession(fresh))
+              .catch(() => {});
+          }
+          return;
+        }
+        const sig = event as SignalEvent;
+        setSignalEvents((prev) => {
+          if (prev.some((e) => e.id === sig.id)) return prev;
+          return [...prev, sig];
+        });
+      },
+      signalStreamCursor,
+    );
     return () => {
       stop();
       setSignalEvents([]);
     };
-  }, [id]);
+  }, [activeSessionId, id, signalStreamCursor]);
 
   useEffect(() => {
     if (suppressAutoScrollRef.current) {

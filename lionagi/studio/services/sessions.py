@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import time
+import math
+from dataclasses import dataclass
 from typing import Any
 
 import aiosqlite
@@ -21,6 +22,7 @@ from ._io import parse_json_col as _parse_json_col
 from .artifact_verification import resolve_artifact_verification
 
 SESSION_DONE_STABLE_SECS = 60.0
+SESSION_TAIL_BATCH = 500
 
 
 def _parse_metadata(raw: str | None) -> dict[str, Any] | None:
@@ -102,6 +104,7 @@ def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
 # `sessions` alone, and only that page is joined against branches/progressions.
 # Callers that want a whole-store answer must ask for it a page at a time.
 MAX_SESSION_PAGE = 500
+MAX_SESSION_SEARCH_CANDIDATES = 10_000
 
 
 # SQLite LIKE's own wildcards, '%' and '_', are otherwise live inside a
@@ -153,6 +156,11 @@ class SessionFilter:
         if self.search:
             escaped = _escape_like(self.search)
             clauses.append(
+                "s.id IN (SELECT recent.id FROM sessions recent "
+                "ORDER BY recent.updated_at DESC, recent.id DESC LIMIT ?)"
+            )
+            params.append(MAX_SESSION_SEARCH_CANDIDATES)
+            clauses.append(
                 "(LOWER(COALESCE(s.name, '')) LIKE '%' || LOWER(?) || '%' "
                 f"ESCAPE '{_LIKE_ESCAPE_CHAR}' "
                 "OR LOWER(COALESCE(s.agent_name, '')) LIKE '%' || LOWER(?) || '%' "
@@ -164,7 +172,7 @@ class SessionFilter:
             placeholders = ",".join("?" for _ in ordered)
             # Legacy rows carry NULL status and read as "completed" everywhere else.
             null_clause = " OR s.status IS NULL" if "completed" in self.statuses else ""
-            clauses.append(f"(COALESCE(s.status, 'completed') IN ({placeholders}){null_clause})")
+            clauses.append(f"(s.status IN ({placeholders}){null_clause})")
             params.extend(ordered)
         if self.project_null:
             clauses.append("s.project IS NULL")
@@ -181,6 +189,17 @@ class SessionFilter:
         if not clauses:
             return "", []
         return "WHERE " + " AND ".join(clauses), params
+
+    def cursor_contract(self) -> dict[str, Any]:
+        """Stable public-filter identity carried by an opaque page cursor."""
+        return {
+            "playbook": self.playbook,
+            "statuses": sorted(self.statuses) if self.statuses else [],
+            "project": self.project,
+            "project_null": self.project_null,
+            "tags": sorted(self.tags) if self.tags else [],
+            "search": self.search,
+        }
 
 
 async def count_sessions(where: SessionFilter | None = None) -> int:
@@ -202,9 +221,171 @@ async def count_sessions(where: SessionFilter | None = None) -> int:
 # including a genuine $0.00 — `total_cost_usd IS NULL` evaluates to 0/1 and
 # sorts ascending first, so reported rows (0) always precede unreported (1).
 _SESSION_SORTS: dict[str, str] = {
-    "recent": "s.updated_at DESC",
-    "cost": "s.total_cost_usd IS NULL, s.total_cost_usd DESC, s.updated_at DESC",
+    "recent": "s.updated_at DESC, s.id DESC",
+    "cost": "s.total_cost_usd IS NULL, s.total_cost_usd DESC, s.updated_at DESC, s.id DESC",
 }
+
+MAX_SESSION_OFFSET = 10_000
+
+
+class SessionListCursorError(ValueError):
+    """A session-list cursor is malformed or does not match the requested query."""
+
+
+@dataclass(frozen=True)
+class SessionPage:
+    items: list[dict[str, Any]]
+    next_cursor: str | None
+    has_more: bool
+
+
+def _encode_session_list_cursor(row: dict[str, Any], *, where: SessionFilter, sort: str) -> str:
+    payload = {
+        "v": 1,
+        "sort": sort,
+        "filters": where.cursor_contract(),
+        "updated_at": float(row.get("updated_at") or 0.0),
+        "id": row["id"],
+    }
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_session_list_cursor(
+    token: str, *, where: SessionFilter, sort: str
+) -> tuple[float, str]:
+    if not token or len(token) > 8_192:
+        raise SessionListCursorError("Malformed session list cursor")
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except Exception as exc:
+        raise SessionListCursorError("Malformed session list cursor") from exc
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        raise SessionListCursorError("Unsupported session list cursor")
+    if payload.get("sort") != sort or payload.get("filters") != where.cursor_contract():
+        raise SessionListCursorError("Session list cursor does not match the requested query")
+    updated_at = payload.get("updated_at")
+    session_id = payload.get("id")
+    if (
+        isinstance(updated_at, bool)
+        or not isinstance(updated_at, (int, float))
+        or not math.isfinite(updated_at)
+        or not isinstance(session_id, str)
+        or not session_id
+    ):
+        raise SessionListCursorError("Malformed session list cursor")
+    return float(updated_at), session_id
+
+
+def _append_where(clause: str, predicate: str) -> str:
+    return f"{clause} AND {predicate}" if clause else f"WHERE {predicate}"
+
+
+def _session_page_sql(clause: str, order_by: str) -> str:
+    """Correlated aggregates preserve the indexed session scan and its LIMIT."""
+    return f"""
+        SELECT
+          s.id,
+          s.name,
+          s.created_at,
+          s.updated_at,
+          s.playbook_name,
+          s.agent_name,
+          s.invocation_kind,
+          s.show_topic,
+          s.show_play_name,
+          s.artifacts_path,
+          s.artifact_contract_json,
+          s.artifact_verification_json,
+          s.source_kind,
+          s.status,
+          s.started_at,
+          s.ended_at,
+          s.last_message_at,
+          s.invocation_id,
+          s.model,
+          s.provider,
+          s.effort,
+          s.agent_hash,
+          s.project,
+          s.project_source,
+          s.status_reason_code,
+          s.status_reason_summary,
+          s.node_metadata,
+          s.total_cost_usd,
+          s.input_tokens,
+          s.output_tokens,
+          (SELECT COUNT(*) FROM branches b WHERE b.session_id = s.id) AS branch_count,
+          COALESCE((
+              SELECT SUM(json_array_length(p.collection))
+              FROM branches b
+              JOIN progressions p ON p.id = b.progression_id
+              WHERE b.session_id = s.id
+          ), 0) AS message_count
+        FROM sessions s
+        {clause}
+        ORDER BY {order_by}
+        LIMIT ? OFFSET ?
+    """  # noqa: S608 -- both fragments are module-owned SQL
+
+
+async def list_sessions_page(
+    *,
+    limit: int = MAX_SESSION_PAGE,
+    offset: int = 0,
+    cursor: str | None = None,
+    where: SessionFilter | None = None,
+    sort: str = "recent",
+) -> SessionPage:
+    """Read a stable page without regrouping or re-sorting the selected rows."""
+    require_file_store()
+    if not store_exists():
+        return SessionPage([], None, False)
+
+    limit = max(1, min(int(limit), MAX_SESSION_PAGE))
+    offset = max(0, min(int(offset), MAX_SESSION_OFFSET))
+    selected_filter = where or SessionFilter()
+    clause, params = selected_filter.where()
+    order_by = _SESSION_SORTS.get(sort, _SESSION_SORTS["recent"])
+    if cursor is not None:
+        if sort != "recent":
+            raise SessionListCursorError("Session list cursors currently require recent sort")
+        updated_at, session_id = _decode_session_list_cursor(
+            cursor, where=selected_filter, sort=sort
+        )
+        clause = _append_where(
+            clause,
+            "(s.updated_at < ? OR (s.updated_at = ? AND s.id < ?))",
+        )
+        params.extend([updated_at, updated_at, session_id])
+        offset = 0
+
+    async with _open_db(store_path()) as db:
+        if selected_filter.tags:
+            from .run_tags import _ensure_table
+
+            await _ensure_table(db)
+        cur = await db.execute(
+            _session_page_sql(clause, order_by),
+            [*params, limit, offset],
+        )
+        rows = await cur.fetchall()
+        has_more = False
+        if len(rows) == limit:
+            more_cur = await db.execute(
+                f"SELECT 1 FROM sessions s {clause} ORDER BY {order_by} LIMIT 1 OFFSET ?",  # noqa: S608
+                [*params, offset + limit],
+            )
+            has_more = await more_cur.fetchone() is not None
+
+    items = [_format_session_summary(row) for row in rows]
+    next_cursor = (
+        _encode_session_list_cursor(items[-1], where=selected_filter, sort=sort)
+        if has_more and items and sort == "recent"
+        else None
+    )
+    return SessionPage(items, next_cursor, has_more)
 
 
 async def list_sessions(
@@ -216,144 +397,74 @@ async def list_sessions(
 ) -> list[dict[str, Any]]:
     """One page of sessions, newest first (or highest-cost first). Cost is
     proportional to `limit`, not to the size of the store."""
-    require_file_store()
-    if not store_exists():
-        return []
+    return (await list_sessions_page(limit=limit, offset=offset, where=where, sort=sort)).items
 
-    limit = max(1, min(int(limit), MAX_SESSION_PAGE))
-    offset = max(0, int(offset))
-    clause, params = (where or SessionFilter()).where()
-    order_by = _SESSION_SORTS.get(sort, _SESSION_SORTS["recent"])
 
-    async with _open_db(store_path()) as db:
-        # run_tags is created lazily on first tag write, so a tag filter would
-        # fail on a store that has never been tagged.
-        if (where or SessionFilter()).tags:
-            from .run_tags import _ensure_table
-
-            await _ensure_table(db)
-        cur = await db.execute(
-            f"""
-            WITH page AS (
-                SELECT s.id AS page_id
-                FROM sessions s
-                {clause}
-                ORDER BY {order_by}
-                LIMIT ? OFFSET ?
-            )
-            SELECT
-                s.id,
-                s.name,
-                s.created_at,
-                s.updated_at,
-                s.playbook_name,
-                s.agent_name,
-                s.invocation_kind,
-                s.show_topic,
-                s.show_play_name,
-                s.artifacts_path,
-                s.artifact_contract_json,
-                s.artifact_verification_json,
-                s.source_kind,
-                s.status,
-                s.started_at,
-                s.ended_at,
-                s.last_message_at,
-                s.invocation_id,
-                s.model,
-                s.provider,
-                s.effort,
-                s.agent_hash,
-                s.project,
-                s.project_source,
-                s.status_reason_code,
-                s.status_reason_summary,
-                s.node_metadata,
-                s.total_cost_usd,
-                s.input_tokens,
-                s.output_tokens,
-                COUNT(DISTINCT b.id) AS branch_count,
-                COALESCE(SUM(
-                    json_array_length(p.collection)
-                ), 0) AS message_count
-            FROM page
-            JOIN sessions s ON s.id = page.page_id
-            LEFT JOIN branches b ON b.session_id = s.id
-            LEFT JOIN progressions p ON p.id = b.progression_id
-            GROUP BY s.id
-            ORDER BY {order_by}
-            """,  # noqa: S608
-            [*params, limit, offset],
-        )
-        rows = await cur.fetchall()
-
-    return [
-        {
-            "id": row["id"],
-            # Displayed name prefers structured identity (playbook/show/agent)
-            # over the raw, possibly prompt-derived value stored on the row
-            # — see resolve_display_name().
-            "name": resolve_display_name(dict(row)),
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"] or 0.0,
-            "node_metadata": row["node_metadata"],
-            "branch_count": row["branch_count"],
-            "message_count": row["message_count"],
-            # ADR-0057: read status directly from column;
-            # fall back to "completed" only for legacy rows where status is NULL.
-            "status": row["status"] or "completed",
-            "started_at": row["started_at"],
-            "ended_at": row["ended_at"],
-            # Caller (runs service) feeds this to staleness_check (ADR-0057 D6).
-            "last_message_at": row["last_message_at"],
-            # Optional parent skill orchestration.
-            "invocation_id": row["invocation_id"],
-            # Provenance disclosure — resolved values.
-            "model": row["model"],
-            "provider": row["provider"],
-            "effort": row["effort"],
-            "agent_hash": row["agent_hash"],
-            "playbook_name": row["playbook_name"],
-            "agent_name": row["agent_name"],
-            "invocation_kind": row["invocation_kind"],
-            "show_topic": row["show_topic"],
-            "show_play_name": row["show_play_name"],
-            "artifacts_path": row["artifacts_path"],
-            "source_kind": row["source_kind"] or "live",
-            "artifact_contract_json": _parse_json_col(row["artifact_contract_json"]),
-            # Resolved, not passed through: a terminal session that was contracted
-            # and holds no verdict reports that absence here exactly as the detail
-            # route does. Returning the raw column instead would give the two
-            # routes different answers for the same session, which is the
-            # conflation this state exists to remove.
-            #
-            # artifacts_path is withheld deliberately, and the row does carry one.
-            # Supplying it would enable the live-progress arm, which reads the
-            # artifacts directory per row -- a filesystem walk for every running
-            # session on a paginated list that Studio polls. Withholding it leaves
-            # the two cheap arms intact (a stored verdict still wins, terminal
-            # absence is still named) and declines only the live read, which
-            # belongs to a single-session view.
-            "artifact_verification_json": resolve_artifact_verification(
-                _parse_json_col(row["artifact_verification_json"]),
-                status=row["status"] or "completed",
-                contract=_parse_json_col(row["artifact_contract_json"]),
-                artifacts_path=None,
-            ),
-            # ADR-0063: project detection.
-            "project": row["project"],
-            "project_source": row["project_source"],
-            # ADR-0057: denormalized status reason for the hot read path.
-            "status_reason_code": row["status_reason_code"],
-            "status_reason_summary": row["status_reason_summary"],
-            # Cost-visibility contract: NULL means the provider never reported
-            # a cost for this session (unknown), never coerced to 0.0 (free).
-            "total_cost_usd": row["total_cost_usd"],
-            "input_tokens": row["input_tokens"],
-            "output_tokens": row["output_tokens"],
-        }
-        for row in rows
-    ]
+def _format_session_summary(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        # Displayed name prefers structured identity (playbook/show/agent)
+        # over the raw, possibly prompt-derived value stored on the row
+        # — see resolve_display_name().
+        "name": resolve_display_name(dict(row)),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"] or 0.0,
+        "node_metadata": row["node_metadata"],
+        "branch_count": row["branch_count"],
+        "message_count": row["message_count"],
+        # ADR-0057: read status directly from column;
+        # fall back to "completed" only for legacy rows where status is NULL.
+        "status": row["status"] or "completed",
+        "started_at": row["started_at"],
+        "ended_at": row["ended_at"],
+        # Caller (runs service) feeds this to staleness_check (ADR-0057 D6).
+        "last_message_at": row["last_message_at"],
+        # Optional parent skill orchestration.
+        "invocation_id": row["invocation_id"],
+        # Provenance disclosure — resolved values.
+        "model": row["model"],
+        "provider": row["provider"],
+        "effort": row["effort"],
+        "agent_hash": row["agent_hash"],
+        "playbook_name": row["playbook_name"],
+        "agent_name": row["agent_name"],
+        "invocation_kind": row["invocation_kind"],
+        "show_topic": row["show_topic"],
+        "show_play_name": row["show_play_name"],
+        "artifacts_path": row["artifacts_path"],
+        "source_kind": row["source_kind"] or "live",
+        "artifact_contract_json": _parse_json_col(row["artifact_contract_json"]),
+        # Resolved, not passed through: a terminal session that was contracted
+        # and holds no verdict reports that absence here exactly as the detail
+        # route does. Returning the raw column instead would give the two
+        # routes different answers for the same session, which is the
+        # conflation this state exists to remove.
+        #
+        # artifacts_path is withheld deliberately, and the row does carry one.
+        # Supplying it would enable the live-progress arm, which reads the
+        # artifacts directory per row -- a filesystem walk for every running
+        # session on a paginated list that Studio polls. Withholding it leaves
+        # the two cheap arms intact (a stored verdict still wins, terminal
+        # absence is still named) and declines only the live read, which
+        # belongs to a single-session view.
+        "artifact_verification_json": resolve_artifact_verification(
+            _parse_json_col(row["artifact_verification_json"]),
+            status=row["status"] or "completed",
+            contract=_parse_json_col(row["artifact_contract_json"]),
+            artifacts_path=None,
+        ),
+        # ADR-0063: project detection.
+        "project": row["project"],
+        "project_source": row["project_source"],
+        # ADR-0057: denormalized status reason for the hot read path.
+        "status_reason_code": row["status_reason_code"],
+        "status_reason_summary": row["status_reason_summary"],
+        # Cost-visibility contract: NULL means the provider never reported
+        # a cost for this session (unknown), never coerced to 0.0 (free).
+        "total_cost_usd": row["total_cost_usd"],
+        "input_tokens": row["input_tokens"],
+        "output_tokens": row["output_tokens"],
+    }
 
 
 async def list_project_counts() -> list[dict[str, Any]]:
@@ -386,6 +497,8 @@ async def list_project_counts() -> list[dict[str, Any]]:
 # responses window from the tail to avoid freezing the client.
 DEFAULT_MESSAGE_LIMIT = 200
 MAX_MESSAGE_LIMIT = 1000
+MAX_LEGACY_MESSAGE_OFFSET = 10_000
+_PROGRESSION_READ_CHUNK = 16 * 1024
 
 
 class MessageCursorError(ValueError):
@@ -414,6 +527,241 @@ def _decode_message_cursor(token: str, *, session_id: str, limit: int) -> dict[s
     if not isinstance(anchors, dict):
         raise MessageCursorError("message_cursor is missing branch_anchors")
     return anchors
+
+
+def _encode_message_window_cursor(
+    session_id: str,
+    limit: int,
+    branch_positions: dict[str, dict[str, Any]],
+) -> str:
+    payload = {
+        "v": 2,
+        "session_id": session_id,
+        "limit": limit,
+        "branch_positions": branch_positions,
+    }
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_message_window_cursor(
+    token: str, *, session_id: str, limit: int
+) -> tuple[int, dict[str, dict[str, Any]] | dict[str, str]]:
+    if not token or len(token) > 64 * 1024:
+        raise MessageCursorError("Malformed message_cursor")
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except Exception as exc:
+        raise MessageCursorError("Malformed message_cursor") from exc
+    if not isinstance(payload, dict):
+        raise MessageCursorError("Malformed message_cursor")
+    version = payload.get("v")
+    if payload.get("session_id") != session_id:
+        raise MessageCursorError("message_cursor belongs to a different session")
+    if payload.get("limit") != limit:
+        raise MessageCursorError("message_cursor does not match message_limit")
+    if version == 1:
+        anchors = payload.get("branch_anchors")
+        if not isinstance(anchors, dict):
+            raise MessageCursorError("message_cursor is missing branch_anchors")
+        return 1, anchors
+    if version != 2:
+        raise MessageCursorError("Unsupported message_cursor")
+    positions = payload.get("branch_positions")
+    if not isinstance(positions, dict):
+        raise MessageCursorError("message_cursor is missing branch_positions")
+    for branch_id, position in positions.items():
+        if not isinstance(branch_id, str) or not isinstance(position, dict):
+            raise MessageCursorError("Malformed message_cursor branch position")
+        end = position.get("end")
+        anchor = position.get("anchor")
+        if (
+            isinstance(end, bool)
+            or not isinstance(end, int)
+            or end < 1
+            or not isinstance(anchor, str)
+            or not anchor
+        ):
+            raise MessageCursorError("Malformed message_cursor branch position")
+    return 2, positions
+
+
+class SessionStreamCursorError(ValueError):
+    """A live-message cursor is malformed or belongs to another session."""
+
+
+def _encode_session_stream_cursor(session_id: str, created_at: float, message_id: str) -> str:
+    payload = {
+        "v": 1,
+        "session_id": session_id,
+        "created_at": created_at,
+        "message_id": message_id,
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_session_stream_cursor(token: str, *, session_id: str) -> tuple[float, str]:
+    if not token or len(token) > 4_096:
+        raise SessionStreamCursorError("Malformed session stream cursor")
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except Exception as exc:
+        raise SessionStreamCursorError("Malformed session stream cursor") from exc
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        raise SessionStreamCursorError("Unsupported session stream cursor")
+    if payload.get("session_id") != session_id:
+        raise SessionStreamCursorError("Session stream cursor belongs to a different session")
+    created_at = payload.get("created_at")
+    message_id = payload.get("message_id")
+    if (
+        isinstance(created_at, bool)
+        or not isinstance(created_at, (int, float))
+        or not math.isfinite(created_at)
+        or not isinstance(message_id, str)
+        or not message_id
+    ):
+        raise SessionStreamCursorError("Malformed session stream cursor")
+    return float(created_at), message_id
+
+
+@dataclass(frozen=True)
+class _ProgressionToken:
+    value: str
+    start: int
+
+
+@dataclass(frozen=True)
+class _ProgressionWindow:
+    ids: list[str]
+    has_older: bool
+    next_position: dict[str, Any] | None
+
+
+def _reverse_json_string_tokens(
+    raw: bytes, *, absolute_start: int
+) -> tuple[list[_ProgressionToken], bool]:
+    """Decode complete JSON strings from an array suffix, newest first.
+
+    The suffix may start in the middle of its oldest string. In that case the
+    complete newer tokens are returned with ``False`` so the caller can prepend
+    another bounded chunk and retry. Progression collections are arrays of
+    strings by schema contract; any other token is treated as corruption.
+    """
+    tokens: list[_ProgressionToken] = []
+    i = len(raw) - 1
+    whitespace = b" \t\r\n"
+    while i >= 0:
+        while i >= 0 and (raw[i] in whitespace or raw[i] in (ord(","), ord("]"))):
+            i -= 1
+        if i < 0:
+            return tokens, False
+        if raw[i] == ord("["):
+            return tokens, True
+        if raw[i] != ord('"'):
+            raise ValueError("progression collection is not a JSON string array")
+        closing = i
+        i -= 1
+        opening = -1
+        while i >= 0:
+            if raw[i] == ord('"'):
+                backslashes = 0
+                j = i - 1
+                while j >= 0 and raw[j] == ord("\\"):
+                    backslashes += 1
+                    j -= 1
+                if backslashes % 2 == 0:
+                    opening = i
+                    break
+            i -= 1
+        if opening < 0:
+            return tokens, False
+        try:
+            value = json.loads(raw[opening : closing + 1].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid message id in progression collection") from exc
+        if not isinstance(value, str):
+            raise ValueError("progression collection is not a JSON string array")
+        tokens.append(_ProgressionToken(value=value, start=absolute_start + opening))
+        i = opening - 1
+    return tokens, False
+
+
+async def _read_progression_window(
+    db: aiosqlite.Connection,
+    progression_id: str,
+    *,
+    total_bytes: int,
+    end: int | None,
+    limit: int,
+    legacy_offset: int,
+) -> _ProgressionWindow:
+    """Read one tail window without materializing the progression JSON blob."""
+    collection_end = max(1, total_bytes - 1)
+    end = collection_end if end is None else end
+    if end < 1 or end > collection_end:
+        raise MessageCursorError("message_cursor position is outside the progression")
+    needed = limit + legacy_offset + 1
+    start = end
+    tokens: list[_ProgressionToken] = []
+    reached_array_start = False
+    while len(tokens) < needed and not reached_array_start and start > 0:
+        start = max(0, start - _PROGRESSION_READ_CHUNK)
+        cur = await db.execute(
+            "SELECT substr(CAST(collection AS BLOB), ?, ?) AS fragment "
+            "FROM progressions WHERE id = ?",
+            (start + 1, end - start, progression_id),
+        )
+        row = await cur.fetchone()
+        fragment = bytes(row["fragment"] or b"") if row else b""
+        tokens, reached_array_start = _reverse_json_string_tokens(fragment, absolute_start=start)
+    newest_first = tokens[:needed]
+    ordered = list(reversed(newest_first))
+    page_end = max(0, len(ordered) - legacy_offset)
+    page_start = max(0, page_end - limit)
+    page = ordered[page_start:page_end]
+    has_older = page_start > 0 or (not reached_array_start and bool(page))
+    next_position = {"end": page[0].start, "anchor": page[0].value} if has_older and page else None
+    return _ProgressionWindow(
+        ids=[token.value for token in page],
+        has_older=has_older,
+        next_position=next_position,
+    )
+
+
+async def _validate_progression_position(
+    db: aiosqlite.Connection,
+    progression_id: str,
+    *,
+    end: int,
+    anchor: str,
+    total_bytes: int,
+) -> None:
+    if end < 1 or end >= total_bytes:
+        raise MessageCursorError("message_cursor position is outside the progression")
+    read_size = min(_PROGRESSION_READ_CHUNK, total_bytes - end)
+    while read_size <= total_bytes - end:
+        cur = await db.execute(
+            "SELECT substr(CAST(collection AS BLOB), ?, ?) AS fragment "
+            "FROM progressions WHERE id = ?",
+            (end + 1, read_size, progression_id),
+        )
+        row = await cur.fetchone()
+        fragment = bytes(row["fragment"] or b"") if row else b""
+        try:
+            decoded = fragment.decode("utf-8")
+            value, _ = json.JSONDecoder().raw_decode(decoded)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            if read_size == total_bytes - end:
+                break
+            read_size = min(read_size * 2, total_bytes - end)
+            continue
+        if value == anchor:
+            return
+        break
+    raise MessageCursorError("message_cursor anchor no longer matches the progression")
 
 
 def _window_message_ids(
@@ -646,26 +994,105 @@ def _branch_message_stats(
     }
 
 
+async def _get_session_statistics_from_db(
+    db: aiosqlite.Connection,
+    session_id: str,
+) -> dict[str, Any] | None:
+    exists_cur = await db.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,))
+    if not await exists_cur.fetchone():
+        return None
+    branch_cur = await db.execute(
+        "SELECT id, progression_id FROM branches WHERE session_id = ? ORDER BY created_at",
+        (session_id,),
+    )
+    branch_rows = await branch_cur.fetchall()
+    full_stats = _init_message_stats()
+    branch_results: dict[str, dict[str, Any]] = {}
+    for branch in branch_rows:
+        msg_ids: list[str] = []
+        progression_id = branch["progression_id"]
+        if progression_id:
+            progression_cur = await db.execute(
+                "SELECT collection FROM progressions WHERE id = ?",
+                (progression_id,),
+            )
+            progression_row = await progression_cur.fetchone()
+            if progression_row and progression_row["collection"]:
+                try:
+                    decoded = json.loads(progression_row["collection"])
+                    msg_ids = decoded if isinstance(decoded, list) else []
+                except (json.JSONDecodeError, TypeError):
+                    msg_ids = []
+        role_counts = await _fetch_role_counts(db, msg_ids)
+        first_message_at, last_message_at = await _fetch_message_bounds(db, msg_ids)
+        action_messages = await _fetch_action_messages(db, msg_ids)
+        branch_stats = _branch_message_stats(
+            sum(role_counts.values()), role_counts, action_messages
+        )
+        branch_id = branch["id"]
+        branch_results[branch_id] = {
+            "message_total": len(msg_ids),
+            "message_stats": {
+                "message_count": branch_stats["message_count"],
+                "roles": branch_stats["roles"],
+            },
+            "first_message_at": first_message_at,
+            "last_message_at": last_message_at,
+        }
+        full_stats["message_count"] += branch_stats["message_count"]
+        for role, count in branch_stats["roles"].items():
+            full_stats["roles"][role] = full_stats["roles"].get(role, 0) + count
+        full_stats["branches"][branch_id] = branch_results[branch_id]["message_stats"]
+        full_stats["tool_call_count"] += branch_stats["tool_call_count"]
+        full_stats["error_count"] += branch_stats["error_count"]
+        full_stats["errors"].extend(branch_stats["errors"])
+        full_stats["files"].extend(branch_stats["files"])
+    full_stats["files"] = sorted(set(full_stats["files"]))
+    return {
+        "session_id": session_id,
+        "message_stats_loaded": True,
+        "message_stats": full_stats,
+        "branches": branch_results,
+    }
+
+
+async def get_session_statistics(session_id: str) -> dict[str, Any] | None:
+    """Load exact lifetime aggregates separately from the bounded detail page."""
+    require_file_store()
+    if not store_exists():
+        return None
+    async with _open_db(store_path()) as db:
+        return await _get_session_statistics_from_db(db, session_id)
+
+
 async def get_session(
     session_id: str,
     *,
     message_limit: int = DEFAULT_MESSAGE_LIMIT,
     message_offset: int = 0,
     message_cursor: str | None = None,
+    include_stats: bool = False,
 ) -> dict[str, Any] | None:
     require_file_store()
     if not store_exists():
         return None
 
     message_limit = max(1, min(message_limit, MAX_MESSAGE_LIMIT))
-    message_offset = max(0, message_offset)
-    cursor_anchors = (
-        _decode_message_cursor(message_cursor, session_id=session_id, limit=message_limit)
-        if message_cursor
-        else None
-    )
+    message_offset = max(0, min(message_offset, MAX_LEGACY_MESSAGE_OFFSET))
+    cursor_version = 0
+    cursor_positions: dict[str, dict[str, Any]] | dict[str, str] | None = None
+    if message_cursor:
+        cursor_version, cursor_positions = _decode_message_window_cursor(
+            message_cursor,
+            session_id=session_id,
+            limit=message_limit,
+        )
 
     async with _open_db(store_path()) as db:
+        # The page, continuation anchors, and both live high-water marks must
+        # describe one read snapshot. The connection stays open only for this
+        # request; the broker owns the reusable live-read resource.
+        await db.execute("BEGIN")
         cur = await db.execute(
             # Include lifecycle and provenance columns (model/provider/effort/agent_hash).
             """SELECT id, name, created_at, updated_at,
@@ -701,72 +1128,106 @@ async def get_session(
 
         try:
             branch_cur = await db.execute(
-                "SELECT id, name, created_at, progression_id, model, provider, agent_name, status, started_at, ended_at FROM branches WHERE session_id = ? ORDER BY created_at",
+                """SELECT b.id, b.name, b.created_at, b.progression_id,
+                          b.model, b.provider, b.agent_name, b.status,
+                          b.started_at, b.ended_at,
+                          length(CAST(p.collection AS BLOB)) AS collection_bytes
+                   FROM branches b
+                   LEFT JOIN progressions p ON p.id = b.progression_id
+                   WHERE b.session_id = ? ORDER BY b.created_at""",
                 (session_id,),
             )
         except Exception:
             branch_cur = await db.execute(
-                "SELECT id, name, created_at, progression_id, model, provider, agent_name FROM branches WHERE session_id = ? ORDER BY created_at",
+                """SELECT b.id, b.name, b.created_at, b.progression_id,
+                          b.model, b.provider, b.agent_name,
+                          length(CAST(p.collection AS BLOB)) AS collection_bytes
+                   FROM branches b
+                   LEFT JOIN progressions p ON p.id = b.progression_id
+                   WHERE b.session_id = ? ORDER BY b.created_at""",
                 (session_id,),
             )
         branch_rows = await branch_cur.fetchall()
 
         branches = []
-        full_stats = _init_message_stats()
-        next_branch_anchors: dict[str, str] = {}
+        next_branch_positions: dict[str, dict[str, Any]] = {}
+        high_water_messages: list[dict[str, Any]] = []
         for br in branch_rows:
             branch_id = br["id"]
-            full_msg_ids: list[str] = []
-            message_total = 0
             prog_id = br["progression_id"]
-            if prog_id:
+            collection_bytes = int(br["collection_bytes"] or 2)
+            window_ids: list[str] = []
+            has_older = False
+            next_position: dict[str, Any] | None = None
+            if prog_id and cursor_version == 1:
+                # Compatibility for an in-flight v1 anchor. New responses issue
+                # byte-position cursors, so the unbounded lookup ages out after
+                # one continuation instead of remaining the normal path.
                 prog_cur = await db.execute(
                     "SELECT collection FROM progressions WHERE id = ?",
                     (prog_id,),
                 )
                 prog_row = await prog_cur.fetchone()
+                full_msg_ids: list[str] = []
                 if prog_row and prog_row["collection"]:
                     try:
                         full_msg_ids = json.loads(prog_row["collection"])
                     except (json.JSONDecodeError, TypeError):
                         full_msg_ids = []
-                    message_total = len(full_msg_ids)
-
-            # Window from the tail: offset/cursor 0 = the newest page,
-            # each page further back prepends older history.
-            window_ids, has_older, next_anchor = _window_message_ids(
-                full_msg_ids,
-                branch_id=branch_id,
-                limit=message_limit,
-                cursor_anchors=cursor_anchors,
-                legacy_offset=message_offset if cursor_anchors is None else 0,
-            )
-            if next_anchor:
-                next_branch_anchors[branch_id] = next_anchor
+                window_ids, has_older, next_anchor = _window_message_ids(
+                    full_msg_ids,
+                    branch_id=branch_id,
+                    limit=message_limit,
+                    cursor_anchors=cursor_positions,  # type: ignore[arg-type]
+                    legacy_offset=0,
+                )
+                if next_anchor:
+                    anchor_index = full_msg_ids.index(next_anchor)
+                    prefix = json.dumps(full_msg_ids[:anchor_index], separators=(",", ":"))
+                    next_position = {"end": len(prefix.encode()) - 1, "anchor": next_anchor}
+            elif prog_id:
+                end: int | None = None
+                if cursor_version == 2:
+                    position = cursor_positions.get(branch_id) if cursor_positions else None
+                    if position is None:
+                        window = _ProgressionWindow([], False, None)
+                    else:
+                        end = int(position["end"])
+                        await _validate_progression_position(
+                            db,
+                            prog_id,
+                            end=end,
+                            anchor=str(position["anchor"]),
+                            total_bytes=collection_bytes,
+                        )
+                        window = await _read_progression_window(
+                            db,
+                            prog_id,
+                            total_bytes=collection_bytes,
+                            end=end,
+                            limit=message_limit,
+                            legacy_offset=0,
+                        )
+                else:
+                    window = await _read_progression_window(
+                        db,
+                        prog_id,
+                        total_bytes=collection_bytes,
+                        end=None,
+                        limit=message_limit,
+                        legacy_offset=message_offset,
+                    )
+                window_ids = window.ids
+                has_older = window.has_older
+                next_position = window.next_position
+            if next_position:
+                next_branch_positions[branch_id] = next_position
 
             window_messages = await _fetch_messages_by_ids(db, window_ids)
             by_id = {m["id"]: m for m in window_messages}
             messages = [by_id[mid] for mid in window_ids if mid in by_id]
-
-            role_counts = await _fetch_role_counts(db, full_msg_ids)
-            first_message_at, last_message_at = await _fetch_message_bounds(db, full_msg_ids)
-            action_messages = await _fetch_action_messages(db, full_msg_ids)
-            # message_count is the DB role-aggregate, not message_total: a
-            # progression can reference ids whose row was pruned, so the two can diverge.
-            message_count = sum(role_counts.values())
-            branch_stats = _branch_message_stats(message_count, role_counts, action_messages)
-
-            full_stats["message_count"] += branch_stats["message_count"]
-            for role, count in branch_stats["roles"].items():
-                full_stats["roles"][role] = full_stats["roles"].get(role, 0) + count
-            full_stats["branches"][branch_id] = {
-                "message_count": branch_stats["message_count"],
-                "roles": branch_stats["roles"],
-            }
-            full_stats["tool_call_count"] += branch_stats["tool_call_count"]
-            full_stats["error_count"] += branch_stats["error_count"]
-            full_stats["errors"].extend(branch_stats["errors"])
-            full_stats["files"].extend(branch_stats["files"])
+            if cursor_version == 0 and message_offset == 0 and messages:
+                high_water_messages.append(messages[-1])
 
             br_keys = br.keys()
             branches.append(
@@ -775,15 +1236,18 @@ async def get_session(
                     "name": br["name"],
                     "created_at": br["created_at"],
                     "messages": messages,
-                    "message_total": message_total,
+                    # Exact lifetime fields are intentionally deferred. Keeping
+                    # their compatibility keys with null values makes absence
+                    # visible instead of silently redefining them from a window.
+                    "message_total": None,
                     "message_offset": message_offset,
                     "message_limit": message_limit,
                     "message_window_count": len(messages),
-                    "messages_truncated": message_total > len(messages),
+                    "messages_truncated": has_older or bool(message_cursor),
                     "message_has_older": has_older,
-                    "message_stats": full_stats["branches"][branch_id],
-                    "first_message_at": first_message_at,
-                    "last_message_at": last_message_at,
+                    "message_stats": None,
+                    "first_message_at": None,
+                    "last_message_at": None,
                     "model": br["model"],
                     "provider": br["provider"],
                     "agent_name": br["agent_name"],
@@ -793,12 +1257,41 @@ async def get_session(
                 }
             )
 
-        full_stats["files"] = sorted(set(full_stats["files"]))
         message_next_cursor = (
-            _encode_message_cursor(session_id, message_limit, next_branch_anchors)
-            if next_branch_anchors
+            _encode_message_window_cursor(session_id, message_limit, next_branch_positions)
+            if next_branch_positions
             else None
         )
+        signal_cursor = 0
+        try:
+            signal_cur = await db.execute(
+                "SELECT COALESCE(MAX(seq), 0) AS seq FROM session_signals WHERE session_id = ?",
+                (session_id,),
+            )
+            signal_row = await signal_cur.fetchone()
+            signal_cursor = int(signal_row["seq"] or 0) if signal_row else 0
+        except aiosqlite.OperationalError:
+            signal_cursor = 0
+        message_stream_cursor = None
+        if high_water_messages:
+            newest = max(
+                high_water_messages,
+                key=lambda message: (float(message.get("timestamp") or 0.0), message["id"]),
+            )
+            message_stream_cursor = _encode_session_stream_cursor(
+                session_id,
+                float(newest.get("timestamp") or 0.0),
+                newest["id"],
+            )
+        lifetime_stats = (
+            await _get_session_statistics_from_db(db, session_id) if include_stats else None
+        )
+        if lifetime_stats:
+            by_branch = lifetime_stats["branches"]
+            for branch in branches:
+                exact = by_branch.get(branch["id"])
+                if exact:
+                    branch.update(exact)
 
     started_at = session_row["started_at"]
     ended_at = session_row["ended_at"]
@@ -843,7 +1336,13 @@ async def get_session(
         "message_limit": message_limit,
         "message_cursor": message_cursor,
         "message_next_cursor": message_next_cursor,
-        "message_stats": full_stats,
+        "message_stats": lifetime_stats["message_stats"] if lifetime_stats else None,
+        "message_stats_loaded": lifetime_stats is not None,
+        "statistics_url": f"/api/sessions/{session_id}/statistics",
+        "stream_cursors": {
+            "messages": message_stream_cursor,
+            "signals": signal_cursor,
+        },
         # Provenance disclosure — same fields exposed on list_sessions().
         "model": session_row["model"],
         "provider": session_row["provider"],
@@ -885,7 +1384,55 @@ async def get_session_by_cc_id(cc_uid: str) -> dict[str, Any] | None:
     return await get_session(row["id"] if row else session_db_id(cc_uid))
 
 
-async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:
+async def _get_session_messages_after_db(
+    db: Any,
+    session_id: str,
+    after_ts: float,
+    after_id: str | None,
+    *,
+    limit: int = SESSION_TAIL_BATCH,
+) -> list[dict[str, Any]]:
+    cursor_clause = (
+        "AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?))"
+        if after_id is not None
+        else "AND m.created_at > ?"
+    )
+    params: tuple[Any, ...] = (
+        (session_id, after_ts, after_ts, after_id, limit)
+        if after_id is not None
+        else (session_id, after_ts, limit)
+    )
+    cur = await db.execute(
+        f"""
+        SELECT m.id, m.created_at, m.content, m.sender, m.role,
+               mt.lion_class AS lion_class_str, b.id AS branch_id
+        FROM branches b
+        JOIN progressions p ON p.id = b.progression_id
+        JOIN json_each(p.collection) je ON 1=1
+        JOIN messages m ON m.id = je.value
+        LEFT JOIN message_types mt ON m.lion_class = mt.type_id
+        WHERE b.session_id = ? {cursor_clause}
+        ORDER BY m.created_at, m.id
+        LIMIT ?
+        """,  # noqa: S608 -- cursor_clause is a fixed internal fragment
+        params,
+    )
+    rows = await cur.fetchall()
+    result = []
+    for row in rows:
+        msg = _format_message(row)
+        msg["branch_id"] = row["branch_id"]
+        result.append(msg)
+    return result
+
+
+async def get_session_messages_after(
+    session_id: str,
+    after_ts: float,
+    after_id: str | None = None,
+    *,
+    limit: int = SESSION_TAIL_BATCH,
+) -> list[dict[str, Any]]:
     """Poll-friendly tail read for the SSE stream/signals endpoints. Joins via
     json_each rather than binding every message id into an IN (...) clause,
     which would blow past SQLite's 999 bound-variable limit at scale."""
@@ -893,28 +1440,79 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
         return []
 
     async with _open_db(store_path()) as db:
-        cur = await db.execute(
-            """
-            SELECT m.id, m.created_at, m.content, m.sender, m.role,
-                   mt.lion_class AS lion_class_str, b.id AS branch_id
-            FROM branches b
-            JOIN progressions p ON p.id = b.progression_id
-            JOIN json_each(p.collection) je ON 1=1
-            JOIN messages m ON m.id = je.value
-            LEFT JOIN message_types mt ON m.lion_class = mt.type_id
-            WHERE b.session_id = ? AND m.created_at > ?
-            ORDER BY m.created_at
-            """,
-            (session_id, after_ts),
+        return await _get_session_messages_after_db(
+            db,
+            session_id,
+            after_ts,
+            after_id,
+            limit=max(1, min(limit, SESSION_TAIL_BATCH)),
         )
-        rows = await cur.fetchall()
 
-    result = []
-    for row in rows:
-        msg = _format_message(row)
-        msg["branch_id"] = row["branch_id"]
-        result.append(msg)
-    return result
+
+async def _read_session_tail_tick(
+    db: Any,
+    session_id: str,
+    message_cursor: tuple[float, str] | None,
+    signal_cursor: int,
+    *,
+    read_messages: bool,
+    read_signals: bool,
+) -> Any:
+    """Read one bounded live-tail tick on the broker's retained connection."""
+    from . import signals as signals_svc
+    from .tail_broker import TailRead
+
+    messages: list[dict[str, Any]] = []
+    signals: list[dict[str, Any]] = []
+    next_message_cursor = message_cursor
+    next_signal_cursor = signal_cursor
+    if read_messages:
+        after_ts, after_id = message_cursor or (0.0, "")
+        messages = await _get_session_messages_after_db(
+            db,
+            session_id,
+            after_ts,
+            after_id,
+            limit=SESSION_TAIL_BATCH,
+        )
+        if messages:
+            newest = messages[-1]
+            next_message_cursor = (
+                float(newest.get("timestamp") or 0.0),
+                str(newest["id"]),
+            )
+    if read_signals:
+        signals = await signals_svc._get_signals_after_db(
+            db,
+            session_id,
+            signal_cursor,
+            limit=SESSION_TAIL_BATCH,
+        )
+        if signals:
+            next_signal_cursor = int(signals[-1]["seq"])
+
+    cur = await db.execute(
+        "SELECT updated_at, status FROM sessions WHERE id = ?",
+        (session_id,),
+    )
+    row = await cur.fetchone()
+    state = (
+        {
+            "updated_at": row["updated_at"] or 0.0,
+            "status": row["status"] or "completed",
+        }
+        if row
+        else None
+    )
+    return TailRead(
+        messages=messages,
+        signals=signals,
+        state=state,
+        message_cursor=next_message_cursor,
+        signal_cursor=next_signal_cursor,
+        messages_caught_up=len(messages) < SESSION_TAIL_BATCH,
+        signals_caught_up=len(signals) < SESSION_TAIL_BATCH,
+    )
 
 
 async def session_exists(session_id: str) -> bool:
@@ -974,7 +1572,20 @@ async def list_sessions_route(
         le=MAX_SESSION_PAGE,
         description=f"Rows to return, newest first (max {MAX_SESSION_PAGE})",
     ),
-    offset: int = Query(default=0, ge=0, description="Rows to skip, newest first"),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        le=MAX_SESSION_OFFSET,
+        description=f"Compatibility rows to skip (max {MAX_SESSION_OFFSET}); prefer cursor",
+    ),
+    cursor: str | None = Query(
+        default=None,
+        description="Opaque continuation cursor from the previous recent-sorted page",
+    ),
+    include_total: bool = Query(
+        default=True,
+        description="Compute the exact matching total; disable on latency-sensitive reads",
+    ),
     sort: str = Query(
         default="recent",
         description="Sort order: 'recent' (default) or 'cost' (highest reported spend first)",
@@ -984,14 +1595,28 @@ async def list_sessions_route(
     `truncated` so a bounded answer can never be mistaken for a complete one."""
     if sort not in _SESSION_SORTS:
         raise HTTPException(status_code=422, detail="sort must be one of: recent, cost")
-    sessions = await list_sessions(limit=limit, offset=offset, sort=sort)
-    total = await count_sessions()
+    if cursor is not None and offset:
+        raise HTTPException(status_code=422, detail="cursor and offset are mutually exclusive")
+    try:
+        page = await list_sessions_page(
+            limit=limit,
+            offset=offset,
+            cursor=cursor,
+            sort=sort,
+        )
+    except SessionListCursorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    total = await count_sessions() if include_total else None
     return {
-        "sessions": sessions,
+        "sessions": page.items,
         "total": total,
+        "total_exact": include_total,
         "limit": limit,
         "offset": offset,
-        "truncated": offset + len(sessions) < total,
+        "next_cursor": page.next_cursor,
+        "has_more": page.has_more,
+        "truncated": (offset + len(page.items) < total) if total is not None else page.has_more,
+        "search": {"mode": "none", "bounded_slow_path": False},
     }
 
 
@@ -1001,6 +1626,10 @@ async def get_session_route(
     message_limit: int = DEFAULT_MESSAGE_LIMIT,
     message_offset: int = 0,
     message_cursor: str | None = None,
+    include_stats: bool = Query(
+        default=False,
+        description="Include exact lifetime statistics inline; prefer the statistics endpoint",
+    ),
 ) -> dict[str, Any]:
     try:
         session = await get_session(
@@ -1008,6 +1637,7 @@ async def get_session_route(
             message_limit=message_limit,
             message_offset=message_offset,
             message_cursor=message_cursor,
+            include_stats=include_stats,
         )
     except MessageCursorError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1017,42 +1647,70 @@ async def get_session_route(
 
 
 @studio_route(
+    "/sessions/{session_id}/statistics",
+    method="GET",
+    area="sessions",
+    name="get_session_statistics",
+)
+async def get_session_statistics_route(session_id: str) -> dict[str, Any]:
+    statistics = await get_session_statistics(session_id)
+    if statistics is None:
+        raise NotFoundError(f"Session '{session_id}' not found")
+    return statistics
+
+
+@studio_route(
     "/sessions/{session_id}/stream",
     method="GET",
     area="sessions",
     name="stream_session",
     response_class=None,
 )
-async def stream_session_route(session_id: str):
+async def stream_session_route(session_id: str, cursor: str | None = None):
     # Pre-flight 404 guard: without it a non-existent session silently
     # returns no messages and waits 60s before "done" with no indication.
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
 
+    try:
+        start = _decode_session_stream_cursor(cursor, session_id=session_id) if cursor else None
+    except SessionStreamCursorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     async def generate():
-        after_ts: float = 0.0
-        last_heartbeat = time.monotonic()
+        from .tail_broker import subscribe_session_messages
 
-        while True:
-            messages = await get_session_messages_after(session_id, after_ts)
-
-            if messages:
-                for msg in messages:
-                    yield f"data: {json.dumps(msg)}\n\n"
-                    ts = msg.get("timestamp") or msg.get("created_at")
-                    if ts and ts > after_ts:
-                        after_ts = ts
-                last_heartbeat = time.monotonic()
-            elif time.monotonic() - last_heartbeat >= 5.0:
-                yield 'data: {"type":"heartbeat"}\n\n'
-                last_heartbeat = time.monotonic()
-
-            state = await get_session_stream_state(session_id)
-            if is_session_stream_done(state, now=time.time()):
-                yield 'data: {"type":"done"}\n\n'
-                return
-
-            await asyncio.sleep(0.5)
+        subscription = await subscribe_session_messages(session_id, start)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(subscription.next_event(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    yield 'data: {"type":"heartbeat"}\n\n'
+                    continue
+                if event.kind == "data":
+                    resume = event.resume_cursor
+                    event_id = (
+                        _encode_session_stream_cursor(session_id, resume[0], resume[1])
+                        if isinstance(resume, tuple)
+                        else ""
+                    )
+                    prefix = f"id: {event_id}\n" if event_id else ""
+                    yield f"{prefix}data: {json.dumps(event.payload)}\n\n"
+                elif event.kind == "resync":
+                    resume = event.resume_cursor
+                    resync_cursor = (
+                        _encode_session_stream_cursor(session_id, resume[0], resume[1])
+                        if isinstance(resume, tuple)
+                        else None
+                    )
+                    yield f"data: {json.dumps({'type': 'resync', 'cursor': resync_cursor})}\n\n"
+                    return
+                elif event.kind == "done":
+                    yield f"data: {json.dumps(event.payload)}\n\n"
+                    return
+        finally:
+            await subscription.close()
 
     from ._sse import sse_response
 
@@ -1071,47 +1729,34 @@ async def stream_session_route(session_id: str):
     name="stream_signals",
     response_class=None,
 )
-async def stream_signals(session_id: str) -> Any:
+async def stream_signals(session_id: str, after_seq: int = 0) -> Any:
     # Pre-flight 404 guard before opening the stream (ADR-0076).
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
 
-    from . import signals as signals_svc
-
     async def generate():
-        after_seq: int = 0
-        last_heartbeat = time.monotonic()
+        from .tail_broker import subscribe_session_signals
 
-        while True:
-            rows = await signals_svc.get_signals_after(session_id, after_seq)
-
-            if rows:
-                for row in rows:
-                    # _PAYLOAD_BYTE_CAP (session/observer.py) caps the payload
-                    # column only; the row envelope adds overhead so frames can exceed it.
-                    yield f"data: {json.dumps(row)}\n\n"
-                    if row["seq"] > after_seq:
-                        after_seq = row["seq"]
-                last_heartbeat = time.monotonic()
-                # get_signals_after is itself page-limited, so a non-empty
-                # batch does not mean the client is caught up to the tip —
-                # loop again immediately instead of falling through to the
-                # done-check below. Checking "done" here would let a
-                # long-completed session's first (oldest) page read as the
-                # whole stream and close the connection before the rest ever
-                # sends.
-                continue
-
-            if time.monotonic() - last_heartbeat >= 5.0:
-                yield 'data: {"type":"heartbeat"}\n\n'
-                last_heartbeat = time.monotonic()
-
-            state = await get_session_stream_state(session_id)
-            if is_session_stream_done(state, now=time.time()):
-                yield 'data: {"type":"done"}\n\n'
-                return
-
-            await asyncio.sleep(0.5)
+        subscription = await subscribe_session_signals(session_id, max(0, after_seq))
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(subscription.next_event(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    yield 'data: {"type":"heartbeat"}\n\n'
+                    continue
+                if event.kind == "data":
+                    event_id = str(event.resume_cursor or "")
+                    prefix = f"id: {event_id}\n" if event_id else ""
+                    yield f"{prefix}data: {json.dumps(event.payload)}\n\n"
+                elif event.kind == "resync":
+                    yield f"data: {json.dumps({'type': 'resync', 'after_seq': event.resume_cursor})}\n\n"
+                    return
+                elif event.kind == "done":
+                    yield f"data: {json.dumps(event.payload)}\n\n"
+                    return
+        finally:
+            await subscription.close()
 
     from ._sse import sse_response
 

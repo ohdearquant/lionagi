@@ -113,6 +113,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/sessions/"),
     ("GET", "/api/sessions/{session_id}"),
     ("GET", "/api/sessions/{session_id}/signals"),
+    ("GET", "/api/sessions/{session_id}/statistics"),
     ("GET", "/api/sessions/{session_id}/stream"),
     ("GET", "/api/shows/"),
     ("GET", "/api/shows/gated-plays"),
@@ -269,7 +270,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 131
+    assert len(_GOLDEN_ROUTES) == 132
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -579,6 +580,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "message_limit",
         "message_next_cursor",
         "message_stats",
+        "message_stats_loaded",
         "model",
         "name",
         "node_metadata",
@@ -597,6 +599,8 @@ _SESSION_DETAIL_KEYS = sorted(
         "status_evidence_refs",
         "status_reason_code",
         "status_reason_summary",
+        "statistics_url",
+        "stream_cursors",
         "total_cost_usd",
         "updated_at",
     ]
@@ -611,10 +615,14 @@ def test_sessions_list_response_shape(tmp_path, monkeypatch):
     assert r.status_code == 200
     # The listing is bounded, so it also reports what it left out.
     assert sorted(r.json().keys()) == [
+        "has_more",
         "limit",
+        "next_cursor",
         "offset",
+        "search",
         "sessions",
         "total",
+        "total_exact",
         "truncated",
     ]
 

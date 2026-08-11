@@ -196,12 +196,16 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated
   ON sessions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_updated_id
+  ON sessions(updated_at DESC, id DESC);
 -- ADR-0028: failed/timed_out queries in the attention queue (ADR-0030)
 -- need an index that covers terminal states, not just running. The
 -- existing idx_sessions_status_last_msg is a partial index for
 -- status='running' only.
 CREATE INDEX IF NOT EXISTS idx_sessions_status_updated
   ON sessions(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_status_updated_id
+  ON sessions(status, updated_at DESC, id DESC);
 -- Lets the staleness query (running sessions sorted by oldest
 -- activity) skip the full table scan.
 CREATE INDEX IF NOT EXISTS idx_sessions_status_last_msg

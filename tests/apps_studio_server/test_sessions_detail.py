@@ -1023,7 +1023,7 @@ async def test_get_session_windows_newest_messages_by_default(patched_sessions_d
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=10)
 
-    result = await svc.get_session("sess-paged", message_limit=3)
+    result = await svc.get_session("sess-paged", message_limit=3, include_stats=True)
 
     branch = result["branches"][0]
     assert [m["id"] for m in branch["messages"]] == ["pmsg-7", "pmsg-8", "pmsg-9"]
@@ -1037,7 +1037,7 @@ async def test_get_session_branch_bounds_cover_full_progression_when_messages_ar
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=10)
 
-    result = await svc.get_session("sess-paged", message_limit=3)
+    result = await svc.get_session("sess-paged", message_limit=3, include_stats=True)
 
     branch = result["branches"][0]
     assert [m["timestamp"] for m in branch["messages"]] == [107.0, 108.0, 109.0]
@@ -1070,7 +1070,9 @@ async def test_get_session_offset_past_total_returns_empty_page(patched_sessions
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=10)
 
-    result = await svc.get_session("sess-paged", message_limit=3, message_offset=50)
+    result = await svc.get_session(
+        "sess-paged", message_limit=3, message_offset=50, include_stats=True
+    )
 
     branch = result["branches"][0]
     assert branch["messages"] == []
@@ -1081,7 +1083,7 @@ async def test_get_session_limit_clamped_to_max(patched_sessions_db):
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=5)
 
-    result = await svc.get_session("sess-paged", message_limit=10_000)
+    result = await svc.get_session("sess-paged", message_limit=10_000, include_stats=True)
 
     branch = result["branches"][0]
     assert len(branch["messages"]) == 5
@@ -1158,11 +1160,93 @@ async def test_get_session_full_aggregates_do_not_hydrate_every_message_row(
 
     monkeypatch.setattr(svc, "_fetch_messages_by_ids", spy)
 
-    result = await svc.get_session("sess-paged", message_limit=3)
+    result = await svc.get_session("sess-paged", message_limit=3, include_stats=True)
 
     assert len(calls) == 1
     assert calls[0] == ["pmsg-47", "pmsg-48", "pmsg-49"]
     assert result["message_stats"]["message_count"] == 50
+
+
+async def test_get_session_initial_page_does_not_decode_or_aggregate_full_progression(
+    patched_sessions_db, monkeypatch
+):
+    """The default detail read is a page operation, not a lifetime-statistics read.
+
+    A large progression must not cross the Python boundary as one decoded JSON
+    list, and the helpers whose input contract is a complete id list must not run.
+    Exact lifetime statistics remain available from the separate statistics read.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=2_000)
+
+    decoded_array_bytes = 0
+    original_loads = svc.json.loads
+
+    def measured_loads(raw, *args, **kwargs):
+        nonlocal decoded_array_bytes
+        if isinstance(raw, str) and raw.lstrip().startswith("["):
+            decoded_array_bytes += len(raw.encode())
+        return original_loads(raw, *args, **kwargs)
+
+    async def full_history_helper_must_not_run(*_args, **_kwargs):
+        raise AssertionError("initial detail invoked a full-history statistics helper")
+
+    monkeypatch.setattr(svc.json, "loads", measured_loads)
+    monkeypatch.setattr(svc, "_fetch_role_counts", full_history_helper_must_not_run)
+    monkeypatch.setattr(svc, "_fetch_message_bounds", full_history_helper_must_not_run)
+    monkeypatch.setattr(svc, "_fetch_action_messages", full_history_helper_must_not_run)
+
+    result = await svc.get_session("sess-paged", message_limit=3)
+
+    assert [m["id"] for m in result["branches"][0]["messages"]] == [
+        "pmsg-1997",
+        "pmsg-1998",
+        "pmsg-1999",
+    ]
+    assert decoded_array_bytes <= 4_096
+    assert result["message_stats"] is None
+    assert result["message_stats_loaded"] is False
+    assert result["branches"][0]["message_total"] is None
+    assert result["branches"][0]["message_has_older"] is True
+
+
+async def test_session_statistics_is_an_explicit_exact_lifetime_read(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    stats = await svc.get_session_statistics("sess-paged")
+
+    assert stats is not None
+    assert stats["message_stats_loaded"] is True
+    assert stats["message_stats"]["message_count"] == 10
+    assert stats["branches"]["br-paged"] == {
+        "message_total": 10,
+        "message_stats": {"message_count": 10, "roles": {"assistant": 10}},
+        "first_message_at": 100.0,
+        "last_message_at": 109.0,
+    }
+
+
+async def test_get_session_returns_live_high_water_from_its_read_snapshot(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=4)
+    async with StateDB(db_path) as db:
+        await db.insert_session_signal(
+            session_id="sess-paged",
+            kind="NodeStarted",
+            op_id="op-a",
+            ts=200.0,
+            payload={},
+        )
+
+    result = await svc.get_session("sess-paged", message_limit=2)
+
+    cursors = result["stream_cursors"]
+    assert svc._decode_session_stream_cursor(cursors["messages"], session_id="sess-paged") == (
+        103.0,
+        "pmsg-3",
+    )
+    assert cursors["signals"] == 1
 
 
 async def test_get_session_rejects_cursor_from_a_different_session(patched_sessions_db):
@@ -1241,7 +1325,7 @@ async def test_get_session_action_stats_match_canonical_fully_qualified_lion_cla
             }
         )
 
-    result = await svc.get_session("sess-canonical")
+    result = await svc.get_session("sess-canonical", include_stats=True)
 
     stats = result["message_stats"]
     assert stats["tool_call_count"] == 1
@@ -1333,7 +1417,7 @@ async def test_get_session_message_count_is_db_aggregate_not_progression_length(
             }
         )
 
-    result = await svc.get_session("sess-stale-prog")
+    result = await svc.get_session("sess-stale-prog", include_stats=True)
 
     branch = result["branches"][0]
     assert branch["message_total"] == 2  # progression length, kept as a separate field

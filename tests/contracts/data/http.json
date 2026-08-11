@@ -1,5 +1,5 @@
 {
-  "count": 135,
+  "count": 136,
   "routes": [
     {
       "ordinal": 0,
@@ -225,6 +225,54 @@
     },
     {
       "ordinal": 7,
+      "path": "/api/sessions/{session_id}/statistics",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_session_statistics",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Get Session Statistics Api Sessions  Session Id  Statistics Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "sessions"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.sessions",
+        "qualname": "get_session_statistics_route"
+      }
+    },
+    {
+      "ordinal": 8,
       "path": "/api/sessions/{session_id}/stream",
       "methods": [
         "GET"
@@ -268,7 +316,7 @@
       }
     },
     {
-      "ordinal": 8,
+      "ordinal": 9,
       "path": "/api/sessions/{session_id}/signals",
       "methods": [
         "GET"
@@ -314,7 +362,7 @@
       }
     },
     {
-      "ordinal": 9,
+      "ordinal": 10,
       "path": "/api/runs/",
       "methods": [
         "GET"
@@ -362,7 +410,7 @@
       }
     },
     {
-      "ordinal": 10,
+      "ordinal": 11,
       "path": "/api/runs/projects",
       "methods": [
         "GET"
@@ -400,7 +448,7 @@
       }
     },
     {
-      "ordinal": 11,
+      "ordinal": 12,
       "path": "/api/runs/{run_id}",
       "methods": [
         "GET"
@@ -448,7 +496,7 @@
       }
     },
     {
-      "ordinal": 12,
+      "ordinal": 13,
       "path": "/api/runs/{run_id}/file",
       "methods": [
         "GET"
@@ -496,7 +544,7 @@
       }
     },
     {
-      "ordinal": 13,
+      "ordinal": 14,
       "path": "/api/schedules/",
       "methods": [
         "GET"
@@ -544,7 +592,7 @@
       }
     },
     {
-      "ordinal": 14,
+      "ordinal": 15,
       "path": "/api/schedules/limits",
       "methods": [
         "GET"
@@ -582,7 +630,7 @@
       }
     },
     {
-      "ordinal": 15,
+      "ordinal": 16,
       "path": "/api/schedules/{schedule_id}",
       "methods": [
         "GET"
@@ -630,7 +678,7 @@
       }
     },
     {
-      "ordinal": 16,
+      "ordinal": 17,
       "path": "/api/schedules/",
       "methods": [
         "POST"
@@ -678,7 +726,7 @@
       }
     },
     {
-      "ordinal": 17,
+      "ordinal": 18,
       "path": "/api/schedules/{schedule_id}",
       "methods": [
         "PATCH"
@@ -726,7 +774,7 @@
       }
     },
     {
-      "ordinal": 18,
+      "ordinal": 19,
       "path": "/api/schedules/{schedule_id}",
       "methods": [
         "DELETE"
@@ -774,7 +822,7 @@
       }
     },
     {
-      "ordinal": 19,
+      "ordinal": 20,
       "path": "/api/schedules/{schedule_id}/enable",
       "methods": [
         "POST"
@@ -822,7 +870,7 @@
       }
     },
     {
-      "ordinal": 20,
+      "ordinal": 21,
       "path": "/api/schedules/{schedule_id}/disable",
       "methods": [
         "POST"
@@ -870,7 +918,7 @@
       }
     },
     {
-      "ordinal": 21,
+      "ordinal": 22,
       "path": "/api/schedules/{schedule_id}/trigger",
       "methods": [
         "POST"
@@ -918,7 +966,7 @@
       }
     },
     {
-      "ordinal": 22,
+      "ordinal": 23,
       "path": "/api/schedules/{schedule_id}/runs",
       "methods": [
         "GET"
@@ -966,7 +1014,7 @@
       }
     },
     {
-      "ordinal": 23,
+      "ordinal": 24,
       "path": "/api/schedules/runs/{run_id}",
       "methods": [
         "GET"
@@ -1015,7 +1063,7 @@
       }
     },
     {
-      "ordinal": 24,
+      "ordinal": 25,
       "path": "/api/schedules/{schedule_id}/status",
       "methods": [
         "GET"
@@ -1063,7 +1111,7 @@
       }
     },
     {
-      "ordinal": 25,
+      "ordinal": 26,
       "path": "/api/launches/",
       "methods": [
         "POST"
@@ -1111,7 +1159,7 @@
       }
     },
     {
-      "ordinal": 26,
+      "ordinal": 27,
       "path": "/api/invocations/{invocation_id}/cancel",
       "methods": [
         "POST"
@@ -1159,7 +1207,7 @@
       }
     },
     {
-      "ordinal": 27,
+      "ordinal": 28,
       "path": "/api/runs/{run_id}/resume",
       "methods": [
         "GET"
@@ -1207,7 +1255,7 @@
       }
     },
     {
-      "ordinal": 28,
+      "ordinal": 29,
       "path": "/api/runs/{run_id}/resume",
       "methods": [
         "POST"
@@ -1255,7 +1303,7 @@
       }
     },
     {
-      "ordinal": 29,
+      "ordinal": 30,
       "path": "/api/engine-runs/",
       "methods": [
         "GET"
@@ -1306,7 +1354,7 @@
       }
     },
     {
-      "ordinal": 30,
+      "ordinal": 31,
       "path": "/api/engine-runs/{run_id}",
       "methods": [
         "GET"
@@ -1354,7 +1402,7 @@
       }
     },
     {
-      "ordinal": 31,
+      "ordinal": 32,
       "path": "/api/agents/",
       "methods": [
         "GET"
@@ -1392,7 +1440,7 @@
       }
     },
     {
-      "ordinal": 32,
+      "ordinal": 33,
       "path": "/api/agents/{name}",
       "methods": [
         "GET"
@@ -1440,7 +1488,7 @@
       }
     },
     {
-      "ordinal": 33,
+      "ordinal": 34,
       "path": "/api/agents/{name}",
       "methods": [
         "POST"
@@ -1488,7 +1536,7 @@
       }
     },
     {
-      "ordinal": 34,
+      "ordinal": 35,
       "path": "/api/agents/{name}",
       "methods": [
         "PUT"
@@ -1536,7 +1584,7 @@
       }
     },
     {
-      "ordinal": 35,
+      "ordinal": 36,
       "path": "/api/agents/{name}",
       "methods": [
         "DELETE"
@@ -1584,7 +1632,7 @@
       }
     },
     {
-      "ordinal": 36,
+      "ordinal": 37,
       "path": "/api/agents/{name}/validate",
       "methods": [
         "POST"
@@ -1632,7 +1680,7 @@
       }
     },
     {
-      "ordinal": 37,
+      "ordinal": 38,
       "path": "/api/definitions/",
       "methods": [
         "GET"
@@ -1680,7 +1728,7 @@
       }
     },
     {
-      "ordinal": 38,
+      "ordinal": 39,
       "path": "/api/definitions/{kind}/{name}",
       "methods": [
         "GET"
@@ -1728,7 +1776,7 @@
       }
     },
     {
-      "ordinal": 39,
+      "ordinal": 40,
       "path": "/api/definitions/{kind}/{name}/versions/{version}",
       "methods": [
         "GET"
@@ -1776,7 +1824,7 @@
       }
     },
     {
-      "ordinal": 40,
+      "ordinal": 41,
       "path": "/api/definitions/{kind}/{name}",
       "methods": [
         "POST"
@@ -1824,7 +1872,7 @@
       }
     },
     {
-      "ordinal": 41,
+      "ordinal": 42,
       "path": "/api/definitions/{kind}/{name}/rollback",
       "methods": [
         "POST"
@@ -1872,7 +1920,7 @@
       }
     },
     {
-      "ordinal": 42,
+      "ordinal": 43,
       "path": "/api/definitions/snapshot",
       "methods": [
         "POST"
@@ -1920,7 +1968,7 @@
       }
     },
     {
-      "ordinal": 43,
+      "ordinal": 44,
       "path": "/api/playbooks/",
       "methods": [
         "GET"
@@ -1958,7 +2006,7 @@
       }
     },
     {
-      "ordinal": 44,
+      "ordinal": 45,
       "path": "/api/playbooks/{name}",
       "methods": [
         "GET"
@@ -2006,7 +2054,7 @@
       }
     },
     {
-      "ordinal": 45,
+      "ordinal": 46,
       "path": "/api/playbooks/{name}",
       "methods": [
         "POST"
@@ -2054,7 +2102,7 @@
       }
     },
     {
-      "ordinal": 46,
+      "ordinal": 47,
       "path": "/api/playbooks/{name}",
       "methods": [
         "PUT"
@@ -2102,7 +2150,7 @@
       }
     },
     {
-      "ordinal": 47,
+      "ordinal": 48,
       "path": "/api/playbooks/{name}",
       "methods": [
         "DELETE"
@@ -2150,7 +2198,7 @@
       }
     },
     {
-      "ordinal": 48,
+      "ordinal": 49,
       "path": "/api/playbooks/{name}/validate",
       "methods": [
         "POST"
@@ -2198,7 +2246,7 @@
       }
     },
     {
-      "ordinal": 49,
+      "ordinal": 50,
       "path": "/api/playbooks/{name}/run",
       "methods": [
         "POST"
@@ -2246,7 +2294,7 @@
       }
     },
     {
-      "ordinal": 50,
+      "ordinal": 51,
       "path": "/api/playbook-templates/",
       "methods": [
         "GET"
@@ -2284,7 +2332,7 @@
       }
     },
     {
-      "ordinal": 51,
+      "ordinal": 52,
       "path": "/api/playbook-templates/{name}",
       "methods": [
         "GET"
@@ -2332,7 +2380,7 @@
       }
     },
     {
-      "ordinal": 52,
+      "ordinal": 53,
       "path": "/api/playbook-templates/{name}/install",
       "methods": [
         "POST"
@@ -2380,7 +2428,7 @@
       }
     },
     {
-      "ordinal": 53,
+      "ordinal": 54,
       "path": "/api/shows/",
       "methods": [
         "GET"
@@ -2421,7 +2469,7 @@
       }
     },
     {
-      "ordinal": 54,
+      "ordinal": 55,
       "path": "/api/shows/gated-plays",
       "methods": [
         "GET"
@@ -2462,7 +2510,7 @@
       }
     },
     {
-      "ordinal": 55,
+      "ordinal": 56,
       "path": "/api/shows/import",
       "methods": [
         "POST"
@@ -2503,7 +2551,7 @@
       }
     },
     {
-      "ordinal": 56,
+      "ordinal": 57,
       "path": "/api/shows/{topic}",
       "methods": [
         "GET"
@@ -2551,7 +2599,7 @@
       }
     },
     {
-      "ordinal": 57,
+      "ordinal": 58,
       "path": "/api/shows/{topic}/stream",
       "methods": [
         "GET"
@@ -2595,7 +2643,7 @@
       }
     },
     {
-      "ordinal": 58,
+      "ordinal": 59,
       "path": "/api/skills/",
       "methods": [
         "GET"
@@ -2633,7 +2681,7 @@
       }
     },
     {
-      "ordinal": 59,
+      "ordinal": 60,
       "path": "/api/skills/{name}",
       "methods": [
         "GET"
@@ -2681,7 +2729,7 @@
       }
     },
     {
-      "ordinal": 60,
+      "ordinal": 61,
       "path": "/api/skills/{name}/validate",
       "methods": [
         "POST"
@@ -2729,7 +2777,7 @@
       }
     },
     {
-      "ordinal": 61,
+      "ordinal": 62,
       "path": "/api/plugins",
       "methods": [
         "GET"
@@ -2767,7 +2815,7 @@
       }
     },
     {
-      "ordinal": 62,
+      "ordinal": 63,
       "path": "/api/plugins/{name}",
       "methods": [
         "GET"
@@ -2815,7 +2863,7 @@
       }
     },
     {
-      "ordinal": 63,
+      "ordinal": 64,
       "path": "/api/plugins/{plugin_name}/skills/{skill_name}",
       "methods": [
         "GET"
@@ -2863,7 +2911,7 @@
       }
     },
     {
-      "ordinal": 64,
+      "ordinal": 65,
       "path": "/api/plugins/{plugin_name}/agents/{agent_name}",
       "methods": [
         "GET"
@@ -2911,7 +2959,7 @@
       }
     },
     {
-      "ordinal": 65,
+      "ordinal": 66,
       "path": "/api/mcp/servers/",
       "methods": [
         "GET"
@@ -2949,7 +2997,7 @@
       }
     },
     {
-      "ordinal": 66,
+      "ordinal": 67,
       "path": "/api/mcp/servers/{name}",
       "methods": [
         "GET"
@@ -2997,7 +3045,7 @@
       }
     },
     {
-      "ordinal": 67,
+      "ordinal": 68,
       "path": "/api/mcp/servers/",
       "methods": [
         "POST"
@@ -3045,7 +3093,7 @@
       }
     },
     {
-      "ordinal": 68,
+      "ordinal": 69,
       "path": "/api/mcp/servers/{name}",
       "methods": [
         "PUT"
@@ -3093,7 +3141,7 @@
       }
     },
     {
-      "ordinal": 69,
+      "ordinal": 70,
       "path": "/api/mcp/servers/{name}/enable",
       "methods": [
         "POST"
@@ -3141,7 +3189,7 @@
       }
     },
     {
-      "ordinal": 70,
+      "ordinal": 71,
       "path": "/api/mcp/servers/{name}/disable",
       "methods": [
         "POST"
@@ -3189,7 +3237,7 @@
       }
     },
     {
-      "ordinal": 71,
+      "ordinal": 72,
       "path": "/api/mcp/servers/{name}",
       "methods": [
         "DELETE"
@@ -3237,7 +3285,7 @@
       }
     },
     {
-      "ordinal": 72,
+      "ordinal": 73,
       "path": "/api/mcp/servers/{name}/check",
       "methods": [
         "POST"
@@ -3285,7 +3333,7 @@
       }
     },
     {
-      "ordinal": 73,
+      "ordinal": 74,
       "path": "/api/mcp/servers/{name}/validate",
       "methods": [
         "POST"
@@ -3333,7 +3381,7 @@
       }
     },
     {
-      "ordinal": 74,
+      "ordinal": 75,
       "path": "/api/teams/",
       "methods": [
         "GET"
@@ -3381,7 +3429,7 @@
       }
     },
     {
-      "ordinal": 75,
+      "ordinal": 76,
       "path": "/api/teams/{team_id}",
       "methods": [
         "GET"
@@ -3429,7 +3477,7 @@
       }
     },
     {
-      "ordinal": 76,
+      "ordinal": 77,
       "path": "/api/invocations/",
       "methods": [
         "GET"
@@ -3477,7 +3525,7 @@
       }
     },
     {
-      "ordinal": 77,
+      "ordinal": 78,
       "path": "/api/invocations/{invocation_id}",
       "methods": [
         "GET"
@@ -3525,7 +3573,7 @@
       }
     },
     {
-      "ordinal": 78,
+      "ordinal": 79,
       "path": "/api/artifacts/{artifact_id}",
       "methods": [
         "GET"
@@ -3573,7 +3621,7 @@
       }
     },
     {
-      "ordinal": 79,
+      "ordinal": 80,
       "path": "/api/artifacts/by-session/{session_id}",
       "methods": [
         "GET"
@@ -3621,7 +3669,7 @@
       }
     },
     {
-      "ordinal": 80,
+      "ordinal": 81,
       "path": "/api/projects/",
       "methods": [
         "GET"
@@ -3659,7 +3707,7 @@
       }
     },
     {
-      "ordinal": 81,
+      "ordinal": 82,
       "path": "/api/projects/{name}",
       "methods": [
         "GET"
@@ -3707,7 +3755,7 @@
       }
     },
     {
-      "ordinal": 82,
+      "ordinal": 83,
       "path": "/api/projects/",
       "methods": [
         "POST"
@@ -3755,7 +3803,7 @@
       }
     },
     {
-      "ordinal": 83,
+      "ordinal": 84,
       "path": "/api/projects/{name}",
       "methods": [
         "PUT"
@@ -3803,7 +3851,7 @@
       }
     },
     {
-      "ordinal": 84,
+      "ordinal": 85,
       "path": "/api/projects/{name}/assign",
       "methods": [
         "POST"
@@ -3851,7 +3899,7 @@
       }
     },
     {
-      "ordinal": 85,
+      "ordinal": 86,
       "path": "/api/projects/{name}",
       "methods": [
         "DELETE"
@@ -3899,7 +3947,7 @@
       }
     },
     {
-      "ordinal": 86,
+      "ordinal": 87,
       "path": "/api/engine-defs/",
       "methods": [
         "GET"
@@ -3950,7 +3998,7 @@
       }
     },
     {
-      "ordinal": 87,
+      "ordinal": 88,
       "path": "/api/engine-defs/",
       "methods": [
         "POST"
@@ -3998,7 +4046,7 @@
       }
     },
     {
-      "ordinal": 88,
+      "ordinal": 89,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "GET"
@@ -4046,7 +4094,7 @@
       }
     },
     {
-      "ordinal": 89,
+      "ordinal": 90,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "PUT"
@@ -4094,7 +4142,7 @@
       }
     },
     {
-      "ordinal": 90,
+      "ordinal": 91,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "DELETE"
@@ -4142,7 +4190,7 @@
       }
     },
     {
-      "ordinal": 91,
+      "ordinal": 92,
       "path": "/api/workflow-defs/",
       "methods": [
         "GET"
@@ -4193,7 +4241,7 @@
       }
     },
     {
-      "ordinal": 92,
+      "ordinal": 93,
       "path": "/api/workflow-defs/",
       "methods": [
         "POST"
@@ -4241,7 +4289,7 @@
       }
     },
     {
-      "ordinal": 93,
+      "ordinal": 94,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "GET"
@@ -4289,7 +4337,7 @@
       }
     },
     {
-      "ordinal": 94,
+      "ordinal": 95,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "PUT"
@@ -4337,7 +4385,7 @@
       }
     },
     {
-      "ordinal": 95,
+      "ordinal": 96,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "DELETE"
@@ -4385,7 +4433,7 @@
       }
     },
     {
-      "ordinal": 96,
+      "ordinal": 97,
       "path": "/api/workflow-defs/{def_id}/run",
       "methods": [
         "POST"
@@ -4433,7 +4481,7 @@
       }
     },
     {
-      "ordinal": 97,
+      "ordinal": 98,
       "path": "/api/sessions/{session_id}/tags",
       "methods": [
         "POST"
@@ -4481,7 +4529,7 @@
       }
     },
     {
-      "ordinal": 98,
+      "ordinal": 99,
       "path": "/api/sessions/{session_id}/tags/{tag:path}",
       "methods": [
         "DELETE"
@@ -4529,7 +4577,7 @@
       }
     },
     {
-      "ordinal": 99,
+      "ordinal": 100,
       "path": "/api/operator/conversations",
       "methods": [
         "GET"
@@ -4577,7 +4625,7 @@
       }
     },
     {
-      "ordinal": 100,
+      "ordinal": 101,
       "path": "/api/operator/conversations",
       "methods": [
         "POST"
@@ -4625,7 +4673,7 @@
       }
     },
     {
-      "ordinal": 101,
+      "ordinal": 102,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "PATCH"
@@ -4673,7 +4721,7 @@
       }
     },
     {
-      "ordinal": 102,
+      "ordinal": 103,
       "path": "/api/operator/conversations/{conversation_id}/fork",
       "methods": [
         "POST"
@@ -4721,7 +4769,7 @@
       }
     },
     {
-      "ordinal": 103,
+      "ordinal": 104,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "GET"
@@ -4769,7 +4817,7 @@
       }
     },
     {
-      "ordinal": 104,
+      "ordinal": 105,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "DELETE"
@@ -4817,7 +4865,7 @@
       }
     },
     {
-      "ordinal": 105,
+      "ordinal": 106,
       "path": "/api/operator/conversations/{conversation_id}/turns",
       "methods": [
         "POST"
@@ -4865,7 +4913,7 @@
       }
     },
     {
-      "ordinal": 106,
+      "ordinal": 107,
       "path": "/api/operator/models",
       "methods": [
         "GET"
@@ -4903,7 +4951,7 @@
       }
     },
     {
-      "ordinal": 107,
+      "ordinal": 108,
       "path": "/api/operator/conversations/{conversation_id}/view",
       "methods": [
         "POST"
@@ -4951,7 +4999,7 @@
       }
     },
     {
-      "ordinal": 108,
+      "ordinal": 109,
       "path": "/api/operator/conversations/{conversation_id}/requests/{request_id}/cancel",
       "methods": [
         "POST"
@@ -4999,7 +5047,7 @@
       }
     },
     {
-      "ordinal": 109,
+      "ordinal": 110,
       "path": "/api/operator/conversations/{conversation_id}/stream",
       "methods": [
         "GET"
@@ -5043,7 +5091,7 @@
       }
     },
     {
-      "ordinal": 110,
+      "ordinal": 111,
       "path": "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/confirm",
       "methods": [
         "POST"
@@ -5091,7 +5139,7 @@
       }
     },
     {
-      "ordinal": 111,
+      "ordinal": 112,
       "path": "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/decision",
       "methods": [
         "POST"
@@ -5139,7 +5187,7 @@
       }
     },
     {
-      "ordinal": 112,
+      "ordinal": 113,
       "path": "/api/operator/conversations/{conversation_id}/effects/{effect_id}/ack",
       "methods": [
         "POST"
@@ -5187,7 +5235,7 @@
       }
     },
     {
-      "ordinal": 113,
+      "ordinal": 114,
       "path": "/api/approvals/",
       "methods": [
         "POST"
@@ -5235,7 +5283,7 @@
       }
     },
     {
-      "ordinal": 114,
+      "ordinal": 115,
       "path": "/api/approvals/evidence/verify",
       "methods": [
         "GET"
@@ -5273,7 +5321,7 @@
       }
     },
     {
-      "ordinal": 115,
+      "ordinal": 116,
       "path": "/api/approvals/{approval_id}",
       "methods": [
         "GET"
@@ -5321,7 +5369,7 @@
       }
     },
     {
-      "ordinal": 116,
+      "ordinal": 117,
       "path": "/api/approvals/{approval_id}/grant",
       "methods": [
         "POST"
@@ -5369,7 +5417,7 @@
       }
     },
     {
-      "ordinal": 117,
+      "ordinal": 118,
       "path": "/api/approvals/{approval_id}/deny",
       "methods": [
         "POST"
@@ -5417,7 +5465,7 @@
       }
     },
     {
-      "ordinal": 118,
+      "ordinal": 119,
       "path": "/api/admin/doctor",
       "methods": [
         "GET"
@@ -5465,7 +5513,7 @@
       }
     },
     {
-      "ordinal": 119,
+      "ordinal": 120,
       "path": "/api/admin/health",
       "methods": [
         "GET"
@@ -5503,7 +5551,7 @@
       }
     },
     {
-      "ordinal": 120,
+      "ordinal": 121,
       "path": "/api/admin/readiness",
       "methods": [
         "GET"
@@ -5551,7 +5599,7 @@
       }
     },
     {
-      "ordinal": 121,
+      "ordinal": 122,
       "path": "/api/admin/transition",
       "methods": [
         "POST"
@@ -5599,7 +5647,7 @@
       }
     },
     {
-      "ordinal": 122,
+      "ordinal": 123,
       "path": "/api/admin/events",
       "methods": [
         "GET"
@@ -5647,7 +5695,7 @@
       }
     },
     {
-      "ordinal": 123,
+      "ordinal": 124,
       "path": "/api/admin/prune-old-data",
       "methods": [
         "POST"
@@ -5697,7 +5745,7 @@
       }
     },
     {
-      "ordinal": 124,
+      "ordinal": 125,
       "path": "/api/admin/maintenance",
       "methods": [
         "POST"
@@ -5745,7 +5793,7 @@
       }
     },
     {
-      "ordinal": 125,
+      "ordinal": 126,
       "path": "/api/admin/prune",
       "methods": [
         "POST"
@@ -5795,7 +5843,7 @@
       }
     },
     {
-      "ordinal": 126,
+      "ordinal": 127,
       "path": "/api/stats/activity",
       "methods": [
         "GET"
@@ -5841,7 +5889,7 @@
       }
     },
     {
-      "ordinal": 127,
+      "ordinal": 128,
       "path": "/api/stats/spend",
       "methods": [
         "GET"
@@ -5887,7 +5935,7 @@
       }
     },
     {
-      "ordinal": 128,
+      "ordinal": 129,
       "path": "/api/stats/spend/rollup",
       "methods": [
         "GET"
@@ -5933,7 +5981,7 @@
       }
     },
     {
-      "ordinal": 129,
+      "ordinal": 130,
       "path": "/api/stats",
       "methods": [
         "GET"
@@ -5969,7 +6017,7 @@
       }
     },
     {
-      "ordinal": 130,
+      "ordinal": 131,
       "path": "/api/attention/dispositions/",
       "methods": [
         "GET"
@@ -6007,7 +6055,7 @@
       }
     },
     {
-      "ordinal": 131,
+      "ordinal": 132,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "PUT"
@@ -6055,7 +6103,7 @@
       }
     },
     {
-      "ordinal": 132,
+      "ordinal": 133,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "DELETE"
@@ -6103,7 +6151,7 @@
       }
     },
     {
-      "ordinal": 133,
+      "ordinal": 134,
       "path": "/api/attention/dispositions/{item_id}/history",
       "methods": [
         "GET"
@@ -6151,7 +6199,7 @@
       }
     },
     {
-      "ordinal": 134,
+      "ordinal": 135,
       "path": "/health",
       "methods": [
         "GET"
@@ -10264,6 +10312,36 @@
           "summary": "List Runs",
           "parameters": [
             {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Opaque continuation cursor; requires page=1 and recent sort",
+                "title": "Cursor"
+              },
+              "description": "Opaque continuation cursor; requires page=1 and recent sort"
+            },
+            {
+              "name": "include_total",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "boolean",
+                "description": "Compute the exact matching total; disable on latency-sensitive reads",
+                "default": true,
+                "title": "Include Total"
+              },
+              "description": "Compute the exact matching total; disable on latency-sensitive reads"
+            },
+            {
               "name": "page",
               "in": "query",
               "required": false,
@@ -10351,10 +10429,10 @@
                     "type": "null"
                   }
                 ],
-                "description": "Case-insensitive contains match on session name or agent name",
+                "description": "Explicit bounded slow mode: case-insensitive contains match on session or agent name",
                 "title": "Search"
               },
-              "description": "Case-insensitive contains match on session name or agent name"
+              "description": "Explicit bounded slow mode: case-insensitive contains match on session or agent name"
             },
             {
               "name": "sort",
@@ -11267,6 +11345,36 @@
           "description": "One page of sessions. The response always reports `total` and\n`truncated` so a bounded answer can never be mistaken for a complete one.",
           "parameters": [
             {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Opaque continuation cursor from the previous recent-sorted page",
+                "title": "Cursor"
+              },
+              "description": "Opaque continuation cursor from the previous recent-sorted page"
+            },
+            {
+              "name": "include_total",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "boolean",
+                "description": "Compute the exact matching total; disable on latency-sensitive reads",
+                "default": true,
+                "title": "Include Total"
+              },
+              "description": "Compute the exact matching total; disable on latency-sensitive reads"
+            },
+            {
               "name": "limit",
               "in": "query",
               "required": false,
@@ -11286,12 +11394,13 @@
               "required": false,
               "schema": {
                 "type": "integer",
+                "maximum": 10000,
                 "minimum": 0,
-                "description": "Rows to skip, newest first",
+                "description": "Compatibility rows to skip (max 10000); prefer cursor",
                 "default": 0,
                 "title": "Offset"
               },
-              "description": "Rows to skip, newest first"
+              "description": "Compatibility rows to skip (max 10000); prefer cursor"
             },
             {
               "name": "sort",
@@ -11339,6 +11448,18 @@
           ],
           "summary": "Get Session",
           "parameters": [
+            {
+              "name": "include_stats",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "boolean",
+                "description": "Include exact lifetime statistics inline; prefer the statistics endpoint",
+                "default": false,
+                "title": "Include Stats"
+              },
+              "description": "Include exact lifetime statistics inline; prefer the statistics endpoint"
+            },
             {
               "name": "message_cursor",
               "in": "query",
@@ -11419,6 +11540,16 @@
           "summary": "Stream Signals",
           "parameters": [
             {
+              "name": "after_seq",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 0,
+                "title": "After Seq"
+              }
+            },
+            {
               "name": "session_id",
               "in": "path",
               "required": true,
@@ -11452,6 +11583,49 @@
           }
         }
       },
+      "/api/sessions/{session_id}/statistics": {
+        "get": {
+          "tags": [
+            "sessions"
+          ],
+          "summary": "Get Session Statistics",
+          "parameters": [
+            {
+              "name": "session_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Session Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Get Session Statistics Api Sessions  Session Id  Statistics Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/sessions/{session_id}/stream": {
         "get": {
           "tags": [
@@ -11459,6 +11633,22 @@
           ],
           "summary": "Stream Session",
           "parameters": [
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Cursor"
+              }
+            },
             {
               "name": "session_id",
               "in": "path",
@@ -12429,7 +12619,7 @@
         }
       }
     },
-    "path_count": 104,
+    "path_count": 105,
     "schemas": {
       "AcknowledgeEffectRequest": {
         "properties": {

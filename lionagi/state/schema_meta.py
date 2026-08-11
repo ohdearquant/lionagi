@@ -225,7 +225,14 @@ Index("idx_sessions_first_msg_id", sessions.c.first_msg_id)
 Index("idx_sessions_last_msg_id", sessions.c.last_msg_id)
 Index("idx_sessions_progression_id", sessions.c.progression_id)
 Index("idx_sessions_updated", sessions.c.updated_at)
+Index("idx_sessions_updated_id", sessions.c.updated_at, sessions.c.id)
 Index("idx_sessions_status_updated", sessions.c.status, sessions.c.updated_at)
+Index(
+    "idx_sessions_status_updated_id",
+    sessions.c.status,
+    sessions.c.updated_at,
+    sessions.c.id,
+)
 Index(
     "idx_sessions_status_last_msg",
     sessions.c.status,

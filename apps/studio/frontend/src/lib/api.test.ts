@@ -651,6 +651,68 @@ describe("runs/sessions query construction", () => {
     const url = new URL(calls[0]!.url, "http://localhost");
     expect(url.searchParams.has("message_cursor")).toBe(false);
   });
+
+  it("getSessionStatistics reads exact lifetime totals from the lazy endpoint", async () => {
+    const calls = stubFetch({
+      session_id: "s1",
+      message_stats_loaded: true,
+      message_stats: {
+        message_count: 12,
+        roles: {},
+        tool_call_count: 0,
+        error_count: 0,
+        files: [],
+      },
+      branches: {},
+    });
+    const { getSessionStatistics } = await import("./api");
+    await getSessionStatistics("s1");
+    expect(calls[0]?.url).toMatch(/\/api\/sessions\/s1\/statistics$/);
+  });
+
+  it("streamSession resumes from the detail snapshot high-water", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        calls.push(url);
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('data: {"type":"done"}\n\n'));
+            controller.close();
+          },
+        });
+        return Promise.resolve(new Response(body, { status: 200 }));
+      }),
+    );
+    const { streamSession } = await import("./api");
+    streamSession("s1", () => {}, "opaque-high-water");
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    const url = new URL(calls[0]!, "http://localhost");
+    expect(url.searchParams.get("cursor")).toBe("opaque-high-water");
+  });
+
+  it("streamSignals resumes after the detail snapshot sequence", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        calls.push(url);
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('data: {"type":"done"}\n\n'));
+            controller.close();
+          },
+        });
+        return Promise.resolve(new Response(body, { status: 200 }));
+      }),
+    );
+    const { streamSignals } = await import("./api");
+    streamSignals("s1", () => {}, 17);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    const url = new URL(calls[0]!, "http://localhost");
+    expect(url.searchParams.get("after_seq")).toBe("17");
+  });
 });
 
 // The backend stamps a signal's `ts` with time.time() — Unix SECONDS — and the

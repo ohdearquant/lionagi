@@ -202,6 +202,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>;
 function sseSubscribe(
   path: string,
   onData: (data: string) => void,
+  resume?: { param: string; initial?: string },
 ): () => void;
 ```
 
@@ -217,8 +218,13 @@ The SSE helper uses `fetch` plus `ReadableStream`, not native `EventSource`. Exa
 - The returned closer sets a closed flag and aborts the request.
 - EOF or network error reconnects after 2,000 ms unless closed.
 - The endpoint consumer is responsible for JSON parsing and closing on its `done` frame.
-- Parser errors thrown by the consumer are not converted into a durable cursor or replay.
-- There is no `Last-Event-ID`; reconnect starts according to the endpoint's server contract.
+- For cursor-bearing endpoints, the parser retains the most recent non-empty `id:` value and
+  reapplies it through that endpoint's query parameter (`cursor` for messages, `after_seq` for
+  signals) on reconnect. The initial value is the high-water returned with session detail.
+- Parser errors thrown by the consumer do not advance the resume cursor.
+- The client does not send the native `Last-Event-ID` header; resume remains an explicit,
+  endpoint-specific query contract so authenticated fetch and initial snapshot handoff use the
+  same path.
 
 The two-second reconnect delay is a shipped inherited value. Its qualitative purpose is to
 avoid a tight retry loop while keeping local recovery responsive; no recorded measurement

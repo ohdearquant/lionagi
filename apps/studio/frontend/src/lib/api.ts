@@ -212,9 +212,14 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 // studio endpoints: unnamed `data: <json>\n\n` frames, auto-reconnect after
 // 2s unless closed. Callers parse the JSON and call the returned closer on
 // their terminal "done" frame.
-function sseSubscribe(path: string, onData: (data: string) => void): () => void {
+function sseSubscribe(
+  path: string,
+  onData: (data: string) => void,
+  resume?: { param: string; initial?: string },
+): () => void {
   const controller = new AbortController();
   let closed = false;
+  let resumeCursor = resume?.initial;
   const close = () => {
     closed = true;
     controller.abort();
@@ -226,7 +231,10 @@ function sseSubscribe(path: string, onData: (data: string) => void): () => void 
         const token = resolveAuthToken();
         const headers: Record<string, string> = { Accept: "text/event-stream" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
-        const response = await fetch(`${API_BASE}${path}`, {
+        const query = new URLSearchParams();
+        if (resumeCursor && resume) query.set(resume.param, resumeCursor);
+        const requestPath = query.size > 0 ? `${path}?${query.toString()}` : path;
+        const response = await fetch(`${API_BASE}${requestPath}`, {
           headers,
           signal: controller.signal,
         });
@@ -244,8 +252,13 @@ function sseSubscribe(path: string, onData: (data: string) => void): () => void 
           while ((sep = buffer.indexOf("\n\n")) !== -1) {
             const frame = buffer.slice(0, sep);
             buffer = buffer.slice(sep + 2);
-            const data = frame
-              .split("\n")
+            const lines = frame.split("\n");
+            const eventId = lines
+              .find((line) => line.startsWith("id:"))
+              ?.slice(3)
+              .replace(/^ /, "");
+            if (eventId) resumeCursor = eventId;
+            const data = lines
               .filter((line) => line.startsWith("data:"))
               .map((line) => line.slice(5).replace(/^ /, ""))
               .join("\n");
@@ -1203,7 +1216,7 @@ export interface SessionBranch {
   ended_at?: number | null;
   messages: SessionMessage[];
   /** Full progression length; messages is a tail window of it. */
-  message_total?: number;
+  message_total?: number | null;
   message_offset?: number;
   /** Whether this branch has messages older than the current window — the
    * server's own signal, independent of the message_total/messages.length
@@ -1254,7 +1267,31 @@ export interface SessionDetail {
     tool_call_count: number;
     error_count: number;
     files: string[];
+  } | null;
+  message_stats_loaded?: boolean;
+  statistics_url?: string;
+  stream_cursors?: {
+    messages?: string | null;
+    signals: number;
   };
+}
+
+export interface SessionStatistics {
+  session_id: string;
+  message_stats_loaded: true;
+  message_stats: NonNullable<SessionDetail["message_stats"]>;
+  branches: Record<
+    string,
+    {
+      message_total: number;
+      message_stats: {
+        message_count: number;
+        roles: Record<string, number>;
+      };
+      first_message_at: number | null;
+      last_message_at: number | null;
+    }
+  >;
 }
 
 export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
@@ -1279,23 +1316,32 @@ export async function getSession(
   return fetchJson<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
 }
 
+export async function getSessionStatistics(id: string): Promise<SessionStatistics> {
+  return fetchJson<SessionStatistics>(`/api/sessions/${encodeURIComponent(id)}/statistics`);
+}
+
 export function streamSession(
   id: string,
   onEvent: (event: Record<string, unknown>) => void,
+  initialCursor?: string | null,
 ): () => void {
-  const close = sseSubscribe(`/api/sessions/${encodeURIComponent(id)}/stream`, (data) => {
-    let event: Record<string, unknown>;
-    try {
-      event = JSON.parse(data) as Record<string, unknown>;
-    } catch {
-      /* malformed chunk */
-      return;
-    }
-    if (event.type === "done") {
-      close();
-    }
-    onEvent(event);
-  });
+  const close = sseSubscribe(
+    `/api/sessions/${encodeURIComponent(id)}/stream`,
+    (data) => {
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(data) as Record<string, unknown>;
+      } catch {
+        /* malformed chunk */
+        return;
+      }
+      if (event.type === "done" || event.type === "resync") {
+        close();
+      }
+      onEvent(event);
+    },
+    { param: "cursor", initial: initialCursor ?? undefined },
+  );
   return close;
 }
 
@@ -1327,20 +1373,25 @@ export function normalizeSignalEvent(raw: SignalEvent): SignalEvent {
 export function streamSignals(
   id: string,
   onEvent: (event: SignalEvent | { type: string }) => void,
+  initialAfterSeq?: number,
 ): () => void {
-  const close = sseSubscribe(`/api/sessions/${encodeURIComponent(id)}/signals`, (data) => {
-    let event: SignalEvent | { type: string };
-    try {
-      event = JSON.parse(data) as SignalEvent | { type: string };
-    } catch {
-      /* malformed chunk */
-      return;
-    }
-    if ("type" in event && event.type === "done") {
-      close();
-    }
-    onEvent("type" in event ? event : normalizeSignalEvent(event));
-  });
+  const close = sseSubscribe(
+    `/api/sessions/${encodeURIComponent(id)}/signals`,
+    (data) => {
+      let event: SignalEvent | { type: string };
+      try {
+        event = JSON.parse(data) as SignalEvent | { type: string };
+      } catch {
+        /* malformed chunk */
+        return;
+      }
+      if ("type" in event && (event.type === "done" || event.type === "resync")) {
+        close();
+      }
+      onEvent("type" in event ? event : normalizeSignalEvent(event));
+    },
+    { param: "after_seq", initial: initialAfterSeq?.toString() },
+  );
   return close;
 }
 
