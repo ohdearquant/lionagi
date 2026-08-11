@@ -651,6 +651,29 @@ describe("runs/sessions query construction", () => {
     const url = new URL(calls[0]!.url, "http://localhost");
     expect(url.searchParams.has("message_cursor")).toBe(false);
   });
+
+  it("renameSession sends an authenticated JSON PUT and returns the resolved name", async () => {
+    (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__ =
+      "desktop-label-token";
+    const payload = {
+      session_id: "session/one",
+      user_label: "Demo run",
+      display_name: "Demo run",
+    };
+    const calls = stubFetch(payload);
+
+    const { renameSession } = await import("./api");
+    const result = await renameSession("session/one", "  Demo run  ");
+
+    expect(result).toEqual(payload);
+    expect(new URL(calls[0]!.url, "http://localhost").pathname).toBe("/api/sessions/session%2Fone");
+    expect(calls[0]!.init?.method).toBe("PUT");
+    expect(calls[0]!.init?.body).toBe(JSON.stringify({ label: "  Demo run  " }));
+    expect(calls[0]!.init?.headers).toMatchObject({
+      "Content-Type": "application/json",
+      Authorization: "Bearer desktop-label-token",
+    });
+  });
 });
 
 // The backend stamps a signal's `ts` with time.time() — Unix SECONDS — and the

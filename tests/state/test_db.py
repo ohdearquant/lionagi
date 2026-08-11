@@ -611,6 +611,8 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
             "artifact_verification_json",
             # live flow phase column for `li monitor`.
             "current_phase",
+            # User-owned display label for Studio session renames.
+            "user_label",
         ):
             assert must_have in cols, f"sessions.{must_have} not migrated"
         async with db._read() as conn:
@@ -930,6 +932,7 @@ async def test_create_session_minimal(db: StateDB):
     assert retrieved is not None
     assert retrieved["id"] == session["id"]
     assert retrieved["name"] is None
+    assert retrieved["user_label"] is None
     assert retrieved["status"] is None
 
 

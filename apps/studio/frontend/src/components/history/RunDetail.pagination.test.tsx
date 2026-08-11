@@ -25,11 +25,15 @@ class MockApiError extends Error {
   }
 }
 
-const getSessionMock = vi.hoisted(() => vi.fn());
+const { getSessionMock, renameSessionMock } = vi.hoisted(() => ({
+  getSessionMock: vi.fn(),
+  renameSessionMock: vi.fn(),
+}));
 
 vi.mock("@/lib/api", () => ({
   ApiError: MockApiError,
   getSession: getSessionMock,
+  renameSession: renameSessionMock,
   getInvocation: vi.fn().mockRejectedValue(new Error("no invocation in this test")),
   streamSession: vi.fn(() => () => {}),
   streamSignals: vi.fn(() => () => {}),
@@ -72,6 +76,7 @@ describe("RunDetail — cursor-based backward pagination", () => {
 
   beforeEach(() => {
     getSessionMock.mockReset();
+    renameSessionMock.mockReset();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     // jsdom does not implement scrollIntoView; RunDetail calls it on load.
     Element.prototype.scrollIntoView = vi.fn();
@@ -103,6 +108,43 @@ describe("RunDetail — cursor-based backward pagination", () => {
       | HTMLButtonElement
       | undefined;
   }
+
+  it("renames a session inline and renders the server-resolved display name", async () => {
+    getSessionMock.mockResolvedValueOnce(
+      baseSession({
+        name: "Original run",
+        display_name: "Original run",
+        user_label: null,
+      }),
+    );
+    renameSessionMock.mockResolvedValueOnce({
+      session_id: "s1",
+      user_label: "Demo run",
+      display_name: "Demo run",
+    });
+
+    await mount();
+
+    const rename = container.querySelector<HTMLButtonElement>('button[aria-label="Rename"]');
+    expect(rename).not.toBeNull();
+    await act(async () => rename?.click());
+
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Rename"]');
+    expect(input?.value).toBe("Original run");
+    await act(async () => {
+      if (!input) return;
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      valueSetter?.call(input, "  Demo run  ");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(renameSessionMock).toHaveBeenCalledWith("s1", "  Demo run  ");
+    expect(container.textContent).toContain("Demo run");
+    expect(container.querySelector('input[aria-label="Rename"]')).toBeNull();
+  });
 
   it("pages older messages by cursor (not offset), merging with no skip and no duplicate even as the tail grows between fetches", async () => {
     // Initial page: newest 3 of 5 messages, with a next-page anchor.

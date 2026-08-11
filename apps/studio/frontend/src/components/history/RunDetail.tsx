@@ -24,9 +24,22 @@ import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
-import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
-import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
-import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
+import { IconChevronDown, IconChevronRight, IconPencil } from "@/components/ui/icons";
+import {
+  ApiError,
+  getInvocation,
+  getSession,
+  renameSession,
+  streamSession,
+  streamSignals,
+} from "@/lib/api";
+import type {
+  RenameSessionResponse,
+  SessionDetail,
+  SessionBranch,
+  SessionMessage,
+  SignalEvent,
+} from "@/lib/api";
 import {
   buildNodeStatusesByName,
   buildOperationGraph,
@@ -1720,6 +1733,111 @@ export interface RunDetailProps {
   id: string;
 }
 
+interface SessionNameEditorProps {
+  sessionId: string;
+  displayName: string;
+  onRenamed: (result: RenameSessionResponse) => void;
+}
+
+function SessionNameEditor({ sessionId, displayName, onRenamed }: SessionNameEditorProps) {
+  const t = useTranslations("operator");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(displayName);
+  const [saving, setSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  const beginEditing = () => {
+    setDraft(displayName);
+    setRenameError(null);
+    setEditing(true);
+  };
+
+  const commit = async (label = draft) => {
+    if (saving) return;
+    setSaving(true);
+    setRenameError(null);
+    try {
+      const result = await renameSession(sessionId, label);
+      onRenamed(result);
+      setEditing(false);
+    } catch {
+      setRenameError(t("errors.rename"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <div className="flex min-w-0 flex-1 items-center gap-1">
+        <span className="min-w-0 flex-1 truncate font-mono text-[length:var(--t-base)] font-semibold text-content-primary">
+          {displayName}
+        </span>
+        <button
+          type="button"
+          aria-label={t("list.rename")}
+          title={t("list.rename")}
+          onClick={beginEditing}
+          className="shrink-0 rounded p-1 text-content-muted hover:bg-surface-overlay hover:text-content-primary"
+        >
+          <IconPencil size={13} strokeWidth={1.8} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-w-0 flex-1">
+      <form
+        className="flex items-center gap-1"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void commit();
+        }}
+      >
+        <input
+          ref={inputRef}
+          aria-label={t("list.rename")}
+          value={draft}
+          maxLength={160}
+          disabled={saving}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void commit(event.currentTarget.value);
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              setRenameError(null);
+              setEditing(false);
+            }
+          }}
+          className="min-w-0 flex-1 rounded border border-edge bg-surface-base px-2 py-1 font-mono text-[length:var(--t-base)] font-semibold text-content-primary outline-none focus:border-accent disabled:opacity-60"
+        />
+        <button
+          type="submit"
+          disabled={saving}
+          aria-label={t("list.rename")}
+          title={t("list.rename")}
+          className="shrink-0 rounded p-1 text-accent hover:bg-surface-overlay disabled:opacity-50"
+        >
+          <IconPencil size={13} strokeWidth={1.8} />
+        </button>
+      </form>
+      {renameError && (
+        <p role="alert" className="mt-1 text-[length:var(--t-xs)] text-status-failure">
+          {renameError}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function RunDetail({ id }: RunDetailProps) {
   const t = useTranslations("history.detail");
   const [session, setSession] = useState<SessionDetail | null>(null);
@@ -2527,9 +2645,22 @@ export default function RunDetail({ id }: RunDetailProps) {
     <div className="flex flex-col gap-6 p-3">
       {/* Compact pane header — name + live badge + elapsed */}
       <div className="flex items-center gap-2 border-b border-edge pb-1">
-        <span className="min-w-0 flex-1 truncate font-mono text-[length:var(--t-base)] font-semibold text-content-primary">
-          {session.name || session.id.slice(0, 8)}
-        </span>
+        <SessionNameEditor
+          sessionId={session.id}
+          displayName={session.display_name || session.name || session.id.slice(0, 8)}
+          onRenamed={(renamed) => {
+            setSession((current) =>
+              current && current.id === renamed.session_id
+                ? {
+                    ...current,
+                    name: renamed.display_name,
+                    display_name: renamed.display_name,
+                    user_label: renamed.user_label,
+                  }
+                : current,
+            );
+          }}
+        />
         <StatusVerdictChips run={runForStatus} />
         {live && !done && (
           <span className="flex shrink-0 items-center gap-1 text-[length:var(--t-xs)] text-status-success">

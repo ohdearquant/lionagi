@@ -1413,6 +1413,33 @@ async def test_narrow_source_kind_check_is_widened_for_codex_imports(tmp_path):
         _insert_session(db_path, "bogus", "imported_elsewhere")
 
 
+async def test_legacy_sessions_rebuild_preserves_user_label(tmp_path):
+    """The constraint-rebuild table must declare every current session column.
+
+    The rebuild copies the legacy table's columns by name. If its literal
+    ``sessions_new`` DDL omits ``user_label``, an upgrade either drops the
+    user's rename or fails during ``INSERT ... SELECT``.
+    """
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "legacy-label.db"
+    _create_legacy_session_status_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("INSERT OR IGNORE INTO progressions (id, created_at) VALUES ('p', 1.0)")
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, progression_id, user_label) "
+            "VALUES ('labeled', 1.0, 1.0, 'p', 'Keep Me')"
+        )
+
+    state = StateDB(f"sqlite+aiosqlite:///{db_path}")
+    async with state:
+        pass
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT user_label FROM sessions WHERE id = 'labeled'").fetchone()
+    assert row == ("Keep Me",)
+
+
 async def test_current_schema_db_is_not_rebuilt(tmp_path):
     """A database created by this release carries neither legacy CHECK, so opening
     it leaves the sessions table byte-identical."""

@@ -1360,6 +1360,7 @@ class StateDB:
                               created_at      REAL    NOT NULL,
                               node_metadata   JSON,
                               name            TEXT,
+                              user_label      TEXT,
                               user            TEXT,
                               progression_id  TEXT    NOT NULL REFERENCES progressions(id),
                               first_msg_id    TEXT    REFERENCES messages(id),

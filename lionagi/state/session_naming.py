@@ -143,10 +143,9 @@ def resolve_display_name(session_row: dict[str, Any]) -> str:
         user_label > show/play name > playbook name > agent-role descriptor
         > sanitized prompt-derived name > short id
 
-    `user_label` has no write path anywhere in this codebase yet — it is read
-    defensively via `.get()` so a future rename feature slots into the top of
-    this chain without another reorder. Every other tier reads a field that
-    is already computed or stored on the row.
+    `user_label` is written only by Studio's dedicated session-label endpoint;
+    every other tier reads a field that is already computed or stored on the
+    row.
 
     The prompt-derived tier declines a stored name that is a known placeholder
     (see `_UNINFORMATIVE_STORED_NAMES`) and falls through to the short id, so

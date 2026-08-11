@@ -115,6 +115,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at      REAL    NOT NULL,
   node_metadata   JSON,
   name            TEXT,
+  -- User-owned display label. Unlike system-written `name`, this is changed
+  -- only through Studio's dedicated rename path; NULL selects the normal
+  -- derived display-name chain.
+  user_label      TEXT,
   user            TEXT,
   progression_id  TEXT    NOT NULL REFERENCES progressions(id),
   first_msg_id    TEXT    REFERENCES messages(id),

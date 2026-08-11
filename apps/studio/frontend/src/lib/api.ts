@@ -1175,6 +1175,8 @@ export function streamShow(topic: string, onEvent: (event: ShowEvent) => void): 
 export interface SessionSummary {
   id: string;
   name: string;
+  user_label?: string | null;
+  display_name?: string;
   created_at: number;
   updated_at: number;
   branch_count: number;
@@ -1217,6 +1219,8 @@ export interface SessionBranch {
 export interface SessionDetail {
   id: string;
   name: string;
+  user_label?: string | null;
+  display_name?: string;
   invocation_kind?: string | null;
   created_at: number;
   updated_at: number;
@@ -1277,6 +1281,20 @@ export async function getSession(
   if (params?.messageCursor != null) query.set("message_cursor", params.messageCursor);
   const qs = query.toString();
   return fetchJson<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
+}
+
+export interface RenameSessionResponse {
+  session_id: string;
+  user_label: string | null;
+  display_name: string;
+}
+
+export async function renameSession(id: string, label: string): Promise<RenameSessionResponse> {
+  return fetchJson<RenameSessionResponse>(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
 }
 
 export function streamSession(

@@ -4,12 +4,14 @@ import asyncio
 import base64
 import json
 import time
+import unicodedata
 from typing import Any
 
 import aiosqlite
 from fastapi import HTTPException, Query
+from pydantic import BaseModel
 
-from lionagi._errors import NotFoundError
+from lionagi._errors import NotFoundError, ValidationError
 from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 from lionagi.state.session_naming import resolve_display_name
@@ -21,6 +23,21 @@ from ._io import parse_json_col as _parse_json_col
 from .artifact_verification import resolve_artifact_verification
 
 SESSION_DONE_STABLE_SECS = 60.0
+MAX_SESSION_LABEL_LENGTH = 160
+
+
+def _normalize_session_label(raw: str) -> str | None:
+    """Validate one user-owned label; blank input means clear the label."""
+    trimmed = raw.strip()
+    if not trimmed:
+        return None
+    if len(trimmed) > MAX_SESSION_LABEL_LENGTH:
+        raise ValidationError(
+            f"label must be at most {MAX_SESSION_LABEL_LENGTH} characters after trimming"
+        )
+    if any(unicodedata.category(char) == "Cc" for char in trimmed):
+        raise ValidationError("label must not contain control characters")
+    return trimmed
 
 
 def _parse_metadata(raw: str | None) -> dict[str, Any] | None:
@@ -153,12 +170,14 @@ class SessionFilter:
         if self.search:
             escaped = _escape_like(self.search)
             clauses.append(
-                "(LOWER(COALESCE(s.name, '')) LIKE '%' || LOWER(?) || '%' "
+                "(LOWER(COALESCE(s.user_label, '')) LIKE '%' || LOWER(?) || '%' "
+                f"ESCAPE '{_LIKE_ESCAPE_CHAR}' "
+                "OR LOWER(COALESCE(s.name, '')) LIKE '%' || LOWER(?) || '%' "
                 f"ESCAPE '{_LIKE_ESCAPE_CHAR}' "
                 "OR LOWER(COALESCE(s.agent_name, '')) LIKE '%' || LOWER(?) || '%' "
                 f"ESCAPE '{_LIKE_ESCAPE_CHAR}')"
             )
-            params.extend([escaped, escaped])
+            params.extend([escaped, escaped, escaped])
         if self.statuses:
             ordered = sorted(self.statuses)
             placeholders = ",".join("?" for _ in ordered)
@@ -244,6 +263,7 @@ async def list_sessions(
             SELECT
                 s.id,
                 s.name,
+                s.user_label,
                 s.created_at,
                 s.updated_at,
                 s.playbook_name,
@@ -290,10 +310,12 @@ async def list_sessions(
     return [
         {
             "id": row["id"],
+            "user_label": row["user_label"],
             # Displayed name prefers structured identity (playbook/show/agent)
             # over the raw, possibly prompt-derived value stored on the row
             # — see resolve_display_name().
             "name": resolve_display_name(dict(row)),
+            "display_name": resolve_display_name(dict(row)),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"] or 0.0,
             "node_metadata": row["node_metadata"],
@@ -668,7 +690,7 @@ async def get_session(
     async with _open_db(store_path()) as db:
         cur = await db.execute(
             # Include lifecycle and provenance columns (model/provider/effort/agent_hash).
-            """SELECT id, name, created_at, updated_at,
+            """SELECT id, name, user_label, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
                       artifact_contract_json, artifact_verification_json,
@@ -818,9 +840,11 @@ async def get_session(
 
     return {
         "id": session_row["id"],
+        "user_label": session_row["user_label"],
         # Same resolution as list_sessions() — structured identity beats
         # the raw, possibly prompt-derived stored name.
         "name": resolve_display_name(dict(session_row)),
+        "display_name": resolve_display_name(dict(session_row)),
         "created_at": session_row["created_at"],
         "updated_at": session_row["updated_at"],
         "playbook_name": session_row["playbook_name"],
@@ -931,6 +955,42 @@ async def session_exists(session_id: str) -> bool:
         return row is not None
 
 
+async def write_session_user_label(
+    session_id: str, user_label: str | None
+) -> dict[str, Any] | None:
+    """Persist only ``user_label`` and return the stored/resolved names.
+
+    This deliberately bypasses ``StateDB.update_session()``, whose universal
+    ``updated_at`` bump represents execution activity. Renaming presentation
+    state must not reorder the history list or reset staleness detection.
+    """
+    require_file_store()
+    async with _open_db(store_path()) as db:
+        update = await db.execute(
+            "UPDATE sessions SET user_label = ? WHERE id = ?",
+            (user_label, session_id),
+        )
+        if update.rowcount != 1:
+            await db.rollback()
+            return None
+        cur = await db.execute(
+            """SELECT id, user_label, name, show_play_name, playbook_name,
+                      agent_name, started_at
+               FROM sessions WHERE id = ?""",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        await db.commit()
+    if row is None:
+        return None
+    stored = dict(row)
+    return {
+        "session_id": session_id,
+        "user_label": stored["user_label"],
+        "display_name": resolve_display_name(stored),
+    }
+
+
 async def get_session_stream_state(session_id: str) -> dict[str, Any] | None:
     """Scalar read for the SSE done-condition check — avoids the full get_session() round-trip."""
     if not store_exists():
@@ -1014,6 +1074,24 @@ async def get_session_route(
     if session is None:
         raise NotFoundError(f"Session '{session_id}' not found")
     return session
+
+
+class SessionLabelRequest(BaseModel):
+    label: str
+
+
+@studio_route("/sessions/{session_id}", method="PUT", area="sessions", name="label_session")
+async def label_session_route(session_id: str, body: SessionLabelRequest) -> dict[str, Any]:
+    """Set or clear the session's user-owned display label."""
+    # Existence precedes validation and, critically, every write. An unknown
+    # id always reads as the GET route's 404 and cannot reach the writer.
+    if not await session_exists(session_id):
+        raise NotFoundError(f"Session '{session_id}' not found")
+    normalized = _normalize_session_label(body.label)
+    result = await write_session_user_label(session_id, normalized)
+    if result is None:  # The row was deleted between the existence read and write.
+        raise NotFoundError(f"Session '{session_id}' not found")
+    return result
 
 
 @studio_route(
