@@ -162,6 +162,71 @@ different-than-intended TOML value. Every override value is therefore
 serialized as syntactically valid TOML (`toml_override_value()`) instead of
 JSON.
 
+## CLI adapter error-chunk conformance
+
+**`providers/anthropic/claude_code.py`, `providers/google/gemini_code.py`,
+`providers/openai/codex.py`, `providers/pi/cli.py`**
+
+Four CLI adapters each decide, independently, what a stream consumer sees
+when a session ends in failure. Nothing compares the four against each
+other, so a new adapter, or a refactor of an existing one, can reopen a gap
+in silence.
+
+The contract, per adapter:
+
+1. a session finishing with `is_error` set yields exactly one chunk of type
+   `error`;
+2. that chunk carries `is_error`;
+3. a session finishing without `is_error` yields zero `error` chunks.
+
+"Exactly one" (not "at least one") is deliberate: it is the only phrasing
+that can express both "this failure was reported" and "this failure was not
+reported twice." Assertion 3 is the other direction — an adapter that
+reports errors on healthy sessions would otherwise pass.
+
+Where the error chunk gets built differs by adapter, and that difference is
+what makes the guard against double-reporting reachable or not:
+
+- `claude_code` builds it only in the endpoint, behind an
+  already-reported guard. Its parser never builds one, so on any real event
+  sequence today that guard cannot fire — it is pinned intent, not live
+  cover.
+- `gemini_code` builds it in the parser on the failing path; the endpoint
+  guard is what stops a second one. This is the one adapter where "exactly
+  one" is non-vacuous today.
+- `codex` used to build one in both the parser and the endpoint with no
+  guard between them, so a real `turn.failed` event was reported twice.
+  That defect is why "at least one" would have been the wrong contract to
+  test — it passed on codex while the bug was live. A guard was added and
+  codex now satisfies all three assertions.
+- `pi` builds none. A failed pi session instead yields a chunk of type
+  `result` whose content is the error text — the failure survives, wearing
+  the type that means success. A consumer keying on chunk type sees a clean
+  result; one reading content sees an error string; neither can tell it from
+  success by the documented contract. This is pi's tracked, open
+  divergence.
+
+Codex also yields an `error`-type chunk when a resumed session ends
+normally. That is not a violation of assertion 3: the chunk carries
+`is_error=False` and `benign_eos=True`, both set deliberately, and codex's
+healthy fixtures use `turn.completed` so the two cases never collide. A
+consumer keying on chunk type alone still can't distinguish this from a
+failure, but the discriminator fields exist for one that reads them.
+
+Not covered by this contract: the non-streaming path (`_call()` drives the
+same generator and returns the session as a dict, nothing branches on the
+flag), ReAct's final-answer turn (catches broadly and substitutes the last
+response), and per-tool error carriers (`tool_result.is_error` is a separate
+signal — gemini's wire format has no per-tool events to carry it at all).
+
+Fixtures are labelled `RECORDED` or `AUTHORED`; the label matters. An
+authored event dict is written from what the parser reads, so it agrees
+with the parser by construction and inherits its blind spots — a fixture
+built this way cannot reveal a CLI that signals failure through a channel
+nobody reads, and would pass cleanly forever if it did. Only a recorded
+transcript is evidence about the real CLI; an authored one is evidence
+about the model of it encoded in the parser.
+
 ## Codex turn-completed usage delta
 
 **`providers/openai/codex.py`**

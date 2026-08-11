@@ -220,7 +220,6 @@ class TestMatchEndpoint:
         assert isinstance(openai_endpoint, OpenaiChatEndpoint)
         assert isinstance(anthropic_endpoint, AnthropicMessagesEndpoint)
 
-        # Should be different instances with different configurations
         assert openai_endpoint is not anthropic_endpoint
         assert openai_endpoint.config.provider != anthropic_endpoint.config.provider
 
@@ -236,7 +235,6 @@ class TestMatchEndpoint:
             provider="openai", endpoint="chat", model="gpt-4o", temperature=0.8
         )
 
-        # Should have different configurations
         assert endpoint1.config is not endpoint2.config
 
     def test_match_endpoint_routes_firecrawl_tavily_and_cli_aliases(self):

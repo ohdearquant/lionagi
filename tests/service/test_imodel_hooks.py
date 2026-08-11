@@ -511,11 +511,6 @@ class TestiModelHooks:
         assert call_log.index("v1") < call_log.index("v2")
 
 
-# ---------------------------------------------------------------------------
-# D12 – process_chunk raises exception from exit tuple
-# ---------------------------------------------------------------------------
-
-
 class TestProcessChunkExitTuple:
     """process_chunk raises hook_result[1] when the hook signals exit with a BaseException."""
 
