@@ -26,7 +26,7 @@ def _invocation_health(
 ) -> tuple[str, float | None]:
     """Worst-of health verdict + latest activity timestamp across an
     invocation's child sessions, reusing the session health classifier
-    (ADR-0057) rather than a second vocabulary (issue #2851). "unknown"
+    (ADR-0057) rather than a second vocabulary. "unknown"
     when the invocation has no child sessions yet — liveness genuinely
     cannot be determined, never silently defaulted to "healthy"."""
     if not sessions:
@@ -112,7 +112,7 @@ async def list_invocations(
                     "schedule_run_exit_code": r.get("schedule_run_exit_code"),
                     "schedule_run_error_detail": r.get("schedule_run_error_detail"),
                     # ADR-0057 health verdict + last-activity, derived from child
-                    # sessions (issue #2851) — same vocabulary runs already use.
+                    # sessions — same vocabulary runs already use.
                     "health": health,
                     "last_activity_at": last_activity_at,
                 }
