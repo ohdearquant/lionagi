@@ -33,9 +33,7 @@ class OutputModel(BaseModel):
     summary: str
 
 
-# ============================================================================
 # P0 - Critical Coverage Tests
-# ============================================================================
 
 
 async def parse(branch, **kws):
@@ -230,9 +228,7 @@ class TestBasicParsing:
                 assert result == text
 
 
-# ============================================================================
 # P1 - Important Feature Coverage
-# ============================================================================
 
 
 class TestAdvancedFeatures:
@@ -371,9 +367,7 @@ class TestLndlExtraction:
         assert result == "<lvar answer a>first</lvar>\n\n\nOUT{answer: [a]}\n"
 
 
-# ============================================================================
 # Fixtures
-# ============================================================================
 
 
 @pytest.fixture
@@ -389,9 +383,7 @@ def make_mocked_branch_for_parse(make_mocked_branch):
     return _make_branch
 
 
-# ---------------------------------------------------------------------------
 # parse propagates cancellation without retry
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

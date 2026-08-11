@@ -23,10 +23,6 @@ from lionagi.tools.coding import (
     _write_file_sync,
 )
 
-# ---------------------------------------------------------------------------
-# _resolve_workspace_path: symlink refusal, denied names, valid paths
-# ---------------------------------------------------------------------------
-
 
 def test_resolve_workspace_path_symlink_raises(tmp_path):
     real = tmp_path / "real.py"
@@ -69,11 +65,6 @@ def test_resolve_workspace_path_relative_resolved_under_root(tmp_path):
 
     result = _resolve_workspace_path("hello.py", tmp_path)
     assert result == f.resolve()
-
-
-# ---------------------------------------------------------------------------
-# _read_image_sync: valid PNG, escape, OSError
-# ---------------------------------------------------------------------------
 
 
 def _make_tiny_png(path):
@@ -121,11 +112,6 @@ def test_read_image_sync_oserror(tmp_path, monkeypatch):
     assert "disk full" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# _read_file_sync: image delegation, not-a-file, OSError on mtime
-# ---------------------------------------------------------------------------
-
-
 def test_read_file_sync_delegates_to_image_reader(tmp_path):
     img = tmp_path / "shot.png"
     _make_tiny_png(img)
@@ -150,11 +136,6 @@ def test_read_file_sync_nonexistent_returns_error(tmp_path):
     assert "not found" in result["error"].lower()
 
 
-# ---------------------------------------------------------------------------
-# _list_dir_sync: exception from dir_to_files
-# ---------------------------------------------------------------------------
-
-
 def test_list_dir_sync_exception_returns_error(tmp_path, monkeypatch):
     import lionagi.libs.file.process as fp_mod
 
@@ -168,11 +149,6 @@ def test_list_dir_sync_exception_returns_error(tmp_path, monkeypatch):
     assert "disk error" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# _write_file_sync: OSError writing
-# ---------------------------------------------------------------------------
-
-
 def test_write_file_sync_oserror_returns_error(tmp_path, monkeypatch):
     def raise_oserror(*args, **kwargs):
         raise OSError("no space left")
@@ -183,11 +159,6 @@ def test_write_file_sync_oserror_returns_error(tmp_path, monkeypatch):
     result = _write_file_sync(str(target), "hello", tmp_path)
     assert result["success"] is False
     assert "no space left" in result["error"]
-
-
-# ---------------------------------------------------------------------------
-# _edit_file_sync: OSError on read, old_string not found
-# ---------------------------------------------------------------------------
 
 
 def test_edit_file_sync_old_string_not_found(tmp_path):
@@ -212,11 +183,6 @@ def test_edit_file_sync_oserror_on_read(tmp_path, monkeypatch):
 
     result = _edit_file_sync(str(f), "hello", "bye", False, tmp_path)
     assert result["success"] is False
-
-
-# ---------------------------------------------------------------------------
-# _drain_stream: truncation path
-# ---------------------------------------------------------------------------
 
 
 def test_drain_stream_truncates_at_max(monkeypatch):
@@ -267,11 +233,6 @@ def test_drain_stream_handles_read_exception():
     truncated = _drain_stream(ExplodingStream(), buf)
     assert truncated is False
     assert len(buf) == 0
-
-
-# ---------------------------------------------------------------------------
-# _subprocess_sync: FileNotFoundError, TimeoutExpired
-# ---------------------------------------------------------------------------
 
 
 def test_subprocess_sync_file_not_found_returns_error():
@@ -340,20 +301,13 @@ def test_subprocess_sync_timeout_invalid_pid_calls_kill_not_killpg(invalid_pid):
     mock_proc.kill.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# CodingToolkit.to_tool: raises NotImplementedError
-# ---------------------------------------------------------------------------
-
-
 def test_coding_toolkit_to_tool_raises():
     tk = CodingToolkit(notify=False)
     with pytest.raises(NotImplementedError, match="bind"):
         tk.to_tool()
 
 
-# ---------------------------------------------------------------------------
 # CodingToolkit.security_pre + _build_preprocessor with security hooks
-# ---------------------------------------------------------------------------
 
 
 async def test_security_pre_hook_runs_before_user_hooks(tmp_path):
@@ -410,11 +364,6 @@ async def test_build_preprocessor_no_hooks_returns_none():
 
     reader_tool = next(t for t in tools if t.func_callable.__name__ == "reader")
     assert reader_tool.preprocessor is None
-
-
-# ---------------------------------------------------------------------------
-# Context: get_messages and evict_action_results
-# ---------------------------------------------------------------------------
 
 
 async def test_context_get_messages_returns_summaries(tmp_path):
@@ -476,11 +425,6 @@ async def test_context_unknown_action_returns_error(tmp_path):
     assert "Unknown action" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Reader: list_dir with recursive/file_types, unknown action
-# ---------------------------------------------------------------------------
-
-
 async def test_reader_list_dir_with_file_types(tmp_path):
     (tmp_path / "a.py").write_text("x")
     (tmp_path / "b.txt").write_text("y")
@@ -511,11 +455,6 @@ async def test_reader_unknown_action_returns_error(tmp_path):
     assert "Unknown action" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Editor: content=None for write, unknown action
-# ---------------------------------------------------------------------------
-
-
 async def test_editor_write_no_content_returns_error(tmp_path):
     from lionagi.session.branch import Branch
 
@@ -542,11 +481,6 @@ async def test_editor_unknown_action_returns_error(tmp_path):
     result = await editor.func_callable(action="blorp", file_path=str(tmp_path / "out.py"))
     assert result["success"] is False
     assert "Unknown action" in result["error"]
-
-
-# ---------------------------------------------------------------------------
-# Search: grep with include filter, unknown action
-# ---------------------------------------------------------------------------
 
 
 async def test_search_grep_with_include_filter(tmp_path):
@@ -579,11 +513,6 @@ async def test_search_unknown_action_returns_error(tmp_path):
     assert "Unknown action" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Bash: shell control operator rejection in CodingToolkit
-# ---------------------------------------------------------------------------
-
-
 async def test_bash_shell_control_rejected_in_toolkit(tmp_path):
     from lionagi.session.branch import Branch
 
@@ -608,11 +537,6 @@ async def test_bash_malformed_command_returns_error(tmp_path):
     result = await bash.func_callable(command="echo 'unterminated")
     assert result["return_code"] == -1
     assert "Malformed" in result["stderr"]
-
-
-# ---------------------------------------------------------------------------
-# Sandbox: no active session, already active, no workspace root
-# ---------------------------------------------------------------------------
 
 
 async def test_sandbox_no_active_session_error(tmp_path):
@@ -673,11 +597,6 @@ async def test_sandbox_already_active_blocks_create(tmp_path, monkeypatch):
     result = await sandbox.func_callable(action="create")
     assert result["success"] is False
     assert "already active" in result["error"].lower()
-
-
-# ---------------------------------------------------------------------------
-# _system_status: notify=True path exercised
-# ---------------------------------------------------------------------------
 
 
 async def test_system_status_emitted_via_postprocessor(tmp_path):

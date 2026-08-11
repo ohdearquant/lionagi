@@ -138,7 +138,6 @@ def test_levenshtein_similarity(s1: str, s2: str, expected: float) -> None:
 
 
 def test_similarity_algorithms_bounds() -> None:
-    """Test that all similarity algorithms return values between 0 and 1."""
     test_cases = [
         ("hello", "hello"),
         ("hello", "world"),
@@ -157,7 +156,6 @@ def test_similarity_algorithms_bounds() -> None:
 
 
 def test_all_algorithms_handle_special_characters() -> None:
-    """Test that all algorithms handle special characters properly."""
     special_chars = "!@#$%^&*()"
     normal_text = "hello"
 
@@ -172,7 +170,6 @@ def test_all_algorithms_handle_special_characters() -> None:
 
 
 def test_all_algorithms_handle_unicode() -> None:
-    """Test that all algorithms handle Unicode characters properly."""
     unicode_text1 = "hello世界"
     unicode_text2 = "hello世界"
 
@@ -184,7 +181,6 @@ def test_all_algorithms_handle_unicode() -> None:
 
 
 def test_all_algorithms_handle_long_strings() -> None:
-    """Test that all algorithms handle long strings properly."""
     long_text1 = "a" * 1000
     long_text2 = "a" * 999 + "b"
 

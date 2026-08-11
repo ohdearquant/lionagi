@@ -35,11 +35,6 @@ def _policy(**kw) -> PermissionPolicy:
     return PermissionPolicy(mode="rules", **kw)
 
 
-# --------------------------------------------------------------------------
-# the escalate decision, which is where the two were conflated
-# --------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_escalate_without_a_handler_is_a_fault():
     hook = _policy(escalate={"bash": ["*"]}).to_pre_hook()
@@ -95,11 +90,6 @@ async def test_an_allowed_call_is_untouched():
     assert await hook("bash", "run", {"command": "ls -la"}) is None
 
 
-# --------------------------------------------------------------------------
-# what the gate layer does with each
-# --------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_the_gate_marks_a_declared_fault_errored():
     hook = _policy(escalate={"bash": ["*"]}).to_pre_hook()
@@ -134,11 +124,6 @@ async def test_an_unexpected_exception_stays_errored():
     assert result.allowed is False
     assert result.errored is True
     assert "evaluator error" in result.reason
-
-
-# --------------------------------------------------------------------------
-# the flag has readers, which is the other half of the row
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

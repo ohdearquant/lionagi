@@ -14,9 +14,7 @@ from lionagi.state.completion_evidence import (
     has_completion_evidence,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _git(path: Path, *args: str) -> None:
@@ -38,9 +36,7 @@ def git_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-# ---------------------------------------------------------------------------
 # checked=False cases — the check must have "no opinion", not "no evidence"
-# ---------------------------------------------------------------------------
 
 
 def test_no_cwd_is_unchecked():
@@ -55,9 +51,7 @@ def test_non_git_dir_is_unchecked(tmp_path: Path):
     assert has_completion_evidence(evidence) is False
 
 
-# ---------------------------------------------------------------------------
 # checked=True cases
-# ---------------------------------------------------------------------------
 
 
 def test_clean_tree_no_commits_ahead_has_no_evidence(git_repo: Path):

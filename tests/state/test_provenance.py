@@ -30,7 +30,7 @@ def _uid() -> str:
     return str(uuid.uuid4())
 
 
-# ── resolve_model_spec ────────────────────────────────────────────────────────
+# resolve_model_spec
 
 
 def test_resolve_combines_provider_and_model():
@@ -50,7 +50,7 @@ def test_resolve_none_for_both_none():
     assert resolve_model_spec(None, None) is None
 
 
-# ── agent_definition_hash ────────────────────────────────────────────────────
+# agent_definition_hash
 
 
 def test_hash_none_for_missing_agent(tmp_path: Path, monkeypatch):
@@ -131,7 +131,7 @@ def test_hash_is_16_chars():
     assert len(h) == 16
 
 
-# ── DB write path ────────────────────────────────────────────────────────────
+# DB write path
 
 
 async def test_create_session_persists_provenance(db: StateDB):

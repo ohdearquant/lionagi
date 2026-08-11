@@ -4,16 +4,11 @@
 
 Gives one Studio run (a `sessions` row) a human name through the Operator,
 gated on the same durable human allow/deny proposal flow `cancel_run` and
-`resume_run` use (`application_mcp.py::launch_playbook`'s shape). This is
-deliberately distinct from renaming the Operator's own *conversation*
-(`store.py::update_conversation`, shipped separately as a direct human
-UI/REST action): a conversation can talk about many runs over its life, and
-this tool names the run the conversation is currently discussing, not the
-conversation thread itself.
-
-Reuses `run_progress.py::resolve_run` for reference resolution -- the same
-id/prefix/name/"current" vocabulary and project-scoping `resume_run` already
-uses -- rather than a third private copy of that logic.
+`resume_run` use. Deliberately distinct from renaming the Operator's own
+*conversation* (`store.py::update_conversation`, a direct human UI/REST
+action) -- see docs/internals/studio.md ("Turn identity and the
+propose/poll/execute pattern"). Reuses `run_progress.py::resolve_run` for
+reference resolution rather than a third private copy of that logic.
 """
 
 from __future__ import annotations

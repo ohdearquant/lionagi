@@ -37,10 +37,10 @@ def edge_test_graph():
 
 
 class TestEdgeBasics:
-    """Test basic edge functionality"""
+    """Basic edge functionality"""
 
     def test_edge_creation(self, edge_test_graph):
-        """Test creating edges with different configurations"""
+        """Creating edges with different configurations"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2)
@@ -57,7 +57,7 @@ class TestEdgeBasics:
         assert edge_with_props.properties.get("custom_prop") == "test"
 
     def test_edge_properties(self, edge_test_graph):
-        """Test edge property management"""
+        """Edge property management"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2)
@@ -73,7 +73,7 @@ class TestEdgeBasics:
         assert edge.properties.get("weight", None) is None
 
     def test_edge_validation(self, edge_test_graph):
-        """Test edge validation"""
+        """Edge validation"""
         graph, node1, node2, _ = edge_test_graph
 
         # Test with invalid head/tail
@@ -92,10 +92,10 @@ class TestEdgeBasics:
 
 @pytest.mark.asyncio
 class TestEdgeConditions:
-    """Test edge conditions"""
+    """Edge conditions"""
 
     async def test_edge_condition_true(self, edge_test_graph):
-        """Test edge condition that evaluates to True"""
+        """Edge condition that evaluates to True"""
         graph, node1, node2, _ = edge_test_graph
 
         condition = CustomEdgeCondition(value=True)
@@ -105,7 +105,7 @@ class TestEdgeConditions:
         assert await edge.check_condition()
 
     async def test_edge_condition_false(self, edge_test_graph):
-        """Test edge condition that evaluates to False"""
+        """Edge condition that evaluates to False"""
         graph, node1, node2, _ = edge_test_graph
 
         condition = CustomEdgeCondition(value=False)
@@ -115,7 +115,7 @@ class TestEdgeConditions:
         assert not await edge.check_condition()
 
     async def test_edge_no_condition(self, edge_test_graph):
-        """Test edge with no condition"""
+        """Edge with no condition"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2)
@@ -124,7 +124,7 @@ class TestEdgeConditions:
         assert await edge.check_condition()
 
     async def test_custom_condition(self, edge_test_graph):
-        """Test edge with custom condition class"""
+        """Edge with custom condition class"""
         graph, node1, node2, _ = edge_test_graph
 
         class WeightCondition(EdgeCondition):
@@ -146,10 +146,10 @@ class TestEdgeConditions:
 
 
 class TestEdgeTypes:
-    """Test different edge types and configurations"""
+    """Different edge types and configurations"""
 
     def test_multi_label_edge(self, edge_test_graph):
-        """Test edge with multiple labels"""
+        """Edge with multiple labels"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2, label=["label1", "label2", "label3"])
@@ -160,7 +160,7 @@ class TestEdgeTypes:
         assert "label1" in edge.properties.get("label")
 
     def test_weighted_edge(self, edge_test_graph):
-        """Test edge with weight property"""
+        """Edge with weight property"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2)
@@ -170,7 +170,7 @@ class TestEdgeTypes:
         assert edge.properties.get("weight") == 5.5
 
     def test_custom_edge_type(self, edge_test_graph):
-        """Test custom edge type"""
+        """Custom edge type"""
         graph, node1, node2, _ = edge_test_graph
 
         class WeightedEdge(Edge):
@@ -195,10 +195,10 @@ class TestEdgeTypes:
 
 
 class TestEdgeOperations:
-    """Test edge operations in graph context"""
+    """Edge operations in graph context"""
 
     def test_parallel_edges(self, edge_test_graph):
-        """Test parallel edges between same nodes"""
+        """Parallel edges between same nodes"""
         graph, node1, node2, _ = edge_test_graph
 
         edge1 = Edge(head=node1, tail=node2)
@@ -215,7 +215,7 @@ class TestEdgeOperations:
         assert any(e.properties.get("type") == "type2" for e in edges)
 
     def test_bidirectional_edges(self, edge_test_graph):
-        """Test bidirectional edges"""
+        """Bidirectional edges"""
         graph, node1, node2, _ = edge_test_graph
 
         edge1 = Edge(head=node1, tail=node2)
@@ -228,7 +228,7 @@ class TestEdgeOperations:
         assert len(graph.find_node_edge(node2)) == 2
 
     def test_self_loop_edge(self, edge_test_graph):
-        """Test self-loop edge"""
+        """Self-loop edge"""
         graph, node1, _, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node1)
@@ -238,7 +238,7 @@ class TestEdgeOperations:
         assert edge.id in graph.node_edge_mapping[node1.id]["out"]
 
     def test_edge_removal_cleanup(self, edge_test_graph):
-        """Test proper cleanup after edge removal"""
+        """Proper cleanup after edge removal"""
         graph, node1, node2, _ = edge_test_graph
 
         edge = Edge(head=node1, tail=node2)

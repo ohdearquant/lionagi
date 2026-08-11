@@ -105,9 +105,7 @@ def test_stats_db_health_missing_db_returns_zeroes(tmp_path, monkeypatch):
     assert db["sessions_by_status"] == {}
 
 
-# ---------------------------------------------------------------------------
 # stats reports the store the daemon serves, not a path of its own
-# ---------------------------------------------------------------------------
 
 
 def test_stats_size_comes_from_the_configured_store(tmp_path, monkeypatch):
@@ -142,9 +140,7 @@ def test_stats_size_comes_from_the_configured_store(tmp_path, monkeypatch):
     assert db["tables"]["sessions"] == 2
 
 
-# ---------------------------------------------------------------------------
 # invocation node_metadata parse failure must return None, not the raw string
-# ---------------------------------------------------------------------------
 
 
 async def _seed_invocation_with_bad_metadata(db_path: Path, inv_id: str) -> None:
@@ -202,9 +198,7 @@ def test_invocation_list_bad_metadata_becomes_none(tmp_path, monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
 # the size alert is one decision, and both health surfaces report it
-# ---------------------------------------------------------------------------
 
 
 def test_doctor_and_stats_agree_on_the_size_alert(tmp_path, monkeypatch):

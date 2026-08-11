@@ -236,7 +236,7 @@ async def mirror_session(
     write, for callers with no live transcript file behind the events.
 
     ``cwd`` is the transcript's own working directory -- the CLI's artifact root
-    (issue #2848) -- written to ``artifacts_path`` on create, and backfilled on an
+    -- written to ``artifacts_path`` on create, and backfilled on an
     existing row that lacks one without ever overwriting one that is already set.
     """
     sid = session_db_id(session_uid)

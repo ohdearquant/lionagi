@@ -12,9 +12,7 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # open_db() configures busy_timeout, WAL, and row_factory
-# ---------------------------------------------------------------------------
 
 
 class TestOpenDb:

@@ -88,23 +88,11 @@ class OperatorContextSnapshot(WireModel):
     route: str = Field(min_length=1, max_length=4096)
     selection: dict[str, str] | None = None
     filters: dict[str, Any] = Field(default_factory=dict)
-    # Who observed this view, and how many views they had seen when they did.
-    #
-    # Ordering is by count and deliberately not by any clock. Server arrival
-    # order answers a different question, since a view seen before an
-    # instruction can arrive after it. A wall clock answers it wrongly too: it
-    # can step backwards, and then a view from before the step outranks
-    # everything observed after it.
-    #
-    # A count means nothing outside the page that did the counting, which is why
-    # the observer travels with it. Two tabs on one conversation are looking at
-    # two different pages; only the one the instruction came from can say where
-    # the human is, and comparing the other's count against it is what makes an
-    # abandoned page look current. A reload is a new observer for the same
-    # reason.
-    #
-    # Both are optional here so a client that sends neither degrades to "cannot
-    # establish freshness" rather than to a false claim of it.
+    # Who observed this view and how many views they had seen when they did;
+    # ordering uses this count, never arrival order or a wall clock — see
+    # docs/internals/studio.md ("View freshness: observation count, not wall
+    # clock"). Both optional: a client sending neither degrades to "cannot
+    # establish freshness" rather than a false claim of it.
     observation_seq: int | None = Field(default=None, ge=1, alias="observationSeq")
     observer_id: str | None = Field(default=None, min_length=1, max_length=128, alias="observerId")
 

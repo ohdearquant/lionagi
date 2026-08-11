@@ -30,9 +30,7 @@ def progression(elements):
     return Progression(order=[e.id for e in elements])
 
 
-# ---------------------------------------------------------------------------
 # Happy paths
-# ---------------------------------------------------------------------------
 
 
 def test_contains_happy_path_element_and_id(progression, elements):
@@ -60,10 +58,8 @@ def test_contains_invalid_candidate_returns_false(progression):
     assert object() not in progression
 
 
-# ---------------------------------------------------------------------------
 # Mutation invariants: `_members` (and thus `__contains__`) must reflect
 # every public mutation path.
-# ---------------------------------------------------------------------------
 
 
 def test_append_element_updates_membership(progression):
@@ -193,9 +189,7 @@ def test_move_swap_reverse_preserve_membership(progression, elements):
         assert e in progression
 
 
-# ---------------------------------------------------------------------------
 # Duplicate policy
-# ---------------------------------------------------------------------------
 
 
 def test_duplicate_ids_collapse_in_membership_but_not_in_order():
@@ -217,9 +211,7 @@ def test_construction_with_duplicates_then_single_removal_keeps_membership():
     assert other in p
 
 
-# ---------------------------------------------------------------------------
 # Slicing
-# ---------------------------------------------------------------------------
 
 
 def test_getitem_slice_returns_new_synced_progression(progression, elements):
@@ -245,10 +237,8 @@ def test_getitem_invalid_key_type_raises(progression):
         progression["bad-key"]
 
 
-# ---------------------------------------------------------------------------
 # External direct-`order`-mutation contract (the reason a naive cache-only
 # `__contains__` cannot be used, per ranked_targets.md Target 1 risk note).
-# ---------------------------------------------------------------------------
 
 
 def test_direct_order_mutation_is_observed_by_contains():
@@ -334,10 +324,8 @@ def test_order_mutators_sync_membership_after_order_reassignment(mutate):
     assert p._members == set(p.order)
 
 
-# ---------------------------------------------------------------------------
 # Length-preserving external mutation (the `_ensure_synced` length-only guard
 # cannot see these — the owning `_MembersDeque` must handle them directly).
-# ---------------------------------------------------------------------------
 
 
 def test_direct_order_setitem_length_preserving_membership_both_signs():
@@ -486,9 +474,7 @@ def test_progression_method_coverage_keeps_members_consistent_with_order():
     assert p._members == set(p.order)
 
 
-# ---------------------------------------------------------------------------
 # Serialization
-# ---------------------------------------------------------------------------
 
 
 def test_to_dict_excludes_private_cache(progression):
@@ -526,9 +512,7 @@ def test_equality_ignores_private_cache(elements):
     assert a != b
 
 
-# ---------------------------------------------------------------------------
 # Exceptions preserved
-# ---------------------------------------------------------------------------
 
 
 def test_pop_empty_raises_item_not_found():
@@ -559,7 +543,6 @@ def test_factory_prog_preserves_membership():
         assert i in p
 
 
-# ---------------------------------------------------------------------------
 # Performance regression: membership cost must not scale with n.
 #
 # Pre-fix, `__contains__` rebuilt `set(self.order)` on every call, making the
@@ -567,7 +550,6 @@ def test_factory_prog_preserves_membership():
 # not produce anywhere near a 20x growth in check time; we assert a generous
 # ratio ceiling well below linear scaling to stay robust to CI noise while
 # still failing hard if the O(n) behavior regresses.
-# ---------------------------------------------------------------------------
 
 
 def test_contains_cost_does_not_scale_with_size():

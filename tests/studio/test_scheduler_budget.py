@@ -61,9 +61,7 @@ def _make_svc() -> AsyncMock:
     return svc
 
 
-# ---------------------------------------------------------------------------
 # service-boundary validation — non-finite budgets must be rejected
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
@@ -111,9 +109,7 @@ def test_validate_rate_limit_accepts_positive_window_cap():
     assert validate_rate_limit({"max_fires": 3, "window_sec": 120}) == (3, 120)
 
 
-# ---------------------------------------------------------------------------
 # _check_budget — pure read, no reservation
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -201,9 +197,7 @@ async def test_check_budget_either_bound_trips_when_both_set():
     assert await engine._check_budget(schedule) is True
 
 
-# ---------------------------------------------------------------------------
 # _maybe_fire — auto-disables + records, does not fire when over budget
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -280,9 +274,7 @@ async def test_maybe_fire_fires_normally_when_under_budget():
     svc.update_schedule.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # rolling-window fire cap — reserve capacity, defer automatic fires
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -378,9 +370,7 @@ async def test_tick_github_rate_limit_defers_without_polling_or_disabling():
     svc.update_schedule.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # _tick_github — disables over-budget schedules WITHOUT polling
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -441,9 +431,7 @@ async def test_tick_github_polls_normally_when_under_budget():
     )
 
 
-# ---------------------------------------------------------------------------
 # fire_now — refuses (does not disable) at exhaustion
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -478,9 +466,7 @@ async def test_fire_now_succeeds_when_under_budget():
     mock_tracked.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # sum_schedule_spend — real StateDB aggregate
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

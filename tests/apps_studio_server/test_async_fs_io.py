@@ -14,9 +14,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Helpers / shared fixtures
-# ---------------------------------------------------------------------------
 
 
 def _make_client(
@@ -99,9 +97,7 @@ def _make_client(
     return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
-# ---------------------------------------------------------------------------
 # Runs detail — offloaded to worker thread
-# ---------------------------------------------------------------------------
 
 
 def test_run_detail_reads_from_statedb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -155,9 +151,7 @@ def test_run_detail_404_with_thread_offload(
     assert r.status_code == 404
 
 
-# ---------------------------------------------------------------------------
 # Agents — offloaded to worker thread
-# ---------------------------------------------------------------------------
 
 
 def test_agents_list_uses_thread_offload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -193,9 +187,7 @@ def test_agent_update_uses_thread_offload(tmp_path: Path, monkeypatch: pytest.Mo
     assert data["model"] == "anthropic/claude-sonnet-4-20250514"
 
 
-# ---------------------------------------------------------------------------
 # Playbooks — offloaded to worker thread
-# ---------------------------------------------------------------------------
 
 
 def test_playbooks_list_uses_thread_offload(
@@ -222,9 +214,7 @@ def test_playbook_detail_uses_thread_offload(
     assert data["name"] == "test-pb"
 
 
-# ---------------------------------------------------------------------------
 # Skills — offloaded to worker thread
-# ---------------------------------------------------------------------------
 
 
 def test_skills_list_uses_thread_offload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,9 +238,7 @@ def test_skill_detail_uses_thread_offload(tmp_path: Path, monkeypatch: pytest.Mo
     assert data["content"] == "Skill body."
 
 
-# ---------------------------------------------------------------------------
 # Thread offload verification — confirms anyio.to_thread.run_sync is used
-# ---------------------------------------------------------------------------
 
 
 def test_run_detail_returns_404_for_nonexistent_id(

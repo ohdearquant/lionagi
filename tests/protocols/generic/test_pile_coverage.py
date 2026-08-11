@@ -23,9 +23,7 @@ class ItemB(Element):
     pass
 
 
-# ---------------------------------------------------------------------------
 # _validate_item_type: string resolution and error paths
-# ---------------------------------------------------------------------------
 
 
 class TestValidateItemType:
@@ -65,9 +63,7 @@ class TestValidateItemType:
         assert _validate_item_type(PlainClass) == {PlainClass}
 
 
-# ---------------------------------------------------------------------------
 # _validate_progression: dict path, duplicates, ID not found
-# ---------------------------------------------------------------------------
 
 
 class TestValidateProgression:
@@ -114,9 +110,7 @@ class TestValidateProgression:
         assert isinstance(result, Progression)
 
 
-# ---------------------------------------------------------------------------
 # Pile with order kwarg, item_type serialization
-# ---------------------------------------------------------------------------
 
 
 class TestPileInit:
@@ -156,9 +150,7 @@ class TestPileInit:
         assert len(lst) == 2
 
 
-# ---------------------------------------------------------------------------
 # _getitem: callable key, UUID key, list key edge cases
-# ---------------------------------------------------------------------------
 
 
 class TestPileGetItem:
@@ -203,9 +195,7 @@ class TestPileGetItem:
         assert result is a
 
 
-# ---------------------------------------------------------------------------
 # _setitem: non-int key paths and mismatch errors
-# ---------------------------------------------------------------------------
 
 
 class TestPileSetItem:
@@ -240,9 +230,7 @@ class TestPileSetItem:
         assert new in p
 
 
-# ---------------------------------------------------------------------------
 # _get: list of non-int keys
-# ---------------------------------------------------------------------------
 
 
 class TestPileGet:
@@ -277,9 +265,7 @@ class TestPileGet:
             p.get(Element())
 
 
-# ---------------------------------------------------------------------------
 # _pop: non-int key paths
-# ---------------------------------------------------------------------------
 
 
 class TestPilePop:
@@ -322,9 +308,7 @@ class TestPilePop:
             p._pop([])
 
 
-# ---------------------------------------------------------------------------
 # adapt_to / adapt_from
-# ---------------------------------------------------------------------------
 
 
 class TestPileAdapters:
@@ -336,9 +320,7 @@ class TestPileAdapters:
         assert "collections" in result
 
 
-# ---------------------------------------------------------------------------
 # Async iteration
-# ---------------------------------------------------------------------------
 
 
 class TestPileAsyncIteration:
@@ -377,9 +359,7 @@ class TestPileAsyncIteration:
             assert len(pp) == 2
 
 
-# ---------------------------------------------------------------------------
 # to_list_type: None input (module-level function in pile.py)
-# ---------------------------------------------------------------------------
 
 
 class TestToListType:

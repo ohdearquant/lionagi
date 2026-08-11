@@ -3,24 +3,16 @@
 
 """Periodic all-thread stack dumps, armed by an environment variable.
 
-A daemon that stops answering on one route is asking a question only a stack
-can answer, and the usual way to get one is to attach a sampling profiler to
-the live process. On macOS that needs root, which a rule against improvised
-elevation puts out of reach at exactly the moment the process is wedged.
+Uses ``faulthandler.dump_traceback_later`` to write every thread's stack to
+a file on a timer, with no process attach and no elevated privileges needed
+(a sampling profiler attach needs root on macOS). Off unless
+``LIONAGI_STUDIO_TRACEBACK_DUMP`` names a path -- absent that, this module
+arms no timer and changes no behaviour.
 
-``faulthandler.dump_traceback_later`` answers the same question from inside:
-every thread's stack, written to a file on a timer, with no attach and no
-privileges. It is stdlib, it is already imported by nothing else here, and it
-costs a wedged process nothing it was doing anyway.
-
-It is off unless ``LIONAGI_STUDIO_TRACEBACK_DUMP`` names a path. Absent that
-variable this module arms no timer, opens no file, and changes no behaviour.
-
-Capture windows are operator-bounded. ``repeat=True`` appends every interval
-for as long as the process runs, so an armed daemon left running writes an
-unbounded file. Nothing here rotates or truncates it: the intended use is a
-short reproduction window, and a size cap that silently stopped writing would
-lose the frames the window exists to catch.
+``repeat=True`` appends every interval for as long as the process runs, and
+nothing here rotates or truncates the file -- an armed daemon left running
+writes it unbounded. Intended for a short reproduction window, not
+always-on operation.
 """
 
 from __future__ import annotations

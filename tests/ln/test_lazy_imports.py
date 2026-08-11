@@ -15,10 +15,6 @@ import pytest
 
 import lionagi.ln as ln
 
-# ---------------------------------------------------------------------------
-# Public-symbol resolution
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.parametrize("name", ln.__all__)
 def test_all_exports_resolve(name):
@@ -45,11 +41,6 @@ def test_lazy_attribute_cached_after_first_access():
     assert "alcall" in vars(ln)
 
 
-# ---------------------------------------------------------------------------
-# dir() parity
-# ---------------------------------------------------------------------------
-
-
 def test_dir_is_superset_of_all():
     d = set(dir(ln))
     assert set(ln.__all__) <= d
@@ -68,11 +59,6 @@ def test_concurrency_module_accessible_via_attribute():
     assert ln.concurrency is direct
 
 
-# ---------------------------------------------------------------------------
-# No-warning import
-# ---------------------------------------------------------------------------
-
-
 def test_import_lionagi_ln_raises_no_warnings():
     result = subprocess.run(
         [sys.executable, "-W", "error", "-c", "import lionagi.ln; print('RUN_OK')"],
@@ -82,11 +68,6 @@ def test_import_lionagi_ln_raises_no_warnings():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "RUN_OK"
-
-
-# ---------------------------------------------------------------------------
-# Lazy loading — anyio / concurrency / _async_call / _to_list deferred
-# ---------------------------------------------------------------------------
 
 
 def _run_and_report(code: str) -> str:
@@ -161,11 +142,6 @@ def test_spec_module_does_not_eagerly_load_concurrency():
     )
     out = _run_and_report(code)
     assert out == "False False"
-
-
-# ---------------------------------------------------------------------------
-# Functional edge cases through the lazy surface
-# ---------------------------------------------------------------------------
 
 
 def test_to_list_functional_through_lazy_attribute():

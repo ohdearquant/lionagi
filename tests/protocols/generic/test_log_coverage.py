@@ -11,9 +11,7 @@ from lionagi.protocols.generic.log import (
 )
 from lionagi.protocols.generic.pile import Pile
 
-# ---------------------------------------------------------------------------
 # DataLoggerConfig validators
-# ---------------------------------------------------------------------------
 
 
 class TestDataLoggerConfigValidators:
@@ -34,9 +32,7 @@ class TestDataLoggerConfigValidators:
             DataLoggerConfig(hash_digits=-1)
 
 
-# ---------------------------------------------------------------------------
 # Log.from_dict / immutability
-# ---------------------------------------------------------------------------
 
 
 class TestLogFromDict:
@@ -55,9 +51,7 @@ class TestLogFromDict:
             restored.content = {"new": "data"}
 
 
-# ---------------------------------------------------------------------------
 # Log.create
-# ---------------------------------------------------------------------------
 
 
 class TestLogCreate:
@@ -76,9 +70,7 @@ class TestLogCreate:
         assert log.content == {"error": "No content to log."}
 
 
-# ---------------------------------------------------------------------------
 # DataLogger init with dict logs
-# ---------------------------------------------------------------------------
 
 
 class TestDataLoggerInitFromDict:
@@ -90,9 +82,7 @@ class TestDataLoggerInitFromDict:
         assert len(dl.logs) == 1
 
 
-# ---------------------------------------------------------------------------
 # DataLogger.log — capacity auto-dump failure
-# ---------------------------------------------------------------------------
 
 
 class TestDataLoggerLogCapacity:
@@ -107,9 +97,7 @@ class TestDataLoggerLogCapacity:
         assert len(dl.logs) >= 1
 
 
-# ---------------------------------------------------------------------------
 # DataLogger.dump — various paths
-# ---------------------------------------------------------------------------
 
 
 class TestDataLoggerDump:
@@ -173,9 +161,7 @@ class TestDataLoggerDump:
                 dl.dump(persist_path=json_path)
 
 
-# ---------------------------------------------------------------------------
 # DataLogger.adump
-# ---------------------------------------------------------------------------
 
 
 class TestDataLoggerAdump:
@@ -188,9 +174,7 @@ class TestDataLoggerAdump:
         assert json_path.exists()
 
 
-# ---------------------------------------------------------------------------
 # DataLogger._create_path with subfolder
-# ---------------------------------------------------------------------------
 
 
 class TestCreatePathSubfolder:
@@ -206,9 +190,7 @@ class TestCreatePathSubfolder:
         assert "mysub" in str(path)
 
 
-# ---------------------------------------------------------------------------
 # DataLogger.save_at_exit
-# ---------------------------------------------------------------------------
 
 
 class TestSaveAtExit:
@@ -247,9 +229,7 @@ class TestSaveAtExit:
             dl.save_at_exit()
 
 
-# ---------------------------------------------------------------------------
 # DataLogger.from_config
-# ---------------------------------------------------------------------------
 
 
 class TestFromConfig:
@@ -269,9 +249,7 @@ class TestFromConfig:
         assert len(dl.logs) == 1
 
 
-# ---------------------------------------------------------------------------
 # alog async method
-# ---------------------------------------------------------------------------
 
 
 class TestDataLoggerAlog:
@@ -283,9 +261,7 @@ class TestDataLoggerAlog:
         assert len(dl.logs) == 1
 
 
-# ---------------------------------------------------------------------------
 # CSV dump path
-# ---------------------------------------------------------------------------
 
 
 class TestDataLoggerDumpCSV:

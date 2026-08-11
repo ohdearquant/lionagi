@@ -20,9 +20,7 @@ from lionagi.cli.agent import (
     run_agent,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_parser():
@@ -70,9 +68,7 @@ def _agent_args(**overrides):
     return SimpleNamespace(**defaults)
 
 
-# ---------------------------------------------------------------------------
 # 3a — --preset parser tests
-# ---------------------------------------------------------------------------
 
 
 class TestPresetParserFlag:
@@ -104,9 +100,7 @@ class TestPresetParserFlag:
         assert ns.form == str(spec_path)
 
 
-# ---------------------------------------------------------------------------
 # 3b — --form parser tests
-# ---------------------------------------------------------------------------
 
 
 class TestFormParserFlag:
@@ -121,9 +115,7 @@ class TestFormParserFlag:
         assert ns.form is None
 
 
-# ---------------------------------------------------------------------------
 # _load_form_spec unit tests
-# ---------------------------------------------------------------------------
 
 
 class TestLoadFormSpec:
@@ -152,9 +144,7 @@ class TestLoadFormSpec:
             _load_form_spec(str(p))
 
 
-# ---------------------------------------------------------------------------
 # _build_work_form unit tests
-# ---------------------------------------------------------------------------
 
 
 class TestBuildWorkForm:
@@ -203,9 +193,7 @@ class TestBuildWorkForm:
             _build_work_form(spec, "<test>")
 
 
-# ---------------------------------------------------------------------------
 # _form_to_context_block unit tests
-# ---------------------------------------------------------------------------
 
 
 class TestFormToContextBlock:
@@ -223,9 +211,7 @@ class TestFormToContextBlock:
         assert "/tmp/x" in block
 
 
-# ---------------------------------------------------------------------------
 # run_agent — --form validation gate fires BEFORE LLM call
-# ---------------------------------------------------------------------------
 
 
 class TestFormValidationGate:
@@ -375,9 +361,7 @@ class TestFormValidationGate:
         assert captured_prompts[0] == "bare prompt"
 
 
-# ---------------------------------------------------------------------------
 # run_agent — --preset forwarded correctly in the _run_agent() call
-# ---------------------------------------------------------------------------
 
 
 class TestPresetCodingBehaviour:
@@ -445,9 +429,7 @@ class TestPresetCodingBehaviour:
         assert captured_kwargs[0].get("cwd") == str(tmp_path)
 
 
-# ---------------------------------------------------------------------------
 # _run_agent — preset param wires _make_coding_preset() and create_agent
-# ---------------------------------------------------------------------------
 
 #: Core CodingToolkit tool names expected when preset=coding is used.
 _CODING_TOOL_NAMES = {"reader", "editor", "bash", "search"}
@@ -659,9 +641,7 @@ async def test_run_agent_continue_last_with_preset_raises(monkeypatch, tmp_path)
         )
 
 
-# ---------------------------------------------------------------------------
 # profile + preset system prompt composition
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -789,9 +769,7 @@ async def test_run_agent_profile_without_preset_system_prompt_unchanged(monkeypa
     assert PROFILE_PROMPT in sys_msg.rendered
 
 
-# ---------------------------------------------------------------------------
 # form spec closed schema enforcement
-# ---------------------------------------------------------------------------
 
 
 class TestFormSpecClosedSchema:
@@ -894,9 +872,7 @@ class TestFormSpecClosedSchema:
         )
 
 
-# ---------------------------------------------------------------------------
 # directory --form path → rc=1, clear error, no traceback
-# ---------------------------------------------------------------------------
 
 
 class TestFormDirectoryPath:
@@ -928,9 +904,7 @@ class TestFormDirectoryPath:
         )
 
 
-# ---------------------------------------------------------------------------
 # non-mapping fields / values probe shapes
-# ---------------------------------------------------------------------------
 
 
 class TestFormNonMappingTypes:
@@ -998,9 +972,7 @@ class TestFormNonMappingTypes:
         assert errors
 
 
-# ---------------------------------------------------------------------------
 # LION_SYSTEM_MESSAGE dedup with real profile files
-# ---------------------------------------------------------------------------
 
 
 def _make_agents_dir(tmp_path, monkeypatch):

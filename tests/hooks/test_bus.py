@@ -9,8 +9,6 @@ import pytest
 
 from lionagi.hooks import HookBus, HookPoint, StopHook, hook
 
-# ── Basic dispatch ────────────────────────────────────────────────────────────
-
 
 async def test_emit_calls_registered_handlers_in_order():
     bus = HookBus()
@@ -58,9 +56,6 @@ async def test_off_unregistered_handler_is_noop():
     bus.off(HookPoint.MESSAGE_ADD, h)
 
 
-# ── Sync handlers accepted ────────────────────────────────────────────────────
-
-
 async def test_sync_handler_runs_without_await():
     bus = HookBus()
     calls: list[int] = []
@@ -71,9 +66,6 @@ async def test_sync_handler_runs_without_await():
     bus.on(HookPoint.SESSION_END, sync_handler)
     await bus.emit(HookPoint.SESSION_END, session_id="s", status="completed")
     assert calls == [1]
-
-
-# ── Isolation: handler errors do NOT abort ───────────────────────────────────
 
 
 async def test_handler_exception_is_logged_and_swallowed():
@@ -110,9 +102,6 @@ async def test_sync_handler_exception_is_also_swallowed():
     assert fired_after == ["after"]
 
 
-# ── StopHook short-circuits remaining handlers ───────────────────────────────
-
-
 async def test_stop_hook_aborts_siblings_but_not_operation():
     bus = HookBus()
     calls: list[str] = []
@@ -130,9 +119,6 @@ async def test_stop_hook_aborts_siblings_but_not_operation():
     assert calls == ["stopper"]
 
 
-# ── Read introspection ──────────────────────────────────────────────────────
-
-
 async def test_handlers_for_returns_copy_not_internal_list():
     bus = HookBus()
 
@@ -144,9 +130,6 @@ async def test_handlers_for_returns_copy_not_internal_list():
     snapshot.clear()  # Should not affect the bus.
 
     assert bus.handlers_for(HookPoint.SESSION_START) == [h]
-
-
-# ── @hook decorator ──────────────────────────────────────────────────────────
 
 
 def test_hook_decorator_tags_function_with_point():
@@ -173,9 +156,6 @@ def test_hook_decorator_rejects_unknown_point():
             pass
 
 
-# ── HookPoint vocabulary pinned ──────────────────────────────────────────────
-
-
 def test_hook_point_vocabulary():
     """Pin the 12-event vocabulary so a removal is visible in this test."""
     values = {p.value for p in HookPoint}
@@ -194,9 +174,6 @@ def test_hook_point_vocabulary():
         "artifact.created",
         "prompt.submit",
     }
-
-
-# ── FIX 1: on() validates HookPoint ─────────────────────────────────────────
 
 
 def test_on_string_valid_point_registers():
@@ -237,9 +214,6 @@ def test_handlers_for_invalid_string_raises_value_error():
         bus.handlers_for("session.starts")
 
 
-# ── Dormant-point registration warns (issue #1965) ───────────────────────────
-
-
 def test_registering_on_dormant_point_warns():
     """ARTIFACT_CREATED has no production emit site — registering a handler on
     it must not be silently accepted; the caller learns about it via warning,
@@ -275,9 +249,9 @@ def test_registering_on_dormant_point_by_string_value_warns():
     ],
 )
 def test_registering_on_now_wired_api_points_does_not_warn(recwarn, point):
-    """Regression guard for issue #1965: these three used to be dormant.
-    Now that they have production emit sites (operations/_api_hooks.py),
-    registering a handler on them must NOT trigger the dormant-point warning."""
+    """These three points used to be dormant. Now that they have production
+    emit sites (operations/_api_hooks.py), registering a handler on them
+    must NOT trigger the dormant-point warning."""
     bus = HookBus()
 
     async def h(**kw):
@@ -285,9 +259,6 @@ def test_registering_on_now_wired_api_points_does_not_warn(recwarn, point):
 
     bus.on(point, h)
     assert not any(issubclass(w.category, UserWarning) for w in recwarn.list)
-
-
-# ── FIX 2: blocking_emit propagates exceptions for TOOL_PRE ──────────────────
 
 
 async def test_blocking_emit_propagates_exception():
@@ -333,10 +304,7 @@ async def test_blocking_emit_stop_hook_short_circuits_without_error():
     assert calls == ["stopper"]
 
 
-# ── FIX 3: handlers snapshotted before dispatch ───────────────────────────────
-
-
-# ── USER_PROMPT_SUBMIT is the second blocking point (ADR-0048 D2) ───────────
+# USER_PROMPT_SUBMIT is the second blocking point (ADR-0048 D2)
 
 
 async def test_blocking_emit_propagates_exception_for_user_prompt_submit():

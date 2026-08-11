@@ -327,13 +327,11 @@ async def test_get_artifact_caps_and_redacts_content(monkeypatch):
     _assert_private_input_is_removed(result, source)
 
 
-# ---------------------------------------------------------------------------
 # An unreadable store must not answer like an empty one
 #
 # Each guard gets both arms. The unknown-arm alone would pass against a `known`
 # hardcoded to False, and the known-arm alone would pass against one hardcoded
 # True, so neither on its own shows the flag carries information.
-# ---------------------------------------------------------------------------
 
 
 async def test_list_sessions_reports_unknown_when_the_store_cannot_be_opened(monkeypatch):

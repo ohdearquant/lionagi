@@ -1,21 +1,9 @@
 """The suite's run directory must be its own, whatever the environment says.
 
-``tests/conftest.py`` redirects ``LIONAGI_HOME`` to a temporary directory before
-any lionagi import, because ``lionagi._paths`` reads it once at import and
-derives ``RUNS_ROOT`` from it. The redirect is only worth anything if it also
-holds when the invoking environment already sets ``LIONAGI_HOME`` — that is the
-case where a developer's real store, or a persistent CI one, is what the suite
-would otherwise write into, and it is the case a conftest that only fills in a
-missing value gets wrong while looking correct.
-
-Checking that from inside the running suite is not possible: by then the
-redirect has already happened and the original environment is gone. So this
-launches a second pytest with ``LIONAGI_HOME`` pre-set to a disposable
-directory and asks the collected code what it actually bound.
-
-The same subprocess is what makes the cleanup of that root observable: the
-removal runs at interpreter exit, after the session is over, so only a second
-process can watch a first one finish and read what it said on the way out.
+Verifies from the outside (a probe subprocess) that tests/conftest.py's
+LIONAGI_HOME redirect holds even when the invoking environment already sets
+LIONAGI_HOME. See docs/internals/ci.md#run-directory-isolation for the
+mechanism and why a subprocess is required to observe it.
 """
 
 import errno
@@ -35,7 +23,7 @@ _REPO_ROOT = _TESTS_DIR.parent
 
 # Reports the constants as lionagi bound them, from inside a suite that loaded
 # the real tests/conftest.py. Writes rather than prints so the answer survives
-# whatever pytest does to captured output.
+# pytest's output capture.
 _PROBE_TEST = """
 import json
 import os
@@ -57,16 +45,10 @@ def test_report_bound_paths():
 """
 
 
-# Makes the suite's own root impossible to delete, using nothing but file
-# permissions: a process cannot unlink an entry from a directory it may not
-# write to, so ``rmtree`` walks in and stops on the file inside. The reporting
-# path under test is left alone -- stubbing it would only prove the stub ran.
-#
-# The paths are written down BEFORE the lock goes on, and that order is the
-# point: from the instant this directory becomes unremovable there is a file on
-# disk naming it and naming what has to be undone. The caller can then clear it
-# up whatever happens next -- including the cases where the caller never
-# receives a result at all, because this process hung or was killed.
+# Makes the suite's own root impossible to delete via chmod(0o500) on a
+# subdirectory, so rmtree walks in and stops. Paths are written down BEFORE
+# the lock goes on, so a caller can find and clear the root even if this
+# process hangs or is killed before reporting anything else.
 _UNREMOVABLE_PROBE_TEST = """
 import json
 import os
@@ -88,18 +70,13 @@ def test_leave_the_run_directory_unremovable():
 def _undo_lock_and_remove(reported: dict) -> None:
     """Restore whatever a probe made unremovable, then delete its root.
 
-    Works from what the probe wrote down rather than from a live handle, so it
-    can run at any point after the probe locked the directory -- including
-    after a call that raised before it could hand anything back.
-
-    Raises when the root is still there afterwards, naming the path and the
-    error. Attempting the removal and reporting that as having removed it is
-    the failure this whole module exists to catch: a directory nothing can
-    delete stays on disk and the suite says nothing about it. The removal is
-    therefore unguarded -- the error the filesystem gives is the only thing
-    that tells a reader whether to fix permissions or free some disk -- and the
-    path is checked again afterwards, because a removal that raises nothing has
-    still failed if the directory is there.
+    Works from what the probe wrote down rather than a live handle, so it can
+    run even after a call that raised before it could hand anything back. The
+    removal is unguarded (its error is what tells a reader whether to fix
+    permissions or free disk) and the path is checked again afterwards,
+    because a removal that raises nothing has still failed if the directory
+    is there -- reporting otherwise is the exact failure this module exists
+    to catch.
     """
     locked = reported.get("locked")
     if locked and os.path.exists(locked):
@@ -125,17 +102,12 @@ def _undo_lock_and_remove(reported: dict) -> None:
 def _recover_reported_roots(result_paths) -> None:
     """Undo every recorded lock, and name every one that could not be undone.
 
-    Every record gets its turn even when an earlier one fails: the roots are
-    independent, and stopping at the first failure strands the later ones with
-    nothing coming back for them. The failures are collected and raised
-    together at the end, so a partial recovery cannot be read as a complete
-    one -- which is the same defect as a single removal that reports having
-    happened when it did not.
-
-    The per-record guard is deliberately wide. Nothing is swallowed by it:
-    whatever it catches is named in the consolidated failure, and catching
-    narrowly here would let one unexpected error decide that the remaining
-    roots are not worth attempting.
+    Every record gets its turn even when an earlier one fails, since stopping
+    at the first failure would strand the later roots with nothing coming
+    back for them; failures are collected and raised together at the end.
+    The per-record guard is deliberately wide -- whatever it catches is named
+    in the consolidated failure, rather than letting one unexpected error
+    decide the remaining roots aren't worth attempting.
     """
     failures = []
     for result_path in result_paths:
@@ -161,21 +133,14 @@ def _recover_reported_roots(result_paths) -> None:
 def probe(tmp_path):
     """Run one probe pytest and hand back what it reported from inside.
 
-    The probe file lives in a dot-directory under ``tests/`` so that the real
-    conftest applies to it (conftest discovery walks up the filesystem, so a
-    file in ``/tmp`` would collect nothing) while pytest's default
-    ``norecursedirs`` keeps an ordinary suite run from picking it up. Passing
-    the file path explicitly collects it anyway.
-
-    A probe that deliberately makes its own root unremovable writes the paths
-    down before it locks anything, so every root a call could leave behind is
-    named by a file this fixture already knows the location of. Reading those
-    back at teardown is what clears up after a call that never returned -- a
-    timeout, or a result that would not parse -- where the test itself never
-    learns which directory to go and unlock.
-
-    The list of records is hung off the returned callable, so a test can drive
-    the same recovery this teardown runs and read what it reports.
+    The probe file lives in a dot-directory under tests/ so real conftest
+    discovery applies to it (a file under /tmp would collect nothing) while
+    pytest's default norecursedirs keeps an ordinary suite run from picking
+    it up -- passing the file path explicitly collects it anyway. Recorded
+    paths are read back at teardown to clean up after a call that never
+    returned (timeout, unparseable result), and are also hung off the
+    returned callable so a test can drive the same recovery and read what it
+    reports.
     """
 
     reported_paths: list[Path] = []
@@ -282,11 +247,10 @@ def test_lionagi_test_home_is_the_deliberate_way_through(probe, tmp_path):
 def test_a_root_that_cannot_be_removed_is_reported(probe, tmp_path):
     """A cleanup that fails must say which directory it left behind, and why.
 
-    The suite deletes its temporary root from ``atexit``, which is past the
-    point where a failure can be a test result -- so the only thing that can
-    observe one is another process watching this one exit. The probe makes the
-    removal fail through ordinary permissions and this reads the exiting
-    process's stderr.
+    atexit cleanup runs past the point where a failure can be a test result,
+    so only another process watching this one exit can observe it. The probe
+    forces the removal to fail via ordinary permissions; this reads the
+    exiting process's stderr.
     """
     caller_home = tmp_path / "caller-store"
     caller_home.mkdir()
@@ -333,15 +297,11 @@ def test_one_failed_recovery_neither_hides_itself_nor_strands_the_next_root(
 ):
     """Recovering two locked roots, where the first recovery cannot be done.
 
-    Two calls leave two roots that only the recorded paths can find again, and
-    the first is made irrecoverable: its unlocking is turned into a no-op, so
-    the recovery goes on to a removal that cannot succeed. That is the failure
-    worth forcing, because it is the one a removal asked to ignore its errors
-    would carry out and then report as done.
-
-    What has to hold is that the failure reaches the caller naming the root and
-    the reason, and that the second root is recovered anyway -- a loop that
-    stops at the first failure leaves it locked on disk with nothing coming
+    The first root's unlocking is turned into a no-op so its removal cannot
+    succeed -- the failure a removal that ignored its own errors would carry
+    out and report as done. Asserts the failure reaches the caller naming the
+    root and the reason, and that the second root is recovered anyway; a loop
+    that stops at the first failure would leave it locked with nothing coming
     back for it.
     """
     caller_home = tmp_path / "caller-store"
@@ -400,11 +360,10 @@ def test_one_failed_recovery_neither_hides_itself_nor_strands_the_next_root(
 def test_a_removal_that_exhausts_the_stack_is_reported_too(monkeypatch, capsys):
     """Not every way a removal fails comes from the filesystem.
 
-    ``rmtree`` descends recursively, so a tree deep enough exhausts the stack
-    and raises ``RecursionError`` while every directory in it is perfectly
-    removable. The root is still left behind, so it has to reach the same
-    message -- not escape and become an ``atexit`` traceback, which is the one
-    outcome the reporting exists to prevent.
+    rmtree descends recursively, so a tree deep enough exhausts the stack and
+    raises RecursionError while every directory in it is perfectly removable.
+    The root is still left behind, so this must reach the same stderr
+    message rather than escape as an atexit traceback.
     """
     from tests.conftest import _remove_test_home
 
@@ -427,9 +386,9 @@ def test_a_removal_that_exhausts_the_stack_is_reported_too(monkeypatch, capsys):
 def test_a_bug_in_the_removal_is_not_dressed_up_as_a_cleanup_failure(monkeypatch, capsys):
     """Only the filesystem's refusals are turned into a message.
 
-    Calling ``rmtree`` wrongly is a defect in this suite, not a directory the
-    machine would not delete, and reporting it as the latter would send a
-    reader hunting for a root that is not there.
+    Calling rmtree wrongly is a defect in this suite, not a directory the
+    machine would not delete; reporting it as the latter would send a reader
+    hunting for a root that isn't there.
     """
     from tests.conftest import _remove_test_home
 

@@ -23,9 +23,7 @@ from lionagi.ln.concurrency._compat import (
     is_exception_group,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _finding_factory(name: str) -> FindingEmitted:
@@ -71,9 +69,7 @@ def _budget_gated_make_agent(run: Any, emit_factory: Any = _finding_factory):
     return fake_make_agent
 
 
-# ---------------------------------------------------------------------------
 # 1. Repro FRICTION_LOG run 5a — spawned discretionary expansion crash
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -110,9 +106,7 @@ async def test_research_verbose_root_spawn_budget_race_degrades_not_crashes(monk
     assert result.events_by_type(FindingEmitted), "expected real findings collected before the cap"
 
 
-# ---------------------------------------------------------------------------
 # 2. Repro FRICTION_LOG run 3 — root-level (gathered) raw raise
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -144,12 +138,6 @@ async def test_review_root_gather_budget_error_does_not_raise(monkeypatch):
     assert run._budget_notified is True, "the budget-exhaustion signal must still be recorded"
 
 
-# ---------------------------------------------------------------------------
-# 2b. Repro production bug gtd 6b76e4ff (2026-07-17) — verdict computed then
-#     dropped when the deadline fires before synth.operate() returns
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 @pytest.mark.slow_timing
 async def test_review_verdict_emitted_on_exhaustion_not_dropped(monkeypatch):
@@ -159,14 +147,14 @@ async def test_review_verdict_emitted_on_exhaustion_not_dropped(monkeypatch):
     deadline cancels the run must be returned via _partial_export, not
     discarded.
 
-    Reproduces the production bug (gtd 6b76e4ff, 2026-07-17, leo's reactive
-    PR-review daemon): the codex terra engine sometimes needs emission
-    retries before its structured verdict settles. If the deadline watchdog
-    fires while _verdict()'s synth.operate() call is still in flight, the
-    verdict was already computed/emitted onto run.by_type(ReviewVerdict), but
-    pre-fix the base Engine._partial_export no-op (inherited by ReviewEngine)
-    discarded it and Engine.run() returned a bare None — the daemon reported
-    NO-VERDICT despite a verdict existing in the event stream.
+    Reproduces a production bug in a reactive PR-review daemon: a review
+    engine sometimes needs emission retries before its structured verdict
+    settles, and if the deadline watchdog fires while the verdict call is
+    still in flight, the verdict was already computed/emitted onto
+    run.by_type(ReviewVerdict) — but pre-fix, the base Engine._partial_export
+    no-op (inherited by ReviewEngine) discarded it and Engine.run() returned
+    a bare None, so the daemon reported no verdict despite one existing in
+    the event stream.
     """
     verdict = ReviewVerdict(
         verdict="REQUEST-CHANGES",
@@ -220,9 +208,7 @@ async def test_review_verdict_emitted_on_exhaustion_not_dropped(monkeypatch):
     assert "REQUEST-CHANGES" in result.text
 
 
-# ---------------------------------------------------------------------------
 # 3. Masking guard — a real error in a mixed group must still surface
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -322,9 +308,7 @@ async def test_masking_guard_reraises_real_error_buried_in_nested_group():
     )
 
 
-# ---------------------------------------------------------------------------
 # 5. Back-compat: await engine.run(...) stays isinstance(str)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -355,12 +339,10 @@ async def test_back_compat_str_contract_across_prose_engines():
         assert str(result) == result.text
 
 
-# ---------------------------------------------------------------------------
 # 7. A dimension agent's emission failure alone (no deadline/budget hit) must
 #    still flag the result degraded — a verdict blind to a whole skipped
 #    dimension is degraded by construction, independent of *why* it was
 #    skipped.
-# ---------------------------------------------------------------------------
 
 
 class _NeverEmitBranch:
@@ -522,10 +504,8 @@ async def test_clean_run_with_no_skipped_agents_stays_not_degraded():
     assert result.degrade_reason == ""
 
 
-# ---------------------------------------------------------------------------
 # 6. R5 — success path after a filtered discretionary budget raise still
 #    flags degraded (anti-silent-truncation guard for edit 1 + edit 3)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

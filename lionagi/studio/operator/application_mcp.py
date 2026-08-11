@@ -851,23 +851,13 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
     context = context if isinstance(context, dict) else None
     source = "turn"
 
-    # The turn's context is frozen at submit, so it is only the freshest answer
-    # until the human moves. Prefer a view the SAME PAGE observed later in its
-    # own count of the views it has seen.
-    #
-    # Both halves of that are load-bearing. Server arrival order cannot stand in
-    # for the count: a report the browser saw before the instruction can arrive
-    # after it, and ordering by arrival would present a view from before the
-    # question as the answer to it, labelled live. Nor can a wall clock, which
-    # can step backwards and leave a stale view holding the higher number. And a
-    # count from a different page cannot be compared at all: two tabs on one
-    # conversation are looking at two different pages, they count
-    # independently, and only the page the instruction came from can say where
-    # the human is.
-    #
-    # When the turn names no observer or no count there is nothing to compare
-    # against, so the honest answer is the turn's own snapshot rather than a
-    # freshness claim that cannot be supported.
+    # The turn's context is frozen at submit, so it is only the freshest
+    # answer until the human moves. Prefer a view the SAME PAGE observed
+    # later, by its own observation count -- never server arrival order or a
+    # wall clock, and never a count from a different page. See
+    # docs/internals/studio.md ("View freshness: observation count, not
+    # wall clock"). When the turn names no observer or no count, the turn's
+    # own snapshot is the honest answer.
     turn_seq = (context or {}).get("observationSeq")
     turn_observer = (context or {}).get("observerId")
     if isinstance(turn_seq, int) and isinstance(turn_observer, str):
@@ -884,14 +874,10 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
         "project": public_project(context.get("project")),
         "selection": context.get("selection"),
         "filters": context.get("filters"),
-        # "turn" means nothing observed later than the instruction has been
-        # reported, so the human may have moved since. "live" means this is
-        # where they are.
-        #
-        # The observation count that decided this is deliberately NOT returned.
-        # It counts what one page has seen and means nothing outside that page,
-        # so a bare number here could only invite a comparison that is not
-        # valid -- which is the defect this whole mechanism was built to remove.
+        # "turn": nothing observed later has been reported, so the human may
+        # have moved since. "live": this is where they are. The observation
+        # count itself is deliberately not returned -- it means nothing
+        # outside the page that counted it.
         "source": source,
     }
 

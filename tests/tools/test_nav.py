@@ -55,11 +55,6 @@ def typed_file(tmp_path: Path) -> Path:
     return f
 
 
-# ---------------------------------------------------------------------------
-# _outline_sync
-# ---------------------------------------------------------------------------
-
-
 def test_outline_finds_class(sample_file):
     resp = _outline_sync(str(sample_file))
     assert resp.success
@@ -125,11 +120,6 @@ def test_outline_two_classes(typed_file):
     assert "Child" in names
 
 
-# ---------------------------------------------------------------------------
-# _find_definition_sync
-# ---------------------------------------------------------------------------
-
-
 def test_find_definition_class(sample_file):
     resp = _find_definition_sync(str(sample_file), "Foo")
     assert resp.success
@@ -166,11 +156,6 @@ def test_find_definition_syntax_error(tmp_path):
     assert not resp.success
 
 
-# ---------------------------------------------------------------------------
-# _find_references_sync
-# ---------------------------------------------------------------------------
-
-
 def test_find_references_returns_uses(typed_file):
     resp = _find_references_sync(str(typed_file), "Base")
     assert resp.success
@@ -194,11 +179,6 @@ def test_find_references_kind(typed_file):
     resp = _find_references_sync(str(typed_file), "Base")
     for item in resp.items:
         assert item.kind == "reference"
-
-
-# ---------------------------------------------------------------------------
-# NavTool async handle_request
-# ---------------------------------------------------------------------------
 
 
 async def test_handle_request_dict_input(tmp_path):
@@ -271,11 +251,6 @@ async def test_handle_request_rejects_outside_workspace(tmp_path):
     assert resp.error
 
 
-# ---------------------------------------------------------------------------
-# NavTool.to_tool
-# ---------------------------------------------------------------------------
-
-
 def test_to_tool_returns_tool():
     tool = NavTool()
     assert isinstance(tool.to_tool(), Tool)
@@ -289,11 +264,6 @@ def test_to_tool_cached():
 def test_to_tool_func_name():
     tool = NavTool()
     assert tool.to_tool().func_callable.__name__ == "code_nav"
-
-
-# ---------------------------------------------------------------------------
-# CodingToolkit integration
-# ---------------------------------------------------------------------------
 
 
 def test_coding_toolkit_registers_code_nav(tmp_path):
