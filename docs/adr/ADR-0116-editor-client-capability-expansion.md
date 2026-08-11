@@ -1,7 +1,17 @@
 # ADR-0116: Editor client capability expansion
 
-- **Status**: Proposed
+- **Status**: Accepted (2026-08-11)
 - **Kind**: Aspirational (records the target state)
+- **Implementation-status**: not started, verified against the extension source rather
+  than assumed. No tier-1 capability has shipped, and two of the three have a near-miss
+  in the tree that should not be mistaken for them. There is no file-decoration or
+  CodeLens provider at all. The run tree *groups* by project and can page a project's
+  runs, but it does not scope to the open workspace's project — it shows the whole
+  machine's history, and the only read of `workspaceFolders` picks the backend's working
+  directory. The extension does register a status bar item, but it reports backend
+  lifecycle state (stopped/starting/running/error), not the ambient counts tier 1 asks
+  for. D1's allowlist test does not exist. Tier 3 remains gated on the two daemon
+  conditions named in D2. The delta table below is the work list.
 - **Area**: studio
 - **Date**: 2026-08-07
 - **Relations**: extends ADR-0082; revises ADR-0082 D2; depends on ADR-0076, ADR-0078
