@@ -60,9 +60,7 @@ def _make_svc() -> AsyncMock:
     return svc
 
 
-# ---------------------------------------------------------------------------
 # threshold.py — pure validation + comparison
-# ---------------------------------------------------------------------------
 
 
 def test_validate_threshold_config_accepts_well_formed():
@@ -130,9 +128,7 @@ def test_compare_rejects_unknown_op():
         compare("lt", 1, 2)
 
 
-# ---------------------------------------------------------------------------
 # services/schedules.py — service-boundary validation
-# ---------------------------------------------------------------------------
 
 
 def test_svc_validate_threshold_config_accepts_none():
@@ -165,9 +161,7 @@ def test_svc_validate_threshold_config_rejects_unknown_key():
         )
 
 
-# ---------------------------------------------------------------------------
 # SchedulerEngine._evaluate_threshold_breach
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -266,9 +260,7 @@ async def test_evaluate_threshold_breach_flags_partial_spend_when_sessions_unrep
     }
 
 
-# ---------------------------------------------------------------------------
 # SchedulerEngine._maybe_fire — full threshold-alert integration
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -425,12 +417,10 @@ async def test_maybe_fire_threshold_still_honors_overlap_policy():
     assert not last_alert_calls
 
 
-# ---------------------------------------------------------------------------
 # _maybe_fire() — synchronous in-process cooldown reservation. last_alert_at
 # alone (a DB read) can go stale between ticks; these tests pin the
 # in-memory _threshold_pending gate that closes the resulting duplicate-fire
 # race, independent of when (or whether) the durable stamp lands.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -547,10 +537,8 @@ async def test_maybe_fire_exception_between_reserve_and_fire_releases_threshold_
     mock_tracked.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # _fire() / _fire_inner() — threshold cooldown stamp lands AFTER the
 # schedule_run row is durably persisted, not before the fire starts.
-# ---------------------------------------------------------------------------
 
 
 def _threshold_ctx(**overrides) -> dict:
@@ -807,9 +795,7 @@ async def test_fire_non_threshold_schedule_never_stamps_last_alert_at():
     assert not _last_alert_calls(svc)
 
 
-# ---------------------------------------------------------------------------
 # StateDB.metric_value — real in-memory DB, window math
-# ---------------------------------------------------------------------------
 
 
 async def _make_session(
@@ -976,10 +962,8 @@ async def test_metric_value_unknown_metric_raises():
     await state.close()
 
 
-# ---------------------------------------------------------------------------
 # StateDB.metric_value — github_poll_healthy_age_minutes / _consecutive_401
 # (observer self-health)
-# ---------------------------------------------------------------------------
 
 
 async def _make_github_schedule(state, sched_id: str, **overrides):
@@ -1110,9 +1094,7 @@ async def test_metric_value_github_poll_consecutive_401_counts_and_resets():
     await state.close()
 
 
-# ---------------------------------------------------------------------------
 # create_schedule / update_schedule round-trip threshold_config + last_alert_at
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1154,9 +1136,7 @@ async def test_schedule_round_trips_threshold_config_and_last_alert_at():
     await state.close()
 
 
-# ---------------------------------------------------------------------------
 # VALID_METRICS and _THRESHOLD_METRIC_QUERIES, named in one place
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

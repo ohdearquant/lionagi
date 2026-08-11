@@ -6,9 +6,7 @@ import pytest
 
 from lionagi.testing import LionAGIMockFactory
 
-# ============================================================================
 # Helpers / tool functions used across tests
-# ============================================================================
 
 
 def search_knowledge(query: str) -> str:
@@ -21,9 +19,7 @@ def search_papers(query: str, max_results: int = 5) -> str:
     return f"Papers about: {query}"
 
 
-# ============================================================================
 # Fan-Out/In Pattern
-# ============================================================================
 
 
 class TestFanOutIn:
@@ -122,9 +118,7 @@ class TestFanOutIn:
         assert len(result) > 0
 
 
-# ============================================================================
 # Sequential Analysis Pattern
-# ============================================================================
 
 
 class TestSequentialAnalysis:
@@ -206,9 +200,7 @@ class TestSequentialAnalysis:
         assert asyncio.iscoroutinefunction(branch.communicate)
 
 
-# ============================================================================
 # Tournament Validation Pattern
-# ============================================================================
 
 
 class TestTournamentValidation:
@@ -301,9 +293,7 @@ class TestTournamentValidation:
         assert "Best solution" in verdict
 
 
-# ============================================================================
 # Conditional Flows Pattern
-# ============================================================================
 
 
 class TestConditionalFlows:
@@ -383,9 +373,7 @@ class TestConditionalFlows:
         assert code_branch.name == "code"
 
 
-# ============================================================================
 # ReAct with RAG Pattern
-# ============================================================================
 
 
 class TestReActWithRAG:
