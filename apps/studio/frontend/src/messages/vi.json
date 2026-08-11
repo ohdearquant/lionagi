@@ -887,8 +887,7 @@
       "updated": "đã cập nhật",
       "branchesTitle": "nhánh ({count})",
       "noBranches": "không có nhánh.",
-      "msgs": " tin nhắn",
-      "engineRuns": "Lượt chạy engine"
+      "msgs": " tin nhắn"
     },
     "split": {
       "master": "danh sách phiên",

@@ -887,8 +887,7 @@
       "updated": "আপডেটেড",
       "branchesTitle": "{count, plural, one {ব্রাঞ্চ (#)} other {ব্রাঞ্চ (#)}}",
       "noBranches": "কোনো ব্রাঞ্চ নেই।",
-      "msgs": " মেসেজ",
-      "engineRuns": "ইঞ্জিন রান"
+      "msgs": " মেসেজ"
     },
     "split": {
       "master": "সেশন তালিকা",

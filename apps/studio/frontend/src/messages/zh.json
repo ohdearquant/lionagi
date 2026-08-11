@@ -887,8 +887,7 @@
       "updated": "更新时间",
       "branchesTitle": "分支（{count}）",
       "noBranches": "暂无分支。",
-      "msgs": " 条消息",
-      "engineRuns": "引擎运行"
+      "msgs": " 条消息"
     },
     "split": {
       "master": "会话列表",

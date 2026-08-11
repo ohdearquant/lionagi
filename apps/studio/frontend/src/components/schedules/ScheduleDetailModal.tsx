@@ -503,9 +503,9 @@ export default function ScheduleDetailModal({
             <span className="text-body text-content-muted">{t("loading")}</span>
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 overflow-y-auto">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row">
             {/* Main column */}
-            <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
+            <div className="flex min-w-0 flex-none flex-col gap-3 overflow-visible px-5 py-4 md:min-h-0 md:flex-1 md:overflow-y-auto">
               {/* Description */}
               <SectionLabel className="border-t border-edge pt-3">{t("sectionDesc")}</SectionLabel>
               <TextArea
@@ -769,7 +769,7 @@ export default function ScheduleDetailModal({
             </div>
 
             {/* Sidebar */}
-            <div className="hidden shrink-0 flex-col gap-4 border-l border-edge px-4 py-4 md:flex md:w-56">
+            <div className="flex w-full shrink-0 flex-col gap-4 border-t border-edge px-4 py-4 md:w-56 md:border-l md:border-t-0">
               {/* Actions rail */}
               <div>
                 <SectionLabel className="mb-2">{t("sideActions")}</SectionLabel>
@@ -778,7 +778,7 @@ export default function ScheduleDetailModal({
                     type="button"
                     disabled={triggering}
                     onClick={() => void handleTrigger()}
-                    className="w-full rounded border border-edge bg-surface-overlay px-3 py-1.5 text-left text-meta text-content-secondary transition-colors hover:border-edge-strong hover:text-content-primary disabled:opacity-50"
+                    className="hidden w-full rounded border border-edge bg-surface-overlay px-3 py-1.5 text-left text-meta text-content-secondary transition-colors hover:border-edge-strong hover:text-content-primary disabled:opacity-50 md:block"
                   >
                     {triggering ? t("triggering") : t("runNow")}
                   </button>

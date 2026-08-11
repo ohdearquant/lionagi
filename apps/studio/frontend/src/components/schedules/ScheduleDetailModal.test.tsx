@@ -72,7 +72,7 @@ const detail: ScheduleDetail = {
   recent_runs: [],
 };
 
-describe("ScheduleDetailModal unsaved changes", () => {
+describe("ScheduleDetailModal interactions", () => {
   let container: HTMLDivElement;
   let root: Root;
   let onClose: ReturnType<typeof vi.fn<() => void>>;
@@ -94,8 +94,34 @@ describe("ScheduleDetailModal unsaved changes", () => {
     });
   }
 
+  function isReachableAtMobile(element: Element): boolean {
+    let current: Element | null = element;
+    while (current && current !== container.parentElement) {
+      if (current.classList.contains("hidden")) return false;
+      current = current.parentElement;
+    }
+    return true;
+  }
+
+  function mobileButtons(label: string): HTMLButtonElement[] {
+    return Array.from(container.querySelectorAll<HTMLButtonElement>("button")).filter(
+      (button) => button.textContent === label && isReachableAtMobile(button),
+    );
+  }
+
+  function mobileSelect(label: string): HTMLSelectElement | undefined {
+    return (
+      Array.from(container.querySelectorAll<HTMLLabelElement>("label"))
+        .filter((field) => isReachableAtMobile(field))
+        .find((field) => field.querySelector(":scope > span")?.textContent === label)
+        ?.querySelector<HTMLSelectElement>("select") ?? undefined
+    );
+  }
+
   beforeEach(async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("innerWidth", 390);
+    vi.stubGlobal("innerHeight", 844);
     api.getSchedule.mockResolvedValue(detail);
     api.listScheduleRuns.mockResolvedValue({ runs: [], total: 0 });
     onClose = vi.fn<() => void>();
@@ -130,6 +156,60 @@ describe("ScheduleDetailModal unsaved changes", () => {
       input?.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
+
+  it("exposes one mobile Delete control and one of each firing-policy selector in logical order", () => {
+    const deleteButtons = mobileButtons("Delete");
+    const missedFire = mobileSelect("Missed fire");
+    const overlap = mobileSelect("Overlap");
+
+    expect(deleteButtons).toHaveLength(1);
+    expect(missedFire).toBeDefined();
+    expect(overlap).toBeDefined();
+    expect(deleteButtons[0].tabIndex).toBe(0);
+    expect(missedFire?.tabIndex).toBe(0);
+    expect(overlap?.tabIndex).toBe(0);
+    expect(
+      deleteButtons[0].compareDocumentPosition(missedFire!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      missedFire!.compareDocumentPosition(overlap!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it.each([
+    ["Missed fire", "run_once"],
+    ["Overlap", "queue"],
+  ])("a mobile %s edit participates in the dirty-close guard", (label, value) => {
+    const select = mobileSelect(label);
+    expect(select).toBeDefined();
+    const setValue = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    act(() => {
+      setValue?.call(select, value);
+      select?.dispatchEvent(new Event("change", { bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "You have unsaved changes.",
+    );
+  });
+
+  it("mobile Delete keeps its explicit two-step confirmation", async () => {
+    const deleteButton = mobileButtons("Delete")[0];
+    expect(deleteButton).toBeDefined();
+
+    act(() => deleteButton?.click());
+    expect(api.deleteSchedule).not.toHaveBeenCalled();
+    expect(deleteButton?.textContent).toBe("Confirm delete");
+
+    await act(async () => {
+      deleteButton?.click();
+      await Promise.resolve();
+    });
+    expect(api.deleteSchedule).toHaveBeenCalledWith(detail.id);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 
   it("asks before Cancel discards an edited schedule", () => {
     editName();

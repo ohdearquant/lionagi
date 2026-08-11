@@ -887,8 +887,7 @@
       "updated": "Atualizado",
       "branchesTitle": "{count, plural, one {Ramificação (#)} other {Ramificações (#)}}",
       "noBranches": "Nenhum branch.",
-      "msgs": " msgs",
-      "engineRuns": "Execuções de engine"
+      "msgs": " msgs"
     },
     "split": {
       "master": "Lista de sessões",

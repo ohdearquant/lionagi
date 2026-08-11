@@ -887,8 +887,7 @@
       "updated": "Обновлено",
       "branchesTitle": "Ветки ({count})",
       "noBranches": "Веток нет.",
-      "msgs": " сообщ.",
-      "engineRuns": "Запуски движка"
+      "msgs": " сообщ."
     },
     "split": {
       "master": "Список сессий",

@@ -887,8 +887,7 @@
       "updated": "آخر تحديث",
       "branchesTitle": "الفروع ({count})",
       "noBranches": "لا توجد فروع.",
-      "msgs": " رسائل",
-      "engineRuns": "عمليات تشغيل المحرك"
+      "msgs": " رسائل"
     },
     "split": {
       "master": "قائمة الجلسات",

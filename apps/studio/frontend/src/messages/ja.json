@@ -887,8 +887,7 @@
       "updated": "更新",
       "branchesTitle": "ブランチ ({count})",
       "noBranches": "ブランチはありません。",
-      "msgs": " 件のメッセージ",
-      "engineRuns": "エンジン実行"
+      "msgs": " 件のメッセージ"
     },
     "split": {
       "master": "セッション一覧",

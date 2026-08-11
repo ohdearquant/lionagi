@@ -887,8 +887,7 @@
       "updated": "अपडेट हुआ",
       "branchesTitle": "ब्रांच ({count})",
       "noBranches": "कोई ब्रांच नहीं।",
-      "msgs": " मैसेज",
-      "engineRuns": "इंजन रन"
+      "msgs": " मैसेज"
     },
     "split": {
       "master": "सेशन सूची",

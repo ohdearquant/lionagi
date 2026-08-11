@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { useTranslations } from "use-intl";
 import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
@@ -1767,6 +1768,8 @@ export default function RunDetail({ id }: RunDetailProps) {
   // button or Escape; never by anything else, so a stray keypress elsewhere
   // can't dismiss it.
   const [graphExpanded, setGraphExpanded] = useState(false);
+  const graphDialogRef = useRef<HTMLDivElement>(null);
+  const graphExpandButtonRef = useRef<HTMLButtonElement>(null);
   // ADR-0113 D6: the two raw sources resolveInitialView weighs against the
   // default — the URL's `view` param (a pasted deep link) and the stored
   // per-user preference — read once at mount (lazy useState initializers,
@@ -2098,11 +2101,72 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   useEffect(() => {
     if (!graphExpanded) return;
+    const dialog = graphDialogRef.current;
+    if (!dialog) return;
+    const launcher = graphExpandButtonRef.current;
+    const previousBodyOverflow = document.body.style.overflow;
+    const backgroundElements = Array.from(document.body.children)
+      .filter((element): element is HTMLElement => element instanceof HTMLElement)
+      .filter((element) => element !== dialog)
+      .map((element) => ({ element, wasInert: element.hasAttribute("inert") }));
+    const focusableSelector = [
+      "button:not([disabled])",
+      "[href]",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(",");
+    const focusableElements = () =>
+      Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector)).filter(
+        (element) =>
+          element.tabIndex >= 0 &&
+          !element.hidden &&
+          !element.closest(".hidden") &&
+          element.getAttribute("aria-hidden") !== "true",
+      );
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setGraphExpanded(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setGraphExpanded(false);
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+
+      const focusable = focusableElements();
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!dialog.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+
+    document.body.style.overflow = "hidden";
+    for (const { element } of backgroundElements) element.setAttribute("inert", "");
+    (focusableElements()[0] ?? dialog)?.focus();
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.body.style.overflow = previousBodyOverflow;
+      for (const { element, wasInert } of backgroundElements) {
+        if (!wasInert) element.removeAttribute("inert");
+      }
+      if (launcher?.isConnected) launcher.focus();
+    };
   }, [graphExpanded]);
 
   const hiddenOlderCount = useMemo(() => {
@@ -2622,6 +2686,7 @@ export default function RunDetail({ id }: RunDetailProps) {
             showImplied={showImpliedEdges}
             trailing={
               <button
+                ref={graphExpandButtonRef}
                 type="button"
                 onClick={() => setGraphExpanded(true)}
                 aria-label={t("expandGraph")}
@@ -2660,54 +2725,64 @@ export default function RunDetail({ id }: RunDetailProps) {
               />
             </Suspense>
           </div>
-          {graphExpanded && (
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-label={t("sectionExecutionGraph")}
-              className="fixed inset-4 z-50 flex flex-col rounded border border-edge bg-surface-raised shadow-card"
-            >
-              <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
-                <SectionHeader
-                  label={t("sectionExecutionGraph")}
-                  count={runGraph.nodes.length}
-                  edgeCount={displayEdges.length}
-                  hiddenCount={hiddenCount}
-                  onToggleImplied={() => setShowImpliedEdges((v) => !v)}
-                  showImplied={showImpliedEdges}
-                />
-                <button
-                  type="button"
-                  onClick={() => setGraphExpanded(false)}
-                  aria-label={t("collapseGraph")}
-                  className="rounded border border-edge px-2 py-0.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary"
-                >
-                  {t("closeExpandedGraph")}
-                </button>
-              </div>
-              {progressCounts && (
-                <div className="px-3 pt-2">
-                  <ProgressSummaryBar counts={progressCounts} elapsedLabel={elapsedLabel} t={t} />
+          {graphExpanded &&
+            createPortal(
+              <div
+                ref={graphDialogRef}
+                role="dialog"
+                aria-modal="true"
+                aria-label={t("sectionExecutionGraph")}
+                tabIndex={-1}
+                className="fixed inset-0 z-50 flex flex-col bg-black/50 p-4"
+              >
+                <div className="flex min-h-0 flex-1 flex-col rounded border border-edge bg-surface-raised shadow-card">
+                  <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
+                    <SectionHeader
+                      label={t("sectionExecutionGraph")}
+                      count={runGraph.nodes.length}
+                      edgeCount={displayEdges.length}
+                      hiddenCount={hiddenCount}
+                      onToggleImplied={() => setShowImpliedEdges((v) => !v)}
+                      showImplied={showImpliedEdges}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setGraphExpanded(false)}
+                      aria-label={t("collapseGraph")}
+                      className="rounded border border-edge px-2 py-0.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary"
+                    >
+                      {t("closeExpandedGraph")}
+                    </button>
+                  </div>
+                  {progressCounts && (
+                    <div className="px-3 pt-2">
+                      <ProgressSummaryBar
+                        counts={progressCounts}
+                        elapsedLabel={elapsedLabel}
+                        t={t}
+                      />
+                    </div>
+                  )}
+                  {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- see note on the inline panel's identical delegation above */}
+                  <div className="min-h-0 flex-1 p-3" onClick={handleDagPanelClick}>
+                    <Suspense fallback={null}>
+                      <WorkerCanvas
+                        graph={{ ...runGraph, edges: displayEdges }}
+                        editable={false}
+                        execSteps={execSteps}
+                        nodeStatuses={reconciledNodeStatuses}
+                        nodeActivity={nodeActivity}
+                        compact
+                        onLayoutHeight={noopLayoutHeight}
+                        live={live}
+                        done={done}
+                      />
+                    </Suspense>
+                  </div>
                 </div>
-              )}
-              {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- see note on the inline panel's identical delegation above */}
-              <div className="min-h-0 flex-1 p-3" onClick={handleDagPanelClick}>
-                <Suspense fallback={null}>
-                  <WorkerCanvas
-                    graph={{ ...runGraph, edges: displayEdges }}
-                    editable={false}
-                    execSteps={execSteps}
-                    nodeStatuses={reconciledNodeStatuses}
-                    nodeActivity={nodeActivity}
-                    compact
-                    onLayoutHeight={noopLayoutHeight}
-                    live={live}
-                    done={done}
-                  />
-                </Suspense>
-              </div>
-            </div>
-          )}
+              </div>,
+              document.body,
+            )}
         </div>
       ) : (
         effectiveView === "graph" &&

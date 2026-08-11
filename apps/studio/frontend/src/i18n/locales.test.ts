@@ -213,12 +213,13 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  // 1062: the run controls gained a reason string for a verb with no backing
+  // 1061: the run controls gained a reason string for a verb with no backing
   // command (translated in all 16 locales rather than copied from English, so
   // the identity-leak baseline below does not move), and the demo-readiness
-  // pass added the three schedule-detail discard-dialog strings on top.
-  it("en.json has 1062 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1062);
+  // pass added the three schedule-detail discard-dialog strings on top, then
+  // removed the run-detail-only Engine runs key with its retired header link.
+  it("en.json has 1061 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1061);
   });
 
   it.each(LOCALES.map((l) => l.code))(

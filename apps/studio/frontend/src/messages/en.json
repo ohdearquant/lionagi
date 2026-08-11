@@ -887,8 +887,7 @@
       "updated": "Updated",
       "branchesTitle": "{count, plural, one {Branch (#)} other {Branches (#)}}",
       "noBranches": "No branches.",
-      "msgs": " msgs",
-      "engineRuns": "Engine runs"
+      "msgs": " msgs"
     },
     "split": {
       "master": "Session list",

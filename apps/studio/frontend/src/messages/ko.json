@@ -887,8 +887,7 @@
       "updated": "업데이트됨",
       "branchesTitle": "브랜치({count})",
       "noBranches": "브랜치 없음.",
-      "msgs": " 메시지",
-      "engineRuns": "엔진 실행"
+      "msgs": " 메시지"
     },
     "split": {
       "master": "세션 목록",

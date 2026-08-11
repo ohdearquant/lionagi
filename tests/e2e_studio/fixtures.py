@@ -23,6 +23,43 @@ SMOKE_AGENT_NAME = "e2e-smoke-reviewer"
 SMOKE_PLAYBOOK_NAME = "e2e-smoke-release-checklist"
 SMOKE_PROJECT_NAME = "e2e-smoke-project"
 
+SMOKE_EXECUTION_GRAPH = {
+    "name": "e2e-smoke-graph",
+    "description": "Seeded two-step graph for expanded-dialog interaction tests.",
+    "nodes": [
+        {
+            "id": "prepare",
+            "label": "Prepare",
+            "role": "planner",
+            "assignment": "Prepare the demo",
+            "prompt": "Prepare the demo",
+            "capacity": 1,
+            "timeout": None,
+            "inputs": [],
+            "outputs": [],
+        },
+        {
+            "id": "present",
+            "label": "Present",
+            "role": "presenter",
+            "assignment": "Present the demo",
+            "prompt": "Present the demo",
+            "capacity": 1,
+            "timeout": None,
+            "inputs": ["prepare"],
+            "outputs": [],
+        },
+    ],
+    "edges": [
+        {
+            "id": "prepare-present",
+            "source": "prepare",
+            "target": "present",
+            "mode": "simple",
+        }
+    ],
+}
+
 SESSION_STATUSES = (
     "running",
     "completed",
@@ -57,6 +94,9 @@ async def seed_state_db(db: StateDB) -> dict[str, Any]:
             {
                 "id": session_id,
                 "progression_id": progression_id,
+                "node_metadata": (
+                    {"early_graph": SMOKE_EXECUTION_GRAPH} if status == "completed" else None
+                ),
                 "name": name,
                 "status": status,
                 "invocation_kind": "agent",

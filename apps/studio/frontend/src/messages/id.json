@@ -887,8 +887,7 @@
       "updated": "Diperbarui",
       "branchesTitle": "{count, plural, other {Cabang (#)}}",
       "noBranches": "Tidak ada branch.",
-      "msgs": " pesan",
-      "engineRuns": "Proses engine"
+      "msgs": " pesan"
     },
     "split": {
       "master": "Daftar sesi",

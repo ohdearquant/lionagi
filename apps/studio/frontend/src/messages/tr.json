@@ -887,8 +887,7 @@
       "updated": "güncellendi",
       "branchesTitle": "dallar ({count})",
       "noBranches": "dal yok.",
-      "msgs": " mesaj",
-      "engineRuns": "Motor çalıştırmaları"
+      "msgs": " mesaj"
     },
     "split": {
       "master": "oturum listesi",

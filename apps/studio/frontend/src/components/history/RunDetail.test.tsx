@@ -162,10 +162,37 @@ describe("history/RunDetail.tsx — fullPage prop removed", () => {
 });
 
 describe("fleet/SessionDetail.tsx — renders RunDetail without fullPage", () => {
+  const sessionDetailSrc = fs.readFileSync(
+    path.resolve(HISTORY_DIR, "../fleet/SessionDetail.tsx"),
+    "utf-8",
+  );
+
   it("passes only id to RunDetail", () => {
-    const src = fs.readFileSync(path.resolve(HISTORY_DIR, "../fleet/SessionDetail.tsx"), "utf-8");
-    expect(src).toMatch(/<RunDetail id={runId} \/>/);
-    expect(src).not.toMatch(/fullPage/);
+    expect(sessionDetailSrc).toMatch(/<RunDetail id={runId} \/>/);
+    expect(sessionDetailSrc).not.toMatch(/fullPage/);
+  });
+
+  it("does not link away to Engine runs from the run-detail header", () => {
+    expect(sessionDetailSrc).not.toMatch(/to="\/engine-runs"/);
+    expect(sessionDetailSrc).not.toMatch(/detail\.engineRuns/);
+  });
+
+  it("keeps Engine runs reachable from the System view", () => {
+    const systemSrc = fs.readFileSync(
+      path.resolve(HISTORY_DIR, "../../routes/system.tsx"),
+      "utf-8",
+    );
+    expect(systemSrc).toMatch(/to="\/engine-runs"/);
+  });
+
+  it("leaves no run-detail-only Engine runs translation behind in any locale", () => {
+    const messagesDir = path.resolve(HISTORY_DIR, "../../messages");
+    for (const filename of fs.readdirSync(messagesDir).filter((name) => name.endsWith(".json"))) {
+      const messages = JSON.parse(fs.readFileSync(path.join(messagesDir, filename), "utf-8")) as {
+        fleet?: { detail?: Record<string, unknown> };
+      };
+      expect(messages.fleet?.detail, filename).not.toHaveProperty("engineRuns");
+    }
   });
 });
 
@@ -1816,7 +1843,7 @@ describe("history/RunDetail.tsx — execution-graph expand/close wiring", () => 
   });
 
   it("the progress summary bar renders from the same progressCounts used by both graph embeds", () => {
-    const occurrences = src.match(/<ProgressSummaryBar counts={progressCounts}/g) ?? [];
+    const occurrences = src.match(/<ProgressSummaryBar[^>]*counts={progressCounts}/g) ?? [];
     expect(occurrences.length).toBe(2);
   });
 });
@@ -2181,6 +2208,146 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
       },
     };
   }
+
+  async function openExpandedGraph(container: HTMLDivElement) {
+    const expand = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Expand execution graph"]',
+    );
+    expect(expand).not.toBeNull();
+    expand?.focus();
+    await act(async () => {
+      expand?.click();
+    });
+    const dialog = document.body.querySelector<HTMLElement>(
+      '[role="dialog"][aria-label="Execution graph"]',
+    );
+    expect(dialog).not.toBeNull();
+    return { dialog: dialog!, expand: expand! };
+  }
+
+  it("opening the expanded graph moves focus inside, names it, and locks the background", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const { dialog } = await openExpandedGraph(container);
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(dialog.getAttribute("aria-label")).toBe("Execution graph");
+      expect(container.hasAttribute("inert")).toBe(true);
+      expect(document.body.style.overflow).toBe("hidden");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("traps forward and reverse Tab traversal when focus starts outside the graph dialog", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    try {
+      const { dialog } = await openExpandedGraph(container);
+      const last = document.createElement("button");
+      last.textContent = "Last graph action";
+      dialog.appendChild(last);
+      const first = dialog.querySelector<HTMLButtonElement>("button");
+      expect(first).not.toBeNull();
+
+      outside.focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      expect(document.activeElement).toBe(first);
+      expect(dialog.contains(document.activeElement)).toBe(true);
+
+      outside.focus();
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }),
+      );
+      expect(document.activeElement).toBe(last);
+      expect(dialog.contains(document.activeElement)).toBe(true);
+
+      last.focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      expect(document.activeElement).toBe(first);
+
+      first?.focus();
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }),
+      );
+      expect(document.activeElement).toBe(last);
+    } finally {
+      outside.remove();
+      unmount();
+    }
+  });
+
+  it("Escape closes the expanded graph and restores focus to its launcher", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const { dialog, expand } = await openExpandedGraph(container);
+      dialog.querySelector<HTMLButtonElement>("button")?.focus();
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      });
+      expect(
+        document.body.querySelector('[role="dialog"][aria-label="Execution graph"]'),
+      ).toBeNull();
+      expect(document.activeElement).toBe(expand);
+      expect(container.hasAttribute("inert")).toBe(false);
+      expect(document.body.style.overflow).toBe("");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("the explicit close control restores focus to the Expand graph launcher", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const { dialog, expand } = await openExpandedGraph(container);
+      const close = dialog.querySelector<HTMLButtonElement>(
+        'button[aria-label="Collapse execution graph"]',
+      );
+      expect(close).not.toBeNull();
+      close?.focus();
+      await act(async () => {
+        close?.click();
+      });
+      expect(
+        document.body.querySelector('[role="dialog"][aria-label="Execution graph"]'),
+      ).toBeNull();
+      expect(document.activeElement).toBe(expand);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("closing preserves the selected graph node and the mounted inline canvas viewport", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const inlineCanvas = container.querySelector('[data-testid="worker-canvas"]');
+      const { dialog } = await openExpandedGraph(container);
+      const expandedCanvas = dialog.querySelector('[data-testid="worker-canvas"]');
+      const expandedPanel = expandedCanvas?.parentElement;
+      expect(expandedPanel).not.toBeNull();
+      const fakeNode = document.createElement("div");
+      fakeNode.className = "react-flow__node";
+      fakeNode.dataset.id = "A";
+      expandedPanel?.appendChild(fakeNode);
+      await act(async () => {
+        fakeNode.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      await act(async () => {
+        dialog
+          .querySelector<HTMLButtonElement>('button[aria-label="Collapse execution graph"]')
+          ?.click();
+      });
+
+      expect(container.querySelector('[data-testid="worker-canvas"]')).toBe(inlineCanvas);
+      expect(
+        container.querySelector('[data-testid="run-detail-selected-node"]')?.textContent,
+      ).toContain("A");
+      expect(document.getElementById("step-A")).not.toBeNull();
+    } finally {
+      unmount();
+    }
+  });
 
   it("row 3: a run with edges opens on the graph", async () => {
     const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
