@@ -43,9 +43,7 @@ def _get_oai_config(
     )
 
 
-# ============================================================================
 # Test Fixtures and Helpers
-# ============================================================================
 
 
 def make_mock_branch(name: str = "TestBranch") -> Branch:
@@ -112,9 +110,7 @@ def make_parallel_graph() -> tuple[Graph, dict[str, Operation]]:
     return graph, ops
 
 
-# ============================================================================
 # 1. Basic Flow Execution Tests
-# ============================================================================
 
 
 class TestBranchManagement:
@@ -317,6 +313,4 @@ class TestBranchManagement:
         assert all(b in branch_list for b in branches)
 
 
-# ============================================================================
 # 3. Edge Cases and Error Handling
-# ============================================================================

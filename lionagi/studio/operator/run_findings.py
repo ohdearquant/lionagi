@@ -5,13 +5,12 @@
 Per-branch message tails, tool calls with inferred outcomes, errors (both
 tool-level and branch/session status failures), and declared artifacts with
 their verification state. Bounded and redacted on the same rules as
-``run_progress``/the existing read tools — see ``redact.py``.
-
-Tool-call outcomes are inferred from message content via the same
-``_detect_status`` heuristic ``lionagi.studio.services.runs`` already uses to
-build the run-detail step list; there is no structured ``ok: bool`` on a
-plain session's ActionRequest/ActionResponse messages to read instead (see
-``read_tools_implementation.md`` for the source citation this replaces).
+``run_progress``/the existing read tools — see ``redact.py`` and
+docs/internals/studio.md ("Bounded read projections"). Tool-call outcomes
+are inferred from message content via the same ``_detect_status`` heuristic
+``lionagi.studio.services.runs`` already uses to build the run-detail step
+list, since a plain session's ActionRequest/ActionResponse messages carry
+no structured ``ok: bool``.
 """
 
 from __future__ import annotations

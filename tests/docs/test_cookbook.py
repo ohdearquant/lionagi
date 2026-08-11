@@ -9,9 +9,7 @@ from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 from lionagi.testing import LionAGIMockFactory
 
-# ---------------------------------------------------------------------------
 # Inline Pydantic models (as cookbook docs define them)
-# ---------------------------------------------------------------------------
 
 
 class Claim(BaseModel):
@@ -34,9 +32,7 @@ class CandidateEvaluation(BaseModel):
     recommendation: str
 
 
-# ---------------------------------------------------------------------------
 # Brainstorming cookbook
-# ---------------------------------------------------------------------------
 
 
 class TestBrainstorming:
@@ -102,9 +98,7 @@ class TestBrainstorming:
         assert len(b2.messages) == 1
 
 
-# ---------------------------------------------------------------------------
 # Code Review Crew cookbook
-# ---------------------------------------------------------------------------
 
 
 class TestCodeReviewCrew:
@@ -153,9 +147,7 @@ class TestCodeReviewCrew:
         assert OperationGraphBuilder is not None
 
 
-# ---------------------------------------------------------------------------
 # Claim Extraction cookbook
-# ---------------------------------------------------------------------------
 
 
 class TestClaimExtraction:
@@ -204,9 +196,7 @@ class TestClaimExtraction:
         assert result is not None
 
 
-# ---------------------------------------------------------------------------
 # Research Synthesis cookbook
-# ---------------------------------------------------------------------------
 
 
 class TestResearchSynthesis:
@@ -267,9 +257,7 @@ class TestResearchSynthesis:
         assert found.name == "my_researcher"
 
 
-# ---------------------------------------------------------------------------
 # Data Persistence cookbook
-# ---------------------------------------------------------------------------
 
 
 class TestDataPersistence:
@@ -315,9 +303,7 @@ class TestDataPersistence:
         assert len(df) == 1
 
 
-# ---------------------------------------------------------------------------
 # HR Automation cookbook
-# ---------------------------------------------------------------------------
 
 
 class TestHRAutomation:

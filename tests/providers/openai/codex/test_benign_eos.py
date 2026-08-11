@@ -37,11 +37,6 @@ async def _chunks_from_events(events: list[dict]) -> list[StreamChunk]:
     return collected
 
 
-# ---------------------------------------------------------------------------
-# Test 1: error event with non-empty error (rate_limit) → NOT benign
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_error_event_with_rate_limit_code_is_not_benign():
     """{"error": {"code": "rate_limit"}} has a truthy value so any(err.values()) is True — not benign."""
@@ -54,11 +49,6 @@ async def test_error_event_with_rate_limit_code_is_not_benign():
     assert not error_chunk.metadata.get("benign_eos"), (
         f"rate_limit error must NOT be marked benign_eos; metadata={error_chunk.metadata}"
     )
-
-
-# ---------------------------------------------------------------------------
-# Test 2: turn.failed with empty error payload → NOT benign
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -76,11 +66,6 @@ async def test_turn_failed_with_empty_error_is_not_benign():
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 3: error event with completely empty error dict → benign EOS
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_error_event_with_empty_error_dict_is_benign_eos():
     """{"error":{}} is the resume-EOF sentinel and must be tagged benign_eos=True so run() terminates cleanly."""
@@ -94,11 +79,6 @@ async def test_error_event_with_empty_error_dict_is_benign_eos():
         "empty-error 'error' event must be tagged benign_eos=True; "
         f"metadata={error_chunks[0].metadata}"
     )
-
-
-# ---------------------------------------------------------------------------
-# Invariant: structured-but-falsy error payloads are REAL failures
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -193,10 +173,8 @@ async def test_turn_failed_with_nested_message_still_preferred_over_toplevel():
     assert chunks[0].content == "inner detail"
 
 
-# ---------------------------------------------------------------------------
 # Regression: "error": null must NOT be treated as benign EOS
 # (fix/cli-worker-error-surfacing regression)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

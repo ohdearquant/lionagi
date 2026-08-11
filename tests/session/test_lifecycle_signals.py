@@ -30,9 +30,7 @@ from lionagi.session.signal import (
     lane_for,
 )
 
-# ---------------------------------------------------------------------------
 # lane_for unit tests
-# ---------------------------------------------------------------------------
 
 
 def test_lane_for_empty_stream():
@@ -181,9 +179,7 @@ def test_lane_for_full_happy_path_sequence():
         assert lane_for(sig) == expected, f"step {i}"
 
 
-# ---------------------------------------------------------------------------
 # New signal type tests
-# ---------------------------------------------------------------------------
 
 
 def test_node_queued_fields():
@@ -234,9 +230,7 @@ def test_node_escalated_request_not_payload_matched():
     assert not isinstance(sig.data, EscalationRequest)
 
 
-# ---------------------------------------------------------------------------
 # Engine bridge: NodeQueued emitted via run_dag
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -327,9 +321,7 @@ async def test_run_dag_calls_session_flow_once_with_same_graph():
     assert passed_graph is graph
 
 
-# ---------------------------------------------------------------------------
 # End-to-end projection: collect signals, project lanes, assert sequence
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -388,9 +380,7 @@ async def test_projection_contract_end_to_end():
     assert q_idx < r_idx < s_idx, f"Lane sequence wrong: {lanes_seen}"
 
 
-# ---------------------------------------------------------------------------
 # Reactive injection: injected children also get NodeQueued
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -439,9 +429,7 @@ async def test_reactive_injected_child_receives_node_queued():
         assert op_id in queued_ids, f"op {op_id} was started without a prior NodeQueued"
 
 
-# ---------------------------------------------------------------------------
 # Skipped nodes project to 'failed' lane
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -515,9 +503,7 @@ async def test_skipped_node_projects_to_skipped_lane():
     )
 
 
-# ---------------------------------------------------------------------------
 # execute_stream subscribes via the public observer property
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -576,9 +562,7 @@ async def test_execute_stream_subscribes_spawn_via_public_observer(monkeypatch):
     assert any(e.spawned for e in events)
 
 
-# ---------------------------------------------------------------------------
 # Export contract
-# ---------------------------------------------------------------------------
 
 
 def test_session_package_exports_new_symbols():

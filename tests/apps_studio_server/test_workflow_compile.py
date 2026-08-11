@@ -19,7 +19,7 @@ from lionagi.studio.services.workflow_compile import (
     compile_workflow_def,
 )
 
-# ─── StudioExprCondition: allowed grammar ───────────────────────────────────
+# StudioExprCondition: allowed grammar
 
 
 async def test_eq_comparison_true():
@@ -75,7 +75,7 @@ async def test_non_dict_context_normalized_to_empty_dict():
         await cond.apply(None)
 
 
-# ─── Hostile inputs — MUST reject at construction, never crash ─────────────
+# Hostile inputs — MUST reject at construction, never crash
 
 HOSTILE_EXPRS = [
     "__class__",
@@ -147,7 +147,7 @@ def test_name_not_in_context_rejected_at_eval_not_construction():
         asyncio.run(cond.apply({"result": "x", "context": {}}))
 
 
-# ─── compile_workflow_def ────────────────────────────────────────────────────
+# compile_workflow_def
 
 
 def _make_spec(**overrides: Any) -> dict[str, Any]:
@@ -287,7 +287,7 @@ async def test_compile_null_budget_override_falls_back_to_def():
     assert engine_op.parameters["engine_max_agents"] == 5  # def value, not None
 
 
-# ─── Per-node cwd ──────────────────────────────────────────────────────
+# Per-node cwd
 
 
 async def _resolve_coding_kind(ref: str) -> dict[str, Any]:
@@ -624,7 +624,7 @@ async def test_compile_cycle_raises():
         await compile_workflow_def(spec, resolve_engine_def=_resolve_ok)
 
 
-# ─── build_early_graph ───────────────────────────────────────────────────────
+# build_early_graph
 
 
 def test_build_early_graph_shape():

@@ -585,28 +585,16 @@ async def spawn_and_wait(
 ) -> tuple[int, str]:
     """Spawn subprocess and wait for completion. Returns (exit_code, output_tail).
 
-    Both streams are captured and drained concurrently, bounded rather than
-    buffered whole -- a single ``communicate()`` on both pipes holds an
-    entire streaming leg's output in memory, and draining one at a time
-    deadlocks once the other fills.
-
-    If *tmp_path* is given it is deleted after the subprocess exits (used by
-    the ``flow_yaml`` action kind's temp spec file). *cwd* pins the
-    subprocess working directory; ``None`` inherits the daemon's own cwd, so
-    callers should resolve a concrete path first (see
-    SchedulerEngine._resolve_action_cwd).
-
-    *action_kind* re-runs the command allow-list check here, immediately
-    before spawn, when ``"command"`` -- closes the window where an awaited
-    DB call between ``build_argv`` and this function gives a revoked
-    allow-list env var a scheduling point to land in.
-
-    *on_launched*, if given, is awaited right after ``create_subprocess_exec``
-    confirms the OS process exists, before waiting on completion -- the
-    scheduler engine uses this to mark a schedule_run "dispatched" durably,
-    closing the recovery scan's committed-but-never-launched window. A
-    failing callback is logged and swallowed, never allowed to fail the
-    process that already launched.
+    Both streams are drained concurrently and bounded rather than buffered
+    whole. *tmp_path*, if given, is deleted after exit. *cwd* pins the
+    subprocess working directory (``None`` inherits the daemon's own --
+    callers should resolve a concrete path first, see
+    ``SchedulerEngine._resolve_action_cwd``). *on_launched*, if given, is
+    awaited right after the OS process is confirmed to exist, before waiting
+    on completion; a failing callback is logged and swallowed, never allowed
+    to fail an already-launched process. See docs/internals/studio.md for
+    the allow-list re-check race this closes and why streams can't drain
+    sequentially.
     """
     if action_kind == "command":
         command = argv[0] if argv else ""

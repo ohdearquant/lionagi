@@ -93,7 +93,7 @@ def test_element_to_dict_rejects_non_finite(mode):
         _Scored(value=float("inf")).to_dict(mode=mode)
 
 
-# --- what the check costs is only paid when it is asked for ---
+# what the check costs is only paid when it is asked for
 
 
 @pytest.mark.parametrize("bad", NON_FINITE)
@@ -122,7 +122,7 @@ def test_db_json_column_rejects_non_finite():
         _to_json_column({"v": float("inf")})
 
 
-# --- orjson.Fragment is an opaque boundary the check cannot see past ---
+# orjson.Fragment is an opaque boundary the check cannot see past
 
 
 def test_fragment_contents_are_not_checked():
@@ -146,7 +146,7 @@ def test_fragment_contents_are_not_checked():
         json_dumpb({"raw": orjson.Fragment(b"{}"), "v": float("inf")}, check_non_finite=True)
 
 
-# --- the guard must not disturb anything that is legitimately serializable ---
+# the guard must not disturb anything that is legitimately serializable
 
 
 def test_genuine_nulls_still_serialize():
@@ -179,7 +179,7 @@ def test_extreme_but_finite_floats_are_untouched():
     assert math.copysign(1, restored["neg"]) == -1
 
 
-# --- forms orjson encodes natively, which never reach the default() hook ---
+# forms orjson encodes natively, which never reach the default() hook
 
 
 @pytest.mark.parametrize("bad", NON_FINITE)

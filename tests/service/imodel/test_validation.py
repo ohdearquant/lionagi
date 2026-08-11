@@ -24,14 +24,14 @@ class TestiModelValidationErrors:
         api_call = imodel.create_api_calling(
             messages=[{"role": "user", "content": "test"}], max_tokens=-100
         )
-        # Should accept negative value, API will validate
+        # Range validation is deferred to the API, not enforced here.
         assert api_call.payload["max_tokens"] == -100
 
     def test_invalid_messages_structure(self):
         imodel = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
         # Test with malformed messages
         api_call = imodel.create_api_calling(messages=[{"invalid": "structure"}])
-        # Should create payload, validation happens at API level
+        # Message structure validation happens at the API level, not here.
         assert len(api_call.payload["messages"]) == 1
 
     def test_empty_content_in_messages(self):

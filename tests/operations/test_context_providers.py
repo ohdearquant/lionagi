@@ -14,9 +14,7 @@ from lionagi.operations.types import ChatParam
 from lionagi.protocols.context_providers import ContextProviderRegistry, ProviderReport
 from lionagi.session.branch import Branch
 
-# ---------------------------------------------------------------------------
 # Stub providers
-# ---------------------------------------------------------------------------
 
 
 class _StubProvider:
@@ -108,9 +106,7 @@ def _chat_param(branch, **overrides):
     return ChatParam(**kw)
 
 
-# ---------------------------------------------------------------------------
 # ContextProviderRegistry.gather — unit level
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -249,9 +245,7 @@ def test_registry_is_falsy_when_empty():
     assert registry
 
 
-# ---------------------------------------------------------------------------
 # Branch integration — registry lives on Branch (gate ruling Q1)
-# ---------------------------------------------------------------------------
 
 
 def test_branch_providers_lazily_created_and_zero_cost_when_unused():
@@ -287,9 +281,7 @@ def test_prepare_run_kwargs_renders_explicit_context_blocks(make_mocked_branch):
     assert "call-local-knowledge" in kw["messages"][0]["content"]
 
 
-# ---------------------------------------------------------------------------
 # End-to-end: provider text in rendered first message, absent from record
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -368,9 +360,7 @@ async def test_chat_only_branch_no_tools_works_with_providers(make_mocked_branch
     assert any("floor-knowledge" in m["content"] for m in sent_messages)
 
 
-# ---------------------------------------------------------------------------
 # Systemless branches: no render target — providers skipped, observably
-# ---------------------------------------------------------------------------
 
 
 class _CountingProvider:

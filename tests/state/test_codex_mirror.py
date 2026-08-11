@@ -325,7 +325,7 @@ async def test_harness_injected_user_turns_are_not_mirrored_as_prompts(db, openi
     assert [m["content"]["instruction"] for m in messages] == ["the actual question"]
 
 
-# ── Orchestrated-rollout absorption ──────────────────────────────────────────
+# Orchestrated-rollout absorption
 
 
 async def test_delete_imported_session_removes_the_whole_graph(db):

@@ -33,9 +33,7 @@ def _create_data(**overrides) -> dict:
     return base
 
 
-# ---------------------------------------------------------------------------
 # _svc_validate_action_cwd — pure logic
-# ---------------------------------------------------------------------------
 
 
 def test_validate_action_cwd_none_is_noop():
@@ -77,9 +75,7 @@ def test_validate_action_cwd_rejects_file_not_directory(tmp_path):
         _svc_validate_action_cwd(str(f))
 
 
-# ---------------------------------------------------------------------------
 # create_schedule — explicit action_cwd wins, validated before the DB write
-# ---------------------------------------------------------------------------
 
 
 def test_create_schedule_rejects_invalid_action_cwd():
@@ -209,9 +205,7 @@ def test_create_schedule_without_action_project_stays_none_without_lookup(monkey
     fake_get_project.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
 # update_schedule — action_cwd validated at the PATCH boundary
-# ---------------------------------------------------------------------------
 
 
 def test_update_schedule_rejects_invalid_action_cwd():

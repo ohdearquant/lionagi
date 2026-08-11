@@ -27,11 +27,9 @@ from uuid import uuid4
 
 from lionagi.protocols.generic.progression import Progression, _MembersDeque
 
-# ---------------------------------------------------------------------------
 # Ownership-by-identity: sharing a `_MembersDeque` across two `Progression`
 # instances must never let a length-preserving mutation through one instance
 # corrupt the other's membership view.
-# ---------------------------------------------------------------------------
 
 
 def test_model_copy_shared_wrapper_both_instances_correct_after_setitem():
@@ -109,9 +107,7 @@ def test_deque_copy_of_members_deque_assigned_unbound_wrapper():
     assert src.order[0] in src
 
 
-# ---------------------------------------------------------------------------
 # Exhaustive accounting of every `deque` mutator.
-# ---------------------------------------------------------------------------
 
 
 def test_dir_deque_mutators_all_overridden_or_allowlisted():

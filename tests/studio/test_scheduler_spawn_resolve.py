@@ -13,9 +13,7 @@ import pytest
 
 from lionagi.studio.scheduler import subprocess as sched_subprocess
 
-# ---------------------------------------------------------------------------
 # resolve_li_executable
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_li_executable_finds_absolute_path_in_normal_env():
@@ -190,9 +188,7 @@ def test_resolve_li_executable_returns_none_and_names_every_tried_strategy_when_
     assert "console_scripts" in detail
 
 
-# ---------------------------------------------------------------------------
 # build_argv: executable_prefix passthrough
-# ---------------------------------------------------------------------------
 
 
 def _minimal_agent_schedule(**overrides) -> dict:
@@ -225,9 +221,7 @@ def test_build_argv_uses_explicit_executable_prefix():
     assert argv[1] == "agent"
 
 
-# ---------------------------------------------------------------------------
 # render_action_prompt
-# ---------------------------------------------------------------------------
 
 
 def test_render_action_prompt_substitutes_trigger_context_vars():

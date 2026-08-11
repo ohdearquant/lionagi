@@ -20,9 +20,7 @@ import pytest
 from lionagi._errors import ConfigurationError
 from lionagi.cli._util import validate_cwd_exists
 
-# ---------------------------------------------------------------------------
 # validate_cwd_exists — the shared validator
-# ---------------------------------------------------------------------------
 
 
 class TestValidateCwdExists:
@@ -74,9 +72,7 @@ class TestValidateCwdExists:
         assert "--cwd" not in str(exc_info.value)
 
 
-# ---------------------------------------------------------------------------
 # _run_agent: fails before any spawn / run allocation
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -196,9 +192,7 @@ async def test_run_agent_forwards_tilde_expanded_cwd_to_spawn(monkeypatch, tmp_p
     assert spawned.get("repo") == str(tmp_path / "ws")
 
 
-# ---------------------------------------------------------------------------
 # run_agent (sync CLI entry point): clean diagnostic before re-raising
-# ---------------------------------------------------------------------------
 
 
 def _agent_args(**overrides) -> SimpleNamespace:

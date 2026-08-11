@@ -117,7 +117,7 @@ async def reap_stale_invocations(
                     # atomic UPDATE as the status transition — a winning CAS
                     # followed by a separate update_invocation() call could
                     # leave status="timed_out" with ended_at never patched if
-                    # that second write failed (issue #2844). Preserving a
+                    # that second write failed. Preserving a
                     # pre-existing ended_at (rather than overwriting it) is
                     # still decided off this same pre-write snapshot.
                     transitioned = await db.update_status(

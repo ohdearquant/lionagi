@@ -237,9 +237,7 @@ class TestRevalidateWithActionResults:
         assert result.title == "My Title"
 
 
-# ---------------------------------------------------------------------------
 # Regression: LNDLOutput.__getattr__ must raise AttributeError not KeyError
-# ---------------------------------------------------------------------------
 
 
 class TestLNDLOutputGetAttrRaisesAttributeError:
@@ -290,9 +288,7 @@ class TestLNDLOutputGetAttrRaisesAttributeError:
         assert out.fields == {"x": 1}
 
 
-# ---------------------------------------------------------------------------
 # Regression: _coerce_result handles Optional scalar annotations
-# ---------------------------------------------------------------------------
 
 
 class TestCoerceResultOptionalScalar:
@@ -343,7 +339,7 @@ class TestCoerceResultOptionalScalar:
         parsed = json.loads(result)
         assert parsed == {"a": 1}
 
-    # --- Regression: None result for optional fields must stay None, not become 'None' ---
+    # Regression: None result for optional fields must stay None, not become 'None'
 
     def test_none_result_optional_str_preserved(self):
         """A legitimately-None result for `str | None` must stay None, not become

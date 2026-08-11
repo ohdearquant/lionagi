@@ -7,7 +7,7 @@ from lionagi.protocols.action.tool import Tool
 
 # Helper functions - not test cases
 def example_func(x: int, y: str = "default") -> str:
-    """Test function with docstring.
+    """Function with docstring.
 
     Args:
         x: An integer parameter

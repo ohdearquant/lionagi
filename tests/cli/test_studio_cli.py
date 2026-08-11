@@ -112,7 +112,7 @@ def test_studio_bare_uses_default_port(monkeypatch):
     assert kwargs.get("port") == 8765
 
 
-# ─── frontend-mode flags: --web (default) / --docker / --no-frontend ────────
+# frontend-mode flags: --web (default) / --docker / --no-frontend
 
 
 def test_studio_bare_defaults_to_hosted_web_mode(capsys):
@@ -337,7 +337,7 @@ def test_studio_cross_level_mode_flags_are_mutually_exclusive():
         assert exc_info.value.code == 2
 
 
-# ─── studio cwd / module resolution ─────────────
+# studio cwd / module resolution
 
 
 def test_find_repo_root_returns_path_from_source_checkout():
@@ -387,7 +387,7 @@ def test_ensure_apps_importable_adds_repo_root_to_sys_path(monkeypatch):
     assert root_str in sys.path
 
 
-# ─── _is_build_stale staleness predicate ─────────────────────────────────────
+# _is_build_stale staleness predicate
 
 
 def _write_marker(frontend_dir):
@@ -541,7 +541,7 @@ def test_is_build_stale_postcss_config_triggers_rebuild(tmp_path):
     assert _is_build_stale(tmp_path) is True
 
 
-# ─── _needs_npm_install tests ─────────────────────────────────────────────────
+# _needs_npm_install tests
 
 
 def test_needs_npm_install_when_node_modules_absent(tmp_path):

@@ -18,9 +18,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from lionagi.state.db import StateDB  # noqa: E402
 from lionagi.state.reasons import RunReasons  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Shared seed helpers (mirror test_sessions_detail.py idioms)
-# ---------------------------------------------------------------------------
 
 
 async def seed_session(
@@ -102,9 +100,7 @@ def patched_runs_svc(tmp_path: Path, monkeypatch: Any):
     return runs_svc, db_path
 
 
-# ---------------------------------------------------------------------------
 # Test 1 — get_run returns None for a missing run id
-# ---------------------------------------------------------------------------
 
 
 async def test_get_run_returns_none_for_missing_id(patched_runs_svc):
@@ -117,9 +113,7 @@ async def test_get_run_returns_none_for_missing_id(patched_runs_svc):
     assert result is None
 
 
-# ---------------------------------------------------------------------------
 # Test 2 — get_run returns None when DB file does not exist
-# ---------------------------------------------------------------------------
 
 
 async def test_get_run_returns_none_when_db_absent(patched_runs_svc):
@@ -130,9 +124,7 @@ async def test_get_run_returns_none_when_db_absent(patched_runs_svc):
     assert result is None
 
 
-# ---------------------------------------------------------------------------
 # Test 3 — get_run returns all required keys for a DB-seeded run
-# ---------------------------------------------------------------------------
 
 
 _REQUIRED_KEYS = {
@@ -169,9 +161,7 @@ async def test_get_run_returns_all_required_keys(patched_runs_svc):
     assert not missing, f"Missing keys in get_run response: {missing}"
 
 
-# ---------------------------------------------------------------------------
 # Test 4 — get_run maps session fields to correct response keys
-# ---------------------------------------------------------------------------
 
 
 async def test_get_run_maps_session_fields_correctly(patched_runs_svc):
@@ -203,9 +193,7 @@ async def test_get_run_maps_session_fields_correctly(patched_runs_svc):
     assert result["task"] == ""
 
 
-# ---------------------------------------------------------------------------
 # Test 5 — step_count matches branch count; steps list is populated
-# ---------------------------------------------------------------------------
 
 
 async def test_get_run_step_count_and_steps_from_branches(patched_runs_svc):
@@ -225,9 +213,7 @@ async def test_get_run_step_count_and_steps_from_branches(patched_runs_svc):
     assert step_names == {"alpha", "beta"}
 
 
-# ---------------------------------------------------------------------------
 # Test 6 — artifact_contract_json and artifact_verification_json are passed through
-# ---------------------------------------------------------------------------
 
 
 async def test_get_run_passes_artifact_json_fields(patched_runs_svc):
@@ -252,9 +238,7 @@ async def test_get_run_passes_artifact_json_fields(patched_runs_svc):
     assert resolved["staleness_check"] == "unknown"
 
 
-# ---------------------------------------------------------------------------
 # Test 7 — graph is populated from node_metadata when present
-# ---------------------------------------------------------------------------
 
 
 async def test_get_run_graph_from_node_metadata(patched_runs_svc):
@@ -275,9 +259,7 @@ async def test_get_run_graph_from_node_metadata(patched_runs_svc):
     assert graph["nodes"][0]["id"] == "collect"
 
 
-# ---------------------------------------------------------------------------
 # Test 8 — graph is None when no node_metadata present
-# ---------------------------------------------------------------------------
 
 
 async def test_get_run_graph_is_none_without_node_metadata(patched_runs_svc):
@@ -291,9 +273,7 @@ async def test_get_run_graph_is_none_without_node_metadata(patched_runs_svc):
     assert result["graph"] is None
 
 
-# ---------------------------------------------------------------------------
 # Test 9 — steps is None when no branches exist
-# ---------------------------------------------------------------------------
 
 
 async def test_get_run_steps_is_none_with_no_branches(patched_runs_svc):
@@ -309,9 +289,7 @@ async def test_get_run_steps_is_none_with_no_branches(patched_runs_svc):
     assert result["branches"] == []
 
 
-# ---------------------------------------------------------------------------
 # Test 10 — HTTP endpoint returns 404 for missing run
-# ---------------------------------------------------------------------------
 
 
 def test_get_run_endpoint_returns_404_for_missing(tmp_path, monkeypatch):
@@ -329,9 +307,7 @@ def test_get_run_endpoint_returns_404_for_missing(tmp_path, monkeypatch):
     assert r.status_code == 404
 
 
-# ---------------------------------------------------------------------------
 # Test 11 — detail route satisfies the list Run contract (no field drift)
-# ---------------------------------------------------------------------------
 
 # The fields the extension's `Run` TS interface (apps/vscode/src/api/types.ts)
 # requires from GET /api/runs/{id}. The detail route once dropped these (e.g.
@@ -449,9 +425,7 @@ async def test_get_run_zombie_recorded_pid_reports_stale(patched_runs_svc, monke
     assert result["effective_health"] == "stale"
 
 
-# ---------------------------------------------------------------------------
 # get_run() / _build_steps_from_db() over the default 200-message window
-# ---------------------------------------------------------------------------
 
 
 async def seed_over_limit_branch(

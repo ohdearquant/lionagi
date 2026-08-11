@@ -16,9 +16,7 @@ import pytest
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.pile import Pile
 
-# ---------------------------------------------------------------------------
 # Fixtures / helpers
-# ---------------------------------------------------------------------------
 
 
 class Item(Element):
@@ -49,9 +47,7 @@ def pile_5(five_items):
     return Pile(collections=five_items)
 
 
-# ---------------------------------------------------------------------------
 # 1. to_df / dump (pandas-dependent)
-# ---------------------------------------------------------------------------
 
 pandas_missing = importlib.util.find_spec("pandas") is None
 
@@ -276,6 +272,4 @@ class TestSerializationFormat:
             await pile_3.adump(tmp_path / "x.json", obj_key="json", force_ascii=True)
 
 
-# ---------------------------------------------------------------------------
 # 2. Set operations — __ior__, __iand__, __ixor__ (in-place; these work)
-# ---------------------------------------------------------------------------

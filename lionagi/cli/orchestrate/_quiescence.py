@@ -1,43 +1,17 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Proving that nothing a manifest round started is still running.
+"""Prove that nothing a manifest round started is still running.
 
-``round_state: complete`` is a claim that the round's work is over, and it is
-published only after this sweep has observed every recorded control group
-empty. The domain is read from the run directory rather than from a live
-process's memory, so a reaper that shared nothing with a dead runner sweeps
-exactly what the runner would have swept.
+``round_state: complete`` is published only after this sweep has observed
+every recorded control group empty. The domain is read from the run
+directory, never from a live process's memory, so a reaper sharing nothing
+with a dead runner sweeps exactly what the runner would have.
 
-Three things about the predicate are load-bearing, and all three are the sort
-that fail toward reassuring if left implicit:
-
-- **Where the observer sits.** A reaper belongs to no recorded group, so its
-  predicate is absolute emptiness. A cooperative finalizer is a member of the
-  runner's own group, so its predicate exempts exactly itself and nothing else.
-  A predicate that forgets its own observer fails toward unsatisfiable; one
-  that assumes it is outside when it is inside certifies a group holding the
-  observer as empty.
-- **Who joins the domain.** The groups come from each leg record's spawn-time
-  capture, written on the record's first write. That is the mechanism that
-  populates the set, and it is named here because a sweep over a domain nobody
-  joined is indistinguishable from a clean sweep. So an incomplete domain is
-  never quiet, however quiet its groups are.
-- **An unfinished measurement is not an answer.** A scan that could not read
-  the process table, or a member whose identity could not be pinned, leaves the
-  scan incomplete. That is reported as its own verdict and never as emptiness.
-
-What this cannot close, stated rather than papered over: a descendant that
-leaves its leg's recorded process GROUP keeps running outside every group
-here, and leaving the group is all it takes — ``setpgid(0, 0)`` is enough and
-stays in the same session, so this is not confined to the descendants that
-call ``setsid``, which is the narrower class an earlier wording of this
-paragraph named. Membership is the only thing read (``getpgid(pid) != pgid``),
-so nothing group-based can see a process that has left, and no change here
-would fix it. A member that forks during the sweep can likewise leave a child
-the verification pass never saw; and identification and signal are two
-syscalls, so a group observed empty was empty when it was read. The round
-record is what a consumer reads, and writes that land after the sweep simply
-miss the round.
+Known blind spot: a descendant that leaves its leg's recorded process group
+(``setpgid(0, 0)`` — not limited to ``setsid`` callers) keeps running outside
+every group this module can see, and no rescan fixes it. See
+``docs/internals/cli.md`` (`_round_records.py` / `_quiescence.py`) for the
+full verdict precedence and observer-exemption rules.
 """
 
 from __future__ import annotations
@@ -130,15 +104,11 @@ def sweep_quiet(
 ) -> Quiescence:
     """Observe every recorded control group and say whether the round is quiet.
 
-    ``exempt_pgid`` names the one group the observer belongs to, which is the
-    cooperative finalizer's case: it is running inside the runner's group, so
-    that group holds the observer and the predicate there admits the observer's
-    own pid and nothing else. A reaper passes None, belongs to no recorded
-    group, and gets absolute emptiness everywhere.
-
-    Passing an ``exempt_pgid`` the observer is NOT in would exempt a pid from a
-    group it does not lead, so the exemption applies only to the observer's own
-    pid inside that one group; every other pid in it is a member.
+    ``exempt_pgid`` names the one group the observer itself belongs to (the
+    cooperative-finalizer case); the predicate there admits only the
+    observer's own pid, nothing else. A reaper passes None and gets absolute
+    emptiness everywhere. Passing an ``exempt_pgid`` the observer is NOT in
+    would wrongly exempt that pid from a group it doesn't lead.
     """
     observer_pid = os.getpid() if observer_pid is None else observer_pid
     domain = control_group_domain(run_dir)
@@ -222,36 +192,14 @@ def enforce_quiet(
 ) -> QuietEnforcement:
     """End what a round's recorded groups still hold, then re-observe.
 
-    The close-time counterpart to :func:`sweep_quiet`. A leg that ended normally
-    leaves its group empty and this changes nothing; a straggler still inside one
-    is ended at round close rather than tolerated into the harvest window, where
-    it could still be writing the files about to be collected.
-
-    Four properties, each of which fails toward reassuring if left implicit.
-
-    **It signals only on positive evidence.** A group is ended only where the
-    sweep pinned a live member in it. That evidence is also what makes the group
-    id safe to use: a process group id is not reissued while the group still has
-    members, so a group that answers with members is the one whose id was
-    recorded. On the other side, an incomplete scan says an unread member may
-    exist, never who is there — signalling on that reaches whatever now holds a
-    recycled id. So UNPROVEN is left alone and reported, not swept.
-
-    **The mechanism follows the observer's position, and the rule does not
-    change with it.** For a group the observer is outside, the whole group is
-    killed, which also reaches a member that appeared after the scan. The
-    observer's own group cannot be killed that way without ending the observer,
-    which still has to publish, so there its pinned members are signalled
-    individually and it is skipped. Same predicate, two mechanisms.
-
-    **Sending a signal is not ending a process.** The second sweep is the
-    verdict. ``settle`` bounds how long delivery is given; a group still holding
-    a member after it is BUSY, and the round is not quiet.
-
-    **Making it quiet and finding it quiet are different facts**, and
-    ``already_quiet`` keeps them apart. A close that had to kill something is
-    reporting that the round leaked, which a reader should be able to see even
-    though the outcome is the same word.
+    Close-time counterpart to :func:`sweep_quiet`. Only signals groups pinned
+    BUSY (never UNPROVEN — an incomplete scan never tells who's there, so
+    signalling could hit a recycled pgid). Kills the whole group when the
+    observer sits outside it; signals its own pinned members individually,
+    skipping itself, when it doesn't (killing its own group would end the
+    observer before it can publish). The returned ``after`` sweep is the
+    verdict — sending a signal isn't the same as a process having ended.
+    See ``docs/internals/cli.md`` for the full rationale.
     """
     observer_pid = os.getpid() if observer_pid is None else observer_pid
     before = sweep_quiet(
@@ -343,19 +291,10 @@ def _holds_a_member(
 ) -> bool:
     """Whether *pgid* still holds a member the quiet predicate would count.
 
-    An incomplete scan answers True, so the wait continues rather than releasing
-    on a reading that could not see everyone. The benefit is confined to a
-    transiently unreadable process table, where waiting lets the next poll
-    reach a readable one and converge to QUIET instead of settling for
-    UNPROVEN. Where the table stays unreadable this only spends the settle
-    budget: the sweep that follows answers UNPROVEN either way, because it is
-    the verdict and this is not.
-
-    That confinement is also why no test here pins this direction. A mutant
-    that releases early survives the suite, which is a gap in the tests rather
-    than a defence of the mutant: constructing the transient case means
-    controlling how many reads fail, and a test whose apparatus decides the
-    timing decides the outcome.
+    An incomplete scan answers True, so the wait keeps polling instead of
+    releasing on a reading that couldn't see everyone — this only spends the
+    ``settle`` budget if the process table stays unreadable; the sweep that
+    follows is the actual verdict either way.
     """
     members, complete = live_group_members(pgid, marker_var=marker_var)
     if not complete:

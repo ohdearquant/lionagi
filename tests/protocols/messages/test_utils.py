@@ -129,7 +129,7 @@ def test_instructioncontent_from_dict_with_images():
 
 
 def test_validate_sender_recipient(sample_element):
-    """Test sender/recipient validation"""
+    """Sender/recipient validation"""
     assert validate_sender_recipient(MessageRole.SYSTEM) == MessageRole.SYSTEM
     assert validate_sender_recipient(MessageRole.USER) == MessageRole.USER
 

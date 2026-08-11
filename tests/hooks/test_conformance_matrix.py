@@ -79,11 +79,6 @@ def _mock_proc(returncode: int, stdout: bytes = b"", stderr: bytes = b""):
     return proc
 
 
-# ---------------------------------------------------------------------------
-# Claude Code fixture: import report + resulting hooks_external entries
-# ---------------------------------------------------------------------------
-
-
 def test_claude_fixture_imports_mappable_events_and_rejects_the_rest():
     data = _load("claude_settings.json")
     external, report = _translate_config(data, source_label="claude")
@@ -131,11 +126,6 @@ def test_claude_fixture_entries_parse_and_construct_adapters():
         assert callable(handler)
 
 
-# ---------------------------------------------------------------------------
-# Codex fixture: PreCompact (out of scope, no runtime seam) is rejected.
-# ---------------------------------------------------------------------------
-
-
 def test_codex_fixture_rejects_precompact_no_seam():
     data = _load("codex_hooks.json")
     external, report = _translate_config(data, source_label="codex")
@@ -152,11 +142,6 @@ def test_codex_fixture_marks_dv1_1_transcript_divergence_for_user_prompt_submit(
     ups_lines = [line for line in report if "UserPromptSubmit" in line and "imported" in line]
     assert ups_lines
     assert any("transcript_path/turn_id" in line for line in ups_lines)
-
-
-# ---------------------------------------------------------------------------
-# Field-guarantee rows, exercised end to end against a mocked subprocess.
-# ---------------------------------------------------------------------------
 
 
 async def test_pre_tool_use_field_guarantees_reach_the_subprocess(monkeypatch):
@@ -210,11 +195,6 @@ async def test_user_prompt_submit_field_guarantees_include_model_and_permission_
     assert env["permission_mode"] == "default"
 
 
-# ---------------------------------------------------------------------------
-# Exit-code protocol, exactly as the ADR states it (D1/D4 acceptance).
-# ---------------------------------------------------------------------------
-
-
 async def test_exit_code_protocol_zero_two_and_other(monkeypatch):
     hook = external_hook_adapter(event="PreToolUse", command=["guard"])
 
@@ -242,13 +222,6 @@ async def test_exit_code_protocol_zero_two_and_other(monkeypatch):
     # reason text must not collapse the two into indistinguishable output.
     assert error.decision == "deny"
     assert "unexpected crash" in error.reason
-
-
-# ---------------------------------------------------------------------------
-# Malformed/partial exit-0 responses (D1/D4 acceptance): only a
-# genuinely empty stdout means "no opinion" (allow). Every other shape that
-# fails to yield a recognized decision must fail closed on a blocking seam.
-# ---------------------------------------------------------------------------
 
 
 async def test_malformed_exit_zero_responses_fail_closed_not_allow(monkeypatch):
@@ -279,12 +252,6 @@ async def test_empty_stdout_is_the_only_legitimate_no_opinion_allow(monkeypatch)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0)))
     result = await hook("bash", {})
     assert result.decision == "allow"
-
-
-# ---------------------------------------------------------------------------
-# Named divergence Dv1-4: LionAGI fails closed on a blocking-event timeout,
-# where Claude Code cancels the hook and lets the prompt proceed (fail open).
-# ---------------------------------------------------------------------------
 
 
 async def test_dv1_4_timeout_fails_closed_unlike_claude_codes_fail_open(monkeypatch):

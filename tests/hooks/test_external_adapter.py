@@ -31,10 +31,6 @@ from lionagi.hooks.external import (
 )
 from lionagi.protocols.action.tool_hooks import ToolPostDecision, ToolPreDecision
 
-# ---------------------------------------------------------------------------
-# validate_argv (D4: non-empty argv of non-empty/non-whitespace strings)
-# ---------------------------------------------------------------------------
-
 
 def test_validate_argv_accepts_nonempty_string_list():
     assert validate_argv(["uv", "run", "guard.py"]) == ["uv", "run", "guard.py"]
@@ -54,11 +50,6 @@ def test_validate_argv_accepts_nonempty_string_list():
 def test_validate_argv_rejects(bad):
     with pytest.raises(ExternalHookConfigError):
         validate_argv(bad)
-
-
-# ---------------------------------------------------------------------------
-# build_envelope: D1 field guarantees per event
-# ---------------------------------------------------------------------------
 
 
 def test_envelope_common_fields_always_present():
@@ -127,11 +118,6 @@ def test_envelope_post_tool_use_failure_guarantees_tool_response_as_error():
     assert env["tool_response"] == {"error": "boom"}
 
 
-# ---------------------------------------------------------------------------
-# match_hook: harness matcher semantics
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("matcher", [None, "", "*"])
 def test_match_hook_empty_or_star_matches_everything(matcher):
     assert match_hook(matcher, "bash") is True
@@ -148,11 +134,6 @@ def test_match_hook_exact_or_list():
 def test_match_hook_unanchored_regex_fallback():
     assert match_hook("^bash$", "bash") is True
     assert match_hook("bash.*", "bash_tool") is True
-
-
-# ---------------------------------------------------------------------------
-# Trust gate (D7): content-pinned to the resolved executable, not argv alone
-# ---------------------------------------------------------------------------
 
 
 def test_is_command_trusted_no_source_is_project_authored():
@@ -176,13 +157,6 @@ def test_is_command_trusted_imported_with_matching_record(monkeypatch, tmp_path)
 
 def test_command_hash_changes_with_argv():
     assert compute_command_hash(["a", "b"]) != compute_command_hash(["a", "c"])
-
-
-# ---------------------------------------------------------------------------
-# Content-pinned trust (Issue 3 fix): resolution, digesting, and the exact
-# attack this closes -- an argv-only-hashed approval carrying over to a
-# different resolved executable.
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_hook_executable_relative_path(tmp_path):
@@ -297,11 +271,6 @@ def test_trust_does_not_carry_over_when_relative_command_resolves_elsewhere(monk
     assert is_command_trusted(["./guard"], source="imported:claude", cwd=str(attacker_dir)) is False
 
 
-# ---------------------------------------------------------------------------
-# external_hook_adapter: unsupported event fails config load
-# ---------------------------------------------------------------------------
-
-
 def test_adapter_rejects_unmappable_event():
     with pytest.raises(ExternalHookConfigError, match="no seam"):
         external_hook_adapter(event="Stop", command=["guard"])
@@ -310,11 +279,6 @@ def test_adapter_rejects_unmappable_event():
 def test_adapter_rejects_invalid_argv():
     with pytest.raises(ExternalHookConfigError):
         external_hook_adapter(event="PreToolUse", command="echo unsafe")
-
-
-# ---------------------------------------------------------------------------
-# PreToolUse: exit-code contract + stdout decision parsing
-# ---------------------------------------------------------------------------
 
 
 class _FakeStream:
@@ -498,16 +462,6 @@ async def test_pre_tool_use_nonjson_stdout_fails_closed_on_blocking_seam(monkeyp
     assert result.decision == "deny"
 
 
-# ---------------------------------------------------------------------------
-# Malformed/partial exit-0 responses on a blocking seam: only a
-# genuinely empty stdout means "no opinion" (allow). Every other case that
-# fails to yield a recognized decision -- a scalar JSON value, an empty
-# object, a hookSpecificOutput with no permissionDecision key, and an
-# EXPLICIT null permissionDecision -- must fail closed, never fall through
-# to the empty-stdout allow convention.
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "stdout",
     [
@@ -571,12 +525,6 @@ async def test_pre_tool_use_matcher_skips_non_matching_tool(monkeypatch):
     spawn.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# PostToolUse: advisory only -- a deny/error becomes a surfaced note, never
-# a raised exception (the action already happened).
-# ---------------------------------------------------------------------------
-
-
 async def test_post_tool_use_allow_returns_none(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0)))
     hook = external_hook_adapter(event="PostToolUse", command=["notify"])
@@ -605,12 +553,6 @@ async def test_post_tool_use_error_result_maps_tool_response_to_error_dict(monke
     await hook("bash", {"command": ["ls"]}, None, err)
     envelope = json.loads(proc.stdin.written.decode())
     assert envelope["tool_response"] == {"error": "kaboom"}
-
-
-# ---------------------------------------------------------------------------
-# Timeout: process group is killed; blocking events fail closed, advisory
-# events are logged and continue.
-# ---------------------------------------------------------------------------
 
 
 async def test_pre_tool_use_timeout_kills_process_group_and_denies(monkeypatch):
@@ -651,11 +593,6 @@ async def test_post_tool_use_timeout_surfaces_reason_not_raise(monkeypatch):
     assert "timed out" in result.reason
 
 
-# ---------------------------------------------------------------------------
-# UserPromptSubmit: blocking HookBus seam -- a deny verdict raises.
-# ---------------------------------------------------------------------------
-
-
 async def test_user_prompt_submit_deny_raises_permission_error(monkeypatch):
     stdout = json.dumps({"decision": "block", "reason": "hygiene check failed"}).encode()
     monkeypatch.setattr(
@@ -670,11 +607,6 @@ async def test_user_prompt_submit_allow_does_not_raise(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=_mock_proc(0)))
     hook = external_hook_adapter(event="UserPromptSubmit", command=["hygiene"])
     await hook(session_id="s-1", branch_id="b-1", prompt="do a thing")  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# SessionStart/SessionEnd/PostToolUseFailure: advisory -- deny is logged, not raised.
-# ---------------------------------------------------------------------------
 
 
 async def test_session_start_deny_is_logged_not_raised(monkeypatch):
@@ -695,11 +627,6 @@ async def test_post_tool_use_failure_stringifies_error_into_tool_response(monkey
     envelope = json.loads(proc.stdin.written.decode())
     assert envelope["tool_response"] == {"error": "disk full"}
     assert envelope["tool_name"] == "bash"
-
-
-# ---------------------------------------------------------------------------
-# Untrusted command: imported entries never execute without a trust record.
-# ---------------------------------------------------------------------------
 
 
 async def test_untrusted_imported_pre_tool_use_denies_without_spawning(monkeypatch, tmp_path):
@@ -737,16 +664,6 @@ async def test_untrusted_imported_advisory_event_is_error_not_raise(monkeypatch,
     hook = external_hook_adapter(event="SessionStart", command=["notify"], source="imported:codex")
     await hook(session_id="s-1")  # advisory: must not raise even though untrusted
     spawn.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Approval cwd vs exec cwd, and the hash-to-exec TOCTOU (real subprocesses,
-# no mocking of create_subprocess_exec): a trust record pins a relative
-# command to the executable it resolves to IN THE APPROVED DIRECTORY: the
-# process that actually runs must be that exact file, never whatever
-# same-named program happens to sit in the calling process's own cwd, and
-# never a file swapped into the approved path after its digest was read.
-# ---------------------------------------------------------------------------
 
 
 async def test_approved_relative_command_runs_from_approval_cwd_not_process_cwd(
@@ -976,12 +893,6 @@ async def test_trusted_exec_spawns_a_private_copy_not_the_configured_path(monkey
     assert not executed_path.parent.exists(), "the private directory must be removed after exit"
 
 
-# ---------------------------------------------------------------------------
-# Bounded subprocess output (Issue 2 fix): stdout AND stderr are capped while
-# streaming, never after an unbounded `communicate()`-style full buffer.
-# ---------------------------------------------------------------------------
-
-
 async def test_read_capped_truncates_and_logs(caplog):
     from lionagi.hooks.external import _MAX_STDOUT_BYTES, _read_capped
 
@@ -1009,14 +920,6 @@ async def test_read_capped_none_stream_returns_empty():
     result = await _read_capped(None, 1_048_576, "stdout")
     assert result.data == b""
     assert result.truncated is False
-
-
-# ---------------------------------------------------------------------------
-# Truncation-to-allow: a hook response cut off at the cap must
-# never be parsed as a decision -- a truncated exit-0 stdout is a hook
-# failure (deny on a blocking seam), not "whatever the retained prefix
-# happened to say."
-# ---------------------------------------------------------------------------
 
 
 async def test_truncated_stdout_on_blocking_seam_denies_even_with_a_complete_allow_prefix(
@@ -1123,13 +1026,6 @@ async def test_real_subprocess_large_dual_pipe_output_does_not_hang():
     assert result.decision == "deny"
     assert "truncat" in result.reason.lower()
     assert elapsed < 15, "hook should complete well within its own timeout, not hang"
-
-
-# ---------------------------------------------------------------------------
-# Non-serializable tool results (Issue 9 fix): serialize the envelope BEFORE
-# spawning; ADR-0048 D1's tool_response string fallback so PostToolUse hooks
-# still fire; no path leaves a spawned process handle unterminated.
-# ---------------------------------------------------------------------------
 
 
 class _Unserializable:

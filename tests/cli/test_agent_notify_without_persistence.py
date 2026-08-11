@@ -5,24 +5,22 @@
 could register the callback that would normally deliver one, still gets it
 delivered.
 
-`--notify` is ordinarily delivered by a callback registered against this
-run's session entity and fired by that entity's terminal transition. When
-persistence setup fails there is no session entity, so no transition can ever
-happen and the registered path can never fire, however well it resolves. This
-run instead delivers the notice itself, directly, once its own terminal
-status is known — see `deliver_flow_notify_now` in
-`lionagi/cli/orchestrate/_notify.py` and docs/internals/cli.md.
+`--notify` is ordinarily delivered by a callback registered against the run's
+session entity, fired by that entity's terminal transition. When persistence
+setup fails there is no session entity and no transition ever fires, so this
+run instead delivers the notice itself once its own terminal status is known
+— see `deliver_flow_notify_now` in `lionagi/cli/orchestrate/_notify.py` and
+docs/internals/cli.md.
 
-That matters because the consumers are automated. The lion MCP server wires
-`--notify` on every job it spawns and takes the resulting notice as the run's
-end; without one it eventually observes the process is gone with nothing
-recorded and publishes `outcome=indeterminate`, which is the opposite of what
-happened to a run that did all of its work.
+This matters because consumers are automated: the lion MCP server wires
+`--notify` on every job it spawns and takes the notice as the run's end;
+without one it eventually observes the process gone with nothing recorded and
+publishes `outcome=indeterminate` for a run that actually completed its work.
 
 Recording a refusal is not the same as delivering a notice: the refusal
-record (`notify_outcome.json` with a `reason`) is now written only when
-delivery is actually attempted and genuinely cannot be completed — nothing
-usable is configured — never merely because persistence broke.
+record (`notify_outcome.json` with a `reason`) is written only when delivery
+is actually attempted and genuinely cannot complete, never merely because
+persistence broke.
 """
 
 from __future__ import annotations

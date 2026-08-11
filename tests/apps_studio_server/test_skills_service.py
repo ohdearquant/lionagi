@@ -13,9 +13,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from lionagi.studio.services.skills import validate_skill_content  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # validate_skill_content() — both arms per finding
-# ---------------------------------------------------------------------------
 
 VALID_SKILL = """---
 name: my-skill
@@ -98,9 +96,7 @@ def test_validate_skill_content_rejects_null_frontmatter():
     assert any("YAML" in e or "mapping" in e for e in errors)
 
 
-# ---------------------------------------------------------------------------
 # definitions.py — skill kind save / get / rollback
-# ---------------------------------------------------------------------------
 
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 

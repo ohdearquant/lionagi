@@ -61,7 +61,7 @@ def mixed_type_graph():
 
 
 class TestNodeTypes:
-    """Test different node types in graph"""
+    """Different node types in graph"""
 
     def test_type_a_nodes(self, mixed_type_graph):
         graph, nodes, _ = mixed_type_graph
@@ -98,7 +98,7 @@ class TestNodeTypes:
 
 
 class TestEdgeTypes:
-    """Test different edge types in graph"""
+    """Different edge types in graph"""
 
     def test_weighted_edges(self, mixed_type_graph):
         graph, _, edges = mixed_type_graph
@@ -126,7 +126,7 @@ class TestEdgeTypes:
 
 
 class TestMixedTypeOperations:
-    """Test operations with mixed node and edge types"""
+    """Operations with mixed node and edge types"""
 
     def test_mixed_type_traversal(self, mixed_type_graph):
         graph, nodes, _ = mixed_type_graph
