@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from lionagi.cli.doctor import (
+    _STUDIO_READINESS_URL_DEFAULT,
     _check_core_deps,
     _check_imports,
     _check_lionagi_home,
@@ -19,6 +20,7 @@ from lionagi.cli.doctor import (
     _check_studio_daemon,
     _check_version,
     _looks_editable,
+    _readiness_verdict,
     collect_checks,
     run_doctor,
 )
@@ -30,7 +32,7 @@ def _closed_port_url() -> str:
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
-    return f"http://127.0.0.1:{port}/api/admin/health"
+    return f"http://127.0.0.1:{port}/api/admin/readiness"
 
 
 # ── _looks_editable ──────────────────────────────────────────────────────────
@@ -173,6 +175,52 @@ def test_check_studio_daemon_unreachable_is_warn_not_fail() -> None:
     result = _check_studio_daemon(url=url, timeout=0.5)
     assert result["status"] == "warn"
     assert url in result["detail"]
+
+
+def test_studio_default_target_is_readiness_not_the_composite_report() -> None:
+    """The composite report walks the recent session page, so its cost grows with
+    stored message volume and it can stop answering entirely while every other
+    route serves. Pointing this check back at it reports a working daemon as
+    unreachable, so the endpoint choice is pinned here deliberately."""
+    assert _STUDIO_READINESS_URL_DEFAULT.endswith("/api/admin/readiness")
+
+
+# ── _readiness_verdict ───────────────────────────────────────────────────────
+# Readiness answers 200 for all three of its states, so these assert the verdict
+# is taken from the body. A code-only check would pass every one of them.
+
+
+def test_readiness_verdict_healthy_is_ok() -> None:
+    body = json.dumps({"status": "healthy", "detail": "store answered"}).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "ok"
+    assert "store answered" in result["detail"]
+
+
+@pytest.mark.parametrize("state", ["slow", "unavailable"])
+def test_readiness_verdict_degraded_store_is_warn(state: str) -> None:
+    body = json.dumps({"status": state, "detail": "d"}).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "warn"
+    assert state in result["detail"]
+
+
+def test_readiness_verdict_malformed_body_is_unknown() -> None:
+    result = _readiness_verdict("http://x/api/admin/readiness", b"<html>not json</html>")
+    assert result["status"] == "unknown"
+
+
+def test_readiness_verdict_missing_status_key_is_unknown() -> None:
+    body = json.dumps({"detail": "no status field"}).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "unknown"
+
+
+def test_readiness_verdict_unrecognised_status_is_unknown() -> None:
+    """An unknown verdict has established nothing, so it must not read as a pass."""
+    body = json.dumps({"status": "brand-new-state"}).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "unknown"
 
 
 # ── _check_lionagi_home ──────────────────────────────────────────────────────
