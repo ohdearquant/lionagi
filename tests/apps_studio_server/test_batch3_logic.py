@@ -16,9 +16,7 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # is_session_stream_done() gates on terminal status AND stale time
-# ---------------------------------------------------------------------------
 
 
 class TestIsSessionStreamDone:
@@ -170,9 +168,7 @@ class TestGetSessionStreamState:
         assert result["status"] == "completed"
 
 
-# ---------------------------------------------------------------------------
 # update_playbook() rejects invalid links via validate_playbook()
-# ---------------------------------------------------------------------------
 
 
 class TestUpdatePlaybookValidation:

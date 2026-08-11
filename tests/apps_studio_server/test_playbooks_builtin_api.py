@@ -35,9 +35,7 @@ EXPECTED_BUILTIN_NAMES = {
 }
 
 
-# ---------------------------------------------------------------------------
 # Bundled data integrity
-# ---------------------------------------------------------------------------
 
 
 def test_bundled_root_exists_and_has_expected_names():
@@ -64,9 +62,7 @@ def test_bundled_files_match_examples_playbooks_byte_for_byte():
         )
 
 
-# ---------------------------------------------------------------------------
 # list_builtin_playbooks / get_builtin_playbook (service layer, real bundled data)
-# ---------------------------------------------------------------------------
 
 
 class TestListBuiltinPlaybooks:
@@ -135,9 +131,7 @@ class TestGetBuiltinPlaybook:
         assert svc.get_builtin_playbook(bad_name) is None
 
 
-# ---------------------------------------------------------------------------
 # install_builtin_playbook — idempotent materialize into ~/.lionagi/playbooks
-# ---------------------------------------------------------------------------
 
 
 class TestInstallBuiltinPlaybook:
@@ -189,9 +183,7 @@ class TestInstallBuiltinPlaybook:
             svc.install_builtin_playbook("..")
 
 
-# ---------------------------------------------------------------------------
 # Route-level smoke tests (real app, real bundled data, isolated user dir)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration

@@ -4,23 +4,22 @@
 """Regression test for the flow-created clone-branch persistence gap.
 
 `workflow_run._setup_run_persist` registers per-branch persistence
-(`register_branch_hook`) only for the branches present on `session.branches`
-at setup time. `session.flow()` -> `FlowExecutor._preallocate_all_branches`
-then clones `session.default_branch` for every operation that has a
-predecessor and no explicit `branch_id` (exactly what the Studio compiler
-produces for any multi-step workflow). Those clones are born *after* setup,
-so without the `on_branch_created` seam their transcripts never persist —
-even though the run-DAG *signals* still render, because those persist via a
-separate session-level observer, not the per-branch message hook.
+(`register_branch_hook`) only for branches present on `session.branches` at
+setup time. `session.flow()` -> `FlowExecutor._preallocate_all_branches`
+then clones `session.default_branch` for every operation with a predecessor
+and no explicit `branch_id` -- exactly what the Studio compiler produces for
+any multi-step workflow. Those clones are born *after* setup, so without the
+`on_branch_created` seam their transcripts never persist, even though the
+run-DAG signals still render (those persist via a separate session-level
+observer, not the per-branch message hook).
 
-This test proves the fix by exercising the exact code path
-`workflow_run.run_workflow_def` uses (`Session.flow(..., on_branch_created=...)`
-wired to `register_branch_hook`), forcing a real branch clone, producing a
-real persisted message on it (via `branch.communicate()`, which -- unlike
-the Studio "chat" node kind -- actually calls `branch.msgs.a_add_message()`
-and so fires the `on_message_added` -> `MESSAGE_ADD` hook chain that
-`register_branch_hook` wires into StateDB), and then reading the message
-back out of a *fresh* StateDB connection.
+This exercises the exact path `workflow_run.run_workflow_def` uses
+(`Session.flow(..., on_branch_created=...)` wired to `register_branch_hook`):
+forces a real branch clone, produces a real persisted message on it via
+`branch.communicate()` (which, unlike the Studio "chat" node kind, calls
+`branch.msgs.a_add_message()` and fires the `on_message_added` ->
+`MESSAGE_ADD` hook chain), then reads the message back from a fresh
+StateDB connection.
 """
 
 from __future__ import annotations
@@ -125,7 +124,7 @@ async def test_flow_clone_branch_transcript_persists(patched_env):
     )
     assert "error" not in result["operation_results"].get(op2_id, {})
 
-    # --- Prove op2 actually ran on a CLONE branch (predecessor, no branch_id) ---
+    # Prove op2 actually ran on a CLONE branch (predecessor, no branch_id)
     assert len(created_branches) == 1, (
         "expected exactly one clone: op1 has no predecessor (stays on default "
         "branch); op2 depends on op1 with no explicit branch_id, so "
@@ -138,7 +137,7 @@ async def test_flow_clone_branch_transcript_persists(patched_env):
         "the session's original default branch"
     )
 
-    # --- Query a FRESH StateDB connection (ctx["db"] is closed by teardown) ---
+    # Query a FRESH StateDB connection (ctx["db"] is closed by teardown)
     from lionagi.state.db import StateDB
 
     db = StateDB(db_path)

@@ -36,9 +36,7 @@ STDIO_CONFIG = {
 URL_CONFIG = {"url": "https://example.invalid/mcp"}
 
 
-# ---------------------------------------------------------------------------
 # Shape validation
-# ---------------------------------------------------------------------------
 
 
 def test_validate_shape_rejects_missing_transport():
@@ -113,9 +111,7 @@ async def test_validate_config_malformed_never_attempts_connection(monkeypatch):
     assert called is False
 
 
-# ---------------------------------------------------------------------------
 # CRUD
-# ---------------------------------------------------------------------------
 
 
 def test_register_list_get_roundtrip(tmp_path, monkeypatch):
@@ -289,11 +285,9 @@ def test_enable_disable_nonexistent_returns_none(tmp_path, monkeypatch):
     assert mcp_mod.set_enabled("nope", False) is None
 
 
-# ---------------------------------------------------------------------------
 # Secret handling — never returned raw, never written to the synced file
 # for a disabled server, never present in the on-disk registry as anything
 # other than what the user configured.
-# ---------------------------------------------------------------------------
 
 
 def test_list_and_get_never_return_raw_secret(tmp_path, monkeypatch):
@@ -345,9 +339,7 @@ def test_synced_mcp_json_is_readable_by_mcp_resolve_contract(tmp_path, monkeypat
     assert servers["myserver"]["env"]["API_KEY"] == "sk-super-secret-value"
 
 
-# ---------------------------------------------------------------------------
 # Connection checking — a real attempt, and honest about whether one ran
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -539,10 +531,8 @@ async def test_check_server_connection_does_not_resurrect_deleted_server(tmp_pat
     assert mcp_mod.get_server("myserver") is None
 
 
-# ---------------------------------------------------------------------------
 # At-rest permissions -- the registry and derived file hold secret env
 # values verbatim, so neither may be group/world readable.
-# ---------------------------------------------------------------------------
 
 
 def _mode(path) -> int:
@@ -612,9 +602,7 @@ def test_save_registry_writes_temp_file_owner_only(tmp_path, monkeypatch):
     assert all(mode == 0o600 for mode in seen_modes)
 
 
-# ---------------------------------------------------------------------------
 # Routes (end-to-end through the FastAPI app)
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -693,14 +681,12 @@ def test_route_validate_malformed(mcp_client):
     assert body["errors"]
 
 
-# ---------------------------------------------------------------------------
 # Validate/Save parity -- Validate must accept exactly the edits Save
 # accepts. Save (PUT) merges a patch onto the stored config; a Validate that
 # shape-checks the raw patch instead rejects perfectly ordinary partial
 # edits (e.g. one that only changes `args`) and, worse, the env-deletion
 # patch Save requires to drop a key (an explicit `null` value, since a
 # client never sees secret values to resend them).
-# ---------------------------------------------------------------------------
 
 
 _PARITY_PATCH_CORPUS = [
@@ -826,7 +812,6 @@ def test_create_time_malformed_falsy_values_are_rejected_not_laundered(
     )
 
 
-# ---------------------------------------------------------------------------
 # URL-transport parity -- `_validate_shape` used to gate every args/env shape
 # check behind `has_command`, so a URL config (no `command` at all) skipped
 # them outright; `_merge_config` separately laundered a fresh url+malformed
@@ -835,7 +820,6 @@ def test_create_time_malformed_falsy_values_are_rejected_not_laundered(
 # malformed field in the same request) and update-time (a patch that edits
 # only the malformed field on an already-registered url server, never
 # resending `url`) -- the two shapes each mechanism above was specific to.
-# ---------------------------------------------------------------------------
 
 _URL_MALFORMED_PATCH_CORPUS = [
     ("env_list", {"env": []}),
@@ -988,11 +972,9 @@ def test_validate_create_time_null_env_against_empty_base_is_key_absent(tmp_path
     assert result["errors"] is None
 
 
-# ---------------------------------------------------------------------------
 # A stored status belongs to the configuration it sits on -- the connection
 # check refuses to write one for a configuration it never probed, and an
 # ordinary edit must not leave one behind for a configuration it replaced.
-# ---------------------------------------------------------------------------
 
 
 def test_update_server_clears_a_status_obtained_for_the_replaced_config(tmp_path, monkeypatch):
