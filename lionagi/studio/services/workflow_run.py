@@ -27,6 +27,7 @@ async def _setup_run_persist(
     invocation_kind: str,
     extra_node_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from lionagi.cli.kill import current_pid_markers
     from lionagi.cli.orchestrate._orchestration import register_branch_hook
     from lionagi.state.db import StateDB
 
@@ -40,6 +41,7 @@ async def _setup_run_persist(
 
     node_metadata = {
         **(session_dict.get("node_metadata") or {}),
+        **current_pid_markers(),
         **(extra_node_metadata or {}),
     }
     await db.create_session(

@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the shared tri-state process-liveness oracle."""
 
+import asyncio
 import json
 import os
 import subprocess
+import time
+from unittest.mock import AsyncMock
 
 import psutil
 import pytest
@@ -91,3 +94,95 @@ def test_node_metadata_pid_with_matching_create_time_but_zombie_status_is_dead(m
 
     session = {"id": "s1", "node_metadata": {"pid": pid, "pid_create_time": ct}}
     assert process_liveness(session, None, ps_snapshot="") is False
+
+
+async def test_identity_complete_runs_page_does_not_capture_process_table(monkeypatch):
+    import lionagi.studio.services.admin as admin_mod
+    import lionagi.studio.services.run_tags as run_tags_mod
+    import lionagi.studio.services.runs as runs_mod
+
+    created = psutil.Process(os.getpid()).create_time()
+    sessions = [
+        {
+            "id": f"session-{i}",
+            "status": "running",
+            "started_at": time.time(),
+            "updated_at": time.time(),
+            "node_metadata": {"pid": os.getpid(), "pid_create_time": created},
+        }
+        for i in range(20)
+    ]
+    monkeypatch.setattr(runs_mod._sessions_svc, "list_sessions", AsyncMock(return_value=sessions))
+    monkeypatch.setattr(run_tags_mod, "tags_for_sessions", AsyncMock(return_value={}))
+    snapshot = AsyncMock(return_value="")
+    monkeypatch.setattr(admin_mod, "cached_ps_snapshot", snapshot)
+
+    result = await runs_mod.list_runs(limit=20)
+
+    assert len(result) == 20
+    snapshot.assert_not_awaited()
+
+
+async def test_concurrent_legacy_pages_share_one_process_table_capture(monkeypatch):
+    import lionagi.studio.services.admin as admin_mod
+
+    admin_mod.reset_process_snapshot_cache()
+    calls = 0
+
+    def capture() -> str:
+        nonlocal calls
+        calls += 1
+        time.sleep(0.03)
+        return "123 li agent --resume legacy-session"
+
+    monkeypatch.setattr(admin_mod, "_ps_snapshot", capture)
+
+    snapshots = await asyncio.gather(*(admin_mod.cached_ps_snapshot() for _ in range(12)))
+
+    assert snapshots == ["123 li agent --resume legacy-session"] * 12
+    assert calls == 1
+    metrics = admin_mod.process_snapshot_metrics()
+    assert metrics["fallback_rows"] == 0
+    assert metrics["captures"] == 1
+
+
+async def test_explicit_nonlocal_run_is_unverifiable_without_legacy_snapshot(monkeypatch):
+    import lionagi.studio.services.admin as admin_mod
+    import lionagi.studio.services.run_tags as run_tags_mod
+    import lionagi.studio.services.runs as runs_mod
+
+    sessions = [
+        {
+            "id": "imported-session",
+            "status": "running",
+            "started_at": time.time(),
+            "updated_at": time.time(),
+            "node_metadata": {"process_identity_mode": "external"},
+        }
+    ]
+    monkeypatch.setattr(runs_mod._sessions_svc, "list_sessions", AsyncMock(return_value=sessions))
+    monkeypatch.setattr(run_tags_mod, "tags_for_sessions", AsyncMock(return_value={}))
+    snapshot = AsyncMock(return_value="")
+    monkeypatch.setattr(admin_mod, "cached_ps_snapshot", snapshot)
+
+    result = await runs_mod.list_runs(limit=1)
+
+    assert len(result) == 1
+    snapshot.assert_not_awaited()
+
+
+def test_process_identity_from_another_host_is_unknown(monkeypatch):
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "current-host")
+    session = {
+        "id": "remote-session",
+        "node_metadata": {
+            "pid": os.getpid(),
+            "pid_create_time": psutil.Process(os.getpid()).create_time(),
+            "pid_host": "another-host",
+            "pid_boot_time": psutil.boot_time(),
+        },
+    }
+
+    assert process_liveness(session, None, ps_snapshot="") is None

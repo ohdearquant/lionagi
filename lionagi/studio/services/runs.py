@@ -455,6 +455,13 @@ def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool
     return process_liveness(s, Path(ap) if ap else None, ps_snapshot)
 
 
+def _session_requires_snapshot(s: dict[str, Any]) -> bool:
+    from .admin import process_snapshot_required
+
+    ap = s.get("artifacts_path")
+    return process_snapshot_required(s, Path(ap) if ap else None)
+
+
 def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
     """Canonical Run row shape shared by list and detail routes."""
     from lionagi.state.health import classify_session_health
@@ -534,17 +541,40 @@ async def list_runs(
     )
     sessions = await _sessions_svc.list_sessions(limit=limit, offset=offset, where=where, sort=sort)
     now = time.time()
-    out = []
-    snapshot: str | None = None
+    out: list[dict[str, Any]] = []
+    fallback: list[tuple[int, dict[str, Any]]] = []
+    identity_rows = 0
+    unverifiable_rows = 0
     for s in sessions:
         alive: bool | None = None
         if s.get("status") == "running":
-            if snapshot is None:
-                from .admin import _ps_snapshot
-
-                snapshot = _ps_snapshot()
-            alive = _session_liveness(s, snapshot)
+            alive = _session_liveness(s, "")
+            if alive is None and _session_requires_snapshot(s):
+                fallback.append((len(out), s))
+            elif alive is None:
+                unverifiable_rows += 1
+            else:
+                identity_rows += 1
         out.append(_run_row(s, now, process_alive=alive))
+
+    if fallback:
+        from .admin import cached_ps_snapshot
+
+        snapshot = await cached_ps_snapshot()
+        for index, session in fallback:
+            out[index] = _run_row(
+                session,
+                now,
+                process_alive=_session_liveness(session, snapshot),
+            )
+
+    from .admin import _record_process_identity_batch
+
+    _record_process_identity_batch(
+        identity_rows=identity_rows,
+        fallback_rows=len(fallback),
+        unverifiable_rows=unverifiable_rows,
+    )
 
     tagmap = await run_tags.tags_for_sessions([r["id"] for r in out])
     for r in out:

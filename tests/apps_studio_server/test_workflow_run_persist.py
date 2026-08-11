@@ -24,6 +24,7 @@ StateDB connection.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -97,6 +98,12 @@ async def test_flow_clone_branch_transcript_persists(patched_env):
     graph = builder.graph
 
     ctx = await _setup_run_persist(session, invocation_kind="flow")
+
+    persisted = await ctx["db"].get_session(ctx["session_id"])
+    assert persisted["status"] == "running"
+    assert persisted["node_metadata"]["pid"] == os.getpid()
+    assert persisted["node_metadata"]["pid_create_time"] > 0
+    assert persisted["node_metadata"]["process_identity_mode"] == "local"
 
     created_branches: list[Any] = []
 

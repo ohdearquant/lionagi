@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import socket
 import time
 from typing import Any, Literal
 
@@ -45,10 +46,13 @@ def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
 
 
 def current_pid_markers() -> dict[str, Any]:
-    """PID + create_time for the current process, for kill verification (CWE-362)."""
+    """Host-scoped process identity for liveness and kill verification."""
     return {
         "pid": os.getpid(),
         "pid_create_time": psutil.Process(os.getpid()).create_time(),
+        "pid_host": socket.gethostname(),
+        "pid_boot_time": psutil.boot_time(),
+        "process_identity_mode": "local",
     }
 
 

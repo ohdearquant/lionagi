@@ -710,6 +710,9 @@ def test_current_pid_markers_records_own_pid():
     import psutil
 
     assert markers["pid_create_time"] == pytest.approx(psutil.Process(os.getpid()).create_time())
+    assert markers["pid_host"]
+    assert markers["pid_boot_time"] == pytest.approx(psutil.boot_time())
+    assert markers["process_identity_mode"] == "local"
 
 
 async def test_kill_one_skips_recycled_pid_via_create_time(

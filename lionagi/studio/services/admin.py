@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import socket
 import sqlite3
 import subprocess
 import time
@@ -221,6 +223,95 @@ def _ps_snapshot() -> str:
         return ""
 
 
+_PS_SNAPSHOT_TTL_SECONDS = 0.5
+_ps_snapshot_value: str | None = None
+_ps_snapshot_at = 0.0
+_ps_snapshot_inflight: asyncio.Task[tuple[str, float]] | None = None
+_ps_snapshot_captures = 0
+_ps_snapshot_cache_hits = 0
+_ps_snapshot_duration_ms: float | None = None
+_process_identity_rows = 0
+_process_fallback_rows = 0
+_process_unverifiable_rows = 0
+
+
+def _capture_ps_snapshot() -> tuple[str, float]:
+    started = time.perf_counter()
+    snapshot = _ps_snapshot()
+    return snapshot, (time.perf_counter() - started) * 1000
+
+
+async def cached_ps_snapshot() -> str:
+    """Return a short-lived process snapshot shared by concurrent read requests."""
+    global _ps_snapshot_at, _ps_snapshot_cache_hits, _ps_snapshot_captures
+    global _ps_snapshot_duration_ms, _ps_snapshot_inflight, _ps_snapshot_value
+
+    now = time.monotonic()
+    if _ps_snapshot_value is not None and now - _ps_snapshot_at <= _PS_SNAPSHOT_TTL_SECONDS:
+        _ps_snapshot_cache_hits += 1
+        return _ps_snapshot_value
+
+    task = _ps_snapshot_inflight
+    loop = asyncio.get_running_loop()
+    if task is None or task.done() or task.get_loop() is not loop:
+        task = loop.create_task(asyncio.to_thread(_capture_ps_snapshot))
+        _ps_snapshot_inflight = task
+
+    snapshot, duration_ms = await asyncio.shield(task)
+    if _ps_snapshot_inflight is task:
+        _ps_snapshot_value = snapshot
+        _ps_snapshot_at = time.monotonic()
+        _ps_snapshot_duration_ms = duration_ms
+        _ps_snapshot_captures += 1
+        _ps_snapshot_inflight = None
+    return snapshot
+
+
+def _record_process_identity_batch(
+    *, identity_rows: int, fallback_rows: int, unverifiable_rows: int
+) -> None:
+    global _process_fallback_rows, _process_identity_rows, _process_unverifiable_rows
+    _process_identity_rows += identity_rows
+    _process_fallback_rows += fallback_rows
+    _process_unverifiable_rows += unverifiable_rows
+
+
+def process_snapshot_metrics() -> dict[str, int | float | None]:
+    """Counters for targeted identity coverage and legacy process-table fallback."""
+    total = _process_identity_rows + _process_fallback_rows
+    age_ms = None
+    if _ps_snapshot_value is not None:
+        age_ms = max(0.0, (time.monotonic() - _ps_snapshot_at) * 1000)
+    return {
+        "identity_rows": _process_identity_rows,
+        "fallback_rows": _process_fallback_rows,
+        "unverifiable_rows": _process_unverifiable_rows,
+        "identity_coverage": (_process_identity_rows / total) if total else None,
+        "captures": _ps_snapshot_captures,
+        "cache_hits": _ps_snapshot_cache_hits,
+        "cache_age_ms": age_ms,
+        "last_scan_duration_ms": _ps_snapshot_duration_ms,
+    }
+
+
+def reset_process_snapshot_cache() -> None:
+    """Reset process-snapshot state; intended for daemon restart and isolated tests."""
+    global _process_fallback_rows, _process_identity_rows, _process_unverifiable_rows
+    global _ps_snapshot_at
+    global _ps_snapshot_cache_hits, _ps_snapshot_captures, _ps_snapshot_duration_ms
+    global _ps_snapshot_inflight, _ps_snapshot_value
+
+    _ps_snapshot_value = None
+    _ps_snapshot_at = 0.0
+    _ps_snapshot_inflight = None
+    _ps_snapshot_captures = 0
+    _ps_snapshot_cache_hits = 0
+    _ps_snapshot_duration_ms = None
+    _process_identity_rows = 0
+    _process_fallback_rows = 0
+    _process_unverifiable_rows = 0
+
+
 # Process start-time comparison tolerance (clock-tick rounding).
 _PID_CREATE_TIME_TOLERANCE = 1.0
 
@@ -239,6 +330,9 @@ def process_liveness(
     dead, None = unknown (no recorded pid/no process match)."""
     pid: int | None = None
     create_time: float | None = None
+    pid_host: str | None = None
+    pid_boot_time: float | None = None
+    identity_mode: str | None = None
 
     meta = session.get("node_metadata")
     if isinstance(meta, str):
@@ -247,6 +341,9 @@ def process_liveness(
         except ValueError:
             meta = None
     if isinstance(meta, dict):
+        raw_mode = meta.get("process_identity_mode")
+        if isinstance(raw_mode, str):
+            identity_mode = raw_mode
         raw_pid = meta.get("pid")
         if raw_pid is not None:
             try:
@@ -256,6 +353,25 @@ def process_liveness(
         raw_ct = meta.get("pid_create_time")
         if isinstance(raw_ct, int | float):
             create_time = float(raw_ct)
+        raw_host = meta.get("pid_host")
+        if isinstance(raw_host, str):
+            pid_host = raw_host
+        raw_boot = meta.get("pid_boot_time")
+        if isinstance(raw_boot, int | float):
+            pid_boot_time = float(raw_boot)
+
+    if identity_mode not in (None, "local"):
+        return None
+    if pid is not None and pid_host is not None and pid_host != socket.gethostname():
+        return None
+    if pid is not None and pid_boot_time is not None:
+        try:
+            import psutil
+
+            if abs(psutil.boot_time() - pid_boot_time) > _PID_CREATE_TIME_TOLERANCE:
+                return False
+        except Exception:
+            return None
 
     if pid is None and artifacts_path is not None and artifacts_path.exists():
         pid = _find_pid_file(artifacts_path)
@@ -288,6 +404,31 @@ def process_liveness(
     if session_id and session_id in snapshot:
         return True
     return None
+
+
+def process_snapshot_required(session: dict[str, Any], artifacts_path: Path | None) -> bool:
+    """Whether legacy command matching is the only remaining liveness evidence."""
+    meta = session.get("node_metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            meta = None
+    if isinstance(meta, dict):
+        mode = meta.get("process_identity_mode")
+        if isinstance(mode, str) and mode != "local":
+            return False
+        raw_pid = meta.get("pid")
+        if raw_pid is not None:
+            try:
+                int(raw_pid)
+            except (TypeError, ValueError):
+                pass
+            else:
+                return False
+    if artifacts_path is not None and artifacts_path.exists():
+        return _find_pid_file(artifacts_path) is None
+    return True
 
 
 def _artifacts_path(row: Any) -> Path | None:
@@ -612,6 +753,7 @@ async def health_report() -> dict[str, Any]:
         return {
             "sessions": {"total": 0, "by_status": {}, "by_health": {}, "unhealthy": []},
             "db": db_health(),
+            "process_liveness": process_snapshot_metrics(),
             "scheduler_timezone": scheduler_timezone_report(),
             "code_identity": await _code_identity_report(),
             "diagnostic_run_at": now_utc().isoformat(),
@@ -769,6 +911,7 @@ async def health_report() -> dict[str, Any]:
             "unhealthy": unhealthy,
         },
         "db": db_health(),
+        "process_liveness": process_snapshot_metrics(),
         # The zone this daemon interprets cron expressions in, as resolved at
         # its own start. Reported alongside the other daemon state because the
         # value is frozen per process: nothing in the source tree or the host's

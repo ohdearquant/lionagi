@@ -285,6 +285,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             if await db.get_session(run_id) is not None:
                 warn(f"sessions row {run_id} already exists; skipping signal binding")
             else:
+                from lionagi.cli.kill import current_pid_markers
+
                 prog_id = f"{run_id}-prog"
                 await db.create_progression(prog_id)
                 await db.create_session(
@@ -294,6 +296,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
                         "started_at": started_at,
                         "progression_id": prog_id,
                         "name": f"engine:{kind}",
+                        "node_metadata": current_pid_markers(),
                         "status": "running",
                         "invocation_kind": None,
                     }
