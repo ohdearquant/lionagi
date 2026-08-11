@@ -12,7 +12,7 @@ import pytest
 
 from lionagi.state.db import StateDB
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def uid() -> str:
     return str(uuid.uuid4())
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# Helpers
 
 
 async def _make_session(db: StateDB) -> str:
@@ -57,7 +57,7 @@ async def _make_show(db: StateDB) -> str:
     return show_id
 
 
-# ── Tests: UUID values round-trip through JSON columns ───────────────────────
+# Tests: UUID values round-trip through JSON columns
 
 
 @pytest.mark.unit

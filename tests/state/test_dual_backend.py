@@ -23,7 +23,7 @@ import pytest
 from lionagi.state.db import SCHEMA_VERSION, StateDB
 from lionagi.state.reasons import RunReasons
 
-# ── Shared helpers ────────────────────────────────────────────────────────────
+# Shared helpers
 
 
 def _uid() -> str:
@@ -240,7 +240,7 @@ async def _run_parity_suite(db: StateDB) -> None:
     assert empties[0]["project"] is None, f"zero-session project must be None: {empties[0]!r}"
 
 
-# ── SQLite leg (always runs) ──────────────────────────────────────────────────
+# SQLite leg (always runs)
 
 
 @pytest.fixture
@@ -257,7 +257,7 @@ async def test_sqlite_parity(sqlite_db: StateDB):
     await _run_parity_suite(sqlite_db)
 
 
-# ── SQLite regression: singleton keying by URL ─────────────────────────────────
+# SQLite regression: singleton keying by URL
 
 
 async def test_sqlite_singleton_keyed_by_url(tmp_path):
@@ -276,7 +276,7 @@ async def test_sqlite_singleton_keyed_by_url(tmp_path):
         await db.close()
 
 
-# ── SQLite regression: multiple concurrent writes (WAL) ───────────────────────
+# SQLite regression: multiple concurrent writes (WAL)
 
 
 async def test_sqlite_concurrent_writes(tmp_path):
@@ -315,7 +315,7 @@ async def test_sqlite_concurrent_writes(tmp_path):
         await db.close()
 
 
-# ── Postgres leg (pg_url fixture: testcontainers, or LIONAGI_TEST_PG_URL) ─────
+# Postgres leg (pg_url fixture: testcontainers, or LIONAGI_TEST_PG_URL)
 
 
 async def test_postgres_parity(pg_url):
@@ -356,7 +356,7 @@ async def test_postgres_schema_creates_all_tables(pg_url):
         await db.close()
 
 
-# ── Dialect SQL correctness (static — no live connection, always runs) ─────────
+# Dialect SQL correctness (static — no live connection, always runs)
 # Guards the Postgres-breaking SQL forms that the gated live leg above would only
 # catch when LIONAGI_TEST_PG_URL is set.
 
@@ -486,7 +486,7 @@ async def test_postgres_capability_claim(pg_url):
         await db.close()
 
 
-# ── merge_session_node_metadata: dialect-parity table ─────────────────────────
+# merge_session_node_metadata: dialect-parity table
 # Postgres's jsonb_strip_nulls, applied to the *entire* merged document,
 # deletes nulls that predate the patch and were never touched by it --
 # SQLite's json_patch never removes them. A real NodeStarted flow segment
@@ -738,7 +738,7 @@ async def test_postgres_json_column_rejects_non_json_text(pg_url):
         await db.close()
 
 
-# ── Postgres leg: lifecycle service load-bearing contract (ADR-0058 Phase 2) ──
+# Postgres leg: lifecycle service load-bearing contract (ADR-0058 Phase 2)
 # The applied/conflict/rejected/rollback/parity cases pinned against SQLite in
 # tests/state/lifecycle/test_service.py and test_wrapper_parity.py must hold
 # identically on PostgreSQL (FOR UPDATE locking, JSON binding, transaction
@@ -979,7 +979,7 @@ async def test_postgres_wrapper_parity_cas_conflict_and_same_status_append(pg_ur
         await db.close()
 
 
-# ── session-control admission takes the session row lock on PostgreSQL ───────
+# session-control admission takes the session row lock on PostgreSQL
 #
 # SQLite serialises writers, so evaluating the running-session condition inside
 # the insert statement is decisive there. PostgreSQL runs two clients at once
@@ -1073,7 +1073,7 @@ async def test_postgres_control_admission_waits_on_a_locked_session_row(pg_url):
         assert after is not None
 
 
-# ── a hand resolution that loses its race reports nothing ────────────────
+# a hand resolution that loses its race reports nothing
 #
 # `resolve_claimed_session_control` reads the current claim, decides from it,
 # then writes under a compare-and-set. On PostgreSQL the claimant can commit its
@@ -1181,7 +1181,7 @@ async def test_postgres_resolve_reports_nothing_when_its_write_lost_the_race(pg_
         )
 
 
-# ── Postgres leg: the delete/writer race on delete_imported_session ───────────
+# Postgres leg: the delete/writer race on delete_imported_session
 # Lives in this module for the reason stated above: it needs the session-scoped
 # `pg_url` fixture, and a second module requesting it in the same run breaks
 # asyncpg's loop-bound connections.
@@ -1558,10 +1558,10 @@ async def test_postgres_teardown_gives_up_rather_than_deadlocking_after_it_holds
         await db.close()
 
 
-# ── Postgres leg: attach_session_invocation's prior-invocation read races ────
-# a concurrent repoint (round-2 review of PR #2884). SQLite serializes this
-# through its own write lock plus BEGIN IMMEDIATE; PostgreSQL at READ
-# COMMITTED does not, so the prior-invocation SELECT takes FOR UPDATE there.
+# Postgres leg: attach_session_invocation's prior-invocation read can race
+# a concurrent repoint. SQLite serializes this through its own write lock
+# plus BEGIN IMMEDIATE; PostgreSQL at READ COMMITTED does not, so the
+# prior-invocation SELECT takes FOR UPDATE there.
 
 
 async def test_postgres_attach_session_invocation_decrements_off_the_value_a_concurrent_repoint_left(

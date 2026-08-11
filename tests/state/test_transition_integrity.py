@@ -29,7 +29,7 @@ from lionagi.state.db import (
 from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
 from lionagi.state.reasons import RunReasons, SessionReasons
 
-# ── Fixtures ────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -84,7 +84,7 @@ async def _make_schedule_run(db: StateDB, *, status: str = "running") -> str:
     return run_id
 
 
-# ── Rejection without override ──────────────────────────────────────────────
+# Rejection without override
 
 
 @pytest.mark.asyncio
@@ -125,7 +125,7 @@ async def test_rejected_transition_is_recorded_in_admin_events(db: StateDB) -> N
     assert details["attempted_status"] == "running"
 
 
-# ── Override path ────────────────────────────────────────────────────────────
+# Override path
 
 
 @pytest.mark.asyncio
@@ -193,7 +193,7 @@ def test_override_requires_actor_and_justification() -> None:
     asyncio.run(_run())
 
 
-# ── Concurrent stale write loses to the guarded write ───────────────────────
+# Concurrent stale write loses to the guarded write
 
 
 @pytest.mark.asyncio
@@ -230,7 +230,7 @@ async def test_concurrent_stale_write_loses_to_guarded_write(db: StateDB) -> Non
     assert row["status"] == "completed"  # the first (newer) write wins
 
 
-# ── Status vocabulary — update_status() rejects unknown statuses ───────────
+# Status vocabulary — update_status() rejects unknown statuses
 
 
 @pytest.mark.asyncio
@@ -313,7 +313,7 @@ def test_valid_vocabulary_admits_every_authoritative_status(
     assert not missing, f"{entity_type} vocabulary omits legal statuses: {sorted(missing)}"
 
 
-# ── Storage-level CAS — the UPDATE itself guards on previous_status ─────────
+# Storage-level CAS — the UPDATE itself guards on previous_status
 
 
 @pytest.mark.asyncio

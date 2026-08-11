@@ -44,7 +44,7 @@ def _envelope() -> RunTerminalEnvelope:
     )
 
 
-# ── String form ───────────────────────────────────────────────────────────────
+# String form
 
 
 def test_string_form_resolves_to_argv():
@@ -88,7 +88,7 @@ def test_unparseable_string_resolves_disabled_with_diagnostic(caplog):
     assert any("failed to parse" in r.message for r in caplog.records)
 
 
-# ── Empty-argv resolution: every path resolves to disabled (1c) ─────────────
+# Empty-argv resolution: every path resolves to disabled (1c)
 
 
 @pytest.mark.parametrize(
@@ -115,7 +115,7 @@ def test_empty_argv_via_settings_path_also_disabled(caplog):
     assert any("empty command" in r.message for r in caplog.records)
 
 
-# ── Mapping form ──────────────────────────────────────────────────────────────
+# Mapping form
 
 
 def test_mapping_form_exec_adapter():
@@ -293,7 +293,7 @@ def test_malformed_settings_never_raises(caplog, monkeypatch):
     assert any("settings resolution failed" in r.message for r in caplog.records)
 
 
-# ── Invalid top-level value / absent key ─────────────────────────────────────
+# Invalid top-level value / absent key
 
 
 def test_invalid_value_type_disabled(caplog):
@@ -312,7 +312,7 @@ def test_absent_notify_key_is_disabled():
         assert resolved.reason is None
 
 
-# ── Precedence: per-run override beats settings for its own scope only ───────
+# Precedence: per-run override beats settings for its own scope only
 
 
 def test_per_run_override_replaces_settings_handler():
@@ -326,7 +326,7 @@ def test_per_run_override_replaces_settings_handler():
     assert resolved_with_override.handler.argv == ("override-cmd",)
 
 
-# ── No-shell safety: the exec adapter never launches via a shell ────────────
+# No-shell safety: the exec adapter never launches via a shell
 
 
 @pytest.mark.asyncio
@@ -384,7 +384,7 @@ async def test_exec_handler_swallows_nonzero_exit_and_timeout(monkeypatch, caplo
     assert any("exited 1" in r.message for r in caplog.records)
 
 
-# ── Adapter outcome visibility: notify_outcome.json + the CLI warn() channel ──
+# Adapter outcome visibility: notify_outcome.json + the CLI warn() channel
 #
 # Outcome recording is never automatic: a bare build_handler(resolved) call
 # (the process-wide default registered by register_settings_terminal_callback)
@@ -660,7 +660,7 @@ async def test_exec_handler_outcome_recording_is_a_noop_without_a_bound_run(tmp_
     assert not run.notify_outcome_path.exists()
 
 
-# ── Run-scoped attribution: bound at registration time, never last-writer-wins ──
+# Run-scoped attribution: bound at registration time, never last-writer-wins
 
 
 @pytest.mark.asyncio
@@ -840,7 +840,7 @@ async def test_cancelled_exec_handler_still_kills_its_child_process_group(tmp_pa
         pytest.fail(f"child pid {child_pid} was still alive after cancellation cleanup")
 
 
-# ── build_handler: a malformed python adapter must never raise ─────────────
+# build_handler: a malformed python adapter must never raise
 
 
 def test_build_handler_bad_python_ref_returns_none_not_raises(caplog):
@@ -948,7 +948,7 @@ def test_register_settings_terminal_callback_malformed_filter_never_raises(monke
     assert any("filter.kinds must be a list of strings" in r.message for r in caplog.records)
 
 
-# ── Legacy argv/env substitution hooks used by the flow `--notify` adapter ──
+# Legacy argv/env substitution hooks used by the flow `--notify` adapter
 
 
 @pytest.mark.asyncio
@@ -988,7 +988,7 @@ async def test_exec_handler_argv_fn_and_env_fn_are_applied_per_call(monkeypatch)
     assert "PATH" in called["env"] or called["env"] is not None
 
 
-# ── Bootstrap: register/unregister on the shared registry ──────────────────
+# Bootstrap: register/unregister on the shared registry
 
 
 def test_register_settings_terminal_callback_installs_and_uninstalls(tmp_path, monkeypatch):
@@ -1108,7 +1108,7 @@ async def test_run_scoped_registration_honors_configured_filter(monkeypatch, tmp
     assert json.loads(run.notify_outcome_path.read_text())["ok"] is True
 
 
-# ── The two silences a run must not confuse ────────────────────────────────
+# The two silences a run must not confuse
 # Registration returns None both when nothing was configured and when a
 # configured notifier was refused. The run's own record is what tells them
 # apart: a refusal writes an unsuccessful outcome carrying the reason, chosen

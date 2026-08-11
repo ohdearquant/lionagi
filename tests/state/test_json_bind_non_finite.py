@@ -33,7 +33,7 @@ async def _artifact_count(db: StateDB) -> int:
     return row["n"]
 
 
-# ── The shared JSON-bind serializer ──────────────────────────────────────────
+# The shared JSON-bind serializer
 
 
 @pytest.mark.parametrize("bad", NON_FINITE)
@@ -51,7 +51,7 @@ def test_engine_json_serializer_keeps_ordinary_values():
     assert _dumps_with_uuid({"a": 1.5, "b": None, "c": "x"}) == '{"a": 1.5, "b": null, "c": "x"}'
 
 
-# ── insert_artifact: rejected before a row exists ────────────────────────────
+# insert_artifact: rejected before a row exists
 
 
 @pytest.mark.parametrize("bad", NON_FINITE)
@@ -85,7 +85,7 @@ async def test_insert_artifact_update_rejects_non_finite_without_changing_the_ro
     assert stored == {"score": 1.0}
 
 
-# ── Ordinary content, including a genuine null, still writes ─────────────────
+# Ordinary content, including a genuine null, still writes
 
 
 async def test_ordinary_content_with_a_genuine_null_round_trips(db):
@@ -99,7 +99,7 @@ async def test_ordinary_content_with_a_genuine_null_round_trips(db):
     assert math.isfinite(stored["big"])
 
 
-# ── The TEXT-column JSON write goes through the checked helper ───────────────
+# The TEXT-column JSON write goes through the checked helper
 
 
 async def test_progression_collection_writes_through_the_checked_helper(db):
@@ -126,7 +126,7 @@ async def test_set_progression_replaces_an_ordinary_collection(db):
     assert await db.get_progression("prog-replace") == ["m1", "m2", "m3"]
 
 
-# ── The run-import path writes its collections through the same helper ───────
+# The run-import path writes its collections through the same helper
 #
 # `li state import` reads run files written by other processes and parses them
 # with json.loads, which accepts the non-standard NaN/Infinity tokens. Nothing
