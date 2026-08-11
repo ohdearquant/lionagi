@@ -38,10 +38,7 @@ except ImportError:
 
 B = TypeVar("B", bound=BaseModel)
 
-# ---------------------------------------------------------------------------
 # JSON-Schema type -> Python type mapping
-# ---------------------------------------------------------------------------
-
 _JSON_TYPE_MAP: dict[str, type] = {
     "string": str,
     "number": float,
@@ -55,9 +52,7 @@ class _CreateModelUnsupportedError(Exception):
     """Raised when create_model cannot represent the schema."""
 
 
-# ---------------------------------------------------------------------------
 # Internal helpers for create_model approach
-# ---------------------------------------------------------------------------
 
 
 def _sanitize_model_name(raw: str) -> str | None:
@@ -310,9 +305,7 @@ def _create_model_from_schema(
     return _build_model_from_object(schema_dict, model_name, root_schema, models_cache)
 
 
-# ---------------------------------------------------------------------------
 # Fallback: datamodel-code-generator + exec_module
-# ---------------------------------------------------------------------------
 
 
 def _load_via_codegen(
@@ -399,9 +392,7 @@ def _load_via_codegen(
         return model_class
 
 
-# ---------------------------------------------------------------------------
 # Public API
-# ---------------------------------------------------------------------------
 
 
 def load_pydantic_model_from_schema(
