@@ -23,7 +23,7 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return db_path
 
 
-# ── test_teardown_no_contract_unchanged ──────────────────────────────────────
+# test_teardown_no_contract_unchanged
 
 
 async def test_teardown_no_contract_unchanged(temp_db_path: Path):
@@ -42,7 +42,7 @@ async def test_teardown_no_contract_unchanged(temp_db_path: Path):
     assert s["artifact_verification_json"] is None
 
 
-# ── test_teardown_contract_passed_stays_completed ────────────────────────────
+# test_teardown_contract_passed_stays_completed
 
 
 async def test_teardown_contract_passed_stays_completed(temp_db_path: Path, tmp_path: Path):
@@ -71,7 +71,7 @@ async def test_teardown_contract_passed_stays_completed(temp_db_path: Path, tmp_
     assert v["status"] == "passed"
 
 
-# ── test_teardown_contract_failed_overrides_completed ────────────────────────
+# test_teardown_contract_failed_overrides_completed
 
 
 async def test_teardown_contract_failed_overrides_completed(temp_db_path: Path, tmp_path: Path):
@@ -108,7 +108,7 @@ async def test_teardown_contract_failed_overrides_completed(temp_db_path: Path, 
     assert v["status"] == "failed"
 
 
-# ── test_teardown_already_failed_keeps_original_reason ───────────────────────
+# test_teardown_already_failed_keeps_original_reason
 
 
 async def test_teardown_already_failed_keeps_original_reason(temp_db_path: Path, tmp_path: Path):

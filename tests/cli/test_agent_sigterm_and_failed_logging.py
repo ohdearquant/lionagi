@@ -103,9 +103,7 @@ def _agent_args(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-# ---------------------------------------------------------------------------
 # Site 1: _run_agent's inner except — "failed" bucket must log before raising
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -161,9 +159,7 @@ async def test_run_agent_inner_does_not_log_on_success(monkeypatch, tmp_path):
     assert not errors_emitted, f"log_error should not fire on success; got: {errors_emitted}"
 
 
-# ---------------------------------------------------------------------------
 # Site 2: run_agent's outer except — "failed" bucket must log before raising
-# ---------------------------------------------------------------------------
 
 
 def test_run_agent_outer_logs_failed_exception_before_reraising(monkeypatch):
@@ -190,9 +186,7 @@ def test_run_agent_outer_logs_failed_exception_before_reraising(monkeypatch):
     assert "outer boundary failure" in combined
 
 
-# ---------------------------------------------------------------------------
 # Site 2: run_agent's new SigtermInterrupt branch
-# ---------------------------------------------------------------------------
 
 
 def test_run_agent_outer_handles_sigterm_interrupt(monkeypatch):
@@ -247,9 +241,7 @@ def test_run_agent_outer_sigterm_not_caught_as_generic_failure(monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
 # _util.classify_exception: SigtermInterrupt maps to the "cancelled" bucket
-# ---------------------------------------------------------------------------
 
 
 def test_classify_exception_sigterm_interrupt_maps_to_cancelled():
@@ -268,9 +260,7 @@ def test_classify_exception_sigterm_interrupt_distinct_from_aborted():
     assert classify_exception(SigtermInterrupt("received SIGTERM")) != "aborted"
 
 
-# ---------------------------------------------------------------------------
 # Both handlers write the typed cause the MCP job record reads
-# ---------------------------------------------------------------------------
 
 
 class TestTheTerminalPathReachesTheCauseWriter:

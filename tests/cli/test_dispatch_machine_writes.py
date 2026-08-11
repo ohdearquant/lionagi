@@ -73,7 +73,7 @@ def _run(argv: list[str], capfd) -> tuple[int, dict]:
     return rc, _envelope(capfd)
 
 
-# ── ack ──────────────────────────────────────────────────────────────────────
+# ack
 
 
 def test_ack_applies_and_reports_the_row_acked(monkeypatch, tmp_path, capfd):
@@ -222,7 +222,7 @@ def test_a_lost_race_on_a_row_that_is_then_deleted_is_not_found_not_a_null_confl
     ), "an absent row was given a status field"
 
 
-# ── retry ────────────────────────────────────────────────────────────────────
+# retry
 
 
 def test_retry_requeues_a_dead_letter_row(monkeypatch, tmp_path, capfd):
@@ -261,7 +261,7 @@ def test_retry_of_an_unknown_id_is_not_found(monkeypatch, tmp_path, capfd):
     assert envelope["error"]["kind"] == "not_found"
 
 
-# ── purge ────────────────────────────────────────────────────────────────────
+# purge
 
 
 def test_purge_deletes_the_row_and_reports_the_status_it_had(monkeypatch, tmp_path, capfd):
@@ -342,7 +342,7 @@ def test_purge_with_no_id_and_no_criteria_is_invalid_input(monkeypatch, tmp_path
     assert envelope["error"]["kind"] == "invalid_input"
 
 
-# ── the store itself ─────────────────────────────────────────────────────────
+# the store itself
 
 
 def test_a_write_against_a_store_that_does_not_exist_is_not_found(monkeypatch, tmp_path, capfd):

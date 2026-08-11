@@ -38,7 +38,7 @@ def _make_team(team_id: str, members: list[str], messages: list[dict] | None = N
     )
 
 
-# ── compute_quiescence: pure predicate ──────────────────────────────────────
+# compute_quiescence: pure predicate
 
 
 class TestComputeQuiescence:
@@ -294,7 +294,7 @@ class TestComputeQuiescence:
         assert not state.quiescent
 
 
-# ── post_done_signal / post_finished_signal / post_wakeup_signal ───────────
+# post_done_signal / post_finished_signal / post_wakeup_signal
 
 
 class TestSignalWriters:
@@ -364,7 +364,7 @@ class TestSignalWriters:
         assert "alice" in data["messages"][0]["read_by"]
 
 
-# ── read_team_json / _load_team / cmd_list: shared-flock reads ─────────────
+# read_team_json / _load_team / cmd_list: shared-flock reads
 
 
 class TestReadTeamJson:
@@ -407,7 +407,7 @@ class TestReadTeamJson:
         assert "r3" in out
 
 
-# ── flock-safety under concurrent writers ───────────────────────────────────
+# flock-safety under concurrent writers
 
 
 class TestConcurrentWrites:
@@ -519,7 +519,7 @@ class TestConcurrentWrites:
         assert len(data["messages"]) == 20 * len(workers)
 
 
-# ── machine result: create / show / send / receive ──────────────────────────
+# machine result: create / show / send / receive
 
 
 class TestMachineResult:

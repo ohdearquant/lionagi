@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for `li agent -r --effort` re-applying effort to gemini-code /
-gemini-cli (agy) branches — issue #1595.
+gemini-cli (agy) branches.
 
 agy has no effort flag/kwarg; effort is folded into the `--model` display
-name (e.g. "Gemini 3.5 Flash (High)"). On resume, `cfg["model"]` already
-holds that resolved display name from the first turn. `resolve_agy_model`'s
-exact-match short-circuit (correct for a caller-typed pin) was firing on
-this *persisted* value too, silently dropping a new `--effort` passed on
-resume with no new `--model`. These tests pin:
+name (e.g. "Gemini 3.5 Flash (High)"), and `cfg["model"]` already holds that
+resolved display name on resume. `resolve_agy_model`'s exact-match
+short-circuit (correct for a caller-typed pin) was firing on this
+*persisted* value too, silently dropping a new `--effort` passed on resume
+with no new `--model`. These tests pin:
 
   * resume + explicit --effort (no new model) re-applies effort onto the
     persisted agy model name,
