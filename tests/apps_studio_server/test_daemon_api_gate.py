@@ -589,6 +589,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "project",
         "project_source",
         "provider",
+        "run_files",
         "segments",
         "show_play_name",
         "show_topic",
