@@ -290,15 +290,12 @@ class Branch(Element, Relational):
 
     @property
     def last_context_report(self):
-        """ProviderReport from this task's latest provider pass, when present.
-
-        Otherwise returns the branch's most recently completed provider pass
-        for backward compatibility. Concurrent passes use last-writer semantics
-        for that branch-level fallback.
-
-        When the branch has no system message there is no render target, so
-        providers are not invoked and the report lists every registered
-        provider under ``skipped``.
+        """ProviderReport from this task's latest provider pass, or the
+        branch's most recently completed pass as a fallback (concurrent
+        passes use last-writer semantics for that fallback). When the branch
+        has no system message there is no render target, so providers are
+        not invoked and the report lists every registered provider under
+        ``skipped``.
         """
         task_report = self._last_context_report.get()
         if task_report is not None:

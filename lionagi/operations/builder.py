@@ -67,10 +67,7 @@ class OperationGraphBuilder:
         one added before it.
 
         `is_gate=True` opts this node into the flow executor's gate-reject
-        contract (see `lionagi/operations/flow.py`): if its result carries a
-        top-level `gate_verdict="reject"`, every downstream dependent is
-        short-circuited to skipped instead of running against the baseline
-        this node just rejected.
+        contract — see `docs/internals/core.md` (`operations/flow.py`).
         """
         node = create_operation(operation=operation, parameters=parameters)
 

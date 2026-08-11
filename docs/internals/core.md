@@ -20,6 +20,20 @@ runs synchronously at the tail of every node's execution — the only
 race-free point for a caller's `inject()` against the task group's
 convergence; `cli/orchestrate/flow.py`'s team-round wakeup logic is wired here.
 
+**`flow.py`** gate-reject contract — a playbook-authored node opts into gate
+semantics by setting `operation.metadata["is_gate"] = True` (e.g. via
+`OperationGraphBuilder.add_operation(..., is_gate=True)`). Once that node
+completes, its result is inspected for a top-level `"gate_verdict"` key; if
+the value is the string `"reject"` (case-insensitive), every direct and
+transitive dependent of the gate is short-circuited to SKIPPED instead of
+running against the baseline the gate just rejected. A node that isn't
+marked `is_gate`, or a gate whose result has no `gate_verdict` key (or any
+value other than `"reject"`), changes nothing — flows with no gate nodes
+stay byte-identical to before. The veto is transitive and absolute: if any
+incoming edge traces back to a rejecting gate, the dependent is skipped
+regardless of any other otherwise-valid incoming path, and the skip reason
+propagates to that node's own dependents in turn.
+
 **`lndl_middle/lndl_middle.py`** — LNDL seam Middle (ADR-0024 §1-2): advances
 a branch one LNDL round per inner chat call, looping internally up to a round
 budget (default 3). Opt-in via `branch.operate(instruction=..., middle=lndl_middle)`;
@@ -126,6 +140,28 @@ breaking field removal/rename; adding nullable fields is non-breaking.
   pinned into the terminal "escalated" lane — only a "blocked" urgency (default,
   matching historical give_up/higher_tier behavior) or an unaccompanied signal
   (no request attached) is treated as escalated.
+- `_extract_usage_dims` normalizes both provider usage shapes to "uncached
+  prompt tokens" for input. Anthropic-style: `input_tokens` already excludes
+  cache activity; cache reads/writes arrive separately as
+  `cache_read_input_tokens` / `cache_creation_input_tokens`. OpenAI-style:
+  `prompt_tokens` *includes* cached reads, split out under
+  `prompt_tokens_details.cached_tokens`, so it's subtracted here. `is_valid`
+  is False when an OpenAI-style report violates the token-count invariants (a
+  negative prompt total, or `cached_tokens` greater than `prompt_tokens`);
+  the returned numbers are still clamped into a safe, non-negative shape so a
+  caller that ignores validity still gets a sane aggregate, but a billing
+  consumer that checks `is_valid` can distinguish a genuine full-cache hit
+  from a provider sending garbage.
+- `_sum_model_usage` sums per-model whole-tree token counts from a
+  claude_code CLI `modelUsage` map; unlike the flat top-level `usage` field
+  (top-level-loop only), each entry here already includes descendant
+  subagent spend. An entry counts as valid only when it's a dict carrying
+  all four expected keys with non-negative-integer values — a genuinely
+  zero-usage model still reports the full shape, so a valid entry that sums
+  to zero is distinct from no valid entry at all. If any entry in the map is
+  malformed, the whole map is untrustworthy and `has_valid_entry` is False:
+  summing only the well-shaped entries would silently undercount whatever
+  the malformed entry actually spent.
 
 **`observer.py`** — `_PAYLOAD_BYTE_CAP` bounds the persisted `payload` JSON
 column in `session_signals`, not the SSE frame: the SSE generator wraps each
@@ -328,6 +364,24 @@ handler: a root-level `make_agent()` budget-out routes to partial-export
 instead of crashing; masking guard — a non-budget leaf anywhere in the group
 (including nested groups) must not be laundered into a partial, so it
 re-raises instead.
+
+**`flow_signals.py`** — `flow_progress_signals` turns executor node
+transitions into `NodeQueued`/`Started`/`Completed`/`Failed` session-bus
+signals for a live-rendered `Session.flow` DAG run (shared by the engine and
+Studio). `_on_progress` prefers the authored node id so every lifecycle
+signal maps back to the designer DAG, falling back to the executor's name
+for the engine's own ops and reactive spawns; it pins the first genuinely
+resolved name for an `op_id` so later started/completed/failed calls reuse
+it even if a branch-naming hook later renames the operation's cloned
+branch (the branch name is a display concern, not the correlation key).
+Whether a name is a placeholder is decided structurally by the producer and
+passed in via `name_is_fallback` — never inferred by comparing against the
+op_id's prefix, since a genuine authored name can coincide with that prefix
+by chance. `name_is_fallback` has no default: it's an internal seam with an
+enumerable, all-internal caller set (the four lifecycle producers in
+`operations/flow.py`), so an untagged call fails loudly (`TypeError`)
+instead of guessing wrong and reintroducing the split-identity bug this
+guards against.
 
 **`coding.py`** — `CodingChainEvent` `eid` prefixes (`W`/`P`/`T`/`V`/`K`) are
 namespaced against hypothesis engine's (`F`/`Q`/`E`/`H`/`X`/`R`/`C`/`A`) so
