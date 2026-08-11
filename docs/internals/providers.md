@@ -148,6 +148,48 @@ requires a system task (`trio.lowlevel.spawn_system_task`), which is immune
 to any enclosing cancel scope and is stopped via `driver_cancel_scope`
 instead.
 
+## Codex config profile resolution and effort clamping
+
+**`providers/openai/_codex_profile.py`**, **`providers/openai/codex.py`**
+
+codex reaches a model from another provider through a config profile: `-p
+<name>` layers `$CODEX_HOME/<name>.config.toml` over the base config, and
+that file names a `model` and the `model_provider` that serves it. So
+`codex/<name>` in a lionagi model string should mean "run that profile," not
+"run a model literally called `<name>`." lionagi can't forward this with
+`-p` — codex accepts exactly one profile per invocation, and lionagi already
+spends that slot on a generated profile carrying MCP server secrets. Instead
+`resolve_codex_config_profile()` reads the file directly: the profile's
+`model` becomes the request's model, and its remaining scalar keys become
+`-c` overrides (table-valued keys, notably `mcp_servers`, are dropped and
+logged — lionagi decides a leg's MCP servers itself, and silently
+re-introducing servers from a config file would go around that).
+
+Two limits keep this from misfiring on an ordinary model id. Only a bare
+name is looked up (no dots, no separators), so a vendor id like
+`deepseek/deepseek-v4-flash-0731` is never treated as a profile path — a
+real model id carries dots or a slash, which the bare-name check rejects.
+And a symlinked profile file whose target can't be read raises loudly rather
+than silently falling through to "no profile" — `Path.is_file()` follows a
+broken symlink and returns False either way, and the whole point of this
+code is to stop a profile name from silently reaching codex as a literal
+model id.
+
+This resolution runs once, at the request-model level (`_resolve_config_profile`),
+so both the CLI and library entry points reach it — for a while only the CLI
+path resolved profiles, and a request built as
+`Branch(chat_model="codex/deepseek-flash")` sent the profile name to codex as
+a model id, which codex rejected as unsupported. It has to run *before*
+effort clamping (`_resolve_profile_then_clamp_effort`), since the clamp's
+ceilings are keyed on the model id and a profile names a different model
+than the caller did. Both steps are folded into one `mode="before"` model
+validator, deliberately not left as two separate validators relying on
+pydantic's ordering — pydantic runs `mode="before"` validators in *reverse*
+definition order, so getting this wrong silently applies one model's effort
+ceiling to a different model's profile. Caller-supplied `config_overrides`
+still win over the profile's, since an override at the call site is an
+explicit instruction and the profile is only a default sitting in a file.
+
 ## Codex c override TOML serialization
 
 **`providers/openai/codex.py`**
@@ -179,3 +221,189 @@ summing across every flushed message reconstructs the true total exactly
 once. `num_turns` is the exception: each `turn.completed` occurrence is
 already a per-event delta (incremented locally, not read off the event), so
 it is always safe to emit as `1`.
+
+## A session-terminal error must be turned back into a stream chunk
+
+**`providers/anthropic/claude_code.py`**, **`providers/openai/codex.py`**
+
+Both CLI providers drive their subprocess through an internal generator that
+yields ordinary `StreamChunk`s interleaved with, at the end, a `CLISession`
+object carrying the run's terminal verdict (`is_error`, usage, cost, turns,
+duration). `CLISession` is never itself yielded to the caller of `stream()`
+— only the chunks are — so a failure recorded solely on that object reaches
+nobody: the result chunk emitted beside it carries usage and cost but never
+the error flag, and a run that ended in error looks exactly like one that
+succeeded to anything consuming the stream. `stream()` therefore checks
+`item.is_error` when it sees the `CLISession` and synthesizes one final
+`StreamChunk(type="error", is_error=True, ...)` if no chunk already reported
+an error — the guard exists because a chunk-level error should never be
+double-reported, not because one currently occurs; today nothing else in
+either module constructs one, so the guard is presently vacuous but is kept
+as the natural place a future real error chunk would need it.
+
+The fix is scoped to `stream()` only. `_call()` drives the same generator
+and returns the session as a dict without branching on `is_error`, so the
+one-shot (non-streaming) helpers built on `_call()` still return an ordinary
+answer for a failed session — a separate gap, not closed by this. Per-tool
+failures already have their own carriers and are outside this concern
+entirely; this is about the session-terminal verdict only.
+
+## CLI subprocess lifecycle
+
+**`providers/_cli_subprocess.py`**
+
+Every CLI-backed provider (codex, claude_code, gemini, pi, ...) spawns
+through `ndjson_from_cli()`. Most of the module exists to answer one
+question honestly: is the child, and everything it spawned, actually gone
+when the caller is done with it?
+
+A pid and its process-group id are both recyclable — once reaped, the
+kernel is free to hand them to an unrelated process. `SpawnedProcess` (pid,
+pgid, create_time) is what makes a later signal target provably still the
+same child: `observe_spawned()` reads the group id bracketed by two
+start-time reads, before and after, and reports no identity
+(`create_time=None`) if the process was replaced mid-read or was already
+reaped or zombied. A consumer that gets `create_time=None` must treat it as
+"no identity captured," not as a statement about the child. `on_spawn`,
+when given, fires with this observation once the child exists and is
+awaited before any output is consumed, so a caller with durable accounting
+has recorded the process before anything can happen to it; its exceptions
+are not swallowed, since a failed recording leaves a live process nothing
+is tracking.
+
+Group cleanup only signals when it can prove the recorded group id is
+still this child's: either the leader is unreaped (its pid can't have been
+recycled yet, so no scan is needed), or, after reaping, a live member is
+still found occupying that group id. A process-table read that comes back
+incomplete and empty is *not* treated as an empty group — it is logged as
+`"unproven"` and left alone, because an unprovable group and a reissued one
+look identical from here. `end_child_group()` awaits a graceful terminate
+bounded by `grace`, then does a synchronous group sweep in a `finally` so a
+second cancellation can't interpose; the graceful path only runs on the
+not-yet-waited branch, since calling it after a drain has already happened
+would signal whatever now holds a possibly-recycled group id. A process
+group is also not a containment boundary — a descendant that calls
+`setsid()` leaves it, and cleanup then says nothing about that descendant.
+
+One hole is stated rather than closed: if the coroutine awaiting subprocess
+creation is cancelled after the OS has created the child but before the
+pid comes back, nothing in this process can reach it — asyncio closes the
+direct child's transport but never touches its group. This was measured,
+not reasoned about: a leg spawned under a loop that shuts down mid-creation
+leaves a SIGTERM-ignoring descendant running. Closing the window needs the
+pid before the creation call returns, which means reimplementing
+`create_subprocess_exec` on stdlib internals outside their public surface —
+declined as too fragile across Python versions, so the loss is logged as a
+warning instead.
+
+Streaming has its own hazard. `stdin_data` feeds a large prompt through a
+pipe (avoiding the OS argv length limit) via a task that runs concurrently
+with the stdout/stderr readers — writing it sequentially would deadlock
+once the data exceeds the pipe buffer and the child blocks writing output
+nobody is draining yet. stdout EOF requires *every* holder of the pipe's
+write end to close it, not just the spawned child: a CLI child that spawns
+its own long-lived helpers (MCP servers, daemons) leaks the write end into
+them, and when the child dies but its orphans keep the pipe open, a plain
+`read()` waits forever — a finished leg reads as "running" for the rest of
+the caller's budget. `ndjson_from_cli` races each read against the child's
+exit, then bounds the post-exit drain to 10s (`_POST_EXIT_DRAIN_GRACE`)
+once the child has exited; after that grace, teardown ends the process
+group, which is what actually closes the orphans' copy of the pipe. Stderr
+is drained concurrently and capped at 256 KiB; on a nonzero exit,
+`_no_stderr_reason()` distinguishes "the child wrote nothing" from "the
+drain itself failed" from "stderr was never opened," since a caller acts on
+those differently and collapsing them makes a broken capture read exactly
+like a quiet subprocess.
+
+Every CLI provider's request model wraps its `env` and `on_spawn` fields in
+`Redacted` at the top of every model-level `mode="before"` validator
+(`redact_runtime_fields_in_place`), so a rejected request never carries a
+child environment or a bound callback into `str(err)`, `err.errors()`, or
+`err.json()`. This matters because pydantic keeps a failing validator's raw
+input on the error — `repr=False`/`exclude` on a field don't help, since a
+model-level validator holds the whole raw mapping regardless of per-field
+settings. `Redacted` deliberately isn't a mapping, so serialization sees no
+structure to walk, and it refuses (`TypeError`, not `ValueError` — pydantic
+quotes a `ValueError` verbatim into the validation error) when the raw
+input is immutable and can't be substituted in place.
+
+## Declared secret lookup
+
+**`providers/_secret_resolution.py`**
+
+A CLI provider authenticates by reading its own process environment (an
+`env_key`), so when a secret actually lives somewhere else — a keychain, a
+password manager, a vault agent — the spawning process has nothing to pass
+on, and the child dies with a missing-variable error that says nothing
+about where the value should have come from. `secrets.lookup` in
+`~/.lionagi/settings.yaml` (the **global** file only, never the
+project-local one — where a secret lives is a property of the machine, and
+a checked-out repo has no business naming the program that reads this
+machine's secrets) names a fixed command and the variable names it may be
+asked to resolve:
+
+```yaml
+secrets:
+  lookup:
+    argv: [security, find-generic-password, -s, "{name}", -a, lionagi, -w]
+    names: [OPENROUTER_API_KEY]
+```
+
+`resolve_secret_lookup_config()` validates the block atomically — one bad
+name rejects the whole lookup rather than being dropped from it, since a
+config that silently resolves fewer names than it declares is
+indistinguishable from a working one until something using the dropped
+name fails. `fill_declared_secrets()` (called from `ndjson_from_cli` on
+every CLI spawn) only looks up names still missing from the environment —
+an already-set variable is never overwritten, so exporting one remains the
+way to override the store for a single run — and a refused or misconfigured
+lookup returns the environment unchanged, exactly like an absent one, but
+logs the distinction first: without that, a child dying on a missing
+variable gives no hint that the operator's own lookup config is what's
+broken.
+
+The resolved value reaches the child only through its environment: never a
+file, an argv, or a log line. A lookup command's stdout can carry the
+secret itself, so `_run_lookup()` only ever logs the program name, the
+variable name, and the exit status — never the command's own output, on
+success or failure. Lookups run on the spawn path with a 15s timeout; a
+keychain that wants to prompt interactively will exceed it by design — the
+prompt gets answered once, out of band, with the variable exported, rather
+than blocking every spawn on a UI it can't display.
+
+## Runtime-only endpoint state kept out of serialization
+
+**`providers/_agentic_handlers.py`**
+
+An `Endpoint`'s `EndpointConfig.kwargs` is both a supported way to pass
+provider-specific options through and the thing `to_dict()` serializes —
+which puts it on the path to `iModel.to_dict()`, `Branch.to_dict()`, and
+the run snapshots written to disk. For CLI providers, two of those kwargs
+are not safe to write down: a child `env` (credentials) and an `on_spawn`
+callback (which closes over whatever supervisor object created it).
+`AgenticHandlersMixin` moves anything named in `_runtime_state_fields` out
+of `config.kwargs` into an in-memory-only `_runtime_state` dict, at every
+point the config could otherwise be read or written down: construction,
+and again before any serialization, since `EndpointConfig.update()` and
+`iModel.from_dict()` can both reintroduce the values into `kwargs` after
+construction.
+
+Identity matters more than value here. `Endpoint.__init__` deep-copies a
+supplied `EndpointConfig`, and deep-copying a bound method copies its
+receiver too — so a naive copy silently hands a callback to a *copy* of the
+supervisor, which then never hears from the real one, while every wiring
+check still passes. The runtime fields are read off the caller's own
+config *before* that copy happens, specifically to preserve identity, and
+copied only shallowly afterwards, since these are live objects and a deep
+copy would hand the copy a different object under the same name. A caller
+that hands over an already-built `Endpoint` instance instead of a config
+missed that window entirely, so `adopt_runtime_state()` writes the values
+directly onto the supplied instance rather than dropping them.
+
+`create_payload()` rebuilds the request model from `to_dict(request)`,
+which is a `model_dump()` and so omits every field declared
+`exclude=True`. Runtime-state fields are typically `exclude=True` on the
+request model, so the rebuild would otherwise silently revert them to
+defaults; `_carried_runtime_state()` re-attaches them from the original
+request object, at lower precedence than anything already present from an
+explicit kwarg or the endpoint config.
