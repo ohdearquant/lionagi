@@ -73,6 +73,15 @@ public prefix genuinely ends in `/api` needs visibility into the rewrite.
 
 ## lionagi/studio/services/schedules.py
 
+- **Schedule summary contract** — `GET /api/schedules/summary` is the
+  schedule-board read path. Version 1 returns the filtered schedule definitions
+  and a bounded recent-run slice for every returned schedule. The slices come
+  from one windowed database query, ordered by `fired_at DESC, id DESC`; each
+  schedule id is present in `run_summaries`, with `state = "ok"` even when its
+  run list is empty. A batch-read failure preserves the schedule definitions
+  and marks each affected slice `state = "error"`, so the client never treats
+  unavailable history as a known-empty history. The per-schedule limit is
+  caller-selectable from 1 through 25 and is echoed in the response.
 - **`_svc_validate_action_command`** — Delegates to the subprocess validators
   so charset/allow-list rules live in one place. `build_argv` re-checks the
   allow-list again at spawn time since `LIONAGI_SCHEDULER_COMMAND_ALLOWLIST`
@@ -107,6 +116,34 @@ public prefix genuinely ends in `/api` needs visibility into the rewrite.
   `exclude_none`: a field the client never mentioned is untouched, while an
   explicit `null` passes through so the field can be cleared or rejected.
   `exclude_none` would make an all-null PATCH indistinguishable from an empty one.
+
+## lionagi/studio/services/invocations.py
+
+**Scalar lifecycle read** — `GET /api/invocations/{invocation_id}/status`
+returns only `id`, `status`, `ended_at`, and `updated_at`. It is the reconnect
+fallback for a resumed live run; callers that need messages, sessions,
+artifacts, or health must continue to use the invocation/session detail
+routes. Keeping the fallback scalar prevents a disconnected stream from
+repeatedly materializing an invocation's growing detail payload.
+
+## apps/studio/frontend/src/components/history/RunDetail.tsx
+
+**Resumed-run freshness** — The session and signal streams are the primary
+freshness path. While both connections are open, a resumed run performs no
+lifecycle polling. If either connection is not open, a scalar invocation-status
+fallback starts after 750 ms and backs off on consecutive failures to an
+8-second ceiling. A terminal status or terminal stream frame ends the watch and
+allows exactly one final session-detail refresh to collect persisted output;
+run navigation invalidates delayed results from the previous selection.
+
+## apps/studio/frontend/src/components/library/data.ts
+
+**Active-tab catalog reads** — A Library tab requests only the catalogs that
+can render on that tab. Playbooks intentionally join the built-in and custom
+sources; All requests every supported visible catalog. Workflow and engine are
+unfinished/hidden surfaces and therefore issue no catalog request. A failed
+active source marks the result degraded while preserving rows from fulfilled
+active sources.
 
 ## lionagi/studio/services/runs.py
 

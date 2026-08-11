@@ -26,6 +26,8 @@ from . import run_view
 
 _log = logging.getLogger(__name__)
 
+SCHEDULE_SUMMARY_VERSION = 1
+
 
 class NameConflictError(Exception):
     """Raised when a schedule name already exists."""
@@ -443,6 +445,43 @@ async def list_schedules(
             row["last_status"] = last_status
             row.update(compute_schedule_health(row, health_evidence_by_id[row["id"]], now=now))
     return rows
+
+
+async def list_schedule_summary(
+    *,
+    enabled: bool | None = None,
+    trigger_type: str | None = None,
+    project: str | None = None,
+    recent_runs_limit: int = 25,
+) -> dict[str, Any]:
+    """Return definitions plus a bounded recent-run slice in one contract."""
+    schedules = await list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
+    schedule_ids = [schedule["id"] for schedule in schedules]
+    if not schedule_ids:
+        run_summaries: dict[str, dict[str, Any]] = {}
+    else:
+        try:
+            async with StateDB(readonly=read_only_open_supported()) as db:
+                runs_by_schedule = await db.list_schedule_runs_batch(
+                    schedule_ids,
+                    limit_per_schedule=recent_runs_limit,
+                )
+        except Exception:
+            _log.exception("Failed to batch recent schedule-run summaries")
+            run_summaries = {
+                schedule_id: {"state": "error", "runs": []} for schedule_id in schedule_ids
+            }
+        else:
+            run_summaries = {
+                schedule_id: {"state": "ok", "runs": runs_by_schedule[schedule_id]}
+                for schedule_id in schedule_ids
+            }
+    return {
+        "summary_version": SCHEDULE_SUMMARY_VERSION,
+        "recent_runs_limit": recent_runs_limit,
+        "schedules": schedules,
+        "run_summaries": run_summaries,
+    }
 
 
 async def _attach_spend(db: StateDB, row: dict[str, Any]) -> None:
@@ -895,6 +934,21 @@ async def schedule_limits_route() -> dict[str, Any]:
         "max_adhoc_concurrent": config.MAX_ADHOC_CONCURRENT,
         "current_adhoc_inflight": scheduler._adhoc_inflight,
     }
+
+
+@studio_route("/schedules/summary", method="GET", area="schedules", name="schedule_summary")
+async def schedule_summary_route(
+    enabled: bool | None = Query(default=None),
+    trigger_type: str | None = Query(default=None),
+    project: str | None = Query(default=None),
+    recent_runs_limit: int = Query(default=25, ge=1, le=25),
+) -> dict[str, Any]:
+    return await list_schedule_summary(
+        enabled=enabled,
+        trigger_type=trigger_type,
+        project=project,
+        recent_runs_limit=recent_runs_limit,
+    )
 
 
 @studio_route("/schedules/{schedule_id}", method="GET", area="schedules", name="get_schedule")

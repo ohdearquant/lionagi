@@ -3,7 +3,7 @@
  * schedule; run history lives on the schedule detail page, not here.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listScheduleRuns, listSchedules } from "@/lib/api";
+import { listScheduleSummary } from "@/lib/api";
 import type { ScheduleRunSummary, ScheduleSummary } from "@/lib/types";
 
 // Statuses with a history.status translation; unknown values fall back to
@@ -71,44 +71,17 @@ export interface SchedulesData {
   nowMs: number;
   loading: boolean;
   error: boolean;
+  /** Schedule ids whose recent-run slice is missing or failed. */
+  runSummaryErrors: ReadonlySet<string>;
   refresh: () => void;
 }
 
 const POLL_MS = 30_000;
 const RUNS_PER_SCHEDULE = 25;
-export const RUN_SUMMARY_CONCURRENCY = 6;
-
-/** Promise.allSettled semantics with a fixed worker pool and stable result order. */
-export async function mapSettledWithConcurrency<T, R>(
-  items: T[],
-  requestedConcurrency: number,
-  task: (item: T, index: number) => Promise<R>,
-): Promise<PromiseSettledResult<R>[]> {
-  if (items.length === 0) return [];
-  const concurrency = Math.min(items.length, Math.max(1, Math.floor(requestedConcurrency) || 1));
-  const results = new Array<PromiseSettledResult<R>>(items.length);
-  let nextIndex = 0;
-
-  const worker = async () => {
-    for (;;) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= items.length) return;
-      try {
-        results[index] = { status: "fulfilled", value: await task(items[index], index) };
-      } catch (reason) {
-        results[index] = { status: "rejected", reason };
-      }
-    }
-  };
-
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
-  return results;
-}
 
 /**
- * Fetches all schedules plus each schedule's recent runs (the API exposes
- * runs per schedule only), and re-polls every 30s so the Running lane is live.
+ * Fetches schedules and their bounded recent-run slices in one request, and
+ * re-polls every 30s so the Running lane is live.
  */
 export function useSchedulesData(): SchedulesData {
   const [schedules, setSchedules] = useState<ScheduleSummary[]>([]);
@@ -116,6 +89,7 @@ export function useSchedulesData(): SchedulesData {
   const [nowMs, setNowMs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [runSummaryErrors, setRunSummaryErrors] = useState<ReadonlySet<string>>(new Set());
   const aliveRef = useRef(true);
   const inFlightRef = useRef<Promise<void> | null>(null);
   const trailingRefreshRef = useRef(false);
@@ -128,29 +102,30 @@ export function useSchedulesData(): SchedulesData {
 
     const request = (async () => {
       try {
-        const res = await listSchedules();
+        const res = await listScheduleSummary({ recentRunsLimit: RUNS_PER_SCHEDULE });
         if (!aliveRef.current) return;
         const list = res.schedules;
-        const settled = await mapSettledWithConcurrency(list, RUN_SUMMARY_CONCURRENCY, (schedule) =>
-          listScheduleRuns(schedule.id, { limit: RUNS_PER_SCHEDULE }),
-        );
-        if (!aliveRef.current) return;
         const nameById = new Map(list.map((s) => [s.id, s.name]));
         const allRuns: RunRow[] = [];
-        for (const r of settled) {
-          if (r.status === "fulfilled") {
-            for (const run of r.value.runs) {
-              allRuns.push({
-                ...run,
-                scheduleName: nameById.get(run.schedule_id) ?? run.schedule_id,
-              });
-            }
+        const summaryErrors = new Set<string>();
+        for (const schedule of list) {
+          const summary = res.run_summaries[schedule.id];
+          if (!summary || summary.state !== "ok") {
+            summaryErrors.add(schedule.id);
+            continue;
+          }
+          for (const run of summary.runs) {
+            allRuns.push({
+              ...run,
+              scheduleName: nameById.get(run.schedule_id) ?? run.schedule_id,
+            });
           }
         }
         setSchedules(list);
         setRuns(allRuns);
+        setRunSummaryErrors(summaryErrors);
         setNowMs(Date.now());
-        setError(false);
+        setError(summaryErrors.size > 0);
       } catch {
         if (aliveRef.current) setError(true);
       } finally {
@@ -180,7 +155,15 @@ export function useSchedulesData(): SchedulesData {
     };
   }, [load]);
 
-  return { schedules, runs, nowMs, loading, error, refresh: () => void load() };
+  return {
+    schedules,
+    runs,
+    nowMs,
+    loading,
+    error,
+    runSummaryErrors,
+    refresh: () => void load(),
+  };
 }
 
 // ─── Next-fire derivation ─────────────────────────────────────────────────────

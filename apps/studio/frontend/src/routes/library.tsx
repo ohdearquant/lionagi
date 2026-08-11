@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { AgentDetail } from "@/components/library/AgentDetail";
 import { CreateAgentPanel } from "@/components/library/CreateAgentPanel";
@@ -9,6 +9,8 @@ import { McpServerDetail, CreateMcpServerPanel } from "@/components/library/McpS
 import { SkillDetail } from "@/components/library/SkillDetail";
 import { PluginDetail } from "@/components/library/PluginDetail";
 import { KindBadge } from "@/components/library/KindBadge";
+import { loadLibraryCatalogs } from "@/components/library/data";
+import type { LibraryItem, PlaybookSubKind } from "@/components/library/data";
 import SplitPane from "@/components/ui/SplitPane";
 import TabBar from "@/components/shell/TabBar";
 import EmptyState from "@/components/ui/EmptyState";
@@ -17,16 +19,6 @@ import Button from "@/components/ui/Button";
 import DrawerBackButton from "@/components/ui/DrawerBackButton";
 import DrawerHeader from "@/components/ui/DrawerHeader";
 import type { LibraryKind } from "@/components/library/KindBadge";
-import {
-  listAgents,
-  listWorkflowDefs,
-  listSkills,
-  listPlugins,
-  listEngineDefs,
-  listBuiltinPlaybooks,
-  listPlaybooks,
-  listMcpServers,
-} from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
 import type { EngineDef } from "@/lib/api";
 
@@ -70,184 +62,35 @@ export const Route = createFileRoute("/library")({
 // user's own materialized copies. Distinct from LibraryKind (which stays a
 // closed, shared union) so the KindBadge component doesn't need to know
 // about this split.
-type PlaybookSubKind = "builtin" | "custom";
-
-interface LibraryItem {
-  key: string;
-  kind: LibraryKind;
-  subKind?: PlaybookSubKind;
-  name: string;
-  description?: string;
-  meta?: string;
-}
-
-function useLibraryData() {
+function useLibraryData(tab: LibraryTab) {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [allAgents, setAllAgents] = useState<AgentProfileSummary[]>([]);
   const [allEngines, setAllEngines] = useState<EngineDef[]>([]);
+  const requestGenerationRef = useRef(0);
 
   const reload = useCallback(() => {
-    let alive = true;
+    const generation = ++requestGenerationRef.current;
     setLoading(true);
     setError(null);
 
-    Promise.allSettled([
-      listAgents(),
-      listBuiltinPlaybooks(),
-      listPlaybooks(),
-      listWorkflowDefs(),
-      listSkills(),
-      listPlugins(),
-      listEngineDefs(),
-      listMcpServers(),
-    ]).then(
-      ([
-        agentsRes,
-        builtinsRes,
-        playbooksRes,
-        workflowsRes,
-        skillsRes,
-        pluginsRes,
-        enginesRes,
-        mcpRes,
-      ]) => {
-        if (!alive) return;
-
-        const out: LibraryItem[] = [];
-        const results = [
-          agentsRes,
-          builtinsRes,
-          playbooksRes,
-          workflowsRes,
-          skillsRes,
-          pluginsRes,
-          enginesRes,
-          mcpRes,
-        ];
-
-        if (agentsRes.status === "fulfilled") {
-          setAllAgents(agentsRes.value.agents);
-          for (const a of agentsRes.value.agents) {
-            out.push({
-              key: `agent:${a.name}`,
-              kind: "agent",
-              name: a.name,
-              description: a.description ?? undefined,
-              meta: a.model ?? undefined,
-            });
-          }
-        }
-        // Built-in templates first, then the user's own playbooks — surfacing
-        // the shipped templates the Workflows page was missing entirely
-        // (DESIGN-BRIEF §3). These are agent+prompt templates, not graphs, so
-        // they live under the "playbook" kind, separate from "workflow"
-        // (DB-backed graph designs, edited inline via the Library drawer).
-        if (builtinsRes.status === "fulfilled") {
-          for (const p of builtinsRes.value.playbooks) {
-            out.push({
-              key: `playbook:builtin:${p.name}`,
-              kind: "playbook",
-              subKind: "builtin",
-              name: p.name,
-              description: p.description,
-              meta: p.description,
-            });
-          }
-        }
-        if (playbooksRes.status === "fulfilled") {
-          for (const p of playbooksRes.value.playbooks) {
-            out.push({
-              key: `playbook:custom:${p.name}`,
-              kind: "playbook",
-              subKind: "custom",
-              name: p.name,
-              description: p.description ?? undefined,
-              meta: p.description ?? undefined,
-            });
-          }
-        }
-        if (workflowsRes.status === "fulfilled") {
-          for (const w of workflowsRes.value) {
-            out.push({
-              key: `workflow:${w.id}`,
-              kind: "workflow",
-              name: w.name,
-              description: w.description ?? undefined,
-              meta: w.id,
-            });
-          }
-        }
-        if (skillsRes.status === "fulfilled") {
-          for (const s of skillsRes.value.skills) {
-            out.push({
-              key: `skill:${s.name}`,
-              kind: "skill",
-              name: s.name,
-              description: s.description ?? undefined,
-            });
-          }
-        }
-        if (pluginsRes.status === "fulfilled") {
-          // The same plugin can be listed by several sources (marketplace +
-          // installed cache); detail lookup is by name, so one row suffices.
-          const seenPlugins = new Set<string>();
-          for (const p of pluginsRes.value.plugins) {
-            if (seenPlugins.has(p.name)) continue;
-            seenPlugins.add(p.name);
-            out.push({
-              key: `plugin:${p.name}`,
-              kind: "plugin",
-              name: p.name,
-              description: p.description ?? undefined,
-              meta: `v${p.version}`,
-            });
-          }
-        }
-        if (enginesRes.status === "fulfilled") {
-          setAllEngines(enginesRes.value);
-          for (const e of enginesRes.value) {
-            out.push({
-              key: `engine:${e.id}`,
-              kind: "engine",
-              name: e.name,
-              description: e.description ?? undefined,
-              meta: e.kind,
-            });
-          }
-        }
-
-        if (mcpRes.status === "fulfilled") {
-          for (const s of mcpRes.value.servers) {
-            out.push({
-              key: `mcp:${s.name}`,
-              kind: "mcp",
-              name: s.name,
-              description: s.command ?? s.url ?? undefined,
-              meta: s.enabled ? s.transport : `${s.transport} · disabled`,
-            });
-          }
-        }
-
-        setItems(out);
-        if (results.some((result) => result.status === "rejected")) {
-          setError("degraded");
-        }
-        setLoading(false);
-      },
-    );
-
-    return () => {
-      alive = false;
-    };
-  }, []);
+    void loadLibraryCatalogs(tab).then((result) => {
+      if (requestGenerationRef.current !== generation) return;
+      setItems(result.items);
+      setAllAgents(result.allAgents);
+      setAllEngines(result.allEngines);
+      setError(result.degraded ? "degraded" : null);
+      setLoading(false);
+    });
+  }, [tab]);
 
   useEffect(() => {
-    // Return reload()'s cleanup so an unmount mid-flight flips its alive flag
-    // and the resolved fetch can't setState on the stale component.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reload() calls setState inside async callbacks; synchronous reset is needed to clear stale items before the fetch resolves
-    return reload();
+    reload();
+    return () => {
+      requestGenerationRef.current += 1;
+    };
   }, [reload]);
 
   return { items, loading, error, reload, allAgents, allEngines };
@@ -345,10 +188,10 @@ function CatalogSkeleton() {
 function LibraryPage() {
   const t = useTranslations("library");
   const tDaemon = useTranslations("daemon");
-  const { items, loading, error, reload, allAgents, allEngines } = useLibraryData();
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
   const kindFilter: LibraryKind | "all" = tab ?? "all";
+  const { items, loading, error, reload, allAgents, allEngines } = useLibraryData(kindFilter);
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);

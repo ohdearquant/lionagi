@@ -18,6 +18,12 @@ import enMessages from "@/messages/en.json";
 import type { SignalEvent } from "@/lib/api";
 import type { RunStep, WorkerGraph } from "@/lib/types";
 
+const resumeHarness = vi.hoisted(() => ({
+  onResumed: undefined as
+    | ((result: { run_id: string; invocation_id: string }) => void | Promise<void>)
+    | undefined,
+}));
+
 vi.mock("@/components/ui/Markdown", () => ({
   default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
@@ -36,13 +42,17 @@ vi.mock("@/lib/api", async () => {
     ...actual,
     getSession: vi.fn(),
     getInvocation: vi.fn(),
+    getInvocationStatus: vi.fn(),
     streamSession: vi.fn(() => () => {}),
     streamSignals: vi.fn(() => () => {}),
   };
 });
 
 vi.mock("@/components/history/ResumeRun", () => ({
-  default: () => null,
+  default: (props: { onResumed: typeof resumeHarness.onResumed }) => {
+    resumeHarness.onResumed = props.onResumed;
+    return null;
+  },
 }));
 
 vi.mock("@/components/canvas/WorkerCanvas", () => ({
@@ -434,6 +444,35 @@ describe("history/RunDetail.tsx — hidden-count badge and show-implied toggle, 
     }
   });
 
+  it("reopens a completed run's closed signal stream when the run is resumed", async () => {
+    const { getSession, streamSession, streamSignals } = await import("@/lib/api");
+    vi.mocked(getSession).mockReset();
+    vi.mocked(streamSession).mockClear();
+    vi.mocked(streamSignals).mockReset();
+    vi.mocked(streamSignals).mockImplementation((_id, listener, onConnectionState) => {
+      onConnectionState?.("open");
+      if (vi.mocked(streamSignals).mock.calls.length === 1) listener({ type: "done" });
+      return () => {};
+    });
+
+    const { unmount } = await mountRunDetail(null);
+    try {
+      expect(streamSession).not.toHaveBeenCalled();
+      expect(streamSignals).toHaveBeenCalledOnce();
+
+      await act(async () => {
+        await resumeHarness.onResumed?.({ run_id: "run-mount-1", invocation_id: "inv-1" });
+        await Promise.resolve();
+      });
+
+      expect(streamSession).toHaveBeenCalledOnce();
+      expect(streamSignals).toHaveBeenCalledTimes(2);
+    } finally {
+      unmount();
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
   it("opens both SSE channels after a running snapshot resolves", async () => {
     const { streamSession, streamSignals } = await import("@/lib/api");
     vi.mocked(streamSession).mockClear();
@@ -445,6 +484,207 @@ describe("history/RunDetail.tsx — hidden-count badge and show-implied toggle, 
       expect(streamSignals).toHaveBeenCalledOnce();
     } finally {
       unmount();
+    }
+  });
+
+  it("uses healthy resumed-run streams without repeated detail polling", async () => {
+    vi.useFakeTimers();
+    const { getInvocation, getInvocationStatus, getSession, streamSession, streamSignals } =
+      await import("@/lib/api");
+    vi.mocked(getSession).mockReset();
+    vi.mocked(getInvocation).mockReset();
+    vi.mocked(getInvocationStatus).mockReset();
+    vi.mocked(streamSession).mockImplementation((_id, _listener, onConnectionState) => {
+      onConnectionState?.("open");
+      return () => {};
+    });
+    vi.mocked(streamSignals).mockImplementation((_id, _listener, onConnectionState) => {
+      onConnectionState?.("open");
+      return () => {};
+    });
+    vi.mocked(getInvocation).mockResolvedValue({ status: "running" } as never);
+
+    const { unmount } = await mountRunDetail(null, "running");
+    try {
+      await act(async () => {
+        await resumeHarness.onResumed?.({ run_id: "run-mount-1", invocation_id: "inv-1" });
+        await Promise.resolve();
+      });
+      await act(async () => vi.advanceTimersByTimeAsync(30_000));
+
+      expect(getInvocation).not.toHaveBeenCalled();
+      expect(getInvocationStatus).not.toHaveBeenCalled();
+      expect(getSession).toHaveBeenCalledTimes(2);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  it("backs off the lifecycle fallback after consecutive stream-loss failures", async () => {
+    vi.useFakeTimers();
+    const { getInvocationStatus, getSession, streamSession, streamSignals } =
+      await import("@/lib/api");
+    let setSessionConnection: ((state: "connecting" | "open" | "disconnected") => void) | undefined;
+    vi.mocked(getSession).mockReset();
+    vi.mocked(getInvocationStatus).mockReset();
+    vi.mocked(getInvocationStatus).mockRejectedValue(new Error("offline"));
+    vi.mocked(streamSession).mockImplementation((_id, _listener, onConnectionState) => {
+      setSessionConnection = onConnectionState;
+      onConnectionState?.("open");
+      return () => {};
+    });
+    vi.mocked(streamSignals).mockImplementation((_id, _listener, onConnectionState) => {
+      onConnectionState?.("open");
+      return () => {};
+    });
+
+    const { unmount } = await mountRunDetail(null, "running");
+    try {
+      await act(async () => {
+        await resumeHarness.onResumed?.({ run_id: "run-mount-1", invocation_id: "inv-1" });
+        setSessionConnection?.("disconnected");
+      });
+
+      await act(async () => vi.advanceTimersByTimeAsync(749));
+      expect(getInvocationStatus).not.toHaveBeenCalled();
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(getInvocationStatus).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(1_499));
+      expect(getInvocationStatus).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(getInvocationStatus).toHaveBeenCalledTimes(2);
+      await act(async () => vi.advanceTimersByTimeAsync(3_000 + 6_000 + 8_000));
+      expect(getInvocationStatus).toHaveBeenCalledTimes(5);
+
+      await act(async () => setSessionConnection?.("open"));
+      await act(async () => vi.advanceTimersByTimeAsync(30_000));
+      expect(getInvocationStatus).toHaveBeenCalledTimes(5);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  it("performs one final detail refresh and stops fallback work on a terminal frame", async () => {
+    vi.useFakeTimers();
+    const { getInvocationStatus, getSession, streamSession, streamSignals } =
+      await import("@/lib/api");
+    let emitSession: ((event: Record<string, unknown>) => void) | undefined;
+    vi.mocked(getSession).mockReset();
+    vi.mocked(getInvocationStatus).mockReset();
+    vi.mocked(getSession)
+      .mockResolvedValueOnce(minimalSession(null, "running") as never)
+      .mockResolvedValueOnce(minimalSession(null, "running") as never)
+      .mockResolvedValueOnce(minimalSession(null, "completed") as never);
+    vi.mocked(streamSession).mockImplementation((_id, listener, onConnectionState) => {
+      emitSession = listener;
+      onConnectionState?.("open");
+      return () => {};
+    });
+    vi.mocked(streamSignals).mockImplementation((_id, _listener, onConnectionState) => {
+      onConnectionState?.("open");
+      return () => {};
+    });
+
+    const { unmount } = await mountRunDetail(null, "running");
+    try {
+      await act(async () => {
+        await resumeHarness.onResumed?.({ run_id: "run-mount-1", invocation_id: "inv-1" });
+        emitSession?.({ type: "done" });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(getSession).toHaveBeenCalledTimes(3);
+      await act(async () => vi.advanceTimersByTimeAsync(30_000));
+      expect(getSession).toHaveBeenCalledTimes(3);
+      expect(getInvocationStatus).not.toHaveBeenCalled();
+    } finally {
+      unmount();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  it("ignores a delayed fallback response after another run is selected", async () => {
+    vi.useFakeTimers();
+    const [
+      { getInvocationStatus, getSession, streamSession, streamSignals },
+      { default: RunDetail },
+    ] = await Promise.all([import("@/lib/api"), import("./RunDetail")]);
+    let setSessionConnection: ((state: "connecting" | "open" | "disconnected") => void) | undefined;
+    let resolveStatus!: (value: { id: string; status: string }) => void;
+    vi.mocked(getSession).mockReset();
+    vi.mocked(getSession).mockImplementation(
+      async (runId: string) =>
+        ({
+          ...minimalSession(null, "running"),
+          id: runId,
+          name: runId,
+        }) as never,
+    );
+    vi.mocked(getInvocationStatus).mockReset();
+    vi.mocked(getInvocationStatus).mockReturnValue(
+      new Promise((resolve) => {
+        resolveStatus = resolve;
+      }) as never,
+    );
+    vi.mocked(streamSession).mockImplementation((_id, _listener, onConnectionState) => {
+      setSessionConnection = onConnectionState;
+      onConnectionState?.("open");
+      return () => {};
+    });
+    vi.mocked(streamSignals).mockImplementation((_id, _listener, onConnectionState) => {
+      onConnectionState?.("open");
+      return () => {};
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const render = async (runId: string) => {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id={runId} />
+          </IntlProvider>,
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+
+    try {
+      await render("run-a");
+      await act(async () => {
+        await resumeHarness.onResumed?.({ run_id: "run-a", invocation_id: "inv-a" });
+        setSessionConnection?.("disconnected");
+      });
+      await act(async () => vi.advanceTimersByTimeAsync(750));
+      expect(getInvocationStatus).toHaveBeenCalledOnce();
+
+      await render("run-b");
+      await act(async () => {
+        resolveStatus({ id: "inv-a", status: "completed" });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).toContain("run-b");
+      expect(container.textContent).not.toContain("run-a");
+      expect(vi.mocked(getSession).mock.calls.filter(([runId]) => runId === "run-a")).toHaveLength(
+        2,
+      );
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
     }
   });
 

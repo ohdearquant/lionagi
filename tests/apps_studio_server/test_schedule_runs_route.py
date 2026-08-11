@@ -45,11 +45,13 @@ async def _seed_run(
     fired_at: float,
     error_detail: str | None = None,
     chain_depth: int = 0,
-) -> None:
+    run_id: str | None = None,
+) -> str:
+    resolved_run_id = run_id or str(uuid.uuid4())
     async with StateDB() as db:
         await db.create_schedule_run(
             {
-                "id": str(uuid.uuid4()),
+                "id": resolved_run_id,
                 "schedule_id": schedule_id,
                 "trigger_context": {"source": "cron"},
                 "action_kind": "agent",
@@ -60,6 +62,7 @@ async def _seed_run(
                 "error_detail": error_detail,
             }
         )
+    return resolved_run_id
 
 
 def _patch_db(monkeypatch, db_path: Path) -> None:
@@ -153,3 +156,55 @@ def test_status_filter_and_pagination(tmp_path, monkeypatch):
     body = resp.json()
     assert len(body["runs"]) == 2
     assert body["has_next"] is True
+
+
+def test_schedule_summary_batches_recent_runs_with_stable_order(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    now = time.time()
+
+    async def seed():
+        first = await _seed_schedule()
+        second = await _seed_schedule()
+        await _seed_run(first, status="failed", fired_at=now - 10, run_id="run-a")
+        await _seed_run(first, status="completed", fired_at=now, run_id="run-b")
+        await _seed_run(first, status="failed", fired_at=now, run_id="run-c")
+        await _seed_run(second, status="completed", fired_at=now, run_id="run-d")
+        return first, second
+
+    first, second = asyncio.run(seed())
+    response = _make_client().get("/api/schedules/summary", params={"recent_runs_limit": 2})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary_version"] == 1
+    assert body["recent_runs_limit"] == 2
+    assert {schedule["id"] for schedule in body["schedules"]} == {first, second}
+    assert body["run_summaries"][first]["state"] == "ok"
+    first_runs = body["run_summaries"][first]["runs"]
+    assert [run["id"] for run in first_runs] == ["run-c", "run-b"]
+    assert [run["fired_at"] for run in first_runs] == pytest.approx([now, now])
+    assert body["run_summaries"][second]["state"] == "ok"
+    assert [run["id"] for run in body["run_summaries"][second]["runs"]] == ["run-d"]
+
+
+def test_schedule_summary_marks_each_slice_failed_when_batch_read_fails(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    async def seed():
+        return await _seed_schedule(), await _seed_schedule()
+
+    first, second = asyncio.run(seed())
+
+    async def fail_batch(*args, **kwargs):
+        raise RuntimeError("summary read failed")
+
+    monkeypatch.setattr(StateDB, "list_schedule_runs_batch", fail_batch, raising=False)
+
+    response = _make_client().get("/api/schedules/summary")
+
+    assert response.status_code == 200
+    summaries = response.json()["run_summaries"]
+    assert summaries[first] == {"state": "error", "runs": []}
+    assert summaries[second] == {"state": "error", "runs": []}

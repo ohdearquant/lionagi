@@ -74,6 +74,23 @@ async def test_get_invocation_returns_none_reason_fields_when_unset(tmp_path, mo
     assert result["status_evidence_refs"] is None
 
 
+async def test_get_invocation_status_returns_only_lifecycle_fields(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    async with StateDB(db_path) as db:
+        inv_id = await _create_invocation(db)
+        await db.update_invocation(inv_id, status="completed", ended_at=time.time())
+
+    result = await invocations_mod.get_invocation_status(inv_id)
+
+    assert result is not None
+    assert set(result) == {"id", "status", "ended_at", "updated_at"}
+    assert result["id"] == inv_id
+    assert result["status"] == "completed"
+    assert result["ended_at"] is not None
+
+
 async def _create_failed_schedule_run(
     db: StateDB, *, invocation_id: str, exit_code: int, error_detail: str
 ) -> str:
