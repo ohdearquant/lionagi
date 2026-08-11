@@ -199,7 +199,6 @@ async def test_operate_filters_none_action_responses():
     # This is what the FIXED code does - filter out None values
     filtered = [r for r in action_response_models if r is not None]
 
-    # Verify the filtering worked correctly
     assert len(filtered) == 1, "Should filter out None values"
     assert filtered[0].function == "multiply"
     assert filtered[0].output == 15

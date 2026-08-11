@@ -36,6 +36,71 @@ Never mutate a returned model class. `LIONAGI_OPERATIVE_MODEL_CACHE_SIZE=0`
 restores per-call classes (disables sharing). See also `models/_build_model.py`
 and `adapters/spec_adapters/pydantic_field.py` below — same cache, different layer.
 
+**Graph-entrypoint conformance suite** (`tests/operations/test_graph_entrypoint_conformance.py`) —
+pins every graph-shaped production surface in the shipped package to the
+`Session.flow`/streaming-kernel execution authority. A manifest classifies
+every graph-shaped function the suite can find: whether it delegates to
+`Session.flow` (directly or through an adapter), reaches the sanctioned
+streaming kernel, is itself the kernel, or is a pure builder/alias that never
+executes anything. The suite statically scans the real source tree for
+qualified `.flow`/`.flow_stream`/`.run_dag` calls, bare calls to a
+locally-imported kernel function, and executor/graph-builder construction
+sites, and fails (with file:line and reason) on anything not in the
+manifest — so a new graph entrypoint that isn't registered breaks the build
+instead of silently growing a second executor.
+
+The executor-construction scan recognizes a direct
+`DependencyAwareExecutor(...)`/`ReactiveExecutor(...)` call, an
+`from ... import X as Y` alias, a one-level-deep bare assignment alias, and a
+literal `getattr(<flow module>, "DependencyAwareExecutor")` lookup (only when
+the receiver statically denotes `lionagi.operations.flow`). Import provenance
+is tracked per lexical scope rather than as one flat module timeline: each
+function/lambda scope starts from a copy of its enclosing scope's provenance,
+first masks every name any local import, assignment, `for`/`async for`
+target, match-capture, or augmented assignment binds anywhere in the body
+(Python function scope isn't statement-ordered, so a name bound only inside
+an `if`/`try`/`for`/`match` is still a lexical local for the whole function),
+discards any parameter-shadowed name, then replays its own body's
+*unconditional* binding events on top of that masked copy. A binding nested
+inside `if`/`try`/`except`/`for`/`while`/`with`/`match`-case is conditional:
+it may only discard provenance (never establish or restore it), since a
+conditional import might not execute and trusting it risks a false positive
+either way. Class bodies get their own add-only environment
+(`_SinkVisitor.visit_ClassDef`). The scanner does not perform general
+data-flow analysis — resolution through a factory return value, a
+non-literal string argument, a multi-hop alias, or a binding inside a
+comprehension/walrus is untracked and is a known residual imprecision.
+
+`global`/`nonlocal` declarations are handled separately from ordinary
+masking, since they resolve against different target scopes: `global`
+overlays provenance from a pristine module-scope snapshot (skipping every
+intermediate function scope, including one whose own parameter shadows the
+name), while `nonlocal` resolves against the nearest enclosing function
+scope, which the ordinary lexical inheritance chain already reproduces. A
+`global`/`nonlocal` statement nested inside a class body does not count as a
+declaration of the surrounding function — a class body is its own namespace
+for this purpose. The scanner's governing invariant is zero false negatives:
+a missed executor-construction site is a coverage hole, while a spurious one
+only costs a review. Where closing a remaining false positive would require
+reasoning about whether a declared name's own binder form actually executes,
+that reasoning is deliberately not attempted — the scanner keeps the
+(possibly stale) inherited/overlaid provenance and reports a site. This is a
+documented conservative over-approximation, not a bug.
+
+Registering a manifest row is necessary but not sufficient: a row naming an
+`expected_target` must also name a `delegation_test` (the exact pytest node
+id of the test that asserts the delegation — call count, argument identity,
+or a mocked target reached), and a row with `persistence="required"` must
+name a `persistence_evidence` node id backed by a real StateDB write. Both
+are validated against real source, not just checked for non-emptiness, so a
+stale or nonexistent reference fails the suite. Known limitation: resolving
+a `delegation_test` id to a real test function does not check what that
+test's body actually asserts — a row can cite a real, passing test that
+exercises an entirely different code path than the one it's cited for. A
+weaker structural companion check (does the cited test's source at least
+mention a token from `expected_target`) catches the obvious case but is not
+a substitute for reading the cited test.
+
 ## `session/`
 
 **`signal.py`** — Signal types and per-node lifecycle projection for the

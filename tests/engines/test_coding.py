@@ -44,9 +44,7 @@ class _ScriptedBranch:
         return "ok"
 
 
-# ---------------------------------------------------------------------------
 # Pure helpers
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_cmd_list_runs_shell_false():
@@ -91,9 +89,7 @@ def test_tail_bounds_lines_and_chars():
     assert len(_tail(big, lines=5, max_chars=4000)) <= 4001  # leading ellipsis
 
 
-# ---------------------------------------------------------------------------
 # Ground-truth subprocess runner
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -148,9 +144,7 @@ async def test_test_stage_times_out(tmp_path):
     assert tests.timed_out is True
 
 
-# ---------------------------------------------------------------------------
 # Full pipeline — plan -> implement -> test (pass path)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -206,9 +200,7 @@ def _async(value):
     return _coro()
 
 
-# ---------------------------------------------------------------------------
 # Fix loop — fail then pass on a flipping test command
-# ---------------------------------------------------------------------------
 
 
 def _flip_test_cmd(flag_path) -> list[str]:
@@ -366,9 +358,7 @@ async def test_fix_loop_stops_when_implementer_repeats_change(tmp_path, monkeypa
     assert any(e["type"] == "fix_no_change" for e in events)
 
 
-# ---------------------------------------------------------------------------
 # Implementer emits nothing -> graceful conclude
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -399,9 +389,7 @@ async def test_no_change_proposed_concludes_failed(tmp_path, monkeypatch):
     assert run.events_of(TestsRan) == []
 
 
-# ---------------------------------------------------------------------------
 # Workspace is ground truth when emission fails
-# ---------------------------------------------------------------------------
 
 
 def _make_git_workspace(path) -> None:
@@ -885,9 +873,7 @@ async def test_absolute_files_touched_reaches_verify_diff(tmp_path, monkeypatch)
     assert "(no diff captured" not in verify_instruction
 
 
-# ---------------------------------------------------------------------------
 # Pending-experiment ingestion + hypothesis seed round-trip
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -965,9 +951,7 @@ def test_to_hypothesis_seeds_empty_experiment_ref_still_validates():
     assert rr.experiment_ref == "" and rr.passed is False
 
 
-# ---------------------------------------------------------------------------
 # Judge gate on the fix-loop boundary
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1010,9 +994,7 @@ async def test_judge_can_stop_fix_loop_early(tmp_path, monkeypatch):
     assert any(e["type"] == "fix_gated" for e in events)
 
 
-# ---------------------------------------------------------------------------
 # Chain events must reach on_event exactly once
-# ---------------------------------------------------------------------------
 
 
 class _BusBranch:

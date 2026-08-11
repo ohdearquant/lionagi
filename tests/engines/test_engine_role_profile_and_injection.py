@@ -17,9 +17,7 @@ import lionagi.engines.engine as engine_mod
 from lionagi.engines.engine import Engine
 from lionagi.tools.khive_injection import KhiveInjectionProvider
 
-# ---------------------------------------------------------------------------
 # Role-profile cache: keyed by (role, cwd), never caches an exception fallback
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -112,9 +110,7 @@ def test_role_profile_injection_cache_keyed_by_cwd_and_not_negative(monkeypatch,
     assert len(calls) == 2  # one lookup per distinct project dir
 
 
-# ---------------------------------------------------------------------------
 # make_agent(): run-derived khive-injection namespace
-# ---------------------------------------------------------------------------
 
 
 def _provider_entries(branch):
@@ -158,9 +154,7 @@ async def test_make_agent_two_runs_get_distinct_namespaces():
     assert ns1 != ns2  # cross-run memory exposure is exactly what this closes
 
 
-# ---------------------------------------------------------------------------
 # make_agent(): effort-suffix precedence over a profile default
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -23,9 +23,7 @@ from lionagi.protocols.graph.graph import Graph
 from lionagi.session.session import Session
 from lionagi.testing import TestBranch
 
-# ---------------------------------------------------------------------------
 # Unit: render + lift-out (operates directly on _prepare_operation)
-# ---------------------------------------------------------------------------
 
 
 def test_operator_message_renders_labeled_block_into_instruction():
@@ -101,9 +99,7 @@ def test_no_operator_messages_leaves_instruction_and_context_untouched():
     assert "rendered_into_op" not in op.metadata
 
 
-# ---------------------------------------------------------------------------
 # Consume-once: a steer renders into exactly one downstream op
-# ---------------------------------------------------------------------------
 
 
 def test_consume_once_second_op_does_not_rerender_first_message():
@@ -157,9 +153,7 @@ def test_consume_once_new_message_queued_between_ops_renders_into_next_op_only()
     assert "first steer" not in instr2
 
 
-# ---------------------------------------------------------------------------
 # Acceptance: the rendered block reaches the provider-bound payload
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -226,9 +220,7 @@ async def test_operator_steer_consume_once_across_real_flow_ops():
     assert "[OPERATOR STEER]" not in (calls[1].last_user_message or "")
 
 
-# ---------------------------------------------------------------------------
 # Regression (issue 1681): a steer landing after prepare, before invoke
-# ---------------------------------------------------------------------------
 
 
 def test_steer_appended_after_prepare_is_caught_by_invoke_time_recheck():

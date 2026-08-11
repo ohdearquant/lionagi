@@ -22,9 +22,7 @@ from lionagi.engines.hypothesis import (
     QuestionRaised,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers shared across tests
-# ---------------------------------------------------------------------------
 
 
 class _StubEngine(Engine):
@@ -36,9 +34,7 @@ class _SlowEvent(EngineEvent):
     value: str = ""
 
 
-# ---------------------------------------------------------------------------
 # Deadline watchdog cancels in-flight spawned tasks
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -127,9 +123,7 @@ async def test_deadline_watchdog_cleans_up_after_fast_run():
     # finishing promptly is the observable signal that cleanup happened.
 
 
-# ---------------------------------------------------------------------------
 # CodingEngine normalize-before-gate
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -266,9 +260,7 @@ def _coro(value):
     return _inner()
 
 
-# ---------------------------------------------------------------------------
 # CLI-aware emission repair instruction
-# ---------------------------------------------------------------------------
 
 
 def test_cli_repair_instruction_contains_fenced_example():
@@ -428,9 +420,7 @@ async def test_operate_with_repair_no_chat_model_falls_back_to_api_template():
     assert "finding_emitted" in repair_instructions[0]
 
 
-# ---------------------------------------------------------------------------
 # Deadline cancels in-flight operate_with_repair
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -484,9 +474,7 @@ async def test_deadline_cancels_in_flight_operate_with_repair():
     )
 
 
-# ---------------------------------------------------------------------------
 # CLI repair example is syntactically valid JSON
-# ---------------------------------------------------------------------------
 
 
 def test_cli_repair_instruction_example_is_valid_json():
@@ -547,9 +535,7 @@ def test_cli_repair_instruction_fenced_block_validates_against_emission():
     )
 
 
-# ---------------------------------------------------------------------------
 # _active tasks are drained even when _run() raises immediately
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -625,9 +611,7 @@ async def test_external_cancel_during_drain_propagates():
     )
 
 
-# ---------------------------------------------------------------------------
 # _normalize_spec called exactly once via run()
-# ---------------------------------------------------------------------------
 
 
 def test_coding_engine_normalizes_spec_exactly_once(monkeypatch):

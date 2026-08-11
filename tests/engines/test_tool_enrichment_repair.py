@@ -24,9 +24,7 @@ from lionagi.engines.coding import (
 )
 from lionagi.engines.engine import Engine, EngineRun
 
-# ---------------------------------------------------------------------------
 # Shared helpers
-# ---------------------------------------------------------------------------
 
 
 class _StubEngine(Engine):
@@ -56,9 +54,7 @@ class _ScriptedBranch:
         return "ok"
 
 
-# ---------------------------------------------------------------------------
 # _looks_mechanical unit tests
-# ---------------------------------------------------------------------------
 
 
 def test_looks_mechanical_returns_false_for_passing_tests():
@@ -99,9 +95,7 @@ def test_looks_mechanical_ruff_format_output():
     assert _looks_mechanical(t)
 
 
-# ---------------------------------------------------------------------------
 # worker_extra_tools: merged into make_agent call
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -189,9 +183,7 @@ async def test_plan_and_verify_do_not_get_worker_tools(tmp_path, monkeypatch):
             )
 
 
-# ---------------------------------------------------------------------------
 # worker_mcp_servers: passed to implement agent only
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -238,9 +230,7 @@ async def test_worker_mcp_servers_passed_to_implement_not_verify(tmp_path, monke
             assert call.get("mcp_servers") is None, f"{call['name']} must not receive mcp_servers"
 
 
-# ---------------------------------------------------------------------------
 # worker_extra_prompt: forwarded to implement agent
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -282,9 +272,7 @@ async def test_worker_extra_prompt_forwarded(tmp_path, monkeypatch):
     assert implement_call.get("extra_prompt") == "Always prefer idiomatic Rust."
 
 
-# ---------------------------------------------------------------------------
 # make_agent: mcp_servers + extra_prompt propagate through AgentSpec
-# ---------------------------------------------------------------------------
 
 
 def test_make_agent_mcp_servers_set_on_spec_directly():
@@ -306,9 +294,7 @@ def test_make_agent_extra_prompt_set_via_compose():
     assert spec.extra_prompt == "prefer idiomatic Rust"
 
 
-# ---------------------------------------------------------------------------
 # auto_repair_cmds: AutoRepairApplied events emitted before test gate
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -436,9 +422,7 @@ async def test_auto_repair_recorded_in_measurements(tmp_path, monkeypatch):
     assert "auto_repair_rounds" in result.measurements
 
 
-# ---------------------------------------------------------------------------
 # mechanical round: skips judge, skips worker re-prompt
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -522,9 +506,7 @@ async def test_mechanical_fix_round_skips_judge(tmp_path, monkeypatch):
     assert any(e["type"] == "fix_mechanical" for e in events)
 
 
-# ---------------------------------------------------------------------------
 # fast_test_cmd: used for intermediate rounds, full test_cmd as final gate
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -620,9 +602,7 @@ async def test_fast_test_cmd_used_for_intermediate_rounds(tmp_path, monkeypatch)
     assert fast_calls, f"_fast_test must be called for intermediate rounds; got calls={fast_calls}"
 
 
-# ---------------------------------------------------------------------------
 # worker_grants recorded in measurements
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -693,9 +673,7 @@ async def test_worker_grants_absent_when_not_configured(tmp_path, monkeypatch):
     assert "worker_grants" not in result.measurements
 
 
-# ---------------------------------------------------------------------------
 # AutoRepairApplied event shape
-# ---------------------------------------------------------------------------
 
 
 def test_auto_repair_applied_event_shape():
