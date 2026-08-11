@@ -28,6 +28,7 @@ from lionagi.cli.orchestrate.fanout import (
 )
 from lionagi.engines import PlanningEngine
 from lionagi.operations.builder import OperationGraphBuilder
+from lionagi.protocols.types import EventStatus
 from lionagi.session.signal import NodeCompleted, NodeFailed
 
 
@@ -89,27 +90,48 @@ def _wire_fanout(monkeypatch, env, assignments, run_dag, warnings=None, progress
     return stop_persist
 
 
+def _completed(session, node, response, name="worker"):
+    """Leave a node the way a real run_dag leaves a finished one — terminal status
+    included, so a later pass over the same graph does not re-execute it."""
+    node.execution.status = EventStatus.COMPLETED
+    node.execution.response = response
+    return asyncio.create_task(
+        session.emit(NodeCompleted(op_id=str(node.id), name=name, elapsed=0.01))
+    )
+
+
+def _failed(session, node, name="worker"):
+    node.execution.status = EventStatus.FAILED
+    return asyncio.create_task(
+        session.emit(NodeFailed(op_id=str(node.id), name=name, elapsed=0.01))
+    )
+
+
 def _one_fails_one_completes(session):
-    """A run_dag stub: the first leg raises, the second completes normally."""
+    """A run_dag stub: on the worker pass the first leg fails and the second
+    completes. Synthesis goes through run_dag as well, so a second call gets the
+    graph with the synthesis node appended and completes that. ``passes`` records
+    one entry per call, which is how a test tells the two phases apart."""
+    passes: list = []
 
     async def run_dag(graph, **kwargs):
+        passes.append(graph)
         nodes = list(graph.internal_nodes.values())
-        operation_results = {}
-        emits = [
-            asyncio.create_task(
-                session.emit(NodeFailed(op_id=str(nodes[0].id), name="worker", elapsed=0.01))
-            )
-        ]
-        nodes[1].execution.response = "worker 2 result"
-        operation_results[nodes[1].id] = "worker 2 result"
-        emits.append(
-            asyncio.create_task(
-                session.emit(NodeCompleted(op_id=str(nodes[1].id), name="worker", elapsed=0.01))
-            )
+        if len(passes) == 1:
+            emits = [
+                _failed(session, nodes[0]),
+                _completed(session, nodes[1], "worker 2 result"),
+            ]
+            await asyncio.gather(*emits, return_exceptions=True)
+            return {"operation_results": {nodes[1].id: "worker 2 result"}}
+        synth = nodes[-1]
+        await asyncio.gather(
+            _completed(session, synth, "synthesis result", name="synthesis"),
+            return_exceptions=True,
         )
-        await asyncio.gather(*emits, return_exceptions=True)
-        return {"operation_results": operation_results}
+        return {"operation_results": {synth.id: "synthesis result"}}
 
+    run_dag.passes = passes
     return run_dag
 
 
@@ -145,7 +167,8 @@ async def test_a_failed_worker_is_excluded_from_the_synthesis_context(
         TaskAssignment(task="first", assignee="worker"),
         TaskAssignment(task="second", assignee="worker"),
     ]
-    _wire_fanout(monkeypatch, env, assignments, _one_fails_one_completes(session))
+    run_dag = _one_fails_one_completes(session)
+    _wire_fanout(monkeypatch, env, assignments, run_dag)
 
     added_contexts: list = []
     original_add = env.builder.add_operation
@@ -156,17 +179,14 @@ async def test_a_failed_worker_is_excluded_from_the_synthesis_context(
 
     monkeypatch.setattr(env.builder, "add_operation", capture_add)
 
-    async def fake_flow(self, graph, **kwargs):
-        return {"operation_results": {}}
-
-    monkeypatch.setattr(Session, "flow", fake_flow)
-
     await fanout_module._run_fanout("codex/model", "work", num_workers=2, with_synthesis=True)
 
     # The synthesis operation is added last; its context must carry the real
     # result and not the failed leg's marker.
     synthesis_context = added_contexts[-1]
     assert synthesis_context == ["worker 2 result"]
+    # Both phases execute through the engine, so synthesis is a second pass.
+    assert len(run_dag.passes) == 2
 
 
 async def test_all_workers_failed_skips_synthesis_and_says_why(
@@ -178,29 +198,27 @@ async def test_all_workers_failed_skips_synthesis_and_says_why(
         TaskAssignment(task="second", assignee="worker"),
     ]
 
+    passes: list = []
+
     async def run_dag(graph, **kwargs):
-        emits = [
-            asyncio.create_task(
-                session.emit(NodeFailed(op_id=str(node.id), name="worker", elapsed=0.01))
-            )
-            for node in graph.internal_nodes.values()
-        ]
+        passes.append(graph)
+        emits = [_failed(session, node) for node in graph.internal_nodes.values()]
         await asyncio.gather(*emits, return_exceptions=True)
         return {"operation_results": {}}
 
     warnings: list[str] = []
     _wire_fanout(monkeypatch, env, assignments, run_dag, warnings=warnings)
 
-    synth_flow = AsyncMock()
-    monkeypatch.setattr(Session, "flow", synth_flow)
-
     output, terminal_status = await fanout_module._run_fanout(
         "codex/model", "work", num_workers=2, with_synthesis=True
     )
 
     assert terminal_status == "failed"
-    synth_flow.assert_not_awaited()
-    assert any("no output to synthesize" in message for message in warnings)
+    # Synthesis is skipped, so the worker pass is the only pass. Counting passes
+    # is what makes this a real assertion: synthesis executes through the same
+    # run_dag seam as the workers, so a second pass would mean it ran anyway.
+    assert len(passes) == 1
+    assert any("Every worker failed" in message for message in warnings)
     assert output.count(FAILED_WORKER_MARKER) == 2
 
 
@@ -213,29 +231,34 @@ async def test_a_failed_synthesis_is_marked_as_failed_not_as_empty(
         TaskAssignment(task="second", assignee="worker"),
     ]
 
+    # The synthesis pass runs the real engine, so the failure signal this test
+    # reads is emitted by production code rather than injected here. Take the
+    # run before `new_run` is stubbed out for the worker pass.
+    real_run = PlanningEngine().new_run(session=session)
+    passes: list = []
+
     async def run_dag(graph, **kwargs):
+        passes.append(graph)
+        if len(passes) > 1:
+            return await real_run.run_dag(graph, **kwargs)
         operation_results = {}
         emits = []
         for number, node in enumerate(graph.internal_nodes.values(), start=1):
             response = f"worker {number} result"
-            node.execution.response = response
             operation_results[node.id] = response
-            emits.append(
-                asyncio.create_task(
-                    session.emit(NodeCompleted(op_id=str(node.id), name="worker", elapsed=0.01))
-                )
-            )
+            emits.append(_completed(session, node, response))
         await asyncio.gather(*emits, return_exceptions=True)
         return {"operation_results": operation_results}
 
     _wire_fanout(monkeypatch, env, assignments, run_dag)
 
-    async def failing_synthesis_flow(self, graph, **kwargs):
-        synthesis_node = list(graph.internal_nodes.values())[-1]
-        await session.emit(NodeFailed(op_id=str(synthesis_node.id), name="synthesis", elapsed=0.01))
-        return {"operation_results": {}}
+    # Fail the synthesis operation itself. Nothing here emits a signal: getting
+    # that outcome to the observer is the job of the engine's signal bridge,
+    # which is the thing under test.
+    async def failing_operate(self, *args, **kwargs):
+        raise RuntimeError("synthesis model unavailable")
 
-    monkeypatch.setattr(Session, "flow", failing_synthesis_flow)
+    monkeypatch.setattr(Branch, "operate", failing_operate)
 
     output, terminal_status = await fanout_module._run_fanout(
         "codex/model", "work", num_workers=2, with_synthesis=True
@@ -246,3 +269,6 @@ async def test_a_failed_synthesis_is_marked_as_failed_not_as_empty(
     assert terminal_status == "failed"
     assert FAILED_SYNTHESIS_MARKER in output
     assert "(no response)" not in output
+    # And it got there through the engine, whose signal bridge is the only thing
+    # that can carry a synthesis failure to the observer above.
+    assert len(passes) == 2

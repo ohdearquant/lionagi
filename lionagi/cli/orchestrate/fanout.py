@@ -470,7 +470,13 @@ async def _run_fanout_inner(
 
     synthesis_result = None
     if with_synthesis and not contexts:
-        warn("Every worker failed; there is no output to synthesize.")
+        # An empty context means either "every worker failed" or "no worker ran
+        # at all". Only the first one has failures to report, so name the
+        # situation that actually happened.
+        if fanned_nodes:
+            warn("Every worker failed; there is no output to synthesize.")
+        else:
+            warn("No workers ran; there is no output to synthesize.")
     if with_synthesis and contexts:
         synth_spec = synthesis_model or model_spec
         synth_label = str(parse_model_spec(synth_spec))
@@ -492,7 +498,15 @@ async def _run_fanout_inner(
         t2 = time.monotonic()
         env.session.observe(NodeFailed, handler=_record_failed_op)
         try:
-            result3 = await env.session.flow(env.builder.get_graph(), verbose=env.verbose)
+            # Synthesis runs through the engine for the same reason the worker
+            # phase does: run_dag is what installs the node-lifecycle signal
+            # bridge, so a failed synthesis reaches the observer above. Calling
+            # session.flow directly emits no node signals at all, which leaves
+            # the observer silent and renders the failure as an empty response.
+            result3 = await eng_run.run_dag(
+                env.builder.get_graph(),
+                verbose=env.verbose,
+            )
         finally:
             env.session.observer.unobserve(_record_failed_op)
         t_synth = time.monotonic() - t2
