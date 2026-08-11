@@ -469,6 +469,58 @@ even though it is a real, schema-covered field. Classifying it as "extra"
 would let a preprocessor set it by name and forward the raw, unvalidated
 value straight to the callable — a schema bypass.
 
+### Pile row serialization
+
+`Pile.dump`/`adump` write JSONL and CSV without a pandas dependency, via
+`_serialize_records` in `generic/pile.py`. JSONL is one compact JSON object
+per line, newline-terminated so `mode="a"` appends valid JSONL (matching the
+old `DataFrame.to_json(orient="records", lines=True)` output). CSV writes a
+header of every key seen across all rows, in first-appearance order; rows
+missing a key render that cell empty, as pandas did. Row values come from
+`to_dict(mode="json")` — lionagi's canonical orjson encoding (ISO datetimes,
+shortest round-trippable floats) — which is value-equal and round-trippable
+via `Element.from_dict`, but not byte-identical to the old pandas output for
+datetime and high-precision-float fields (pandas rendered epoch-ms datetimes
+and double-precision floats). `parquet` stays on the pandas `to_df` path
+since it needs a columnar engine; `_serialize_records` doesn't support it.
+
+### Progression membership sync
+
+`Progression.order` is a public, directly-mutable deque — tests, third-party
+callers, and `Pile` internals all mutate it in place (`p.order.append(x)`,
+`p.order[0] = x`, `p.order.popleft()`), not just through `Progression`'s own
+methods. `Progression` keeps an O(1) membership set (`_members`) in sync with
+that deque so `__contains__` doesn't have to scan.
+
+A naive staleness check comparing `len(order)` across calls misses any
+length-preserving external write — `order[0] = x`, or a `popleft()` paired
+with an `append()` — because the length is unchanged even though the
+contents are not. `generic/progression.py` solves this two ways:
+
+- `order` is always wrapped in a `_MembersDeque`, a `deque` subclass that
+  updates the bound `_members` set eagerly inside every mutating method
+  (`append`, `insert`, `__setitem__`, `__delitem__`, `extend`, ...), using a
+  duplicate-aware discard rule: an id is only dropped from the set once no
+  occurrence of it remains in the deque. `__imul__` with `n <= 0` clears the
+  set (every element is dropped); `n >= 1` only duplicates existing ids, so
+  the set of unique members is unchanged and needs no update. `rotate` and
+  `reverse` permute existing entries without changing which ids are present,
+  so neither touches the set.
+- `Progression._ensure_synced()` (called before any read of, or incremental
+  update to, `_members`/`_order_len`) additionally detects wholesale
+  replacement of `order` — `p.order = deque(...)`, or a plain-deque copy
+  produced by pydantic re-validation — and a wrapper that is bound to a
+  *different* `Progression` instance's `_members` set. Ownership is checked
+  by identity (`order._members_ref is self._members`), not just type and
+  length, so a foreign or unbound wrapper of matching length can't silently
+  pass as synced. Either case triggers `_rebuild_members()`, which rebuilds
+  `_members` from scratch and rebinds the wrapper.
+
+Public behavior — membership correctness after *any* direct `order`
+mutation, not just length-changing ones — must not be narrowed to a
+length-only check; that was tried and is exactly the case this design
+covers.
+
 ### Graph adjacency cache
 
 `Graph.get_predecessors_cached` / `get_successors_cached` memoize plain-tuple
