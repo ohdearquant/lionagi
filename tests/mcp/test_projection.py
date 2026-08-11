@@ -117,6 +117,18 @@ def test_available_paths_lists_canonical_spellings_only() -> None:
     )
 
 
+def test_resume_on_timeout_is_only_advertised_by_the_agent_surface() -> None:
+    """A projected flag must be implemented by the command it describes.
+
+    ``agent`` owns the bounded resume behavior.  Flow and fanout previously
+    inherited the flag from their shared parser arguments but never consumed
+    it, so MCP callers could request a behavior that was silently ignored.
+    """
+    assert "resume_on_timeout" in project("agent").schema["properties"]
+    assert "resume_on_timeout" not in project("orchestrate flow").schema["properties"]
+    assert "resume_on_timeout" not in project("orchestrate fanout").schema["properties"]
+
+
 # ── the seam ─────────────────────────────────────────────────────────────────
 
 

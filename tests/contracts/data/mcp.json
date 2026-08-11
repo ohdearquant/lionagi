@@ -1352,12 +1352,6 @@
             "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
             "x-flag": "--project"
           },
-          "resume_on_timeout": {
-            "type": "boolean",
-            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
-            "default": false,
-            "x-flag": "--resume-on-timeout"
-          },
           "notify": {
             "type": "string",
             "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
@@ -1605,12 +1599,6 @@
             "type": "string",
             "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
             "x-flag": "--project"
-          },
-          "resume_on_timeout": {
-            "type": "boolean",
-            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
-            "default": false,
-            "x-flag": "--resume-on-timeout"
           },
           "notify": {
             "type": "string",

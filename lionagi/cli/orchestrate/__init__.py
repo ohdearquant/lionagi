@@ -557,7 +557,7 @@ def add_orchestrate_subparser(
     )
 
     _add_mcp_config_args(fo)
-    add_common_cli_args(fo)
+    add_common_cli_args(fo, include_resume_on_timeout=False)
 
     fl = orch_sub.add_parser(
         "flow",
@@ -771,7 +771,7 @@ def add_orchestrate_subparser(
         ),
     )
     _add_mcp_config_args(fl)
-    add_common_cli_args(fl)
+    add_common_cli_args(fl, include_resume_on_timeout=False)
 
     # `li o ctl status <id>` aliases the same status renderer as `li agent
     # status`; pause/resume/msg queue session_controls rows for the poller.

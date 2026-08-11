@@ -98,12 +98,6 @@
         "type": "array",
         "x-positional": true
       },
-      "resume_on_timeout": {
-        "default": false,
-        "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
-        "type": "boolean",
-        "x-flag": "--resume-on-timeout"
-      },
       "save": {
         "description": "Directory to write each worker's output and the run's artifacts into. Without it they land in the run's own artifacts directory.",
         "type": "string",

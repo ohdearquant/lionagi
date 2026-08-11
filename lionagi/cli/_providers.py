@@ -251,8 +251,17 @@ def resolve_persisted_effort(
 # ── CLI common args ───────────────────────────────────────────────────────
 
 
-def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
-    """Add shared CLI flags to any subparser."""
+def add_common_cli_args(
+    parser: argparse.ArgumentParser,
+    *,
+    include_resume_on_timeout: bool = True,
+) -> None:
+    """Add shared CLI flags to any subparser.
+
+    ``--resume-on-timeout`` is an agent-only execution contract.  Callers
+    whose handlers do not implement that contract must opt out so argparse
+    and the MCP projection never advertise an ignored option.
+    """
     parser.add_argument(
         "--yolo",
         action="store_true",
@@ -341,19 +350,20 @@ def add_common_cli_args(parser: argparse.ArgumentParser) -> None:
             "from .lionagi/config.toml or git remote."
         ),
     )
-    parser.add_argument(
-        "--resume-on-timeout",
-        dest="resume_on_timeout",
-        action="store_true",
-        default=False,
-        help=(
-            "If the run terminates on --timeout, automatically fire one "
-            "resume of the same session with 'continue and conclude the "
-            "task' and report the combined result. Bounded to a single "
-            "auto-resume; a timeout on the resumed leg terminates normally. "
-            "Same effect as an agent profile's 'resume_on_timeout: once'."
-        ),
-    )
+    if include_resume_on_timeout:
+        parser.add_argument(
+            "--resume-on-timeout",
+            dest="resume_on_timeout",
+            action="store_true",
+            default=False,
+            help=(
+                "If the run terminates on --timeout, automatically fire one "
+                "resume of the same session with 'continue and conclude the "
+                "task' and report the combined result. Bounded to a single "
+                "auto-resume; a timeout on the resumed leg terminates normally. "
+                "Same effect as an agent profile's 'resume_on_timeout: once'."
+            ),
+        )
     parser.add_argument(
         "--notify",
         metavar="CMD",
