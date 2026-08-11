@@ -785,12 +785,14 @@ export default function WorkerCanvas({
         {editable && (
           <div className="absolute bottom-4 left-4 flex items-center gap-2 z-10">
             <button
+              type="button"
               onClick={onAddStep}
               className="rounded-md bg-interactive-secondary px-3 py-1.5 text-xs font-medium text-content-primary hover:bg-interactive-secondary-hover"
             >
               + Add Step
             </button>
             <button
+              type="button"
               onClick={handleAutoLayout}
               className="rounded-md bg-interactive-secondary px-3 py-1.5 text-xs font-medium text-content-primary hover:bg-interactive-secondary-hover"
             >

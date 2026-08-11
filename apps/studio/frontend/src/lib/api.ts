@@ -63,9 +63,11 @@ export function resolveApiBase(): string {
   if (viteEnv) return viteEnv;
   if (typeof window !== "undefined") {
     const port = window.location.port;
-    // Vite dev-server ports: forward to the backend on the same hostname.
+    // Vite dev-server ports use the configured same-origin proxy. Keeping the
+    // browser on /api makes STUDIO_API_URL and the isolated E2E daemon target
+    // effective without requiring CORS on the backend.
     if (port === "3000" || port === "5173") {
-      return `${window.location.protocol}//${window.location.hostname}:8765`;
+      return "";
     }
     // Every other browser origin — including HTTPS on a non-local hostname —
     // is treated as a same-origin deployment (Docker/reverse-proxy serving

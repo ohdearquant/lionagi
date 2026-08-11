@@ -628,7 +628,7 @@ function ProgressSummaryBar({
         {t("progressFailed")} {counts.failed}
       </span>
       <span className={counts.escalated > 0 ? "font-semibold text-status-warning" : undefined}>
-        {t("graphNodeStatusEscalated")} {counts.escalated}
+        {t("progressEscalated")} {counts.escalated}
       </span>
       <span>
         {t("progressPending")} {pending}

@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import { useTranslations } from "use-intl";
 import { getStats, resolveApiBase, type StudioStats } from "@/lib/api";
 
+const HEALTH_POLL_MS = 30_000;
+const STATS_POLL_MS = 5 * 60_000;
+export const STATS_INITIAL_DELAY_MS = 2_000;
+
 function formatBytes(b: number): string {
   if (b === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -17,30 +21,55 @@ export default function StatusFooter() {
 
   useEffect(() => {
     let active = true;
+    let healthInFlight = false;
+    let statsInFlight = false;
+    let hasStats = false;
 
-    async function poll() {
+    async function pollHealth() {
+      if (healthInFlight) return;
+      healthInFlight = true;
       try {
-        const [s] = await Promise.all([
-          getStats(),
-          fetch(`${apiBase}/health`)
-            .then((r) => {
-              if (active) setHealthy(r.ok);
-            })
-            .catch(() => {
-              if (active) setHealthy(false);
-            }),
-        ]);
-        if (active) setStats(s);
+        const response = await fetch(`${apiBase}/health`);
+        if (active) setHealthy(response.ok);
       } catch {
         if (active) setHealthy(false);
+      } finally {
+        healthInFlight = false;
       }
     }
 
-    void poll();
-    const id = setInterval(poll, 30_000);
+    async function pollStats() {
+      if (statsInFlight || document.visibilityState === "hidden") return;
+      statsInFlight = true;
+      try {
+        const next = await getStats();
+        if (active) {
+          hasStats = true;
+          setStats(next);
+        }
+      } catch {
+        // Diagnostics are optional footer context. Their failure must not
+        // override the independent /health verdict or make the daemon look
+        // unavailable.
+      } finally {
+        statsInFlight = false;
+      }
+    }
+
+    void pollHealth();
+    const healthId = setInterval(() => void pollHealth(), HEALTH_POLL_MS);
+    const initialStatsId = window.setTimeout(() => void pollStats(), STATS_INITIAL_DELAY_MS);
+    const statsId = setInterval(() => void pollStats(), STATS_POLL_MS);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && !hasStats) void pollStats();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       active = false;
-      clearInterval(id);
+      clearInterval(healthId);
+      clearTimeout(initialStatsId);
+      clearInterval(statsId);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [apiBase]);
 

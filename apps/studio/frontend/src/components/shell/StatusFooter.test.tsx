@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
-import StatusFooter from "./StatusFooter";
+import StatusFooter, { STATS_INITIAL_DELAY_MS } from "./StatusFooter";
 import enMessages from "@/messages/en.json";
 
 const getStats = vi.fn();
@@ -56,9 +56,10 @@ async function mountFooter(container: HTMLElement): Promise<Root> {
       </IntlProvider>,
     );
   });
-  // let the health probe and the stats read settle
+  // Health is immediate; heavyweight diagnostics deliberately wait until
+  // after first paint.
   await act(async () => {
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(STATS_INITIAL_DELAY_MS);
   });
   return root;
 }
@@ -77,6 +78,8 @@ describe("StatusFooter DB reading", () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.useFakeTimers();
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.stubGlobal(
@@ -91,6 +94,7 @@ describe("StatusFooter DB reading", () => {
     container.remove();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   it("marks the reading when the backend says the store is over its threshold", async () => {
@@ -134,5 +138,21 @@ describe("StatusFooter DB reading", () => {
     const span = dbSpan(container);
     expect(span.className).not.toContain("text-status-warning");
     expect(span.getAttribute("title")).toBeNull();
+  });
+
+  it("does not repeat heavyweight stats reads on the 30-second health cadence", async () => {
+    getStats.mockResolvedValue(statsWith({ size_bytes: 120 * MB, size_alert: false }));
+    root = await mountFooter(container);
+    expect(getStats).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+    });
+    expect(getStats).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(getStats).toHaveBeenCalledTimes(2);
   });
 });

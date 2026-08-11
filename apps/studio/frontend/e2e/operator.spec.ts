@@ -35,12 +35,6 @@ async function selectFreshConversation(page: Page): Promise<void> {
   await expect(page.getByLabel("Instruction")).toBeEnabled();
 }
 
-test.beforeEach(async ({ page }) => {
-  await page.route("https://analytics.khive.ai/**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/javascript", body: "" }),
-  );
-});
-
 test("Operator streams, persists, stops, records a run, and resumes it", async ({ page }) => {
   test.setTimeout(45_000);
   const discovery = page.waitForResponse(

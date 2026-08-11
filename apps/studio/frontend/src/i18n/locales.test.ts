@@ -78,7 +78,16 @@ const EN_LEAVES = flattenLeaves(en);
 type LooseTranslator = (key: string, values?: Record<string, unknown>) => string;
 
 function translatorFor(code: string): LooseTranslator {
-  return createTranslator({ locale: code, messages: MESSAGES[code] }) as unknown as LooseTranslator;
+  return createTranslator({
+    locale: code,
+    messages: MESSAGES[code],
+    // use-intl normally reports an ICU error and returns the source string.
+    // A test that only checks `not.toThrow()` therefore passed while printing
+    // hundreds of errors and while the same message failed in the product.
+    onError: (error) => {
+      throw error;
+    },
+  }) as unknown as LooseTranslator;
 }
 
 // Sample values covering every ICU argument name used anywhere in en.json —
@@ -110,8 +119,10 @@ const SAMPLE_VALUES = {
   message: "oops",
   minor: 5,
   minute: "05",
+  model: "gpt-5",
   n: 5,
   name: "worker",
+  node: "research",
   outcome: "completed",
   plural: "s",
   position: 1,
@@ -202,8 +213,8 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  it("en.json has 1034 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1034);
+  it("en.json has 1038 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1038);
   });
 
   it.each(LOCALES.map((l) => l.code))(
@@ -263,6 +274,7 @@ function findIdentityLeaks(code: string): string[] {
 
 describe("messages — a locale value byte-identical to English is a missed translation", () => {
   const EXECUTION_GRAPH_KEYS = [
+    "history.detail.progressEscalated",
     "history.detail.progressTotal",
     "history.detail.progressCompleted",
     "history.detail.progressRunning",
