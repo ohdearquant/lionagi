@@ -3,13 +3,9 @@
 """Read/write helper for the plugin-related blocks of ``~/.lionagi/settings.yaml``.
 
 Trust records and the enable/disable flag are both user-level, never
-project-level: a repository must not be able to self-trust a plugin it
-carries by committing a settings line — the human on the machine approves.
-
-Every mutator in this package (GC, trust, enable/disable) goes through
-``locked_user_settings()``, a single exclusive-``flock`` critical section
-held across the whole read-modify-write, so a concurrent writer's stale
-snapshot can never silently clobber another's write.
+project-level — a repository must not be able to self-trust a plugin it
+carries by committing a settings line. Every mutator here goes through
+``locked_user_settings()``. See docs/internals/plugin-runtime.md#settings-lock.
 """
 
 from __future__ import annotations
@@ -125,11 +121,9 @@ def locked_user_settings():
 
     Yields the parsed settings dict; mutate it in place. Written back only
     if it changed, so a no-op pass touches neither the file's mtime nor a
-    concurrent reader.
-
-    Opens with ``O_CREAT`` but never ``O_TRUNC``, since truncating before
-    the lock is held could blow away content a racing creator already
-    committed; truncation only happens below, after the lock is held.
+    concurrent reader. Opens with ``O_CREAT`` but never ``O_TRUNC`` — see
+    docs/internals/plugin-runtime.md#settings-lock for why truncating before
+    the lock is held is unsafe.
     """
     path = user_settings_path()
     ensure_lionagi_dir(path.parent)

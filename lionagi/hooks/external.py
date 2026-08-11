@@ -341,16 +341,14 @@ def _prepare_trusted_execution(
 
 
 def _trust_status(command: list[str], *, source: str | None, cwd: str) -> tuple[bool, str]:
-    """Loader trust rule (ADR-0048 D7, content-pinned): an entry with no
-    ``source`` is project/user-authored and trusted as code; any non-empty
-    ``source`` (``imported:claude``, ``imported:codex``, ...) requires a
-    trust record in ``~/.lionagi/settings.yaml``'s ``trusted_hook_commands``
-    whose argv hash, resolved executable path, AND content digest all match
-    *command* as it resolves right now -- a prior approval of ``["./guard"]``
-    does NOT carry over if the executable it resolves to, or that
-    executable's bytes, have changed since approval (the flaw this closes:
-    argv-only hashing let a different repository's or a later PATH-resolved
-    ``./guard`` run under a stale approval).
+    """Loader trust rule (ADR-0048 D7, content-pinned): a ``source``-less entry
+    is project/user-authored and trusted as code; any non-empty ``source``
+    (``imported:claude``, ``imported:codex``, ...) requires a matching record
+    in ``trusted_hook_commands`` whose argv hash, resolved executable path,
+    AND content digest all match *command* as it resolves right now — a
+    stale approval does not carry over if the resolved executable or its
+    bytes changed (closes argv-only hashing letting a different repo's or a
+    later PATH-resolved same-argv command run under a stale approval).
 
     Returns ``(trusted, reason)``; *reason* is empty when trusted.
     """
@@ -750,18 +748,14 @@ def external_hook_adapter(
     blocking = event in BLOCKING_EVENTS
 
     async def _guarded_execute(envelope: dict[str, Any]) -> HookVerdict:
-        # Re-resolved every call, not cached from adapter construction: the
-        # executable a relative/PATH-searched command resolves to can change
-        # between approval and this exact invocation (D7 content pinning).
-        # For a source-having (imported) entry, resolution, the trust-record
-        # match, AND the private copy that gets exec'd all come from this
-        # ONE `_prepare_trusted_execution` call -- never a fresh
-        # re-resolution of `command[0]` that a swap between "approved" and
-        # "exec'd" could win a race against (see `_BoundExecutable`). A
-        # project/user-authored entry (source is falsy) has no separate
-        # approval to bind against; it always spawns in `resolved_cwd`,
-        # matching the directory it would have resolved a relative path
-        # against.
+        # Re-resolved every call, not cached: for a source-having (imported)
+        # entry, resolution, the trust-record match, and the private copy
+        # that gets exec'd all come from this ONE
+        # `_prepare_trusted_execution` call, never a fresh re-resolution of
+        # `command[0]` that a swap between "approved" and "exec'd" could win
+        # a race against (see `_BoundExecutable`, D7 content pinning). A
+        # source-less entry has no approval to bind against; it spawns
+        # directly in `resolved_cwd`.
         bound: _BoundExecutable | None = None
         if source:
             bound, reason = _prepare_trusted_execution(command, source=source, cwd=resolved_cwd)

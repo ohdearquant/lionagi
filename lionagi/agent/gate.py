@@ -46,19 +46,14 @@ GateEvaluator = Callable[[str, str, dict], Awaitable[GateResult]]
 
 
 class ControlUnavailableError(PermissionError):
-    """A control could not reach a verdict about this call.
+    """A control could not reach a verdict — its own configuration is the
+    problem (missing escalation handler, unreachable backend, a rule set
+    that failed to load), not anything about the call. Still refuses the
+    call, since a control that cannot answer must not be read as approval.
 
-    Raised when the thing standing in the way is the control's own
-    configuration rather than anything about the call: no escalation handler
-    where a decision needs one, a backend that is not reachable, a rule set
-    that could not be loaded. The call is still refused, because a control
-    that cannot answer must not be read as an approval.
-
-    It subclasses ``PermissionError`` so that everything already failing
-    closed on that keeps doing so unchanged. What it adds is a way to tell
-    "your configuration cannot answer this" from "the answer is no", which
-    an operator acts on differently and which the two are otherwise
-    indistinguishable in.
+    Subclasses ``PermissionError`` so existing fail-closed handling is
+    unchanged; distinguishes "configuration cannot answer this" from "the
+    answer is no" for operators who act on the two differently.
     """
 
 
