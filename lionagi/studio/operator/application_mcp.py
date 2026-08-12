@@ -178,7 +178,7 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "run_detail": RunDetailInput,
     "cancel_run": CancelRunInput,
     "resume_run": ResumeRunInput,
-    "rename_session": RenameSessionInput,
+    "rename_run": RenameSessionInput,
     "list_sessions": ListSessionsInput,
     "session_detail": SessionDetailInput,
     "session_signals": SessionSignalsInput,
@@ -193,13 +193,18 @@ _TOOL_DESCRIPTIONS = {
         "Each entry carries 'kind' (agent, play, flow, fanout, or show-play) and "
         "'playbookName' when set -- a run may be a play root coordinating other "
         "runs, and 'agentName' alone never establishes that a run is a single "
-        "agent. Read 'kind' before characterizing a run. For 'how is this play "
-        "going', use run_progress instead."
+        "agent. Read 'kind' before characterizing a run. A 'completed' status "
+        "means the engine went idle without a recorded failure, not that the "
+        "run achieved its goal. For 'how is this play going', use run_progress "
+        "instead."
     ),
     "run_stats": (
         "Count runs over a whole window (24h or 7d) with per-status totals and "
         "completion rate. Use this for 'how many runs did I have', which "
-        "list_recent_runs cannot answer because it only returns the newest 20."
+        "list_recent_runs cannot answer because it only returns the newest 20. "
+        "'completed' means the run's engine went idle without a recorded "
+        "failure -- it does not certify the run achieved its goal, so never "
+        "present the completion rate as a success rate without saying so."
     ),
     "get_current_view": (
         "Read the Studio view the human is on: space, route, selection and "
@@ -265,7 +270,7 @@ _TOOL_DESCRIPTIONS = {
     ),
     "cancel_run": CANCEL_RUN_DESCRIPTION,
     "resume_run": RESUME_RUN_DESCRIPTION,
-    "rename_session": RENAME_SESSION_DESCRIPTION,
+    "rename_run": RENAME_SESSION_DESCRIPTION,
     "list_sessions": (
         "List a filtered page of Studio sessions. The result is capped at 500 rows, "
         "reports the matching total and whether more rows exist, and labels the store source."
@@ -840,6 +845,12 @@ async def run_stats(arguments: dict[str, Any]) -> dict[str, Any]:
         "total": stats.get("total"),
         "byStatus": totals,
         "completionRate": stats.get("completion_rate"),
+        # Carried in the payload, not only the tool description: a caller
+        # answering "what's our success rate" reads the result it just got
+        # far more reliably than a description it saw at schema-load time.
+        "completedMeans": (
+            "engine went idle without a recorded failure; not a goal-achievement judgment"
+        ),
     }
 
 
@@ -1065,7 +1076,7 @@ _TOOL_HANDLERS = {
     "run_detail": run_detail,
     "cancel_run": cancel_run,
     "resume_run": resume_run,
-    "rename_session": rename_session,
+    "rename_run": rename_session,
     "list_sessions": list_sessions,
     "session_detail": session_detail,
     "session_signals": session_signals,

@@ -351,15 +351,6 @@ async def cancel_run(arguments: dict[str, Any]) -> dict[str, Any]:
     row = resolution["run"]
     run_id = row["id"]
 
-    row_project = row.get("project")
-    if not isinstance(row_project, str) or not row_project:
-        # Only reachable through the exact-id arm: a fenced resolution always
-        # yields a row matching the turn's own non-empty project. The
-        # execute-time ownership guard below refuses a row with no project,
-        # so creating a proposal for one would burn a human approval on an
-        # act that cannot execute -- report it the way the executor would.
-        return {"cancelled": False, "reason": "not_found", "run_untouched": True}
-
     if row.get("status") != "running":
         # Nothing to propose: there is no action left to gate behind a human
         # decision, so no proposal is created and no mutation callback runs.
@@ -437,15 +428,19 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         if row is None:
             return {"status": "not_found", "id": run_id}
         row_dict = db._row_to_dict(row)
-        # A command built by cancel_run() above always carries the resolved
-        # row's own (non-empty) project -- cancel_run() refuses to propose
-        # for a row without one. A missing or empty project here is
-        # therefore itself an ownership failure, not a value meaning
-        # "unscoped, allow any row" -- it fails exactly like a project
-        # mismatch, and exactly like a nonexistent id: confirming a foreign
-        # run's terminal status here would be the same disclosure the
-        # resolution-time ownership check exists to prevent.
-        if not isinstance(project, str) or not project or row_dict.get("project") != project:
+        # The command carries the project the resolved row held at proposal
+        # time. Two arms, both failing toward not_found rather than
+        # disclosure: a command with a real project must match the row's
+        # exactly, and a command with NO project (built from the exact-id
+        # fence arm for a row that had none -- Operator-launched runs have
+        # no project today) matches only a row that STILL has none. A row
+        # that gained an owner during the human's approval window fails
+        # closed, and a project-less command can never touch an owned row.
+        row_project = row_dict.get("project")
+        if isinstance(project, str) and project:
+            if row_project != project:
+                return {"status": "not_found", "id": run_id}
+        elif isinstance(row_project, str) and row_project:
             return {"status": "not_found", "id": run_id}
         if row_dict.get("status") != "running":
             return {"status": "already_terminal", "id": run_id}

@@ -822,11 +822,12 @@ async def test_cancel_run_exact_id_resolves_on_a_turn_with_no_project(tmp_path, 
     }
 
 
-async def test_cancel_run_refuses_to_propose_for_a_row_with_no_project(tmp_path, monkeypatch):
-    """A running row with no project of its own resolves through the
-    exact-id arm, but the execute-time ownership guard would refuse it after
-    the human approved -- so no proposal is created at all and the outcome
-    is reported the way the executor would report it."""
+async def test_cancel_run_allow_path_cancels_a_projectless_row_by_exact_id(tmp_path, monkeypatch):
+    """A running row with no project of its own (Operator-launched runs have
+    none today) resolves through the exact-id arm and goes through the full
+    proposal flow: the human's approval is the authority, and the command
+    carries the row's own empty project so the executor can hold it to
+    still-projectless at execute time."""
     from lionagi.state.db import StateDB
 
     path = tmp_path / "state.db"
@@ -835,15 +836,38 @@ async def test_cancel_run_refuses_to_propose_for_a_row_with_no_project(tmp_path,
         run_id = await _seed_session(db, status="running", pid=None, project=None)
 
     store = OperatorStore(path)
+    calls: list = []
+    coordinator = OperatorCoordinator(store=store, command_executor=_command_executor(calls))
+    await coordinator.startup()
     cid, request_id = await _make_running_turn(
         store, context={"space": "mission", "route": "/", "filters": {}}
     )
     _set_identity(monkeypatch, path, cid, request_id)
 
-    result = await cancel_run({"run": run_id})
+    task = asyncio.create_task(cancel_run({"run": run_id}))
+    proposal = await _wait_proposal(store, request_id)
+    assert proposal["command"] == {"session_id": run_id, "reason": "", "project": None}
 
-    assert result == {"cancelled": False, "reason": "not_found", "run_untouched": True}
-    assert await store.list_proposals_for_request(request_id) == []
+    await coordinator.decide(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=proposal["targetVersion"],
+    )
+    result = await asyncio.wait_for(task, timeout=2)
+
+    assert result == {
+        "cancelled": True,
+        "status": "terminal",
+        "id": run_id,
+        "signal": "no_pid",
+        "run_untouched": False,
+    }
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
+        assert row["status"] == "cancelled"
+    await coordinator.shutdown()
 
 
 async def test_cancel_run_current_resolves_via_the_exact_id_arm(tmp_path, monkeypatch):
@@ -879,22 +903,53 @@ async def test_cancel_run_current_resolves_via_the_exact_id_arm(tmp_path, monkey
     }
 
 
-async def test_execute_cancel_command_without_project_fails_closed(tmp_path, monkeypatch):
-    """The execution-time re-check must itself require a non-None project --
-    a command missing its owner project context must never be treated as
-    authorized to signal any row, even one that also has no project set."""
+async def test_execute_cancel_command_without_project_cannot_touch_an_owned_row(
+    tmp_path, monkeypatch
+):
+    """A command carrying no project matches only a row that also has none.
+    Against a row that belongs to a project it fails exactly like a
+    nonexistent id -- a project-less command must never be treated as
+    authorized for every project's runs."""
     from lionagi.state.db import StateDB
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     async with StateDB() as db:
-        run_id = await _seed_session(db, status="running", pid=None, project=None)
+        run_id = await _seed_session(db, status="running", pid=None)
 
     result = await execute_cancel_command({"session_id": run_id})
     assert result == {"status": "not_found", "id": run_id}
 
     async with StateDB() as db:
         row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
+        assert row["status"] == "running"
+
+
+async def test_execute_cancel_command_projectless_pairing_requires_row_still_projectless(
+    tmp_path, monkeypatch
+):
+    """The (no command project, no row project) pairing executes -- and its
+    guard is the row STILL having no project. A row that gained an owner
+    during the human's approval window fails closed as not_found."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        projectless = await _seed_session(db, status="running", pid=None, project=None)
+        gained_owner = await _seed_session(db, status="running", pid=None, project=None)
+        await db.update_session(gained_owner, project=DEFAULT_TEST_PROJECT)
+
+    result = await execute_cancel_command({"session_id": projectless, "project": None})
+    assert result == {"status": "terminal", "id": projectless, "signal": "no_pid"}
+
+    stale = await execute_cancel_command({"session_id": gained_owner, "project": None})
+    assert stale == {"status": "not_found", "id": gained_owner}
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (projectless,))
+        assert row["status"] == "cancelled"
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (gained_owner,))
         assert row["status"] == "running"
 
 
