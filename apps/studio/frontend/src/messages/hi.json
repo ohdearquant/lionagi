@@ -478,6 +478,8 @@
       "statMessages": "मैसेज",
       "statToolCalls": "टूल कॉल",
       "statErrors": "त्रुटियाँ",
+      "statTokensIn": "इनपुट टोकन",
+      "statTokensOut": "आउटपुट टोकन",
       "statTopic": "विषय",
       "statPlay": "प्ले",
       "statPlaybook": "वर्कफ़्लो",

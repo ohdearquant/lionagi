@@ -36,6 +36,7 @@ import {
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
 import { buildNodeActivityByName } from "@/lib/nodeActivity";
 import type { NodeActivitySnapshot } from "@/lib/nodeActivity";
+import { formatTokenCount } from "@/lib/usageFormat";
 import {
   deriveDisplayStatus,
   deriveVerdict,
@@ -753,6 +754,9 @@ interface OverviewData {
   /** Why the run ended this way, for terminal statuses that need explaining. */
   statusReason?: string | null;
   durationSec: number | null;
+  /** Whole-session totals (workers included) — null means never reported. */
+  inputTokens?: number | null;
+  outputTokens?: number | null;
   branchCount: number;
   messageCount: number;
   toolCallCount: number;
@@ -768,6 +772,14 @@ function OverviewSection({ data }: { data: OverviewData }) {
     { label: t("statStatus"), value: data.status },
     ...(data.durationSec != null
       ? [{ label: t("statDuration"), value: formatDuration(data.durationSec) }]
+      : []),
+    // Cost-visibility contract: null means the provider never reported usage,
+    // so the cell is omitted rather than shown as a fabricated 0.
+    ...(data.inputTokens != null
+      ? [{ label: t("statTokensIn"), value: formatTokenCount(data.inputTokens) }]
+      : []),
+    ...(data.outputTokens != null
+      ? [{ label: t("statTokensOut"), value: formatTokenCount(data.outputTokens) }]
       : []),
     { label: t("statBranches"), value: String(data.branchCount) },
     { label: t("statMessages"), value: String(data.messageCount) },
@@ -2528,6 +2540,8 @@ export default function RunDetail({ id }: RunDetailProps) {
       ? (session.status_reason_summary ?? null)
       : null,
     durationSec,
+    inputTokens: session.input_tokens ?? null,
+    outputTokens: session.output_tokens ?? null,
     branchCount: session.branches.length,
     messageCount: totalMessages,
     toolCallCount,

@@ -478,6 +478,8 @@
       "statMessages": "Mensajes",
       "statToolCalls": "Llamadas a herramienta",
       "statErrors": "Errores",
+      "statTokensIn": "Tokens de entrada",
+      "statTokensOut": "Tokens de salida",
       "statTopic": "Tema",
       "statPlay": "Play",
       "statPlaybook": "Flujo de trabajo",

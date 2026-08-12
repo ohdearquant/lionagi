@@ -1256,6 +1256,13 @@ export interface SessionDetail {
   // Absolute artifact-root path on disk (services/sessions.py get_session
   // returns this verbatim) — the run's save root for file-link resolution.
   artifacts_path?: string | null;
+  // Cost-visibility contract: null means the provider never reported usage
+  // (unknown), never coerced to 0. Token totals are summed across every
+  // branch of the session, so an orchestration run carries its workers'
+  // spend, not just the orchestrator's own turns.
+  total_cost_usd?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
   // Full-session aggregate (services/sessions.py get_session, computed over
   // every branch's full progression, not the display window) — `files` is
   // the run-wide known-file union, including files touched before the

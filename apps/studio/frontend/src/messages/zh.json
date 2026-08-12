@@ -478,6 +478,8 @@
       "statMessages": "消息",
       "statToolCalls": "工具调用",
       "statErrors": "错误",
+      "statTokensIn": "输入 Token",
+      "statTokensOut": "输出 Token",
       "statTopic": "主题",
       "statPlay": "剧目",
       "statPlaybook": "工作流",

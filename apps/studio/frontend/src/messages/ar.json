@@ -478,6 +478,8 @@
       "statMessages": "الرسائل",
       "statToolCalls": "استدعاءات الأدوات",
       "statErrors": "الأخطاء",
+      "statTokensIn": "رموز الإدخال",
+      "statTokensOut": "رموز الإخراج",
       "statTopic": "الموضوع",
       "statPlay": "Play",
       "statPlaybook": "سير العمل",

@@ -478,6 +478,8 @@
       "statMessages": "پیغامات",
       "statToolCalls": "ٹول کالز",
       "statErrors": "خرابیاں",
+      "statTokensIn": "اِن پٹ ٹوکن",
+      "statTokensOut": "آؤٹ پٹ ٹوکن",
       "statTopic": "موضوع",
       "statPlay": "Play",
       "statPlaybook": "ورک فلو",

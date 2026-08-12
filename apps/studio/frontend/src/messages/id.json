@@ -478,6 +478,8 @@
       "statMessages": "Pesan",
       "statToolCalls": "Pemanggilan alat",
       "statErrors": "Kesalahan",
+      "statTokensIn": "Token masuk",
+      "statTokensOut": "Token keluar",
       "statTopic": "Topik",
       "statPlay": "Play",
       "statPlaybook": "Alur kerja",

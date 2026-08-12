@@ -478,6 +478,8 @@
       "statMessages": "tin nhắn",
       "statToolCalls": "lệnh gọi công cụ",
       "statErrors": "lỗi",
+      "statTokensIn": "Token đầu vào",
+      "statTokensOut": "Token đầu ra",
       "statTopic": "chủ đề",
       "statPlay": "Play",
       "statPlaybook": "quy trình làm việc",

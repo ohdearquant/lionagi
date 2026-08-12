@@ -478,6 +478,8 @@
       "statMessages": "Сообщения",
       "statToolCalls": "Вызовы инструментов",
       "statErrors": "Ошибки",
+      "statTokensIn": "Входные токены",
+      "statTokensOut": "Выходные токены",
       "statTopic": "Тема",
       "statPlay": "Play",
       "statPlaybook": "Рабочий процесс",

@@ -478,6 +478,8 @@
       "statMessages": "メッセージ",
       "statToolCalls": "ツール呼び出し",
       "statErrors": "エラー",
+      "statTokensIn": "入力トークン",
+      "statTokensOut": "出力トークン",
       "statTopic": "トピック",
       "statPlay": "プレイ",
       "statPlaybook": "ワークフロー",

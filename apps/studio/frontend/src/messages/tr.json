@@ -478,6 +478,8 @@
       "statMessages": "mesajlar",
       "statToolCalls": "araç çağrıları",
       "statErrors": "hatalar",
+      "statTokensIn": "girdi tokenları",
+      "statTokensOut": "çıktı tokenları",
       "statTopic": "konu",
       "statPlay": "Play",
       "statPlaybook": "iş akışı",
