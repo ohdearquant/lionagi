@@ -65,6 +65,14 @@ NEWLY_ADDED_TOOL_NAMES = frozenset(
     }
 )
 
+RUN_CONTROL_TOOL_NAMES = frozenset(
+    {
+        "pause_run",
+        "release_run_pause",
+        "steer_run",
+    }
+)
+
 
 def test_pre_existing_tools_are_all_still_registered():
     missing = PRE_EXISTING_TOOL_NAMES - application_mcp._TOOL_HANDLERS.keys()
@@ -76,8 +84,13 @@ def test_newly_added_tools_are_all_registered():
     assert missing == set()
 
 
+def test_proposal_backed_run_control_tools_are_all_registered():
+    missing = RUN_CONTROL_TOOL_NAMES - application_mcp._TOOL_HANDLERS.keys()
+    assert missing == set()
+
+
 def test_registry_holds_no_unexpected_tool_names():
-    expected = PRE_EXISTING_TOOL_NAMES | NEWLY_ADDED_TOOL_NAMES
+    expected = PRE_EXISTING_TOOL_NAMES | NEWLY_ADDED_TOOL_NAMES | RUN_CONTROL_TOOL_NAMES
     registered = set(application_mcp._TOOL_HANDLERS.keys())
 
     # Exact equality, deliberately. Tolerating extra names would give up the

@@ -1234,6 +1234,8 @@ export interface SessionDetail {
   effort?: string | null;
   agent_hash?: string | null;
   invocation_id?: string | null;
+  /** Project scope used by Operator write tools to fail closed across runs. */
+  project?: string | null;
   // ADR-0028: denormalized status reason (services/sessions.py get_session
   // already returns these; the type was just missing them).
   status_reason_code?: string | null;

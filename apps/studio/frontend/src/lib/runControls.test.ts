@@ -18,12 +18,12 @@ describe("lib/runControls — controlKindFor", () => {
 });
 
 describe("lib/runControls — hasAnyExecutablePath", () => {
-  // Deliberately unmocked. The run detail's decision to render no control
-  // section rests on this being false against the real registry; asserting it
-  // only through a mock would prove the wiring and say nothing about the fact.
-  it("is false today, because no verb has a backing command yet", async () => {
+  // Deliberately unmocked. The run detail renders its control section from
+  // this real registry, so a mocked answer would not prove the shipped UI is
+  // reachable.
+  it("is true once the three control verbs have backing commands", async () => {
     const { hasAnyExecutablePath } = await import("./runControls");
-    expect(hasAnyExecutablePath()).toBe(false);
+    expect(hasAnyExecutablePath()).toBe(true);
   });
 
   it("agrees with the per-verb answer for every verb, so the two cannot drift", async () => {
@@ -182,35 +182,29 @@ describe("lib/runControls — steerControlState (row 8: steer offered on an agen
 });
 
 describe("lib/runControls — hasExecutablePath / applyExecutablePath", () => {
-  // Tripwire. Every one of the operator's mutating commands is accounted for
-  // (prefill_schedule, launch_playbook, cancel_run, resume_run,
-  // rename_session) and none of them pauses a run, releases a pause gate, or
-  // delivers a steering message. When a backing command lands, its type goes
-  // into COMMAND_TYPES_BY_VERB, this test fails, and whoever added it is
-  // pointed straight at the refusals below that have to be revisited.
-  it("reports no executable path for any of the three verbs", async () => {
+  it("reports an executable path for all three control verbs", async () => {
     const { hasExecutablePath } = await import("./runControls");
-    expect(hasExecutablePath("pause")).toBe(false);
-    expect(hasExecutablePath("resume")).toBe(false);
-    expect(hasExecutablePath("message")).toBe(false);
+    expect(hasExecutablePath("pause")).toBe(true);
+    expect(hasExecutablePath("resume")).toBe(true);
+    expect(hasExecutablePath("message")).toBe(true);
   });
 
-  it("disables an offered control and states the reason as no-executable-path", async () => {
+  it("keeps an otherwise-enabled backed control enabled", async () => {
     const { applyExecutablePath } = await import("./runControls");
     expect(
       applyExecutablePath("pause", { offered: true, disabled: false, reasonCode: null }),
-    ).toEqual({ offered: true, disabled: true, reasonCode: "no-executable-path" });
+    ).toEqual({ offered: true, disabled: false, reasonCode: null });
   });
 
   // The run-state reason implies a counterfactual that is not true: "the run
   // is not paused" tells the reader resume will work once it pauses. It will
   // not, so this refusal has to win rather than defer to the more specific
   // reason.
-  it("overrides a run-state reason that would imply the control works in another state", async () => {
+  it("preserves the run-state reason for a backed command", async () => {
     const { applyExecutablePath, resumeControlState } = await import("./runControls");
     const runState = resumeControlState("flow", false, "idle");
     expect(runState.reasonCode).toBe("not-paused");
-    expect(applyExecutablePath("resume", runState).reasonCode).toBe("no-executable-path");
+    expect(applyExecutablePath("resume", runState).reasonCode).toBe("not-paused");
   });
 
   it("never turns an unoffered control into an offered one", async () => {
@@ -415,12 +409,15 @@ describe("lib/runControls — proposeRunControl / confirmRunControl route throug
     const { proposeRunControl, confirmRunControl } = await import("./runControls");
     const api = await import("@/lib/api");
 
-    const result = await proposeRunControl("run-abc123", "flow", "pause");
+    const result = await proposeRunControl("run-abc123", "flow", "pause", {
+      project: "acme-project",
+    } as never);
 
     expect(api.createOperatorConversation).toHaveBeenCalledTimes(1);
     const turnArgs = vi.mocked(api.submitOperatorTurn).mock.calls[0];
     expect(turnArgs[0]).toBe("conv-1");
     expect(turnArgs[1].instruction).toContain("run-abc123");
+    expect(turnArgs[1].context.project).toBe("acme-project");
     expect(result.conversationId).toBe("conv-1");
     expect(result.proposal.id).toBe("prop-1");
 

@@ -1472,6 +1472,7 @@ type ControlDialog = {
 
 function RunControls({
   runId,
+  project,
   kind,
   runTerminal,
   pausePhase,
@@ -1479,6 +1480,7 @@ function RunControls({
   onResumeAccepted,
 }: {
   runId: string;
+  project?: string | null;
   kind: ControlKind | null;
   runTerminal: boolean;
   pausePhase: PausePhase;
@@ -1494,10 +1496,9 @@ function RunControls({
 
   if (!kind) return null;
 
-  // applyExecutablePath layers the surface-wide refusal on top of the run's
-  // own state: no command exists that pauses a run, releases a pause gate, or
-  // delivers a steering message, so all three are shown and disabled rather
-  // than dispatching an instruction the operator has no tool for.
+  // applyExecutablePath layers command availability on top of the run's own
+  // state. The proposal-backed commands exist for all three verbs; the state
+  // machines still disable unsupported kinds and invalid phases explicitly.
   const pauseState = applyExecutablePath("pause", pauseControlState(kind, runTerminal, pausePhase));
   const resumeState = applyExecutablePath(
     "resume",
@@ -1509,7 +1510,10 @@ function RunControls({
     setBusy(verb);
     setError(null);
     try {
-      const { conversationId, proposal } = await proposeRunControl(runId, kind!, verb, { message });
+      const { conversationId, proposal } = await proposeRunControl(runId, kind!, verb, {
+        message,
+        project,
+      });
       setDialog({ verb, conversationId, proposal });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("controls.proposeFailed"));
@@ -2546,6 +2550,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       {controlKind && hasAnyExecutablePath() && (
         <RunControls
           runId={session.id}
+          project={session.project}
           kind={controlKind}
           runTerminal={runTerminal}
           pausePhase={pausePhase}

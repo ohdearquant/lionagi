@@ -192,8 +192,9 @@ export function controlInstructionText(
   return `Deliver this message to the ${label} ${runId} as a steering continuation at the next turn boundary: ${(message ?? "").trim()}`;
 }
 
-function controlContext(runId: string): OperatorContextSnapshot {
+function controlContext(runId: string, project?: string | null): OperatorContextSnapshot {
   return {
+    project,
     space: "history",
     route: `/history?s=${encodeURIComponent(runId)}`,
     selection: { s: runId },
@@ -261,14 +262,14 @@ export async function proposeRunControl(
   runId: string,
   kind: ControlKind,
   verb: ControlVerb,
-  options?: { message?: string },
+  options?: { message?: string; project?: string | null },
 ): Promise<RunControlProposal> {
   const conversation = await createOperatorConversation({
     title: `${verb} · ${runId.slice(0, 8)}`,
   });
   const accepted = await submitOperatorTurn(conversation.id, {
     instruction: controlInstructionText(kind, verb, runId, options?.message),
-    context: controlContext(runId),
+    context: controlContext(runId, options?.project),
     expectedLastSequence: 0,
   });
   const proposal = await waitForProposal(conversation.id, accepted.acceptedSequence);
@@ -277,24 +278,15 @@ export async function proposeRunControl(
 
 /** Command types that legitimately satisfy each control verb.
  *
- * Every set is empty, and that is a finding rather than a placeholder. The
- * operator's mutating command set is prefill_schedule, launch_playbook,
- * cancel_run, resume_run and rename_session; none of them pauses a run,
- * releases a pause gate, or delivers a steering message. `resume_run` is the
- * trap: it carries command type "resume" and its own docstring says it is a
- * distinct operation from un-pausing a paused run, so it matches this verb by
- * name while doing something else.
- *
- * A control command therefore rides a natural-language instruction to a model
- * that has no tool for it, and the nearest available match to "stop this run"
- * is cancel_run. Until a backing command exists, every proposal returned for a
- * control verb is the wrong command, and refusing it is the only correct
- * outcome. Adding the backing command means adding its type here, and the
- * checks below start passing without further change. */
+ * Gate-release deliberately does not reuse the checkpoint-resume command type
+ * (`resume`): that launches another invocation, while `release_run_pause`
+ * releases the live run's existing pause gate. Keeping the types distinct lets
+ * the confirmation guard reject a model substituting one operation for the
+ * other even though both are described as "resume" in natural language. */
 const COMMAND_TYPES_BY_VERB: Record<ControlVerb, ReadonlySet<string>> = {
-  pause: new Set(),
-  resume: new Set(),
-  message: new Set(),
+  pause: new Set(["pause_run"]),
+  resume: new Set(["release_run_pause"]),
+  message: new Set(["steer_run"]),
 };
 
 /** A returned proposal does not match the control that was requested. Thrown
@@ -331,12 +323,9 @@ export function assertProposalSatisfies(
   verb: ControlVerb,
   runId: string,
   proposal: OperatorCommandProposal,
-  /** The command types that satisfy `verb`. Defaults to the table above, which
-   * is empty for every verb today — meaning every call refuses at the first
-   * check, and a test asserting any of the later refusals would pass no matter
-   * what this function did with run ids. Passing a set explicitly is what keeps
-   * each rule here separately falsifiable, and is what a backing command's own
-   * tests use before its type is added to the table. */
+  /** The command types that satisfy `verb`. Defaults to the production table;
+   * tests may pass a set explicitly to keep every mismatch rule independently
+   * falsifiable without changing the registered command surface. */
   allowed: ReadonlySet<string> = COMMAND_TYPES_BY_VERB[verb],
 ): void {
   const commandType = proposal.commandType ?? "";
