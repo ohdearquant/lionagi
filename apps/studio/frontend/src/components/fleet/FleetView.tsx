@@ -63,14 +63,6 @@ function AgentRowItem({
       aria-label={t("agentRow.ariaLabel", { name: agent.name })}
     >
       <StatusDot status={agent.status} />
-      {isPlayRoot(agent.invocationKind) && (
-        <span
-          className="shrink-0 rounded border border-edge px-1 py-0.5 font-data text-[length:var(--t-xs)] uppercase tracking-[0.04em] text-content-muted"
-          title={agent.invocationKind ?? undefined}
-        >
-          play
-        </span>
-      )}
       <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-primary">
         {agent.name}
       </span>
@@ -94,6 +86,46 @@ function AgentRowItem({
         {formatElapsed(agent.elapsedSec)}
       </span>
     </button>
+  );
+}
+
+export function AgentSections({
+  agents,
+  selectedId,
+  onSelectAgent,
+}: {
+  agents: AgentRow[];
+  selectedId: string | null;
+  onSelectAgent: (id: string) => void;
+}) {
+  const t = useTranslations("fleet");
+  const orchestrations = agents.filter((agent) => isPlayRoot(agent.invocationKind));
+  const singleAgents = agents.filter((agent) => !isPlayRoot(agent.invocationKind));
+  const groups = [
+    { key: "orchestrations", rows: orchestrations },
+    { key: "agents", rows: singleAgents },
+  ] as const;
+
+  return groups.map(({ key, rows }) =>
+    rows.length > 0 ? (
+      <section
+        key={key}
+        data-fleet-group={key}
+        aria-label={t(`counts.${key}`, { count: rows.length })}
+      >
+        <div className="border-t border-edge bg-surface-overlay px-4 py-1.5 font-ui text-[length:var(--t-xs)] font-semibold uppercase tracking-[0.08em] text-content-muted">
+          {t(`counts.${key}`, { count: rows.length })}
+        </div>
+        {rows.map((agent) => (
+          <AgentRowItem
+            key={agent.id}
+            agent={agent}
+            selected={selectedId === agent.id}
+            onSelect={onSelectAgent}
+          />
+        ))}
+      </section>
+    ) : null,
   );
 }
 
@@ -144,15 +176,7 @@ function OrgUnitGroup({
         </span>
       </div>
 
-      {/* Agent rows */}
-      {unit.agents.map((agent) => (
-        <AgentRowItem
-          key={agent.id}
-          agent={agent}
-          selected={selectedId === agent.id}
-          onSelect={onSelectAgent}
-        />
-      ))}
+      <AgentSections agents={unit.agents} selectedId={selectedId} onSelectAgent={onSelectAgent} />
 
       {unit.agents.length === 0 && (
         <div className="border-t border-edge px-4 py-2">
