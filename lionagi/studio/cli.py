@@ -754,6 +754,7 @@ def _launch_vite_dev(
 
 
 _warned_api_suffix = False
+_SCHEDULE_API_TIMEOUT_SECONDS = 10.0
 
 
 def _base_url() -> str:
@@ -778,6 +779,22 @@ def _base_url() -> str:
     return f"http://{host}:{port}"
 
 
+def _is_schedule_request_timeout(exc: OSError) -> bool:
+    """Return whether urllib stopped because the request exceeded its deadline."""
+    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+
+
+def _schedule_request_timeout_message(
+    *, method: str, url: str, elapsed_seconds: float, limit_seconds: float
+) -> str:
+    """Describe a timeout without claiming the mutation did not land."""
+    return (
+        f"Studio request {method} {url} timed out "
+        f"(elapsed {elapsed_seconds:.1f}s; limit {limit_seconds:g}s). "
+        "The request may still have completed; verify schedule state before retrying."
+    )
+
+
 def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
     """Minimal HTTP helper — no extra deps beyond stdlib urllib."""
     import urllib.error
@@ -791,14 +808,27 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
         method=method,
         headers={"Content-Type": "application/json"} if data else {},
     )
+    started_at = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=_SCHEDULE_API_TIMEOUT_SECONDS) as resp:  # noqa: S310
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         msg = exc.read().decode(errors="replace")
         print(f"Error {exc.code}: {msg}", file=sys.stderr)
         return None
     except OSError as exc:
+        if _is_schedule_request_timeout(exc):
+            elapsed_seconds = max(0.0, time.monotonic() - started_at)
+            print(
+                _schedule_request_timeout_message(
+                    method=method,
+                    url=url,
+                    elapsed_seconds=elapsed_seconds,
+                    limit_seconds=_SCHEDULE_API_TIMEOUT_SECONDS,
+                ),
+                file=sys.stderr,
+            )
+            return None
         print(
             f"Cannot reach Studio at {_base_url()} — is `li studio` running? ({exc})",
             file=sys.stderr,
