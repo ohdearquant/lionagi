@@ -12630,6 +12630,7 @@
             "title": "Description"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -13858,6 +13859,7 @@
             "title": "Description"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "UpdateEngineDefRequest"
       },
