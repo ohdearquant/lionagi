@@ -874,6 +874,8 @@ async def _build_dag(
         role_artifact_entries.extend(leg_expected)
 
         ctx: list = [{"original_task": prompt}]
+        if ta.inputs:
+            ctx.append({"assignment_inputs": list(ta.inputs)})
         artifact_note = _artifact_directive(env.run, agent_ids[i], leg_expected)
         if dep_indices[i]:
             ups = "; ".join(
@@ -906,6 +908,10 @@ async def _build_dag(
             ctx.append({"effort_guidance": EFFORT_MAP.get(w_effort, "")})
 
         instruction = budget_preambles.get(i, "") + ta.task
+        if ta.exit_criteria:
+            instruction += (
+                f"\n\nExit criteria (must be satisfied before completion):\n{ta.exit_criteria}"
+            )
         dep_nodes = [node_ids[j] for j in dep_indices[i]]
         node = _build_worker_operate_node(
             env.builder,
