@@ -14,12 +14,21 @@ see docs/internals/studio.md ("Resolving a run reference").
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .redact import MAX_CANDIDATES, public_project, scrub_text
+
+# A full canonical UUID (36 characters, 8-4-4-4-12 hex). A reference in this
+# form identifies at most one row and cannot enumerate anything, which is what
+# lets it pass the project fence below the same way ``run_detail``'s bare-id
+# lookup does.
+_EXACT_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
 __all__ = ("MissingOwnerContextError", "RunProgressInput", "resolve_run", "run_progress")
 
@@ -163,7 +172,9 @@ async def _allowed_project() -> str | None:
     project = context.get("project") if isinstance(context, dict) else None
     if not isinstance(project, str) or not project:
         raise MissingOwnerContextError(
-            "operator turn has no project context -- refusing to resolve any run"
+            "operator turn has no project context -- refusing to resolve a run "
+            "by prefix or name. Pass the run's full 36-character id instead, "
+            "or ask about the run the human has open ('current')."
         )
     return project
 
@@ -199,8 +210,12 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     name/playbook substring matching 2-``MAX_CANDIDATES`` sessions, comes
     back as candidates; more than ``MAX_CANDIDATES`` text matches come back
     as the newest ``MAX_CANDIDATES`` plus ``truncated: True``. Every arm is
-    scoped to the calling turn's project (when it names one) -- see
-    docs/internals/studio.md ("Resolving a run reference").
+    scoped to the calling turn's project (when it names one). A turn whose
+    identity is present but whose context names no project may still resolve
+    an exact full-UUID reference (or 'current') -- a bare id identifies at
+    most one row and cannot enumerate, so it is safe where prefix and
+    substring resolution are not -- see docs/internals/studio.md
+    ("Resolving a run reference").
     """
     from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
     from lionagi.state.db import StateDB
@@ -209,17 +224,43 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     if not normalized:
         return {"found": False}
 
-    project = await _allowed_project()
-
+    from_current_view = False
     if normalized.lower() == "current":
+        # Resolved before the project fence: this only reads the human's own
+        # view selection, it enumerates nothing. Whatever id it yields still
+        # goes through the same fence-or-exact-id logic as a typed reference.
         session_id = await _resolve_current()
         if session_id is None:
             return {"found": False}
+        normalized = session_id
+        from_current_view = True
+
+    try:
+        project = await _allowed_project()
+    except MissingOwnerContextError:
+        if _EXACT_UUID_RE.fullmatch(normalized) is None:
+            raise
+        # A turn with an owner but no declared project may still look up one
+        # run by its full id: an exact 36-character UUID identifies at most
+        # one row and cannot enumerate anything, the same position
+        # ``run_detail`` already takes for a bare id. Prefix and
+        # name-substring resolution stay behind the fence above, and a turn
+        # that *does* declare a project keeps full ownership scoping on
+        # every arm, including this one.
         async with StateDB(readonly=True) as db:
-            row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
+            row = await db.fetch_one("SELECT id FROM sessions WHERE id = ?", (normalized,))
+        if row is None:
+            return {"found": False}
+        return {"found": True, "ambiguous": False, "session_id": row["id"]}
+
+    if from_current_view:
+        # A 'current' selection under a project-scoped turn keeps the
+        # pre-existing direct lookup + ownership check.
+        async with StateDB(readonly=True) as db:
+            row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (normalized,))
         if row is None or not _owns(row.get("project"), project):
             return {"found": False}
-        return {"found": True, "ambiguous": False, "session_id": session_id}
+        return {"found": True, "ambiguous": False, "session_id": normalized}
 
     async with StateDB(readonly=True) as db:
         try:

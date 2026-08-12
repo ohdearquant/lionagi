@@ -19,6 +19,7 @@ un-gate of a cancelled run's status.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
 
@@ -93,6 +94,15 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# A full canonical UUID (36 characters, 8-4-4-4-12 hex). Mirrors
+# ``run_progress.py``'s own copy, kept separate for the same reason
+# ``_allowed_project`` is: this module's identity/store handling stays
+# self-contained.
+_EXACT_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
 async def _current_run_id(store: OperatorStore, request_id: str) -> str | None:
     """The run the human was looking at when this instruction was sent.
 
@@ -127,7 +137,9 @@ async def _allowed_project(store: OperatorStore, request_id: str) -> str:
     project = context.get("project") if isinstance(context, dict) else None
     if not isinstance(project, str) or not project:
         raise MissingOwnerContextError(
-            "operator turn has no project context -- refusing to resolve or cancel any run"
+            "operator turn has no project context -- refusing to resolve or "
+            "cancel a run by prefix or name. Pass the run's full 36-character "
+            "id instead, or cancel the run the human has open ('current')."
         )
     return project
 
@@ -219,7 +231,24 @@ async def _resolve_reference(store: OperatorStore, request_id: str, ref: str) ->
             return {"found": False}
         ref = run_id
 
-    project = await _allowed_project(store, request_id)
+    ref = ref.strip()
+    try:
+        project = await _allowed_project(store, request_id)
+    except MissingOwnerContextError:
+        if _EXACT_UUID_RE.fullmatch(ref) is None:
+            raise
+        # A turn with an owner but no declared project may still resolve one
+        # run by its full id: an exact 36-character UUID identifies at most
+        # one row and cannot enumerate anything, the same position
+        # ``run_detail`` already takes for a bare id. Prefix and
+        # name-substring resolution stay behind the fence, and a turn that
+        # *does* declare a project keeps full ownership scoping on every arm.
+        async with StateDB() as db:
+            row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (ref,))
+            if row is None:
+                return {"found": False}
+            return {"found": True, "ambiguous": False, "run": db._row_to_dict(row)}
+
     async with StateDB() as db:
         try:
             row = await _resolve_run(db, ref, project=project)
@@ -322,6 +351,15 @@ async def cancel_run(arguments: dict[str, Any]) -> dict[str, Any]:
     row = resolution["run"]
     run_id = row["id"]
 
+    row_project = row.get("project")
+    if not isinstance(row_project, str) or not row_project:
+        # Only reachable through the exact-id arm: a fenced resolution always
+        # yields a row matching the turn's own non-empty project. The
+        # execute-time ownership guard below refuses a row with no project,
+        # so creating a proposal for one would burn a human approval on an
+        # act that cannot execute -- report it the way the executor would.
+        return {"cancelled": False, "reason": "not_found", "run_untouched": True}
+
     if row.get("status") != "running":
         # Nothing to propose: there is no action left to gate behind a human
         # decision, so no proposal is created and no mutation callback runs.
@@ -399,14 +437,14 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         if row is None:
             return {"status": "not_found", "id": run_id}
         row_dict = db._row_to_dict(row)
-        # A command built by cancel_run() above always carries the caller's
-        # own (non-empty) project -- _allowed_project() raises rather than
-        # letting a turn with no owner mapping reach this point. A missing
-        # or empty project here is therefore itself an ownership failure,
-        # not a value meaning "unscoped, allow any row" -- it fails exactly
-        # like a project mismatch, and exactly like a nonexistent id:
-        # confirming a foreign run's terminal status here would be the same
-        # disclosure the resolution-time ownership check exists to prevent.
+        # A command built by cancel_run() above always carries the resolved
+        # row's own (non-empty) project -- cancel_run() refuses to propose
+        # for a row without one. A missing or empty project here is
+        # therefore itself an ownership failure, not a value meaning
+        # "unscoped, allow any row" -- it fails exactly like a project
+        # mismatch, and exactly like a nonexistent id: confirming a foreign
+        # run's terminal status here would be the same disclosure the
+        # resolution-time ownership check exists to prevent.
         if not isinstance(project, str) or not project or row_dict.get("project") != project:
             return {"status": "not_found", "id": run_id}
         if row_dict.get("status") != "running":

@@ -777,9 +777,11 @@ async def test_run_findings_exact_id_of_a_foreign_project_run_is_not_found(db_pa
 
 async def test_run_findings_turn_with_no_project_context_fails_closed(db_path, monkeypatch):
     """A turn whose identity is present but whose own context names no
-    project must never fall back to matching every project's runs --
+    project must never fall back to enumerating every project's runs --
     run_findings inherits this from resolve_run() (run_progress.py) the same
-    way it already inherits project scoping."""
+    way it already inherits project scoping. An exact full-UUID reference is
+    the one deliberate exception (it cannot enumerate), so the fenced arms
+    are exercised with a name and an id prefix."""
     from lionagi.studio.operator.run_findings import run_findings
     from lionagi.studio.operator.run_progress import MissingOwnerContextError
     from lionagi.studio.operator.store import OperatorStore
@@ -801,7 +803,14 @@ async def test_run_findings_turn_with_no_project_context_fails_closed(db_path, m
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
 
     with pytest.raises(MissingOwnerContextError):
-        await run_findings({"run": sid})
+        await run_findings({"run": "nightly-triage"})
+
+    with pytest.raises(MissingOwnerContextError):
+        await run_findings({"run": sid[:8]})
+
+    # The exception: the full id rides the exact-id arm through the fence.
+    result = await run_findings({"run": sid})
+    assert result["found"] is True
 
 
 async def test_run_findings_env_secret_value_is_redacted_even_without_a_known_shape(

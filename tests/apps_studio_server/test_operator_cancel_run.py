@@ -786,13 +786,70 @@ async def test_cancel_run_text_search_without_project_context_fails_closed(tmp_p
     with pytest.raises(MissingOwnerContextError):
         await cancel_run({"run": "nightly-triage"})
 
+    # A short id prefix is fenced the same way -- prefixes enumerate.
+    with pytest.raises(MissingOwnerContextError):
+        await cancel_run({"run": first[:8]})
+
     assert await store.list_proposals_for_request(request_id) == []
 
 
-async def test_cancel_run_current_without_project_context_fails_closed(tmp_path, monkeypatch):
-    """The 'current' arm must also refuse a turn with no owner mapping --
-    the selection lookup itself needs no project, but the row it resolves to
-    must never be read back without one."""
+async def test_cancel_run_exact_id_resolves_on_a_turn_with_no_project(tmp_path, monkeypatch):
+    """A turn with an owner but no declared project may still target one run
+    by its full id -- an exact 36-character UUID identifies at most one row
+    and cannot enumerate, so it passes the fence that keeps refusing prefix
+    and name resolution. The already-terminal outcome proves resolution
+    succeeded without any proposal machinery."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_session(db, status="completed", pid=None)
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store, context={"space": "mission", "route": "/", "filters": {}}
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    result = await cancel_run({"run": run_id})
+
+    assert result == {
+        "cancelled": False,
+        "status": "already_terminal",
+        "id": run_id,
+        "run_untouched": True,
+    }
+
+
+async def test_cancel_run_refuses_to_propose_for_a_row_with_no_project(tmp_path, monkeypatch):
+    """A running row with no project of its own resolves through the
+    exact-id arm, but the execute-time ownership guard would refuse it after
+    the human approved -- so no proposal is created at all and the outcome
+    is reported the way the executor would report it."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_session(db, status="running", pid=None, project=None)
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store, context={"space": "mission", "route": "/", "filters": {}}
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    result = await cancel_run({"run": run_id})
+
+    assert result == {"cancelled": False, "reason": "not_found", "run_untouched": True}
+    assert await store.list_proposals_for_request(request_id) == []
+
+
+async def test_cancel_run_current_resolves_via_the_exact_id_arm(tmp_path, monkeypatch):
+    """'Cancel the run the human is looking at' must work from any view:
+    the frozen selection is a full id the human's own browser reported, so
+    it rides the exact-id arm through the project fence."""
     from lionagi.state.db import StateDB
 
     path = tmp_path / "state.db"
@@ -812,8 +869,14 @@ async def test_cancel_run_current_without_project_context_fails_closed(tmp_path,
     )
     _set_identity(monkeypatch, path, cid, request_id)
 
-    with pytest.raises(MissingOwnerContextError):
-        await cancel_run({"run": "current"})
+    result = await cancel_run({"run": "current"})
+
+    assert result == {
+        "cancelled": False,
+        "status": "already_terminal",
+        "id": run_id,
+        "run_untouched": True,
+    }
 
 
 async def test_execute_cancel_command_without_project_fails_closed(tmp_path, monkeypatch):
