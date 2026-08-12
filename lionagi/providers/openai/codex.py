@@ -518,7 +518,10 @@ class CodexCodeRequest(BaseModel):
         if self.bypass_approvals:
             args.append("--dangerously-bypass-approvals-and-sandbox")
         elif self.full_auto:
-            args.append("--full-auto")
+            # Codex 0.147.0 removed `--full-auto`, turning the earlier deprecation
+            # warning into a hard argv error. Its deprecation notice prescribes
+            # `--sandbox workspace-write`, which keeps the same sandbox posture.
+            args.extend(["--sandbox", "workspace-write"])
         else:
             if self.ask_for_approval:
                 args.extend(["-a", self.ask_for_approval])
