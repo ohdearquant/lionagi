@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Bounds shared by every surface that validates an orchestration spec.
+"""Bounds shared by surfaces that validate agent and orchestration prompts.
 
 Deliberately importing nothing — see docs/internals/support-libs.md#_spec_limits-max_spec_prompt_chars.
 """

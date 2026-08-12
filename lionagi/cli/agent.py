@@ -15,6 +15,7 @@ from lionagi import Branch
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._errors import ConfigurationError
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln.concurrency import (
     SigtermInterrupt,
     cache_cancelled_exc_class,
@@ -1545,10 +1546,11 @@ def _resolve_model_and_prompt(args: argparse.Namespace) -> tuple[str | None, str
             log_error("pass --prompt or --prompt-file, not both")
             return None
         if args.prompt_file == "-":
-            flag_prompt = sys.stdin.read()
+            flag_prompt = sys.stdin.read(MAX_SPEC_PROMPT_CHARS + 1)
         else:
             try:
-                flag_prompt = Path(args.prompt_file).read_text()
+                with Path(args.prompt_file).open() as prompt_stream:
+                    flag_prompt = prompt_stream.read(MAX_SPEC_PROMPT_CHARS + 1)
             except OSError as exc:
                 log_error(f"could not read --prompt-file: {exc}")
                 return None
@@ -1614,6 +1616,9 @@ def run_agent(args: argparse.Namespace) -> int:
             form_prompt_prefix = _form_to_context_block(work_form) + "\n\n"
 
     prompt = form_prompt_prefix + prompt_text
+    if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+        log_error(f"agent prompt exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters")
+        return 1
 
     # --image: load and validate BEFORE any LLM call, same contract as --form.
     image_uris: list[str] | None = None

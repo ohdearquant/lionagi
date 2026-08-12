@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln._proc import aterminate_process_group
 
 _log = logging.getLogger(__name__)
@@ -227,12 +228,18 @@ def _render_command_arg(template: str, context: dict) -> str:
 
 
 def _validate_prompt(prompt: str) -> None:
-    """Raise ValueError if *prompt* is exactly the end-of-options sentinel '--'.
+    """Raise ValueError when *prompt* cannot be admitted safely.
 
     build_argv places '--' before positionals, so a prompt value of exactly
     '--' would be consumed by argparse as the separator, never reaching the
-    runner. All other content (including leading '-') is safe.
+    runner. The shared character cap also keeps stored and rendered schedule
+    prompts aligned with the orchestration surfaces instead of accepting work
+    that can only fail when it fires.
     """
+    if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+        raise ValueError(
+            f"action_prompt exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
+        )
     if prompt == "--":
         raise ValueError(
             "action_prompt value '--' is not allowed: the literal end-of-options "
@@ -270,7 +277,9 @@ def render_action_prompt(schedule: dict, trigger_context: dict) -> str | None:
     prompt = schedule.get("action_prompt") or ""
     if not prompt:
         return None
-    return _render_template(prompt, trigger_context)
+    rendered = _render_template(prompt, trigger_context)
+    _validate_prompt(rendered)
+    return rendered
 
 
 def resolve_li_executable() -> tuple[list[str] | None, str | None]:
