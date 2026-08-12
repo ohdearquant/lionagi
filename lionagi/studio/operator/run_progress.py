@@ -286,9 +286,10 @@ _NODE_KIND_TO_STATE: dict[str, str] = {
     "NodeCompleted": "succeeded",
     "NodeFailed": "failed",
     "NodeSkipped": "skipped",
+    "NodeCancelled": "cancelled",
     "NodeEscalated": "escalated",
 }
-_NODE_TERMINAL_STATES = frozenset({"succeeded", "failed", "skipped", "escalated"})
+_NODE_TERMINAL_STATES = frozenset({"succeeded", "failed", "skipped", "cancelled", "escalated"})
 _NODE_STATE_BUCKET = {
     "queued": "pending",
     "running": "running",
@@ -302,6 +303,9 @@ _NODE_STATE_BUCKET = {
     # the edge condition did what it was written to do. The separate
     # skippedCount below keeps it from silently inflating the success figure.
     "skipped": "completed",
+    # Also settled, but counted separately below: cancellation can stop work
+    # after it began, unlike a skip, and must remain observable by callers.
+    "cancelled": "completed",
     # The scalar API has four buckets that must sum to total. Keep the
     # per-node "escalated" outcome distinct while its aggregate waits for
     # follow-up in pending rather than inflating failure.
@@ -362,7 +366,7 @@ async def _dag_progress(session_id: str, graph: dict[str, Any]) -> dict[str, Any
     ]
     lanes = await _node_lanes_by_name(session_id)
 
-    completed = running = failed = pending = unknown = escalated = skipped = 0
+    completed = running = failed = pending = unknown = escalated = skipped = cancelled = 0
     node_out: list[dict[str, Any]] = []
     for node in nodes:
         node_id = node["id"]
@@ -389,6 +393,8 @@ async def _dag_progress(session_id: str, graph: dict[str, Any]) -> dict[str, Any
                 escalated += 1
             elif lane == "skipped":
                 skipped += 1
+            elif lane == "cancelled":
+                cancelled += 1
         node_out.append(
             {
                 "id": node_id,
@@ -416,6 +422,7 @@ async def _dag_progress(session_id: str, graph: dict[str, Any]) -> dict[str, Any
         # caller reading only the scalars cannot tell work that ran and
         # succeeded from work an edge condition passed over.
         "skippedCount": skipped,
+        "cancelledCount": cancelled,
         "nodes": node_out,
     }
 

@@ -10,6 +10,7 @@ export type OperationStatus =
   | "succeeded"
   | "failed"
   | "skipped"
+  | "cancelled"
   | "escalated";
 
 export interface OperationNode {
@@ -36,7 +37,13 @@ export interface OperationGraphState {
 
 // ── Status projection ─────────────────────────────────────────────────────────
 
-const TERMINAL = new Set<OperationStatus>(["succeeded", "failed", "skipped", "escalated"]);
+const TERMINAL = new Set<OperationStatus>([
+  "succeeded",
+  "failed",
+  "skipped",
+  "cancelled",
+  "escalated",
+]);
 
 const KIND_TO_STATE: Record<string, OperationStatus | undefined> = {
   NodeQueued: "queued",
@@ -53,6 +60,7 @@ const KIND_TO_STATE: Record<string, OperationStatus | undefined> = {
   // that never finished -- which is why this mirrors _NODE_KIND_TO_STATE in
   // lionagi/studio/operator/run_progress.py entry for entry.
   NodeSkipped: "skipped",
+  NodeCancelled: "cancelled",
   NodeEscalated: "escalated",
 };
 

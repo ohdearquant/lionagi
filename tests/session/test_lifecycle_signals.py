@@ -15,6 +15,7 @@ from lionagi.session.signal import (
     GateDenied,
     MessageAdded,
     NodeAwaitingApproval,
+    NodeCancelled,
     NodeCompleted,
     NodeEscalated,
     NodeFailed,
@@ -571,6 +572,7 @@ def test_session_package_exports_new_symbols():
 
     for name in (
         "NodeQueued",
+        "NodeCancelled",
         "NodeAwaitingApproval",
         "NodeEscalated",
         "NodeLifecycleState",
@@ -599,3 +601,10 @@ def test_lane_for_skipped_resets_on_a_genuine_retry():
     assert (
         lane_for([NodeSkipped(op_id="a", name="a"), NodeStarted(op_id="a", name="a")]) == "running"
     )
+
+
+def test_lane_for_cancelled_is_distinct_terminal_and_retryable():
+    cancelled = NodeCancelled(op_id="a", name="a")
+    assert lane_for([NodeQueued(op_id="a", name="a"), cancelled]) == "cancelled"
+    assert lane_for([cancelled, NodeCompleted(op_id="a", name="a")]) == "cancelled"
+    assert lane_for([cancelled, NodeStarted(op_id="a", name="a")]) == "running"

@@ -481,6 +481,7 @@
       "graphNodeStatusDone": "مکمل",
       "graphNodeStatusFailed": "ناکام",
       "graphNodeStatusSkipped": "چھوڑ دیا گیا",
+      "graphNodeStatusCancelled": "منسوخ",
       "graphNodeStatusEscalated": "بڑھایا گیا",
       "progressTotal": "کل",
       "progressCompleted": "مکمل",

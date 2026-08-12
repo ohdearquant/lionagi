@@ -481,6 +481,7 @@
       "graphNodeStatusDone": "selesai",
       "graphNodeStatusFailed": "gagal",
       "graphNodeStatusSkipped": "dilewati",
+      "graphNodeStatusCancelled": "dibatalkan",
       "graphNodeStatusEscalated": "dieskalasi",
       "progressTotal": "Total",
       "progressCompleted": "Selesai",

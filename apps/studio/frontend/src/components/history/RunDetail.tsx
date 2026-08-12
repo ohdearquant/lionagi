@@ -1188,6 +1188,7 @@ const KIND_BADGE: Record<string, { label: string; tone: string }> = {
   // Muted, not an error tone: an edge condition passed this node over, which
   // is the gate working rather than the step breaking.
   NodeSkipped: { label: "skipped", tone: "bg-surface-overlay text-content-muted" },
+  NodeCancelled: { label: "cancelled", tone: "bg-status-warning-bg text-status-warning" },
   NodeAwaitingApproval: { label: "approval", tone: "bg-status-warning-bg text-status-warning" },
   NodeEscalated: { label: "escalated", tone: "bg-status-warning-bg text-status-warning" },
   GateDenied: { label: "gate-denied", tone: "bg-status-error-bg text-status-error" },
@@ -1219,6 +1220,7 @@ const LANE_TONE: Record<LaneState, string> = {
   succeeded: "bg-status-success-bg text-status-success",
   failed: "bg-status-error-bg text-status-error",
   skipped: "bg-surface-overlay text-content-muted",
+  cancelled: "bg-status-warning-bg text-status-warning",
   escalated: "bg-status-warning-bg text-status-warning",
 };
 

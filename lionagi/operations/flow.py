@@ -53,14 +53,14 @@ SKIP_REASON_UPSTREAM_GATE_REJECT = "upstream_gate_reject"
 
 # Lifecycle status to announce for an operation that is already terminal when
 # the flow reaches it -- a resumed run replaying work an earlier attempt
-# finished. CANCELLED and ABORTED are deliberately absent: neither has a
-# lifecycle signal of its own, and announcing either under one of these words
-# would assert an outcome that did not happen. They stay unannounced until they
-# have a signal to be announced as.
+# finished. ABORTED is deliberately absent: it has no node-level lifecycle
+# signal (the live ABORTED reasons are run-level), so mapping it here would
+# assert an outcome the node vocabulary cannot represent.
 _PRETERMINAL_ANNOUNCE_STATUS = {
     EventStatus.COMPLETED: "completed",
     EventStatus.FAILED: "failed",
     EventStatus.SKIPPED: "skipped",
+    EventStatus.CANCELLED: "cancelled",
 }
 
 # Tracks which Operation a reactive task is running (per-task contextvar).
@@ -117,7 +117,7 @@ class FlowEvent:
 
     operation_id: str
     name: str
-    status: str  # "completed" | "failed" | "skipped"
+    status: str  # "completed" | "failed" | "skipped" | "cancelled"
     result: Any
     spawned: bool = False  # True if this node was injected mid-run
 
@@ -457,12 +457,11 @@ class DependencyAwareExecutor:
         self._terminal_emitted.add(operation.id)
         self._emit_progress(str(operation.id), branch_name, status, elapsed, name_is_fallback)
 
-    def _emit_abandoned_terminal(self, operation: Operation) -> None:
-        """Safety net: emit "failed" (no separate cancelled/abandoned signal
-        kind exists) for an operation that emitted "started" but left
-        `_execute_operation` via cancellation or an unhandled exception,
-        bypassing the normal completed/failed paths. No-op if the operation
-        never started or already has a terminal emitted.
+    def _emit_abandoned_terminal(self, operation: Operation, status: str = "failed") -> None:
+        """Safety net for a started operation that bypassed normal terminals.
+
+        Cancellation and unexpected errors retain their distinct outcome;
+        no-op if the operation never started or already emitted a terminal.
         """
         if operation.id not in self._started_ops:
             return
@@ -473,7 +472,7 @@ class DependencyAwareExecutor:
         branch = self.operation_branches.get(operation.id, self.session.default_branch)
         branch_name, name_is_fallback = self._branch_display_name(operation, branch)
         elapsed = _time.monotonic() - self._op_start_times.get(operation.id, _time.monotonic())
-        self._emit_terminal_once(operation, branch_name, "failed", elapsed, name_is_fallback)
+        self._emit_terminal_once(operation, branch_name, status, elapsed, name_is_fallback)
 
     async def _execute_operation(self, operation: Operation, limiter: CapacityLimiter):
         if operation.execution.status in Event._TERMINAL_STATUSES:
@@ -630,13 +629,20 @@ class DependencyAwareExecutor:
                             operation.execution.error,
                         )
 
+                elif operation.execution.status == EventStatus.CANCELLED:
+                    self._emit_terminal_once(
+                        operation, branch_name, "cancelled", elapsed, name_is_fallback
+                    )
+
         except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
             self.completion_events[operation.id].set()
             # Cancellation (task-group teardown, timeout, abandonment) skips
             # the normal completed/failed paths above; emit the terminal
             # this started operation is still owed so it never renders as
             # perpetually running.
-            self._emit_abandoned_terminal(operation)
+            if operation.execution.status not in Event._TERMINAL_STATUSES:
+                operation.execution.status = EventStatus.CANCELLED
+            self._emit_abandoned_terminal(operation, "cancelled")
             raise
 
         except Exception as e:
@@ -1138,6 +1144,8 @@ class ReactiveExecutor(DependencyAwareExecutor):
     def _make_event(self, node: Operation) -> FlowEvent:
         if node.id in self.skipped_operations:
             status = "skipped"
+        elif node.execution.status == EventStatus.CANCELLED:
+            status = "cancelled"
         elif node.execution.status == EventStatus.FAILED:
             status = "failed"
         else:

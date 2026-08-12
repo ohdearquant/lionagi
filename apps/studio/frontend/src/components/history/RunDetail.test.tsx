@@ -1016,6 +1016,25 @@ describe("history/RunDetail.tsx — badgeForEvent escalation presentation", () =
   });
 });
 
+describe("history/RunDetail.tsx — cancellation presentation", () => {
+  it("labels NodeCancelled explicitly without the failure tone", async () => {
+    const { badgeForEvent } = await import("./RunDetail");
+    const badge = badgeForEvent({
+      id: "cancel-1",
+      session_id: "session-1",
+      seq: 2,
+      kind: "NodeCancelled",
+      op_id: "op-1",
+      ts: 2,
+      payload: { name: "work" },
+    });
+
+    expect(badge.label).toBe("cancelled");
+    expect(badge.tone).toContain("status-warning");
+    expect(badge.tone).not.toContain("status-error");
+  });
+});
+
 describe("history/RunDetail.tsx — operation lane escalation presentation", () => {
   it("uses a warning lane for escalated while a failed lane stays error-toned", async () => {
     const { EventsSection } = await import("./RunDetail");

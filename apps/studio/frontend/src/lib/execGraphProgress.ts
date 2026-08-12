@@ -26,6 +26,7 @@ export interface ProgressCounts {
   paused: number;
   completed: number;
   skipped: number;
+  cancelled: number;
   escalated: number;
   failed: number;
   hasFailure: boolean;
@@ -41,6 +42,7 @@ function emptyCounts(total = 0): ProgressCounts {
     paused: 0,
     completed: 0,
     skipped: 0,
+    cancelled: 0,
     escalated: 0,
     failed: 0,
     hasFailure: false,
@@ -87,6 +89,9 @@ export function deriveProgressCounts(
       case "skipped":
         counts.skipped++;
         break;
+      case "cancelled":
+        counts.cancelled++;
+        break;
       case "escalated":
         counts.escalated++;
         break;
@@ -123,7 +128,13 @@ export function formatElapsed(seconds: number | null): string {
 
 // ── Descendant-terminal suppression + terminal-run collapse ────────────────
 
-const TERMINAL_STATUSES = new Set<NodeExecStatus>(["completed", "failed", "skipped", "escalated"]);
+const TERMINAL_STATUSES = new Set<NodeExecStatus>([
+  "completed",
+  "failed",
+  "skipped",
+  "cancelled",
+  "escalated",
+]);
 const NON_TERMINAL_ACTIVE_STATUSES = new Set<NodeExecStatus>([
   "queued",
   "running",

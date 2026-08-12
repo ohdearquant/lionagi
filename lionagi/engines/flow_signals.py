@@ -12,6 +12,7 @@ from typing import Any
 
 from lionagi.ln.concurrency import gather
 from lionagi.session.signal import (
+    NodeCancelled,
     NodeCompleted,
     NodeFailed,
     NodeQueued,
@@ -94,6 +95,14 @@ async def flow_progress_signals(
             )
         elif status == "skipped":
             sig = NodeSkipped(
+                op_id=op_id,
+                name=sig_name,
+                elapsed=elapsed,
+                parent_id=parent_id,
+                depends_on=depends_on,
+            )
+        elif status == "cancelled":
+            sig = NodeCancelled(
                 op_id=op_id,
                 name=sig_name,
                 elapsed=elapsed,

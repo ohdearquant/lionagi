@@ -435,11 +435,9 @@ async def test_failure_path_emits_exactly_one_terminal_signal():
 
 
 @pytest.mark.asyncio
-async def test_cancelled_after_start_emits_exactly_one_terminal_signal():
-    """CancelledError during invoke() must still close the started identity
-    with a terminal "failed" (there is no separate cancelled signal kind) —
-    the pre-fix behaviour swallowed the terminal signal in this path
-    entirely, leaving the node rendered as running forever."""
+async def test_cancelled_after_start_emits_exactly_one_cancelled_signal():
+    """CancelledError during invoke() closes the started identity as
+    cancelled, rather than borrowing failed or leaving the node running."""
 
     async def work(**kw):
         return "unused"
@@ -461,8 +459,37 @@ async def test_cancelled_after_start_emits_exactly_one_terminal_signal():
         await executor._execute_operation(op, limiter)
 
     op_id = str(op.id)
-    assert log.statuses_for(op_id) == ["started", "failed"]
+    assert log.statuses_for(op_id) == ["started", "cancelled"]
     assert executor.completion_events[op.id].is_set()
+
+
+@pytest.mark.asyncio
+async def test_operation_returning_cancelled_status_emits_cancelled_signal():
+    """An operation can settle as CANCELLED without raising out of invoke().
+
+    That normal-return path still owes the graph a terminal cancellation.
+    """
+
+    async def work(**kw):
+        return "unused"
+
+    session = _session_with_ops(work=work)
+    graph = Graph()
+    op = Operation(operation="work", parameters={})
+    graph.add_node(op)
+
+    log = _ProgressLog()
+    executor = DependencyAwareExecutor(session=session, graph=graph, max_concurrent=10)
+    executor.on_progress = log
+    executor.operation_branches[op.id] = session.default_branch
+
+    async def cancel_without_raising():
+        op.execution.status = EventStatus.CANCELLED
+
+    object.__setattr__(op, "invoke", AsyncMock(side_effect=cancel_without_raising))
+    await executor._execute_operation(op, CapacityLimiter(10))
+
+    assert log.statuses_for(str(op.id)) == ["started", "cancelled"]
 
 
 @pytest.mark.asyncio
@@ -696,15 +723,9 @@ async def test_preterminal_op_is_announced_with_its_own_outcome(status, expected
 
 
 @pytest.mark.asyncio
-async def test_preterminal_cancelled_is_deliberately_left_unannounced():
-    """CANCELLED is terminal but has no lifecycle signal of its own.
-
-    Announcing it as "failed" would assert an outcome that did not happen, and
-    inventing a word here would pre-empt an open design question about whether
-    cancelled, skipped and aborted stay distinct. So it is deliberately silent,
-    and this test exists so that silence stays a decision: if a NodeCancelled
-    signal is ever added, this test fails and points at the choice.
-    """
+async def test_preterminal_cancelled_is_announced_with_its_own_outcome():
+    """A resumed CANCELLED node answers its earlier queued announcement with
+    its real terminal outcome, without being misreported as failed/skipped."""
     from lionagi.operations.flow import flow
 
     async def work(**kw):  # pragma: no cover - a terminal op must not re-execute
@@ -717,9 +738,33 @@ async def test_preterminal_cancelled_is_deliberately_left_unannounced():
     await flow(session, graph, parallel=False, verbose=False, on_progress=log)
 
     statuses = log.statuses_for(str(op.id))
-    assert statuses == ["queued"], (
-        f"cancelled must not borrow another outcome's word, got {statuses}"
+    assert statuses == ["queued", "cancelled"], (
+        f"cancelled must leave the queued lane under its own word, got {statuses}"
     )
+
+
+@pytest.mark.asyncio
+async def test_preterminal_cancelled_reaches_signal_bus_cancelled_lane():
+    """The Flow-to-Studio bridge persists NodeCancelled and lane_for projects
+    it as cancelled, so the execution graph cannot keep showing queued."""
+    from lionagi.engines.flow_signals import flow_progress_signals
+    from lionagi.operations.flow import flow
+    from lionagi.session.signal import NodeCancelled, lane_for
+
+    async def work(**kw):  # pragma: no cover - terminal work never reruns
+        raise AssertionError("an already-terminal operation must not run again")
+
+    session = _session_with_ops(work=work)
+    graph, op = _one_op_graph(EventStatus.CANCELLED)
+    seen: list[object] = []
+    session.observe(NodeCancelled, handler=lambda signal, _: seen.append(signal))
+
+    async with flow_progress_signals(session, graph) as on_progress:
+        await flow(session, graph, parallel=False, verbose=False, on_progress=on_progress)
+
+    for_op = [signal for signal in seen if getattr(signal, "op_id", None) == str(op.id)]
+    assert len(for_op) == 1
+    assert lane_for(for_op) == "cancelled"
 
 
 @pytest.mark.asyncio
