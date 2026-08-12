@@ -2629,7 +2629,7 @@ async def test_stdio_permission_bridge_never_reuses_approval_for_changed_input(
     )
     assert await asyncio.wait_for(changed_task, timeout=2) == {
         "behavior": "deny",
-        "message": "The Lion Studio operator denied this tool request",
+        "message": "The human at the Studio permission prompt declined this tool request",
     }
 
 
