@@ -509,6 +509,14 @@ already finished, or a read that has already published a durable end, and
 neither can be failed by a notifier. Every way a delivery does not happen
 comes back as an outcome describing it.
 
+When this hook is launched by the flow terminal adapter, the adapter's
+versioned payload is already present in `LIONAGI_NOTIFY_PAYLOAD`. The hook
+accepts its `reason_code` only if it belongs to the controlled runtime
+vocabulary, then preserves it on the MCP job record and offers it to the
+configured downstream notifier. This prevents a degraded completed flow from
+being flattened back to `run.completed.ok` at the outer job boundary; malformed
+or unregistered environment content is ignored rather than persisted.
+
 ### `mcp/projection.py`
 
 #### accepts-no-values-required-unenforced
