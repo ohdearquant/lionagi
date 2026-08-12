@@ -306,7 +306,7 @@ async def test_build_dag_forwards_assignment_inputs_to_worker_context(tmp_path):
             wraps=_build_worker_operate_node,
         ) as build_node,
     ):
-        await _build_dag(env, "ship safely", plan_result, reactive_spec="off")
+        await _build_dag(env, "ship safely", plan_result, reactive_spec="off", max_spawn=20)
 
     assert {"assignment_inputs": ["requirements.md", "the implementation diff"]} in (
         build_node.call_args.kwargs["context"]
@@ -340,7 +340,7 @@ async def test_build_dag_forwards_assignment_exit_criteria_to_worker_instruction
             wraps=_build_worker_operate_node,
         ) as build_node,
     ):
-        await _build_dag(env, "ship safely", plan_result, reactive_spec="off")
+        await _build_dag(env, "ship safely", plan_result, reactive_spec="off", max_spawn=20)
 
     assert build_node.call_args.kwargs["instruction"] == (
         "[BUDGET]\nimplement the fix\n\n"

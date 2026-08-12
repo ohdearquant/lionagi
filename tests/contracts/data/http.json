@@ -1,5 +1,5 @@
 {
-  "count": 135,
+  "count": 140,
   "routes": [
     {
       "ordinal": 0,
@@ -5188,6 +5188,226 @@
     },
     {
       "ordinal": 113,
+      "path": "/api/hooks/library",
+      "methods": [
+        "GET"
+      ],
+      "name": "list_hook_library",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response List Hook Library Api Hooks Library Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "hooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.hooks_library",
+        "qualname": "list_hook_library_route"
+      }
+    },
+    {
+      "ordinal": 114,
+      "path": "/api/hooks/library/{name}",
+      "methods": [
+        "PUT"
+      ],
+      "name": "put_hook_def",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Put Hook Def Api Hooks Library  Name  Put"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "hooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.hooks_library",
+        "qualname": "put_hook_def_route"
+      }
+    },
+    {
+      "ordinal": 115,
+      "path": "/api/hooks/library/{name}",
+      "methods": [
+        "DELETE"
+      ],
+      "name": "delete_hook_def",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Response Delete Hook Def Api Hooks Library  Name  Delete"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "hooks"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.hooks_library",
+        "qualname": "delete_hook_def_route"
+      }
+    },
+    {
+      "ordinal": 116,
+      "path": "/api/operator/hooks",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_operator_hooks",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response Get Operator Hooks Api Operator Hooks Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "operator"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.operator_hooks",
+        "qualname": "get_operator_hooks_route"
+      }
+    },
+    {
+      "ordinal": 117,
+      "path": "/api/operator/hooks",
+      "methods": [
+        "PUT"
+      ],
+      "name": "put_operator_hooks",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response Put Operator Hooks Api Operator Hooks Put"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [
+        "operator"
+      ],
+      "summary": null,
+      "description": null,
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.operator_hooks",
+        "qualname": "put_operator_hooks_route"
+      }
+    },
+    {
+      "ordinal": 118,
       "path": "/api/approvals/",
       "methods": [
         "POST"
@@ -5235,7 +5455,7 @@
       }
     },
     {
-      "ordinal": 114,
+      "ordinal": 119,
       "path": "/api/approvals/evidence/verify",
       "methods": [
         "GET"
@@ -5273,7 +5493,7 @@
       }
     },
     {
-      "ordinal": 115,
+      "ordinal": 120,
       "path": "/api/approvals/{approval_id}",
       "methods": [
         "GET"
@@ -5321,7 +5541,7 @@
       }
     },
     {
-      "ordinal": 116,
+      "ordinal": 121,
       "path": "/api/approvals/{approval_id}/grant",
       "methods": [
         "POST"
@@ -5369,7 +5589,7 @@
       }
     },
     {
-      "ordinal": 117,
+      "ordinal": 122,
       "path": "/api/approvals/{approval_id}/deny",
       "methods": [
         "POST"
@@ -5417,7 +5637,7 @@
       }
     },
     {
-      "ordinal": 118,
+      "ordinal": 123,
       "path": "/api/admin/doctor",
       "methods": [
         "GET"
@@ -5465,7 +5685,7 @@
       }
     },
     {
-      "ordinal": 119,
+      "ordinal": 124,
       "path": "/api/admin/health",
       "methods": [
         "GET"
@@ -5503,7 +5723,7 @@
       }
     },
     {
-      "ordinal": 120,
+      "ordinal": 125,
       "path": "/api/admin/readiness",
       "methods": [
         "GET"
@@ -5551,7 +5771,7 @@
       }
     },
     {
-      "ordinal": 121,
+      "ordinal": 126,
       "path": "/api/admin/transition",
       "methods": [
         "POST"
@@ -5599,7 +5819,7 @@
       }
     },
     {
-      "ordinal": 122,
+      "ordinal": 127,
       "path": "/api/admin/events",
       "methods": [
         "GET"
@@ -5647,7 +5867,7 @@
       }
     },
     {
-      "ordinal": 123,
+      "ordinal": 128,
       "path": "/api/admin/prune-old-data",
       "methods": [
         "POST"
@@ -5697,7 +5917,7 @@
       }
     },
     {
-      "ordinal": 124,
+      "ordinal": 129,
       "path": "/api/admin/maintenance",
       "methods": [
         "POST"
@@ -5745,7 +5965,7 @@
       }
     },
     {
-      "ordinal": 125,
+      "ordinal": 130,
       "path": "/api/admin/prune",
       "methods": [
         "POST"
@@ -5795,7 +6015,7 @@
       }
     },
     {
-      "ordinal": 126,
+      "ordinal": 131,
       "path": "/api/stats/activity",
       "methods": [
         "GET"
@@ -5841,7 +6061,7 @@
       }
     },
     {
-      "ordinal": 127,
+      "ordinal": 132,
       "path": "/api/stats/spend",
       "methods": [
         "GET"
@@ -5887,7 +6107,7 @@
       }
     },
     {
-      "ordinal": 128,
+      "ordinal": 133,
       "path": "/api/stats/spend/rollup",
       "methods": [
         "GET"
@@ -5933,7 +6153,7 @@
       }
     },
     {
-      "ordinal": 129,
+      "ordinal": 134,
       "path": "/api/stats",
       "methods": [
         "GET"
@@ -5969,7 +6189,7 @@
       }
     },
     {
-      "ordinal": 130,
+      "ordinal": 135,
       "path": "/api/attention/dispositions/",
       "methods": [
         "GET"
@@ -6007,7 +6227,7 @@
       }
     },
     {
-      "ordinal": 131,
+      "ordinal": 136,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "PUT"
@@ -6055,7 +6275,7 @@
       }
     },
     {
-      "ordinal": 132,
+      "ordinal": 137,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "DELETE"
@@ -6103,7 +6323,7 @@
       }
     },
     {
-      "ordinal": 133,
+      "ordinal": 138,
       "path": "/api/attention/dispositions/{item_id}/history",
       "methods": [
         "GET"
@@ -6151,7 +6371,7 @@
       }
     },
     {
-      "ordinal": 134,
+      "ordinal": 139,
       "path": "/health",
       "methods": [
         "GET"
@@ -8055,6 +8275,124 @@
           }
         }
       },
+      "/api/hooks/library": {
+        "get": {
+          "tags": [
+            "hooks"
+          ],
+          "summary": "List Hook Library",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response List Hook Library Api Hooks Library Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/hooks/library/{name}": {
+        "delete": {
+          "tags": [
+            "hooks"
+          ],
+          "summary": "Delete Hook Def",
+          "parameters": [
+            {
+              "name": "name",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Name"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Delete Hook Def Api Hooks Library  Name  Delete"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "tags": [
+            "hooks"
+          ],
+          "summary": "Put Hook Def",
+          "parameters": [
+            {
+              "name": "name",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Name"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Spec"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Response Put Hook Def Api Hooks Library  Name  Put"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/invocations/": {
         "get": {
           "tags": [
@@ -9396,6 +9734,70 @@
           }
         }
       },
+      "/api/operator/hooks": {
+        "get": {
+          "tags": [
+            "operator"
+          ],
+          "summary": "Get Operator Hooks",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Get Operator Hooks Api Operator Hooks Get"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "tags": [
+            "operator"
+          ],
+          "summary": "Put Operator Hooks",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Config"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Put Operator Hooks Api Operator Hooks Put"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/operator/models": {
         "get": {
           "tags": [
@@ -10263,6 +10665,27 @@
           ],
           "summary": "List Runs",
           "parameters": [
+            {
+              "name": "kind",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Repeated orchestration-kind filter: agent, play, flow, fanout, show",
+                "title": "Kind"
+              },
+              "description": "Repeated orchestration-kind filter: agent, play, flow, fanout, show"
+            },
             {
               "name": "page",
               "in": "query",
@@ -12429,7 +12852,7 @@
         }
       }
     },
-    "path_count": 104,
+    "path_count": 107,
     "schemas": {
       "AcknowledgeEffectRequest": {
         "properties": {
@@ -13164,6 +13587,18 @@
               }
             ],
             "title": "Action Playbook"
+          },
+          "action_playbook_args": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Playbook Args"
           },
           "action_project": {
             "anyOf": [
