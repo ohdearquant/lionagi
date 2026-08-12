@@ -2328,12 +2328,6 @@ export async function listGatedPlays(): Promise<GatedPlaySummary[]> {
 
 // ─── Engine definitions ───────────────────────────────────────────────────────
 
-/** Per-stage override persisted on an engine definition. */
-export interface StageOverride {
-  role?: string;
-  model?: string;
-}
-
 export interface EngineDef {
   id: string;
   name: string;
@@ -2342,7 +2336,6 @@ export interface EngineDef {
   max_depth: number | null;
   max_agents: number | null;
   options: Record<string, string> | null;
-  stages: Record<string, StageOverride> | null;
   description: string | null;
   created_at: number;
   updated_at: number;
@@ -2355,7 +2348,6 @@ export interface CreateEngineDefRequest {
   max_depth?: number;
   max_agents?: number;
   options?: Record<string, string>;
-  stages?: Record<string, StageOverride>;
   description?: string;
 }
 
@@ -2366,7 +2358,6 @@ export interface UpdateEngineDefRequest {
   max_depth?: number;
   max_agents?: number;
   options?: Record<string, string>;
-  stages?: Record<string, StageOverride>;
   description?: string;
 }
 

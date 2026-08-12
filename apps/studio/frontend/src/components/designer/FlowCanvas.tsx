@@ -8,10 +8,9 @@
  * Escape clears focus, then selection. Pan by dragging the background, zoom
  * with the wheel or the controls.
  *
- * Nodes are draggable: grab a card, drag it anywhere, release to snap to the
- * 16 px grid. Connected edges reroute in real time using frozen channel
- * geometry so layout structure is preserved. Position overrides live in
- * component state and reset when the blueprint changes.
+ * Workflow nodes are draggable when the caller supplies `onNodeMoved`.
+ * Code-owned engine blueprints omit that callback, so their stages remain
+ * inspectable but have no drag or topology-edit affordance.
  *
  * Viewport stability is a hard rule: the view transform changes ONLY through
  * user gestures, the fit button, or a blueprint switch. Selection, panels,
@@ -21,16 +20,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
 import type { FlowEdge, FlowModel, FlowNode } from "@/lib/designer/flow";
-import {
-  QUIESCENCE,
-  SIGNAL_PALETTE,
-  SNAP_GRID,
-  rerouteEdges,
-  snapToGrid,
-} from "@/lib/designer/flow";
+import { QUIESCENCE, SNAP_GRID, rerouteEdges, snapToGrid } from "@/lib/designer/flow";
 import EdgeInspector from "./EdgeInspector";
-import { IconClose, IconPencil, IconShield, IconTrash } from "@/components/ui/icons";
-import { useDesignerDraft } from "./DesignerDraftContext";
+import { IconClose, IconShield } from "@/components/ui/icons";
 
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 1.5;
@@ -92,7 +84,6 @@ export default function FlowCanvas({
   fitPad,
 }: FlowCanvasProps) {
   const t = useTranslations("designer.flow");
-  const draftCtx = useDesignerDraft();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -101,11 +92,6 @@ export default function FlowCanvas({
   const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [signalFilter, setSignalFilter] = useState("");
-  // Signal editing state — which signal is being renamed, and the pending new name/color.
-  const [editingSignal, setEditingSignal] = useState<string | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editColor, setEditColor] = useState("");
-
   // Pan drag ref
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
 
@@ -258,13 +244,17 @@ export default function FlowCanvas({
     (e: React.PointerEvent, nodeId: string) => {
       if (e.button !== 0) return;
       e.stopPropagation();
+      const targetStageId =
+        (e.target as HTMLElement).closest("[data-stage-id]")?.getAttribute("data-stage-id") ?? null;
+      if (!onNodeMoved) {
+        if (targetStageId) onSelect(targetStageId);
+        return;
+      }
       const node = model.nodes.find((n) => n.id === nodeId);
       if (!node) return;
       const override = posOverrides.get(nodeId);
       const origX = override?.x ?? node.x;
       const origY = override?.y ?? node.y;
-      const targetStageId =
-        (e.target as HTMLElement).closest("[data-stage-id]")?.getAttribute("data-stage-id") ?? null;
       nodeDrag.current = {
         nodeId,
         pointerId: e.pointerId,
@@ -279,7 +269,7 @@ export default function FlowCanvas({
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       setLiveDelta({ nodeId, dx: 0, dy: 0 });
     },
-    [model.nodes, posOverrides],
+    [model.nodes, onNodeMoved, onSelect, posOverrides],
   );
 
   const onNodePointerMove = useCallback(
@@ -601,7 +591,7 @@ export default function FlowCanvas({
               className="transition-opacity duration-150"
               style={{
                 opacity: dimmed ? 0.35 : 1,
-                cursor: isDragging ? "grabbing" : "grab",
+                cursor: onNodeMoved ? (isDragging ? "grabbing" : "grab") : "default",
               }}
               onPointerDown={(e) => onNodePointerDown(e, n.id)}
               onPointerEnter={() => setHoveredOp(n.id)}
@@ -634,26 +624,12 @@ export default function FlowCanvas({
               setSelectedEdgeId(null);
             }}
             onClose={() => setSelectedEdgeId(null)}
-            onDelete={
-              draftCtx
-                ? () => {
-                    const { from, to, signal } = selectedEdge;
-                    draftCtx.patchTopo((topo) => ({
-                      ...topo,
-                      edges: topo.edges.filter(
-                        (e) => !(e.from === from && e.to === to && (e.on ?? undefined) === signal),
-                      ),
-                    }));
-                    setSelectedEdgeId(null);
-                  }
-                : undefined
-            }
           />
         </div>
       )}
 
-      {/* Signal index — identity, fan-in/out, focus. Editable when draftCtx
-          is available (designer mode). Hidden while a stage is selected or in workflow mode. */}
+      {/* Signal index — read-only identity and fan-in/out. Hidden while a stage
+          is selected or in workflow mode. */}
       <div
         data-flow-stop
         data-flow-wheel
@@ -688,137 +664,32 @@ export default function FlowCanvas({
         <div className="max-h-[38vh] overflow-y-auto py-1">
           {filteredSignals.map((s) => {
             const focused = focusSignal === s.name;
-            const isEditing = editingSignal === s.name;
             return (
-              <div key={s.name} className="group relative">
-                {isEditing && draftCtx ? (
-                  // Inline edit form — rename + recolor
-                  <div className="flex flex-col gap-1.5 px-2.5 py-2">
-                    <input
-                      type="text"
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      className="h-6 rounded border border-edge bg-surface-overlay px-2 font-data text-[length:var(--t-xs)] text-content-primary focus:outline-none focus:ring-1 focus:ring-accent"
-                    />
-                    <div className="flex flex-wrap gap-1">
-                      {SIGNAL_PALETTE.map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          aria-label={`color ${c}`}
-                          onClick={() => setEditColor(c)}
-                          className="h-4 w-4 rounded-full border-2 transition-transform hover:scale-110"
-                          style={{
-                            background: c,
-                            borderColor: editColor === c ? "var(--content-primary)" : "transparent",
-                          }}
-                        />
-                      ))}
-                    </div>
-                    <div className="flex gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const newName = editName.trim();
-                          if (newName && newName !== s.name) {
-                            draftCtx.patchTopo((topo) => ({
-                              ...topo,
-                              stages: topo.stages.map((st) => ({
-                                ...st,
-                                emits: st.emits.map((e) => (e === s.name ? newName : e)),
-                              })),
-                              edges: topo.edges.map((e) =>
-                                e.on === s.name ? { ...e, on: newName } : e,
-                              ),
-                            }));
-                            if (focusSignal === s.name) onFocusSignal(newName);
-                          }
-                          setEditingSignal(null);
-                        }}
-                        className="flex h-6 flex-1 items-center justify-center rounded bg-accent font-ui text-[length:var(--t-xs)] text-accent-contrast hover:opacity-90"
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingSignal(null)}
-                        className="flex h-6 items-center justify-center rounded border border-edge px-1.5 text-content-muted hover:text-content-primary"
-                      >
-                        <IconClose size={9} strokeWidth={2} />
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => onFocusSignal(focused ? null : s.name)}
-                    className={`flex w-full items-center gap-2 px-2.5 py-1 text-left hover:bg-surface-overlay ${
-                      focused ? "bg-surface-overlay" : ""
-                    }`}
-                    title={`${s.emitters.length} → · → ${s.observers.length}`}
-                  >
-                    <span
-                      aria-hidden="true"
-                      className={`h-2 w-2 shrink-0 rounded-full ${s.system ? "border border-current bg-transparent" : ""}`}
-                      style={s.system ? { color: s.color } : { background: s.color }}
-                    />
-                    <span
-                      className={`min-w-0 flex-1 truncate font-data text-[length:var(--t-xs)] ${
-                        focused ? "text-content-primary" : "text-content-secondary"
-                      }`}
-                    >
-                      {s.system ? t("quiescence") : s.name}
-                    </span>
-                    <span className="shrink-0 font-data text-[length:var(--t-xs)] tabular-nums text-content-muted">
-                      {s.emitters.length}→{s.observers.length}
-                    </span>
-                  </button>
-                )}
-                {/* Edit / delete actions — appear on hover, only in designer mode */}
-                {!isEditing && !s.system && draftCtx && (
-                  <div className="absolute right-1 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 group-hover:flex">
-                    <button
-                      type="button"
-                      aria-label={`Edit ${s.name}`}
-                      title="Edit signal"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setEditingSignal(s.name);
-                        setEditName(s.name);
-                        setEditColor(s.color);
-                      }}
-                      className="flex h-5 w-5 items-center justify-center rounded text-content-muted hover:bg-surface-overlay hover:text-content-primary"
-                    >
-                      <IconPencil size={9} strokeWidth={1.75} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Delete ${s.name}`}
-                      title="Delete signal"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const hasEdges = draftCtx.topo.edges.some((ed) => ed.on === s.name);
-                        const msg = hasEdges
-                          ? `Remove signal "${s.name}" and its ${draftCtx.topo.edges.filter((ed) => ed.on === s.name).length} edge(s)?`
-                          : `Remove signal "${s.name}"?`;
-                        if (!confirm(msg)) return;
-                        draftCtx.patchTopo((topo) => ({
-                          ...topo,
-                          stages: topo.stages.map((st) => ({
-                            ...st,
-                            emits: st.emits.filter((em) => em !== s.name),
-                          })),
-                          edges: topo.edges.filter((ed) => ed.on !== s.name),
-                        }));
-                        if (focusSignal === s.name) onFocusSignal(null);
-                      }}
-                      className="flex h-5 w-5 items-center justify-center rounded text-content-muted hover:bg-surface-overlay hover:text-status-danger"
-                    >
-                      <IconTrash size={9} strokeWidth={1.75} />
-                    </button>
-                  </div>
-                )}
-              </div>
+              <button
+                key={s.name}
+                type="button"
+                onClick={() => onFocusSignal(focused ? null : s.name)}
+                className={`flex w-full items-center gap-2 px-2.5 py-1 text-left hover:bg-surface-overlay ${
+                  focused ? "bg-surface-overlay" : ""
+                }`}
+                title={`${s.emitters.length} → · → ${s.observers.length}`}
+              >
+                <span
+                  aria-hidden="true"
+                  className={`h-2 w-2 shrink-0 rounded-full ${s.system ? "border border-current bg-transparent" : ""}`}
+                  style={s.system ? { color: s.color } : { background: s.color }}
+                />
+                <span
+                  className={`min-w-0 flex-1 truncate font-data text-[length:var(--t-xs)] ${
+                    focused ? "text-content-primary" : "text-content-secondary"
+                  }`}
+                >
+                  {s.system ? t("quiescence") : s.name}
+                </span>
+                <span className="shrink-0 font-data text-[length:var(--t-xs)] tabular-nums text-content-muted">
+                  {s.emitters.length}→{s.observers.length}
+                </span>
+              </button>
             );
           })}
         </div>
