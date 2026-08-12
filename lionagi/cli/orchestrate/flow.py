@@ -130,7 +130,11 @@ def _heartbeat_warning(
     max_activity_rate = max(activity_rates)
     peer_rates = activity_rates.copy()
     peer_rates.remove(max_activity_rate)
-    activity_floor = statistics.median(peer_rates) if peer_rates else 0.0
+    # Agent process trees contain many blocked infrastructure descendants.
+    # Their exact-zero rates are not a working peer baseline; including them
+    # drives the median to zero and makes this relative discriminator inert.
+    active_peer_rates = [rate for rate in peer_rates if rate > 0]
+    activity_floor = statistics.median(active_peer_rates) if active_peer_rates else 0.0
     ratio_activity_cutoff = activity_floor * _DESCENDANT_CPU_ACTIVITY_RATIO
     fallback_activity_seconds = _DESCENDANT_CPU_FALLBACK_SECONDS * math.sqrt(
         sample_interval_seconds / _DESCENDANT_CPU_FALLBACK_INTERVAL_SECONDS
