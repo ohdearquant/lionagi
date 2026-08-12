@@ -928,3 +928,19 @@ async def test_run_progress_no_identity_at_all_stays_unscoped(db_path):
 
     result = await resolve_run(sid)
     assert result == {"found": True, "ambiguous": False, "session_id": sid}
+
+
+def test_terminal_safe_health_drops_only_the_vacuous_healthy():
+    """Health is a liveness concept: for a terminal run the classifier's
+    "healthy" only means "no residue", and projected beside status=failed it
+    reads as a claim about the run's outcome. The projection drops exactly
+    that pairing -- a live run's "healthy" and a terminal run's pathological
+    verdict (leftover locks) both pass through unchanged."""
+    from lionagi.studio.operator.run_progress import _terminal_safe_health
+
+    for terminal in ("completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"):
+        assert _terminal_safe_health({"status": terminal, "effective_health": "healthy"}) is None
+
+    assert _terminal_safe_health({"status": "running", "effective_health": "healthy"}) == "healthy"
+    assert _terminal_safe_health({"status": "failed", "effective_health": "zombie"}) == "zombie"
+    assert _terminal_safe_health({"status": "running", "effective_health": "stale"}) == "stale"
