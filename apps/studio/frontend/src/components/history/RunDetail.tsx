@@ -27,21 +27,16 @@ import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
-import {
-  buildNodeStatusesByName,
-  buildOperationGraph,
-  laneFor,
-  transitiveReduceDisplay,
-} from "@/lib/operationGraph";
+import { laneFor, transitiveReduceDisplay } from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
-import { buildNodeActivityByName } from "@/lib/nodeActivity";
 import type { NodeActivitySnapshot } from "@/lib/nodeActivity";
-import {
-  deriveDisplayStatus,
-  deriveVerdict,
-  isEffectivelyActive,
-  isUnsuccessfulTerminal,
-} from "@/lib/runStatus";
+import { gateOutcomeFromEvent, SignalProjection } from "@/lib/signalProjection";
+import type {
+  SignalGateOutcome,
+  SignalLaneSummary,
+  SignalProjectionSnapshot,
+} from "@/lib/signalProjection";
+import { deriveDisplayStatus, isEffectivelyActive, isUnsuccessfulTerminal } from "@/lib/runStatus";
 import type { Verdict } from "@/lib/runStatus";
 import type {
   OperatorCommandProposal,
@@ -72,6 +67,7 @@ import {
 import type { ControlKind, ControlReasonCode, ControlVerb, PausePhase } from "@/lib/runControls";
 
 const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
+const EMPTY_SIGNAL_SNAPSHOT = new SignalProjection(1).snapshot();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -920,16 +916,7 @@ interface ErrorEntry {
   summary?: string;
 }
 
-export interface GateOutcome {
-  verdict: Verdict;
-  major: number;
-  minor: number;
-  /** True when the emission carried a findings list (a review-style verdict);
-   *  false for a bare pass/fail gate, which has no severity breakdown. */
-  hasFindings: boolean;
-}
-
-const BLOCKING_FINDING_SEVERITIES = new Set(["critical", "high"]);
+export type GateOutcome = SignalGateOutcome;
 
 // Flow-layer DAG gates (lionagi/operations/flow.py's is_gate contract) never
 // emit a StructuredOutput signal — a rejecting gate's verdict lives in the
@@ -960,31 +947,8 @@ export function deriveGateOutcome(
   runStatus?: { status_reason_code?: string | null } | null,
 ): GateOutcome | null {
   for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
-    if (ev.kind !== "StructuredOutput") continue;
-    const data = ev.payload?.data;
-    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
-    const d = data as Record<string, unknown>;
-    if (typeof d.gate_verdict === "string" && d.gate_verdict) {
-      const findings = Array.isArray(d.findings) ? d.findings : [];
-      let major = 0;
-      let minor = 0;
-      for (const f of findings) {
-        const severity =
-          f && typeof f === "object" ? (f as Record<string, unknown>).severity : null;
-        if (typeof severity === "string" && BLOCKING_FINDING_SEVERITIES.has(severity)) major += 1;
-        else minor += 1;
-      }
-      return { verdict: deriveVerdict(d.gate_verdict), major, minor, hasFindings: true };
-    }
-    if (typeof d.gate_passed === "boolean") {
-      return {
-        verdict: d.gate_passed ? "approve" : "reject",
-        major: 0,
-        minor: 0,
-        hasFindings: false,
-      };
-    }
+    const outcome = gateOutcomeFromEvent(events[i]);
+    if (outcome) return outcome;
   }
   // No direct-producer StructuredOutput carried a verdict — fall back to the
   // DAG-gate reason code. This channel only ever reports a rejection (there is
@@ -1280,15 +1244,23 @@ export function EventsSection({
   events,
   live,
   renderStep = EVENTS_RENDER_STEP,
+  totalCount = events.length,
+  projectedLanes,
 }: {
   events: SignalEvent[];
   live: boolean;
   /** Paging window size; defaults to EVENTS_RENDER_STEP. Overridable so tests
    *  can exercise the "show older" page-back without rendering hundreds of rows. */
   renderStep?: number;
+  /** Exact number folded from the stream. May exceed events.length because
+   * events is the bounded raw-payload window. */
+  totalCount?: number;
+  /** Full-history lane aggregates maintained by SignalProjection. Direct
+   * EventsSection callers may omit this and derive from their supplied rows. */
+  projectedLanes?: SignalLaneSummary[];
 }) {
   const t = useTranslations("history.detail");
-  const laneSummaries = useMemo((): LaneSummary[] => {
+  const derivedLaneSummaries = useMemo((): LaneSummary[] => {
     const byOp = new Map<string, LaneSignal[]>();
     for (const ev of events) {
       if (!ev.op_id) continue;
@@ -1303,6 +1275,7 @@ export function EventsSection({
       count: kinds.length,
     }));
   }, [events]);
+  const laneSummaries = projectedLanes ?? derivedLaneSummaries;
 
   const [renderCap, setRenderCap] = useState(renderStep);
   // A switch to a new (empty) run must reset the render window immediately,
@@ -1331,7 +1304,7 @@ export function EventsSection({
 
   return (
     <div id="run-events" className="scroll-mt-4">
-      <SectionHeader label={t("sectionEvents")} count={events.length} />
+      <SectionHeader label={t("sectionEvents")} count={totalCount} />
 
       {laneSummaries.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
@@ -1819,7 +1792,14 @@ export default function RunDetail({ id }: RunDetailProps) {
   // string that does not exist. A reload loses it, same as any other
   // client-only UI state; see the report for the follow-up this implies.
   const [pauseRequested, setPauseRequested] = useState(false);
-  const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
+  // Raw signal payloads are capped in a 2,000-row ring. The projection keeps
+  // complete graph/status/activity/gate/lane indexes separately, so a 100k
+  // replay does not leave 100k payload objects in React state or rescan them
+  // for every arriving row.
+  const [signalState, setSignalState] = useState<{
+    id: string;
+    snapshot: SignalProjectionSnapshot;
+  }>({ id, snapshot: EMPTY_SIGNAL_SNAPSHOT });
   const [loadingOlder, setLoadingOlder] = useState(false);
   const loadingOlderRef = useRef(false);
   // Set when the server rejects the held anchor as no longer present in the
@@ -1845,7 +1825,6 @@ export default function RunDetail({ id }: RunDetailProps) {
     setLive(false);
     setDone(false);
     setError(null);
-    setSignalEvents([]);
     // The pause request is scoped to the run it was made on. The Fleet view
     // keeps this component mounted and swaps `id`, so leaving it set let run
     // B derive its pause phase from run A's request: B could show pausing or
@@ -2004,17 +1983,25 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   useEffect(() => {
     if (!id) return;
+    const projection = new SignalProjection();
+    let cancelled = false;
+    let publishScheduled = false;
+    const publish = () => {
+      if (publishScheduled) return;
+      publishScheduled = true;
+      queueMicrotask(() => {
+        publishScheduled = false;
+        if (!cancelled) setSignalState({ id, snapshot: projection.snapshot() });
+      });
+    };
     const stop = streamSignals(id, (event) => {
       if ("type" in event) return;
       const sig = event as SignalEvent;
-      setSignalEvents((prev) => {
-        if (prev.some((e) => e.id === sig.id)) return prev;
-        return [...prev, sig];
-      });
+      if (projection.append(sig)) publish();
     });
     return () => {
+      cancelled = true;
       stop();
-      setSignalEvents([]);
     };
   }, [id]);
 
@@ -2298,15 +2285,14 @@ export default function RunDetail({ id }: RunDetailProps) {
     return errs;
   }, [steps]);
 
+  const signalSnapshot = signalState.id === id ? signalState.snapshot : EMPTY_SIGNAL_SNAPSHOT;
+
   const gateOutcome = useMemo(
-    () => deriveGateOutcome(signalEvents, session),
-    [signalEvents, session],
+    () => signalSnapshot.gateOutcome ?? deriveGateOutcome([], session),
+    [signalSnapshot.gateOutcome, session],
   );
 
-  const opGraph = useMemo(
-    () => buildOperationGraph(signalEvents.filter((e) => !!e.op_id)),
-    [signalEvents],
-  );
+  const opGraph = signalSnapshot.operationGraph;
 
   const execSteps = useMemo(
     () =>
@@ -2347,14 +2333,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   // planned graph exists to correlate against.
   const nodeStatuses = useMemo((): Record<string, NodeExecStatus> | undefined => {
     if (!runGraph) return undefined;
-    const byName = buildNodeStatusesByName(signalEvents);
     const result: Record<string, NodeExecStatus> = {};
     for (const node of runGraph.nodes) {
-      const live = byName.get(node.id);
+      const live = signalSnapshot.nodeStatuses.get(node.id);
       if (live) result[node.id] = live.status === "succeeded" ? "completed" : live.status;
     }
     return result;
-  }, [runGraph, signalEvents]);
+  }, [runGraph, signalSnapshot.nodeStatuses]);
 
   // What each node is DOING inside its running state, correlated from the same
   // stream and by the same authored-name rule as nodeStatuses above. Kept to
@@ -2362,14 +2347,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   // draw cannot grow the map.
   const nodeActivity = useMemo((): Map<string, NodeActivitySnapshot> | undefined => {
     if (!runGraph) return undefined;
-    const byName = buildNodeActivityByName(signalEvents);
     const result = new Map<string, NodeActivitySnapshot>();
     for (const node of runGraph.nodes) {
-      const live = byName.get(node.id);
+      const live = signalSnapshot.nodeActivity.get(node.id);
       if (live) result.set(node.id, live);
     }
     return result;
-  }, [runGraph, signalEvents]);
+  }, [runGraph, signalSnapshot.nodeActivity]);
 
   // The SAME reconciled map feeds both the always-visible progress summary
   // and the graph nodes below (WorkerCanvas nodeStatuses prop) — one source,
@@ -2804,7 +2788,12 @@ export default function RunDetail({ id }: RunDetailProps) {
       )}
       <ErrorsSection errors={errors} partial={partialWindow} gateOutcome={gateOutcome} />
       <FilesSection files={runFiles} partial={partialWindow} />
-      <EventsSection events={signalEvents} live={live && !done} />
+      <EventsSection
+        events={signalSnapshot.events}
+        totalCount={signalSnapshot.totalCount}
+        projectedLanes={signalSnapshot.laneSummaries}
+        live={live && !done}
+      />
       <div ref={bottomRef} />
     </div>
   );

@@ -56,6 +56,13 @@ const KIND_TO_STATE: Record<string, OperationStatus | undefined> = {
   NodeEscalated: "escalated",
 };
 
+/** Return the lifecycle state carried by one signal kind, if it is a node
+ * lifecycle signal.  Incremental projections use this instead of keeping the
+ * raw signal stream solely to rediscover the same mapping. */
+export function operationStatusForSignal(kind: string): OperationStatus | undefined {
+  return KIND_TO_STATE[kind];
+}
+
 // A lane-projection input: either a bare kind string (back-compat; an
 // unaccompanied "NodeEscalated" with no route info still projects to
 // "escalated", matching an EscalationRequest-less signal on the backend) or
@@ -63,23 +70,22 @@ const KIND_TO_STATE: Record<string, OperationStatus | undefined> = {
 // help signal (route="notify") can be told apart from a real escalation.
 export type LaneSignal = string | { kind: string; route?: string };
 
+/** Fold one lifecycle signal into an existing lane state.  This is the
+ * single-event form of laneFor(), exported for bounded incremental indexes. */
+export function advanceLane(current: OperationStatus, entry: LaneSignal): OperationStatus {
+  const kind = typeof entry === "string" ? entry : entry.kind;
+  const route = typeof entry === "string" ? undefined : entry.route;
+  if (kind === "NodeEscalated" && route === "notify") return current;
+  const next = KIND_TO_STATE[kind];
+  if (!next) return current;
+  if (TERMINAL.has(current) && next !== "queued" && next !== "running") return current;
+  return next;
+}
+
 export function laneFor(kinds: LaneSignal[]): OperationStatus {
   let state: OperationStatus = "queued";
-  let inTerminal = false;
   for (const entry of kinds) {
-    const k = typeof entry === "string" ? entry : entry.kind;
-    const route = typeof entry === "string" ? undefined : entry.route;
-    // Soft ("fyi") help signal: NodeEscalated fires for observability but
-    // the emitting node keeps working toward its own terminal state — must
-    // not get pinned into the terminal "escalated" lane. Mirrors
-    // _signal_to_state returning None for urgency="fyi" in
-    // lionagi/session/signal.py.
-    if (k === "NodeEscalated" && route === "notify") continue;
-    const newState = KIND_TO_STATE[k];
-    if (!newState) continue;
-    if (inTerminal && newState !== "queued" && newState !== "running") continue;
-    state = newState;
-    inTerminal = TERMINAL.has(state);
+    state = advanceLane(state, entry);
   }
   return state;
 }
