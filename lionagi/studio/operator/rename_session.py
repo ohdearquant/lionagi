@@ -148,6 +148,16 @@ async def rename_session(arguments: dict[str, Any]) -> dict[str, Any]:
         # genuine race (the run was deleted), not an ownership question.
         return {"renamed": False, "reason": "not_found"}
 
+    row_project = row_dict.get("project")
+    if not isinstance(row_project, str) or not row_project:
+        # Only reachable through resolve_run()'s exact-id arm: a fenced
+        # resolution always yields a row matching the turn's own non-empty
+        # project. The execute-time ownership guard refuses a row with no
+        # project, so creating a proposal for one would burn a human
+        # approval on an act that cannot execute -- report it the way the
+        # executor would.
+        return {"renamed": False, "reason": "not_found"}
+
     # Carried through to `execute_rename_session_command` so ownership is
     # checked again immediately before the row is written, not only once at
     # resolution time -- the human's approval window is a gap a run's
@@ -204,7 +214,8 @@ async def execute_rename_session_command(command: dict[str, Any]) -> dict[str, A
             return {"status": "not_found", "id": run_id}
         row_dict = db._row_to_dict(row)
         # A command built by rename_session() above always carries the
-        # caller's own (non-empty) project -- a missing or empty project
+        # resolved row's own (non-empty) project -- rename_session() refuses
+        # to propose for a row without one. A missing or empty project
         # here is itself an ownership failure, not a value meaning
         # "unscoped, allow any row" -- it fails exactly like a project
         # mismatch and exactly like a nonexistent id, the same reasoning

@@ -850,9 +850,11 @@ async def test_run_progress_ambiguous_id_prefix_hides_foreign_project_candidates
 
 async def test_run_progress_turn_with_no_project_context_fails_closed(db_path, monkeypatch):
     """A turn whose identity is present but whose own context names no
-    project must never fall back to matching every project's runs -- it is
-    refused with a typed error before any row is read, not merely before one
-    foreign row is exposed."""
+    project must never fall back to enumerating every project's runs:
+    prefix and name-substring references are refused with a typed error
+    whose message names the remedy. The one deliberate exception is an
+    exact full-UUID reference -- it identifies at most one row and cannot
+    enumerate, the same position run_detail takes for a bare id."""
     from lionagi.studio.operator.run_progress import MissingOwnerContextError, resolve_run
 
     sid = str(uuid.uuid4())
@@ -863,14 +865,55 @@ async def test_run_progress_turn_with_no_project_context_fails_closed(db_path, m
     monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
 
-    with pytest.raises(MissingOwnerContextError):
+    with pytest.raises(MissingOwnerContextError, match="full 36-character id"):
         await resolve_run("nightly-triage")
 
     with pytest.raises(MissingOwnerContextError):
-        await resolve_run(sid)
+        await resolve_run(sid[:8])
 
-    with pytest.raises(MissingOwnerContextError):
-        await resolve_run("current")
+    result = await resolve_run(sid)
+    assert result == {"found": True, "ambiguous": False, "session_id": sid}
+
+    # A nonexistent exact UUID is a clean not-found, not an error -- and not
+    # a fall-through into the fenced text-search arms.
+    result = await resolve_run(str(uuid.uuid4()))
+    assert result == {"found": False}
+
+
+async def test_run_progress_current_resolves_on_a_turn_with_no_project(db_path, monkeypatch):
+    """'Cancel/inspect the run the human is looking at' must work from any
+    view: the current-view selection is a full id the human's own browser
+    reported, so it rides the exact-id arm through the project fence. The
+    seeded row deliberately has no project -- the arm must not depend on
+    one."""
+    from lionagi.studio.operator.run_progress import run_progress
+    from lionagi.studio.operator.store import OperatorStore
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="completed", project=None)
+
+    store = OperatorStore(db_path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="how is this run going?",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "selection": {"s": sid},
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    result = await run_progress({"run": "current"})
+
+    assert result["found"] is True
+    assert result["id"] == sid
 
 
 async def test_run_progress_no_identity_at_all_stays_unscoped(db_path):
