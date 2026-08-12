@@ -3936,11 +3936,8 @@ async def test_execute_dag_delegates_to_planning_engine_run_dag(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_synthesize_calls_env_session_flow_with_builder_graph(tmp_path):
-    """cli-o-flow-synth: `_synthesize` submits the final synthesis op directly
-    through `env.session.flow`, a distinct call site from the run_dag bridge
-    cli-o-flow-exec uses — it needs its own identity-preserving probe rather
-    than relying on expected_target being read anywhere."""
+async def test_synthesize_calls_execution_engine_with_builder_graph(tmp_path):
+    """cli-o-flow-synth: synthesis reuses the execution engine's run_dag bridge."""
     from lionagi.casts.emission import TaskAssignment
     from lionagi.cli.orchestrate.flow import _DagState, _ExecResult, _PlanResult, _synthesize
     from tests.cli.orchestrate.test_flow_phases import _FakeBranch, _make_env
@@ -3965,6 +3962,7 @@ async def test_synthesize_calls_env_session_flow_with_builder_graph(tmp_path):
         role_base={},
         worker_models=["codex/gpt-5.5"],
     )
+    run_dag_spy = AsyncMock(return_value={"operation_results": {}, "completed_operations": []})
     exec_result = _ExecResult(
         agent_results=[
             {
@@ -3976,10 +3974,8 @@ async def test_synthesize_calls_env_session_flow_with_builder_graph(tmp_path):
         ],
         n_spawned=0,
         t_exec_elapsed=1.0,
+        engine_run=mock.MagicMock(run_dag=run_dag_spy),
     )
-
-    flow_spy = AsyncMock(return_value={"operation_results": {}, "completed_operations": []})
-    env.session.flow = flow_spy
 
     await _synthesize(
         env,
@@ -3991,8 +3987,8 @@ async def test_synthesize_calls_env_session_flow_with_builder_graph(tmp_path):
         model_spec="codex/gpt-5.5",
     )
 
-    flow_spy.assert_called_once()
-    passed_graph = flow_spy.call_args.args[0]
+    run_dag_spy.assert_awaited_once_with(env.builder.get_graph(), verbose=False)
+    passed_graph = run_dag_spy.call_args.args[0]
     assert passed_graph.nodes == env.builder._nodes
     assert len(passed_graph.nodes) == 1
 

@@ -764,6 +764,7 @@ class _ExecResult:
     n_spawned: int
     t_exec_elapsed: float
     escalated_agent_ids: list[str] = field(default_factory=list)
+    engine_run: Any | None = field(default=None, repr=False)
 
 
 # ── Phase 1: build DAG ────────────────────────────────────────────────────────
@@ -2105,6 +2106,7 @@ async def _execute_dag(
         n_spawned=n_spawned,
         t_exec_elapsed=t_exec_elapsed,
         escalated_agent_ids=escalated_agent_ids,
+        engine_run=eng_run,
     )
 
 
@@ -2172,7 +2174,12 @@ async def _synthesize(
         context=artifacts,
     )
     t_synth = time.monotonic()
-    synth_result_raw = await env.session.flow(env.builder.get_graph(), verbose=env.verbose)
+    if exec_result.engine_run is None:
+        raise RuntimeError("synthesis requires the engine run that executed the DAG")
+    synth_result_raw = await exec_result.engine_run.run_dag(
+        env.builder.get_graph(),
+        verbose=env.verbose,
+    )
     t_synth_elapsed = time.monotonic() - t_synth
     synth_res = synth_result_raw.get("operation_results", {}).get(synth_node)
     synthesis_result = {

@@ -107,8 +107,10 @@ class _SessionBackedEngineRun:
     async def run_dag(self, graph, **kwargs):
         inspect.signature(EngineRun.run_dag).bind(self, graph, **kwargs)
         assert isinstance(graph, Graph)
-        assert set(kwargs) == _RUN_DAG_KEYWORDS
         self.session.run_dag_calls.append((graph, dict(kwargs)))
+        if set(kwargs) == {"verbose"}:
+            return await self.session.flow(graph, verbose=kwargs["verbose"])
+        assert set(kwargs) == _RUN_DAG_KEYWORDS
         node_ids = tuple(node.id for node in graph.internal_nodes)
         assert len(node_ids) == len(self.session.execution_responses)
         return {
@@ -156,7 +158,7 @@ def _env(tmp_path, execution_responses: list[str], *, spawned_operations: int = 
 
 
 def _assert_run_dag_contract(env, *, expected_max_concurrent: int = 2) -> None:
-    assert len(env.session.run_dag_calls) == 1
+    assert env.session.run_dag_calls
     graph, kwargs = env.session.run_dag_calls[0]
     assert graph is env.builder.get_graph()
     on_branch_created = kwargs.pop("on_branch_created")
@@ -257,6 +259,7 @@ async def test_run_flow_inner_sequences_phases_and_propagates_results_to_synthes
         "[implementer via implementer]: implementation output",
     ]
     _assert_run_dag_contract(env)
+    assert len(env.session.run_dag_calls) == 2
     assert len(env.session.flow_calls) == 1
     assert "research output" in output
     assert "implementation output" in output
@@ -294,6 +297,7 @@ async def test_run_flow_inner_with_synthesis_controls_synthesis_gate(
     )
 
     _assert_run_dag_contract(env)
+    assert len(env.session.run_dag_calls) == 1 + int(expected_synthesis)
     assert len(env.session.flow_calls) == int(expected_synthesis)
     assert ("synthesized deliverable" in output) is expected_synthesis
     assert len(env.builder.get_graph().internal_nodes) == (3 if expected_synthesis else 2)

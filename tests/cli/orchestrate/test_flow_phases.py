@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -1431,10 +1431,10 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
         ],
         n_spawned=0,
         t_exec_elapsed=1.0,
+        engine_run=SimpleNamespace(
+            run_dag=AsyncMock(return_value={"operation_results": {"node-0": "synthesized content"}})
+        ),
     )
-
-    # session.flow returns a synthesis response.
-    env.session.flow = _make_flow_returning("node-1", "synthesized content")
 
     result = await _synthesize(
         env,
@@ -1450,6 +1450,64 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
     assert "model" in result
     assert "response" in result
     assert "time_ms" in result
+
+
+@pytest.mark.asyncio
+async def test_synthesize_reuses_execution_engine_lifecycle_bridge(tmp_path):
+    """Synthesis must use the same engine run that executed the worker DAG."""
+    env = _make_env(tmp_path)
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-worker"],
+        known_nodes={"node-worker"},
+        deps_by_node={"node-worker": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "response": "findings",
+            }
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+    )
+    engine_run = SimpleNamespace(
+        run_dag=AsyncMock(
+            return_value={"operation_results": {"node-0": "synthesized through engine"}}
+        )
+    )
+    exec_result.engine_run = engine_run
+    env.session.flow = _make_flow_returning("node-0", "direct session result")
+
+    result = await _synthesize(
+        env,
+        "task",
+        plan_result,
+        dag_state,
+        exec_result,
+        synthesis_model=None,
+        model_spec="codex/gpt-5.5",
+    )
+
+    engine_run.run_dag.assert_awaited_once_with(
+        env.builder.get_graph(),
+        verbose=env.verbose,
+    )
+    assert result is not None
+    assert result["response"] == "synthesized through engine"
 
 
 @pytest.mark.asyncio
@@ -1491,9 +1549,10 @@ async def test_synthesize_includes_spawned_artifact_dir(tmp_path):
         ],
         n_spawned=1,
         t_exec_elapsed=1.0,
+        engine_run=SimpleNamespace(
+            run_dag=AsyncMock(return_value={"operation_results": {"node-0": "synthesized content"}})
+        ),
     )
-
-    env.session.flow = _make_flow_returning("node-1", "synthesized content")
 
     await _synthesize(
         env,
