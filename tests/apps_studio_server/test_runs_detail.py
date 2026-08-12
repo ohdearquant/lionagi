@@ -365,6 +365,37 @@ async def test_get_run_satisfies_run_list_contract(patched_runs_svc):
     assert result["branch_count"] == 2
 
 
+async def test_completed_run_has_no_effective_liveness_health(patched_runs_svc):
+    """A terminal success is described by status, not a live-process signal."""
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="completed")
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    assert result["status"] == "completed"
+    assert result["effective_health"] is None
+
+
+@pytest.mark.parametrize(
+    "status", ["completed_empty", "failed", "timed_out", "aborted", "cancelled"]
+)
+async def test_unsuccessful_terminal_run_has_no_false_healthy_liveness(
+    patched_runs_svc, status: str
+):
+    """Terminal outcome remains explicit while inapplicable liveness is absent."""
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status=status)
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    assert result["status"] == status
+    assert result["effective_health"] is None
+
+
 async def test_get_run_surfaces_status_reason(patched_runs_svc):
     """ADR-0057: a failed run surfaces the reason fields the detail banner reads."""
     svc, db_path = patched_runs_svc

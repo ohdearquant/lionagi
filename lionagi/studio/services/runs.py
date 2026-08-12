@@ -456,18 +456,25 @@ def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool
 
 
 def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
-    """Canonical Run row shape shared by list and detail routes."""
-    from lionagi.state.health import classify_session_health
+    """Canonical Run row shape shared by list and detail routes.
 
-    health = classify_session_health(
-        s,
-        now=now,
-        process_alive=process_alive,
-        has_artifacts=bool(s.get("artifacts_path")),
-        has_stale_locks=False,
-    )
-    # Expose the classifier verdict verbatim; the dashboard maps UNRESPONSIVE→"stuck".
-    effective_health = health.value
+    ``effective_health`` is a live-process diagnostic, not an execution
+    outcome. Once the session is terminal there is no process health to
+    report; callers must use ``status`` and its reason fields for the outcome.
+    """
+    effective_health: str | None = None
+    if s.get("status") == "running":
+        from lionagi.state.health import classify_session_health
+
+        health = classify_session_health(
+            s,
+            now=now,
+            process_alive=process_alive,
+            has_artifacts=bool(s.get("artifacts_path")),
+            has_stale_locks=False,
+        )
+        # The dashboard maps a live-but-quiet UNRESPONSIVE run onto "stuck".
+        effective_health = health.value
     return {
         "run_id": s["id"],
         "id": s["id"],
