@@ -2352,7 +2352,7 @@ async def wait(
     }
 
 
-def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
+def mark_terminal(run_id: str, cli_status: str, *, reason_code: str | None = None) -> WriteResult:
     """Record a terminal status for *run_id* (called by the CLI notify hook).
 
     The CLI's terminal status is trusted and recorded verbatim, never matched
@@ -2372,6 +2372,8 @@ def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
             return WriteResult(job, guard.state)
         job["status"] = cli_status
         job["cli_status"] = cli_status
+        if reason_code:
+            job["reason_code"] = reason_code
         job["finished_at"] = _now_iso()
         # The hook fires as the run ends, so this is the end as it happened.
         job["finished_at_precision"] = FINISHED_AT_OBSERVED

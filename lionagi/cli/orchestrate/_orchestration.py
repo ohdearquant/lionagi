@@ -533,6 +533,10 @@ class OrchestrationEnv:
     budget_deadline_epoch: float | None = None
     _live_persist: dict | None = field(default=None, repr=False)
     _run_manifest: dict[str, Any] = field(default_factory=dict, repr=False)
+    # Capacity-refused reactive work, populated after DAG execution and
+    # consumed by terminal persistence. Kept on the run env so it survives
+    # the phase boundary without being confused with operation failures.
+    _spawn_refusal_evidence: list[dict[str, Any]] = field(default_factory=list, repr=False)
     _name_counts: dict[str, int] = field(default_factory=dict)
     _all_names: list[str] = field(default_factory=list)
 
@@ -1652,6 +1656,7 @@ async def stop_live_persist(
     extras = getattr(env, "_finalize_extras", None)
     escalated_evidence = getattr(env, "_escalated_evidence", None)
     failed_operation_evidence = getattr(env, "_failed_operation_evidence", None)
+    spawn_refusal_evidence = getattr(env, "_spawn_refusal_evidence", None)
     finalize_error = getattr(env, "_finalize_error", None)
     artifact_write_error = getattr(env, "_artifact_write_error", None)
     gate_rejected_evidence = getattr(env, "_gate_rejected_evidence", None)
@@ -1662,6 +1667,7 @@ async def stop_live_persist(
         extras=extras,
         escalated_evidence=escalated_evidence,
         failed_operation_evidence=failed_operation_evidence,
+        spawn_refusal_evidence=spawn_refusal_evidence,
         finalize_error=finalize_error,
         artifact_write_error=artifact_write_error,
         gate_rejected_evidence=gate_rejected_evidence,

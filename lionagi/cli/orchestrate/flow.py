@@ -164,17 +164,33 @@ def _heartbeat_warning(
 
 def _surface_dropped_spawns(env: OrchestrationEnv, dropped_spawns: list[dict]) -> None:
     rejected = [item for item in dropped_spawns if item.get("reason") == "builder_error"]
-    if not rejected:
-        return
+    if rejected:
+        evidence = []
+        for item in rejected:
+            assignee = item.get("assignee") or "unassigned"
+            error = item.get("error") or "spawn routing failed"
+            progress(f"  ⚠ SPAWN REJECTED: {assignee} — {error}")
+            evidence.append({"kind": "unroutable_spawn", "id": assignee, "label": error})
+        prior = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior, *evidence]
 
-    evidence = []
-    for item in rejected:
-        assignee = item.get("assignee") or "unassigned"
-        error = item.get("error") or "spawn routing failed"
-        progress(f"  ⚠ SPAWN REJECTED: {assignee} — {error}")
-        evidence.append({"kind": "unroutable_spawn", "id": assignee, "label": error})
-    prior = getattr(env, "_failed_operation_evidence", None) or []
-    env._failed_operation_evidence = [*prior, *evidence]
+    refused = [item for item in dropped_spawns if item.get("reason") == "max_spawn_exceeded"]
+    if refused:
+        evidence = []
+        for item in refused:
+            assignee = item.get("assignee") or "unassigned"
+            emitter_id = str(item.get("emitter_id") or item.get("op_id") or assignee)
+            reason = str(item.get("reason"))
+            progress(f"  ⚠ SPAWN REFUSED: {emitter_id} → {assignee} — {reason}")
+            evidence.append(
+                {
+                    "kind": "refused_spawn",
+                    "id": emitter_id,
+                    "label": f"{assignee} ({reason})",
+                }
+            )
+        prior = getattr(env, "_spawn_refusal_evidence", None) or []
+        env._spawn_refusal_evidence = [*prior, *evidence]
 
 
 class FlowPlanError(LionError):
@@ -585,6 +601,25 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
+                spawn_refused = [
+                    s
+                    for s in sessions
+                    if str(s.get("status_reason_code") or "") == RunReasons.COMPLETED_SPAWN_REFUSED
+                ]
+                if spawn_refused:
+                    spawn_metadata = dict(metadata)
+                    spawn_metadata["spawn_refused_session_ids"] = [
+                        s["id"] for s in spawn_refused if s.get("id")
+                    ]
+                    return (
+                        "completed",
+                        RunReasons.COMPLETED_SPAWN_REFUSED,
+                        "Flow completed, but at least one child session refused "
+                        "reactively requested work because its spawn capacity "
+                        "was exhausted.",
+                        [{"kind": "session", "id": s["id"]} for s in spawn_refused if s.get("id")],
+                        spawn_metadata,
+                    )
                 # A "completed" child may still carry COMPLETED_GATE_REJECTED
                 # (a gate rejected mid-DAG and short-circuited its dependent
                 # subtree) — surface that at the invocation level too, or it
