@@ -1,6 +1,14 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Studio Operator lifecycle service/adapter: ``rename_session``.
+"""Studio Operator lifecycle service/adapter, exposed to the Operator as
+the ``rename_run`` tool.
+
+The module and its internals keep the ``rename_session`` name (the durable
+``command_type`` must stay stable across pending proposals), but the
+tool's catalog name says *run* like every sibling (``cancel_run``,
+``resume_run``): a run and its session are the same ``sessions`` row, and
+a name that suggests otherwise invites the caller to refuse the rename
+while hunting for a "session id" that is the id it already has.
 
 Gives one Studio run (a `sessions` row) a human name through the Operator,
 gated on the same durable human allow/deny proposal flow `cancel_run` and
@@ -36,8 +44,9 @@ _REJECTED_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 RENAME_SESSION_COMMAND_TYPE = "rename_session"
 
 RENAME_SESSION_DESCRIPTION = (
-    "Give one Studio run a human name. This renames the run's own record "
-    "only -- it is not the Operator conversation's own name, which has a "
+    "Give one Studio run a human name. A run and its session are the same "
+    "record here, so this renames the run itself -- it is not the Operator "
+    "conversation's own name, which has a "
     "separate rename path outside this tool. Goes through a human approval "
     "flow; it is never automatic, and a denied proposal leaves the run's "
     "name untouched. Accepts a run UUID, an 8+ hex id prefix, a name "

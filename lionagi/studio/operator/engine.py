@@ -79,7 +79,7 @@ _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__run_detail",
     "mcp__studio_operator__cancel_run",
     "mcp__studio_operator__resume_run",
-    "mcp__studio_operator__rename_session",
+    "mcp__studio_operator__rename_run",
     "mcp__studio_operator__list_sessions",
     "mcp__studio_operator__session_detail",
     "mcp__studio_operator__session_signals",

@@ -178,7 +178,7 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "run_detail": RunDetailInput,
     "cancel_run": CancelRunInput,
     "resume_run": ResumeRunInput,
-    "rename_session": RenameSessionInput,
+    "rename_run": RenameSessionInput,
     "list_sessions": ListSessionsInput,
     "session_detail": SessionDetailInput,
     "session_signals": SessionSignalsInput,
@@ -265,7 +265,7 @@ _TOOL_DESCRIPTIONS = {
     ),
     "cancel_run": CANCEL_RUN_DESCRIPTION,
     "resume_run": RESUME_RUN_DESCRIPTION,
-    "rename_session": RENAME_SESSION_DESCRIPTION,
+    "rename_run": RENAME_SESSION_DESCRIPTION,
     "list_sessions": (
         "List a filtered page of Studio sessions. The result is capped at 500 rows, "
         "reports the matching total and whether more rows exist, and labels the store source."
@@ -1065,7 +1065,7 @@ _TOOL_HANDLERS = {
     "run_detail": run_detail,
     "cancel_run": cancel_run,
     "resume_run": resume_run,
-    "rename_session": rename_session,
+    "rename_run": rename_session,
     "list_sessions": list_sessions,
     "session_detail": session_detail,
     "session_signals": session_signals,
