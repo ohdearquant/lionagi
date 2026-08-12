@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import sqlite3
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
@@ -221,6 +223,84 @@ def _ps_snapshot() -> str:
         return ""
 
 
+# The command-table fallback exists for imported and legacy sessions that do
+# not carry a targeted process identity.  It is host-wide work, so nearby
+# requests share a very short-lived answer.  The value is deliberately short:
+# this cache is a display/diagnostic optimization, never evidence used to send
+# a signal to a process.
+PS_SNAPSHOT_TTL_SECONDS = 1.0
+
+
+class _PsSnapshotCache(NamedTuple):
+    value: str
+    stored_at: float
+    duration_ms: float
+
+
+_PS_SNAPSHOT_CACHE: _PsSnapshotCache | None = None
+_PS_SNAPSHOT_INFLIGHT: asyncio.Task[str] | None = None
+_PS_SNAPSHOT_METRICS: dict[str, int | float | None] | None = None
+
+
+def _ps_snapshot_metrics_state() -> dict[str, int | float | None]:
+    global _PS_SNAPSHOT_METRICS
+    if _PS_SNAPSHOT_METRICS is None:
+        _PS_SNAPSHOT_METRICS = {
+            "captures": 0,
+            "cache_hits": 0,
+            "singleflight_hits": 0,
+            "identity_resolved": 0,
+            "fallback_checks": 0,
+            "last_scan_duration_ms": None,
+        }
+    return _PS_SNAPSHOT_METRICS
+
+
+async def _capture_ps_snapshot() -> str:
+    """Capture once off-loop and publish the cache before waking waiters."""
+    global _PS_SNAPSHOT_CACHE
+
+    started = time.perf_counter()
+    value = await anyio.to_thread.run_sync(_ps_snapshot)
+    duration_ms = (time.perf_counter() - started) * 1000
+    _PS_SNAPSHOT_CACHE = _PsSnapshotCache(
+        value=value,
+        stored_at=time.monotonic(),
+        duration_ms=duration_ms,
+    )
+    metrics = _ps_snapshot_metrics_state()
+    metrics["captures"] = int(metrics["captures"] or 0) + 1
+    metrics["last_scan_duration_ms"] = round(duration_ms, 3)
+    return value
+
+
+async def cached_ps_snapshot() -> str:
+    """Return a short-TTL process snapshot with async singleflight refresh."""
+    global _PS_SNAPSHOT_INFLIGHT
+
+    cached = _PS_SNAPSHOT_CACHE
+    if cached is not None and time.monotonic() - cached.stored_at < PS_SNAPSHOT_TTL_SECONDS:
+        metrics = _ps_snapshot_metrics_state()
+        metrics["cache_hits"] = int(metrics["cache_hits"] or 0) + 1
+        return cached.value
+
+    task = _PS_SNAPSHOT_INFLIGHT
+    if task is None or task.done():
+        task = asyncio.create_task(_capture_ps_snapshot())
+        _PS_SNAPSHOT_INFLIGHT = task
+    else:
+        metrics = _ps_snapshot_metrics_state()
+        metrics["singleflight_hits"] = int(metrics["singleflight_hits"] or 0) + 1
+
+    try:
+        # One cancelled request must not cancel the shared capture underneath
+        # other viewers that are already awaiting it.
+        return await asyncio.shield(task)
+    finally:
+        if task.done() and _PS_SNAPSHOT_INFLIGHT is task:
+            _PS_SNAPSHOT_INFLIGHT = None
+
+
 # Process start-time comparison tolerance (clock-tick rounding).
 _PID_CREATE_TIME_TOLERANCE = 1.0
 
@@ -288,6 +368,57 @@ def process_liveness(
     if session_id and session_id in snapshot:
         return True
     return None
+
+
+async def _resolve_process_liveness_probe_with_snapshot(
+    probe: Callable[[str], bool | None],
+) -> tuple[bool | None, str]:
+    """Resolve liveness and return the fallback evidence used for sync classifiers."""
+    targeted = probe("")
+    metrics = _ps_snapshot_metrics_state()
+    if targeted is not None:
+        metrics["identity_resolved"] = int(metrics["identity_resolved"] or 0) + 1
+        return targeted, ""
+
+    metrics["fallback_checks"] = int(metrics["fallback_checks"] or 0) + 1
+    snapshot = await cached_ps_snapshot()
+    return probe(snapshot), snapshot
+
+
+async def resolve_process_liveness_probe(
+    probe: Callable[[str], bool | None],
+) -> bool | None:
+    """Apply targeted-first fallback semantics through a caller-owned probe."""
+    resolved, _snapshot = await _resolve_process_liveness_probe_with_snapshot(probe)
+    return resolved
+
+
+async def _resolve_process_liveness_with_snapshot(
+    session: dict[str, Any],
+    artifacts_path: Path | None,
+) -> tuple[bool | None, str]:
+    return await _resolve_process_liveness_probe_with_snapshot(
+        lambda snapshot: process_liveness(session, artifacts_path, ps_snapshot=snapshot)
+    )
+
+
+async def resolve_process_liveness(
+    session: dict[str, Any],
+    artifacts_path: Path | None,
+) -> bool | None:
+    """Prefer targeted identity; share an off-loop host scan only for legacy rows."""
+    resolved, _snapshot = await _resolve_process_liveness_with_snapshot(session, artifacts_path)
+    return resolved
+
+
+def process_snapshot_diagnostics() -> dict[str, int | float | None]:
+    """Observable coverage and capture cost for the legacy liveness fallback."""
+    metrics = dict(_ps_snapshot_metrics_state())
+    cached = _PS_SNAPSHOT_CACHE
+    metrics["cache_age_ms"] = (
+        round((time.monotonic() - cached.stored_at) * 1000, 3) if cached is not None else None
+    )
+    return metrics
 
 
 def _artifacts_path(row: Any) -> Path | None:
@@ -521,14 +652,14 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
             """
         )
         rows = await cur.fetchall()
-    snapshot: str | None = None
     # One scan, one answer per artifact root: sessions repeat their roots
     # heavily, and the walk is the expensive part.
     lock_cache: dict[tuple[str, float], _ScanResult] = {}
     lock_budget = _ScanBudget()
     for row in rows:
-        if snapshot is None:
-            snapshot = _ps_snapshot()
+        artifacts = _artifacts_path(row)
+        session = {"id": row["id"], "node_metadata": row["node_metadata"]}
+        _process_alive, snapshot = await _resolve_process_liveness_with_snapshot(session, artifacts)
         # Classification stats an artifact tree and may walk it. Both are
         # synchronous filesystem work, and this coroutine is the one serving
         # every other request while it runs.
@@ -612,6 +743,7 @@ async def health_report() -> dict[str, Any]:
         return {
             "sessions": {"total": 0, "by_status": {}, "by_health": {}, "unhealthy": []},
             "db": db_health(),
+            "process_snapshot": process_snapshot_diagnostics(),
             "scheduler_timezone": scheduler_timezone_report(),
             "code_identity": await _code_identity_report(),
             "diagnostic_run_at": now_utc().isoformat(),
@@ -658,7 +790,6 @@ async def health_report() -> dict[str, Any]:
     by_status: Counter[str] = Counter()
     by_health: Counter[str] = Counter()
     unhealthy: list[dict[str, Any]] = []
-    snapshot: str | None = None
     # One scan, one answer per artifact root: sessions repeat their roots
     # heavily, and the walk is the expensive part.
     lock_cache: dict[tuple[str, float], _ScanResult] = {}
@@ -698,9 +829,7 @@ async def health_report() -> dict[str, Any]:
                 lock_scan_truncated += 1
 
         if status == "running":
-            if snapshot is None:
-                snapshot = _ps_snapshot()
-            process_alive = process_liveness(sess, artifacts, snapshot)
+            process_alive = await resolve_process_liveness(sess, artifacts)
         else:
             process_alive = False
 
@@ -769,6 +898,7 @@ async def health_report() -> dict[str, Any]:
             "unhealthy": unhealthy,
         },
         "db": db_health(),
+        "process_snapshot": process_snapshot_diagnostics(),
         # The zone this daemon interprets cron expressions in, as resolved at
         # its own start. Reported alongside the other daemon state because the
         # value is frozen per process: nothing in the source tree or the host's
@@ -841,7 +971,6 @@ async def transition_sessions(
     transitioned: list[str] = []
     skipped: list[dict[str, str]] = []
     now = time.time()
-    txn_snapshot: str | None = None
     # One scan, one answer per artifact root: sessions repeat their roots
     # heavily, and the walk is the expensive part.
     lock_cache: dict[tuple[str, float], _ScanResult] = {}
@@ -879,9 +1008,9 @@ async def transition_sessions(
                     )
                 )
                 has_stale_locks = scan.lock is not None
-            if txn_snapshot is None:
-                txn_snapshot = _ps_snapshot()
-            process_alive = process_liveness(current, artifacts, txn_snapshot)
+            process_alive, liveness_snapshot = await _resolve_process_liveness_with_snapshot(
+                current, artifacts
+            )
             health = classify_session_health(
                 current,
                 now=now,
@@ -906,7 +1035,7 @@ async def transition_sessions(
                     current,
                     now=now,
                     stale_seconds=3600,
-                    ps_snapshot=txn_snapshot,
+                    ps_snapshot=liveness_snapshot,
                     lock_cache=lock_cache,
                     lock_budget=lock_budget,
                 )
