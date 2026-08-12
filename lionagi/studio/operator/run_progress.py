@@ -96,6 +96,27 @@ def _scrub(value: Any) -> Any:
     return scrub_text(value) if isinstance(value, str) else value
 
 
+# The health classifier's own terminal set (lionagi/state/health.py): for
+# these statuses it answers "healthy" whenever the run left no residue
+# (no stale locks), because health is a LIVENESS concept and a finished
+# run has no liveness. Projected next to status="failed", though, the
+# word "healthy" reads as a claim about the run's outcome and misleads
+# the caller. So for terminal runs this projection drops the vacuous
+# "healthy" and keeps only a pathological verdict (e.g. a zombie's
+# leftover locks), which is the only health information a finished run
+# can still carry.
+_TERMINAL_STATUSES = frozenset(
+    {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
+)
+
+
+def _terminal_safe_health(run: dict[str, Any]) -> str | None:
+    health = run.get("effective_health")
+    if run.get("status") in _TERMINAL_STATUSES and health == "healthy":
+        return None
+    return health
+
+
 def _candidate(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row.get("id"),
@@ -530,7 +551,7 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
         "ambiguous": False,
         "id": run.get("id"),
         "status": run.get("status"),
-        "effectiveHealth": run.get("effective_health"),
+        "effectiveHealth": _terminal_safe_health(run),
         "startedAt": started_at,
         "endedAt": ended_at,
         "elapsedSeconds": elapsed_seconds,
