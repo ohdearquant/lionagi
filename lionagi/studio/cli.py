@@ -384,7 +384,13 @@ def _start_local(
     if dev_mode:
         # Dev mode: hot-reload Vite dev server + uvicorn side-by-side.
         # Vite proxies /api → uvicorn (configured in vite.config.mts).
-        launched = _launch_vite_dev(frontend_dir, frontend_port, host=host)
+        launched = _launch_vite_dev(
+            frontend_dir,
+            frontend_port,
+            host=host,
+            api_host=host,
+            api_port=port,
+        )
         if launched:
             frontend_proc, frontend_url = launched
             if frontend_url:
@@ -707,6 +713,8 @@ def _launch_vite_dev(
     frontend_port: int,
     *,
     host: str = "127.0.0.1",
+    api_host: str | None = None,
+    api_port: int | None = None,
 ) -> tuple[subprocess.Popen, str | None] | None:
     """Spawn the Vite dev server and resolve the URL it actually bound to.
 
@@ -716,6 +724,11 @@ def _launch_vite_dev(
     only when the process itself failed to spawn.
     """
     env = {**os.environ, "PORT": str(frontend_port)}
+    if api_host is not None and api_port is not None:
+        # An operator-supplied target is an intentional escape hatch and wins
+        # over the host/port selected by this CLI invocation.
+        url_host = f"[{api_host}]" if ":" in api_host and not api_host.startswith("[") else api_host
+        env.setdefault("STUDIO_API_URL", f"http://{url_host}:{api_port}")
     try:
         proc = subprocess.Popen(  # noqa: S603
             _vite_dev_argv(frontend_port, host),  # noqa: S607
