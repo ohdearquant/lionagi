@@ -226,6 +226,68 @@ def _render_command_arg(template: str, context: dict) -> str:
     return rendered
 
 
+_RESERVED_FLOW_FLAGS: frozenset[str] | None = None
+
+
+def _reserved_flow_flags() -> frozenset[str]:
+    """Option strings of the base `li o flow` parser, derived not hand-kept.
+
+    `li play NAME --key ...` rewrites to `li o flow -p NAME --key ...`, so a
+    playbook-arg key whose flag form matches a base flow option would be
+    parsed as that built-in flag (e.g. ``bypass`` -> ``--bypass`` disabling
+    approval controls) instead of reaching the playbook's declared args.
+    Deriving the set from the parser itself means a flag added to flow later
+    is reserved here automatically.
+    """
+    global _RESERVED_FLOW_FLAGS
+    if _RESERVED_FLOW_FLAGS is None:
+        import argparse
+
+        from lionagi.cli.orchestrate import add_orchestrate_subparser
+
+        probe = argparse.ArgumentParser(prog="li", add_help=False)
+        flow = add_orchestrate_subparser(probe.add_subparsers(dest="command"))["flow"]
+        _RESERVED_FLOW_FLAGS = frozenset(
+            option
+            for action in flow._actions
+            for option in action.option_strings
+            if option.startswith("--")
+        )
+    return _RESERVED_FLOW_FLAGS
+
+
+def _validate_playbook_args(pb_args: object) -> None:
+    """Validate a play launch's typed playbook args before argv construction.
+
+    Keys become `--key` flags (underscores map to dashes, matching the play
+    CLI's own schema-derived flags), so they must be clean identifiers that do
+    not shadow a built-in flow flag; values ride as the following token, so a
+    leading '-' would be re-parsed as a flag (CWE-88) and is rejected.
+    """
+    if not isinstance(pb_args, dict):
+        raise ValueError("action_playbook_args must be an object of arg name -> value")
+    import re
+
+    for key, value in pb_args.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key):
+            raise ValueError(f"action_playbook_args key {key!r} is not a valid playbook arg name")
+        if "--" + key.replace("_", "-") in _reserved_flow_flags():
+            raise ValueError(
+                f"action_playbook_args key {key!r} collides with a built-in flow "
+                "CLI flag and would change how the run is spawned rather than "
+                "reach the playbook's own declared args"
+            )
+        if not isinstance(value, (str, int, float, bool)):
+            raise ValueError(
+                f"action_playbook_args[{key!r}] must be a scalar, got {type(value).__name__}"
+            )
+        if isinstance(value, str) and value.startswith("-"):
+            raise ValueError(
+                f"action_playbook_args[{key!r}] starts with '-' and would inject "
+                "a CLI flag into the spawned li process"
+            )
+
+
 def _validate_prompt(prompt: str) -> None:
     """Raise ValueError if *prompt* is exactly the end-of-options sentinel '--'.
 
@@ -384,6 +446,8 @@ def build_argv(
         _validate_identifier(playbook, "action_playbook")
     if isinstance(extra, list):
         _validate_extra_args(extra)
+    if kind == "play":
+        _validate_playbook_args(schedule.get("action_playbook_args") or {})
     if kind == "engine":
         _validate_engine_options(schedule.get("action_engine_options"))
 
@@ -394,6 +458,12 @@ def build_argv(
         prompt = _render_template(prompt, trigger_context)
     if prompt:
         _validate_prompt(prompt)
+    if kind == "play" and prompt.startswith("-"):
+        # Checked AFTER template rendering: `li play` has no '--' separator,
+        # so a leading-dash positional re-parses as a flag, and a template
+        # like '{{pr_title}}' can render to one (e.g. '--bypass') even when
+        # the stored template passes a pre-render check.
+        raise ValueError("action_prompt for a play launch must not start with '-'")
 
     argv = list(executable_prefix) if executable_prefix is not None else list(_DEFAULT_LI_PREFIX)
     tmp_path: str | None = None
@@ -435,12 +505,23 @@ def build_argv(
         argv += ["o", "fanout", *flags, "--", model, prompt]
 
     elif kind == "play":
-        # `li play NAME` is a positional-only subcommand; '--' is not needed
-        # because playbook names are validated as identifiers above and there
-        # is no freeform prompt positional.
+        # `li play NAME [--args...] [prompt]` — the playbook name is a
+        # validated identifier; typed playbook args (validated above) become
+        # the play CLI's own schema-derived flags; the prompt positional
+        # interpolates into the template's {input}. Bool args are store_true
+        # flags: present when truthy, absent otherwise.
         argv += ["play"]
         if playbook:
             argv.append(playbook)
+            for key, value in (schedule.get("action_playbook_args") or {}).items():
+                flag = "--" + key.replace("_", "-")
+                if isinstance(value, bool):
+                    if value:
+                        argv.append(flag)
+                else:
+                    argv += [flag, str(value)]
+            if prompt:
+                argv.append(prompt)
 
     elif kind == "flow_yaml":
         # No positionals here (spec file carries prompt/model), so extra

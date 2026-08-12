@@ -192,7 +192,8 @@ async def test_run_findings_not_found(db_path):
         pass
 
     result = await run_findings({"run": str(uuid.uuid4())})
-    assert result == {"found": False}
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
 
 
 async def test_run_findings_ambiguous_reference(db_path):
@@ -220,8 +221,13 @@ async def test_run_findings_zero_operations(db_path):
 
     assert result["found"] is True
     assert result["messages"] == {"items": [], "truncated": False, "returned": 0, "total": 0}
-    assert result["toolCalls"] == {"items": [], "truncated": False}
-    assert result["errors"] == {"items": [], "truncated": False}
+    assert result["toolCalls"] == {"items": [], "truncated": False, "returned": 0}
+    assert result["errors"] == {
+        "items": [],
+        "truncated": False,
+        "returned": 0,
+        "evidenceComplete": True,
+    }
     assert result["artifacts"] == {
         "contract": None,
         "contractTruncated": False,
@@ -772,7 +778,8 @@ async def test_run_findings_exact_id_of_a_foreign_project_run_is_not_found(db_pa
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
 
     result = await run_findings({"run": foreign})
-    assert result == {"found": False}
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
 
 
 async def test_run_findings_turn_with_no_project_context_fails_closed(db_path, monkeypatch):

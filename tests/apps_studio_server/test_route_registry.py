@@ -242,6 +242,7 @@ _MIGRATED_AREAS = {
     "schedules",
     "stats",
     "attention",
+    "hooks",
 }
 
 

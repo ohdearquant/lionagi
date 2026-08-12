@@ -140,9 +140,14 @@ class UiEffectEngine:
         return self._stream(turn)
 
 
-def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_path):
+def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_path, monkeypatch):
+    import lionagi._paths as paths_mod
     from lionagi.studio.operator.engine import build_operator_branch
     from lionagi.studio.operator.types import OperatorEngineTurn
+
+    # Hermetic: no operator_mcp.json / house-rules file from the developer's
+    # real LIONAGI_HOME may leak extra servers or tools into this pin.
+    monkeypatch.setattr(paths_mod, "LIONAGI_HOME", tmp_path / "lionagi-home")
 
     async def request_permission(*_args):
         raise AssertionError("branch construction cannot request permission")
@@ -191,6 +196,83 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
     }
     # The first turn of a conversation has nothing to resume.
     assert "resume" not in kwargs
+
+
+def test_operator_extra_mcp_config_grants_servers_tools_and_house_rules(tmp_path, monkeypatch):
+    """operator_mcp.json attaches extra servers and allows their tools; the
+    request-scoped servers cannot be overridden, an allowed tool must name a
+    server the config itself attaches, and operator_house_rules.md reaches
+    the system prompt."""
+    import lionagi._paths as paths_mod
+    from lionagi.studio.operator.engine import (
+        _operator_system_prompt,
+        build_operator_branch,
+    )
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    home = tmp_path / "lionagi-home"
+    home.mkdir()
+    (home / "operator_mcp.json").write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "khive": {"command": "/opt/knowledge/bin/server", "args": ["mcp"]},
+                    "studio_operator": {"command": "/bin/evil"},
+                    "broken": {"args": ["no-command-string"]},
+                },
+                "allowed_tools": [
+                    "mcp__khive__request",
+                    "mcp__elsewhere__request",
+                    "Bash",
+                ],
+            }
+        )
+    )
+    (home / "operator_house_rules.md").write_text("Answer as the house Operator.")
+    monkeypatch.setattr(paths_mod, "LIONAGI_HOME", home)
+
+    async def request_permission(*_args):
+        raise AssertionError("branch construction cannot request permission")
+
+    branch = build_operator_branch(
+        OperatorEngineTurn(
+            conversation_id="conversation",
+            request_id="request",
+            instruction="inspect recent failures",
+            context={},
+            history=(),
+            request_permission=request_permission,
+            store_path=str(tmp_path / "state.db"),
+        )
+    )
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    assert set(kwargs["mcp_servers"]) == {"studio_permission", "studio_operator", "khive"}
+    assert kwargs["mcp_servers"]["khive"]["command"] == "/opt/knowledge/bin/server"
+    # The reserved name keeps Studio's own server, never the config's.
+    assert kwargs["mcp_servers"]["studio_operator"]["command"] != "/bin/evil"
+    allowed = kwargs["allowed_tools"]
+    assert "mcp__khive__request" in allowed
+    assert "mcp__elsewhere__request" not in allowed, "tool without an attached server admitted"
+    assert "Bash" not in allowed, "non-MCP tool admitted through the extra allowlist"
+    # Every original application tool survives the widening.
+    assert "mcp__studio_operator__list_recent_runs" in allowed
+
+    prompt = _operator_system_prompt()
+    assert prompt.endswith("Answer as the house Operator.")
+    assert "You are the resident Operator" in prompt
+
+
+def test_operator_extra_mcp_absent_config_changes_nothing(tmp_path, monkeypatch):
+    import lionagi._paths as paths_mod
+    from lionagi.studio.operator.engine import (
+        _SYSTEM_PROMPT,
+        _operator_extra_mcp,
+        _operator_system_prompt,
+    )
+
+    monkeypatch.setattr(paths_mod, "LIONAGI_HOME", tmp_path / "empty-home")
+    assert _operator_extra_mcp() == ({}, [])
+    assert _operator_system_prompt() == _SYSTEM_PROMPT
 
 
 # The tool set the Operator is actually supposed to expose. Asserted
@@ -284,8 +366,8 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
 
     observed = {}
 
-    async def fake_list_runs(*, status, limit, offset):
-        observed.update(status=status, limit=limit, offset=offset)
+    async def fake_list_runs(*, status, kind=None, limit, offset):
+        observed.update(status=status, kind=kind, limit=limit, offset=offset)
         return [
             {
                 "id": "run-1",
@@ -313,7 +395,7 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
 
     monkeypatch.setattr(runs_service, "list_runs", fake_list_runs)
     result = await list_recent_runs({"limit": 2, "status": "failed"})
-    assert observed == {"status": "failed", "limit": 2, "offset": 0}
+    assert observed == {"status": "failed", "kind": None, "limit": 2, "offset": 0}
     assert result == {
         "runs": [
             {
@@ -422,6 +504,55 @@ async def test_application_mcp_effects_are_typed_durable_and_client_acknowledged
             rejection_code=None,
         )
     ) == {"effectId": navigation["effectId"], "status": "applied"}
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+
+
+@pytest.mark.asyncio
+async def test_navigate_targets_a_specific_run_and_library_entry(tmp_path, monkeypatch):
+    """navigate can put the human on one run (run_id -> s param) or one
+    library entry (sel), instead of only a space whose view default-selects
+    its first row."""
+    from lionagi.studio.operator.application_mcp import navigate
+
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="show me the run",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    run = await navigate({"space": "history", "run_id": "fb0a809a-28a8-4778-a49d-495b0cf14bec"})
+    entry = await navigate({"space": "library", "sel": "playbook:builtin:audit"})
+    both = await navigate({"space": "history", "status": "failed", "run_id": "abcd1234"})
+    faceted = await navigate({"space": "history", "status": "running", "run_kind": "play"})
+
+    frames = await store.list_frames(cid)
+    effects = [frame["payload"]["effect"] for frame in frames if frame["type"] == "ui_command"]
+    assert [e["params"] for e in effects] == [
+        {"s": "fb0a809a-28a8-4778-a49d-495b0cf14bec"},
+        {"sel": "playbook:builtin:audit"},
+        {"status": "failed", "s": "abcd1234"},
+        {"status": "running", "kind": "play"},
+    ]
+    assert [e["space"] for e in effects] == ["history", "library", "history", "history"]
+    assert run["status"] == entry["status"] == both["status"] == faceted["status"] == "pending"
+
+    # Targets are space-scoped: a run belongs to the fleet view, a sel to the
+    # library — the wrong pairing is refused before any effect is persisted.
+    with pytest.raises(ValueError, match="run_id"):
+        await navigate({"space": "library", "run_id": "abcd1234"})
+    with pytest.raises(ValueError, match="sel"):
+        await navigate({"space": "history", "sel": "playbook:builtin:audit"})
+    with pytest.raises(ValueError, match="run_kind"):
+        await navigate({"space": "library", "run_kind": "play"})
+    assert len(await store.list_frames(cid)) == len(frames)
     await store.finish_turn(accepted["requestId"], outcome="completed")
 
 
@@ -2498,7 +2629,7 @@ async def test_stdio_permission_bridge_never_reuses_approval_for_changed_input(
     )
     assert await asyncio.wait_for(changed_task, timeout=2) == {
         "behavior": "deny",
-        "message": "The Lion Studio operator denied this tool request",
+        "message": "The human at the Studio permission prompt declined this tool request",
     }
 
 
@@ -3323,7 +3454,9 @@ async def test_rename_session_not_found_reports_reason_without_creating_a_propos
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
 
     result = await rename_session({"run": "not-a-real-run-id", "name": "ghost"})
-    assert result == {"renamed": False, "reason": "not_found"}
+    assert result["renamed"] is False
+    assert result["reason"] == "not_found"
+    assert isinstance(result.get("detail"), str) and result["detail"]
     assert await store.list_proposals_for_request(accepted["requestId"]) == []
 
     await store.finish_turn(accepted["requestId"], outcome="completed")

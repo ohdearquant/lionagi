@@ -2087,7 +2087,9 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 {
                     "error": {
                         "code": "denied",
-                        "message": "The operator denied this permission request",
+                        "message": (
+                            "The human at the Studio permission prompt denied this request"
+                        ),
                         "retryable": False,
                     }
                 },
