@@ -788,7 +788,11 @@ async def get_session(
                     "provider": br["provider"],
                     "agent_name": br["agent_name"],
                     "status": br["status"] if "status" in br_keys else None,
-                    "started_at": br["started_at"] if "started_at" in br_keys else None,
+                    "started_at": (
+                        br["started_at"]
+                        if "started_at" in br_keys and br["started_at"] is not None
+                        else br["created_at"]
+                    ),
                     "ended_at": br["ended_at"] if "ended_at" in br_keys else None,
                 }
             )
