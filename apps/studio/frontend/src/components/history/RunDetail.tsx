@@ -553,8 +553,8 @@ export function branchToRunStep(
     rolesCounts[rm.role] = (rolesCounts[rm.role] ?? 0) + 1;
   }
 
-  const firstMessageAt = branch.first_message_at ?? branch.started_at ?? null;
-  const lastMessageAt = branch.last_message_at ?? branch.ended_at ?? null;
+  const firstMessageAt = branch.started_at ?? branch.created_at ?? branch.first_message_at ?? null;
+  const lastMessageAt = branch.ended_at ?? branch.last_message_at ?? null;
   const durationSec =
     firstMessageAt != null && lastMessageAt != null
       ? Math.max(0, Math.round(lastMessageAt - firstMessageAt))
