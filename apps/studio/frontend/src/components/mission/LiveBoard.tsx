@@ -53,6 +53,8 @@ const SKELETON_CARDS = 4;
 interface Props {
   activeRuns: RunSummary[];
   activeInvocations: InvocationSummary[];
+  activeTotal?: number;
+  activeOmitted?: number;
   nowSec: number;
 }
 
@@ -361,9 +363,17 @@ function BoardTable({ cards, nowSec }: { cards: LiveCard[]; nowSec: number }) {
   );
 }
 
-export default function LiveBoard({ activeRuns, activeInvocations, nowSec }: Props) {
+export default function LiveBoard({
+  activeRuns,
+  activeInvocations,
+  activeTotal,
+  activeOmitted = 0,
+  nowSec,
+}: Props) {
   const t = useTranslations("mission");
-  const total = activeRuns.length + activeInvocations.length;
+  const tShared = useTranslations("shared");
+  const shown = activeRuns.length + activeInvocations.length;
+  const total = activeTotal ?? shown;
   const [view, setView] = useState<BoardView>(getStoredBoardView);
 
   function changeView(next: BoardView) {
@@ -404,7 +414,16 @@ export default function LiveBoard({ activeRuns, activeInvocations, nowSec }: Pro
         </SectionLabel>
       </div>
 
-      {total === 0 ? (
+      {activeOmitted > 0 && (
+        <p
+          role="status"
+          className="mb-2 rounded border border-edge bg-surface-raised px-3 py-2 font-data text-[length:var(--t-xs)] text-content-muted"
+        >
+          {tShared("activeSnapshotOmitted", { count: activeOmitted, shown, total })}
+        </p>
+      )}
+
+      {shown === 0 ? (
         <div className="flex flex-col gap-3">
           <p className="text-[length:var(--t-sm)] text-content-muted">
             {t("liveBoard.empty")} {t("liveBoard.emptyHint")}

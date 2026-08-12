@@ -1,4 +1,7 @@
 {
+  "shared": {
+    "activeSnapshotOmitted": "此有界快照还有 {count} 个活跃项未显示；当前显示 {shown}/{total}。"
+  },
   "shell": {
     "rail": {
       "ariaLabel": "主导航",

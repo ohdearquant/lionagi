@@ -37,6 +37,14 @@ export function formatCompactCount(n: number): string {
 // execution, not a single agent" (issue #2842) — the closed vocabulary lives
 // in lionagi/state/db.py's sessions.invocation_kind CHECK constraint.
 const PLAY_ROOT_KINDS = new Set(["play", "flow", "fanout", "show-play"]);
+const TERMINAL_RUN_STATUSES = [
+  "completed",
+  "completed_empty",
+  "failed",
+  "timed_out",
+  "aborted",
+  "cancelled",
+];
 
 export function isPlayRoot(invocationKind: string | null | undefined): boolean {
   return invocationKind != null && PLAY_ROOT_KINDS.has(invocationKind);
@@ -539,6 +547,7 @@ function firstAgentId(orgUnits: OrgUnit[]): string | null {
 
 export default function FleetView() {
   const t = useTranslations("fleet");
+  const tShared = useTranslations("shared");
 
   // URL-synced selection and filters: ?s=<runId>&project=<name>&project_null=true&q=<text>
   const search = Route.useSearch();
@@ -633,6 +642,7 @@ export default function FleetView() {
       listRuns({
         page,
         per_page: HIST_PAGE_SIZE,
+        status: TERMINAL_RUN_STATUSES,
         project: urlProject ?? undefined,
         project_null: urlProjectNull,
         search: urlSearchText || undefined,
@@ -646,6 +656,7 @@ export default function FleetView() {
       listRuns({
         page,
         per_page: HIST_PAGE_SIZE,
+        status: TERMINAL_RUN_STATUSES,
         project: urlProject ?? undefined,
         project_null: urlProjectNull,
         search: urlSearchText || undefined,
@@ -848,11 +859,29 @@ export default function FleetView() {
 
       {/* Counts strip */}
       {state.dataState !== "loading" && state.dataState !== "error" && (
-        <CountsStrip
-          orchestrations={state.counts.orchestrations}
-          agents={state.counts.agents}
-          attention={state.counts.attention}
-        />
+        <>
+          <CountsStrip
+            orchestrations={state.counts.orchestrations}
+            agents={state.counts.agents}
+            attention={state.counts.attention}
+          />
+          {state.activeRunOmitted + state.activeInvocationOmitted > 0 && (
+            <p
+              role="status"
+              className="border-b border-edge bg-status-warning-bg px-4 py-2 font-data text-[length:var(--t-xs)] text-status-warning"
+            >
+              {tShared("activeSnapshotOmitted", {
+                count: state.activeRunOmitted + state.activeInvocationOmitted,
+                shown:
+                  state.activeRunTotal +
+                  state.activeInvocationTotal -
+                  state.activeRunOmitted -
+                  state.activeInvocationOmitted,
+                total: state.activeRunTotal + state.activeInvocationTotal,
+              })}
+            </p>
+          )}
+        </>
       )}
 
       {/* Body — live orchestrations first, then session history (one page) */}

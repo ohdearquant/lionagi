@@ -776,6 +776,52 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
   return fetchJson<RunListResponse>(`/api/runs/${suffix}`);
 }
 
+export interface ActiveSnapshotParams {
+  run_limit?: number;
+  invocation_limit?: number;
+  recent_limit?: number;
+  project?: string;
+  project_null?: boolean;
+  search?: string;
+}
+
+export interface ActiveSnapshotResponse {
+  snapshot_version: string;
+  snapshot_at: number;
+  active_runs: RunSummary[];
+  active_run_total: number;
+  active_run_omitted: number;
+  active_invocations: InvocationSummary[];
+  active_invocation_total: number;
+  active_invocation_omitted: number;
+  recent_runs: RunSummary[];
+  recent_run_has_more: boolean;
+  recent_invocations: InvocationSummary[];
+  recent_invocation_has_more: boolean;
+  complete: boolean;
+}
+
+/** One transactionally coherent, bounded view of active runs and
+ * invocations. Exact totals make a capped response visibly partial. */
+export async function getActiveSnapshot(
+  params?: ActiveSnapshotParams,
+): Promise<ActiveSnapshotResponse> {
+  const query = new URLSearchParams();
+  if (params?.run_limit != null) query.set("run_limit", String(params.run_limit));
+  if (params?.invocation_limit != null) {
+    query.set("invocation_limit", String(params.invocation_limit));
+  }
+  if (params?.recent_limit != null) query.set("recent_limit", String(params.recent_limit));
+  if (params?.project_null) {
+    query.set("project_null", "true");
+  } else if (params?.project) {
+    query.set("project", params.project);
+  }
+  if (params?.search) query.set("search", params.search);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return fetchJson<ActiveSnapshotResponse>(`/api/active-snapshot${suffix}`);
+}
+
 export interface RunProjectCount {
   project: string | null;
   count: number;

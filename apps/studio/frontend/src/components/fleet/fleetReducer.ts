@@ -14,14 +14,10 @@
  * Terminal/idle entries are excluded — Fleet is live-only.
  * History owns the past.
  *
- * Invocations carry no project/search scope of their own — only the runs
- * projection is filtered server-side. So when a project or search filter is
- * active, an invocation group is shown only if it has at least one matching
- * child in the (already-scoped) runs page; otherwise the group is dropped
- * rather than rendered empty. This is a client-side approximation: a live
- * child that exists beyond the polled runs page (200 rows) can still be
- * hidden. With no filter active, every active invocation renders as before,
- * including one with zero children yet (e.g. just started).
+ * The active-snapshot endpoint applies project/search scope to invocation
+ * membership through matching child sessions, then returns exact active
+ * totals alongside bounded rows. The reducer therefore never treats a page
+ * boundary as proof that no matching work exists.
  */
 
 import type { RunSummary } from "@/lib/types";
@@ -85,8 +81,13 @@ export interface FleetState {
   orgUnits: OrgUnit[];
   counts: FleetCounts;
   recent: RecentRow[];
-  /** Whether the server has runs beyond the polled first page. */
+  /** Whether terminal history has rows beyond the snapshot's first page. */
   runsHasNext: boolean;
+  activeRunTotal: number;
+  activeInvocationTotal: number;
+  activeRunOmitted: number;
+  activeInvocationOmitted: number;
+  snapshotVersion: string | null;
   dataState: DataState;
   lastUpdatedMs: number | null;
   errorMessage: string | null;
@@ -101,8 +102,13 @@ export type FleetAction =
       invocations: InvocationSummary[];
       runs: RunSummary[];
       runsHasNext: boolean;
+      activeRunTotal?: number;
+      activeInvocationTotal?: number;
+      activeRunOmitted?: number;
+      activeInvocationOmitted?: number;
+      snapshotVersion?: string;
       nowSec: number;
-      /** Same filters just sent to listRuns() — determines whether an
+      /** Same filters just sent to the active snapshot — determines whether an
        *  invocation group with no matching child should be suppressed. */
       project?: string;
       projectNull?: boolean;
@@ -168,6 +174,7 @@ function buildOrgUnits(
   nowSec: number,
   scoped: boolean,
   runsHasNext: boolean,
+  scopeIsServerCoherent: boolean,
 ): OrgUnit[] {
   const activeInvocations = invocations.filter((inv) => isActive(inv));
 
@@ -215,16 +222,14 @@ function buildOrgUnits(
 
   const units: OrgUnit[] = [];
 
-  // Absence from the runs page is only evidence of absence when the page is the
-  // whole scoped set. The invocations request carries no scope of its own, so
-  // an invocation with no child here has either genuinely nothing in scope, or
-  // a matching child on a page we did not ask for -- and dropping it in the
-  // second case hides live work the filter was supposed to include. Suppressing
-  // an empty heading is a cosmetic win; hiding a running orchestration is not,
-  // so the cure only applies where the evidence actually supports it.
+  // Legacy callers supplied independently fetched invocations and runs, so a
+  // scoped, exhaustive runs page was the only evidence that an empty invocation
+  // did not belong. Snapshot callers are different: invocation membership was
+  // scoped transactionally on the server. Keep those groups even when their
+  // matching child fell beyond the bounded active-runs page.
   const runsAreExhaustive = !runsHasNext;
   for (const unit of invMap.values()) {
-    if (scoped && runsAreExhaustive && unit.agents.length === 0) continue;
+    if (scoped && !scopeIsServerCoherent && runsAreExhaustive && unit.agents.length === 0) continue;
     // A scoped view reports the children it is showing. The invocation's own
     // session_count is global, so rendering it beside a filtered child list
     // states a total that belongs to a different question.
@@ -383,6 +388,11 @@ export function initialFleetState(): FleetState {
     counts: { orchestrations: 0, agents: 0, attention: 0 },
     recent: [],
     runsHasNext: false,
+    activeRunTotal: 0,
+    activeInvocationTotal: 0,
+    activeRunOmitted: 0,
+    activeInvocationOmitted: 0,
+    snapshotVersion: null,
     dataState: "loading",
     lastUpdatedMs: null,
     errorMessage: null,
@@ -399,8 +409,19 @@ export function fleetReducer(state: FleetState, action: FleetAction): FleetState
     case "DATA_OK": {
       const { invocations, runs, runsHasNext, nowSec, project, projectNull, search } = action;
       const scoped = isScopeActive(project, projectNull, search);
-      const orgUnits = buildOrgUnits(invocations, runs, nowSec, scoped, runsHasNext);
+      const orgUnits = buildOrgUnits(
+        invocations,
+        runs,
+        nowSec,
+        scoped,
+        runsHasNext,
+        action.snapshotVersion != null,
+      );
       const counts = deriveCounts(orgUnits, runs);
+      const displayedActiveRuns = runs.filter(isActive).length;
+      const displayedActiveInvocations = invocations.filter(isActive).length;
+      const activeRunTotal = action.activeRunTotal ?? displayedActiveRuns;
+      const activeInvocationTotal = action.activeInvocationTotal ?? displayedActiveInvocations;
       return {
         ...state,
         nowSec,
@@ -408,6 +429,14 @@ export function fleetReducer(state: FleetState, action: FleetAction): FleetState
         counts,
         recent: terminalRecentRows(runs),
         runsHasNext,
+        activeRunTotal,
+        activeInvocationTotal,
+        activeRunOmitted:
+          action.activeRunOmitted ?? Math.max(0, activeRunTotal - displayedActiveRuns),
+        activeInvocationOmitted:
+          action.activeInvocationOmitted ??
+          Math.max(0, activeInvocationTotal - displayedActiveInvocations),
+        snapshotVersion: action.snapshotVersion ?? state.snapshotVersion,
         dataState: "live",
         lastUpdatedMs: Date.now(),
         errorMessage: null,

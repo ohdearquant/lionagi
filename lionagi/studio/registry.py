@@ -42,6 +42,7 @@ _DEDUP_KEYS: set[tuple[str, str, str, str]] = set()
 # Area modules imported at startup; order controls route registration sequence.
 _STUDIO_ROUTE_MODULES: tuple[str, ...] = (
     "lionagi.studio.services.casts",
+    "lionagi.studio.services.active_snapshot",
     "lionagi.studio.services.runs",
     "lionagi.studio.services.run_resume",
     "lionagi.studio.services.engine_runs",

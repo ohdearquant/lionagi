@@ -26,7 +26,7 @@ export default function MissionControl() {
   // Owned here, not inside Pulse, so SpendPanel can follow the same window
   // selection without a second selector of its own.
   const [activityWindow, setActivityWindow] = useState<ActivityWindow>("24h");
-  const runningCount = board.activeRuns.length + board.activeInvocations.length;
+  const runningCount = board.activeRunTotal + board.activeInvocationTotal;
   // Orphaned (daemon-restart housekeeping) runs never enter the attention
   // list — they carry no human action. Acknowledged items stay visible in
   // the panel below but leave this count: acknowledging is "seen, not
@@ -113,6 +113,8 @@ export default function MissionControl() {
           <LiveBoard
             activeRuns={board.activeRuns}
             activeInvocations={board.activeInvocations}
+            activeTotal={runningCount}
+            activeOmitted={board.activeRunOmitted + board.activeInvocationOmitted}
             nowSec={board.nowSec}
           />
 

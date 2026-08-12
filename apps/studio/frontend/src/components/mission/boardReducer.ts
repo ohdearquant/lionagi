@@ -23,6 +23,12 @@ export interface BoardState {
   activeRuns: RunSummary[];
   /** Active invocations (skill orchestrations). */
   activeInvocations: InvocationSummary[];
+  /** Exact active populations from the same server snapshot as the rows. */
+  activeRunTotal: number;
+  activeInvocationTotal: number;
+  activeRunOmitted: number;
+  activeInvocationOmitted: number;
+  snapshotVersion: string | null;
   /** Last 10 terminal runs (completed/failed/cancelled). */
   recentRuns: RunSummary[];
   /** Enabled schedules — feeds failure-streak attention rows. */
@@ -99,6 +105,11 @@ export type BoardAction =
       dispositions?: Record<string, AttentionDisposition> | null;
       /** null = gated-plays fetch failed this cycle — keep the last-known list. */
       gatedPlays?: GatedPlaySummary[] | null;
+      activeRunTotal?: number;
+      activeInvocationTotal?: number;
+      activeRunOmitted?: number;
+      activeInvocationOmitted?: number;
+      snapshotVersion?: string;
       nowSec: number;
     }
   | { type: "DATA_ERROR"; message: string }
@@ -362,6 +373,11 @@ export function initialBoardState(): BoardState {
     nowSec: Math.floor(Date.now() / 1000),
     activeRuns: [],
     activeInvocations: [],
+    activeRunTotal: 0,
+    activeInvocationTotal: 0,
+    activeRunOmitted: 0,
+    activeInvocationOmitted: 0,
+    snapshotVersion: null,
     recentRuns: [],
     schedules: [],
     schedulesKnown: false,
@@ -392,6 +408,8 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
       const gatedPlays = action.gatedPlays ?? state.gatedPlays;
       const activeRuns = deriveActiveRuns(runs);
       const activeInvocations = deriveActiveInvocations(invocations);
+      const activeRunTotal = action.activeRunTotal ?? activeRuns.length;
+      const activeInvocationTotal = action.activeInvocationTotal ?? activeInvocations.length;
       const recentRuns = deriveRecentRuns(runs);
       const { active: attentionItems, discharged: dischargedAttentionItems } = buildAttentionItems(
         runs,
@@ -415,6 +433,14 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
         nowSec,
         activeRuns,
         activeInvocations,
+        activeRunTotal,
+        activeInvocationTotal,
+        activeRunOmitted:
+          action.activeRunOmitted ?? Math.max(0, activeRunTotal - activeRuns.length),
+        activeInvocationOmitted:
+          action.activeInvocationOmitted ??
+          Math.max(0, activeInvocationTotal - activeInvocations.length),
+        snapshotVersion: action.snapshotVersion ?? state.snapshotVersion,
         recentRuns,
         schedules,
         schedulesKnown,

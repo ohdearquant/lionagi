@@ -1,7 +1,7 @@
 /**
  * Data-source hook for Mission Control.
  *
- * Polls runs + invocations APIs every 3s. Drives a client-side watchdog:
+ * Polls one coherent, bounded active snapshot every 3s. Drives a client-side watchdog:
  * if the fetch loop is silent for >5s, state transitions to "stale".
  * The reducer is the single integration point — swapping the poll for an
  * SSE subscription only requires changing this file.
@@ -12,8 +12,7 @@
 
 import { useEffect, useReducer, useRef } from "react";
 import {
-  listRuns,
-  listInvocations,
+  getActiveSnapshot,
   listSchedules,
   listAttentionDispositions,
   listGatedPlays,
@@ -80,14 +79,12 @@ export function useLiveBoard(): BoardState {
         // board only — a failed fetch must not take down the whole board, so
         // all three degrade to null (keep last-known) rather than rejecting
         // the poll.
-        const [runsResp, invsResp, schedulesResp, dispositionsResp, gatedPlaysResp] =
-          await Promise.all([
-            listRuns({ per_page: 200 }),
-            listInvocations({ limit: 100 }),
-            listSchedules({ enabled: true }).catch(() => null),
-            listAttentionDispositions().catch(() => null),
-            listGatedPlays().catch(() => null),
-          ]);
+        const [snapshot, schedulesResp, dispositionsResp, gatedPlaysResp] = await Promise.all([
+          getActiveSnapshot({ run_limit: 200, invocation_limit: 100, recent_limit: 200 }),
+          listSchedules({ enabled: true }).catch(() => null),
+          listAttentionDispositions().catch(() => null),
+          listGatedPlays().catch(() => null),
+        ]);
         if (!active) return;
 
         lastSuccessAt = Date.now();
@@ -99,8 +96,13 @@ export function useLiveBoard(): BoardState {
           wasStaleRef.current = false;
           dispatch({
             type: "DATA_OK",
-            runs: runsResp.runs,
-            invocations: invsResp.invocations,
+            runs: [...snapshot.active_runs, ...snapshot.recent_runs],
+            invocations: [...snapshot.active_invocations, ...snapshot.recent_invocations],
+            activeRunTotal: snapshot.active_run_total,
+            activeInvocationTotal: snapshot.active_invocation_total,
+            activeRunOmitted: snapshot.active_run_omitted,
+            activeInvocationOmitted: snapshot.active_invocation_omitted,
+            snapshotVersion: snapshot.snapshot_version,
             schedules: schedulesResp?.schedules ?? null,
             dispositions: dispositionsResp,
             gatedPlays: gatedPlaysResp,

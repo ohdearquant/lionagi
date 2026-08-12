@@ -1,14 +1,14 @@
 /**
  * Data-source hook for Fleet view.
  *
- * Polls invocations + runs every 3s via Promise.all. Client-side watchdog
+ * Polls one coherent, bounded active snapshot every 3s. Client-side watchdog
  * transitions to "stale" after >5s silence. Stale clears only after
  * ≥2 consecutive successful fetches (hysteresis). SSE can replace polling
  * later by changing only this file — reducer and components are unchanged.
  */
 
 import { useEffect, useReducer, useRef } from "react";
-import { listInvocations, listRuns } from "@/lib/api";
+import { getActiveSnapshot } from "@/lib/api";
 import { fleetReducer, initialFleetState } from "./fleetReducer";
 import type { FleetState } from "./fleetReducer";
 
@@ -73,10 +73,14 @@ export function useFleet(filters?: FleetFilters): FleetState {
       inFlight = true;
       try {
         const nowSec = Math.floor(Date.now() / 1000);
-        const [invsResp, runsResp] = await Promise.all([
-          listInvocations({ limit: 200 }),
-          listRuns({ per_page: 200, project, project_null: projectNull, search }),
-        ]);
+        const snapshot = await getActiveSnapshot({
+          run_limit: 200,
+          invocation_limit: 200,
+          recent_limit: 200,
+          project,
+          project_null: projectNull,
+          search,
+        });
         if (!active) return;
 
         lastSuccessAt = Date.now();
@@ -87,9 +91,14 @@ export function useFleet(filters?: FleetFilters): FleetState {
           wasStaleRef.current = false;
           dispatch({
             type: "DATA_OK",
-            invocations: invsResp.invocations,
-            runs: runsResp.runs,
-            runsHasNext: runsResp.has_next,
+            invocations: [...snapshot.active_invocations, ...snapshot.recent_invocations],
+            runs: [...snapshot.active_runs, ...snapshot.recent_runs],
+            runsHasNext: snapshot.recent_run_has_more,
+            activeRunTotal: snapshot.active_run_total,
+            activeInvocationTotal: snapshot.active_invocation_total,
+            activeRunOmitted: snapshot.active_run_omitted,
+            activeInvocationOmitted: snapshot.active_invocation_omitted,
+            snapshotVersion: snapshot.snapshot_version,
             nowSec,
             project,
             projectNull,

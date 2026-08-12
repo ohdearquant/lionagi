@@ -18,8 +18,7 @@ import type { BoardState } from "./boardReducer";
 import { useLiveBoard } from "./useLiveBoard";
 
 vi.mock("@/lib/api", () => ({
-  listRuns: vi.fn(),
-  listInvocations: vi.fn(),
+  getActiveSnapshot: vi.fn(),
   listSchedules: vi.fn(),
   // No .mockReset() call site below ever touches these two — they keep this
   // default resolved value for the whole file, so every existing DATA_OK
@@ -29,7 +28,24 @@ vi.mock("@/lib/api", () => ({
   listGatedPlays: vi.fn().mockResolvedValue([]),
 }));
 
-import { listRuns, listInvocations, listSchedules } from "@/lib/api";
+import { getActiveSnapshot, listSchedules } from "@/lib/api";
+import type { ActiveSnapshotResponse } from "@/lib/api";
+
+const EMPTY_SNAPSHOT: ActiveSnapshotResponse = {
+  snapshot_version: "test:0:0",
+  snapshot_at: 0,
+  active_runs: [],
+  active_run_total: 0,
+  active_run_omitted: 0,
+  active_invocations: [],
+  active_invocation_total: 0,
+  active_invocation_omitted: 0,
+  recent_runs: [],
+  recent_run_has_more: false,
+  recent_invocations: [],
+  recent_invocation_has_more: false,
+  complete: true,
+};
 
 // ─── Watchdog hysteresis: pure reducer logic ──────────────────────────────────
 // The hysteresis contract is: MARK_STALE only takes effect when dataState=live.
@@ -238,8 +254,7 @@ describe("useLiveBoard — schedules degrade-to-null on fetch failure", () => {
   }
 
   beforeEach(() => {
-    vi.mocked(listRuns).mockReset();
-    vi.mocked(listInvocations).mockReset();
+    vi.mocked(getActiveSnapshot).mockReset().mockResolvedValue(EMPTY_SNAPSHOT);
     vi.mocked(listSchedules).mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -257,23 +272,6 @@ describe("useLiveBoard — schedules degrade-to-null on fetch failure", () => {
   });
 
   it("still reaches DATA_OK with schedules: null when listSchedules rejects but runs/invocations resolve", async () => {
-    vi.mocked(listRuns).mockResolvedValue({
-      runs: [],
-      page: 1,
-      per_page: 200,
-      total: 0,
-      total_pages: 1,
-      has_next: false,
-      has_prev: false,
-    });
-    vi.mocked(listInvocations).mockResolvedValue({
-      invocations: [],
-      limit: 100,
-      offset: 0,
-      has_next: false,
-      total: 0,
-      completed_total: 0,
-    });
     vi.mocked(listSchedules).mockRejectedValue(new Error("schedules endpoint down"));
 
     await act(async () => {
@@ -316,26 +314,6 @@ describe("useLiveBoard — schedules degrade-to-null on fetch failure", () => {
       created_at: 0,
       updated_at: 0,
     };
-    const runsResp = {
-      runs: [],
-      page: 1,
-      per_page: 200,
-      total: 0,
-      total_pages: 1,
-      has_next: false,
-      has_prev: false,
-    };
-    const invsResp = {
-      invocations: [],
-      limit: 100,
-      offset: 0,
-      has_next: false,
-      total: 0,
-      completed_total: 0,
-    };
-
-    vi.mocked(listRuns).mockResolvedValue(runsResp);
-    vi.mocked(listInvocations).mockResolvedValue(invsResp);
     vi.mocked(listSchedules).mockResolvedValueOnce({ schedules: [sched] });
 
     await act(async () => {
@@ -378,8 +356,7 @@ describe("useLiveBoard — a poll slower than the interval does not stack", () =
   }
 
   beforeEach(() => {
-    vi.mocked(listRuns).mockReset();
-    vi.mocked(listInvocations).mockReset();
+    vi.mocked(getActiveSnapshot).mockReset();
     vi.mocked(listSchedules).mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -397,8 +374,7 @@ describe("useLiveBoard — a poll slower than the interval does not stack", () =
   it("opens no second request while the first is still outstanding", async () => {
     vi.useFakeTimers();
     // Never settles, so the first poll is still in flight for the whole test.
-    vi.mocked(listRuns).mockReturnValue(new Promise<never>(() => {}));
-    vi.mocked(listInvocations).mockReturnValue(new Promise<never>(() => {}));
+    vi.mocked(getActiveSnapshot).mockReturnValue(new Promise<never>(() => {}));
     vi.mocked(listSchedules).mockReturnValue(new Promise<never>(() => {}));
 
     await act(async () => {
@@ -406,7 +382,7 @@ describe("useLiveBoard — a poll slower than the interval does not stack", () =
       root.render(React.createElement(Harness));
     });
 
-    expect(vi.mocked(listInvocations)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getActiveSnapshot)).toHaveBeenCalledTimes(1);
 
     // Five interval periods elapse with that first fetch still pending.
     await act(async () => {
@@ -416,8 +392,7 @@ describe("useLiveBoard — a poll slower than the interval does not stack", () =
     // Unguarded this is 6 — the opening poll plus one per tick — which is the
     // defect: at a 50s fetch and a 3s interval the count climbs to ~17 and the
     // board renders nothing at all.
-    expect(vi.mocked(listInvocations)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(listRuns)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getActiveSnapshot)).toHaveBeenCalledTimes(1);
   });
 
   it("goes live on a fetch slower than the stale threshold", async () => {
@@ -428,27 +403,7 @@ describe("useLiveBoard — a poll slower than the interval does not stack", () =
     const slow = <T>(value: T) =>
       new Promise<T>((resolve) => setTimeout(() => resolve(value), 8_000));
 
-    vi.mocked(listRuns).mockImplementation(() =>
-      slow({
-        runs: [],
-        page: 1,
-        per_page: 200,
-        total: 0,
-        total_pages: 1,
-        has_next: false,
-        has_prev: false,
-      }),
-    );
-    vi.mocked(listInvocations).mockImplementation(() =>
-      slow({
-        invocations: [],
-        limit: 100,
-        offset: 0,
-        has_next: false,
-        total: 0,
-        completed_total: 0,
-      }),
-    );
+    vi.mocked(getActiveSnapshot).mockImplementation(() => slow(EMPTY_SNAPSHOT));
     vi.mocked(listSchedules).mockImplementation(() => slow({ schedules: [] }));
 
     await act(async () => {

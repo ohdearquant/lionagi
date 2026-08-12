@@ -625,6 +625,44 @@ describe("runs/sessions query construction", () => {
     expect(url.searchParams.has("project_null")).toBe(false);
   });
 
+  it("getActiveSnapshot sends bounded live limits and run scope", async () => {
+    const payload = {
+      snapshot_version: "snapshot-1",
+      snapshot_at: 1,
+      active_runs: [],
+      active_run_total: 0,
+      active_run_omitted: 0,
+      active_invocations: [],
+      active_invocation_total: 0,
+      active_invocation_omitted: 0,
+      recent_runs: [],
+      recent_invocations: [],
+      complete: true,
+    };
+    const calls = stubFetch(payload);
+    const { getActiveSnapshot } = await import("./api");
+
+    expect(
+      await getActiveSnapshot({
+        run_limit: 200,
+        invocation_limit: 100,
+        recent_limit: 20,
+        search: "deploy%",
+        project: "org/ignored",
+        project_null: true,
+      }),
+    ).toEqual(payload);
+
+    const url = new URL(calls[0]!.url, "http://localhost");
+    expect(url.pathname).toBe("/api/active-snapshot");
+    expect(url.searchParams.get("run_limit")).toBe("200");
+    expect(url.searchParams.get("invocation_limit")).toBe("100");
+    expect(url.searchParams.get("recent_limit")).toBe("20");
+    expect(url.searchParams.get("search")).toBe("deploy%");
+    expect(url.searchParams.get("project_null")).toBe("true");
+    expect(url.searchParams.has("project")).toBe(false);
+  });
+
   it("listRunProjects — GET /api/runs/projects", async () => {
     const payload = { projects: [{ project: "org/alpha", count: 3, last_activity: 1 }], total: 3 };
     const calls = stubFetch(payload);

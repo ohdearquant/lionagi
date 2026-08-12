@@ -1,4 +1,7 @@
 {
+  "shared": {
+    "activeSnapshotOmitted": "{count, plural, one {# active item not shown} other {# active items not shown}} — showing {shown} of {total} from this bounded snapshot."
+  },
   "shell": {
     "rail": {
       "ariaLabel": "Navigasi utama",

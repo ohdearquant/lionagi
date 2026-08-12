@@ -130,6 +130,28 @@ describe("LiveBoard — RunCard dead-health rendering", () => {
     expect(dot?.className).toContain("live-pulse-dot");
     expect(container.textContent).not.toContain("quiet — check?");
   });
+
+  it("shows the exact active total and omitted count for a bounded snapshot", () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    act(() => {
+      root = createRoot(container);
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <LiveBoard
+            activeRuns={[run({ effective_health: "healthy" })]}
+            activeInvocations={[]}
+            activeTotal={5}
+            activeOmitted={4}
+            nowSec={100}
+          />
+        </IntlProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("5");
+    expect(container.textContent).toContain("4 active items not shown");
+  });
 });
 
 // ─── Board rendering: interleaved order, view toggle, persistence ────────────
