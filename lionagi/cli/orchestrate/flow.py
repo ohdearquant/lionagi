@@ -45,6 +45,7 @@ from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
+    _resolve_worker_model_spec,
     attribute_worker_build_failure,
     available_roles,
     build_worker_branch,
@@ -54,8 +55,6 @@ from ._orchestration import (
     parse_orchestrator_provider,
     register_branch_hook,
     resolve_modes,
-    resolve_worker_spec,
-    role_config,
     role_roster,
     setup_orchestration,
     start_live_persist,
@@ -2897,17 +2896,16 @@ async def _run_flow_inner(
             if env.bare:
                 lines.append(f"  {agent_ids[i]}: {model_spec} (bare)")
                 continue
-            rm, rp = resolve_worker_spec(ta.assignee)
-            cfg = role_config(ta.assignee, env.pack)
-            if rp:
+            model, rp, cfg = _resolve_worker_model_spec(env, ta.assignee)
+            if cfg and cfg.model:
+                src = "pack"
+                modes = [] if rp else resolve_modes(ta.assignee, ta.modes or None, env.pack)
+            elif rp:
                 # A user profile supplies its own body — casts modes don't apply
                 # (profile shadows casts; ADR-0043 follow-up makes them compose).
-                model, src, modes = rm, "profile", []
-            elif cfg and cfg.model:
-                model, src = cfg.model, "pack"
-                modes = resolve_modes(ta.assignee, ta.modes or None, env.pack)
+                src, modes = "profile", []
             else:
-                model, src = model_spec, "default"
+                src = "default"
                 modes = resolve_modes(ta.assignee, ta.modes or None, env.pack)
             mode_str = f"  modes={modes}" if modes else ""
             lines.append(f"  {agent_ids[i]}: {model} ({src}){mode_str}")

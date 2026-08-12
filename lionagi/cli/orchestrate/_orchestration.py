@@ -779,8 +779,14 @@ def _resolve_worker_model_spec(
     model_override: str | None = None,
 ) -> tuple[str, AgentProfile | None, Any]:
     """Resolve which model spec a worker with this role/override would use,
-    without building anything. Shared by `build_worker_branch` and
-    `worker_is_cli` so the resolution logic lives in exactly one place."""
+    without building anything.
+
+    Explicit ``--workers`` routing wins, then the selected pack's per-role
+    model, then the role profile's model. The profile is still returned when a
+    pack selects the model so its prompt and behavior remain attached. Shared
+    by `build_worker_branch` and `worker_is_cli` so the resolution logic lives
+    in exactly one place.
+    """
     # Pack per-role config (ADR-0043): model/effort/modes defaults for casts
     # roles. Ignored in bare mode (workers are the raw CLI spec there).
     w_cfg = None if env.bare else role_config(role, env.pack)
@@ -792,10 +798,10 @@ def _resolve_worker_model_spec(
         resolved_model, w_profile = resolve_worker_spec(role)
         if model_override:
             w_model = model_override
-        elif w_profile:
-            w_model = resolved_model
         elif w_cfg and w_cfg.model:
             w_model = w_cfg.model
+        elif w_profile:
+            w_model = resolved_model
         else:
             w_model = env.default_model_spec
 
