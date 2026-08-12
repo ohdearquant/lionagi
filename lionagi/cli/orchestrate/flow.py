@@ -710,6 +710,14 @@ def _parse_reactive(spec: str | None) -> tuple[bool, set[str] | None]:
     return (True, roles) if roles else (True, None)
 
 
+def _remaining_spawn_capacity(
+    max_ops: int, planned_count: int, restored_spawn_count: int = 0
+) -> int:
+    """Return the remaining reactive-spawn budget for this execution attempt."""
+    initial_capacity = max_ops - planned_count if max_ops > 0 else 20
+    return max(0, initial_capacity - restored_spawn_count)
+
+
 def _flow_header_fn(w: dict, i: int, n: int) -> list[str]:
     deps = w.get("depends_on") or []
     dep_str = f"  deps: {', '.join(deps)}" if deps else ""
@@ -742,6 +750,7 @@ class _DagState:
     spawn_roles: set[str] | None
     role_base: dict[str, object]
     worker_models: list[str]
+    max_spawn: int | None = None
     op_segments: list[dict] = field(default_factory=list)
     # role → its resolved artifact_defaults (profile first, else casts Role),
     # cached once per role in _build_dag so _execute_dag can register the same
@@ -809,6 +818,7 @@ async def _build_dag(
     plan_result: _PlanResult,
     *,
     reactive_spec: str,
+    max_spawn: int,
 ) -> _DagState:
     """Wire worker branches into the operation graph builder and snapshot to Studio."""
     assignments = plan_result.assignments
@@ -820,7 +830,7 @@ async def _build_dag(
     reactive, spawn_roles = _parse_reactive(reactive_spec)
 
     def _may_spawn(role: str) -> bool:
-        return reactive and (spawn_roles is None or role in spawn_roles)
+        return max_spawn > 0 and reactive and (spawn_roles is None or role in spawn_roles)
 
     worker_models: list[str] = []
     node_ids: list[str] = []
@@ -930,6 +940,8 @@ async def _build_dag(
 
     # Early DAG snapshot for Studio.
     early_graph = {
+        "reactive": reactive,
+        "max_spawn": max_spawn,
         "agents": [
             {"id": agent_ids[i], "name": agent_ids[i], "model": worker_models[i]}
             for i in range(len(assignments))
@@ -978,6 +990,7 @@ async def _build_dag(
         spawn_roles=spawn_roles,
         role_base=role_base,
         worker_models=worker_models,
+        max_spawn=max_spawn,
         role_artifact_defaults=role_artifact_defaults,
         worker_branches=worker_branches,
         messenger_bound=worker_messenger_bound,
@@ -1198,6 +1211,13 @@ async def _execute_dag(
     _segment_tasks: list = []
     _control_log_tasks: list = []
 
+    # Restored spawns already consumed spawn budget and exist as completed/
+    # failed work; both the budget below and spawn accounting must count them.
+    restored_spawn_count = len(checkpoint_spawned_seed or [])
+    max_spawn = dag_state.max_spawn
+    if max_spawn is None:
+        max_spawn = _remaining_spawn_capacity(max_ops, len(assignments), restored_spawn_count)
+
     _checkpoint_writer: CheckpointWriter | None = None
     if checkpoint_config is not None:
         _ctx_lp = getattr(env, "_live_persist", None)
@@ -1207,6 +1227,7 @@ async def _execute_dag(
             prompt=checkpoint_prompt,
             plan=checkpoint_plan or [],
             config=checkpoint_config,
+            max_spawn=max_spawn,
             # Seed with prior-checkpoint state (empty on a fresh run) so a
             # resume-of-a-resume can't silently lose context before the next flush.
             flow_context=dict(checkpoint_flow_context or {}),
@@ -1223,12 +1244,6 @@ async def _execute_dag(
     else:
         progress(f"Executing DAG (reactive off): {len(assignments)} assignments...")
     conc = max_concurrent if max_concurrent > 0 else max(len(assignments), 1)
-    # Restored spawns already consumed spawn budget and exist as completed/
-    # failed work; both the budget below and spawn accounting must count them.
-    restored_spawn_count = len(checkpoint_spawned_seed or [])
-    # --max-ops shares budget between initial plan + spawns; default cap of
-    # 20 otherwise so an un-capped reactive run can't fan out unbounded.
-    max_spawn = max(0, (max_ops - len(assignments) if max_ops > 0 else 20) - restored_spawn_count)
     # Resume must start the spawn-id ordinal sequence past whatever restored
     # spawns already used (MAX existing + 1, not count — crashes can leave
     # gaps) or a live spawn could reissue a restored spawn_id/artifact dir.
@@ -2911,7 +2926,15 @@ async def _run_flow_inner(
         budget_preambles=budget_preambles,
     )
 
-    dag_state = await _build_dag(env, prompt, plan_result, reactive_spec=reactive_spec)
+    restored_spawn_count = len((resume_checkpoint or {}).get("spawned") or [])
+    max_spawn = _remaining_spawn_capacity(max_ops, len(assignments), restored_spawn_count)
+    dag_state = await _build_dag(
+        env,
+        prompt,
+        plan_result,
+        reactive_spec=reactive_spec,
+        max_spawn=max_spawn,
+    )
 
     if resume_checkpoint is not None:
         _apply_checkpoint_precompletion(
