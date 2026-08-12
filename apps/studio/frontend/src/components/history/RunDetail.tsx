@@ -412,6 +412,7 @@ export function computeReconciledNodeStatuses(
   runGraph: Pick<WorkerGraph, "nodes" | "edges"> | null,
   nodeStatuses: Record<string, NodeExecStatus> | undefined,
   done: boolean,
+  failedNodeIds?: ReadonlySet<string>,
 ): Record<string, NodeExecStatus> | undefined {
   if (!runGraph) return nodeStatuses;
   return reconcileNodeStatuses(
@@ -419,7 +420,23 @@ export function computeReconciledNodeStatuses(
     runGraph.edges.map((e) => ({ source: e.source, target: e.target })),
     nodeStatuses,
     done,
+    failedNodeIds,
   );
+}
+
+// Node ids the run's own failure evidence names as failed operations. The
+// dying engine frequently never emits the node's terminal signal, so this
+// is often the ONLY record that the op failed.
+export function evidenceFailedNodeIds(session: SessionDetail | null): Set<string> | undefined {
+  const refs = session?.status_evidence_refs;
+  if (!Array.isArray(refs)) return undefined;
+  const out = new Set<string>();
+  for (const ref of refs) {
+    if (ref && ref.kind === "failed_operation" && typeof ref.id === "string" && ref.id) {
+      out.add(ref.id);
+    }
+  }
+  return out.size ? out : undefined;
 }
 
 export function computeProgressCountsForGraph(
@@ -1875,10 +1892,13 @@ export default function RunDetail({ id }: RunDetailProps) {
         const ss = (s.status ?? "").toLowerCase();
         if (
           ss === "completed" ||
+          ss === "completed_empty" ||
           ss === "done" ||
           ss === "success" ||
           ss === "failed" ||
           ss === "failure" ||
+          ss === "timed_out" ||
+          ss === "aborted" ||
           ss === "cancelled"
         ) {
           setDone(true);
@@ -2379,9 +2399,12 @@ export default function RunDetail({ id }: RunDetailProps) {
   // descendant has reached a terminal status, and once the run itself is
   // done, any node with no terminal signal collapses to "pending" (absence
   // of information) instead of visually reading as live work.
+  // The run's failure evidence outranks stale lifecycle signals: the op it
+  // names must render failed even when the dying engine left it "queued".
+  const failedNodeIds = useMemo(() => evidenceFailedNodeIds(session), [session]);
   const reconciledNodeStatuses = useMemo(
-    () => computeReconciledNodeStatuses(runGraph, nodeStatuses, done),
-    [runGraph, nodeStatuses, done],
+    () => computeReconciledNodeStatuses(runGraph, nodeStatuses, done, failedNodeIds),
+    [runGraph, nodeStatuses, done, failedNodeIds],
   );
 
   const progressCounts = useMemo(

@@ -737,6 +737,8 @@ export interface RunListParams {
   page?: number;
   per_page?: number;
   status?: string[];
+  /** Orchestration-kind facet: agent | play | flow | fanout | show. */
+  kind?: string[];
   playbook?: string;
   project?: string;
   project_null?: boolean;
@@ -768,6 +770,7 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
   if (params?.search) query.set("search", params.search);
   if (params?.sort) query.set("sort", params.sort);
   for (const value of params?.status ?? []) query.append("status", value);
+  for (const value of params?.kind ?? []) query.append("kind", value);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   // The daemon registers this list route with a trailing slash (unlike
   // /api/runs/{run_id}); omitting it triggers Starlette's redirect-with-
@@ -1132,7 +1135,7 @@ export async function createAgent(name: string, data: AgentProfile): Promise<unk
   });
 }
 
-export async function updateAgent(name: string, data: AgentProfile): Promise<unknown> {
+export async function updateAgent(name: string, data: Partial<AgentProfile>): Promise<unknown> {
   return fetchJson<unknown>(`/api/agents/${encodeURIComponent(name)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -1238,6 +1241,10 @@ export interface SessionDetail {
   // already returns these; the type was just missing them).
   status_reason_code?: string | null;
   status_reason_summary?: string | null;
+  // Structured refs backing the status reason; entries with kind
+  // "failed_operation" carry the authored node id of an op the run's own
+  // failure evidence names.
+  status_evidence_refs?: Array<{ kind?: string; id?: string; label?: string }> | null;
   // ADR-0029: artifact contract and verification result.
   artifact_contract_json?: ArtifactContract | null;
   artifact_verification_json?: ArtifactVerification | null;
@@ -2311,11 +2318,16 @@ export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
 
 // ─── Shows / plays ──────────────────────────────────────────────────────────
 
-/** A play currently sitting in the `gated` lifecycle status, read live. */
+/**
+ * A play currently waiting on a real gate decision (gate_failed, escalated,
+ * a failing verdict parked in `gated`, or explicit opt-in), read live.
+ */
 export interface GatedPlaySummary {
   id: string;
   topic: string;
   play_name: string;
+  /** Play lifecycle status; null when the live state is unavailable. */
+  status?: string | null;
   started_at: number | null;
   updated_at: number | null;
   feedback: string | null;
@@ -2558,5 +2570,77 @@ export async function launchEngine(body: {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+/** One named, reusable hook definition from the shared hook library. */
+export interface HookDef {
+  description: string;
+  command: string;
+  timeout?: number;
+}
+
+/** Provider-neutral hook events — materialized per provider at launch. */
+export type HookEvent =
+  | "pre_tool"
+  | "post_tool"
+  | "prompt_submit"
+  | "post_response"
+  | "session_start"
+  | "session_end";
+
+/** One assembly row binding a library hook to a neutral event. */
+export interface HookAttachment {
+  hook: string;
+  event: HookEvent;
+  matcher?: string;
+}
+
+export interface HookLibrary {
+  path: string;
+  hooks: Record<string, HookDef>;
+  events?: string[];
+  error?: string;
+}
+
+export async function getHookLibrary(): Promise<HookLibrary> {
+  return fetchJson<HookLibrary>("/api/hooks/library");
+}
+
+export async function putHookDef(name: string, spec: HookDef): Promise<HookDef & { name: string }> {
+  return fetchJson<HookDef & { name: string }>(`/api/hooks/library/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(spec),
+  });
+}
+
+export async function deleteHookDef(name: string): Promise<{ ok: boolean }> {
+  return fetchJson<{ ok: boolean }>(`/api/hooks/library/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/** The Operator's hook assembly — attachments materialized into the provider
+ * CLI's settings each turn (the Operator inherits nothing else). */
+export interface OperatorHooksConfig {
+  enabled: boolean;
+  attachments: HookAttachment[];
+  path?: string;
+  error?: string;
+}
+
+export async function getOperatorHooks(): Promise<OperatorHooksConfig> {
+  return fetchJson<OperatorHooksConfig>("/api/operator/hooks");
+}
+
+export async function putOperatorHooks(config: {
+  enabled: boolean;
+  attachments: HookAttachment[];
+}): Promise<OperatorHooksConfig> {
+  return fetchJson<OperatorHooksConfig>("/api/operator/hooks", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
   });
 }

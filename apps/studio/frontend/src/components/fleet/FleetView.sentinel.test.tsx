@@ -65,6 +65,8 @@ function Harness({ onCall }: { onCall: () => void }) {
       rows={all}
       filter="all"
       onFilter={() => {}}
+      kind={null}
+      onKind={() => {}}
       sort="recent"
       onSort={() => {}}
       selectedId={null}

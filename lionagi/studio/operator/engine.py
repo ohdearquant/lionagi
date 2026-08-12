@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -20,6 +21,8 @@ from .types import OperatorEngineEvent, OperatorEngineTurn
 
 if TYPE_CHECKING:
     from ..config import OperatorExecutionRootResolution
+
+_log = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = """\
 You are the resident Operator for Lion Studio. Be concise and factual.
@@ -629,6 +632,42 @@ def _apply_operator_effort(
     return model_name
 
 
+def _operator_hooks_settings_kwarg(execution_root: Path | None) -> dict[str, str]:
+    """``{"settings": <path>}`` when Studio-configured hooks exist, else ``{}``.
+
+    Resolved fresh per turn so a config edit applies to the next turn without
+    a daemon restart; a broken or empty config yields a hook-less turn, never
+    a failed one. The request model accepts only cwd-relative paths on
+    ``settings``, so the materialized file (under LIONAGI_HOME) is handed over
+    relative to the execution root — with the default root (the home
+    directory) that always resolves; a custom root outside home cannot reach
+    the file without traversal, and the turn runs hook-less with a log line
+    saying so.
+    """
+    import os
+
+    from lionagi.studio.services.operator_hooks import materialize_settings_file
+
+    try:
+        path = materialize_settings_file()
+    except Exception:  # noqa: BLE001 — hook config must never break a turn
+        _log.exception("operator hooks settings could not be materialized")
+        return {}
+    if path is None:
+        return {}
+    root = (execution_root or Path.cwd()).resolve()
+    relative = os.path.relpath(path, root)
+    if relative.startswith(".."):
+        _log.warning(
+            "operator hooks configured but the execution root %s cannot reach "
+            "%s without traversal; running the turn without hooks",
+            root,
+            path,
+        )
+        return {}
+    return {"settings": relative}
+
+
 def build_operator_branch(
     turn: OperatorEngineTurn,
     *,
@@ -663,6 +702,11 @@ def build_operator_branch(
             # Do not inherit project/user MCP servers into this privileged
             # control-plane conversation.
             "setting_sources": "",
+            # Hooks reach this isolated CLI session only through Studio's own
+            # explicit config (services/operator_hooks.py) — a settings file
+            # carrying nothing but the configured hooks block. Inheritance
+            # stays off; the injection is deliberate and inspectable.
+            **_operator_hooks_settings_kwarg(execution_root),
             "mcp_servers": {
                 "studio_permission": {
                     "command": sys.executable,

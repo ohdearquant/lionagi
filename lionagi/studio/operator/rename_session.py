@@ -136,7 +136,11 @@ async def rename_session(arguments: dict[str, Any]) -> dict[str, Any]:
 
     resolution = await resolve_run(args.run)
     if not resolution["found"]:
-        return {"renamed": False, "reason": "not_found"}
+        return {
+            "renamed": False,
+            "reason": "not_found",
+            "detail": resolution.get("reason"),
+        }
     if resolution.get("ambiguous"):
         return {
             "renamed": False,

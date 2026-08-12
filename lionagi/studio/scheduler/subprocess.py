@@ -226,6 +226,32 @@ def _render_command_arg(template: str, context: dict) -> str:
     return rendered
 
 
+def _validate_playbook_args(pb_args: object) -> None:
+    """Validate a play launch's typed playbook args before argv construction.
+
+    Keys become `--key` flags (underscores map to dashes, matching the play
+    CLI's own schema-derived flags), so they must be clean identifiers; values
+    ride as the following token, so a leading '-' would be re-parsed as a flag
+    (CWE-88) and is rejected.
+    """
+    if not isinstance(pb_args, dict):
+        raise ValueError("action_playbook_args must be an object of arg name -> value")
+    import re
+
+    for key, value in pb_args.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key):
+            raise ValueError(f"action_playbook_args key {key!r} is not a valid playbook arg name")
+        if not isinstance(value, (str, int, float, bool)):
+            raise ValueError(
+                f"action_playbook_args[{key!r}] must be a scalar, got {type(value).__name__}"
+            )
+        if isinstance(value, str) and value.startswith("-"):
+            raise ValueError(
+                f"action_playbook_args[{key!r}] starts with '-' and would inject "
+                "a CLI flag into the spawned li process"
+            )
+
+
 def _validate_prompt(prompt: str) -> None:
     """Raise ValueError if *prompt* is exactly the end-of-options sentinel '--'.
 
@@ -384,6 +410,12 @@ def build_argv(
         _validate_identifier(playbook, "action_playbook")
     if isinstance(extra, list):
         _validate_extra_args(extra)
+    if kind == "play":
+        _validate_playbook_args(schedule.get("action_playbook_args") or {})
+        if prompt.startswith("-"):
+            # `li play` has no '--' separator; a leading-dash positional would
+            # be re-parsed as a flag instead of reaching {input}.
+            raise ValueError("action_prompt for a play launch must not start with '-'")
     if kind == "engine":
         _validate_engine_options(schedule.get("action_engine_options"))
 
@@ -435,12 +467,23 @@ def build_argv(
         argv += ["o", "fanout", *flags, "--", model, prompt]
 
     elif kind == "play":
-        # `li play NAME` is a positional-only subcommand; '--' is not needed
-        # because playbook names are validated as identifiers above and there
-        # is no freeform prompt positional.
+        # `li play NAME [--args...] [prompt]` — the playbook name is a
+        # validated identifier; typed playbook args (validated above) become
+        # the play CLI's own schema-derived flags; the prompt positional
+        # interpolates into the template's {input}. Bool args are store_true
+        # flags: present when truthy, absent otherwise.
         argv += ["play"]
         if playbook:
             argv.append(playbook)
+            for key, value in (schedule.get("action_playbook_args") or {}).items():
+                flag = "--" + key.replace("_", "-")
+                if isinstance(value, bool):
+                    if value:
+                        argv.append(flag)
+                else:
+                    argv += [flag, str(value)]
+            if prompt:
+                argv.append(prompt)
 
     elif kind == "flow_yaml":
         # No positionals here (spec file carries prompt/model), so extra

@@ -165,7 +165,11 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
 
     resolution = await resolve_run(args.run)
     if not resolution["found"]:
-        return {"resumed": False, "reason": "not_found"}
+        return {
+            "resumed": False,
+            "reason": "not_found",
+            "detail": resolution.get("reason"),
+        }
     if resolution.get("ambiguous"):
         return {
             "resumed": False,

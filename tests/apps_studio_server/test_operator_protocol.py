@@ -284,8 +284,8 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
 
     observed = {}
 
-    async def fake_list_runs(*, status, limit, offset):
-        observed.update(status=status, limit=limit, offset=offset)
+    async def fake_list_runs(*, status, kind=None, limit, offset):
+        observed.update(status=status, kind=kind, limit=limit, offset=offset)
         return [
             {
                 "id": "run-1",
@@ -313,7 +313,7 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
 
     monkeypatch.setattr(runs_service, "list_runs", fake_list_runs)
     result = await list_recent_runs({"limit": 2, "status": "failed"})
-    assert observed == {"status": "failed", "limit": 2, "offset": 0}
+    assert observed == {"status": "failed", "kind": None, "limit": 2, "offset": 0}
     assert result == {
         "runs": [
             {
@@ -422,6 +422,55 @@ async def test_application_mcp_effects_are_typed_durable_and_client_acknowledged
             rejection_code=None,
         )
     ) == {"effectId": navigation["effectId"], "status": "applied"}
+    await store.finish_turn(accepted["requestId"], outcome="completed")
+
+
+@pytest.mark.asyncio
+async def test_navigate_targets_a_specific_run_and_library_entry(tmp_path, monkeypatch):
+    """navigate can put the human on one run (run_id -> s param) or one
+    library entry (sel), instead of only a space whose view default-selects
+    its first row."""
+    from lionagi.studio.operator.application_mcp import navigate
+
+    path = tmp_path / "state.db"
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="show me the run",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    run = await navigate({"space": "history", "run_id": "fb0a809a-28a8-4778-a49d-495b0cf14bec"})
+    entry = await navigate({"space": "library", "sel": "playbook:builtin:audit"})
+    both = await navigate({"space": "history", "status": "failed", "run_id": "abcd1234"})
+    faceted = await navigate({"space": "history", "status": "running", "run_kind": "play"})
+
+    frames = await store.list_frames(cid)
+    effects = [frame["payload"]["effect"] for frame in frames if frame["type"] == "ui_command"]
+    assert [e["params"] for e in effects] == [
+        {"s": "fb0a809a-28a8-4778-a49d-495b0cf14bec"},
+        {"sel": "playbook:builtin:audit"},
+        {"status": "failed", "s": "abcd1234"},
+        {"status": "running", "kind": "play"},
+    ]
+    assert [e["space"] for e in effects] == ["history", "library", "history", "history"]
+    assert run["status"] == entry["status"] == both["status"] == faceted["status"] == "pending"
+
+    # Targets are space-scoped: a run belongs to the fleet view, a sel to the
+    # library — the wrong pairing is refused before any effect is persisted.
+    with pytest.raises(ValueError, match="run_id"):
+        await navigate({"space": "library", "run_id": "abcd1234"})
+    with pytest.raises(ValueError, match="sel"):
+        await navigate({"space": "history", "sel": "playbook:builtin:audit"})
+    with pytest.raises(ValueError, match="run_kind"):
+        await navigate({"space": "library", "run_kind": "play"})
+    assert len(await store.list_frames(cid)) == len(frames)
     await store.finish_turn(accepted["requestId"], outcome="completed")
 
 
@@ -3323,7 +3372,9 @@ async def test_rename_session_not_found_reports_reason_without_creating_a_propos
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
 
     result = await rename_session({"run": "not-a-real-run-id", "name": "ghost"})
-    assert result == {"renamed": False, "reason": "not_found"}
+    assert result["renamed"] is False
+    assert result["reason"] == "not_found"
+    assert isinstance(result.get("detail"), str) and result["detail"]
     assert await store.list_proposals_for_request(accepted["requestId"]) == []
 
     await store.finish_turn(accepted["requestId"], outcome="completed")

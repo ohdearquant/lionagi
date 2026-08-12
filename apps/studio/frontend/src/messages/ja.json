@@ -116,7 +116,8 @@
       "busyPlaceholder": "Operator is working…",
       "hint": "Enter to send · Shift+Enter for a new line",
       "send": "Send",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "autoAllow": "提案を自動許可"
     },
     "message": {
       "you": "You",
@@ -376,6 +377,38 @@
       "creating": "Creating…",
       "create": "Create",
       "createError": "Could not create this server."
+    },
+    "filterHooks": "フック",
+    "hooks": {
+      "title": "フック",
+      "description": "再利用可能な名前付きフックをここで一度定義し、エージェントごとに組み立てます。各エージェントはライブラリのフックをイベント(ツール呼び出し前、プロンプト送信時、応答後)にバインドします。同じ構成がどのプロバイダー CLI でも動作します。",
+      "libraryTitle": "フックライブラリ",
+      "newHook": "新規フック",
+      "emptyLibrary": "フックはまだ定義されていません。作成するとすべてのエージェントで組み立て可能になります。",
+      "emptyLibraryHint": "先にライブラリでフックを定義してください。アタッチはライブラリのフックをイベントにバインドします。",
+      "operatorTitle": "Operator の構成",
+      "operatorDescription": "Studio Operator が実行するフック。Operator はユーザー設定もプロジェクト設定も継承しないため、ここでアタッチしたフックだけが読み込まれます。",
+      "enabled": "有効",
+      "save": "保存",
+      "saving": "保存中…",
+      "savedNotice": "保存しました — 次のターンから適用されます。",
+      "cancel": "キャンセル",
+      "delete": "削除",
+      "fieldName": "名前",
+      "fieldDescription": "説明",
+      "fieldCommand": "コマンド",
+      "fieldTimeout": "タイムアウト(秒)",
+      "nameRequired": "フックには名前が必要です。",
+      "timeoutInvalid": "タイムアウトは数値で指定してください。",
+      "noAttachments": "アタッチされたフックはありません。",
+      "attachmentHook": "フック",
+      "attachmentOn": "→",
+      "attachmentEvent": "イベント",
+      "attachmentMatcher": "マッチャー",
+      "matcherPlaceholder": "マッチャー(任意)",
+      "removeAttachment": "アタッチを解除",
+      "addAttachment": "フックをアタッチ",
+      "agentSectionTitle": "フック"
     }
   },
   "history": {
