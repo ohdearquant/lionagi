@@ -169,7 +169,12 @@
     "model": {
       "label": "Model",
       "default": "기본값",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · 권장",
+      "legacyGroup": "이전 선택",
+      "efforts": "노력: {efforts}",
+      "effortInModel": "노력 수준이 모델 ID에 인코딩됩니다",
+      "effortAsSetting": "노력 수준이 제공자 설정으로 전송됩니다"
     },
     "effort": {
       "label": "노력",

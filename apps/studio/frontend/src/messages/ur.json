@@ -169,7 +169,12 @@
     "model": {
       "label": "Model",
       "default": "پہلے سے طے شدہ",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · تجویز کردہ",
+      "legacyGroup": "پرانا انتخاب",
+      "efforts": "کوشش: {efforts}",
+      "effortInModel": "کوشش ماڈل آئی ڈی میں شامل ہے",
+      "effortAsSetting": "کوشش فراہم کنندہ کی ترتیب کے طور پر بھیجی جاتی ہے"
     },
     "effort": {
       "label": "کوشش",
