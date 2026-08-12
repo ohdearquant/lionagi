@@ -436,7 +436,12 @@ _REGISTERED: tuple[Verb, ...] = (
     ),
     Verb(
         name="job.status",
-        summary="Current state of a background run: liveness, job record, CLI manifest.",
+        summary=(
+            "Current state of a background run: liveness, job record, CLI manifest. "
+            "declared_mcp_servers names only the servers in the config snapshot "
+            "LionAGI wrote; providers may merge other configuration, so it is not "
+            "the effective server set. mcp_config_servers is its deprecated alias."
+        ),
         executor="job",
         own_schema=_JOB_STATUS_SCHEMA,
     ),

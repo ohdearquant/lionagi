@@ -297,12 +297,16 @@ Inconclusive (settle nothing about death):
 - `possibly_orphaned` flags a gone process with no end recorded whose loss
   wasn't conclusively established (unaskable pid, or an unpublishable
   transition) — advisory, never makes the run terminal.
-- `mcp_config*` mirror what `submit()`'s handle returned. `mcp_config_servers`:
-  `[]` means the question was settled with "none"; `null` means either the
-  caller named their own config (never read by this run), no config was found,
-  or the record predates the field — `mcp_config_reason` disambiguates the
-  first two. This reports what was RESOLVED, not that the child's provider
-  then actually started each server.
+- `mcp_config*` mirror what `submit()`'s handle returned.
+  `declared_mcp_servers` names only the servers in the config snapshot LionAGI
+  wrote: `[]` means that declaration was settled as empty; `null` means either
+  the caller named their own config (never read by this run), no config was
+  found, or the record predates the field — `mcp_config_reason` disambiguates
+  the first two. It is not an effective-capability report: a CLI provider may
+  merge global or cwd-resolved configuration and LionAGI does not observe which
+  declared servers started successfully. `mcp_config_servers` is retained as a
+  deprecated alias with the same value; it must not be read as the effective
+  server set.
 - `known` / `record_state`: only `"absent"` means the run is unknown;
   `"unreadable"`/`"wrong_shape"` mean a file is on disk and damaged — reporting
   either as unknown would send an operator away from a file that exists.
