@@ -622,10 +622,16 @@ export default function FleetView() {
   // the deep-link intent must be re-applied whenever the URL's run target
   // changes — during render, the endorsed adjust-on-props-change pattern,
   // which leaves the user's own back/collapse actions (no URL change) alone.
+  const autoSelectedRef = useRef<string | null>(null);
   const [lastUrlRunId, setLastUrlRunId] = useState(urlRunId);
   if (lastUrlRunId !== urlRunId) {
     setLastUrlRunId(urlRunId);
-    setNarrowExplicit(Boolean(urlRunId));
+    // The auto-select effect below writes ?s= too; a selection this component
+    // authored itself is not a deep link, and treating it as one replaces the
+    // master list with the detail pane whenever the pane is narrow.
+    if (urlRunId !== autoSelectedRef.current) {
+      setNarrowExplicit(Boolean(urlRunId));
+    }
   }
   // Deep links (and the Operator's navigate tool) carry ?status=…; honor it
   // as the initial history filter instead of silently showing "all".
@@ -878,8 +884,8 @@ export default function FleetView() {
   }, [histSort, histVisible, historyRows.length, serverHasMore, pager, costHasMore]);
 
   // Derive effective selection: URL param first, else auto-select first row.
-  // We track whether we've done the auto-select with a ref to avoid loops.
-  const autoSelectedRef = useRef<string | null>(null);
+  // The auto-select is tracked in autoSelectedRef (declared beside the
+  // deep-link sync above, which reads it) to avoid loops.
   const allAgents = state.orgUnits.flatMap((u) => u.agents);
   const invocationRunId = urlInvocationId
     ? (allAgents.find((agent) => agent.invocation_id === urlInvocationId)?.id ??
