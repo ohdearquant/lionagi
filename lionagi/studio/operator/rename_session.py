@@ -157,16 +157,6 @@ async def rename_session(arguments: dict[str, Any]) -> dict[str, Any]:
         # genuine race (the run was deleted), not an ownership question.
         return {"renamed": False, "reason": "not_found"}
 
-    row_project = row_dict.get("project")
-    if not isinstance(row_project, str) or not row_project:
-        # Only reachable through resolve_run()'s exact-id arm: a fenced
-        # resolution always yields a row matching the turn's own non-empty
-        # project. The execute-time ownership guard refuses a row with no
-        # project, so creating a proposal for one would burn a human
-        # approval on an act that cannot execute -- report it the way the
-        # executor would.
-        return {"renamed": False, "reason": "not_found"}
-
     # Carried through to `execute_rename_session_command` so ownership is
     # checked again immediately before the row is written, not only once at
     # resolution time -- the human's approval window is a gap a run's
@@ -222,14 +212,18 @@ async def execute_rename_session_command(command: dict[str, Any]) -> dict[str, A
         if row is None:
             return {"status": "not_found", "id": run_id}
         row_dict = db._row_to_dict(row)
-        # A command built by rename_session() above always carries the
-        # resolved row's own (non-empty) project -- rename_session() refuses
-        # to propose for a row without one. A missing or empty project
-        # here is itself an ownership failure, not a value meaning
-        # "unscoped, allow any row" -- it fails exactly like a project
-        # mismatch and exactly like a nonexistent id, the same reasoning
+        # The command carries the project the resolved row held at proposal
+        # time. Two arms, both failing toward not_found: a command with a
+        # real project must match the row's exactly, and a command with NO
+        # project (built from the exact-id fence arm for a row that had
+        # none -- Operator-launched runs have no project today) matches
+        # only a row that STILL has none. Same reasoning
         # `execute_cancel_command` documents.
-        if not isinstance(project, str) or not project or row_dict.get("project") != project:
+        row_project = row_dict.get("project")
+        if isinstance(project, str) and project:
+            if row_project != project:
+                return {"status": "not_found", "id": run_id}
+        elif isinstance(row_project, str) and row_project:
             return {"status": "not_found", "id": run_id}
         await db.update_session(run_id, name=name)
 
