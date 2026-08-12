@@ -93,6 +93,7 @@ _OPERATOR_MCP_TOOLS = [
 _MODEL_CONTEXT_FRAME_LIMIT = 64
 _MODEL_CONTEXT_BYTE_LIMIT = 128 * 1024
 _CONTEXT_VALUE_BYTE_LIMIT = 2 * 1024
+_HOUSE_RULES_BYTE_LIMIT = 32 * 1024
 
 
 class OperatorProviderUnavailableError(RuntimeError):
@@ -668,6 +669,102 @@ def _operator_hooks_settings_kwarg(execution_root: Path | None) -> dict[str, str
     return {"settings": relative}
 
 
+def _operator_extra_mcp() -> tuple[dict[str, Any], list[str]]:
+    """Additional MCP servers and their allowed tools from Studio's own config.
+
+    The turn runs with ``setting_sources: ""`` so nothing user- or
+    project-level is inherited; ``LIONAGI_HOME/operator_mcp.json`` is the
+    deliberate, inspectable counterpart — the one place extra servers (a
+    knowledge store, an orchestration surface) are granted to the Operator::
+
+        {
+          "enabled": true,
+          "servers": {"myserver": {"command": "...", "args": [...], "env": {...}}},
+          "allowed_tools": ["mcp__myserver__request"]
+        }
+
+    Read fresh per turn so an edit applies to the next turn without a daemon
+    restart. A missing or malformed file yields no extras, never a failed
+    turn. The two request-scoped servers cannot be overridden, and an allowed
+    tool must name a server declared in the same file — the allowlist can
+    widen only toward servers this config itself attaches.
+    """
+    from lionagi._paths import LIONAGI_HOME
+
+    config_path = LIONAGI_HOME / "operator_mcp.json"
+    try:
+        raw = config_path.read_text()
+    except FileNotFoundError:
+        return {}, []
+    except OSError:
+        _log.exception("operator extra-MCP config could not be read")
+        return {}, []
+    try:
+        config = json.loads(raw)
+    except json.JSONDecodeError:
+        _log.exception("operator extra-MCP config is not valid JSON; ignoring it")
+        return {}, []
+    if not isinstance(config, dict) or config.get("enabled", True) is not True:
+        return {}, []
+    servers: dict[str, Any] = {}
+    servers_raw = config.get("servers")
+    if isinstance(servers_raw, dict):
+        for name, spec in servers_raw.items():
+            if name in _REQUEST_SCOPED_MCP_SERVERS:
+                _log.warning(
+                    "operator_mcp.json cannot override the request-scoped server %r; ignored",
+                    name,
+                )
+                continue
+            if not isinstance(spec, dict) or not isinstance(spec.get("command"), str):
+                _log.warning("operator_mcp.json server %r has no command string; ignored", name)
+                continue
+            servers[name] = spec
+    allowed: list[str] = []
+    for tool in config.get("allowed_tools") or []:
+        if not isinstance(tool, str) or not tool.startswith("mcp__"):
+            _log.warning("operator_mcp.json allowed tool %r is not an MCP tool name; ignored", tool)
+            continue
+        parts = tool.split("__")
+        if len(parts) < 3 or parts[1] not in servers:
+            _log.warning(
+                "operator_mcp.json allowed tool %r names no server attached by this config; ignored",
+                tool,
+            )
+            continue
+        allowed.append(tool)
+    return servers, allowed
+
+
+def _operator_system_prompt() -> str:
+    """The base system prompt, plus house rules from Studio's own config.
+
+    ``LIONAGI_HOME/operator_house_rules.md`` (a plain file or a symlink
+    pointing at the maintained source, so the rules live in one place) is
+    appended verbatim when present and non-empty — read fresh per turn,
+    size-capped, and never able to fail the turn.
+    """
+    from lionagi._paths import LIONAGI_HOME
+
+    rules_path = LIONAGI_HOME / "operator_house_rules.md"
+    try:
+        rules = rules_path.read_text().strip()
+    except FileNotFoundError:
+        return _SYSTEM_PROMPT
+    except OSError:
+        _log.exception("operator house rules could not be read")
+        return _SYSTEM_PROMPT
+    if not rules:
+        return _SYSTEM_PROMPT
+    encoded = rules.encode()
+    if len(encoded) > _HOUSE_RULES_BYTE_LIMIT:
+        rules = (
+            encoded[:_HOUSE_RULES_BYTE_LIMIT].decode(errors="ignore")
+            + "\n[house rules truncated at size cap]"
+        )
+    return _SYSTEM_PROMPT + "\n\nHouse rules (from Studio operator config):\n" + rules
+
+
 def build_operator_branch(
     turn: OperatorEngineTurn,
     *,
@@ -683,6 +780,7 @@ def build_operator_branch(
         from .store import OperatorStore
 
         db_path = turn.store_path or str(OperatorStore().path())
+        extra_servers, extra_tools = _operator_extra_mcp()
         model_kwargs = {
             "endpoint": "query_cli",
             # Claude's own auth is used by the CLI endpoint.
@@ -691,8 +789,10 @@ def build_operator_branch(
             "include_partial_messages": True,
             # These request-scoped application tools are safe to invoke
             # directly: reads are bounded, UI effects remain client-ACKed, and
-            # launch_playbook performs its own durable human proposal.
-            "allowed_tools": _OPERATOR_MCP_TOOLS,
+            # launch_playbook performs its own durable human proposal. Extra
+            # tools are granted only by the explicit operator_mcp.json config,
+            # and only toward servers that config itself attaches.
+            "allowed_tools": [*_OPERATOR_MCP_TOOLS, *extra_tools],
             "permission_prompt_tool_name": "mcp__studio_permission__request_permission",
             "strict_mcp_config": True,
             # Continue the conversation's own provider session instead of
@@ -726,6 +826,13 @@ def build_operator_branch(
                         "LIONAGI_OPERATOR_REQUEST_ID": turn.request_id,
                     },
                 },
+                # Explicitly configured extras (operator_mcp.json); the two
+                # request-scoped servers above always win a name collision.
+                **{
+                    name: spec
+                    for name, spec in extra_servers.items()
+                    if name not in _REQUEST_SCOPED_MCP_SERVERS
+                },
             },
         }
     elif provider == "codex":
@@ -755,7 +862,10 @@ def build_operator_branch(
     # persists as the same log entry every other turn of this conversation
     # uses instead of a fresh, unrelated one (see OperatorStore.claim_branch_id).
     # No live Branch is ever cached across turns -- only this id is reused.
-    branch_kwargs: dict[str, Any] = {"system": _SYSTEM_PROMPT, "chat_model": chat_model}
+    branch_kwargs: dict[str, Any] = {
+        "system": _operator_system_prompt(),
+        "chat_model": chat_model,
+    }
     if turn.branch_id:
         branch_kwargs["id"] = turn.branch_id
     return Branch(**branch_kwargs)

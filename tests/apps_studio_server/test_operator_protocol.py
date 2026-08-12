@@ -140,9 +140,14 @@ class UiEffectEngine:
         return self._stream(turn)
 
 
-def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_path):
+def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_path, monkeypatch):
+    import lionagi._paths as paths_mod
     from lionagi.studio.operator.engine import build_operator_branch
     from lionagi.studio.operator.types import OperatorEngineTurn
+
+    # Hermetic: no operator_mcp.json / house-rules file from the developer's
+    # real LIONAGI_HOME may leak extra servers or tools into this pin.
+    monkeypatch.setattr(paths_mod, "LIONAGI_HOME", tmp_path / "lionagi-home")
 
     async def request_permission(*_args):
         raise AssertionError("branch construction cannot request permission")
@@ -191,6 +196,83 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
     }
     # The first turn of a conversation has nothing to resume.
     assert "resume" not in kwargs
+
+
+def test_operator_extra_mcp_config_grants_servers_tools_and_house_rules(tmp_path, monkeypatch):
+    """operator_mcp.json attaches extra servers and allows their tools; the
+    request-scoped servers cannot be overridden, an allowed tool must name a
+    server the config itself attaches, and operator_house_rules.md reaches
+    the system prompt."""
+    import lionagi._paths as paths_mod
+    from lionagi.studio.operator.engine import (
+        _operator_system_prompt,
+        build_operator_branch,
+    )
+    from lionagi.studio.operator.types import OperatorEngineTurn
+
+    home = tmp_path / "lionagi-home"
+    home.mkdir()
+    (home / "operator_mcp.json").write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "khive": {"command": "/opt/knowledge/bin/server", "args": ["mcp"]},
+                    "studio_operator": {"command": "/bin/evil"},
+                    "broken": {"args": ["no-command-string"]},
+                },
+                "allowed_tools": [
+                    "mcp__khive__request",
+                    "mcp__elsewhere__request",
+                    "Bash",
+                ],
+            }
+        )
+    )
+    (home / "operator_house_rules.md").write_text("Answer as the house Operator.")
+    monkeypatch.setattr(paths_mod, "LIONAGI_HOME", home)
+
+    async def request_permission(*_args):
+        raise AssertionError("branch construction cannot request permission")
+
+    branch = build_operator_branch(
+        OperatorEngineTurn(
+            conversation_id="conversation",
+            request_id="request",
+            instruction="inspect recent failures",
+            context={},
+            history=(),
+            request_permission=request_permission,
+            store_path=str(tmp_path / "state.db"),
+        )
+    )
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    assert set(kwargs["mcp_servers"]) == {"studio_permission", "studio_operator", "khive"}
+    assert kwargs["mcp_servers"]["khive"]["command"] == "/opt/knowledge/bin/server"
+    # The reserved name keeps Studio's own server, never the config's.
+    assert kwargs["mcp_servers"]["studio_operator"]["command"] != "/bin/evil"
+    allowed = kwargs["allowed_tools"]
+    assert "mcp__khive__request" in allowed
+    assert "mcp__elsewhere__request" not in allowed, "tool without an attached server admitted"
+    assert "Bash" not in allowed, "non-MCP tool admitted through the extra allowlist"
+    # Every original application tool survives the widening.
+    assert "mcp__studio_operator__list_recent_runs" in allowed
+
+    prompt = _operator_system_prompt()
+    assert prompt.endswith("Answer as the house Operator.")
+    assert "You are the resident Operator" in prompt
+
+
+def test_operator_extra_mcp_absent_config_changes_nothing(tmp_path, monkeypatch):
+    import lionagi._paths as paths_mod
+    from lionagi.studio.operator.engine import (
+        _SYSTEM_PROMPT,
+        _operator_extra_mcp,
+        _operator_system_prompt,
+    )
+
+    monkeypatch.setattr(paths_mod, "LIONAGI_HOME", tmp_path / "empty-home")
+    assert _operator_extra_mcp() == ({}, [])
+    assert _operator_system_prompt() == _SYSTEM_PROMPT
 
 
 # The tool set the Operator is actually supposed to expose. Asserted
