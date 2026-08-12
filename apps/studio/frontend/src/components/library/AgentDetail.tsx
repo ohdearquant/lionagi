@@ -186,6 +186,26 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
     };
   }, [agent.name]);
 
+  // Refetch the raw definition after a sibling editor (the hooks assembly)
+  // rewrites the file server-side. Without this, startEdit reparses the
+  // cached pre-hooks content and the next prompt save posts it back verbatim,
+  // silently reverting the hook change. When the raw editor is already open,
+  // only `def` refreshes; the in-progress fm/body edit is the user's to keep.
+  const reloadDefinition = useCallback(async () => {
+    try {
+      const updated = await getDefinition("agent", agent.name);
+      setDef(updated);
+      if (!editing) {
+        const { fm: f, body: b } = parseFm(updated.content);
+        setFm(f);
+        setBody(b);
+      }
+    } catch {
+      // A failed refresh leaves the stale-content hazard in place but has no
+      // channel of its own here; the next explicit action re-surfaces it.
+    }
+  }, [agent.name, editing]);
+
   const startEdit = useCallback(() => {
     if (!def) return;
     const { fm: f, body: b } = parseFm(def.content);
@@ -526,7 +546,7 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
       </div>
 
       {/* Hook assembly — named library hooks bound to provider-neutral events */}
-      <AgentHooksSection name={agent.name} disabled={isProtected} />
+      <AgentHooksSection name={agent.name} disabled={isProtected} onSaved={reloadDefinition} />
 
       {/* System prompt — dominant element */}
       <div className="flex min-h-0 flex-1 flex-col">
@@ -618,7 +638,15 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
  * definition editor above, whose scalar field model cannot represent the
  * nested assembly.
  */
-function AgentHooksSection({ name, disabled }: { name: string; disabled?: boolean }) {
+function AgentHooksSection({
+  name,
+  disabled,
+  onSaved,
+}: {
+  name: string;
+  disabled?: boolean;
+  onSaved?: () => void;
+}) {
   const t = useTranslations("library.hooks");
   const [attachments, setAttachments] = useState<HookAttachment[]>([]);
   const [hookNames, setHookNames] = useState<string[]>([]);
@@ -664,6 +692,11 @@ function AgentHooksSection({ name, disabled }: { name: string; disabled?: boolea
       .then(() => {
         setDirty(false);
         setSaved(true);
+        // The raw-definition editor caches the file content it loaded; this
+        // save just rewrote that file's frontmatter server-side, so the parent
+        // must refetch or its next prompt save posts the pre-hooks document
+        // back verbatim and silently reverts this assembly.
+        onSaved?.();
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setSaving(false));

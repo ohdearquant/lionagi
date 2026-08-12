@@ -49,6 +49,10 @@ export default function HooksView() {
   const [assemblyError, setAssemblyError] = useState<string | null>(null);
   const [assemblySaved, setAssemblySaved] = useState(false);
   const [assemblySaving, setAssemblySaving] = useState(false);
+  // The assembly editor stays gated until this initial GET lands: the library
+  // request resolving first used to unlock editing, and the slower assembly
+  // response then overwrote whatever the user had already changed or saved.
+  const [assemblyLoaded, setAssemblyLoaded] = useState(false);
 
   useEffect(() => {
     getOperatorHooks()
@@ -57,7 +61,8 @@ export default function HooksView() {
         setAttachments(config.attachments ?? []);
         setAssemblyError(config.error ?? null);
       })
-      .catch((err) => setAssemblyError(err instanceof Error ? err.message : String(err)));
+      .catch((err) => setAssemblyError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setAssemblyLoaded(true));
   }, []);
 
   const saveAssembly = useCallback(() => {
@@ -179,6 +184,7 @@ export default function HooksView() {
           <input
             type="checkbox"
             checked={enabled}
+            disabled={!assemblyLoaded}
             onChange={(e) => {
               setEnabled(e.target.checked);
               setAssemblySaved(false);
@@ -193,6 +199,7 @@ export default function HooksView() {
             setAssemblySaved(false);
           }}
           hookNames={hookNames}
+          disabled={!assemblyLoaded}
         />
         {assemblyError && (
           <div
@@ -203,7 +210,11 @@ export default function HooksView() {
           </div>
         )}
         <div className="flex items-center gap-3">
-          <Button variant="primary" onClick={saveAssembly} disabled={assemblySaving}>
+          <Button
+            variant="primary"
+            onClick={saveAssembly}
+            disabled={assemblySaving || !assemblyLoaded}
+          >
             {assemblySaving ? t("saving") : t("save")}
           </Button>
           {assemblySaved && (

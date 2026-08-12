@@ -676,6 +676,17 @@ async def _run_agent(
             timeout = profile.timeout
         if profile.resume_on_timeout and not resume_on_timeout:
             resume_on_timeout = True
+        if (getattr(profile, "extra", None) or {}).get("hooks"):
+            # A saved guard the leg silently does not run is worse than no
+            # guard: say so at launch until CLI runs consume the assembly.
+            from lionagi.cli._logging import warn
+
+            warn(
+                f"agent profile {agent_name!r} declares a hooks assembly; "
+                "CLI-spawned runs do not apply profile hook assemblies yet "
+                "(Studio Operator turns do), so those hooks are NOT active "
+                "for this run"
+            )
 
     # Validate a declared profile `role:` key up front: a falsy-but-present
     # value must fail loudly here, not silently fall back to "implementer".

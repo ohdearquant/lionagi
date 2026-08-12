@@ -309,6 +309,11 @@ function normalizeOperatorConversation(value: unknown): OperatorConversation {
     title: typeof raw.title === "string" ? raw.title : null,
     nextSequence: readNumber("nextSequence", "next_sequence"),
     activeRequestId: readString("activeRequestId", "active_request_id") ?? null,
+    // The pinned selection must survive normalization: dropping it here is
+    // what made the composer fall back to "Default" on every page refresh
+    // even though the store kept the pin the whole time.
+    provider: readString("provider", "provider") ?? null,
+    providerModel: readString("providerModel", "provider_model") ?? null,
     createdAt: readNumber("createdAt", "created_at"),
     updatedAt: readNumber("updatedAt", "updated_at"),
   };

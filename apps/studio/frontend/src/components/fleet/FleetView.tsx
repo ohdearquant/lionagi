@@ -302,7 +302,6 @@ function matchesHistFilter(displayStatus: string, filter: HistFilter): boolean {
 export function HistorySection({
   rows,
   filter,
-  onFilter,
   sort,
   onSort,
   kind,
@@ -317,7 +316,6 @@ export function HistorySection({
 }: {
   rows: RecentRow[];
   filter: HistFilter;
-  onFilter: (f: HistFilter) => void;
   sort: "recent" | "cost";
   onSort: (s: "recent" | "cost") => void;
   kind: KindFacet | null;
@@ -364,34 +362,15 @@ export function HistorySection({
     io.observe(el);
     return () => io.disconnect();
   }, [hasMore]);
-  const chips: { key: HistFilter; label: string }[] = [
-    { key: "all", label: t("history.all") },
-    { key: "completed", label: t("history.completed") },
-    { key: "failed", label: t("history.failed") },
-  ];
-
   return (
     <div>
-      {/* Section header with status filter chips */}
+      {/* Section header — the status chips moved up to the FilterBar beside
+          the other scope controls; the count still reflects the active
+          status filter. */}
       <div className="flex items-center gap-2 border-b border-edge bg-surface-raised px-4 py-2">
         <span className="min-w-0 flex-1 truncate font-ui text-[length:var(--t-xs)] font-semibold uppercase tracking-[0.08em] text-content-muted">
           {t("history.label")}
         </span>
-        {chips.map((c) => (
-          <button
-            key={c.key}
-            type="button"
-            onClick={() => onFilter(c.key)}
-            aria-pressed={filter === c.key}
-            className={`shrink-0 rounded px-1.5 py-0.5 font-data text-[length:var(--t-xs)] transition-colors duration-100 ${
-              filter === c.key
-                ? "bg-surface-overlay text-content-primary"
-                : "text-content-muted hover:text-content-secondary"
-            }`}
-          >
-            {c.label}
-          </button>
-        ))}
         <span className="shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
           {allFiltered.length}
           {serverHasMore ? "+" : ""}
@@ -507,6 +486,8 @@ function FilterBar({
   projectNull,
   onProjectChange,
   onClear,
+  histFilter,
+  onHistFilter,
 }: {
   searchDraft: string;
   onSearchDraftChange: (v: string) => void;
@@ -514,9 +495,19 @@ function FilterBar({
   projectNull: boolean;
   onProjectChange: (next: { project?: string; projectNull?: boolean }) => void;
   onClear: () => void;
+  histFilter: HistFilter;
+  onHistFilter: (f: HistFilter) => void;
 }) {
   const t = useTranslations("fleet");
   const hasFilter = Boolean(searchDraft) || Boolean(project) || projectNull;
+  // Status chips live up here with the other scope controls rather than in
+  // the history section header: a filter placed inside one section reads as
+  // scoped to that section, which is not a promise this control keeps.
+  const chips: { key: HistFilter; label: string }[] = [
+    { key: "all", label: t("history.all") },
+    { key: "completed", label: t("history.completed") },
+    { key: "failed", label: t("history.failed") },
+  ];
   return (
     <div className="flex items-center gap-2 border-b border-edge px-4 py-2">
       <input
@@ -528,6 +519,21 @@ function FilterBar({
         className="min-w-0 flex-1 rounded border border-edge bg-surface-base px-2 py-1 font-data text-[length:var(--t-xs)] text-content-primary placeholder:text-content-muted focus:border-accent/50 focus:outline-none"
       />
       <ProjectFilter project={project} projectNull={projectNull} onChange={onProjectChange} />
+      {chips.map((c) => (
+        <button
+          key={c.key}
+          type="button"
+          onClick={() => onHistFilter(c.key)}
+          aria-pressed={histFilter === c.key}
+          className={`shrink-0 rounded px-1.5 py-0.5 font-data text-[length:var(--t-xs)] transition-colors duration-100 ${
+            histFilter === c.key
+              ? "bg-surface-overlay text-content-primary"
+              : "text-content-muted hover:text-content-secondary"
+          }`}
+        >
+          {c.label}
+        </button>
+      ))}
       {hasFilter && (
         <button
           type="button"
@@ -611,6 +617,16 @@ export default function FleetView() {
   // Operator dock narrows Fleet below the split-pane breakpoint: opening a run
   // must reveal its detail instead of landing back on the master list.
   const [narrowExplicit, setNarrowExplicit] = useState(() => Boolean(urlRunId));
+  // Initializers only run on mount, but the Operator's navigate tool changes
+  // the search params on an already-mounted Fleet (/fleet -> /fleet?s=…), so
+  // the deep-link intent must be re-applied whenever the URL's run target
+  // changes — during render, the endorsed adjust-on-props-change pattern,
+  // which leaves the user's own back/collapse actions (no URL change) alone.
+  const [lastUrlRunId, setLastUrlRunId] = useState(urlRunId);
+  if (lastUrlRunId !== urlRunId) {
+    setLastUrlRunId(urlRunId);
+    setNarrowExplicit(Boolean(urlRunId));
+  }
   // Deep links (and the Operator's navigate tool) carry ?status=…; honor it
   // as the initial history filter instead of silently showing "all".
   const rawUrlStatus = (search as { status?: unknown }).status;
@@ -623,6 +639,16 @@ export default function FleetView() {
   const [histFilter, setHistFilter] = useState<HistFilter>(() =>
     urlStatus === "failed" || urlStatus === "completed" ? urlStatus : "all",
   );
+  // Same adjust-on-change pattern as narrowExplicit above: an in-place
+  // navigation carrying ?status=… must move the filter, while a URL without
+  // the param expresses no opinion and leaves the user's local choice alone.
+  const [lastUrlStatus, setLastUrlStatus] = useState(urlStatus);
+  if (lastUrlStatus !== urlStatus) {
+    setLastUrlStatus(urlStatus);
+    if (urlStatus === "failed" || urlStatus === "completed") {
+      setHistFilter(urlStatus);
+    }
+  }
   const [histSort, setHistSort] = useState<"recent" | "cost">("recent");
 
   // Text search is debounced into the URL (and from there into the poll and
@@ -723,6 +749,8 @@ export default function FleetView() {
     );
     // Filter scope changed - the previous page's older-history cache/cursor
     // belongs to a different result set and must not be appended to this one.
+    // (In-flight continuations from the old pager are dropped by the identity
+    // checks in handleLoadMore: the ref now points at the new pager.)
     // eslint-disable-next-line react-hooks/set-state-in-effect -- external filter change, not a render-derivable value
     setOlderRows([]);
     setPagedHasMore(null);
@@ -808,6 +836,13 @@ export default function FleetView() {
       if (!costHasMore || !costPager || costPager.inFlight()) return;
       setCostSortLoading(true);
       void costPager.loadNext().then((page) => {
+        // A filter/sort change swaps the pager under this continuation; its
+        // rows belong to the previous result set and must not be appended
+        // into the freshly-reset one (has-more included).
+        if (costPagerRef.current !== costPager) {
+          setCostSortLoading(false);
+          return;
+        }
         // null = fetch failed — leave state as-is; the sentinel retries the page.
         if (page) {
           setCostSortedRows((prev) => [...(prev ?? []), ...page.rows]);
@@ -825,6 +860,13 @@ export default function FleetView() {
     if (!serverHasMore || pager.inFlight()) return;
     setLoadingMore(true);
     void pager.loadNext().then((page) => {
+      // Same cross-generation guard as the cost branch: a filter change
+      // rebuilt the pager and reset the arrays; this continuation's rows
+      // belong to the old filter and mixing them in corrupts the list.
+      if (pagerRef.current !== pager) {
+        setLoadingMore(false);
+        return;
+      }
       // null = fetch failed — leave state as-is; the sentinel retries the page.
       if (page) {
         setPagedHasMore(page.hasMore);
@@ -921,6 +963,8 @@ export default function FleetView() {
         projectNull={urlProjectNull}
         onProjectChange={handleProjectChange}
         onClear={handleClearFilters}
+        histFilter={histFilter}
+        onHistFilter={setHistFilter}
       />
 
       {/* Counts strip */}
@@ -957,7 +1001,6 @@ export default function FleetView() {
           <HistorySection
             rows={historyRows}
             filter={histFilter}
-            onFilter={setHistFilter}
             sort={histSort}
             onSort={setHistSort}
             kind={urlKind}

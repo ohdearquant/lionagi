@@ -721,7 +721,16 @@ def _operator_extra_mcp() -> tuple[dict[str, Any], list[str]]:
                 continue
             servers[name] = spec
     allowed: list[str] = []
-    for tool in config.get("allowed_tools") or []:
+    allowed_raw = config.get("allowed_tools")
+    if allowed_raw is None:
+        allowed_raw = []
+    elif not isinstance(allowed_raw, list):
+        # Fail-soft like every other malformed field in this file: one bad
+        # local config must degrade to "no extra grants", never raise and
+        # take down every subsequent Operator turn.
+        _log.warning("operator_mcp.json allowed_tools is not a list; ignoring it")
+        allowed_raw = []
+    for tool in allowed_raw:
         if not isinstance(tool, str) or not tool.startswith("mcp__"):
             _log.warning("operator_mcp.json allowed tool %r is not an MCP tool name; ignored", tool)
             continue

@@ -403,6 +403,7 @@ async def list_project_counts() -> list[dict[str, Any]]:
                    COUNT(*) AS count,
                    MAX(updated_at) AS last_activity
             FROM sessions
+            WHERE json_extract(node_metadata, '$.engine_parent_run_id') IS NULL
             GROUP BY project
             """
         )

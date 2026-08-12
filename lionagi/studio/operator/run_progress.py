@@ -421,20 +421,39 @@ def _node_lane(events: list[tuple[str, str | None]]) -> str:
 async def _node_lanes_by_name(session_id: str) -> dict[str, str]:
     from lionagi.state.db import StateDB
 
-    async with StateDB(readonly=True) as db:
-        signals = await db.get_session_signals_after(session_id, 0, limit=_SIGNAL_READ_LIMIT)
-
     by_name: dict[str, list[tuple[str, str | None]]] = {}
-    for signal in signals:
-        kind = signal.get("kind")
-        if kind not in _NODE_KIND_TO_STATE:
-            continue
-        payload = signal.get("payload") or {}
-        name = payload.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        route = payload.get("route")
-        by_name.setdefault(name, []).append((kind, route if isinstance(route, str) else None))
+    # Paged to exhaustion: reading only the first page and reconciling on it
+    # treats the prefix as the whole history, so a NodeCompleted past the page
+    # boundary reads as a stale in-flight lane and a terminal run then relabels
+    # a genuinely completed node "aborted".
+    after_seq = 0
+    async with StateDB(readonly=True) as db:
+        while True:
+            signals = await db.get_session_signals_after(
+                session_id, after_seq, limit=_SIGNAL_READ_LIMIT
+            )
+            if not signals:
+                break
+            for signal in signals:
+                kind = signal.get("kind")
+                if kind not in _NODE_KIND_TO_STATE:
+                    continue
+                payload = signal.get("payload") or {}
+                name = payload.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                route = payload.get("route")
+                by_name.setdefault(name, []).append(
+                    (kind, route if isinstance(route, str) else None)
+                )
+            last_seq = signals[-1].get("seq")
+            if not isinstance(last_seq, int) or last_seq <= after_seq:
+                # No forward progress in the cursor means another page would
+                # re-read the same rows; stop rather than spin.
+                break
+            after_seq = last_seq
+            if len(signals) < _SIGNAL_READ_LIMIT:
+                break
     return {name: _node_lane(events) for name, events in by_name.items()}
 
 

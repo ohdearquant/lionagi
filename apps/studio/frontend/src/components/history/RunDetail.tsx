@@ -2589,6 +2589,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       <ExpectedArtifacts
         contract={session.artifact_contract_json}
         verification={session.artifact_verification_json}
+        runId={session.id}
       />
       {canRenderGraph && (
         <div
