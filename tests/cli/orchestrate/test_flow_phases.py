@@ -13,7 +13,7 @@ from uuid import uuid4
 import pytest
 
 from lionagi.casts.emission import TaskAssignment
-from lionagi.cli.orchestrate._common import bare_worker_system
+from lionagi.cli.orchestrate._common import _build_worker_operate_node, bare_worker_system
 from lionagi.cli.orchestrate.flow import (
     _build_dag,
     _DagState,
@@ -275,6 +275,76 @@ async def test_build_dag_populates_node_ids(tmp_path):
     # directory — and the roster still names both workers.
     assert env.expected_worker_ids == ["researcher", "implementer"]
     assert env.worker_artifact_dirs == {}
+
+
+@pytest.mark.asyncio
+async def test_build_dag_forwards_assignment_inputs_to_worker_context(tmp_path):
+    """Planner-declared inputs are part of the worker's execution context."""
+    env = _make_env(tmp_path)
+    assignment = TaskAssignment(
+        task="review the implementation",
+        assignee="reviewer",
+        inputs=["requirements.md", "the implementation diff"],
+    )
+    plan_result = _PlanResult(
+        assignments=[assignment],
+        agent_ids=["reviewer"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.build_worker_branch",
+            return_value=(_FakeBranch("reviewer"), "codex/gpt-5.5", None, False),
+        ),
+        patch(
+            "lionagi.cli.orchestrate.flow._build_worker_operate_node",
+            wraps=_build_worker_operate_node,
+        ) as build_node,
+    ):
+        await _build_dag(env, "ship safely", plan_result, reactive_spec="off")
+
+    assert {"assignment_inputs": ["requirements.md", "the implementation diff"]} in (
+        build_node.call_args.kwargs["context"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_dag_forwards_assignment_exit_criteria_to_worker_instruction(tmp_path):
+    """The worker sees the planner's definition of done in its instruction."""
+    env = _make_env(tmp_path)
+    assignment = TaskAssignment(
+        task="implement the fix",
+        assignee="implementer",
+        exit_criteria="The regression test and focused suite pass.",
+    )
+    plan_result = _PlanResult(
+        assignments=[assignment],
+        agent_ids=["implementer"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={0: "[BUDGET]\n"},
+    )
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.build_worker_branch",
+            return_value=(_FakeBranch("implementer"), "codex/gpt-5.5", None, False),
+        ),
+        patch(
+            "lionagi.cli.orchestrate.flow._build_worker_operate_node",
+            wraps=_build_worker_operate_node,
+        ) as build_node,
+    ):
+        await _build_dag(env, "ship safely", plan_result, reactive_spec="off")
+
+    assert build_node.call_args.kwargs["instruction"] == (
+        "[BUDGET]\nimplement the fix\n\n"
+        "Exit criteria (must be satisfied before completion):\n"
+        "The regression test and focused suite pass."
+    )
 
 
 @pytest.mark.asyncio
