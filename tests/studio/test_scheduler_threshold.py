@@ -288,6 +288,7 @@ async def test_maybe_fire_no_breach_advances_next_fire_without_firing():
     args, kwargs = svc.update_schedule.await_args
     assert args[0] == "sched-001"
     assert "next_fire_at" in kwargs
+    assert kwargs["last_evaluated_at"] == 1000.0
     assert "last_alert_at" not in kwargs
 
 
@@ -355,7 +356,7 @@ async def test_maybe_fire_breach_within_cooldown_suppresses_refire():
         await engine._maybe_fire(schedule, now=1000.0)
 
     mock_tracked.assert_not_called()
-    # Only the next_fire_at advance -- no second last_alert_at stamp.
+    # Cadence/evaluation watermarks advance, but no second last_alert_at stamp.
     last_alert_calls = [
         c for c in svc.update_schedule.await_args_list if "last_alert_at" in c.kwargs
     ]
@@ -1094,11 +1095,11 @@ async def test_metric_value_github_poll_consecutive_401_counts_and_resets():
     await state.close()
 
 
-# create_schedule / update_schedule round-trip threshold_config + last_alert_at
+# create_schedule / update_schedule round-trip threshold watermarks
 
 
 @pytest.mark.asyncio
-async def test_schedule_round_trips_threshold_config_and_last_alert_at():
+async def test_schedule_round_trips_threshold_config_and_watermarks():
     from lionagi.state.db import StateDB
 
     state = StateDB(":memory:")
@@ -1128,10 +1129,12 @@ async def test_schedule_round_trips_threshold_config_and_last_alert_at():
         "window_minutes": 60,
     }
     assert row["last_alert_at"] is None
+    assert row["last_evaluated_at"] is None
 
-    await state.update_schedule("sched-threshold-1", last_alert_at=123.0)
+    await state.update_schedule("sched-threshold-1", last_alert_at=123.0, last_evaluated_at=456.0)
     row = await state.get_schedule("sched-threshold-1")
     assert row["last_alert_at"] == 123.0
+    assert row["last_evaluated_at"] == 456.0
 
     await state.close()
 

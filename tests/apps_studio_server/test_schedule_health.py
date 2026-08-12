@@ -3,12 +3,12 @@
 """Tests for the schedule health verdict
 (healthy/failing/overdue/never-fired/no-evidence/disabled).
 
-Health is derived from cadence + recorded schedule_runs rows, never from
-next_fire_at -- these tests plant fixture rows for each state and assert the
-verdict lands where it should, including the shapes next_fire_at cannot
-represent: a schedule that has never recorded a row, one whose recorded rows
-never became a real execution (skipped/queued/pending), and one that keeps
-skipping instead of running.
+Health is derived from cadence + recorded schedule_runs rows and the threshold
+evaluation watermark, never from next_fire_at -- these tests plant fixture
+rows for each state and assert the verdict lands where it should, including
+the shapes next_fire_at cannot represent: a schedule that has never recorded a
+row, one whose recorded rows never became a real execution
+(skipped/queued/pending), and one that keeps skipping instead of running.
 """
 
 from __future__ import annotations
@@ -284,6 +284,87 @@ async def test_overdue_when_no_execution_within_expected_cadence(temp_db_path):
 
     row = await _list_row(sid)
     assert row["health_state"] == "overdue"
+
+
+def test_threshold_health_uses_recent_evaluation_as_liveness():
+    now = time.time()
+    row = {
+        "enabled": 1,
+        "trigger_type": "interval",
+        "interval_sec": 300,
+        "threshold_config": {
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 60,
+        },
+        "created_at": now - 10_000,
+        "last_fired_at": now - 5_000,
+        "last_evaluated_at": now - 30,
+    }
+    evidence = {
+        "last_recorded_run_at": now - 5_000,
+        "last_executed_run_at": now - 5_000,
+        "last_executed_status": "completed",
+    }
+
+    result = compute_schedule_health(row, evidence, now=now)
+
+    assert result["health_state"] == "healthy"
+
+
+def test_quiet_threshold_alert_with_recent_evaluation_is_healthy():
+    now = time.time()
+    row = {
+        "enabled": 1,
+        "trigger_type": "interval",
+        "interval_sec": 300,
+        "threshold_config": {
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 60,
+        },
+        "created_at": now - 10_000,
+        "last_fired_at": None,
+        "last_evaluated_at": now - 30,
+    }
+    evidence = {
+        "last_recorded_run_at": None,
+        "last_executed_run_at": None,
+        "last_executed_status": None,
+    }
+
+    result = compute_schedule_health(row, evidence, now=now)
+
+    assert result["health_state"] == "healthy"
+
+
+def test_threshold_alert_with_stale_evaluation_is_overdue():
+    now = time.time()
+    row = {
+        "enabled": 1,
+        "trigger_type": "interval",
+        "interval_sec": 300,
+        "threshold_config": {
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 60,
+        },
+        "created_at": now - 10_000,
+        "last_fired_at": None,
+        "last_evaluated_at": now - 5_000,
+    }
+    evidence = {
+        "last_recorded_run_at": None,
+        "last_executed_run_at": None,
+        "last_executed_status": None,
+    }
+
+    result = compute_schedule_health(row, evidence, now=now)
+
+    assert result["health_state"] == "overdue"
 
 
 async def test_overdue_outranks_a_pile_of_recent_skips(temp_db_path):

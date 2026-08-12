@@ -1875,10 +1875,15 @@ class SchedulerEngine:
         Used by the threshold-alert paths in ``_maybe_fire`` where the
         cadence tick fires (so the metric is re-checked next time) but no
         breach (or an in-cooldown breach) means no action should spawn.
+        ``last_evaluated_at`` is evidence that the quiet detector itself is
+        alive; unlike ``next_fire_at``, it records completed work rather than
+        a future promise.
         """
         next_at = self._compute_next_fire(schedule, now)
+        fields: dict[str, float] = {"last_evaluated_at": now}
         if next_at:
-            await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
+            fields["next_fire_at"] = next_at
+        await self._svc.update_schedule(schedule["id"], **fields)
 
     async def _maybe_fire(self, schedule: dict, now: float) -> None:
         threshold_extra: dict[str, Any] | None = None
