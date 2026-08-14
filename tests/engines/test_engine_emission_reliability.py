@@ -212,6 +212,67 @@ def test_isolation_predicate_refuses_a_group_carrying_a_non_transport_leaf() -> 
     assert _is_all_isolated_failure(nested_mixed) is False
 
 
+@pytest.mark.skipif(importlib.util.find_spec("mcp") is None, reason="mcp is an optional extra")
+def test_application_mcp_errors_are_not_isolated_as_transport_failures() -> None:
+    """Only connection-shaped McpErrors are per-dimension transport failures.
+
+    The SDK spells just two conditions as McpError itself: connection closed
+    and request timeout. Every other McpError relays a server-side error —
+    an authorization refusal, an application failure — which describes the
+    request, not the wire. Swallowing those as transport drops turns e.g. a
+    permission denial into a silent one-dimension degrade.
+    """
+    from mcp.shared.exceptions import McpError
+    from mcp.types import ErrorData
+
+    from lionagi.engines.review import _is_all_isolated_failure
+
+    connection_closed = McpError(ErrorData(code=-32000, message="Connection closed"))
+    assert _is_all_isolated_failure(connection_closed) is True
+
+    permission_denied = McpError(ErrorData(code=-32603, message="permission denied"))
+    assert _is_all_isolated_failure(permission_denied) is False
+
+    mixed = ExceptionGroup(
+        "unhandled errors in a TaskGroup", [connection_closed, permission_denied]
+    )
+    assert _is_all_isolated_failure(mixed) is False
+
+
+def test_an_approve_emitted_over_a_dead_dimension_is_structurally_capped() -> None:
+    """The prompt tells synthesis not to approve on missing coverage; the
+    engine must not depend on it complying. If a dimension never ran and the
+    synthesis model emits APPROVE anyway, the verdict event is rewritten to
+    REQUEST-CHANGES with the dead dimensions as blocking entries — approval
+    on absent coverage must be unrepresentable, not merely discouraged."""
+    from lionagi.engines.review import ReviewVerdict, _cap_approvals_on_missing_coverage
+
+    approve = ReviewVerdict(verdict="APPROVE", rationale="looks clean", blocking=[])
+    with_fixes = ReviewVerdict(verdict="approve-with-fixes", rationale="minor nits", blocking=[])
+    already_blocking = ReviewVerdict(
+        verdict="REQUEST-CHANGES", rationale="real issue", blocking=["x"]
+    )
+    failed = [("security", "McpError"), ("performance", "EndOfStream")]
+
+    capped = _cap_approvals_on_missing_coverage([approve, with_fixes, already_blocking], failed)
+
+    assert capped is True
+    # Both APPROVE-family verdicts are rewritten, case-insensitively.
+    for verdict in (approve, with_fixes):
+        assert verdict.verdict == "REQUEST-CHANGES"
+        assert "security dimension did not run (McpError)" in verdict.blocking
+        assert "performance dimension did not run (EndOfStream)" in verdict.blocking
+        assert "cannot be issued" in verdict.rationale
+    # A verdict that already refuses approval is left alone.
+    assert already_blocking.rationale == "real issue"
+    assert already_blocking.blocking == ["x"]
+
+    # No dead dimensions -> nothing to cap; an APPROVE stands.
+    clean_approve = ReviewVerdict(verdict="APPROVE", rationale="fine", blocking=[])
+    assert _cap_approvals_on_missing_coverage([clean_approve], []) is False
+    assert clean_approve.verdict == "APPROVE"
+
+
 def test_verdict_prompt_refuses_to_present_a_dead_dimension_as_reviewed() -> None:
     """A dimension whose reviewer died must not be listed as reviewed.
 
@@ -282,6 +343,21 @@ def test_a_broken_mcp_install_is_not_silently_treated_as_absent(monkeypatch) -> 
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ModuleNotFoundError):
+        review_mod._mcp_error_type()
+    review_mod._mcp_error_type.cache_clear()
+
+    # The subtler arm: the top-level package resolved but the submodule itself
+    # is missing. exc.name is then "mcp.shared.exceptions", which a prefix
+    # check reads as "mcp is absent" — it is not, the install is broken.
+    def fake_import_submodule(name, *args, **kwargs):
+        if name == "mcp.shared.exceptions":
+            raise ModuleNotFoundError(
+                "No module named 'mcp.shared.exceptions'", name="mcp.shared.exceptions"
+            )
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import_submodule)
     with pytest.raises(ModuleNotFoundError):
         review_mod._mcp_error_type()
     review_mod._mcp_error_type.cache_clear()

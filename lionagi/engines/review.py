@@ -67,19 +67,40 @@ def _mcp_error_type() -> type[BaseException] | None:
     try:
         from mcp.shared.exceptions import McpError
     except ModuleNotFoundError as exc:
-        if (exc.name or "").partition(".")[0] != "mcp":
-            # mcp itself imported; something it depends on is missing.
+        if exc.name != "mcp":
+            # The top-level package resolved but a submodule or dependency is
+            # missing — a broken install, not an uninstalled extra.
             raise
         return None
     return McpError
+
+
+# The MCP SDK spells only two conditions as McpError itself: a closed
+# connection and a request timeout. Every other McpError relays a server-side
+# error object verbatim — authorization refusals, application failures — which
+# says something about the request, not the transport, and must not be
+# swallowed as if the wire had dropped.
+_MCP_TRANSPORT_CODES: frozenset[int] = frozenset(
+    {
+        -32000,  # mcp.types.CONNECTION_CLOSED
+        408,  # httpx.codes.REQUEST_TIMEOUT, used by the SDK's own timeout raise
+    }
+)
+
+
+def _is_transport_mcp_error(exc: BaseException) -> bool:
+    mcp_error = _mcp_error_type()
+    if mcp_error is None or not isinstance(exc, mcp_error):
+        return False
+    error = getattr(exc, "error", None)
+    return getattr(error, "code", None) in _MCP_TRANSPORT_CODES
 
 
 def _is_all_isolated_failure(exc: BaseException) -> bool:
     """True iff every leaf is a per-dimension provider/transport failure, recursing into nested groups."""
     if isinstance(exc, _ISOLATED_ERRORS):
         return True
-    mcp_error = _mcp_error_type()
-    if mcp_error is not None and isinstance(exc, mcp_error):
+    if _is_transport_mcp_error(exc):
         return True
     if is_exception_group(exc):
         return all(_is_all_isolated_failure(e) for e in get_exception_group_exceptions(exc))
@@ -234,6 +255,38 @@ def _verify_clean_instruction(artifact: str, clean: list[DimensionClean], ref: s
         "verdict does or does not hold).\n\n"
         f"# Clean claims under audit\n{claims}\n\n# Artifact\n{artifact}"
     )
+
+
+def _cap_approvals_on_missing_coverage(
+    verdicts: list[ReviewVerdict], failed: list[tuple[str, str]]
+) -> bool:
+    """Rewrite any APPROVE-family verdict to REQUEST-CHANGES when a dimension
+    never ran, recording each dead dimension as a blocking entry.
+
+    Returns True when at least one verdict was capped. The mutation is on the
+    emitted event itself so every downstream reader — not just the return
+    string — sees a verdict that a run with missing coverage can actually
+    stand behind.
+    """
+    if not failed:
+        return False
+    gap = ", ".join(f"{name} ({err})" for name, err in failed)
+    capped = False
+    for verdict in verdicts:
+        if not verdict.verdict.strip().upper().startswith("APPROVE"):
+            continue
+        verdict.verdict = "REQUEST-CHANGES"
+        verdict.rationale = (
+            f"{verdict.rationale}\n[engine] Approval withdrawn: the following "
+            f"dimensions did not run: {gap}. Their silence is missing coverage, "
+            "not clean evidence, so an approval cannot be issued for this run."
+        ).strip()
+        for name, err in failed:
+            entry = f"{name} dimension did not run ({err})"
+            if entry not in verdict.blocking:
+                verdict.blocking.append(entry)
+        capped = True
+    return capped
 
 
 def _verdict_instruction(
@@ -526,4 +579,10 @@ class ReviewEngine(Engine):
                 artifact, dimensions, issues, verifications, clean, failed
             )
         )
+        # The instruction tells synthesis not to approve on missing coverage,
+        # but an instruction is steering, not a gate: the model can still emit
+        # APPROVE. Enforce it structurally — a run in which a dimension never
+        # executed cannot produce an approval, whatever the synthesis text says.
+        if failed and _cap_approvals_on_missing_coverage(run.by_type(ReviewVerdict), failed):
+            run.notify("verdict_capped", failed=", ".join(name for name, _ in failed))
         return str(res) if res is not None else ""
