@@ -458,3 +458,34 @@ async def test_unset_mcp_config_path_leaves_resolution_untouched(monkeypatch, tm
     await run.make_agent("researcher", name="r1")
 
     assert specs[-1].mcp_config_path is None
+
+
+def test_planning_worker_specs_carry_the_engine_wide_mcp_config(tmp_path):
+    """Planning workers must not be exempt from the config the engine declared.
+
+    They are spawned through the role-spawning helper rather than make_agent,
+    so nothing on that path reads engine-wide agent settings: bare role
+    strings had every worker resolve ambient MCP configuration while the
+    engine's own orchestrator and synthesizer honoured the declared file —
+    the feature working on the paths that were tested and silently not on
+    the fan-out.
+    """
+    from lionagi.agent import AgentSpec
+    from lionagi.engines.planning import PlanningEngine
+
+    declared = _mcp_file(tmp_path, "declared.mcp.json")
+    engine = PlanningEngine(agent_mcp_config_path=declared)
+
+    specs = engine._worker_specs({"researcher", "analyst"})
+
+    assert set(specs) == {"researcher", "analyst"}
+    for spec in specs.values():
+        # Composed specs, not bare strings: the spawning helper applies its
+        # own compose to strings, which cannot see the engine's setting.
+        assert isinstance(spec, AgentSpec)
+        assert spec.mcp_config_path == declared
+
+    # Unset engine-wide config keeps the workers on ambient resolution,
+    # exactly as bare role strings behaved.
+    for spec in PlanningEngine()._worker_specs({"researcher"}).values():
+        assert spec.mcp_config_path is None
