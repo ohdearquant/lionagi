@@ -3,53 +3,31 @@
 
 """CLI contract goldens, part 2: full-registry surface + in-process error paths.
 
-Complements ``tests/cli/test_cli_contracts.py`` (which pins ``li agent`` /
-``li schedule`` / ``li schedule create`` / ``li monitor`` flag sets and exit
-codes via out-of-process ``subprocess`` calls to the real entrypoint). This
-module extends that coverage in three ways rather than duplicating it:
+Complements ``tests/cli/test_cli_contracts.py`` (out-of-process ``subprocess``
+goldens for ``li agent`` / ``li schedule`` / ``li monitor``). This module
+walks the whole top-level command registry plus the ``li o flow`` /
+``li o fanout`` / remaining ``li schedule`` subcommands the other file
+doesn't pin, calls ``lionagi.cli.main.main`` in-process instead of
+subprocessing (faster, and immune to any state a subprocess could leak
+across ``pytest-xdist`` workers), and pins the regression this file exists
+for: a spawn-forwarding surface (``li agent``, ``li o flow``, ``li o fanout``)
+must reject a nonexistent ``--cwd`` before allocating a run record or
+spawning a provider, not silently create the directory and report success as
+a prior version did. Each case monkeypatches the run-allocation function to
+raise if reached, then asserts the *validation* error propagates — proving
+allocation was never reached, not just that the process exits non-zero.
 
-1. It walks the *whole* top-level command registry and the ``li o flow`` /
-   ``li o fanout`` and remaining ``li schedule`` subcommand surfaces (list,
-   get, limits, enable, disable, trigger, delete, runs) that the existing
-   file does not pin — a command silently added to (or removed from) the
-   registry, or a flag silently added to/removed from a spawn-forwarding
-   subcommand, now fails a golden until the change is deliberate.
-2. Every case here is invoked **in-process** — calling ``lionagi.cli.main.main``
-   directly and either catching the ``SystemExit`` argparse raises or reading
-   its plain integer return value — instead of spawning a subprocess. This
-   is materially faster and avoids any shared-state assumptions across
-   ``pytest-xdist`` workers that an out-of-process test could accidentally
-   pick up (it can't: nothing here touches the filesystem outside ``tmp_path``
-   or the network).
-3. It pins, end-to-end through the real CLI entrypoint, the specific
-   regression class this whole test area exists to guard: a spawn-forwarding
-   surface (``li agent``, ``li o flow``, ``li o fanout``) silently accepting
-   a bad input — concretely, a ``--cwd`` that does not exist — instead of
-   failing loudly before anything is spawned or persisted. A prior version of
-   ``li agent --cwd <typo'd path>`` let the underlying provider silently
-   create the directory and report a clean, completed-ok run; the fix makes
-   every one of these three surfaces validate ``--cwd`` before allocating a
-   run record or spawning a provider process. The tests below monkeypatch
-   the run-allocation function each surface calls to raise if reached, then
-   assert the *validation* error is what actually propagates — proving
-   allocation was never reached, not merely that the process exits non-zero.
+``--effort`` has no argparse ``choices=`` deliberately — it's passed through
+unvalidated so a new provider effort tier is never rejected by a stale
+allowlist (see ``lionagi/service/providers.py::normalize_effort``), so there
+is no hermetic "invalid --effort" case to pin here. ``--trigger-type`` and
+``--action-kind`` on ``li schedule create`` are the CLI's actual
+choices=-validated flags and stand in for that contract instead.
 
-A note on one substitution: the source generic guidance for this test area
-mentions pinning an "invalid --effort value" exit code. ``--effort`` is
-deliberately free text with no argparse ``choices=`` — it is lower-cased and
-passed through unvalidated so a newly supported provider effort tier is never
-silently rejected by a stale allowlist (see
-``lionagi/service/providers.py::normalize_effort``). There is therefore no
-cheap, hermetic "invalid --effort" error to pin without mocking a live
-provider spawn. ``--trigger-type`` and ``--action-kind`` on
-``li schedule create`` are the CLI's actual argparse-``choices=``-validated
-flags and serve the same "invalid enum value" contract this module pins
-instead.
-
-Flake rule: every assertion here is deterministic — pure argparse
-introspection, or an in-process call whose only external dependency is a
-nonexistent path the test itself constructs under ``tmp_path``. A flaking
-case is a bug in the test, not grounds to skip it in place.
+Every assertion here is deterministic: pure argparse introspection, or an
+in-process call whose only external dependency is a nonexistent path the
+test itself builds under ``tmp_path``. A flake here is a test bug, not
+grounds to skip.
 """
 
 from __future__ import annotations
@@ -65,9 +43,7 @@ import pytest
 import lionagi.cli.main as cli_main
 from lionagi._errors import ConfigurationError
 
-# ---------------------------------------------------------------------------
 # Shared introspection + invocation helpers
-# ---------------------------------------------------------------------------
 
 
 def _command_parser(command: str, *subs: str) -> argparse.ArgumentParser:
@@ -132,9 +108,7 @@ def _run_main(argv: list[str]) -> int:
         return code if isinstance(code, int) else 1
 
 
-# ---------------------------------------------------------------------------
 # Goldens — sorted flag/positional sets, pinned from the actual parser tree
-# ---------------------------------------------------------------------------
 
 TOP_LEVEL_COMMANDS = [
     "agent",
@@ -311,9 +285,7 @@ class TestScheduleSubcommandShapeGoldens:
         assert _positional_dests("schedule", name) == positionals
 
 
-# ---------------------------------------------------------------------------
 # In-process exit-code / error-shape contracts (no subprocess)
-# ---------------------------------------------------------------------------
 
 
 class TestInProcessContractErrors:
@@ -364,9 +336,7 @@ class TestInProcessContractErrors:
         assert "--action-kind" in captured.err
 
 
-# ---------------------------------------------------------------------------
 # The regression class itself: nonexistent --cwd must fail fast, end-to-end
-# ---------------------------------------------------------------------------
 
 
 class TestNonexistentCwdFailFastEndToEnd:
@@ -469,9 +439,7 @@ class TestNonexistentCwdFailFastEndToEnd:
         assert captured.out == ""
 
 
-# ---------------------------------------------------------------------------
 # Console-script entrypoint smoke test (the one deliberate subprocess case)
-# ---------------------------------------------------------------------------
 
 
 def _find_li_console_script() -> str | None:

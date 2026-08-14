@@ -107,6 +107,32 @@ may still resolve a second later, true of any threshold — no value distinguish
 itself as uniquely correct here. Choosing the longest window this function will
 honour is a bet that a spawn which has outlived one is likelier stuck than slow.
 
+#### spawn-failure-per-op-error
+
+A submit whose child could not be started raises `SpawnError` (a `RuntimeError`),
+carrying the run_id. It didn't always: `_record_spawn_failure` has always raised
+for every `Popen` failure regardless of errno, but dispatch only caught `OpError`
+and the schema-projection errors, so a `SpawnError` escaped uncaught and took the
+whole batch down with it, including ops beside it that had already succeeded and
+the caller had no way to tell which run failed or why. Making it a per-op error
+lets the batch keep its other results, and gives the caller the run_id whose log
+holds the cause.
+
+A first version of that fix watched the freshly spawned child for a few seconds
+and converted an immediate non-zero exit into a refused submit. It was removed
+before merge on a measurement, not an opinion: ten real children spawned to die
+on their own arguments (e.g. an agent profile that doesn't exist), timed end to
+end on a loaded machine, took between 2.08 and 5.52 seconds to exit. A fixed
+window has to sit above the slowest case it's meant to catch, and every healthy
+submit pays that window regardless. At three seconds it would miss several of
+those ten while taxing every good submit; at six it would catch them at twice
+the tax. The distribution is a property of machine load, not of the defect, so
+no constant is right on both counts. What the watch was reaching for already
+exists on the read side instead: `status()` reports `possibly_orphaned` for a
+process that's gone with no end recorded, and returns `log_tail` in the same
+response — a caller probing once after submit learns the same thing without
+anyone paying for a window.
+
 #### kill-reason-codes
 
 `kill()` reason-code taxonomy (`lionagi/mcp/jobs.py`), grouped by what a caller
@@ -271,12 +297,16 @@ Inconclusive (settle nothing about death):
 - `possibly_orphaned` flags a gone process with no end recorded whose loss
   wasn't conclusively established (unaskable pid, or an unpublishable
   transition) — advisory, never makes the run terminal.
-- `mcp_config*` mirror what `submit()`'s handle returned. `mcp_config_servers`:
-  `[]` means the question was settled with "none"; `null` means either the
-  caller named their own config (never read by this run), no config was found,
-  or the record predates the field — `mcp_config_reason` disambiguates the
-  first two. This reports what was RESOLVED, not that the child's provider
-  then actually started each server.
+- `mcp_config*` mirror what `submit()`'s handle returned.
+  `declared_mcp_servers` names only the servers in the config snapshot LionAGI
+  wrote: `[]` means that declaration was settled as empty; `null` means either
+  the caller named their own config (never read by this run), no config was
+  found, or the record predates the field — `mcp_config_reason` disambiguates
+  the first two. It is not an effective-capability report: a CLI provider may
+  merge global or cwd-resolved configuration and LionAGI does not observe which
+  declared servers started successfully. `mcp_config_servers` is retained as a
+  deprecated alias with the same value; it must not be read as the effective
+  server set.
 - `known` / `record_state`: only `"absent"` means the run is unknown;
   `"unreadable"`/`"wrong_shape"` mean a file is on disk and damaged — reporting
   either as unknown would send an operator away from a file that exists.
@@ -404,6 +434,57 @@ group."
   `all_terminal=true` (stop). `all_terminal` means every run has a recorded
   end, not that every run succeeded — read each entry's `outcome` for that.
 
+#### reservation-giveback
+
+`_discard_reservation()` (`lionagi/mcp/jobs.py`) gives a reserved run
+directory back after a submission fails before its job record is published.
+
+A submission that fails partway through writing has already left files
+behind, so removing only an empty directory would give the reservation back
+for some failures and not others. The files a submission writes into its own
+reservation are named by a fixed list and only those are ever removed — they
+are addressed as fixed names under the reservation directory, never through a
+path a caller handed in (a caller-named MCP config file lives wherever it
+lives and is never touched, whatever it points at).
+
+`rmdir` refuses a directory with anything in it, and that refusal stays the
+safety net rather than becoming a check taken beforehand: whatever this is
+asked to remove, a directory holding a run's state survives it. A removal
+that fails for any other reason leaves a directory nobody claimed, which is
+worth less than the error that sent us here, so it is swallowed rather than
+raised.
+
+The function returns whether the directory is actually gone afterward. When
+it is not, a marker (`RESERVATION_ROLLBACK_INCOMPLETE`) is left in what
+remains of it, so a directory found later under the jobs root with no job
+record reads as a giveback that could not run rather than one that
+succeeded — both otherwise look like the same empty absence of a job. The
+marker write is itself best-effort: `_discard_reservation_and_warn()` checks
+the marker's actual presence before logging, rather than assuming it landed
+just because the directory survived.
+
+#### write-job-publish
+
+`_write_job()` (`lionagi/mcp/jobs.py`) publishes a job record by writing a
+per-write-unique temp file in the same directory and calling `os.replace()`.
+`os.replace` is atomic on the same filesystem, so a concurrent reader
+(`status()` / `list_jobs()`) never observes a torn file, and a failed write
+leaves the previous record intact instead of a partial one. The temp name
+being unique per write means two writers to the same run (the pid-attach
+write in `submit()` and the terminal hook) never collide on the temp file
+itself. This makes each publish all-or-nothing; it does not serialize two
+writers, so a read-modify-write pair can still lose an update (last replace
+wins — see `_locked_job()` in [locked-job-contract](#locked-job-contract) for
+what does serialize writers).
+
+Non-finite floats are refused before the temp file is opened, so a refused
+record leaves neither a staging file nor a published one. `json.dumps` would
+otherwise write a non-finite float as the bare token `NaN` or `Infinity`,
+which only Python reads back — every non-Python reader of this record, and
+every strict JSON parser, would fail on it long after the run that wrote it.
+The start time already has a representation for "unreadable" (`null`), so
+nothing here encodes a sentinel this check would need to special-case.
+
 ### `mcp/_notify_hook.py`
 
 #### deliver-terminal-notice-two-callers
@@ -431,6 +512,14 @@ Nothing in this path raises: the caller is either a terminal path that has
 already finished, or a read that has already published a durable end, and
 neither can be failed by a notifier. Every way a delivery does not happen
 comes back as an outcome describing it.
+
+When this hook is launched by the flow terminal adapter, the adapter's
+versioned payload is already present in `LIONAGI_NOTIFY_PAYLOAD`. The hook
+accepts its `reason_code` only if it belongs to the controlled runtime
+vocabulary, then preserves it on the MCP job record and offers it to the
+configured downstream notifier. This prevents a degraded completed flow from
+being flattened back to `run.completed.ok` at the outer job boundary; malformed
+or unregistered environment content is ignored rather than persisted.
 
 ### `mcp/projection.py`
 

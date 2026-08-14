@@ -15,9 +15,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -78,9 +76,7 @@ def no_dist_client(
     yield TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
 
 
-# ---------------------------------------------------------------------------
 # SPA fallback routes
-# ---------------------------------------------------------------------------
 
 
 class TestSPAFallback:
@@ -115,9 +111,7 @@ class TestSPAFallback:
         assert "root" in resp.text
 
 
-# ---------------------------------------------------------------------------
 # /api/* paths must NOT be swallowed by the SPA fallback
-# ---------------------------------------------------------------------------
 
 
 class TestAPIPathsNotSwallowed:
@@ -150,9 +144,7 @@ class TestAPIPathsNotSwallowed:
         assert resp.json() == {"status": "ok"}
 
 
-# ---------------------------------------------------------------------------
 # No-cache headers on index.html
-# ---------------------------------------------------------------------------
 
 
 class TestNoCacheHeaders:
@@ -173,9 +165,7 @@ class TestNoCacheHeaders:
         )
 
 
-# ---------------------------------------------------------------------------
 # No-dist (API-only) mode
-# ---------------------------------------------------------------------------
 
 
 class TestNoDist:
@@ -197,9 +187,7 @@ class TestNoDist:
         assert resp.json() == {"status": "ok"}
 
 
-# ---------------------------------------------------------------------------
 # CORS HEAD method present after SPA mount (registration-order regression guard)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -238,9 +226,7 @@ class TestCORSAfterSPAMount:
         assert "HEAD" in allowed, f"HEAD must be in Access-Control-Allow-Methods; got {raw!r}"
 
 
-# ---------------------------------------------------------------------------
 # Auth-mode interplay: shell public, API guarded
-# ---------------------------------------------------------------------------
 
 
 class TestSPAWithAuthToken:

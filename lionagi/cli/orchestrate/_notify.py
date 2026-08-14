@@ -279,17 +279,12 @@ async def deliver_flow_notify_now(
         logger.warning(
             "direct-path notify.on_terminal delivery failed for run %s", run.run_id, exc_info=True
         )
-        # The exec adapter records every failure mode onto the run -- timeout,
-        # spawn failure, nonzero exit -- because outcome recording is threaded
-        # into it. A python adapter is handed back as the imported callable
-        # with nothing wrapping it, so a raise reached only the log line above
-        # and left nothing to query. That made the durability of "did my
-        # terminal notification go out?" depend on which adapter type happened
-        # to be configured, which is not a distinction any caller can be
-        # expected to know about. The traceback goes to the same owner-only
-        # file the exec adapter's stderr does, and for the same reason: it is
-        # free text that can carry a credential, so it is referenced by path
-        # and never placed in the outcome record itself.
+        # A python adapter's raise otherwise reaches only the log line above,
+        # leaving nothing queryable — unlike the exec adapter, which records
+        # every failure mode as part of outcome recording. Recorded here too
+        # so durability doesn't depend on adapter type. Traceback goes to the
+        # same owner-only file the exec adapter's stderr does (free text can
+        # carry a credential), referenced by path, never inlined.
         record_notify_outcome_to_run(
             run, ok=False, exit_code=None, stderr_text=traceback.format_exc()
         )

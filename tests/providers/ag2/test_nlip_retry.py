@@ -13,10 +13,6 @@ import pytest
 
 from lionagi.providers.ag2 import nlip as nlip_mod
 
-# ---------------------------------------------------------------------------
-# Fakes: httpx.AsyncClient + nlip_sdk (not an installed dependency here)
-# ---------------------------------------------------------------------------
-
 
 class _FakeResponse:
     def __init__(self, data=None, raise_exc: Exception | None = None):
@@ -89,11 +85,6 @@ def _nlip_sdk_stubs() -> dict:
 MESSAGES = [{"role": "user", "content": "hello"}]
 
 
-# ---------------------------------------------------------------------------
-# (a) Backoff timing: sleeps grow, non-zero
-# ---------------------------------------------------------------------------
-
-
 class TestBackoffTiming:
     @pytest.mark.asyncio
     async def test_call_direct_backoff_delays_increase(self, monkeypatch):
@@ -138,11 +129,6 @@ class TestBackoffTiming:
         assert sleep_calls[0] < sleep_calls[1]
 
 
-# ---------------------------------------------------------------------------
-# (b) Raise on final attempt: original exception propagates
-# ---------------------------------------------------------------------------
-
-
 class TestRaiseOnFinalAttempt:
     @pytest.mark.asyncio
     async def test_call_direct_raises_original_timeout_after_exhaustion(self, monkeypatch):
@@ -176,11 +162,6 @@ class TestRaiseOnFinalAttempt:
                 )
 
         assert post_mock.call_count == 2
-
-
-# ---------------------------------------------------------------------------
-# (c) Narrow exception surface: non-retryable errors raise immediately
-# ---------------------------------------------------------------------------
 
 
 class TestNarrowExceptionSurface:
@@ -239,11 +220,6 @@ class TestNarrowExceptionSurface:
         assert sleep_calls == []
 
 
-# ---------------------------------------------------------------------------
-# (d) sdk-path warning logging preserved; direct path stays silent
-# ---------------------------------------------------------------------------
-
-
 class TestRetryLogging:
     @pytest.mark.asyncio
     async def test_call_nlip_sdk_warns_once_per_non_final_retry(self, monkeypatch, caplog):
@@ -283,11 +259,6 @@ class TestRetryLogging:
                 )
 
         assert [r for r in caplog.records if r.levelname == "WARNING"] == []
-
-
-# ---------------------------------------------------------------------------
-# Success paths (sanity: retry then succeed still parses correctly)
-# ---------------------------------------------------------------------------
 
 
 class TestSuccessAfterTransientFailure:

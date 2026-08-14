@@ -138,14 +138,12 @@ def test_to_dict_error_without_suppress():
 
 
 def test_to_dict_mapping_preservation():
-    """Test that mapping types are converted properly"""
     ordered = OrderedDict([("z", 26), ("a", 1)])
     result = to_dict(ordered)
     assert result == {"z": 26, "a": 1}
 
 
 def test_to_dict_bytes_not_enumerated():
-    """Test that bytes are not treated as iterable for enumeration"""
     # bytes should not be enumerated, but we need to check behavior
     try:
         result = to_dict(b"test")

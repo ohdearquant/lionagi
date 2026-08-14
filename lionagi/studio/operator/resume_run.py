@@ -6,27 +6,14 @@ Delegates to the real, supported ``POST /runs/{run_id}/resume`` surface
 (`lionagi/studio/services/run_resume.py::resume_run`) for the actual launch
 decision -- this adapter never picks an argv or a resume path itself. It
 does read the run's recorded ``invocation_kind`` before creating a proposal,
-though: that is what lets the proposal's summary say the true thing the
-dispatcher is about to do, and lets an argument combination the dispatcher
-would always reject (e.g. an instruction for a checkpoint-replay kind) be
-refused before a human ever sees an approvable proposal for it, instead of
-after they approve one that was always going to fail. For an ``agent`` run
-that means the same ``li agent -r`` path a human resuming from the CLI or
-Studio UI uses, continuing the branch with a new instruction. For a
-``play``/``flow``/``show-play`` run it means replaying the run's persisted
-checkpoint via ``li o flow --resume`` -- the checkpoint owns the plan, so no
-instruction is accepted for those kinds. Gated on the same durable human
+so the proposal's summary says the true thing the dispatcher is about to do
+and an argument combination the dispatcher would reject (e.g. an
+instruction for a checkpoint-replay kind) is refused before a human ever
+sees an approvable proposal for it. Gated on the same durable human
 allow/deny proposal flow ``cancel_run``/``launch_playbook`` use, since it
-starts a new process.
-
-This is a distinct operation from "un-pausing a paused run": the session
-lifecycle policy has no edge back out of a terminal state such as
-``cancelled`` (see `cancel_run.py`'s module docstring and
-`lionagi/state/lifecycle/policy.py`), so a resumed run does not reopen its
-old status -- it launches a new, separate invocation that continues (agent)
-or replays (play/flow/show-play) the same run. ``resume_run()`` (the real
-service function) accepts any run with a resumable branch or checkpoint,
-including terminal ones; this adapter does not narrow that further.
+starts a new process. See docs/internals/studio.md ("Turn identity and the
+propose/poll/execute pattern") for why this is a distinct operation from
+un-pausing a paused or cancelled run, and accepts a run in any status.
 """
 
 from __future__ import annotations
@@ -178,7 +165,11 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
 
     resolution = await resolve_run(args.run)
     if not resolution["found"]:
-        return {"resumed": False, "reason": "not_found"}
+        return {
+            "resumed": False,
+            "reason": "not_found",
+            "detail": resolution.get("reason"),
+        }
     if resolution.get("ambiguous"):
         return {
             "resumed": False,

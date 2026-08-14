@@ -23,7 +23,7 @@ async def db():
     await state.close()
 
 
-# ── PRAGMA proof ─────────────────────────────────────────────────────────────
+# PRAGMA proof
 
 
 async def test_pragma_foreign_keys_is_on(db: StateDB):
@@ -33,7 +33,7 @@ async def test_pragma_foreign_keys_is_on(db: StateDB):
     assert row[0] == 1
 
 
-# ── Session → Branch cascade ─────────────────────────────────────────────────
+# Session → Branch cascade
 
 
 async def test_delete_session_cascades_branches(db: StateDB):
@@ -124,7 +124,7 @@ async def test_delete_session_does_not_cascade_progression(db: StateDB):
     assert row["n"] == 1
 
 
-# ── Show → Play cascade ──────────────────────────────────────────────────────
+# Show → Play cascade
 
 
 async def test_delete_show_cascades_plays(db: StateDB):
@@ -207,7 +207,7 @@ async def test_delete_show_with_no_plays_succeeds(db: StateDB):
     assert row["n"] == 0
 
 
-# ── Play.session_id is NOT cascaded ─────────────────────────────────────────
+# Play.session_id is NOT cascaded
 
 
 async def test_delete_session_referenced_by_play_is_rejected(db: StateDB):
@@ -242,7 +242,7 @@ async def test_delete_session_referenced_by_play_is_rejected(db: StateDB):
             await conn.execute(text("DELETE FROM sessions WHERE id = :id"), {"id": sid})
 
 
-# ── Branch.system_msg_id is NOT cascaded ─────────────────────────────────────
+# Branch.system_msg_id is NOT cascaded
 
 
 async def test_delete_message_does_not_cascade_to_branch_system_msg_id(

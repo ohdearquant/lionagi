@@ -26,9 +26,7 @@ def _make_fake_home(tmp_path: Path) -> Path:
     return fake_home
 
 
-# ---------------------------------------------------------------------------
 # public_path() must never return absolute paths
-# ---------------------------------------------------------------------------
 
 
 class TestPublicPath:
@@ -64,9 +62,7 @@ class TestPublicPath:
         assert result == "system.log"
 
 
-# ---------------------------------------------------------------------------
 # definitions disk_path must not be absolute
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -100,9 +96,7 @@ class TestDefinitionsDiskPath:
         assert "myagent" in disk_path
 
 
-# ---------------------------------------------------------------------------
 # plugins path field must not be absolute
-# ---------------------------------------------------------------------------
 
 
 class TestPluginsPathSanitization:
@@ -170,9 +164,7 @@ class TestPluginsPathSanitization:
         )
 
 
-# ---------------------------------------------------------------------------
 # marketplace plugin source paths must be bounded to repo root
-# ---------------------------------------------------------------------------
 
 
 class TestMarketplaceSourcePaths:
@@ -262,9 +254,7 @@ class TestMarketplaceSourcePaths:
         assert "abs" not in names
 
 
-# ---------------------------------------------------------------------------
 # optional bearer token auth
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration

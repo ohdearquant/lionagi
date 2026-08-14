@@ -116,7 +116,8 @@
       "busyPlaceholder": "Operator is working…",
       "hint": "Enter to send · Shift+Enter for a new line",
       "send": "Send",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "autoAllow": "Autoriser les propositions automatiquement"
     },
     "message": {
       "you": "You",
@@ -376,6 +377,38 @@
       "creating": "Creating…",
       "create": "Create",
       "createError": "Could not create this server."
+    },
+    "filterHooks": "Hooks",
+    "hooks": {
+      "title": "Hooks",
+      "description": "Hooks nommés et réutilisables, définis une fois ici puis assemblés par agent : chaque agent lie des hooks de cette bibliothèque à des événements (avant un appel d'outil, à l'envoi du prompt, après une réponse). Le même assemblage fonctionne avec n'importe quel CLI de fournisseur.",
+      "libraryTitle": "Bibliothèque de hooks",
+      "newHook": "Nouveau hook",
+      "emptyLibrary": "Aucun hook défini pour l'instant. Créez-en un pour le rendre assemblable par tous les agents.",
+      "emptyLibraryHint": "Définissez d'abord les hooks dans la bibliothèque — les attachements lient les hooks de la bibliothèque aux événements.",
+      "operatorTitle": "Assemblage de l'Operator",
+      "operatorDescription": "Hooks exécutés par l'Operator de Studio. L'Operator n'hérite d'aucun réglage utilisateur ou projet : les hooks attachés ici sont les seuls chargés à chaque tour.",
+      "enabled": "Activé",
+      "save": "Enregistrer",
+      "saving": "Enregistrement…",
+      "savedNotice": "Enregistré — appliqué dès le prochain tour.",
+      "cancel": "Annuler",
+      "delete": "Supprimer",
+      "fieldName": "Nom",
+      "fieldDescription": "Description",
+      "fieldCommand": "Commande",
+      "fieldTimeout": "Délai (secondes)",
+      "nameRequired": "Un hook doit avoir un nom.",
+      "timeoutInvalid": "Le délai doit être un nombre.",
+      "noAttachments": "Aucun hook attaché.",
+      "attachmentHook": "Hook",
+      "attachmentOn": "sur",
+      "attachmentEvent": "Événement",
+      "attachmentMatcher": "Matcher",
+      "matcherPlaceholder": "matcher (facultatif)",
+      "removeAttachment": "Retirer l'attachement",
+      "addAttachment": "Attacher un hook",
+      "agentSectionTitle": "Hooks"
     }
   },
   "history": {
@@ -445,6 +478,8 @@
       "statMessages": "Messages",
       "statToolCalls": "Appels d’outil",
       "statErrors": "Erreurs",
+      "statTokensIn": "Tokens en entrée",
+      "statTokensOut": "Tokens en sortie",
       "statTopic": "Sujet",
       "statPlay": "Play",
       "statPlaybook": "Workflow",
@@ -487,11 +522,42 @@
       "progressRunning": "En cours",
       "progressFailed": "Échoué",
       "progressPending": "En attente",
+      "progressEscalated": "Escaladé",
       "progressElapsed": "Écoulé",
       "expandGraph": "Développer le graphique d'exécution",
       "collapseGraph": "Réduire le graphique d'exécution",
       "closeExpandedGraph": "Fermer",
-      "nodeNoBranch": "Aucune branche trouvée pour « {node} » — cette étape n'a pas encore commencé."
+      "nodeNoBranch": "Aucune branche trouvée pour « {node} » — cette étape n'a pas encore commencé.",
+      "viewGraph": "Graph",
+      "viewList": "List",
+      "viewToggleLabel": "Graph or list view",
+      "selectedNode": "Selected: {node}",
+      "controls": {
+        "pause": "Pause",
+        "pausePhasePausing": "Pausing…",
+        "pausePhasePaused": "Paused",
+        "resume": "Resume gate",
+        "steer": "Steer",
+        "steerSend": "Send",
+        "steerPlaceholder": "Message to steer the run…",
+        "confirmYes": "Confirm",
+        "confirmCancel": "Cancel",
+        "proposeFailed": "Could not propose the command.",
+        "confirmFailed": "Could not confirm the command.",
+        "confirm": {
+          "pause": "Confirm pause?",
+          "resume": "Confirm resume?",
+          "message": "Confirm sending this message?"
+        },
+        "reason": {
+          "run-terminal": "This run has ended.",
+          "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "already-pause-requested": "A pause has already been requested.",
+          "not-paused": "The run is not paused.",
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-executable-path": "Aucune commande ne permet encore d'exécuter cette action."
+        }
+      }
     },
     "masterAria": "Liste d’historique",
     "detailAria": "Détail de l’élément"

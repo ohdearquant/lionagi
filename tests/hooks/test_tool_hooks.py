@@ -11,8 +11,6 @@ import pytest
 
 from lionagi.hooks.bus import HookBus, HookPoint, StopHook
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
 
 def _make_branch(hooks: HookBus | None = None):
     """Return a minimal branch-like mock that _act() can drive."""
@@ -44,9 +42,6 @@ def _make_func_call(tool_name: str, response=None, duration: float = 0.01):
     fc.status = "completed"
     fc.func_tool.id = "tool-id"
     return fc
-
-
-# ── TOOL_PRE ──────────────────────────────────────────────────────────────────
 
 
 async def test_tool_pre_fires_before_invocation():
@@ -148,9 +143,6 @@ async def test_tool_pre_stophook_blocks_invocation():
     assert order == ["stopper"]
 
 
-# ── TOOL_POST ─────────────────────────────────────────────────────────────────
-
-
 async def test_tool_post_fires_on_success():
     bus = HookBus()
     post_calls: list[dict] = []
@@ -225,9 +217,6 @@ async def test_tool_post_does_not_fire_on_error():
     assert post_calls == []
 
 
-# ── TOOL_ERROR ────────────────────────────────────────────────────────────────
-
-
 async def test_tool_error_fires_on_invocation_exception():
     bus = HookBus()
     error_calls: list[dict] = []
@@ -300,9 +289,6 @@ async def test_tool_error_does_not_fire_on_success():
     await _act(branch, {"function": "ok_tool", "arguments": {}})
 
     assert error_calls == []
-
-
-# ── No-op when no hook bus ────────────────────────────────────────────────────
 
 
 async def test_no_hooks_registered_still_invokes():

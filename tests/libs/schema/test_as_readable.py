@@ -334,11 +334,6 @@ class TestEnvironmentDetection:
             assert not in_notebook()
 
 
-# ---------------------------------------------------------------------------
-# Coverage gap tests (lines 239-241, 103-104)
-# ---------------------------------------------------------------------------
-
-
 class TestAsReadableJsonFallback:
     def test_json_fallback_when_dumps_raises(self, monkeypatch):
         from unittest.mock import MagicMock

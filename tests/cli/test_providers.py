@@ -51,7 +51,7 @@ def test_build_imodel_from_spec_maps_effort_and_yolo_without_network(monkeypatch
     assert kwargs.get("cli_display_theme") == "dark"
 
 
-# ── resolve_persisted_effort — tests against the helper directly ──────────
+# resolve_persisted_effort — tests against the helper directly
 # These test the actual production function, not a hand-rolled copy of the
 # agent.py logic. Moving the PROVIDERS_NO_EFFORT reset back under the iModel
 # guard in the helper will break these tests immediately.
@@ -167,7 +167,7 @@ def test_module_invariant_three_way_disjoint_including_effort_via_model_name():
     assert not (PROVIDER_EFFORT_KWARG.keys() & PROVIDERS_EFFORT_VIA_MODEL_NAME)
 
 
-# ── gemini-code / agy effort folding ───────────────────────────────────────
+# gemini-code / agy effort folding
 # agy (Antigravity CLI) has no effort flag/kwarg — --effort must fold into
 # the resolved --model name suffix instead (see resolve_agy_model). These
 # cover the CLI-integration layer (build_chat_model / resolve_persisted_effort);
@@ -262,7 +262,7 @@ def test_resolve_persisted_effort_gemini_code_keeps_requested_effort():
     assert result == "high", f"expected requested effort to persist for gemini-code, got {result!r}"
 
 
-# ── mixed-case --effort on effort-via-model-name paths ─
+# mixed-case --effort on effort-via-model-name paths
 # All clamp tables (_clamp_codex_effort, _clamp_claude_effort,
 # _GEMINI_EFFORT_CLAMP) are lowercase-keyed. A mixed-case --effort silently
 # misclamps instead of raising (worst on gemini: "High" -> "Medium" fallback).
@@ -327,7 +327,7 @@ def test_build_imodel_from_spec_mixed_case_xhigh_clamps_claude_to_high(monkeypat
     assert captor.captures[0].get("effort") == "high"
 
 
-# ── model-dependent codex effort ceilings ─
+# model-dependent codex effort ceilings
 # Codex effort support varies by model: the gpt-5.6 family accepts max
 # (sol/terra also ultra); every earlier model tops out at xhigh. The clamp
 # must key on the target model, and unrecognized (future) models must pass
@@ -512,7 +512,7 @@ def test_slash_profile_miss_includes_available_plugin_profiles(monkeypatch, tmp_
     assert "Available: myplugin/reviewer" in message
 
 
-# ── Vendor model ids are not lionagi specs ────────────────────────────────
+# Vendor model ids are not lionagi specs
 # The trailing-effort convention belongs to lionagi's own provider/model-effort
 # grammar. A model id borrowed whole from another vendor's catalogue — reached
 # through a codex config profile naming its own model_provider — ends in

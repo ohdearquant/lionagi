@@ -51,9 +51,7 @@ async def _drain(gen) -> list:
     return [item async for item in gen]
 
 
-# ---------------------------------------------------------------------------
 # Quota error chunk → ProviderQuotaError raised (still a RuntimeError)
-# ---------------------------------------------------------------------------
 
 
 async def test_run_raises_quota_error_for_usage_limit_chunk():
@@ -76,9 +74,7 @@ async def test_run_quota_error_is_runtime_error():
         await _drain(run(branch, "do something", RunParam()))
 
 
-# ---------------------------------------------------------------------------
 # Auth error chunk → ProviderAuthError
-# ---------------------------------------------------------------------------
 
 
 async def test_run_raises_auth_error_for_invalid_key_chunk():
@@ -90,9 +86,7 @@ async def test_run_raises_auth_error_for_invalid_key_chunk():
         await _drain(run(branch, "do something", RunParam()))
 
 
-# ---------------------------------------------------------------------------
 # Context error chunk → ProviderContextError
-# ---------------------------------------------------------------------------
 
 
 async def test_run_raises_context_error_for_window_exceeded_chunk():
@@ -104,9 +98,7 @@ async def test_run_raises_context_error_for_window_exceeded_chunk():
         await _drain(run(branch, "do something", RunParam()))
 
 
-# ---------------------------------------------------------------------------
 # Unknown error chunk → base ProviderError (still RuntimeError)
-# ---------------------------------------------------------------------------
 
 
 async def test_run_raises_base_provider_error_for_unknown_chunk():
@@ -128,9 +120,7 @@ async def test_run_base_provider_error_is_runtime_error():
         await _drain(run(branch, "do something", RunParam()))
 
 
-# ---------------------------------------------------------------------------
 # Empty content → "(empty error)" guard, base ProviderError
-# ---------------------------------------------------------------------------
 
 
 async def test_run_empty_error_chunk_uses_fallback_string():
@@ -143,9 +133,7 @@ async def test_run_empty_error_chunk_uses_fallback_string():
         await _drain(run(branch, "do something", RunParam()))
 
 
-# ---------------------------------------------------------------------------
 # subprocess RuntimeError path → classified ProviderError
-# ---------------------------------------------------------------------------
 
 
 async def test_run_subprocess_runtime_error_is_classified():
@@ -232,9 +220,7 @@ async def test_run_already_classified_provider_error_not_double_wrapped():
     )
 
 
-# ---------------------------------------------------------------------------
 # Late error must not destroy already-streamed text
-# ---------------------------------------------------------------------------
 
 
 async def test_run_error_after_text_persists_delivered_content():
@@ -271,10 +257,8 @@ async def test_run_error_without_text_persists_nothing():
     assert responses == []
 
 
-# ---------------------------------------------------------------------------
 # Regression: error:null chunk must NOT be swallowed as benign EOS
 # (null normalised to {} matched the benign predicate before the fix)
-# ---------------------------------------------------------------------------
 
 
 async def test_run_raises_provider_error_for_null_error_payload_chunk():
@@ -296,9 +280,7 @@ async def test_run_raises_provider_error_for_null_error_payload_chunk():
         await _drain(run(branch, "do something", RunParam()))
 
 
-# ---------------------------------------------------------------------------
 # Reconnect notice: the provider CLI retrying its own stream is not a failure
-# ---------------------------------------------------------------------------
 
 
 async def test_run_continues_past_reconnect_notice_and_delivers_text():

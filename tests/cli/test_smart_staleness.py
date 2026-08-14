@@ -25,7 +25,7 @@ def temp_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return db_path
 
 
-# ── Seed helpers ──────────────────────────────────────────────────────────────
+# Seed helpers
 
 
 async def _seed_session(db: StateDB, *, status: str = "running") -> str:
@@ -63,7 +63,7 @@ async def _link_play_session(db: StateDB, play_id: str, session_id: str) -> None
     await db.execute("UPDATE plays SET session_id = ? WHERE id = ?", (session_id, play_id))
 
 
-# ── _play_child_stale ─────────────────────────────────────────────────────────
+# _play_child_stale
 
 
 async def test_play_child_stale_no_session_id(temp_db_path: Path):
@@ -108,7 +108,7 @@ async def test_play_child_stale_with_failed_session(temp_db_path: Path):
         assert await _play_child_stale(db, row)
 
 
-# ── _show_children_all_terminal ───────────────────────────────────────────────
+# _show_children_all_terminal
 
 
 async def test_show_children_all_terminal_no_plays(temp_db_path: Path):
@@ -144,7 +144,7 @@ async def test_show_children_mixed_active_and_terminal(temp_db_path: Path):
         assert not await _show_children_all_terminal(db, show_id)
 
 
-# ── Integration: _do_kill_all_stale with child-derived staleness ─────────────
+# Integration: _do_kill_all_stale with child-derived staleness
 
 
 async def test_do_kill_all_stale_sweeps_play_with_dead_session(

@@ -55,6 +55,14 @@ class _StrictInput(BaseModel):
 class RecentRunsInput(_StrictInput):
     limit: int = Field(default=10, ge=1, le=20)
     status: Literal["pending", "running", "completed", "failed", "cancelled"] | None = None
+    kind: Literal["agent", "play", "flow", "fanout", "show"] | None = Field(
+        default=None,
+        description=(
+            "Orchestration-kind facet: 'play'/'flow'/'fanout'/'show' select "
+            "orchestration roots, 'agent' plain agent sessions. Combine with "
+            "status to find e.g. running plays."
+        ),
+    )
 
 
 class ListSchedulesInput(_StrictInput):
@@ -121,6 +129,35 @@ class NavigateInput(_StrictInput):
         )
     )
     status: Literal["pending", "running", "completed", "failed", "cancelled"] | None = None
+    run_id: str | None = Field(
+        default=None,
+        min_length=4,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_.:-]+$",
+        description=(
+            "Run to select in the Fleet view (mission/history spaces only). "
+            "Pass the full run id from list_recent_runs or run_progress; the "
+            "view opens with that run's details instead of the default row."
+        ),
+    )
+    sel: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9_.:-]+$",
+        description=(
+            "Library entry to select (library/designer spaces only), e.g. "
+            "'playbook:builtin:audit' or a workflow name in the designer."
+        ),
+    )
+    run_kind: Literal["agent", "play", "flow", "fanout", "show"] | None = Field(
+        default=None,
+        description=(
+            "Orchestration-kind facet for the Fleet list (mission/history "
+            "spaces only) — puts the human on e.g. 'plays, running' when "
+            "combined with status."
+        ),
+    )
 
 
 class PrefillScheduleInput(_StrictInput):
@@ -143,6 +180,25 @@ class LaunchPlaybookInput(_StrictInput):
         min_length=1,
         max_length=128,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+    input: str = Field(
+        default="",
+        max_length=4000,
+        description=(
+            "The task text handed to the playbook run. Parameterized "
+            "playbooks interpolate it into their prompt template ('{input}'); "
+            "leaving it empty launches such a template against an "
+            "unspecified target, so fill it whenever the playbook takes one."
+        ),
+    )
+    args: dict[str, str | int | float | bool] = Field(
+        default_factory=dict,
+        description=(
+            "Values for the playbook's own declared args (its 'args:' "
+            "schema), interpolated into the prompt template by name. Keys "
+            "must be declared by the playbook; undeclared keys refuse the "
+            "launch. Declared args you omit keep their defaults."
+        ),
     )
     note: str = Field(default="", max_length=500)
 
@@ -178,7 +234,7 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "run_detail": RunDetailInput,
     "cancel_run": CancelRunInput,
     "resume_run": ResumeRunInput,
-    "rename_session": RenameSessionInput,
+    "rename_run": RenameSessionInput,
     "list_sessions": ListSessionsInput,
     "session_detail": SessionDetailInput,
     "session_signals": SessionSignalsInput,
@@ -193,13 +249,18 @@ _TOOL_DESCRIPTIONS = {
         "Each entry carries 'kind' (agent, play, flow, fanout, or show-play) and "
         "'playbookName' when set -- a run may be a play root coordinating other "
         "runs, and 'agentName' alone never establishes that a run is a single "
-        "agent. Read 'kind' before characterizing a run. For 'how is this play "
-        "going', use run_progress instead."
+        "agent. Read 'kind' before characterizing a run. A 'completed' status "
+        "means the engine went idle without a recorded failure, not that the "
+        "run achieved its goal. For 'how is this play going', use run_progress "
+        "instead."
     ),
     "run_stats": (
         "Count runs over a whole window (24h or 7d) with per-status totals and "
         "completion rate. Use this for 'how many runs did I have', which "
-        "list_recent_runs cannot answer because it only returns the newest 20."
+        "list_recent_runs cannot answer because it only returns the newest 20. "
+        "'completed' means the run's engine went idle without a recorded "
+        "failure -- it does not certify the run achieved its goal, so never "
+        "present the completion rate as a success rate without saying so."
     ),
     "get_current_view": (
         "Read the Studio view the human is on: space, route, selection and "
@@ -221,21 +282,28 @@ _TOOL_DESCRIPTIONS = {
     "navigate": (
         "Request a typed Studio navigation effect. The browser applies and "
         "acknowledges it; this tool does not claim that navigation completed. "
-        "The canonical 'history' space opens Fleet/run history."
+        "The canonical 'history' space opens Fleet/run history. To put the "
+        "human on a specific run, pass run_id with space='history'; to open a "
+        "specific library entry, pass sel with space='library'."
     ),
     "prefill_schedule": (
         "Request a typed schedule-form prefill for human review. This never creates a schedule."
     ),
     "launch_playbook": (
-        "Propose launching one named Studio playbook. This blocks until the "
-        "human explicitly allows or denies the exact durable proposal."
+        "Propose launching one named Studio playbook. Pass the task text as "
+        "'input' and values for the playbook's declared args as 'args'. A "
+        "launch that would leave any prompt placeholder unresolved (or "
+        "passes an undeclared arg) is refused with a reason instead of "
+        "proposed. This blocks until the human explicitly allows or denies "
+        "the exact durable proposal."
     ),
     "run_progress": (
         "Report how one run is going: status, op totals split into "
         "completed/running/failed/pending (they always sum to the total), "
         "which ops are running right now, elapsed time, and whether it has a "
         "graph. Accepts a run id, an id prefix, a name or playbook substring "
-        "(minimum 3 characters), or 'current' for the run the human is "
+        "(minimum 3 characters; needs a project context on the turn), or "
+        "'current' for the run the human is "
         "looking at. An ambiguous reference returns candidates instead of "
         "guessing. Every number is a direct database read taken when this "
         "tool is called, not a live process feed -- the returned "
@@ -265,7 +333,7 @@ _TOOL_DESCRIPTIONS = {
     ),
     "cancel_run": CANCEL_RUN_DESCRIPTION,
     "resume_run": RESUME_RUN_DESCRIPTION,
-    "rename_session": RENAME_SESSION_DESCRIPTION,
+    "rename_run": RENAME_SESSION_DESCRIPTION,
     "list_sessions": (
         "List a filtered page of Studio sessions. The result is capped at 500 rows, "
         "reports the matching total and whether more rows exist, and labels the store source."
@@ -803,7 +871,7 @@ async def list_recent_runs(arguments: dict[str, Any]) -> dict[str, Any]:
     args = RecentRunsInput.model_validate(arguments)
     from lionagi.studio.services.runs import list_runs
 
-    rows = await list_runs(status=args.status, limit=args.limit, offset=0)
+    rows = await list_runs(status=args.status, kind=args.kind, limit=args.limit, offset=0)
 
     projected = [
         {
@@ -840,6 +908,12 @@ async def run_stats(arguments: dict[str, Any]) -> dict[str, Any]:
         "total": stats.get("total"),
         "byStatus": totals,
         "completionRate": stats.get("completion_rate"),
+        # Carried in the payload, not only the tool description: a caller
+        # answering "what's our success rate" reads the result it just got
+        # far more reliably than a description it saw at schema-load time.
+        "completedMeans": (
+            "engine went idle without a recorded failure; not a goal-achievement judgment"
+        ),
     }
 
 
@@ -851,23 +925,13 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
     context = context if isinstance(context, dict) else None
     source = "turn"
 
-    # The turn's context is frozen at submit, so it is only the freshest answer
-    # until the human moves. Prefer a view the SAME PAGE observed later in its
-    # own count of the views it has seen.
-    #
-    # Both halves of that are load-bearing. Server arrival order cannot stand in
-    # for the count: a report the browser saw before the instruction can arrive
-    # after it, and ordering by arrival would present a view from before the
-    # question as the answer to it, labelled live. Nor can a wall clock, which
-    # can step backwards and leave a stale view holding the higher number. And a
-    # count from a different page cannot be compared at all: two tabs on one
-    # conversation are looking at two different pages, they count
-    # independently, and only the page the instruction came from can say where
-    # the human is.
-    #
-    # When the turn names no observer or no count there is nothing to compare
-    # against, so the honest answer is the turn's own snapshot rather than a
-    # freshness claim that cannot be supported.
+    # The turn's context is frozen at submit, so it is only the freshest
+    # answer until the human moves. Prefer a view the SAME PAGE observed
+    # later, by its own observation count -- never server arrival order or a
+    # wall clock, and never a count from a different page. See
+    # docs/internals/studio.md ("View freshness: observation count, not
+    # wall clock"). When the turn names no observer or no count, the turn's
+    # own snapshot is the honest answer.
     turn_seq = (context or {}).get("observationSeq")
     turn_observer = (context or {}).get("observerId")
     if isinstance(turn_seq, int) and isinstance(turn_observer, str):
@@ -884,14 +948,10 @@ async def get_current_view(arguments: dict[str, Any]) -> dict[str, Any]:
         "project": public_project(context.get("project")),
         "selection": context.get("selection"),
         "filters": context.get("filters"),
-        # "turn" means nothing observed later than the instruction has been
-        # reported, so the human may have moved since. "live" means this is
-        # where they are.
-        #
-        # The observation count that decided this is deliberately NOT returned.
-        # It counts what one page has seen and means nothing outside that page,
-        # so a bare number here could only invite a comparison that is not
-        # valid -- which is the defect this whole mechanism was built to remove.
+        # "turn": nothing observed later has been reported, so the human may
+        # have moved since. "live": this is where they are. The observation
+        # count itself is deliberately not returned -- it means nothing
+        # outside the page that counted it.
         "source": source,
     }
 
@@ -965,7 +1025,21 @@ async def navigate(arguments: dict[str, Any]) -> dict[str, Any]:
     args = NavigateInput.model_validate(arguments)
     if args.status is not None and args.space not in {"mission", "history"}:
         raise ValueError("status is only valid for mission/history run navigation")
-    params = {"status": args.status} if args.status is not None else {}
+    if args.run_id is not None and args.space not in {"mission", "history"}:
+        raise ValueError("run_id is only valid for mission/history run navigation")
+    if args.sel is not None and args.space not in {"library", "designer"}:
+        raise ValueError("sel is only valid for library/designer navigation")
+    if args.run_kind is not None and args.space not in {"mission", "history"}:
+        raise ValueError("run_kind is only valid for mission/history run navigation")
+    params: dict[str, str] = {}
+    if args.status is not None:
+        params["status"] = args.status
+    if args.run_id is not None:
+        params["s"] = args.run_id
+    if args.sel is not None:
+        params["sel"] = args.sel
+    if args.run_kind is not None:
+        params["kind"] = args.run_kind
     effect = _NavigateEffect(space=args.space, params=params).model_dump()
     store, conversation_id, request_id = _identity()
     frame = await store.append_effect(conversation_id, request_id, effect)
@@ -1024,14 +1098,67 @@ async def resolve_playbook_version(playbook: str) -> str:
     return await anyio.to_thread.run_sync(fingerprint_playbook, playbook)
 
 
+def _playbook_placeholder_problems(
+    playbook: str, provided_input: str, provided_args: dict[str, Any]
+) -> str | None:
+    """The reason this launch must be refused, or None when it is sound.
+
+    Two refusal classes: (a) a provided arg the playbook never declared —
+    it would be rejected as an unknown flag at spawn time, long after the
+    human approved; (b) a prompt-template placeholder covered by neither the
+    declared args (defaults apply) nor a provided input — the run would
+    execute with a literal '{name}' in its orchestrator prompt.
+    """
+    import re
+
+    from lionagi.studio.services.playbooks import get_playbook
+
+    detail = get_playbook(playbook)
+    if detail is None:
+        return None  # resolve_playbook_version already errors on a missing playbook
+    data = detail.get("data") or {}
+    declared = set((data.get("args") or {}).keys())
+    unknown = sorted(set(provided_args) - declared)
+    if unknown:
+        return (
+            f"args {unknown} are not declared by playbook '{playbook}'; "
+            f"declared args: {sorted(declared) or 'none'}"
+        )
+    template = data.get("prompt") or ""
+    placeholders = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", template))
+    covered = declared | ({"input"} if provided_input else set())
+    unresolved = sorted(placeholders - covered)
+    if unresolved:
+        hint = (
+            "pass 'input'"
+            if unresolved == ["input"]
+            else f"the playbook declares no args covering {unresolved}"
+        )
+        return (
+            f"playbook '{playbook}' has unresolved prompt placeholders "
+            f"{unresolved}; launching would run with the literal braces in "
+            f"the orchestrator prompt — {hint}."
+        )
+    return None
+
+
 async def launch_playbook(arguments: dict[str, Any]) -> dict[str, Any]:
     args = LaunchPlaybookInput.model_validate(arguments)
     store, conversation_id, request_id = _identity()
     target_version = await resolve_playbook_version(args.playbook)
+    problem = await anyio.to_thread.run_sync(
+        _playbook_placeholder_problems, args.playbook, args.input, args.args
+    )
+    if problem is not None:
+        return {"status": "refused", "reason": problem}
     command = {
         "action_kind": "play",
         "action_playbook": args.playbook,
     }
+    if args.input:
+        command["action_prompt"] = args.input
+    if args.args:
+        command["action_playbook_args"] = dict(args.args)
     stable = store.canonical_hash(
         {
             "requestId": request_id,
@@ -1041,6 +1168,16 @@ async def launch_playbook(arguments: dict[str, Any]) -> dict[str, Any]:
         }
     )
     summary = f"Launch playbook '{args.playbook}'"
+    if args.args:
+        # The human allows the EXACT command; the arg values are part of it.
+        shown_args = ", ".join(f"{k}={v}" for k, v in sorted(args.args.items()))
+        if len(shown_args) > 160:
+            shown_args = shown_args[:160] + "…"
+        summary += f" [{shown_args}]"
+    if args.input:
+        # The human allows the EXACT command; the task text is part of it.
+        shown = args.input if len(args.input) <= 160 else args.input[:160] + "…"
+        summary += f" with input: {shown}"
     if args.note:
         summary += f" — {args.note}"
     proposal = await store.create_proposal(
@@ -1079,7 +1216,7 @@ _TOOL_HANDLERS = {
     "run_detail": run_detail,
     "cancel_run": cancel_run,
     "resume_run": resume_run,
-    "rename_session": rename_session,
+    "rename_run": rename_session,
     "list_sessions": list_sessions,
     "session_detail": session_detail,
     "session_signals": session_signals,

@@ -2,16 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """`lifecycle` is reachable from the MCP surface, so its read must be a read.
 
-The ordinary store open reconciles the schema: `create_all`, index reconciliation
-and seed inserts. A reporting path that used it would write to the store it
-reports on, and against a store it may not write to it fails on an
-`INSERT INTO schema_meta` while presenting itself as a read. Only
-``readonly=True`` avoids that, and nothing in the function's own docstring makes
-it so.
+The ordinary store open reconciles the schema (`create_all`, index
+reconciliation, seed inserts), so a reporting path that used it would write
+to the store it reports on -- failing on `INSERT INTO schema_meta` against a
+store it may not write to, while presenting itself as a read. Only
+``readonly=True`` avoids that.
 
-These are behavioural probes rather than an assertion about which keyword was
-passed. A keyword check passes as soon as someone writes the keyword; what has to
-hold is that the path does not need write access.
+These are behavioural probes, not an assertion about which keyword was
+passed: a keyword check passes as soon as someone writes the keyword, but
+what has to hold is that the path does not need write access.
 """
 
 from __future__ import annotations

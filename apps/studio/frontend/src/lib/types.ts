@@ -350,6 +350,8 @@ export interface AgentProfile {
   mode?: string;
   protected?: boolean;
   is_default?: boolean;
+  /** Hook assembly: named library hooks bound to provider-neutral events. */
+  hooks?: Array<{ hook: string; event: string; matcher?: string }>;
 }
 
 // ─── Model config ─────────────────────────────────────────────────────────────
@@ -599,6 +601,11 @@ export interface OperatorResourceVersion {
 
 export interface OperatorCommandProposal {
   id: string;
+  /** What the command would do, e.g. "cancel" or "rename_session". Optional
+   * because a client may still be talking to a server that predates the frame
+   * carrying it; a caller checking a proposal against its own request must
+   * treat the absent case as unverifiable rather than as a match. */
+  commandType?: string;
   command: Record<string, unknown>;
   commandHash: string;
   risk: "mutate" | "execute" | "admin";

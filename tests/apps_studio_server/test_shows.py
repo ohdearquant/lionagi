@@ -16,9 +16,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402 — must follow importorskip
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -70,9 +68,7 @@ def show_with_play(shows_root: Path) -> str:
     return topic
 
 
-# ---------------------------------------------------------------------------
 # Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -116,14 +112,13 @@ def test_show_detail_not_found(patched_app):
     assert r.status_code == 404
 
 
-# ---------------------------------------------------------------------------
 # /api/shows/gated-plays — real gate signal for the Mission Control queue
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
 def show_with_gated_play(shows_root: Path) -> str:
-    """A show with one play sitting in the `gated` lifecycle status."""
+    """A show with one play parked in `gated` whose recorded gate outcome
+    is a FAIL — a real decision, so it must surface in the queue."""
     topic = "gated-show"
     show_dir = shows_root / topic
     play_dir = show_dir / "play-001"
@@ -157,6 +152,7 @@ def test_gated_plays_surfaces_a_real_gated_play(patched_app, show_with_gated_pla
     assert item["play_name"] == "play-001"
     assert item["id"] == f"play:{show_with_gated_play}:play-001"
     assert item["feedback"] == "needs another pass"
+    assert item["status"] == "gated"
 
 
 def test_gated_plays_excludes_non_gated_plays(patched_app, show_with_play):
@@ -164,6 +160,42 @@ def test_gated_plays_excludes_non_gated_plays(patched_app, show_with_play):
     r = patched_app.get("/api/shows/gated-plays")
     assert r.status_code == 200
     assert r.json() == []
+
+
+def test_gated_plays_admission_is_decision_shaped(shows_root: Path, patched_app):
+    """The queue admits plays waiting on a real decision, and only those:
+    a FAIL status (gate_failed, escalated) or an explicit metadata opt-in.
+    A play that passed its gate and is merely next in the queue is routine
+    advance and must NOT surface — attention admission is "a human owes a
+    decision", not "the queue moved".
+    """
+    topic = "admission-show"
+    show_dir = shows_root / topic
+    (show_dir).mkdir(parents=True)
+    (show_dir / "_show.md").write_text(f"# Show: {topic}\n")
+
+    def _mk(name: str, meta: dict, verdict: dict | None = None) -> None:
+        d = show_dir / name
+        d.mkdir()
+        (d / "_meta.json").write_text(json.dumps(meta))
+        if verdict is not None:
+            (d / "_verdict.json").write_text(json.dumps(verdict))
+
+    _mk("failed-play", {"status": "gate_failed"}, {"gate_passed": False, "feedback": "rework"})
+    _mk("escalated-play", {"status": "escalated"})
+    _mk("passed-play", {"status": "gated"}, {"gate_passed": True, "feedback": "solid"})
+    _mk("optin-play", {"status": "gated", "attention_opt_in": True}, {"gate_passed": True})
+    _mk("quiet-play", {"status": "gated"})
+
+    r = patched_app.get("/api/shows/gated-plays")
+    assert r.status_code == 200
+    by_name = {item["play_name"]: item for item in r.json()}
+    assert set(by_name) == {"failed-play", "escalated-play", "optin-play"}, (
+        f"decision-shaped admission violated: {sorted(by_name)!r}"
+    )
+    assert by_name["failed-play"]["status"] == "gate_failed"
+    assert by_name["escalated-play"]["status"] == "escalated"
+    assert by_name["optin-play"]["status"] == "gated"
 
 
 def test_gated_plays_surfaces_a_gate_created_after_import(shows_root: Path, patched_app):
@@ -193,7 +225,7 @@ def test_gated_plays_surfaces_a_gate_created_after_import(shows_root: Path, patc
     play1 = show_dir / "play-1"
     play1.mkdir()
     (play1 / "_meta.json").write_text(
-        json.dumps({"status": "gated", "started_at": "2024-01-02T00:00:00Z"})
+        json.dumps({"status": "gate_failed", "started_at": "2024-01-02T00:00:00Z"})
     )
 
     r = patched_app.get("/api/shows/gated-plays")
@@ -232,7 +264,7 @@ def test_gated_plays_disk_status_wins_over_stale_db_row(shows_root: Path, patche
     # The play is rewritten in place after import — no new play, so the DB
     # row for play-0 stays "running" forever unless something re-imports.
     (play0 / "_meta.json").write_text(
-        json.dumps({"status": "gated", "started_at": "2024-01-01T00:00:00Z"})
+        json.dumps({"status": "gate_failed", "started_at": "2024-01-01T00:00:00Z"})
     )
 
     detail_r = patched_app.get(f"/api/shows/{topic}")
@@ -240,7 +272,7 @@ def test_gated_plays_disk_status_wins_over_stale_db_row(shows_root: Path, patche
     play0_status = next(
         p["meta"]["status"] for p in detail_r.json()["plays"] if p["name"] == "play-0"
     )
-    assert play0_status == "gated", (
+    assert play0_status == "gate_failed", (
         f"get_show() must report the live disk status, got {play0_status!r}"
     )
 
@@ -280,7 +312,7 @@ def test_gated_plays_surfaces_a_show_never_imported(shows_root: Path, patched_ap
     never_play = never_dir / "play-1"
     never_play.mkdir(parents=True)
     (never_dir / "_show.md").write_text(f"# Show: {never_topic}\n")
-    (never_play / "_meta.json").write_text(json.dumps({"status": "gated"}))
+    (never_play / "_meta.json").write_text(json.dumps({"status": "gate_failed"}))
 
     list_r = patched_app.get("/api/shows")
     assert list_r.status_code == 200
@@ -393,9 +425,7 @@ def test_gated_plays_truncated_meta_json_is_reported_unavailable(shows_root: Pat
     assert entry["live_state"] == "unavailable"
 
 
-# ---------------------------------------------------------------------------
 # Path traversal tests (Fix 1)
-# ---------------------------------------------------------------------------
 
 
 def test_path_traversal_encoded_dotdot_shows(patched_app):
@@ -436,9 +466,7 @@ async def test_watch_show_invalid_topic_yields_done(tmp_path, monkeypatch):
     assert json.loads(events[0].removeprefix("data: ").strip()) == {"type": "done"}
 
 
-# ---------------------------------------------------------------------------
 # strict status_source provenance
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -505,9 +533,7 @@ def test_show_detail_status_source_is_sqlite_with_db(sqlite_patched_app):
     )
 
 
-# ---------------------------------------------------------------------------
 # Docker regression test: get_show works from DB even when show dir is absent
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -598,11 +624,6 @@ def test_get_show_returns_404_when_dir_absent_and_no_db_row(docker_patched_app):
     client, _topic = docker_patched_app
     r = client.get("/api/shows/nonexistent-topic-xyz")
     assert r.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# import_shows() must not write an undeclared plays.status value (issue #2619)
-# ---------------------------------------------------------------------------
 
 
 def test_import_shows_refuses_undeclared_play_status(tmp_path, monkeypatch):

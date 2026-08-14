@@ -21,11 +21,11 @@ export function scheduleDeepLink(scheduleId: string): {
 }
 
 /**
- * Play counterpart. There is no dedicated show/play detail route yet (the
- * legacy `/shows` route redirects to `/fleet`), so this is a same
- * best-effort landing spot as `invocationDeepLink` until one exists — not a
- * deep link into the specific play.
+ * Play counterpart. A play whose show recorded its root run/session id deep
+ * links straight to that run's detail; without one (no dedicated show/play
+ * detail route exists — the legacy `/shows` route redirects to `/fleet`)
+ * this stays the same best-effort landing spot as `invocationDeepLink`.
  */
-export function playDeepLink(): { to: "/fleet" } {
-  return { to: "/fleet" };
+export function playDeepLink(sessionId?: string | null): { to: "/fleet"; search?: { s: string } } {
+  return sessionId ? { to: "/fleet", search: { s: sessionId } } : { to: "/fleet" };
 }

@@ -10,9 +10,7 @@ from pydantic.fields import FieldInfo
 from lionagi.models.field_model import FieldModel
 from lionagi.models.operable_model import OperableModel
 
-# ---------------------------------------------------------------------------
 # FieldModel tests
-# ---------------------------------------------------------------------------
 
 
 class TestFieldModelInit:
@@ -243,9 +241,7 @@ class TestFieldModelFactoryHelpers:
         assert ann is not int  # should be a union type
 
 
-# ---------------------------------------------------------------------------
 # OperableModel tests
-# ---------------------------------------------------------------------------
 
 
 class SimpleModel(OperableModel):

@@ -22,10 +22,10 @@ from lionagi.cli.orchestrate.flow import FlowPlanError, _parse_reactive, _run_fl
 def stub_profiles(monkeypatch):
     """Serve agent profiles from a dict instead of the machine's agents directories.
 
-    A user profile outranks a pack in model resolution, and profiles are
-    discovered from the git root, the working directory and its parents, and the
-    home directory — so a test that asserts on which source supplied a model
-    reads whatever profiles happen to be installed unless the loader is stubbed.
+    Profiles are discovered from the git root, the working directory and its
+    parents, and the home directory, so a test that asserts on which source
+    supplied a model reads whatever profiles happen to be installed unless the
+    loader is stubbed.
     """
     table: dict[str, AgentProfile] = {}
 
@@ -76,6 +76,7 @@ def _env(tmp_path, orc) -> SimpleNamespace:
         bare=True,
         effort=None,
         total_budget=None,
+        budget_deadline_epoch=None,
         team_data=None,
         pack=None,
         session=SimpleNamespace(),
@@ -399,7 +400,7 @@ async def test_workers_override_keeps_role_modes(tmp_path):
     assert "adversarial" in out  # role behaviour preserved, not stripped like --bare
 
 
-# ── pack routing ─────────────────────────────────────────────────────────
+# pack routing
 
 
 def _pack_env(tmp_path, orc, pack_yaml: str) -> SimpleNamespace:
@@ -431,6 +432,50 @@ async def test_pack_routing_shown_in_dry_run(tmp_path, stub_profiles):
     )
     out = await _run_flow_inner("codex/gpt-5.5", "task", env=env, dry_run=True)
     assert "writer: codex/codex-cheap (pack)" in out
+
+
+def test_pack_model_overrides_profile_model_but_preserves_profile(tmp_path, stub_profiles):
+    """A pack routes the model while the role profile still supplies behavior."""
+    profile = AgentProfile(
+        name="writer",
+        model="openai/profile-model",
+        system_prompt="profile behavior",
+        raw_body="profile behavior",
+    )
+    stub_profiles["writer"] = profile
+    env = _pack_env(
+        tmp_path,
+        _FakeOrcBranch([]),
+        "name: test-routing\nroles:\n  writer:\n    model: codex/pack-model\n",
+    )
+
+    model, resolved_profile, _ = orch._resolve_worker_model_spec(env, "writer")
+
+    assert model == "codex/pack-model"
+    assert resolved_profile is profile
+
+
+@pytest.mark.asyncio
+async def test_pack_model_with_profile_is_reported_as_pack_in_dry_run(tmp_path, stub_profiles):
+    """Dry-run reports the same routing precedence the worker builder uses."""
+    stub_profiles["writer"] = AgentProfile(
+        name="writer",
+        model="openai/profile-model",
+        system_prompt="profile behavior",
+        raw_body="profile behavior",
+    )
+    orc = _FakeOrcBranch(
+        [SimpleNamespace(assignments=[TaskAssignment(task="draft docs", assignee="writer")])]
+    )
+    env = _pack_env(
+        tmp_path,
+        orc,
+        "name: test-routing\nroles:\n  writer:\n    model: codex/pack-model\n",
+    )
+
+    out = await _run_flow_inner("codex/gpt-5.5", "task", env=env, dry_run=True)
+
+    assert "writer: codex/pack-model (pack)" in out
 
 
 @pytest.mark.asyncio

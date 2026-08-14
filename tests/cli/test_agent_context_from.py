@@ -37,7 +37,7 @@ from lionagi.cli._context_from import (
 from lionagi.cli._runs import RunDir
 from lionagi.state.db import StateDB
 
-# ── Fixtures ──────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -113,7 +113,7 @@ def _write_branch_file(runs_root: Path, run_id: str, branch_id: str) -> Path:
     return path
 
 
-# ── Ladder: artifact present / final-message fallback / truncation marker ──
+# Ladder: artifact present / final-message fallback / truncation marker
 
 
 def test_ladder_uses_verbatim_artifact_when_it_fits():
@@ -161,7 +161,7 @@ def test_ladder_truncates_loudly_when_both_oversized():
     assert len(text) <= 100
 
 
-# ── Budget: total-not-per-ref, argv order, tail-ref loud truncation ────────
+# Budget: total-not-per-ref, argv order, tail-ref loud truncation
 
 
 def test_build_context_block_allocates_total_budget_in_argv_order(caplog):
@@ -256,7 +256,7 @@ def test_file_ref_over_budget_truncates_loudly_no_verbatim_blowup(tmp_path):
     assert "[...truncated...]" in block
 
 
-# ── Ref resolution order + unique prefix + miss ─────────────────────────────
+# Ref resolution order + unique prefix + miss
 
 
 @pytest.mark.asyncio
@@ -348,7 +348,7 @@ async def test_resolve_empty_source_branch_errors(temp_db_path, runs_root):
             await resolve_context_refs([bid])
 
 
-# ── Ambiguous prefix (2+ matches) → hard error listing candidates ─────────
+# Ambiguous prefix (2+ matches) → hard error listing candidates
 
 
 @pytest.mark.asyncio
@@ -389,7 +389,7 @@ async def test_resolve_ambiguous_run_prefix_raises(temp_db_path, runs_root):
         await resolve_context_refs(["run-dup"])
 
 
-# ── CLI wiring: mutual exclusion, manifest, first-instruction injection ────
+# CLI wiring: mutual exclusion, manifest, first-instruction injection
 
 
 def _wire_agent_stubs(
@@ -597,7 +597,7 @@ async def test_injected_block_present_above_prompt_in_first_instruction(monkeypa
     assert instruction.index(marker) < instruction.index("the user prompt")
 
 
-# ── Explicit `--context-budget 0` must be preserved, not defaulted ─────────
+# Explicit `--context-budget 0` must be preserved, not defaulted
 
 
 @pytest.mark.asyncio
@@ -699,7 +699,7 @@ def test_build_context_block_budget_zero_yields_only_truncation_marker():
     assert "final" not in block
 
 
-# ── CLI surface: exit codes, stderr content, precedence, argv ordering ─────
+# CLI surface: exit codes, stderr content, precedence, argv ordering
 
 
 def _base_cli_args(**overrides) -> SimpleNamespace:

@@ -20,7 +20,7 @@ from lionagi.cli.orchestrate.flow import (
     op_budget_share,
 )
 
-# ── _format_budget_preamble ────────────────────────────────────────────────
+# _format_budget_preamble
 
 
 def test_format_budget_preamble_contains_expected_fields():
@@ -87,7 +87,7 @@ def test_format_budget_preamble_index_and_count():
     assert "60 seconds" in text
 
 
-# ── Critical-path depth ────────────────────────────────────────────────────
+# Critical-path depth
 #
 # These call the shipped functions rather than a copy of their arithmetic. The
 # previous version of this section defined its own `_equal_split` helper and
@@ -145,7 +145,7 @@ def test_share_falls_back_to_the_op_count_without_dependency_data():
     assert op_budget_share(600, [], 3) == 200
 
 
-# ── The concurrency cap serializes ops the dependency graph says are parallel ──
+# The concurrency cap serializes ops the dependency graph says are parallel
 #
 # Depth alone is not a lower bound on makespan. `--max-concurrent 1` runs four
 # independent ops one after another, and a share computed from depth 1 hands
@@ -199,7 +199,7 @@ def test_share_treats_a_non_positive_cap_as_unbounded():
     assert op_budget_share(900, [[], [], [], [0, 1, 2]], 4) == 450
 
 
-# ── Where the two bounds interact ───────────────────────────────────────────
+# Where the two bounds interact
 #
 # A dependency does not only lengthen the chain, it idles capacity while it is
 # unsatisfied, and the ops it blocks have to be picked up later. Counting
@@ -267,7 +267,7 @@ def test_an_empty_plan_has_no_depth():
     assert max_sequential_depth([], 0, 2) == 0
 
 
-# ── The share an op is actually told ────────────────────────────────────────
+# The share an op is actually told
 #
 # `op_budget_share` being right says nothing about whether the flow uses it.
 # The equal-split divisor this PR removes survived a green suite for exactly
@@ -338,6 +338,147 @@ def test_the_flow_builds_its_preambles_through_the_shared_helper():
     )
 
 
+# the deadline instant is captured, not recomputed
+
+
+def test_no_preambles_without_a_captured_deadline_instant():
+    """A missing instant means no preamble, never a substitute one.
+
+    The obvious fallback is `now + total_budget`, and it is wrong by however
+    long the run has already been going. It is also wrong permissively: every
+    op would be told it has more time than the flow will actually give it,
+    which is the direction that produces overruns rather than early finishes.
+    Saying nothing is the honest failure here.
+    """
+    assert _build_budget_preambles(600, [[], [0]], 2, 0, None) == {}
+
+
+def test_a_budgeted_run_without_an_instant_says_so(monkeypatch):
+    """Silent about the value, loud about the event.
+
+    Refusing to invent a deadline is right, but a budgeted run reaching this
+    point without one means the instant was never wired through, and the ops
+    are about to be held to a limit nobody told them about. That is worth a
+    line on stderr even though it is not worth a guess.
+    """
+    from lionagi.cli.orchestrate import flow as flow_mod
+
+    said: list[str] = []
+    monkeypatch.setattr(flow_mod, "_warn", lambda msg: said.append(msg))
+
+    assert flow_mod._build_budget_preambles(600, [[], [0]], 2, 0, None) == {}
+    assert said, "a budgeted run with no captured instant passed without a word"
+
+    # The quiet cases stay quiet: no budget means no budget guidance was ever
+    # owed, so warning there would train the reader to ignore the channel.
+    said.clear()
+    assert flow_mod._build_budget_preambles(None, [[], [0]], 2, 0, None) == {}
+    assert not said, f"warned about an unbudgeted run: {said}"
+
+
+def test_the_preamble_renders_the_instant_it_was_handed():
+    """A fixed instant renders as itself, so a recomputed one is visible."""
+    import datetime
+
+    captured = 1786380000.0
+    expected = datetime.datetime.fromtimestamp(captured, tz=datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S"
+    )
+    assert expected in _build_budget_preambles(600, [[], [0]], 2, 0, captured)[0]
+
+
+def test_the_flow_hands_over_the_stored_instant_instead_of_deriving_one():
+    """The call site must pass the recorded instant, not build one from now.
+
+    `_build_budget_preambles` cannot tell where its instant came from, so every
+    test above stays green if the call site goes back to `time.time() + budget`.
+    That is the defect exactly: the arithmetic was right and the moment it ran
+    was wrong, which no assertion about the arithmetic can see.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from lionagi.cli.orchestrate import flow as flow_mod
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(flow_mod._run_flow_inner)))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_build_budget_preambles"
+    ]
+    assert calls, "no call to _build_budget_preambles found — this test is looking at nothing"
+    for call in calls:
+        attrs = {n.attr for arg in call.args for n in ast.walk(arg) if isinstance(n, ast.Attribute)}
+        assert "budget_deadline_epoch" in attrs, (
+            "the deadline handed to the preamble builder must be the instant recorded "
+            "when the run's clock started, read off the environment"
+        )
+        assert "time" not in attrs, (
+            "the call site is deriving a deadline from the current time again, which "
+            "dates it from whenever planning happened to finish"
+        )
+    # Reading the right field is not enough on its own: overwriting it here,
+    # after planning and just before the call, restores the defect while still
+    # satisfying every assertion above. Planning happens in this function, so
+    # the only safe number of writes to the field here is none.
+    rewritten = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Attribute) and target.attr == "budget_deadline_epoch"
+    ]
+    assert not rewritten, (
+        f"_run_flow_inner assigns budget_deadline_epoch at line(s) {rewritten}; the "
+        "instant belongs to the caller that opens the timeout scope, and re-dating "
+        "it here is the original defect wearing the fix's field name"
+    )
+
+
+def test_the_deadline_is_recorded_before_the_timeout_scope_opens():
+    """Where the instant is taken is the whole fix.
+
+    Taken after the scope opens, it is already late by everything that ran in
+    between, and what runs in between is the planning phase every flow pays
+    for before its first op exists.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from lionagi.cli.orchestrate import flow as flow_mod
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(flow_mod._run_flow)))
+    recorded = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Attribute) and target.attr == "budget_deadline_epoch"
+    ]
+    scope_opened = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "move_on_after"
+    ]
+    # Control: without this the ordering assertion below passes vacuously on a
+    # function that no longer has a timeout scope at all.
+    assert scope_opened, "no timeout scope in _run_flow — this test is aimed at the wrong function"
+    assert recorded, "_run_flow must record the instant its timeout clock starts counting from"
+    # Every write, not just the first: an early assignment followed by a later
+    # one leaves the earliest line where it was, so comparing minima would call
+    # a re-dated deadline correct.
+    assert max(recorded) < min(scope_opened), (
+        "the deadline is recorded after the timeout scope opens, so it dates from "
+        "later than the clock it is supposed to describe"
+    )
+
+
 def test_no_budget_preamble_when_total_budget_none():
     """The total_budget None guard produces no preamble entries."""
     total_budget = None
@@ -349,7 +490,7 @@ def test_no_budget_preamble_when_total_budget_none():
     assert preambles == {}
 
 
-# ── OrchestrationEnv.total_budget ─────────────────────────────────────────
+# OrchestrationEnv.total_budget
 
 
 def test_orchestration_env_has_total_budget_field():

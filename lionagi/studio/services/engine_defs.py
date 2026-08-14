@@ -11,7 +11,7 @@ import uuid
 from typing import Any
 
 from fastapi import HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi.state.db import StateDB, state_db_known_absent
@@ -205,6 +205,8 @@ async def delete_engine_def(def_id: str) -> bool:
 
 
 class CreateEngineDefRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     kind: str
     model: str | None = None
@@ -215,6 +217,8 @@ class CreateEngineDefRequest(BaseModel):
 
 
 class UpdateEngineDefRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     kind: str | None = None
     model: str | None = None

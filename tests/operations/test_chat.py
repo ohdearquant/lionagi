@@ -10,9 +10,7 @@ from lionagi.operations.types import ChatParam
 from lionagi.protocols.messages.assistant_response import AssistantResponse
 from lionagi.protocols.messages.instruction import Instruction
 
-# ============================================================================
 # P0 - Critical Coverage Tests
-# ============================================================================
 
 
 class TestAssistantResponseConsolidation:
@@ -422,9 +420,7 @@ class TestReturnFormats:
         assert not isinstance(result, tuple)
 
 
-# ============================================================================
 # P1 - Important Parameter Coverage
-# ============================================================================
 
 
 class TestChatContextParameters:
@@ -542,9 +538,7 @@ class _FalsyIModel:
         return getattr(self._inner, name)
 
 
-# ============================================================================
 # Fixtures
-# ============================================================================
 
 
 @pytest.fixture

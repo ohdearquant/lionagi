@@ -117,7 +117,7 @@ async def reap_stale_invocations(
                     # atomic UPDATE as the status transition — a winning CAS
                     # followed by a separate update_invocation() call could
                     # leave status="timed_out" with ended_at never patched if
-                    # that second write failed (issue #2844). Preserving a
+                    # that second write failed. Preserving a
                     # pre-existing ended_at (rather than overwriting it) is
                     # still decided off this same pre-write snapshot.
                     transitioned = await db.update_status(
@@ -192,16 +192,12 @@ async def reap_stale_invocations(
 
 async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
     """Transition null-status sessions whose process is dead to ``failed``.
-
     Sessions get ``status=NULL`` when the process crashes before writing a
-    terminal status (crash, OOM, SIGKILL).  Guard is ``status IS NULL`` so
-    already-terminal rows are never touched.  Liveness honors the recorded
-    ``node_metadata.pid`` via ``process_liveness()``; when a row is not
-    observably alive it still gets a staleness grace (mirroring
-    ``_classify_phantom``) before it is reaped, so a fresh/quiet null-status
-    session is not punished for a momentary window before it writes its own
-    status.
-    """
+    terminal status; the ``status IS NULL`` guard never touches
+    already-terminal rows. Liveness honors the recorded
+    ``node_metadata.pid`` via ``process_liveness()``, and a not-observably-
+    alive row still gets a staleness grace (mirroring ``_classify_phantom``)
+    so a fresh/quiet session isn't reaped for a momentary window."""
     from lionagi.studio.config import PHANTOM_STALE_HOURS
 
     if stale_hours is None:
@@ -506,21 +502,16 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
 
 async def reap_stale_schedule_runs(*, stale_hours: float | None = None) -> int:
     """Transition ``schedule_runs`` rows stuck at ``status="running"`` to
-    ``timed_out``.
-
-    The scheduler process can die between committing a schedule_run row and
-    its own terminal write, orphaning the row at ``running`` forever with no
-    process-liveness signal to check (unlike stale sessions/plays -- the
-    "process" here is the scheduler daemon, and its restart triggers
-    reaping). Pure wall-clock deadline against ``updated_at`` (falling back
-    to ``fired_at``), with the same optimistic-lock ``expected_updated_at``
-    guard as ``reap_stale_plays``.
-
-    Scoped to ``schedule_id IS NOT NULL``: the ad-hoc task queue
-    (``schedule_id IS NULL``) has its own lease-based recovery
+    ``timed_out``. The scheduler process can die between committing a
+    schedule_run row and its own terminal write, orphaning the row at
+    ``running`` forever with no process-liveness signal to check (the
+    "process" here is the scheduler daemon; its restart triggers reaping).
+    Pure wall-clock deadline against ``updated_at`` (falling back to
+    ``fired_at``), with the same optimistic-lock ``expected_updated_at``
+    guard as ``reap_stale_plays``. Scoped to ``schedule_id IS NOT NULL`` --
+    the ad-hoc task queue has its own lease-based recovery
     (``worker.reap_expired_leases``) and is excluded so a live-leased task
-    isn't marked ``timed_out`` here before its lease even expires.
-    """
+    isn't marked ``timed_out`` before its lease even expires."""
     from lionagi.studio.config import SCHEDULE_RUN_STALE_HOURS
 
     if stale_hours is None:
@@ -596,17 +587,14 @@ _REAPABLE_SHOW_STATUSES = frozenset({"active", "imported"})
 
 
 def _recompute_show_status_from_disk(show_dir: Path) -> tuple[str, str, str] | None:
-    """Re-derive a show's terminal status from on-disk play/verdict evidence.
-
-    Mirrors the rules ``shows.import_shows()`` applies once, at mirror-row
-    creation time: an ``_ABORT`` marker means aborted; a passing
+    """Re-derive a show's terminal status from on-disk play/verdict
+    evidence, mirroring the rules ``shows.import_shows()`` applies once at
+    mirror-row creation time: an ``_ABORT`` marker means aborted; a passing
     ``_final_verdict.json`` means completed; every child play reaching
     ``merged`` (with at least one play) also means completed. Any other
-    on-disk state is still genuinely in flight, so this returns ``None`` and
-    the caller skips the show.
-
-    Returns ``(new_status, reason_code, reason_summary)`` or ``None``.
-    """
+    on-disk state is still in flight, so this returns ``None`` and the
+    caller skips the show. Returns ``(new_status, reason_code,
+    reason_summary)`` or ``None``."""
     if (show_dir / "_ABORT").exists():
         return (
             "aborted",
@@ -636,20 +624,16 @@ def _recompute_show_status_from_disk(show_dir: Path) -> tuple[str, str, str] | N
 
 async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
     """Recompute a stale non-terminal show's status from its plays' state.
-
     ``shows.py`` computes ``show_status`` only once, at mirror-row creation
-    time (``import_shows()``): a show mirrored while its plays are still
-    in flight gets ``status="active"`` and the row is never re-evaluated
-    once those plays later merge or abort on disk — there is no periodic
-    re-derivation, unlike sessions/plays/invocations/schedule_runs, which
-    all have their own reapers. This fills that gap using the exact same
+    time -- a show mirrored while its plays are still in flight gets
+    ``status="active"`` and is never re-evaluated once those plays later
+    merge or abort on disk, unlike sessions/plays/invocations/schedule_runs
+    which all have their own reapers. This fills that gap using the exact
     on-disk rules ``import_shows()`` already applies (see
-    ``_recompute_show_status_from_disk``).
-
-    Liveness-first, like ``reap_stale_plays``: a show with any child play
-    whose session process is still observably alive is never reaped,
-    regardless of the on-disk snapshot or how stale the row looks.
-    """
+    ``_recompute_show_status_from_disk``). Liveness-first, like
+    ``reap_stale_plays``: a show with any child play whose session process
+    is still observably alive is never reaped, regardless of the on-disk
+    snapshot or how stale the row looks."""
     from lionagi.studio.config import SHOW_STALE_HOURS
 
     if stale_hours is None:

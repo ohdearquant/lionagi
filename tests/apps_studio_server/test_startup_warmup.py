@@ -1,17 +1,18 @@
 """The startup WAL checkpoint is deferred off the readiness path; reconciliation
 is not.
 
-The studio lifespan keeps stale-session reconciliation pre-yield (stateful /api
-routes read the rows it corrects) but defers the WAL checkpoint to a background
-task so /health serves as soon as reconciliation completes, without waiting on
-the checkpoint. These tests pin both halves of
-that contract, that the deferred checkpoint still runs with actor='startup', that
-a shutdown landing mid-checkpoint cancels it cleanly, and that a checkpoint
-failure is logged rather than silently dropped.
+The studio lifespan keeps stale-session reconciliation pre-yield (stateful
+/api routes read the rows it corrects) but defers the WAL checkpoint to a
+background task so /health serves as soon as reconciliation completes,
+without waiting on the checkpoint. These tests pin that contract: the
+deferred checkpoint still runs with actor='startup', a shutdown landing
+mid-checkpoint cancels it cleanly, and a checkpoint failure is logged
+rather than silently dropped.
 
-The real scheduler is patched out: its first tick runs the same maintenance
-functions (and spawns aiosqlite workers), which would otherwise pollute these
-assertions and leave a worker posting to a closed loop at teardown.
+The real scheduler is patched out: its first tick runs the same
+maintenance functions (and spawns aiosqlite workers), which would
+otherwise pollute these assertions and leave a worker posting to a closed
+loop at teardown.
 """
 
 from __future__ import annotations

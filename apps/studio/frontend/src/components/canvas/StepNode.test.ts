@@ -109,6 +109,12 @@ describe("StepNode.tsx — source contract for the status rail + reduced-motion"
 
   it("gates the pulse animation on prefers-reduced-motion, keeping the rail/border cues animation-free", () => {
     expect(src).toMatch(/usePrefersReducedMotion/);
-    expect(src).toMatch(/reducedMotion \? "" : " animate-pulse"/);
+    // The pulse is gated on `animating`, which folds in reducedMotion along
+    // with the other real-signal requirements from ADR-0113 row 7 (fresh
+    // events, in viewport, under the concurrency cap) — reducedMotion alone
+    // is no longer sufficient to decide the class, but it must still be one
+    // of the inputs that can turn animation off.
+    expect(src).toMatch(/!reducedMotion/);
+    expect(src).toMatch(/animating \? " animate-pulse" : ""/);
   });
 });

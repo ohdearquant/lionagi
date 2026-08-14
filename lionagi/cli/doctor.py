@@ -40,7 +40,11 @@ _CORE_DEPS: dict[str, str] = {
     "psutil": "psutil",
 }
 
-_STUDIO_HEALTH_URL_DEFAULT = "http://127.0.0.1:8765/api/admin/health"
+# The readiness probe, not the composite health report. The report walks the
+# recent session page, so its cost scales with stored message volume and it can
+# outlast any timeout worth setting here — pointing this check at it made a
+# daemon that was serving every other route read as unreachable.
+_STUDIO_READINESS_URL_DEFAULT = "http://127.0.0.1:8765/api/admin/readiness"
 
 _SYMBOLS = {"ok": "✓", "warn": "!", "fail": "✗", "unknown": "?"}
 
@@ -112,18 +116,56 @@ def _check_core_deps() -> dict[str, dict[str, str]]:
     return results
 
 
+def _readiness_verdict(target: str, body: bytes) -> dict[str, str]:
+    """Turn a readiness response body into a check result.
+
+    Kept separate from the request so the mapping can be exercised without a
+    server, and because the probe distinguishes three states on purpose:
+    collapsing them into one boolean is what let a stalled daemon keep
+    reporting itself healthy.
+    """
+    try:
+        payload = json.loads(body)
+        state = payload["status"]
+    except Exception as exc:  # noqa: BLE001 — malformed body, wrong endpoint, no status key
+        return _result(
+            "unknown",
+            f"Studio daemon answered at {target} but its readiness verdict could not "
+            f"be read ({type(exc).__name__}: {exc}) — treat the daemon as unverified.",
+        )
+
+    detail = payload.get("detail") or ""
+    if state == "healthy":
+        return _result("ok", f"Studio daemon ready at {target} ({detail})")
+    if state in ("slow", "unavailable"):
+        return _result(
+            "warn",
+            f"Studio daemon is up at {target} but its store is {state} ({detail}) — "
+            "scheduled/agent-spawn actions that route through it will be affected.",
+        )
+    return _result(
+        "unknown",
+        f"Studio daemon at {target} reported an unrecognised readiness status {state!r}.",
+    )
+
+
 def _check_studio_daemon(url: str | None = None, timeout: float = 1.5) -> dict[str, str]:
-    """Optional check — the Studio daemon is not required for `li agent`/`li o flow`."""
+    """Optional check — the Studio daemon is not required for `li agent`/`li o flow`.
+
+    The verdict comes from the response body, not the status code: readiness
+    answers 200 even when the store is unreachable, so a code-only check would
+    report a daemon that cannot serve anything as healthy.
+    """
     import urllib.error
     import urllib.request
 
-    target = url or _STUDIO_HEALTH_URL_DEFAULT
+    target = url or _STUDIO_READINESS_URL_DEFAULT
     try:
         req = urllib.request.Request(target, method="GET")  # noqa: S310
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            if resp.status == 200:
-                return _result("ok", f"Studio daemon reachable at {target}")
-            return _result("warn", f"Studio daemon at {target} returned HTTP {resp.status}")
+            if resp.status != 200:
+                return _result("warn", f"Studio daemon at {target} returned HTTP {resp.status}")
+            body = resp.read()
     except Exception as exc:  # noqa: BLE001 — connection refused, timeout, DNS, etc.
         return _result(
             "warn",
@@ -131,6 +173,7 @@ def _check_studio_daemon(url: str | None = None, timeout: float = 1.5) -> dict[s
             "optional; scheduled/agent-spawn actions that route through it will fail "
             "until `li studio` is running.",
         )
+    return _readiness_verdict(target, body)
 
 
 def _check_lionagi_home(home: Path | None = None) -> dict[str, str]:

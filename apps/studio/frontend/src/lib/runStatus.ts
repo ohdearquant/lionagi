@@ -81,6 +81,23 @@ export function deriveDisplayStatus(run: RunStatusInput): DisplayStatus {
   return "running";
 }
 
+const UNSUCCESSFUL_TERMINAL = new Set<DisplayStatus>(["failed", "cancelled", "orphaned"]);
+
+/**
+ * True when a run has finished in a way the operator needs explained, so its
+ * `status_reason_summary` is worth showing. On a completed run that string is
+ * noise; on a running one it is not final yet.
+ *
+ * Keyed on the DISPLAY status, never on `run.status === "failed"`. A run that
+ * exceeded its deadline arrives as `timed_out`, which displays as "cancelled",
+ * so an equality test against "failed" drops the explanation for precisely the
+ * case that most needs one — the operator is left reading a bare "cancelled"
+ * while "Run exceeded the configured timeout." sits unused in the payload.
+ */
+export function isUnsuccessfulTerminal(run: RunStatusInput): boolean {
+  return UNSUCCESSFUL_TERMINAL.has(deriveDisplayStatus(run));
+}
+
 const DEAD_EFFECTIVE_HEALTH = new Set(["stale", "orphaned", "zombie"]);
 
 /**

@@ -63,7 +63,7 @@ class _FakeExecutor:
         return True
 
 
-# ── TeamLifecycleCoordinator: unit-level (no _execute_dag involved) ────────
+# TeamLifecycleCoordinator: unit-level (no _execute_dag involved)
 
 
 class TestTeamLifecycleCoordinatorOnDoneOnFinished:
@@ -453,7 +453,7 @@ class TestTeamLifecycleCoordinatorExchangeUnion:
         await collect_task
 
 
-# ── Source-level wiring guard (mirrors TestCoordinatorWiredAtMessengerConstruction) ──
+# Source-level wiring guard (mirrors TestCoordinatorWiredAtMessengerConstruction)
 
 
 def test_flow_wires_team_lifecycle_done_and_finished_callbacks():
@@ -464,7 +464,7 @@ def test_flow_wires_team_lifecycle_done_and_finished_callbacks():
     assert "_team_coordinator.on_finished" in src
 
 
-# ── _execute_dag integration against a fake executor (decision-logic only) ──
+# _execute_dag integration against a fake executor (decision-logic only)
 
 
 def _plan_and_dag(agent_id: str, *, worker_branches=None, messenger_bound=None):
@@ -489,7 +489,7 @@ def _plan_and_dag(agent_id: str, *, worker_branches=None, messenger_bound=None):
     return plan_result, dag_state
 
 
-# ── _execute_dag integration against the REAL ReactiveExecutor ─────────────
+# _execute_dag integration against the REAL ReactiveExecutor
 # No fake executor: PlanningEngine.new_run is unpatched, so eng_run.run_dag
 # drives the real ReactiveExecutor. Only branch.operate is stubbed.
 

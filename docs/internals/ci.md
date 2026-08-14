@@ -90,3 +90,62 @@ The required lane retains `--dist loadfile`. Some test files mutate process
 environment and module state, so file affinity is part of isolation. Duration
 data should be reviewed for stragglers before proposing `loadgroup`; a change
 also requires explicit `xdist_group` markers for every state-leaking file.
+
+## Run directory isolation
+
+`lionagi._paths` reads `LIONAGI_HOME` once, at import, and derives `RUNS_ROOT`
+from it; several modules then bind those two constants into their own
+namespace by name. `tests/conftest.py` redirects `LIONAGI_HOME` to a fresh
+temporary directory before anything else in the suite can import `lionagi`,
+so that every test's run-directory writes (manifests, branch snapshots,
+stream buffers) land in a throwaway location instead of interleaving with a
+developer's real store or a persistent CI one. The redirect has to sit above
+every other import in `conftest.py`, because once `lionagi._paths` is
+imported the constants it derived are fixed for the process.
+
+The value is overwritten unconditionally rather than only filled in when
+absent. `LIONAGI_HOME` is an ordinary production variable that plenty of
+shells and CI environments already set for reasons unrelated to the suite;
+deferring to an existing value would let that ambient setting silently turn
+isolation off. `LIONAGI_TEST_HOME` is the deliberate way through this: when
+set, the suite adopts it as `LIONAGI_HOME` and writes there instead of a
+throwaway directory. Anything written under it survives the run — it is not
+cleaned up — so it exists for a case that actually wants the suite pointed at
+a specific, inspectable directory. When neither is a concern, the suite
+allocates a temp directory and registers its removal with `atexit`.
+
+Cleanup runs after pytest has already reported the session's result, so a
+failure there has nowhere left to be an assertion. `_remove_test_home`
+therefore never raises: it catches `OSError` and `RecursionError` (the latter
+because `shutil.rmtree` descends recursively and a sufficiently deep tree
+exhausts the stack without the filesystem objecting to anything) and writes
+the surviving root and the underlying error to stderr instead. Nothing wider
+is caught — a bug inside the cleanup call itself (a `TypeError` from a
+misused API, say) is left to propagate rather than being reported as a
+directory the machine refused to delete.
+
+`tests/test_run_directory_isolation.py` verifies this from the outside, since
+by the time a test is running inside the suite the redirect has already
+happened and the original environment is gone. It launches a second pytest
+process with `LIONAGI_HOME` pre-set to a disposable directory (through a
+`probe` fixture that writes a throwaway test file under a dot-directory in
+`tests/`, so real `conftest.py` discovery still applies to it, and runs it
+with `-n0` to avoid xdist startup overhead for a single test) and reads back
+what the child process actually bound `_paths.LIONAGI_HOME` and
+`_paths.RUNS_ROOT` to. That is also how the suite verifies its own
+`atexit` cleanup: only a second process can observe what a first one wrote to
+stderr on the way out.
+
+One probe simulates a root that cannot be removed at all, using file
+permissions: `chmod(0o500)` on a subdirectory makes it impossible for the
+owning process to unlink the entry inside, so `rmtree` walks in and stops.
+The probe records the paths it is about to lock *before* locking them, so a
+caller can find and clear them even if the probe process hangs or is killed
+before it can report anything else. Recovery (`_recover_reported_roots`)
+processes every recorded root even after one fails: it collects failures
+and raises them together at the end rather than stopping at the first one,
+because a loop that stops early would strand every later root with nothing
+left to unlock it. The per-record exception handling is deliberately broad —
+everything caught is named in the consolidated failure — so an unrelated
+error can't decide silently that the remaining roots aren't worth
+attempting.

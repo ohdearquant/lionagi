@@ -37,7 +37,7 @@ def _base_msg(**overrides) -> dict:
     return msg
 
 
-# ── Required-field rejection ─────────────────────────────────────────────────
+# Required-field rejection
 
 
 async def test_insert_message_rejects_null_content(db: StateDB):
@@ -67,7 +67,7 @@ async def test_insert_message_rejects_missing_role(db: StateDB):
         await db.insert_message(msg)
 
 
-# ── Large-payload roundtrip ──────────────────────────────────────────────────
+# Large-payload roundtrip
 
 
 @pytest.mark.parametrize("size_kb", [10, 100, 1024])
@@ -113,7 +113,7 @@ async def test_insert_message_handles_deep_nested_metadata(db: StateDB):
     assert depth == 49
 
 
-# ── Re-fire of mutated message (ON CONFLICT DO UPDATE) ───────────────────────
+# Re-fire of mutated message (ON CONFLICT DO UPDATE)
 
 
 async def test_insert_message_re_fire_updates_content(db: StateDB):
@@ -149,7 +149,7 @@ async def test_insert_message_re_fire_updates_content(db: StateDB):
     assert row["n"] == 1
 
 
-# ── Unicode + binary embedding ───────────────────────────────────────────────
+# Unicode + binary embedding
 
 
 async def test_insert_message_roundtrips_unicode_content(db: StateDB):

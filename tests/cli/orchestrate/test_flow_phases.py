@@ -13,7 +13,7 @@ from uuid import uuid4
 import pytest
 
 from lionagi.casts.emission import TaskAssignment
-from lionagi.cli.orchestrate._common import bare_worker_system
+from lionagi.cli.orchestrate._common import _build_worker_operate_node, bare_worker_system
 from lionagi.cli.orchestrate.flow import (
     _build_dag,
     _DagState,
@@ -25,10 +25,18 @@ from lionagi.cli.orchestrate.flow import (
     _synthesize,
 )
 
-# ── Shared stubs ──────────────────────────────────────────────────────────────
+# Shared stubs
 
 
-def _make_env(tmp_path, *, bare=True, total_budget=None, team_data=None, live_persist=None):
+def _make_env(
+    tmp_path,
+    *,
+    bare=True,
+    total_budget=None,
+    budget_deadline_epoch=None,
+    team_data=None,
+    live_persist=None,
+):
     """Minimal OrchestrationEnv stub for phase tests."""
     name_counts: dict = {}
 
@@ -62,6 +70,7 @@ def _make_env(tmp_path, *, bare=True, total_budget=None, team_data=None, live_pe
         bare=bare,
         effort=None,
         total_budget=total_budget,
+        budget_deadline_epoch=budget_deadline_epoch,
         team_data=team_data,
         pack=None,
         verbose=False,
@@ -231,7 +240,7 @@ class _FakeBranch:
         return {"id": str(self.id), "created_at": 0, "name": self.name}
 
 
-# ── Tests for _build_dag ──────────────────────────────────────────────────────
+# Tests for _build_dag
 
 
 @pytest.mark.asyncio
@@ -254,7 +263,9 @@ async def test_build_dag_populates_node_ids(tmp_path):
         "lionagi.cli.orchestrate.flow.build_worker_branch",
         return_value=(_FakeBranch("researcher"), "codex/gpt-5.5", None, False),
     ):
-        dag_state = await _build_dag(env, "do stuff", plan_result, reactive_spec="off")
+        dag_state = await _build_dag(
+            env, "do stuff", plan_result, reactive_spec="off", max_spawn=20
+        )
 
     assert len(dag_state.node_ids) == 2
     assert len(dag_state.worker_models) == 2
@@ -266,6 +277,76 @@ async def test_build_dag_populates_node_ids(tmp_path):
     # directory — and the roster still names both workers.
     assert env.expected_worker_ids == ["researcher", "implementer"]
     assert env.worker_artifact_dirs == {}
+
+
+@pytest.mark.asyncio
+async def test_build_dag_forwards_assignment_inputs_to_worker_context(tmp_path):
+    """Planner-declared inputs are part of the worker's execution context."""
+    env = _make_env(tmp_path)
+    assignment = TaskAssignment(
+        task="review the implementation",
+        assignee="reviewer",
+        inputs=["requirements.md", "the implementation diff"],
+    )
+    plan_result = _PlanResult(
+        assignments=[assignment],
+        agent_ids=["reviewer"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.build_worker_branch",
+            return_value=(_FakeBranch("reviewer"), "codex/gpt-5.5", None, False),
+        ),
+        patch(
+            "lionagi.cli.orchestrate.flow._build_worker_operate_node",
+            wraps=_build_worker_operate_node,
+        ) as build_node,
+    ):
+        await _build_dag(env, "ship safely", plan_result, reactive_spec="off", max_spawn=20)
+
+    assert {"assignment_inputs": ["requirements.md", "the implementation diff"]} in (
+        build_node.call_args.kwargs["context"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_dag_forwards_assignment_exit_criteria_to_worker_instruction(tmp_path):
+    """The worker sees the planner's definition of done in its instruction."""
+    env = _make_env(tmp_path)
+    assignment = TaskAssignment(
+        task="implement the fix",
+        assignee="implementer",
+        exit_criteria="The regression test and focused suite pass.",
+    )
+    plan_result = _PlanResult(
+        assignments=[assignment],
+        agent_ids=["implementer"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={0: "[BUDGET]\n"},
+    )
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.build_worker_branch",
+            return_value=(_FakeBranch("implementer"), "codex/gpt-5.5", None, False),
+        ),
+        patch(
+            "lionagi.cli.orchestrate.flow._build_worker_operate_node",
+            wraps=_build_worker_operate_node,
+        ) as build_node,
+    ):
+        await _build_dag(env, "ship safely", plan_result, reactive_spec="off", max_spawn=20)
+
+    assert build_node.call_args.kwargs["instruction"] == (
+        "[BUDGET]\nimplement the fix\n\n"
+        "Exit criteria (must be satisfied before completion):\n"
+        "The regression test and focused suite pass."
+    )
 
 
 @pytest.mark.asyncio
@@ -294,7 +375,7 @@ async def test_build_dag_early_graph_write_preserves_unrelated_metadata(tmp_path
         "lionagi.cli.orchestrate.flow.build_worker_branch",
         return_value=(_FakeBranch("researcher"), "codex/gpt-5.5", None, False),
     ):
-        await _build_dag(env, "do stuff", plan_result, reactive_spec="off")
+        await _build_dag(env, "do stuff", plan_result, reactive_spec="off", max_spawn=20)
 
     assert db._node_metadata["unverifiable_since"] == 111.0
     assert db._node_metadata["unverifiable_count"] == 2
@@ -324,7 +405,7 @@ async def test_build_dag_deps_by_node_format(tmp_path):
         "lionagi.cli.orchestrate.flow.build_worker_branch",
         return_value=(_FakeBranch(), "codex/gpt-5.5", None, False),
     ):
-        dag_state = await _build_dag(env, "task", plan_result, reactive_spec="off")
+        dag_state = await _build_dag(env, "task", plan_result, reactive_spec="off", max_spawn=20)
 
     nid0, nid1 = dag_state.node_ids
     assert dag_state.deps_by_node[nid0] == []
@@ -381,7 +462,7 @@ async def test_build_dag_deps_follow_the_built_graph_not_the_declared_plan(tmp_p
         ),
         patch("lionagi.cli.orchestrate.flow._build_worker_operate_node", _diverging_build),
     ):
-        dag_state = await _build_dag(env, "task", plan_result, reactive_spec="off")
+        dag_state = await _build_dag(env, "task", plan_result, reactive_spec="off", max_spawn=20)
 
     nid0, nid1, nid2, nid3 = dag_state.node_ids
     assert dag_state.deps_by_node[nid0] == []
@@ -441,7 +522,7 @@ async def test_build_dag_reactive_all_grants_spawn(tmp_path):
         "lionagi.cli.orchestrate.flow.build_worker_branch",
         return_value=(_FakeBranch(), "codex/gpt-5.5", None, False),
     ):
-        dag_state = await _build_dag(env, "task", plan_result, reactive_spec="all")
+        dag_state = await _build_dag(env, "task", plan_result, reactive_spec="all", max_spawn=20)
 
     assert dag_state.reactive is True
     assert dag_state.spawn_roles is None
@@ -470,13 +551,13 @@ async def test_build_dag_pool_override_passes_to_worker(tmp_path):
         return _FakeBranch(role), model_override or "default", None, False
 
     with patch("lionagi.cli.orchestrate.flow.build_worker_branch", side_effect=fake_build):
-        await _build_dag(env, "task", plan_result, reactive_spec="off")
+        await _build_dag(env, "task", plan_result, reactive_spec="off", max_spawn=20)
 
     assert calls[0]["model_override"] == "codex/cheap"
     assert calls[1]["model_override"] == "codex/expensive"
 
 
-# ── Tests for _execute_dag ────────────────────────────────────────────────────
+# Tests for _execute_dag
 
 
 @pytest.mark.asyncio
@@ -1102,7 +1183,7 @@ async def test_execute_dag_drains_segment_metadata_write_before_returning(tmp_pa
     assert segment_writes[-1]["segments"], "segment entry for the completed node was not recorded"
 
 
-# ── Reactive spawn artifact enforcement through REAL teardown ─────────────────
+# Reactive spawn artifact enforcement through REAL teardown
 # Replaces the old interim regression test that pinned spawned artifacts as
 # permanently non-required (a spawned node used to have no way to learn its
 # own artifact dir before running). decorate_instruction now tells it that
@@ -1353,7 +1434,7 @@ async def test_execute_dag_segment_writer_merges_into_real_statedb(
     assert meta.get("unverifiable_count") == 2
 
 
-# ── Tests for _synthesize ─────────────────────────────────────────────────────
+# Tests for _synthesize
 
 
 @pytest.mark.asyncio
@@ -1501,7 +1582,7 @@ async def test_synthesize_includes_spawned_artifact_dir(tmp_path):
     assert str(tmp_path / "researcher") in instruction
 
 
-# ── Tests for _finalize_flow ──────────────────────────────────────────────────
+# Tests for _finalize_flow
 
 
 def test_finalize_flow_text_output(tmp_path):
@@ -1747,7 +1828,7 @@ def test_finalize_flow_agents_includes_spawned_node(tmp_path):
     assert spawned_agent["spawned"] is True
 
 
-# ── issue #2053: post-DAG finalize failures must not become DAG failures ──────
+# Post-DAG finalize failures must not become DAG failures.
 
 
 def test_finalize_flow_team_post_failure_still_returns_output_and_records_error(tmp_path):
@@ -1909,7 +1990,7 @@ def test_finalize_flow_artifact_write_failure_is_split_from_finalize_error(tmp_p
     assert len(finalize_calls) == 1
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# Helpers
 
 
 def _asyncio_coro(value):

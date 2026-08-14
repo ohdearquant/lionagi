@@ -25,7 +25,7 @@ from lionagi.cli.orchestrate._orchestration import OrchestrationEnv
 from lionagi.cli.orchestrate.flow import _run_flow
 from lionagi.state.db import StateDB
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ def _write_project_settings(project_dir: Path, on_terminal) -> None:
     (lionagi_dir / "settings.yaml").write_text(yaml.dump({"notify": {"on_terminal": on_terminal}}))
 
 
-# ── Tests ─────────────────────────────────────────────────────────────────────
+# Tests
 
 
 async def test_run_flow_notify_fires_with_correct_legacy_payload(

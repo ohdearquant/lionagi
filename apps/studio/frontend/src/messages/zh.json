@@ -116,7 +116,8 @@
       "busyPlaceholder": "操作台正在工作…",
       "hint": "按 Enter 发送 · Shift+Enter 换行",
       "send": "发送",
-      "sending": "正在发送…"
+      "sending": "正在发送…",
+      "autoAllow": "自动允许提案"
     },
     "message": {
       "you": "你",
@@ -376,6 +377,38 @@
       "creating": "Creating…",
       "create": "Create",
       "createError": "Could not create this server."
+    },
+    "filterHooks": "钩子",
+    "hooks": {
+      "title": "钩子",
+      "description": "在这里一次性定义可复用的命名钩子，再按 agent 装配:每个 agent 把库里的钩子绑定到事件上(工具调用前、提交提示词时、回复结束后)。同一份装配在任何 provider CLI 上都能运行。",
+      "libraryTitle": "钩子库",
+      "newHook": "新建钩子",
+      "emptyLibrary": "还没有定义钩子。创建一个后,所有 agent 都可以装配它。",
+      "emptyLibraryHint": "请先在库中定义钩子——装配是把库里的钩子绑定到事件上。",
+      "operatorTitle": "Operator 装配",
+      "operatorDescription": "Studio Operator 运行的钩子。Operator 不继承任何用户或项目设置,这里装配的钩子是它每轮唯一加载的钩子。",
+      "enabled": "启用",
+      "save": "保存",
+      "saving": "保存中…",
+      "savedNotice": "已保存——下一轮生效。",
+      "cancel": "取消",
+      "delete": "删除",
+      "fieldName": "名称",
+      "fieldDescription": "描述",
+      "fieldCommand": "命令",
+      "fieldTimeout": "超时(秒)",
+      "nameRequired": "钩子需要一个名称。",
+      "timeoutInvalid": "超时必须是数字。",
+      "noAttachments": "尚未挂载钩子。",
+      "attachmentHook": "钩子",
+      "attachmentOn": "于",
+      "attachmentEvent": "事件",
+      "attachmentMatcher": "匹配器",
+      "matcherPlaceholder": "匹配器(可选)",
+      "removeAttachment": "移除挂载",
+      "addAttachment": "挂载钩子",
+      "agentSectionTitle": "钩子"
     }
   },
   "history": {
@@ -445,6 +478,8 @@
       "statMessages": "消息",
       "statToolCalls": "工具调用",
       "statErrors": "错误",
+      "statTokensIn": "输入 Token",
+      "statTokensOut": "输出 Token",
       "statTopic": "主题",
       "statPlay": "剧目",
       "statPlaybook": "工作流",
@@ -487,11 +522,42 @@
       "progressRunning": "运行中",
       "progressFailed": "失败",
       "progressPending": "待处理",
+      "progressEscalated": "已升级",
       "progressElapsed": "已用时间",
       "expandGraph": "展开执行图",
       "collapseGraph": "收起执行图",
       "closeExpandedGraph": "关闭",
-      "nodeNoBranch": "未找到“{node}”对应的分支 — 此步骤尚未开始。"
+      "nodeNoBranch": "未找到“{node}”对应的分支 — 此步骤尚未开始。",
+      "viewGraph": "Graph",
+      "viewList": "List",
+      "viewToggleLabel": "Graph or list view",
+      "selectedNode": "Selected: {node}",
+      "controls": {
+        "pause": "Pause",
+        "pausePhasePausing": "Pausing…",
+        "pausePhasePaused": "Paused",
+        "resume": "Resume gate",
+        "steer": "Steer",
+        "steerSend": "Send",
+        "steerPlaceholder": "Message to steer the run…",
+        "confirmYes": "Confirm",
+        "confirmCancel": "Cancel",
+        "proposeFailed": "Could not propose the command.",
+        "confirmFailed": "Could not confirm the command.",
+        "confirm": {
+          "pause": "Confirm pause?",
+          "resume": "Confirm resume?",
+          "message": "Confirm sending this message?"
+        },
+        "reason": {
+          "run-terminal": "This run has ended.",
+          "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "already-pause-requested": "A pause has already been requested.",
+          "not-paused": "The run is not paused.",
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-executable-path": "目前还没有可以执行此操作的命令。"
+        }
+      }
     },
     "masterAria": "历史列表",
     "detailAria": "条目详情"
