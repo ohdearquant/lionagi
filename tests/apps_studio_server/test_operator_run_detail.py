@@ -421,7 +421,11 @@ async def test_run_detail_happy_path(db_path):
     assert result["runId"] == sid
     assert result["id"] == sid
     assert result["status"] == "completed"
-    assert result["effectiveHealth"] == "healthy"
+    # A terminal run's vacuous "healthy" is dropped from the projection:
+    # health is a liveness concept, and "healthy" beside a terminal status
+    # reads as a claim about the run's outcome. Only a pathological verdict
+    # (leftover locks) would still be projected here.
+    assert result["effectiveHealth"] is None
     assert result["project"] == "acme-research"
     assert result["totalCostUsd"] == 1.23
     assert result["task"] == ""

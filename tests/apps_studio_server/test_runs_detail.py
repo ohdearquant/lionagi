@@ -161,6 +161,24 @@ async def test_get_run_returns_all_required_keys(patched_runs_svc):
     assert not missing, f"Missing keys in get_run response: {missing}"
 
 
+async def test_get_run_populates_missing_branch_start_from_creation_time(patched_runs_svc):
+    svc, db_path = patched_runs_svc
+    sid = str(uuid.uuid4())
+    branch_id = f"{sid}-br"
+    await seed_session(db_path, session_id=sid, status="cancelled")
+    await seed_branch(db_path, branch_id=branch_id, session_id=sid)
+    async with StateDB(db_path) as db:
+        await db.update_branch(branch_id, status="cancelled", ended_at=278.1)
+
+    result = await svc.get_run(sid)
+
+    assert result is not None
+    branch = result["branches"][0]
+    assert branch["created_at"] == 200.0
+    assert branch["started_at"] == 200.0
+    assert branch["ended_at"] == 278.1
+
+
 # Test 4 — get_run maps session fields to correct response keys
 
 

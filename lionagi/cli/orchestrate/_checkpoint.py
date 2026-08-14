@@ -47,6 +47,7 @@ class CheckpointWriter:
     config: dict[str, Any]
     version: int = LEGACY_CHECKPOINT_VERSION
     compact_every: int = _DEFAULT_COMPACT_EVERY
+    max_spawn: int | None = None
     flow_context: dict[str, Any] = field(default_factory=dict)
     ops: dict[str, dict[str, Any]] = field(default_factory=dict)
     spawned: list[dict] = field(default_factory=list)
@@ -98,6 +99,8 @@ class CheckpointWriter:
             "spawned": self.spawned,
             "config": self.config,
         }
+        if self.max_spawn is not None:
+            state["max_spawn"] = self.max_spawn
         if self.version == CHECKPOINT_VERSION:
             state["generation"] = self._generation
             state["journal_seq"] = 0

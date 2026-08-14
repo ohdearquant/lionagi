@@ -814,6 +814,85 @@ def test_launch_vite_dev_passes_host_through_to_argv_and_returns_the_bound_url(
     assert url == "http://192.168.1.50:4001"
 
 
+def test_start_local_propagates_selected_backend_to_vite(tmp_path, monkeypatch):
+    """The ``--port`` value in scope at the CLI call site must reach the launcher."""
+    import lionagi.studio.cli as studio_mod
+
+    monkeypatch.setattr(studio_mod.shutil, "which", lambda name: "/usr/bin/node")
+    monkeypatch.setattr(studio_mod, "_ensure_apps_importable", lambda: True)
+    with (
+        patch("uvicorn.run"),
+        patch.object(studio_mod, "_launch_vite_dev", return_value=None) as launch,
+    ):
+        result = studio_mod._start_local("127.0.0.1", 45241, 4000, tmp_path, dev_mode=True)
+
+    assert result == 0
+    launch.assert_called_once_with(
+        tmp_path,
+        4000,
+        host="127.0.0.1",
+        api_host="127.0.0.1",
+        api_port=45241,
+    )
+
+
+def test_launch_vite_dev_passes_selected_backend_to_proxy_env(tmp_path, monkeypatch):
+    """The backend selected by ``li studio --dev`` must become Vite's proxy target."""
+    import lionagi.studio.cli as studio_mod
+
+    captured_env = {}
+
+    class FakeProc:
+        stdout = iter(["  ➜  Local:   http://127.0.0.1:4000/\n"])
+
+    def fake_popen(argv, **kwargs):
+        captured_env.update(kwargs["env"])
+        return FakeProc()
+
+    monkeypatch.delenv("STUDIO_API_URL", raising=False)
+    monkeypatch.setattr(studio_mod.subprocess, "Popen", fake_popen)
+
+    result = studio_mod._launch_vite_dev(
+        tmp_path,
+        4000,
+        host="127.0.0.1",
+        api_host="127.0.0.1",
+        api_port=45241,
+    )
+
+    assert result is not None
+    assert captured_env["STUDIO_API_URL"] == "http://127.0.0.1:45241"
+
+
+def test_launch_vite_dev_preserves_operator_proxy_override(tmp_path, monkeypatch):
+    """An explicit operator target wins over the CLI-selected host and port."""
+    import lionagi.studio.cli as studio_mod
+
+    captured_env = {}
+
+    class FakeProc:
+        stdout = iter(["  ➜  Local:   http://127.0.0.1:4000/\n"])
+
+    def fake_popen(argv, **kwargs):
+        captured_env.update(kwargs["env"])
+        return FakeProc()
+
+    operator_target = "http://127.0.0.1:46117"
+    monkeypatch.setenv("STUDIO_API_URL", operator_target)
+    monkeypatch.setattr(studio_mod.subprocess, "Popen", fake_popen)
+
+    result = studio_mod._launch_vite_dev(
+        tmp_path,
+        4000,
+        host="127.0.0.1",
+        api_host="127.0.0.1",
+        api_port=45241,
+    )
+
+    assert result is not None
+    assert captured_env["STUDIO_API_URL"] == operator_target
+
+
 def test_launch_vite_dev_warns_and_returns_none_when_npx_missing(tmp_path, monkeypatch, capsys):
     import lionagi.studio.cli as studio_mod
 
@@ -826,6 +905,60 @@ def test_launch_vite_dev_warns_and_returns_none_when_npx_missing(tmp_path, monke
 
     assert result is None
     assert "npx not found" in capsys.readouterr().err
+
+
+@requires_real_vite
+@pytest.mark.integration
+@pytest.mark.slow
+def test_vite_proxy_reaches_marker_on_cli_selected_non_default_port(monkeypatch):
+    """A real Vite proxy must read the daemon selected by ``--port``, not 8765."""
+    import json
+    import threading
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import lionagi.studio.cli as studio_mod
+
+    marker = "studio-dev-port-3136"
+
+    class MarkerHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"marker": marker}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            return
+
+    daemon = ThreadingHTTPServer(("127.0.0.1", 0), MarkerHandler)
+    daemon_thread = threading.Thread(target=daemon.serve_forever, daemon=True)
+    daemon_thread.start()
+    proc = None
+    monkeypatch.delenv("STUDIO_API_URL", raising=False)
+    try:
+        api_port = daemon.server_address[1]
+        assert api_port != 8765
+        result = studio_mod._launch_vite_dev(
+            _FRONTEND_DIR,
+            _free_port(),
+            host="127.0.0.1",
+            api_host="127.0.0.1",
+            api_port=api_port,
+        )
+        assert result is not None
+        proc, url = result
+        assert url is not None
+        with urllib.request.urlopen(f"{url}/health", timeout=5) as response:
+            payload = json.load(response)
+        assert payload == {"marker": marker}
+    finally:
+        _stop(proc)
+        daemon.shutdown()
+        daemon.server_close()
+        daemon_thread.join(timeout=5)
 
 
 @requires_real_vite

@@ -352,6 +352,7 @@ keeping the rest of the CLI evolvable.
 | 1 | Publish a command-ownership registry that classifies every top-level verb as local, service-backed, observation, machine-contract, or compatibility alias; acceptance: automated coverage fails when `lionagi/cli/main.py` registers an unclassified command. | S | (filled at issue-open time) |
 | 2 | Extract target resolution and terminal polling from private monitor/status helpers into a neutral CLI query service; acceptance: `wait`, `status`, and `monitor run` use the shared service while their public output remains byte-compatible. | M | (filled at issue-open time) |
 | 3 | Resolve the fixed-workflow entry-point gap by either registering `li flow run` or documenting the Studio workflow service as the sole public entry; acceptance: root help, command documentation, and the scheduling-control-plane ADR name the same surface. | M | (filled at issue-open time) |
+| 4 | Add parser-to-handler conformance coverage for every MCP-projectable option; acceptance: every projected non-presentation option is consumed by the selected handler or is absent/rejected, parser fingerprints and generated schemas update together, and `resume_on_timeout` is either implemented under a documented per-surface recovery contract or omitted from flow/fanout. | M | (filled at issue-open time) |
 
 ## Alternatives considered
 

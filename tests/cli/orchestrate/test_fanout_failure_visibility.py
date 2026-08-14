@@ -135,6 +135,33 @@ def _one_fails_one_completes(session):
     return run_dag
 
 
+def _workers_then_synthesis(session, synthesis_response: str):
+    """Complete every worker on pass one and return *synthesis_response* on pass two."""
+    passes: list = []
+
+    async def run_dag(graph, **kwargs):
+        passes.append(graph)
+        nodes = list(graph.internal_nodes.values())
+        if len(passes) == 1:
+            operation_results = {}
+            emits = []
+            for number, node in enumerate(nodes, start=1):
+                response = f"worker {number} result"
+                operation_results[node.id] = response
+                emits.append(_completed(session, node, response))
+            await asyncio.gather(*emits, return_exceptions=True)
+            return {"operation_results": operation_results}
+        synth = nodes[-1]
+        await asyncio.gather(
+            _completed(session, synth, synthesis_response, name="synthesis"),
+            return_exceptions=True,
+        )
+        return {"operation_results": {synth.id: synthesis_response}}
+
+    run_dag.passes = passes
+    return run_dag
+
+
 async def test_a_failed_worker_flips_terminal_status_and_renders_its_marker(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -272,3 +299,83 @@ async def test_a_failed_synthesis_is_marked_as_failed_not_as_empty(
     # And it got there through the engine, whose signal bridge is the only thing
     # that can carry a synthesis failure to the observer above.
     assert len(passes) == 2
+
+
+async def test_assignment_shaped_synthesis_fails_the_run_and_artifact(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    env, run, session = _fanout_env(tmp_path)
+    assignments = [TaskAssignment(task="first", assignee="worker")]
+    assignment_json = (
+        '```json\n{"assignments":[{"task":"write the answer",'
+        '"assignee":"synthesizer","depends_on":[]}]}\n```'
+    )
+    warnings: list[str] = []
+    _wire_fanout(
+        monkeypatch,
+        env,
+        assignments,
+        _workers_then_synthesis(session, assignment_json),
+        warnings=warnings,
+    )
+
+    output, terminal_status = await fanout_module._run_fanout(
+        "codex/model", "work", num_workers=1, with_synthesis=True
+    )
+
+    assert terminal_status == "failed"
+    assert FAILED_SYNTHESIS_MARKER in output
+    assert run.synthesis_path.read_text() == FAILED_SYNTHESIS_MARKER
+    assert any("assignment" in message.lower() for message in warnings)
+
+
+async def test_synthesis_uses_a_fresh_branch_not_the_planner_branch(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    env, _, session = _fanout_env(tmp_path)
+    assignments = [TaskAssignment(task="first", assignee="worker")]
+    _wire_fanout(
+        monkeypatch,
+        env,
+        assignments,
+        _workers_then_synthesis(session, "integrated result"),
+    )
+    synthesis_branches: list[Branch] = []
+    original_add = env.builder.add_operation
+
+    def capture_add(operation, **kwargs):
+        if kwargs.get("instruction") == "integrate these results":
+            synthesis_branches.append(kwargs["branch"])
+        return original_add(operation, **kwargs)
+
+    monkeypatch.setattr(env.builder, "add_operation", capture_add)
+
+    await fanout_module._run_fanout(
+        "codex/model",
+        "work",
+        num_workers=1,
+        with_synthesis=True,
+        synthesis_prompt="integrate these results",
+    )
+
+    assert len(synthesis_branches) == 1
+    assert synthesis_branches[0] is not env.orc_branch
+
+
+async def test_profile_routed_synthesis_label_uses_the_resolved_default_model(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    env, _, session = _fanout_env(tmp_path)
+    assignments = [TaskAssignment(task="first", assignee="worker")]
+    progress_messages: list[str] = []
+    _wire_fanout(
+        monkeypatch,
+        env,
+        assignments,
+        _workers_then_synthesis(session, "integrated result"),
+        progress=progress_messages,
+    )
+
+    await fanout_module._run_fanout("", "work", num_workers=1, with_synthesis=True)
+
+    assert any(message == "Phase 3: Synthesis [codex/model]..." for message in progress_messages)
