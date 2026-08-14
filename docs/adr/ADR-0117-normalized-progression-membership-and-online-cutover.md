@@ -210,6 +210,26 @@ position.
   and migration metadata, and commits atomically. Its work is proportional to the replacement
   input, which is the operation's declared payload, not to hidden prior history.
 - A failed bulk replacement leaves both representations and phase unchanged.
+
+**Phase after `set_progression`.** The operation is phase-preserving. It replaces content within
+the phase the progression is already in and never advances or regresses it, because a wholesale
+replacement is a statement about contents and carries no evidence about migration progress. What
+"resets allocator and migration metadata" means is therefore specific to the phase, and every
+downstream authority rule in D4 keeps reading the same row it read before:
+
+- absent or `json`: the JSON value is replaced. No allocator row, `frozen_count`, or digest exists
+  to reset, and none is created.
+- `dual`: both representations are replaced in the same transaction. Any partially copied prefix
+  and any recorded verification are discarded, and the backfill boundary restarts from the new
+  contents. The progression stays `dual` and must verify again before cutover.
+- `items`: item rows are replaced and the JSON value is replaced with the complete new collection.
+  `frozen_count` is set to the length of that collection and both digests are recomputed over the
+  new contents in the same transaction. This keeps `compat_json` exact: the frozen prefix is the
+  whole replacement and the relational tail is empty, so the adapter returns the replacement and
+  nothing else. Subsequent appends allocate above `frozen_count` and JSON is not extended again.
+- `blocked`: the progression stays `blocked`. A replacement does not demonstrate that the parity
+  failure or error which blocked it has been repaired, so automatic cutover stays refused until an
+  operator clears the state deliberately.
 - A blocked progression continues to serve from its last authoritative representation but refuses
   automatic cutover. Ordinary appends follow that authoritative representation and surface a
   metric; they do not guess at repair.
