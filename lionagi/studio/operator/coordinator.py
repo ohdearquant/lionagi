@@ -43,6 +43,57 @@ from .types import (
 
 _log = logging.getLogger(__name__)
 
+# The provider CLI's mirrored transcript row gets this display name once it is
+# attributed to its canonical Operator run; the mirror's own choice is the
+# transcript's first prompt, which for the Operator is its system prompt.
+_ENGINE_CHILD_NAME = "Operator · engine transcript"
+_ENGINE_LINK_RETRIES = 10
+_ENGINE_LINK_RETRY_INTERVAL = 3.0
+
+
+async def _link_engine_child(db: Any, session_uid: str, *, parent_run_id: str) -> bool:
+    """Stamp the mirrored CLI transcript as this run's engine child, retrying
+    while the mirror may not have minted the row yet. Borrows the turn's open
+    db handle; the caller settles this task before that handle closes."""
+    from lionagi.state.claude_mirror import link_engine_child_session
+
+    for attempt in range(_ENGINE_LINK_RETRIES):
+        if attempt:
+            await asyncio.sleep(_ENGINE_LINK_RETRY_INTERVAL)
+        try:
+            linked = await link_engine_child_session(
+                db,
+                session_uid=session_uid,
+                parent_run_id=parent_run_id,
+                name=_ENGINE_CHILD_NAME,
+            )
+        except Exception:  # noqa: BLE001 — attribution must never fail the turn
+            _log.exception("engine child link failed for session %s", session_uid[:8])
+            return False
+        if linked:
+            return True
+    return False
+
+
+async def _link_engine_child_once(session_uid: str, *, parent_run_id: str) -> bool:
+    """One last stamp attempt on a short-lived handle of our own, for turns
+    that end before the borrowed-handle retries could land."""
+    from lionagi.state.claude_mirror import link_engine_child_session
+    from lionagi.state.db import StateDB
+
+    db = StateDB()
+    await db.open()
+    try:
+        return await link_engine_child_session(
+            db,
+            session_uid=session_uid,
+            parent_run_id=parent_run_id,
+            name=_ENGINE_CHILD_NAME,
+        )
+    finally:
+        with suppress(Exception):
+            await db.close()
+
 
 class ApplicationTargetConflictError(RuntimeError):
     """The exact target approved by a human is no longer current."""
@@ -318,6 +369,8 @@ class OperatorCoordinator:
         started_at: float | None = None
         terminal_status = "completed"
         terminal_exc: BaseException | None = None
+        engine_link_task: asyncio.Task | None = None
+        engine_session_uid: str | None = None
         try:
             complete_turns = await self.store.list_complete_turn_frame_groups(
                 conversation_id,
@@ -495,6 +548,17 @@ class OperatorCoordinator:
                     session_id = event.payload.get("providerSessionId")
                     if isinstance(session_id, str) and session_id:
                         await self.store.set_provider_session_id(conversation_id, session_id)
+                        # The provider CLI's transcript is mirrored into the
+                        # store as an independent session, duplicating this
+                        # canonical run in every listing. Stamp the mirrored
+                        # row as this run's engine child so listings collapse
+                        # the pair; the mirror may not have minted the row
+                        # yet, so retry in the background for a bounded window.
+                        engine_session_uid = session_id
+                        if engine_link_task is None or engine_link_task.done():
+                            engine_link_task = asyncio.ensure_future(
+                                _link_engine_child(live["db"], session_id, parent_run_id=run_id)
+                            )
                     continue
                 if event.type == "ui_command":
                     effect = event.payload.get("effect")
@@ -606,6 +670,26 @@ class OperatorCoordinator:
             if run_branch is not None and run_dir is not None:
                 with suppress(Exception):
                     await write_resumable_operator_snapshot(run_branch, run_dir.branches_dir)
+            if engine_link_task is not None:
+                # Settle the stamp before teardown closes the db handle it
+                # borrowed. A turn that ends before the mirror mints the row
+                # must not wait out the retry window here: cancel, then make
+                # one last attempt on a short-lived handle of our own. A miss
+                # is cosmetic and self-heals on the conversation's next turn,
+                # which carries the same provider session id.
+                if not engine_link_task.done():
+                    engine_link_task.cancel()
+                with suppress(BaseException):
+                    await engine_link_task
+                if engine_session_uid is not None and not (
+                    engine_link_task.done()
+                    and not engine_link_task.cancelled()
+                    and engine_link_task.result()
+                ):
+                    with suppress(Exception):
+                        await _link_engine_child_once(
+                            engine_session_uid, parent_run_id=live["session_id"]
+                        )
             if live is not None:
                 from lionagi.cli._runs import teardown_agent_persist
 

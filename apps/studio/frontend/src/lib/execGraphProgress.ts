@@ -177,9 +177,19 @@ export function reconcileNodeStatuses(
   edges: GraphEdge[],
   statuses: NodeStatusMap | undefined,
   done: boolean,
+  failedNodeIds?: ReadonlySet<string>,
 ): NodeStatusMap {
   const base: NodeStatusMap = {};
   for (const id of nodeIds) base[id] = statuses?.[id] ?? "pending";
+  // The run's own failure evidence names the op(s) that killed it. That
+  // verdict outranks whatever lifecycle signal the dying engine managed to
+  // record — the named op often still reads "queued" or "running" because
+  // the engine never got to emit its terminal signal.
+  if (failedNodeIds) {
+    for (const id of nodeIds) {
+      if (failedNodeIds.has(id)) base[id] = "failed";
+    }
+  }
 
   const descendants = buildDescendantIndex(nodeIds, edges);
   const afterSuppression: NodeStatusMap = { ...base };

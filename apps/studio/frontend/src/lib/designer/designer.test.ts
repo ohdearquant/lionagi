@@ -104,7 +104,6 @@ function makeDraft(overrides: Partial<EngineDefDraft> = {}): EngineDefDraft {
     test_cmd: "",
     export_dir: "",
     description: "",
-    stages: {},
     ...overrides,
   };
 }
@@ -119,6 +118,7 @@ describe("buildDefBody", () => {
     expect(body.max_agents).toBeUndefined();
     expect(body.max_depth).toBeUndefined();
     expect(body.options).toBeUndefined();
+    expect(body).not.toHaveProperty("stages");
   });
 
   it("model included when non-blank", () => {
@@ -161,25 +161,5 @@ describe("buildDefBody", () => {
     const body = buildDefBody(makeDraft({ kind: "coding", test_cmd: "npm test" }));
     expect(body.kind).toBe("coding");
     expect((body.options as Record<string, string>)?.test_cmd).toBe("npm test");
-  });
-
-  it("stages always sent — empty map clears overrides on update", () => {
-    expect(buildDefBody(makeDraft()).stages).toEqual({});
-  });
-
-  it("stage overrides trimmed; blank entries dropped", () => {
-    const body = buildDefBody(
-      makeDraft({
-        stages: {
-          analyst: { role: " evaluator ", model: "" },
-          synthesize: { model: "claude_code/sonnet" },
-          researcher: { role: "  ", model: "" },
-        },
-      }),
-    );
-    expect(body.stages).toEqual({
-      analyst: { role: "evaluator" },
-      synthesize: { model: "claude_code/sonnet" },
-    });
   });
 });

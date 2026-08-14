@@ -49,7 +49,7 @@ PRE_EXISTING_TOOL_NAMES = frozenset(
         "run_findings",
         "cancel_run",
         "resume_run",
-        "rename_session",
+        "rename_run",
         "run_detail",
     }
 )
