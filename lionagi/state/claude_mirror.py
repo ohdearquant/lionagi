@@ -389,6 +389,38 @@ async def link_session_lineage(
     )
 
 
+async def link_engine_child_session(
+    db: StateDB,
+    *,
+    session_uid: str,
+    parent_run_id: str,
+    name: str,
+) -> bool:
+    """Attribute a mirrored CLI transcript to the run that spawned it as its engine.
+
+    An engine-backed actor (the Studio Operator, and any peer built the same
+    way) records one canonical run row itself, then shells out to a CLI whose
+    transcript the mirror ingests as an independent session — with a name
+    derived from the first prompt, which for these actors is their injected
+    system prompt. That second row duplicates the canonical one in every
+    listing. This stamps the mirrored row with a flat
+    ``engine_parent_run_id`` marker (listings exclude marked rows) and
+    replaces the prompt-derived name. Returns False if the mirror hasn't
+    created the row yet; callers retry for a bounded window, since which
+    side writes first is an unresolved race.
+    """
+    sid = session_db_id(session_uid)
+    existing = await db.get_session(sid)
+    if existing is None:
+        return False
+    await db.update_session(sid, name=name)
+    # Flat scalar on node_metadata, so the atomic merge applies (nested-object
+    # values would trip the merge's dialect-parity guard — see
+    # link_escalation_session below).
+    await db.merge_session_node_metadata(sid, {"engine_parent_run_id": parent_run_id})
+    return True
+
+
 async def link_escalation_session(
     db: StateDB,
     *,

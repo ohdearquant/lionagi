@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+
 from . import config, jobs, projection, roster
 from .verbs import (
     ABSENT,
@@ -485,6 +487,11 @@ def _resolve_prompt(args: dict[str, Any]) -> str | None:
     prompt = args.get("prompt")
     prompt_file = args.get("prompt_file")
     if prompt_file is None:
+        if prompt is not None and len(prompt) > MAX_SPEC_PROMPT_CHARS:
+            raise OpError(
+                "invalid_input",
+                f"prompt exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters",
+            )
         return prompt
     if prompt is not None:
         raise OpError("invalid_input", "pass prompt or prompt_file, not both")
@@ -498,9 +505,15 @@ def _resolve_prompt(args: dict[str, Any]) -> str | None:
             "so a relative path would resolve against the server's directory and not the run's",
         )
     try:
-        text = path.read_text()
+        with path.open() as prompt_stream:
+            text = prompt_stream.read(MAX_SPEC_PROMPT_CHARS + 1)
     except OSError as exc:
         raise OpError("invalid_input", f"could not read prompt_file {path}: {exc}") from exc
+    if len(text) > MAX_SPEC_PROMPT_CHARS:
+        raise OpError(
+            "invalid_input",
+            f"prompt_file content exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters",
+        )
     if not text.strip():
         raise OpError("invalid_input", f"prompt_file is empty: {path}")
     return text

@@ -349,6 +349,10 @@ async def reconcile_status(
             if reactivating
             else None
         ),
+        # A reactivated row is running again: the terminal stamps must not
+        # survive, or every listing reads it as "running yet ended days ago"
+        # and elapsed-time surfaces keep growing from the stale end mark.
+        extra_fields=({"ended_at": None, "duration_ms": None} if reactivating else None),
     )
     return bool(updated) and not live
 

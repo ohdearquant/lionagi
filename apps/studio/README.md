@@ -39,6 +39,7 @@ All variables are optional; defaults are shown.
 | `LIONAGI_STUDIO_MIRROR_CLAUDE_ROOT` | *(unset)* | Explicit Claude projects source root |
 | `LIONAGI_STUDIO_MIRROR_CODEX_ROOT` | *(unset)* | Explicit Codex sessions source root |
 | `LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT` | automatic | Read `~/.claude`/`~/.codex`; on by default only for the conventional `~/.lionagi` profile |
+| `STUDIO_API_URL` | selected `--host` / `--port` in dev mode | Explicit Vite proxy target; an operator-supplied value takes precedence over CLI flags |
 | `CORS_ORIGINS` | `localhost:5173,localhost:3000` | Comma-separated allowed browser origins |
 
 Selecting a different `LIONAGI_HOME` creates an isolated Studio profile: its
@@ -63,7 +64,8 @@ li studio --docker # auto-pulls ghcr.io/ohdearquant/lion-studio; UI + API on :87
 **Dev mode (hot-reload)**:
 
 ```bash
-li studio --dev    # Vite dev server on :3000 + uvicorn on :8765; Vite proxies /api
+li studio --dev              # Vite on :3000 + uvicorn on :8765
+li studio --dev --port 45241 # Vite proxies /api, /health, and /openapi.json to :45241
 ```
 
 **Backend only** (e.g. desktop shell):

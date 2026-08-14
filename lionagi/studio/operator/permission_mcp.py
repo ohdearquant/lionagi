@@ -96,10 +96,17 @@ async def request_permission(arguments: dict[str, Any]) -> dict[str, Any]:
         if status in {"confirmed", "succeeded"}:
             return {"behavior": "allow", "updatedInput": tool_input}
         if status in {"cancelled", "expired", "failed", "conflict"}:
-            return {
-                "behavior": "deny",
-                "message": "The Lion Studio operator denied this tool request",
-            }
+            # Name the deciding party precisely: the human at the Studio
+            # prompt, not "the operator" (which is what the model reading
+            # this transcript calls itself). An expiry is nobody's decision.
+            if status == "expired":
+                message = (
+                    "The permission request expired before the human at the "
+                    "Studio prompt decided; raise it again if still needed"
+                )
+            else:
+                message = "The human at the Studio permission prompt declined this tool request"
+            return {"behavior": "deny", "message": message}
         await asyncio.sleep(0.1)
 
 
@@ -154,10 +161,15 @@ async def _dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
             }
         except Exception:  # noqa: BLE001
             # The provider gets a stable denial; local paths/DB errors are never
-            # reflected into its prompt or the browser.
+            # reflected into its prompt or the browser. The protocol has no
+            # third verdict, so the message carries the distinction: this is
+            # an outage, not a human "no" — retrying later is legitimate.
             decision = {
                 "behavior": "deny",
-                "message": "Studio permission service is unavailable",
+                "message": (
+                    "Studio permission service is temporarily unavailable; "
+                    "this is not a human denial — retry shortly"
+                ),
             }
             return {
                 "jsonrpc": "2.0",

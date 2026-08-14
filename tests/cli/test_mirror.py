@@ -454,6 +454,55 @@ async def test_link_escalation_session_overwrites_orphan_attribution(
 
 
 @pytest.mark.asyncio
+async def test_link_engine_child_session_stamps_marker_and_name(
+    temp_db_path: Path,
+) -> None:
+    """An engine-backed actor's CLI transcript is mirrored with a name derived
+    from its first prompt (the actor's own system prompt). The link write must
+    replace that name and stamp the flat parent marker listings filter on."""
+    from lionagi.state.claude_mirror import link_engine_child_session
+
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=_conversation(),
+            tool_names={},
+            name="You are the resident Operator for Lion Studio. Be concise",
+            status="running",
+        )
+        linked = await link_engine_child_session(
+            db,
+            session_uid=SID,
+            parent_run_id="parent-canonical-run",
+            name="Operator · engine transcript",
+        )
+        after = await db.get_session(session_db_id(SID))
+
+    assert linked is True
+    assert after["name"] == "Operator · engine transcript"
+    assert after["node_metadata"]["engine_parent_run_id"] == "parent-canonical-run"
+
+
+@pytest.mark.asyncio
+async def test_link_engine_child_session_missing_row_returns_false(
+    temp_db_path: Path,
+) -> None:
+    """Before the mirror mints the row there is nothing to stamp; the caller
+    retries on False rather than treating it as done."""
+    from lionagi.state.claude_mirror import link_engine_child_session
+
+    async with StateDB() as db:
+        linked = await link_engine_child_session(
+            db,
+            session_uid=SID,
+            parent_run_id="parent-canonical-run",
+            name="Operator · engine transcript",
+        )
+    assert linked is False
+
+
+@pytest.mark.asyncio
 async def test_link_escalation_session_leaves_project_alone_when_run_project_unknown(
     temp_db_path: Path,
 ) -> None:
@@ -698,6 +747,31 @@ async def test_reconcile_reactivates_completed_when_fresh(temp_db_path: Path) ->
     assert before["status"] == "completed"
     assert after["status"] == "running"
     assert settled is False
+
+
+@pytest.mark.asyncio
+async def test_reconcile_reactivation_clears_terminal_stamps(temp_db_path: Path) -> None:
+    """A reactivated session is running again: its terminal ended_at and
+    duration_ms must not survive the flip, or listings read "running yet
+    ended days ago" and elapsed-time surfaces keep growing off the stale
+    end mark."""
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=SID, events=_conversation(), tool_names={}, status="running"
+        )
+        row = await db.get_session(session_db_id(SID))
+        lm = row["last_message_at"]
+        # Go idle far past the window: terminal write stamps ended_at.
+        await reconcile_session_status(db, SID, now=lm + 10_000, live_window=300)
+        ended = await db.get_session(session_db_id(SID))
+        assert ended["status"] == "completed"
+        assert ended["ended_at"] is not None
+        # Transcript resumes within the window of the last message.
+        await reconcile_session_status(db, SID, now=lm + 1, live_window=300)
+        after = await db.get_session(session_db_id(SID))
+    assert after["status"] == "running"
+    assert after["ended_at"] is None
+    assert after["duration_ms"] is None
 
 
 @pytest.mark.asyncio

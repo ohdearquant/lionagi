@@ -266,10 +266,14 @@ class OperationGraphBuilder:
         return self.graph
 
     def get_node_by_reference(self, reference_id: str):
-        for op in self._operations.values():
-            if op.metadata.get("reference_id") == reference_id:
-                return op
-        return None
+        matches = [
+            op
+            for op in self.graph.internal_nodes.values()
+            if getattr(op, "metadata", {}).get("reference_id") == reference_id
+        ]
+        if len(matches) > 1:
+            raise OperationError(f"Duplicate reference_id {reference_id!r}")
+        return matches[0] if matches else None
 
     def visualize_state(self) -> dict[str, Any]:
         expansions = {}

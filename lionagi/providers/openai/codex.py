@@ -496,6 +496,23 @@ class CodexCodeRequest(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _reject_ambiguous_approval_policy(self):
+        if (
+            self.ask_for_approval
+            and not self.bypass_approvals
+            and not self.full_auto
+            and any(
+                key == "approval_policy" or key.startswith("approval_policy.")
+                for key in self.config_overrides
+            )
+        ):
+            raise ValueError(
+                "ask_for_approval cannot be combined with config_overrides entries "
+                "for approval_policy; choose one approval policy source"
+            )
+        return self
+
     # ── workspace path ────────────────────────────────────────────
 
     def cwd(self) -> Path:
@@ -518,10 +535,20 @@ class CodexCodeRequest(BaseModel):
         if self.bypass_approvals:
             args.append("--dangerously-bypass-approvals-and-sandbox")
         elif self.full_auto:
-            args.append("--full-auto")
+            # Codex 0.147.0 removed `--full-auto`, turning the earlier deprecation
+            # warning into a hard argv error. Its deprecation notice prescribes
+            # `--sandbox workspace-write`, which keeps the same sandbox posture.
+            args.extend(["--sandbox", "workspace-write"])
         else:
             if self.ask_for_approval:
-                args.extend(["-a", self.ask_for_approval])
+                # The config key has the same mode vocabulary as the former CLI
+                # flag and remains available in builds that no longer expose it.
+                args.extend(
+                    [
+                        "-c",
+                        f"approval_policy={toml_override_value(self.ask_for_approval)}",
+                    ]
+                )
             if self.sandbox:
                 args.extend(["-s", self.sandbox])
 
