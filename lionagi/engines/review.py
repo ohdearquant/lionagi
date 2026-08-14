@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from functools import lru_cache
 from typing import Any
 
 import anyio
@@ -15,7 +16,6 @@ from pydantic import Field
 from lionagi.casts.emission import Finding, Verdict
 from lionagi.ln import gather as ln_gather
 from lionagi.ln.concurrency._compat import (
-    ExceptionGroup,
     get_exception_group_exceptions,
     is_exception_group,
 )
@@ -41,21 +41,45 @@ __all__ = (
 _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
     anyio.ClosedResourceError,
     anyio.BrokenResourceError,
+    # A closed MCP response stream surfaces here: the SDK reads replies with
+    # `await response_stream_reader.receive()`, which raises EndOfStream rather
+    # than ClosedResourceError once the peer is gone.
+    anyio.EndOfStream,
 )
 
-try:  # mcp is an optional extra ([mcp]); absent installs simply have no McpError to catch.
-    from mcp.shared.exceptions import McpError
-except ImportError:
-    pass
-else:
-    _TRANSPORT_ERRORS = (*_TRANSPORT_ERRORS, McpError)
-
 _ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_ERRORS)
+
+
+@lru_cache(maxsize=1)
+def _mcp_error_type() -> type[BaseException] | None:
+    """Return mcp's ``McpError``, or ``None`` when the optional extra is absent.
+
+    Resolved on first use rather than at module import. ``mcp`` is an optional
+    extra, importing it pulls the whole package in, and every process that
+    touches the engines package would pay that cost to obtain a type only a
+    transport failure ever consults.
+
+    A missing ``mcp`` is a normal configuration and yields ``None``. An ``mcp``
+    that is present but fails to import is a broken installation and raises, so
+    it cannot masquerade as "the extra is not installed" and silently disable
+    the isolation this module depends on.
+    """
+    try:
+        from mcp.shared.exceptions import McpError
+    except ModuleNotFoundError as exc:
+        if (exc.name or "").partition(".")[0] != "mcp":
+            # mcp itself imported; something it depends on is missing.
+            raise
+        return None
+    return McpError
 
 
 def _is_all_isolated_failure(exc: BaseException) -> bool:
     """True iff every leaf is a per-dimension provider/transport failure, recursing into nested groups."""
     if isinstance(exc, _ISOLATED_ERRORS):
+        return True
+    mcp_error = _mcp_error_type()
+    if mcp_error is not None and isinstance(exc, mcp_error):
         return True
     if is_exception_group(exc):
         return all(_is_all_isolated_failure(e) for e in get_exception_group_exceptions(exc))
@@ -218,11 +242,29 @@ def _verdict_instruction(
     issues: list,
     verifications: list,
     clean: list[str] | None = None,
+    failed: list[tuple[str, str]] | None = None,
 ) -> str:
+    # A dimension whose reviewer died is not a dimension that was reviewed.
+    # Naming it under "Dimensions reviewed" asserts coverage that does not
+    # exist, and since a dead reviewer emits no issues, its silence otherwise
+    # reads exactly like a clean result.
+    failed = list(failed or [])
+    failed_names = {name for name, _ in failed}
+    reviewed = [d for d in dimensions if d not in failed_names]
     parts = [
         "Issue a single ReviewVerdict over the artifact from the issues below.\n",
-        f"Dimensions reviewed: {', '.join(dimensions)}\n",
+        f"Dimensions reviewed: {', '.join(reviewed) if reviewed else '(none)'}\n",
     ]
+    if failed:
+        parts.append(
+            "\nDID NOT RUN: "
+            + "; ".join(f"{name} ({err})" for name, err in failed)
+            + "\nThese dimensions failed. They produced no findings because they "
+            "did not execute, not because the artifact is clean along them, so "
+            "their silence is not evidence. Do not issue APPROVE on coverage "
+            "that is missing: name the gap in the rationale and choose a "
+            "verdict that reflects what was actually reviewed.\n"
+        )
     if clean:
         parts.append(f"Affirmed clean: {', '.join(dict.fromkeys(clean))}\n")
     parts.append(f"\n# Issues ({len(issues)})")
@@ -316,9 +358,13 @@ class ReviewEngine(Engine):
         # failures are isolated per dimension so completed sibling evidence is
         # still usable; run-wide budget exhaustion and cancellation keep their
         # existing structured-concurrency semantics.
+        failed: list[tuple[str, str]] = []
         try:
             await ln_gather(
-                *(self._review_dimension_isolated(run, artifact, dimension) for dimension in dims)
+                *(
+                    self._review_dimension_isolated(run, artifact, dimension, failed)
+                    for dimension in dims
+                )
             )
         except BaseException:
             # Cancel any verifier tasks spawned before the failure so no
@@ -335,7 +381,7 @@ class ReviewEngine(Engine):
         # executed evidence rather than absence.
         if self.verify_clean and not run.by_type(VerifyResult):
             await self._verify_clean(run, artifact, dims)
-        return await self._verdict(run, artifact, dims)
+        return await self._verdict(run, artifact, dims, failed)
 
     # -- reactions ------------------------------------------------------------
 
@@ -346,11 +392,17 @@ class ReviewEngine(Engine):
     # -- stages ---------------------------------------------------------------
 
     async def _review_dimension_isolated(
-        self, run: EngineRun, artifact: str, dimension: str
+        self, run: EngineRun, artifact: str, dimension: str, failed: list[tuple[str, str]]
     ) -> None:
         try:
             await self._review_dimension(run, artifact, dimension)
-        except (*_ISOLATED_ERRORS, ExceptionGroup) as exc:
+        except Exception as exc:
+            # Catch broadly and let the predicate decide, rather than naming the
+            # isolated types in the clause: McpError is resolved lazily and so
+            # cannot appear in a static tuple here. Anything the predicate does
+            # not claim is re-raised unchanged. Cancellation derives from
+            # BaseException and is therefore never caught.
+            #
             # A group reaches here when the dimension's own task group collects
             # several transport failures at once. Isolate only when every leaf
             # is one: a mixed group carries something this stage has no claim
@@ -364,6 +416,11 @@ class ReviewEngine(Engine):
                 dimension=dimension,
                 error_type=error_type,
             )
+            # Record it for the verdict stage as well as the run's degrade
+            # markers. Synthesis is otherwise handed the full requested
+            # dimension list and no indication that one of them never ran,
+            # which reads as "reviewed and found nothing".
+            failed.append((dimension, error_type))
             marker = f"review-{dimension} ({error_type})"
             if marker not in run._emission_failures:
                 run._emission_failures.append(marker)
@@ -440,12 +497,22 @@ class ReviewEngine(Engine):
                 retries=self.repair_retries,
             )
 
-    async def _verdict(self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]) -> str:
+    async def _verdict(
+        self,
+        run: EngineRun,
+        artifact: str,
+        dimensions: tuple[str, ...],
+        failed: list[tuple[str, str]] | None = None,
+    ) -> str:
         issues = run.by_type(IssueFound)
         verifications = run.by_type(VerifyResult)
         clean = [c.dimension for c in run.by_type(DimensionClean)]
         run.notify(
-            "verdict", issues=len(issues), verifications=len(verifications), clean=len(clean)
+            "verdict",
+            issues=len(issues),
+            verifications=len(verifications),
+            clean=len(clean),
+            failed=len(failed or []),
         )
         synth = await run.make_agent(
             self.synthesis_role,
@@ -455,6 +522,8 @@ class ReviewEngine(Engine):
             exempt=True,
         )
         res = await synth.operate(
-            instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
+            instruction=_verdict_instruction(
+                artifact, dimensions, issues, verifications, clean, failed
+            )
         )
         return str(res) if res is not None else ""

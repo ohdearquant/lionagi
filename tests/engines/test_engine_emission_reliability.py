@@ -77,8 +77,9 @@ class _PartiallyFailingReview(ReviewEngine):
         await asyncio.sleep(0.05)
         self.healthy_finished.set()
 
-    async def _verdict(self, run, artifact: str, dimensions: tuple[str, ...]) -> str:
+    async def _verdict(self, run, artifact: str, dimensions: tuple[str, ...], failed=None) -> str:
         assert self.healthy_finished.is_set()
+        self.failed_seen = list(failed or [])
         return "healthy dimension survived"
 
 
@@ -117,8 +118,9 @@ class _TransportFailingReview(ReviewEngine):
         await asyncio.sleep(0.05)
         self.healthy_finished.set()
 
-    async def _verdict(self, run, artifact: str, dimensions: tuple[str, ...]) -> str:
+    async def _verdict(self, run, artifact: str, dimensions: tuple[str, ...], failed=None) -> str:
         assert self.healthy_finished.is_set()
+        self.failed_seen = list(failed or [])
         return "healthy dimension survived"
 
 
@@ -135,6 +137,9 @@ def _mcp_error(message: str) -> BaseException:
     [
         (lambda: anyio.ClosedResourceError(), "ClosedResourceError"),
         (lambda: anyio.BrokenResourceError(), "BrokenResourceError"),
+        # The MCP SDK reads replies with `await response_stream_reader.receive()`,
+        # which raises EndOfStream (not ClosedResourceError) once the peer closes.
+        (lambda: anyio.EndOfStream(), "EndOfStream"),
         (
             lambda: ExceptionGroup(
                 "unhandled errors in a TaskGroup",
@@ -205,3 +210,97 @@ def test_isolation_predicate_refuses_a_group_carrying_a_non_transport_leaf() -> 
         [ExceptionGroup("inner", [anyio.ClosedResourceError(), EngineBudgetError("exhausted")])],
     )
     assert _is_all_isolated_failure(nested_mixed) is False
+
+
+def test_verdict_prompt_refuses_to_present_a_dead_dimension_as_reviewed() -> None:
+    """A dimension whose reviewer died must not be listed as reviewed.
+
+    Isolating a transport failure keeps the run alive, but a dead reviewer
+    emits no issues, and an unqualified "Dimensions reviewed: ... security ..."
+    tells synthesis that security WAS reviewed and found nothing. That is a
+    fail-open review gate: the strongest evidence for approval becomes the
+    silence of a dimension that never executed.
+    """
+    from lionagi.engines.review import _verdict_instruction
+
+    prompt = _verdict_instruction(
+        "artifact",
+        ("correctness", "security"),
+        issues=[],
+        verifications=[],
+        clean=["correctness"],
+        failed=[("security", "McpError")],
+    )
+
+    reviewed_line = next(
+        line for line in prompt.splitlines() if line.startswith("Dimensions reviewed:")
+    )
+    assert "security" not in reviewed_line
+    assert "correctness" in reviewed_line
+
+    assert "DID NOT RUN: security (McpError)" in prompt
+    assert "not evidence" in prompt
+    # The instruction must actively steer away from approving on absent
+    # coverage, not merely mention that something failed.
+    assert "Do not issue APPROVE" in prompt
+
+
+def test_verdict_prompt_is_unchanged_when_every_dimension_ran() -> None:
+    """The all-healthy prompt keeps its previous shape: no empty warning block."""
+    from lionagi.engines.review import _verdict_instruction
+
+    prompt = _verdict_instruction(
+        "artifact",
+        ("correctness", "security"),
+        issues=[],
+        verifications=[],
+        clean=["correctness", "security"],
+    )
+
+    assert "Dimensions reviewed: correctness, security" in prompt
+    assert "DID NOT RUN" not in prompt
+
+
+def test_a_broken_mcp_install_is_not_silently_treated_as_absent(monkeypatch) -> None:
+    """An mcp that fails to import must raise, not disable isolation quietly.
+
+    Reporting a broken install as "extra not present" would silently drop
+    McpError out of the isolated set, and the first symptom would be a run
+    dying with no verdict, far from the cause.
+    """
+    import builtins
+
+    from lionagi.engines import review as review_mod
+
+    review_mod._mcp_error_type.cache_clear()
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mcp.shared.exceptions":
+            # mcp itself is importable; one of ITS dependencies is missing.
+            raise ModuleNotFoundError("No module named 'pydantic_core'", name="pydantic_core")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ModuleNotFoundError):
+        review_mod._mcp_error_type()
+    review_mod._mcp_error_type.cache_clear()
+
+
+def test_a_missing_mcp_extra_is_a_normal_configuration(monkeypatch) -> None:
+    """The other arm: mcp genuinely absent yields None rather than raising."""
+    import builtins
+
+    from lionagi.engines import review as review_mod
+
+    review_mod._mcp_error_type.cache_clear()
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mcp.shared.exceptions":
+            raise ModuleNotFoundError("No module named 'mcp'", name="mcp")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert review_mod._mcp_error_type() is None
+    review_mod._mcp_error_type.cache_clear()
