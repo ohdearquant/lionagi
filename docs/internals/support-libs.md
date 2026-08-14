@@ -73,7 +73,9 @@ then fails loud with `WorkerLivenessError` instead of hanging as a zombie
 "running" leg. `0` disables the watchdog (deterministic / test runs).
 
 `LIONAGI_WORKER_IDLE_TIMEOUT` is the between-chunk idle window for
-early-streaming CLI turns (default 300 seconds). It resets after every chunk.
+early-streaming CLI turns (default 600 seconds). It resets after every chunk.
+The window has to clear the worker's slowest single tool call, not its slowest
+chunk, because a worker emits nothing for the duration of any tool it runs.
 A miss after partial output raises `WorkerLivenessError` with reason
 `worker.stream_idle` without retrying the subprocess. `0` disables this window.
 Buffered transports receive neither default watchdog because silence is their
