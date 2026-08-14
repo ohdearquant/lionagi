@@ -64,7 +64,8 @@ function Harness({ onCall }: { onCall: () => void }) {
     <HistorySection
       rows={all}
       filter="all"
-      onFilter={() => {}}
+      kind={null}
+      onKind={() => {}}
       sort="recent"
       onSort={() => {}}
       selectedId={null}

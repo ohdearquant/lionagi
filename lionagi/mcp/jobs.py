@@ -1062,14 +1062,14 @@ def submit(
         mcp_config_source: str | None = None
         mcp_config_reason: str | None = None
         mcp_servers: dict[str, Any] | None = None
-        # Servers resolved for the run's workers, by name. `[]` means this run
-        # settled the question (caller disabled MCP, or a found config declares
-        # no servers) — `None` means it never resolved a set. This reports what
-        # was RESOLVED, not what the child's provider then managed to start.
-        mcp_config_servers: list[str] | None = None
+        # Server names declared in the config snapshot lionagi controls. `[]`
+        # means this layer settled its declaration as empty; `None` means it
+        # never inspected a set. Providers may merge their own global config,
+        # so this is deliberately not called the effective server set.
+        declared_mcp_servers: list[str] | None = None
         if no_mcp_config:
             mcp_config_reason = "mcp_disabled_by_caller"
-            mcp_config_servers = []
+            declared_mcp_servers = []
         elif mcp_config is not None:
             # Caller named the file; their flag is already on the line, so no
             # snapshot is taken or prepended (a second --mcp-config would let the
@@ -1098,13 +1098,13 @@ def submit(
                     # A settled "none" (as opposed to "no config found", which
                     # the resolver reports with the same null server map — only
                     # the reason string tells the two apart).
-                    mcp_config_servers = []
+                    declared_mcp_servers = []
                     mcp_config_source = str(resolution.source) if resolution.source else None
             else:
                 mcp_servers = resolution.servers
                 mcp_config_source = str(resolution.source) if resolution.source else None
                 mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
-                mcp_config_servers = sorted(
+                declared_mcp_servers = sorted(
                     mcp_servers
                 )  # readable order; child reads the snapshot file, not this list
                 options = ["--mcp-config", mcp_config_path, *options]
@@ -1174,7 +1174,9 @@ def submit(
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
-        "mcp_config_servers": mcp_config_servers,
+        "declared_mcp_servers": declared_mcp_servers,
+        # Deprecated response/record alias; keep equal to the truthful name.
+        "mcp_config_servers": declared_mcp_servers,
         "submitted_at": _now_iso(),
         "finished_at": None,
         "status": "running",
@@ -1250,7 +1252,8 @@ def submit(
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
-        "mcp_config_servers": mcp_config_servers,
+        "declared_mcp_servers": declared_mcp_servers,
+        "mcp_config_servers": declared_mcp_servers,
         "notify_sender": notify_sender,
     }
 
@@ -1631,6 +1634,12 @@ def status(run_id: str) -> dict[str, Any]:
     notify_delivery = (job or {}).get("notify_delivery")
     if notify_delivery is None and derived["terminal"]:
         notify_delivery = {"attempted": False}
+    declared_mcp_servers = (job or {}).get("declared_mcp_servers")
+    if job is not None and "declared_mcp_servers" not in job:
+        # Backfill the accurate name from records written before it existed.
+        # The old field is a deprecated alias for the same declared snapshot,
+        # never evidence of what a provider merged or actually loaded.
+        declared_mcp_servers = job.get("mcp_config_servers")
     persistence_degraded_reason = (
         manifest.get(_PERSISTENCE_DEGRADED_REASON_FIELD) if isinstance(manifest, dict) else None
     )
@@ -1662,7 +1671,8 @@ def status(run_id: str) -> dict[str, Any]:
         "mcp_config": (job or {}).get("mcp_config"),
         "mcp_config_source": (job or {}).get("mcp_config_source"),
         "mcp_config_reason": (job or {}).get("mcp_config_reason"),
-        "mcp_config_servers": (job or {}).get("mcp_config_servers"),
+        "declared_mcp_servers": declared_mcp_servers,
+        "mcp_config_servers": declared_mcp_servers,
         _PERSISTENCE_DEGRADED_REASON_FIELD: persistence_degraded_reason,
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
@@ -2352,7 +2362,7 @@ async def wait(
     }
 
 
-def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
+def mark_terminal(run_id: str, cli_status: str, *, reason_code: str | None = None) -> WriteResult:
     """Record a terminal status for *run_id* (called by the CLI notify hook).
 
     The CLI's terminal status is trusted and recorded verbatim, never matched
@@ -2372,6 +2382,8 @@ def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
             return WriteResult(job, guard.state)
         job["status"] = cli_status
         job["cli_status"] = cli_status
+        if reason_code:
+            job["reason_code"] = reason_code
         job["finished_at"] = _now_iso()
         # The hook fires as the run ends, so this is the end as it happened.
         job["finished_at_precision"] = FINISHED_AT_OBSERVED

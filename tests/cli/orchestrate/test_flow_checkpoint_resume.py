@@ -1983,7 +1983,9 @@ async def test_resume_missing_artifact_still_flips_status_to_failed(
         "lionagi.cli.orchestrate.flow.build_worker_branch",
         return_value=(Branch(name="worker"), "claude", None, False),
     ):
-        dag_state = await _build_dag(env, "write the brief", plan_result, reactive_spec="off")
+        dag_state = await _build_dag(
+            env, "write the brief", plan_result, reactive_spec="off", max_spawn=20
+        )
 
     checkpoint_ops = {
         "worker": {"agent_id": "worker", "status": "completed", "response": "done previously"}
