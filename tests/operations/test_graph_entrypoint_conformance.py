@@ -203,13 +203,14 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
         symbol="lionagi.cli.orchestrate.flow._synthesize",
         location=("lionagi/cli/orchestrate/flow.py", "_synthesize"),
         role="adapter",
-        expected_target="Session.flow",
+        expected_target="EngineRun.run_dag",
         persistence="inherited",
-        reason="CLI flow synthesis phase submits the final synthesis op directly through Session.flow "
-        "rather than the engine bridge; persistence setup is shared with cli-o-flow-exec",
+        reason="CLI flow synthesis phase; the final synthesis op is driven through the same "
+        "EngineRun.run_dag bridge as cli-o-flow-exec rather than being submitted directly to "
+        "Session.flow; persistence setup is shared with cli-o-flow-exec",
         delegation_test=(
             "tests/operations/test_graph_entrypoint_conformance.py::"
-            "test_synthesize_calls_env_session_flow_with_builder_graph"
+            "test_synthesize_calls_execution_engine_with_builder_graph"
         ),
     ),
     GraphSurface(
