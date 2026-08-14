@@ -147,14 +147,18 @@ async def create_agent(
     _apply_permissions(spec)
     _register_tools(branch, spec)
     _register_providers(branch, spec)
+    native_mcp_servers: frozenset[str] = frozenset()
     if resolved_mcp_servers is Unset:
-        await _load_mcp(branch, spec, trust_project_settings=trust_project_settings)
+        native_mcp_servers = await _load_mcp(
+            branch, spec, trust_project_settings=trust_project_settings
+        )
     _forward_mcp_to_cli_request(
         branch,
         spec,
         trust_project_settings=trust_project_settings,
         resolved_servers=resolved_mcp_servers,
         resolved_servers_explicit=resolved_mcp_explicit,
+        native_mcp_servers=native_mcp_servers,
     )
     _wire_external_hooks(branch, spec)
 
@@ -544,10 +548,10 @@ async def _load_mcp(
     spec: AgentSpec,
     *,
     trust_project_settings: bool = False,
-) -> None:
+) -> frozenset[str]:
     mcp_path = _resolve_mcp_path(spec, trust_project_settings=trust_project_settings)
     if mcp_path is None:
-        return
+        return frozenset()
 
     from lionagi.service.connections.mcp_wrapper import MCPSecurityConfig
 
@@ -572,6 +576,8 @@ async def _load_mcp(
                     f"{tool_name!r}, but the branch registry does not contain it"
                 )
             _attach_hooks(tool, spec, tool_name)
+
+    return frozenset(loaded)
 
 
 _MCP_FORWARDING_PROVIDERS = frozenset({*_CLAUDE_PROVIDER_NAMES, "codex"})
@@ -713,6 +719,7 @@ def _forward_mcp_to_cli_request(
     trust_project_settings: bool = False,
     resolved_servers: dict[str, Any] | None | UnsetType = Unset,
     resolved_servers_explicit: bool = False,
+    native_mcp_servers: Collection[str] = (),
 ) -> None:
     """Forward an MCP server set into the CLI provider's own request.
 
@@ -745,19 +752,28 @@ def _forward_mcp_to_cli_request(
             asked_for_servers=asked_for_servers,
         )
         if has_config:
-            import logging
-
-            # Scope the claim to what this call can see: one branch, whose
-            # provider was resolved from this one spec. Sibling branches in the
-            logging.getLogger(__name__).warning(
-                "MCP config present in AgentSpec but the active provider (%s) has "
-                "no MCP passthrough; MCP servers will not be reachable for this "
-                "branch (role %s, branch %s). Other branches resolve their own "
-                "providers and are not covered by this warning.",
-                provider,
-                spec.profile.role.name,
-                branch.id,
-            )
+            if native_mcp_servers:
+                logger.debug(
+                    "The active provider (%s) has no MCP passthrough, but server(s) "
+                    "%s are available to this branch through LionAGI's native MCP "
+                    "registration (role %s, branch %s).",
+                    provider,
+                    sorted(native_mcp_servers),
+                    spec.profile.role.name,
+                    branch.id,
+                )
+            else:
+                # Scope the claim to what this call can see: one branch, whose
+                # provider was resolved from this one spec. Sibling branches in the
+                logger.warning(
+                    "MCP config present in AgentSpec but the active provider (%s) has "
+                    "no MCP passthrough; MCP servers will not be reachable for this "
+                    "branch (role %s, branch %s). Other branches resolve their own "
+                    "providers and are not covered by this warning.",
+                    provider,
+                    spec.profile.role.name,
+                    branch.id,
+                )
         # No MCP-capable request model for this provider to forward into,
         # so this stays a silent no-op (mirrors _load_mcp's own shape).
         return
