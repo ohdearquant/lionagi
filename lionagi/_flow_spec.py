@@ -52,6 +52,13 @@ def normalize_flow_spec_keys(data: dict[Any, Any]) -> dict[str, Any]:
     return normalized
 
 
+def flow_spec_yaml_key(key: str) -> str:
+    """Return the preferred YAML spelling for one canonical spec field."""
+    if key in _PRESERVE_DASHED:
+        return key
+    return key.replace("_", "-")
+
+
 def load_flow_spec(path: str | Path) -> dict[str, Any]:
     """Load and normalize one YAML or JSON flow spec."""
     spec_path = Path(path).expanduser()

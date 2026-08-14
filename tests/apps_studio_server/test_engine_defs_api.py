@@ -247,6 +247,72 @@ async def test_create_endpoint_happy_path(patched_app):
     assert body["name"] == "my-engine"
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        (
+            "POST",
+            "/api/engine-defs/",
+            {"name": "stage-drift", "kind": "research", "stages": {"analyst": {}}},
+        ),
+        (
+            "PUT",
+            "/api/engine-defs/{def_id}",
+            {"stages": {"analyst": {"model": "provider/model"}}},
+        ),
+    ],
+)
+async def test_engine_def_endpoints_reject_unknown_stage_overrides(
+    patched_app, method, path, payload
+):
+    """Unsupported editor fields fail visibly instead of becoming successful no-ops."""
+    _, db_path, client = patched_app
+    def_id = await _seed_engine_def(db_path, name="stage-drift-target")
+    async with client as ac:
+        resp = await ac.request(method, path.format(def_id=def_id), json=payload)
+    assert resp.status_code == 422
+    assert "stages" in resp.text
+
+
+async def test_engine_def_supported_fields_round_trip_through_create_and_update(patched_app):
+    """The closed write contract persists every admitted field without silent loss."""
+    _, _, client = patched_app
+    created = {
+        "name": "round-trip-research",
+        "kind": "research",
+        "model": "provider/model-a",
+        "max_depth": 3,
+        "max_agents": 4,
+        "options": {"export_dir": "artifacts/a"},
+        "description": "first definition",
+    }
+    updated = {
+        "name": "round-trip-coding",
+        "kind": "coding",
+        "model": "provider/model-b",
+        "max_depth": 5,
+        "max_agents": 6,
+        "options": {"test_cmd": "pytest tests", "export_dir": "artifacts/b"},
+        "description": "updated definition",
+    }
+
+    async with client as ac:
+        create_resp = await ac.post("/api/engine-defs/", json=created)
+        assert create_resp.status_code == 201, create_resp.text
+        def_id = create_resp.json()["id"]
+
+        first_get = await ac.get(f"/api/engine-defs/{def_id}")
+        assert first_get.status_code == 200
+        assert {key: first_get.json()[key] for key in created} == created
+
+        update_resp = await ac.put(f"/api/engine-defs/{def_id}", json=updated)
+        assert update_resp.status_code == 200, update_resp.text
+
+        second_get = await ac.get(f"/api/engine-defs/{def_id}")
+        assert second_get.status_code == 200
+        assert {key: second_get.json()[key] for key in updated} == updated
+
+
 async def test_create_endpoint_bad_kind_422(patched_app):
     _, db_path, client = patched_app
     async with client as ac:

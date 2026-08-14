@@ -8,16 +8,21 @@ import {
   getDefinitionVersion,
   getCasts,
   deleteAgent,
+  getAgent,
+  getHookLibrary,
+  updateAgent,
 } from "@/lib/api";
 import type {
   CastMode,
   DefinitionDetail,
   DefinitionVersion,
   DefinitionVersionDetail,
+  HookAttachment,
 } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
 import SectionLabel from "@/components/ui/SectionLabel";
 import Button from "@/components/ui/Button";
+import HookAssemblyEditor from "./HookAssemblyEditor";
 
 // Definitions are authored as markdown; the editor keeps the raw source.
 const Markdown = lazy(() => import("@/components/ui/Markdown"));
@@ -30,31 +35,54 @@ interface ParsedFm {
   [key: string]: unknown;
 }
 
+// Nested frontmatter (a key whose value spans indented/list lines, e.g. the
+// `hooks:` assembly) is beyond this editor's scalar field model — those lines
+// are carried through verbatim so an edit-and-save here cannot destroy them.
+const RAW_BLOCKS_KEY = "__rawBlocks__";
+
 function parseFm(raw: string): { fm: ParsedFm; body: string } {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(raw.trimStart());
   if (!m) return { fm: {}, body: raw };
   const fm: ParsedFm = {};
-  for (const line of m[1].split("\n")) {
+  const rawBlocks: string[] = [];
+  const lines = m[1].split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s/.test(line) || line.trimStart().startsWith("-")) continue; // consumed below
     const colon = line.indexOf(":");
     if (colon === -1) continue;
     const key = line.slice(0, colon).trim();
     const val = line.slice(colon + 1).trim();
     if (!key) continue;
+    // A bare `key:` followed by indented/list lines is a nested block —
+    // capture the whole block verbatim instead of reading it as a scalar.
+    if (val === "" && i + 1 < lines.length && /^(\s|-)/.test(lines[i + 1] ?? "")) {
+      const block = [line];
+      while (i + 1 < lines.length && /^(\s|-)/.test(lines[i + 1] ?? "")) {
+        block.push(lines[++i]);
+      }
+      rawBlocks.push(block.join("\n"));
+      continue;
+    }
     if (val === "true") fm[key] = true;
     else if (val === "false") fm[key] = false;
     else if (val === "" || val === "null" || val === "~") fm[key] = undefined;
     else fm[key] = val.replace(/^["']|["']$/g, "");
   }
+  if (rawBlocks.length) fm[RAW_BLOCKS_KEY] = rawBlocks.join("\n");
   return { fm, body: m[2] ?? "" };
 }
 
 function serializeFm(fm: ParsedFm): string {
   const lines: string[] = [];
   for (const [k, v] of Object.entries(fm)) {
+    if (k === RAW_BLOCKS_KEY) continue;
     if (v === undefined || v === null) continue;
     if (typeof v === "boolean") lines.push(`${k}: ${v}`);
     else lines.push(`${k}: ${String(v)}`);
   }
+  const rawBlocks = fm[RAW_BLOCKS_KEY];
+  if (typeof rawBlocks === "string" && rawBlocks) lines.push(rawBlocks);
   return `---\n${lines.join("\n")}\n---\n`;
 }
 
@@ -157,6 +185,26 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
       alive = false;
     };
   }, [agent.name]);
+
+  // Refetch the raw definition after a sibling editor (the hooks assembly)
+  // rewrites the file server-side. Without this, startEdit reparses the
+  // cached pre-hooks content and the next prompt save posts it back verbatim,
+  // silently reverting the hook change. When the raw editor is already open,
+  // only `def` refreshes; the in-progress fm/body edit is the user's to keep.
+  const reloadDefinition = useCallback(async () => {
+    try {
+      const updated = await getDefinition("agent", agent.name);
+      setDef(updated);
+      if (!editing) {
+        const { fm: f, body: b } = parseFm(updated.content);
+        setFm(f);
+        setBody(b);
+      }
+    } catch {
+      // A failed refresh leaves the stale-content hazard in place but has no
+      // channel of its own here; the next explicit action re-surfaces it.
+    }
+  }, [agent.name, editing]);
 
   const startEdit = useCallback(() => {
     if (!def) return;
@@ -497,6 +545,9 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
         )}
       </div>
 
+      {/* Hook assembly — named library hooks bound to provider-neutral events */}
+      <AgentHooksSection name={agent.name} disabled={isProtected} onSaved={reloadDefinition} />
+
       {/* System prompt — dominant element */}
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex shrink-0 items-center justify-between border-b border-edge px-4 py-2">
@@ -573,6 +624,131 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
                   </button>
                 );
               })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Per-agent hook assembly editor. Reads and writes ONLY the profile's
+ * `hooks` key through the agents API (which validates every attachment
+ * against the shared hook library) — deliberately separate from the raw
+ * definition editor above, whose scalar field model cannot represent the
+ * nested assembly.
+ */
+function AgentHooksSection({
+  name,
+  disabled,
+  onSaved,
+}: {
+  name: string;
+  disabled?: boolean;
+  onSaved?: () => void;
+}) {
+  const t = useTranslations("library.hooks");
+  const [attachments, setAttachments] = useState<HookAttachment[]>([]);
+  const [hookNames, setHookNames] = useState<string[]>([]);
+  const [open, setOpen] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset per-agent editor state the moment the profile identity changes —
+  // done during render (the React-endorsed "adjust state when props change"
+  // pattern) so the effect below only performs the external fetch.
+  const [loadedFor, setLoadedFor] = useState(name);
+  if (loadedFor !== name) {
+    setLoadedFor(name);
+    setAttachments([]);
+    setDirty(false);
+    setSaved(false);
+    setError(null);
+  }
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([getAgent(name), getHookLibrary()])
+      .then(([profile, library]) => {
+        if (!alive) return;
+        setAttachments((profile.hooks ?? []) as HookAttachment[]);
+        setHookNames(Object.keys(library.hooks ?? {}).sort());
+      })
+      .catch((e) => {
+        if (alive) setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [name]);
+
+  const handleSave = () => {
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    updateAgent(name, { hooks: attachments })
+      .then(() => {
+        setDirty(false);
+        setSaved(true);
+        // The raw-definition editor caches the file content it loaded; this
+        // save just rewrote that file's frontmatter server-side, so the parent
+        // must refetch or its next prompt save posts the pre-hooks document
+        // back verbatim and silently reverts this assembly.
+        onSaved?.();
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <div className="shrink-0 border-b border-edge">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between px-4 py-2 text-left"
+      >
+        <SectionLabel>
+          {t("agentSectionTitle")}
+          {attachments.length > 0 ? ` (${attachments.length})` : ""}
+        </SectionLabel>
+        <span className="font-data text-[length:var(--t-xs)] text-content-muted">
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-2 px-4 pb-3">
+          <HookAssemblyEditor
+            attachments={attachments}
+            onChange={(next) => {
+              setAttachments(next);
+              setDirty(true);
+              setSaved(false);
+            }}
+            hookNames={hookNames}
+            disabled={disabled || saving}
+          />
+          {error && (
+            <div role="alert" className="text-[length:var(--t-xs)] text-status-failure">
+              {error}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={handleSave}
+              disabled={disabled || saving || !dirty}
+            >
+              {saving ? t("saving") : t("save")}
+            </Button>
+            {saved && (
+              <span className="text-[length:var(--t-xs)] text-status-success">
+                {t("savedNotice")}
+              </span>
+            )}
           </div>
         </div>
       )}

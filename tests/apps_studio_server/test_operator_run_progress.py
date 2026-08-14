@@ -183,7 +183,8 @@ async def test_run_progress_not_found(db_path):
         pass
 
     result = await run_progress({"run": str(uuid.uuid4())})
-    assert result == {"found": False}
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
 
 
 async def test_run_progress_zero_ops(db_path):
@@ -413,7 +414,8 @@ async def test_run_progress_current_view_unknown_returns_not_found(db_path, monk
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
 
     result = await run_progress({"run": "current"})
-    assert result == {"found": False}
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
 
 
 async def test_run_progress_too_short_reference_not_found(db_path):
@@ -423,7 +425,8 @@ async def test_run_progress_too_short_reference_not_found(db_path):
         pass
 
     result = await run_progress({"run": "ab"})
-    assert result == {"found": False}
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
 
 
 async def test_run_progress_candidate_cap_and_truncation(db_path):
@@ -546,6 +549,90 @@ async def test_run_progress_dag_progress_derives_from_graph_not_branches(db_path
     assert by_id["plan"]["status"] == "succeeded"
     assert by_id["work"]["status"] == "running"
     assert by_id["review"]["status"] == "unknown"
+
+
+async def test_run_progress_terminal_run_reconciles_stale_node_lanes(db_path):
+    """A run that died without emitting node-terminal signals must not keep
+    projecting agents mid-flight: on a terminal run, in-flight lanes read
+    "aborted", never-started lanes read "skipped", and the op the run's own
+    failure evidence names reads "failed"."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    node_metadata = {
+        "early_graph": {
+            "nodes": [
+                {"id": "coordinator", "label": "coordinator"},
+                {"id": "explorer", "label": "explorer"},
+                {"id": "critic", "label": "critic"},
+                {"id": "reporter", "label": "reporter"},
+            ],
+            "edges": [],
+        }
+    }
+    async with StateDB(db_path) as db:
+        prog_id = f"{sid}-prog"
+        await db.create_progression(prog_id)
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": prog_id,
+                "name": "dead-play",
+                "status": "running",
+                "started_at": 1000.0,
+                "node_metadata": node_metadata,
+                "invocation_kind": "agent",
+                "source_kind": "live",
+                "updated_at": time.time(),
+            }
+        )
+        # coordinator succeeded; explorer started and never terminated;
+        # critic was queued (and is the op the failure evidence names);
+        # reporter never emitted any signal at all.
+        await db.insert_session_signal(
+            session_id=sid,
+            kind="NodeCompleted",
+            op_id="op-1",
+            ts=1005.0,
+            payload={"name": "coordinator"},
+        )
+        await db.insert_session_signal(
+            session_id=sid,
+            kind="NodeStarted",
+            op_id="op-2",
+            ts=1006.0,
+            payload={"name": "explorer"},
+        )
+        await db.insert_session_signal(
+            session_id=sid,
+            kind="NodeQueued",
+            op_id="op-3",
+            ts=1007.0,
+            payload={"name": "critic"},
+        )
+        await db.update_status(
+            "session",
+            sid,
+            new_status="failed",
+            reason_code="run.failed.exception",
+            reason_summary="1 operation(s) failed: critic.",
+            evidence_refs=[{"kind": "failed_operation", "id": "critic", "label": "critic"}],
+        )
+
+    result = await run_progress({"run": sid})
+
+    dag = result["dagProgress"]
+    by_id = {node["id"]: node for node in dag["nodes"]}
+    assert by_id["coordinator"]["status"] == "succeeded"
+    assert by_id["explorer"]["status"] == "aborted"
+    assert by_id["critic"]["status"] == "failed"
+    assert by_id["reporter"]["status"] == "skipped"
+    assert dag["running"] == 0
+    assert dag["failed"] == 2  # the named failure plus the aborted node
+    assert dag["abortedCount"] == 1
+    assert dag["skippedCount"] == 1
+    assert result["opsRunning"] == 0
+    assert result["opsFailed"] == 2
 
 
 async def test_run_progress_dag_keeps_escalated_distinct_from_failed(db_path):
@@ -818,11 +905,13 @@ async def test_run_progress_exact_id_of_a_foreign_project_run_is_not_found(db_pa
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
 
     result = await run_progress({"run": foreign})
-    assert result == {"found": False}
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
 
     # A prefix match must be scoped the same way.
     result = await run_progress({"run": foreign[:8]})
-    assert result == {"found": False}
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
 
 
 async def test_run_progress_current_of_a_foreign_project_run_is_not_found(db_path, monkeypatch):
@@ -860,7 +949,8 @@ async def test_run_progress_current_of_a_foreign_project_run_is_not_found(db_pat
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
 
     result = await run_progress({"run": "current"})
-    assert result == {"found": False}
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
 
 
 async def test_run_progress_ambiguous_id_prefix_hides_foreign_project_candidates(
@@ -898,9 +988,11 @@ async def test_run_progress_ambiguous_id_prefix_hides_foreign_project_candidates
 
 async def test_run_progress_turn_with_no_project_context_fails_closed(db_path, monkeypatch):
     """A turn whose identity is present but whose own context names no
-    project must never fall back to matching every project's runs -- it is
-    refused with a typed error before any row is read, not merely before one
-    foreign row is exposed."""
+    project must never fall back to enumerating every project's runs:
+    prefix and name-substring references are refused with a typed error
+    whose message names the remedy. The one deliberate exception is an
+    exact full-UUID reference -- it identifies at most one row and cannot
+    enumerate, the same position run_detail takes for a bare id."""
     from lionagi.studio.operator.run_progress import MissingOwnerContextError, resolve_run
 
     sid = str(uuid.uuid4())
@@ -911,14 +1003,56 @@ async def test_run_progress_turn_with_no_project_context_fails_closed(db_path, m
     monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
 
-    with pytest.raises(MissingOwnerContextError):
+    with pytest.raises(MissingOwnerContextError, match="full 36-character id"):
         await resolve_run("nightly-triage")
 
     with pytest.raises(MissingOwnerContextError):
-        await resolve_run(sid)
+        await resolve_run(sid[:8])
 
-    with pytest.raises(MissingOwnerContextError):
-        await resolve_run("current")
+    result = await resolve_run(sid)
+    assert result == {"found": True, "ambiguous": False, "session_id": sid}
+
+    # A nonexistent exact UUID is a clean not-found, not an error -- and not
+    # a fall-through into the fenced text-search arms.
+    result = await resolve_run(str(uuid.uuid4()))
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
+
+
+async def test_run_progress_current_resolves_on_a_turn_with_no_project(db_path, monkeypatch):
+    """'Cancel/inspect the run the human is looking at' must work from any
+    view: the current-view selection is a full id the human's own browser
+    reported, so it rides the exact-id arm through the project fence. The
+    seeded row deliberately has no project -- the arm must not depend on
+    one."""
+    from lionagi.studio.operator.run_progress import run_progress
+    from lionagi.studio.operator.store import OperatorStore
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="completed", project=None)
+
+    store = OperatorStore(db_path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="how is this run going?",
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "selection": {"s": sid},
+        },
+        expected_last_sequence=0,
+    )
+    assert await store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+
+    result = await run_progress({"run": "current"})
+
+    assert result["found"] is True
+    assert result["id"] == sid
 
 
 async def test_run_progress_no_identity_at_all_stays_unscoped(db_path):
@@ -933,3 +1067,19 @@ async def test_run_progress_no_identity_at_all_stays_unscoped(db_path):
 
     result = await resolve_run(sid)
     assert result == {"found": True, "ambiguous": False, "session_id": sid}
+
+
+def test_terminal_safe_health_drops_only_the_vacuous_healthy():
+    """Health is a liveness concept: for a terminal run the classifier's
+    "healthy" only means "no residue", and projected beside status=failed it
+    reads as a claim about the run's outcome. The projection drops exactly
+    that pairing -- a live run's "healthy" and a terminal run's pathological
+    verdict (leftover locks) both pass through unchanged."""
+    from lionagi.studio.operator.run_progress import _terminal_safe_health
+
+    for terminal in ("completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"):
+        assert _terminal_safe_health({"status": terminal, "effective_health": "healthy"}) is None
+
+    assert _terminal_safe_health({"status": "running", "effective_health": "healthy"}) == "healthy"
+    assert _terminal_safe_health({"status": "failed", "effective_health": "zombie"}) == "zombie"
+    assert _terminal_safe_health({"status": "running", "effective_health": "stale"}) == "stale"

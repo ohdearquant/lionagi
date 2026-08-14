@@ -13,6 +13,7 @@ from pydantic import Field
 
 from lionagi.casts.emission import Finding, Verdict
 from lionagi.ln import gather as ln_gather
+from lionagi.providers._provider_errors import ProviderError
 
 from .engine import Engine, EngineEvent, EngineRun
 
@@ -264,10 +265,14 @@ class ReviewEngine(Engine):
         run.root = artifact
         run.observe(IssueFound, lambda i, _c: self._on_issue(run, i))
 
-        # Fan out one reviewer per dimension; ln_gather's structured concurrency
-        # cancels siblings on a dimension failure so no coroutine outlives this scope.
+        # Fan out one reviewer per dimension. Ordinary provider/transport
+        # failures are isolated per dimension so completed sibling evidence is
+        # still usable; run-wide budget exhaustion and cancellation keep their
+        # existing structured-concurrency semantics.
         try:
-            await ln_gather(*(self._review_dimension(run, artifact, d) for d in dims))
+            await ln_gather(
+                *(self._review_dimension_isolated(run, artifact, dimension) for dimension in dims)
+            )
         except BaseException:
             # Cancel any verifier tasks spawned before the failure so no
             # background work mutates shared run state after _run exits.
@@ -292,6 +297,22 @@ class ReviewEngine(Engine):
             run.spawn(self._verify(run, issue))
 
     # -- stages ---------------------------------------------------------------
+
+    async def _review_dimension_isolated(
+        self, run: EngineRun, artifact: str, dimension: str
+    ) -> None:
+        try:
+            await self._review_dimension(run, artifact, dimension)
+        except ProviderError as exc:
+            error_type = type(exc).__name__
+            run.notify(
+                "dimension_failed",
+                dimension=dimension,
+                error_type=error_type,
+            )
+            marker = f"review-{dimension} ({error_type})"
+            if marker not in run._emission_failures:
+                run._emission_failures.append(marker)
 
     async def _review_dimension(self, run: EngineRun, artifact: str, dimension: str) -> None:
         emits = (IssueFound, DimensionClean)

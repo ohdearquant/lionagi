@@ -2131,6 +2131,52 @@ async def test_gate_rejection_reason_survives_child_to_invocation_resolution(
     assert any(entry.get("id") == ctx["session_id"] for entry in evidence)
 
 
+async def test_spawn_refusal_is_degraded_in_session_and_invocation_status(
+    temp_db_path: Path,
+):
+    """A refused reactive spawn stays a completed run but cannot read clean.
+
+    The session is Studio's run-detail status source and the invocation is the
+    terminal-notify source for an MCP flow. Both layers must retain the same
+    degraded reason instead of flattening it to ``run.completed.ok``.
+    """
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-spawn-refused"
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    env._spawn_refusal_evidence = [
+        {
+            "kind": "refused_spawn",
+            "id": "parent-op",
+            "label": "reviewer (max_spawn_exceeded)",
+        }
+    ]
+
+    assert await stop_live_persist(env, status="completed") == "completed"
+
+    async with StateDB() as db:
+        session = await db.get_session(ctx["session_id"])
+    assert session["status"] == "completed"
+    assert session["status_reason_code"] == RunReasons.COMPLETED_SPAWN_REFUSED
+    assert "1 reactive spawn" in (session["status_reason_summary"] or "")
+    assert session["status_evidence_refs"] == env._spawn_refusal_evidence
+
+    status, reason_code, _summary, evidence, _metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+    assert status == "completed"
+    assert reason_code == RunReasons.COMPLETED_SPAWN_REFUSED
+    assert reason_code != RunReasons.COMPLETED_OK
+    assert evidence == [{"kind": "session", "id": ctx["session_id"]}]
+
+
 async def test_all_legs_completed_resolves_invocation_completed(
     temp_db_path: Path,
     tmp_path: Path,
@@ -2404,7 +2450,7 @@ async def test_build_dag_wires_role_artifact_defaults_into_live_contract_and_fai
         "lionagi.cli.orchestrate.flow.build_worker_branch",
         return_value=(Branch(name="reviewer"), "codex/gpt-5.5", None, False),
     ):
-        await _build_dag(env, "review this PR", plan_result, reactive_spec="off")
+        await _build_dag(env, "review this PR", plan_result, reactive_spec="off", max_spawn=20)
 
     # The live in-memory contract was extended during DAG build, before any
     # worker ran.

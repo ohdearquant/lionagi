@@ -6,7 +6,7 @@
  */
 import { useTranslations } from "use-intl";
 import type { FlowEdge, FlowModel } from "@/lib/designer/flow";
-import { IconShield, IconClose, IconTrash } from "@/components/ui/icons";
+import { IconShield, IconClose } from "@/components/ui/icons";
 import IconButton from "@/components/ui/IconButton";
 import InspectorMetaRow from "@/components/ui/InspectorMetaRow";
 
@@ -37,16 +37,9 @@ export interface EdgeInspectorProps {
   model: FlowModel;
   onTrace?: (signal: string) => void;
   onClose: () => void;
-  onDelete?: () => void;
 }
 
-export default function EdgeInspector({
-  edge,
-  model,
-  onTrace,
-  onClose,
-  onDelete,
-}: EdgeInspectorProps) {
+export default function EdgeInspector({ edge, model, onTrace, onClose }: EdgeInspectorProps) {
   const t = useTranslations("designer.edge");
   const sem = semanticKind(edge);
 
@@ -72,16 +65,6 @@ export default function EdgeInspector({
         <span className="shrink-0 font-ui text-[length:var(--t-xs)] uppercase tracking-wider text-content-muted">
           {t(KIND_KEY[sem])}
         </span>
-        {onDelete && (
-          <IconButton
-            aria-label="Delete edge"
-            title="Delete edge"
-            onClick={onDelete}
-            className="text-status-danger hover:text-status-danger"
-          >
-            <IconTrash size={11} />
-          </IconButton>
-        )}
         <IconButton aria-label={t("close")} onClick={onClose}>
           <IconClose size={11} />
         </IconButton>
