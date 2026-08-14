@@ -204,7 +204,7 @@ async def test_the_default_does_not_fire_when_a_modelless_agent_was_named(monkey
     assert DEFAULT_ORCHESTRATOR_AGENT not in loaded
 
 
-# ── The resolved name has to leave the function ───────────────────────────────
+# The resolved name has to leave the function
 
 
 @pytest.fixture
@@ -286,7 +286,7 @@ async def test_the_carried_name_is_the_loaded_profiles_own(completing_setup, mon
     assert env.orc_profile_name == "orchestrator"
 
 
-# ── …and reach the record a later reader has ──────────────────────────────────
+# …and reach the record a later reader has
 
 
 @pytest.fixture

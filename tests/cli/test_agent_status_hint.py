@@ -113,9 +113,7 @@ def _agent_args(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
-# ---------------------------------------------------------------------------
 # _run_agent: session_id is the 5th return value
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -142,9 +140,7 @@ async def test_run_agent_session_id_none_when_persist_disabled(monkeypatch, tmp_
     assert session_id is None
 
 
-# ---------------------------------------------------------------------------
 # run_agent(): post-run hint includes the status line
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

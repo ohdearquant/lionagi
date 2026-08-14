@@ -224,20 +224,21 @@ async def mirror_session(
     event_sources: list[tuple[int, int, str]] | None = None,
     max_preview_chars: int | None = None,
 ) -> int:
-    """Idempotently write a batch of Claude events for one session; returns msgs written.
-    Live/idle transitions are owned by ``reconcile_session_status``, not this writer.
+    """Idempotently write a batch of Claude events for one session; returns
+    msgs written. Live/idle transitions are owned by
+    ``reconcile_session_status``, not this writer.
 
-    ``event_sources`` is the per-event ``(byte_offset, byte_count, sha256)`` of each
-    raw JSONL line in ``events`` (same order/length), and ``source_path`` is the
-    transcript file they came from. When both are given together with
-    ``max_preview_chars``, every message's content is bounded via
-    ``bound_mirror_content`` before it is written, with a resolvable source pointer
-    on ``node_metadata.mirror_source``. Omitting them keeps the legacy unbounded
-    write, for callers with no live transcript file behind the events.
-
-    ``cwd`` is the transcript's own working directory -- the CLI's artifact root
-    (issue #2848) -- written to ``artifacts_path`` on create, and backfilled on an
-    existing row that lacks one without ever overwriting one that is already set.
+    ``event_sources`` is the per-event ``(byte_offset, byte_count, sha256)``
+    of each raw JSONL line in ``events`` (same order/length), and
+    ``source_path`` is the transcript file they came from. When both are
+    given together with ``max_preview_chars``, message content is bounded
+    via ``bound_mirror_content`` with a resolvable pointer on
+    ``node_metadata.mirror_source``; omitting them keeps the legacy
+    unbounded write, for callers with no live transcript file behind the
+    events. ``cwd`` is the transcript's own working directory --
+    the CLI's artifact root -- written to ``artifacts_path`` on create, and
+    backfilled on an existing row that lacks one without overwriting one
+    already set.
     """
     sid = session_db_id(session_uid)
     branch_id = _det(session_uid, "branch")
@@ -388,6 +389,38 @@ async def link_session_lineage(
     )
 
 
+async def link_engine_child_session(
+    db: StateDB,
+    *,
+    session_uid: str,
+    parent_run_id: str,
+    name: str,
+) -> bool:
+    """Attribute a mirrored CLI transcript to the run that spawned it as its engine.
+
+    An engine-backed actor (the Studio Operator, and any peer built the same
+    way) records one canonical run row itself, then shells out to a CLI whose
+    transcript the mirror ingests as an independent session — with a name
+    derived from the first prompt, which for these actors is their injected
+    system prompt. That second row duplicates the canonical one in every
+    listing. This stamps the mirrored row with a flat
+    ``engine_parent_run_id`` marker (listings exclude marked rows) and
+    replaces the prompt-derived name. Returns False if the mirror hasn't
+    created the row yet; callers retry for a bounded window, since which
+    side writes first is an unresolved race.
+    """
+    sid = session_db_id(session_uid)
+    existing = await db.get_session(sid)
+    if existing is None:
+        return False
+    await db.update_session(sid, name=name)
+    # Flat scalar on node_metadata, so the atomic merge applies (nested-object
+    # values would trip the merge's dialect-parity guard — see
+    # link_escalation_session below).
+    await db.merge_session_node_metadata(sid, {"engine_parent_run_id": parent_run_id})
+    return True
+
+
 async def link_escalation_session(
     db: StateDB,
     *,
@@ -400,21 +433,19 @@ async def link_escalation_session(
 ) -> bool:
     """Attribute a mirrored CLI transcript to the run whose escalation spawned it.
 
-    A flow escalation (``operations.flow._schedule_escalation``) retries a node on a
-    higher-tier CLI engine as an in-session child op; the engine's own transcript is
-    mirrored independently (by this module, possibly in another process) under a
-    session uid the mirror has no way to connect back to the run. The escalation call
-    site learns that uid once the child op's branch reports it
-    (``branch.chat_model.provider_session_id``) and calls this to stamp the link —
-    overwriting the mirror's cwd-guessed ``project`` and first-prompt-derived ``name``,
-    which are wrong for an escalation leg by construction: its transcript's ``cwd`` is
-    the leg's scratch workspace, not a project, and its first prompt is the injected
-    escalation guidance, not a task description. The mirror never revisits either
-    field once a session row exists, so this write is never clobbered by a later sweep.
-
-    Returns ``False`` if the mirror hasn't created the session row yet — the escalation
-    call site is expected to retry for a bounded window rather than lose the link,
-    since which side writes first is a race with no fixed winner.
+    A flow escalation retries a node on a higher-tier CLI engine as an
+    in-session child op; that engine's transcript is mirrored independently
+    (possibly in another process) under a session uid the mirror can't
+    connect back to the run. The escalation call site learns the uid once
+    the child op's branch reports it and calls this to stamp the link,
+    overwriting the mirror's cwd-guessed ``project`` and first-prompt-derived
+    ``name`` -- both wrong for an escalation leg by construction, since its
+    ``cwd`` is a scratch workspace and its first prompt is injected guidance,
+    not a task description. The mirror never revisits either field once a
+    session row exists, so this write is never clobbered later. Returns
+    False if the mirror hasn't created the session row yet; the caller is
+    expected to retry for a bounded window, since which side writes first is
+    an unresolved race.
     """
     sid = session_db_id(session_uid)
     existing = await db.get_session(sid)

@@ -16,10 +16,6 @@ from lionagi.ln.types import (
     not_sentinel,
 )
 
-# ============================================================================
-# Test Enum.allowed() - Line 154
-# ============================================================================
-
 
 class MyTestEnum(Enum):
     """Test enum for testing"""
@@ -37,11 +33,6 @@ def test_enum_allowed():
     assert "value2" in allowed
     assert "value3" in allowed
     assert len(allowed) == 3
-
-
-# ============================================================================
-# Test Params - Lines 188, 197, 214
-# ============================================================================
 
 
 @dataclass(slots=True, frozen=True, init=False)
@@ -115,11 +106,6 @@ def test_params_strict_mode():
     """Test Params strict mode validation - Lines 246-248"""
     with pytest.raises(ValueError, match="Missing required parameter"):
         MyParamsStrict(field1="value")  # field2 is missing and strict=True
-
-
-# ============================================================================
-# Test DataClass - Lines 214, 246-248, 251-253, etc.
-# ============================================================================
 
 
 @dataclass(slots=True)
@@ -240,11 +226,6 @@ def test_dataclass_eq_not_dataclass():
     assert obj != 42
 
 
-# ============================================================================
-# Test Params methods
-# ============================================================================
-
-
 def test_params_to_dict():
     """Test Params.to_dict() method"""
     params = MyParams(field1="test", field2=42)
@@ -303,11 +284,6 @@ def test_params_default_kw():
     assert isinstance(result, dict)
     assert result["field1"] == "test"
     assert result["field2"] == 42
-
-
-# ============================================================================
-# Test sentinel utilities
-# ============================================================================
 
 
 def test_is_sentinel():

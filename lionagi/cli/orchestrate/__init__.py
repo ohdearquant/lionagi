@@ -374,18 +374,12 @@ def _interpolate_prompt(template: str, positional: str | None, playbook_args: di
 def _check_assembled_prompt(prompt: str) -> str | None:
     """Measure the prompt that will run, not the one it was written from.
 
-    A spec's prompt field is checked when the file is read, but that is a
-    template: the caller's positional and the playbook's arguments are
-    substituted into it afterwards, and either can make the result far longer
-    than the text that passed. A caller that names no spec at all skips the
-    file check outright. Both forms arrive here holding the finished text,
-    which is the only version that reaches a run.
-
-    Same bound as the spec field, deliberately: the number exists to refuse a
-    file that is not a prompt, and it sits far enough out that template plus
-    arguments together stay well under it. A second, larger bound here would
-    mean the assembled prompt could pass while the template it came from could
-    not, which is the asymmetry this check is closing.
+    A spec's prompt field is checked at file-read time, but that's a
+    template — substituting the caller's positional and the playbook's
+    arguments afterward can make the result far longer than the text that
+    passed. Uses the same length bound as the spec-field check, deliberately:
+    a larger bound here would let an assembled prompt pass while the
+    template it came from would not have.
     """
     if len(prompt) > MAX_SPEC_PROMPT_CHARS:
         return (

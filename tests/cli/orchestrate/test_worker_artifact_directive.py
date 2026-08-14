@@ -18,7 +18,7 @@ from lionagi.cli.orchestrate._orchestration import (
     collect_worker_artifacts,
 )
 
-# ── Half 1: the prompt names the directory ───────────────────────────────────
+# Half 1: the prompt names the directory
 
 # The sentence the worker prompt used to carry: a claim about text the harness
 # does not control. Its absence is the fix, so it is asserted directly.
@@ -107,7 +107,7 @@ Remain concise."""
     assert "Remain concise." in retargeted
 
 
-# ── build_worker_branch names and records each worker's artifact destination ──
+# build_worker_branch names and records each worker's artifact destination
 
 
 def _build_worker(
@@ -392,7 +392,7 @@ def test_a_reactively_spawned_branch_stops_naming_the_emitters_directory(tmp_pat
     assert str(emitter_dir) not in system_text
 
 
-# ── Half 2: the run reports where each worker actually wrote ─────────────────
+# Half 2: the run reports where each worker actually wrote
 
 
 def _env_with_dirs(dirs: dict[str, Path]) -> SimpleNamespace:

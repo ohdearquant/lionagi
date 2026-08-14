@@ -33,9 +33,7 @@ class TestGetLndlSystemPrompt:
         r2 = get_lndl_system_prompt()
         assert r1 == r2
 
-    # ------------------------------------------------------------------
     # Regression guard: DSL marker presence
-    # ------------------------------------------------------------------
 
     def test_prompt_contains_lvar_marker(self):
         """Prompt must contain the <lvar opening tag — lvar binding syntax."""

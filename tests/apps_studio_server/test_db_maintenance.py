@@ -499,19 +499,19 @@ def test_a_session_that_reopens_past_the_lock_takes_the_whole_pass_down(
     """Nothing may be committed for a session that reopened mid-sequence.
 
     The prune clears associations and deletes transition history before it
-    deletes the session, so a per-statement condition protects each statement
-    on its own and still lets the sequence land half-applied: the earlier
-    writes are already done when the reopen arrives, and the delete then skips
-    the row, leaving a live session whose history and links are gone. The lock
-    is what keeps this from being reachable; the parametrization drives the
-    reopen past it at each step, and every case asserts the session survives
-    whole, so nothing short of abandoning the pass passes here.
+    deletes the session; a per-statement condition protects each statement
+    on its own but still lets the sequence land half-applied -- the earlier
+    writes are already done when the reopen arrives, and the delete then
+    skips the row, leaving a live session whose history and links are gone.
+    The lock is what makes this unreachable; the parametrization drives the
+    reopen past it at each step, and every case asserts the session
+    survives whole.
 
-    The reopen rides the prune's own transaction here, so it is rolled back
-    along with everything else and the status reads terminal again afterwards.
-    A real resume commits on its own and would keep its status; what this
-    checks is the part that is the same either way, which is that none of the
-    prune's writes reached the database.
+    The reopen here rides the prune's own transaction, so it rolls back
+    along with everything else and the status reads terminal again
+    afterwards (a real resume commits on its own and would keep its
+    status). What this checks is the part that's the same either way: none
+    of the prune's writes reached the database.
     """
     from lionagi.studio.services import db_maintenance as maint
 

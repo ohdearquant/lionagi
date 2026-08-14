@@ -5,6 +5,7 @@
 
 import pytest
 
+from lionagi._errors import OperationError
 from lionagi.operations.builder import ExpansionStrategy, OperationGraphBuilder
 
 
@@ -62,6 +63,14 @@ class TestOperationGraphBuilderBasics:
         # Test retrieval by reference
         retrieved = builder.get_node_by_reference("ref_1")
         assert retrieved == node
+
+    def test_duplicate_reference_lookup_fails_loudly(self):
+        builder = OperationGraphBuilder()
+        builder.add_operation(operation="chat", node_id="duplicate")
+        builder.add_operation(operation="chat", node_id="duplicate")
+
+        with pytest.raises(OperationError, match="Duplicate reference_id 'duplicate'"):
+            builder.get_node_by_reference("duplicate")
 
     def test_add_operation_with_branch(self):
         """Test adding operation with branch ID."""

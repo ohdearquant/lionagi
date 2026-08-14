@@ -37,7 +37,7 @@ async def _make_session(db: StateDB, **fields) -> str:
     return sid
 
 
-# ── test_create_session_with_contract ────────────────────────────────────────
+# test_create_session_with_contract
 
 
 async def test_create_session_with_contract(db: StateDB):
@@ -51,7 +51,7 @@ async def test_create_session_with_contract(db: StateDB):
     assert stored["expected"][0]["id"] == "report"
 
 
-# ── test_create_session_without_contract ─────────────────────────────────────
+# test_create_session_without_contract
 
 
 async def test_create_session_without_contract(db: StateDB):
@@ -62,7 +62,7 @@ async def test_create_session_without_contract(db: StateDB):
     assert row["artifact_contract_json"] is None
 
 
-# ── test_update_artifact_verification ────────────────────────────────────────
+# test_update_artifact_verification
 
 
 async def test_update_artifact_verification(db: StateDB):
@@ -84,7 +84,7 @@ async def test_update_artifact_verification(db: StateDB):
     assert stored["produced"][0]["id"] == "report"
 
 
-# ── test_migration_adds_columns ───────────────────────────────────────────────
+# test_migration_adds_columns
 
 
 async def test_migration_adds_columns():

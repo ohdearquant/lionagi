@@ -58,7 +58,7 @@ async def _make_session(db: StateDB, *, invocation_id: str | None = None, **fiel
     return session
 
 
-# ── Vocabulary ────────────────────────────────────────────────────────────────
+# Vocabulary
 
 
 def test_invocation_status_vocabulary_matches_adr0025():
@@ -77,7 +77,7 @@ def test_invocation_status_vocabulary_matches_adr0025():
     )
 
 
-# ── CRUD ──────────────────────────────────────────────────────────────────────
+# CRUD
 
 
 async def test_create_and_get_invocation(db: StateDB):
@@ -117,7 +117,7 @@ async def test_update_invocation_rejects_unknown_column(db: StateDB):
         await db.update_invocation(inv["id"], not_a_column="x")
 
 
-# ── Session linkage ───────────────────────────────────────────────────────────
+# Session linkage
 
 
 async def test_create_session_with_invocation_bumps_count(db: StateDB):
@@ -173,7 +173,7 @@ async def test_session_without_invocation_id_is_unaffected(db: StateDB):
     assert fetched["invocation_id"] is None
 
 
-# ── attach_session_invocation (resume backfill, issue #2767) ──────────────────
+# attach_session_invocation: resume backfill
 
 
 async def test_attach_session_invocation_links_an_unlinked_session(db: StateDB):
@@ -246,7 +246,7 @@ async def test_attach_session_invocation_is_a_noop_when_already_current(db: Stat
     assert (await db.get_invocation(inv["id"]))["session_count"] == 1
 
 
-# ── List + filter ─────────────────────────────────────────────────────────────
+# List + filter
 
 
 async def test_list_invocations_filters_by_skill(db: StateDB):
@@ -281,7 +281,7 @@ async def test_list_invocations_filters_by_plugin(db: StateDB):
     assert only_review_toolkit[0]["plugin"] == "review-toolkit"
 
 
-# ── Count (real total, not a page count) ───────────────────────────────────────
+# Count (real total, not a page count)
 
 
 async def test_count_invocations_matches_row_count_below_the_page_limit(db: StateDB):

@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import time
 
 from lionagi._errors import EmptyOutgoingContentError, LionError
@@ -35,6 +37,7 @@ from ._orchestration import (
     finalize_orchestration,
     mode_roster,
     parse_orchestrator_provider,
+    register_branch_hook,
     resolve_modes,
     role_roster,
     setup_orchestration,
@@ -55,6 +58,51 @@ class FanoutPlanError(LionError):
 # exclude it rather than synthesize over a placeholder as if it were content.
 FAILED_WORKER_MARKER = "(worker failed: no output)"
 FAILED_SYNTHESIS_MARKER = "(synthesis failed: no output)"
+
+
+def _is_assignment_shaped_synthesis(value: object) -> bool:
+    """True when the entire response is a planner-style assignment payload."""
+    text = str(value).strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL)
+    if fenced is not None:
+        text = fenced.group(1)
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+
+    if isinstance(payload, dict) and isinstance(payload.get("assignments"), list):
+        assignments = payload["assignments"]
+    elif isinstance(payload, list):
+        assignments = payload
+    elif isinstance(payload, dict):
+        assignments = [payload]
+    else:
+        return False
+    return bool(assignments) and all(
+        isinstance(item, dict) and "task" in item and "assignee" in item for item in assignments
+    )
+
+
+async def _fresh_synthesis_branch(env: OrchestrationEnv):
+    """Build a clean synthesizer branch without the planner conversation."""
+    from lionagi.agent import AgentSpec, create_agent
+
+    spec = AgentSpec.compose(
+        "synthesizer",
+        pack=env.pack if env.pack is not None else "default",
+        grant_emissions=False,
+    )
+    branch = await create_agent(
+        spec,
+        load_settings=False,
+        chat_model=env.orc_branch.chat_model.copy(),
+    )
+    branch.name = "synthesis"
+    env.session.include_branches(branch)
+    if env._live_persist:
+        register_branch_hook(env._live_persist, branch)
+    return branch
 
 
 def _parse_worker_pool(workers_str: str | None, *, num_workers: int) -> list[str]:
@@ -501,7 +549,7 @@ async def _run_fanout_inner(
         else:
             warn("No workers ran; there is no output to synthesize.")
     if with_synthesis and contexts:
-        synth_spec = synthesis_model or model_spec
+        synth_spec = synthesis_model or env.default_model_spec
         synth_label = str(parse_model_spec(synth_spec))
 
         progress(f"Phase 3: Synthesis [{synth_label}]...")
@@ -510,9 +558,10 @@ async def _run_fanout_inner(
             synthesis_prompt or f"{SYNTHESIS_INSTRUCTION}\n\nOriginal task: {prompt}"
         )
 
+        synth_branch = await _fresh_synthesis_branch(env)
         synth_node = env.builder.add_operation(
             "operate",
-            branch=env.orc_branch,
+            branch=synth_branch,
             depends_on=fanned_nodes,
             instruction=synth_instruction,
             context=contexts,
@@ -539,6 +588,15 @@ async def _run_fanout_inner(
             synth_text = FAILED_SYNTHESIS_MARKER
         else:
             synth_text = str(synth_res) if synth_res is not None else "(no response)"
+            if _is_assignment_shaped_synthesis(synth_text):
+                failed_ops.add(str(synth_node))
+                if _shared is not None:
+                    _shared["op_failures"] = sorted(failed_ops)
+                warn(
+                    "Synthesis returned a planner assignment instead of an integrated "
+                    "result; marking the synthesis leg failed."
+                )
+                synth_text = FAILED_SYNTHESIS_MARKER
         synthesis_result = {
             "model": synth_label,
             "response": synth_text,

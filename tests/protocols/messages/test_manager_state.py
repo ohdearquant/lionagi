@@ -27,7 +27,7 @@ def message_manager():
 
 
 def test_message_manager_initialization():
-    """Test basic initialization of MessageManager"""
+    """Basic initialization of MessageManager"""
     manager = MessageManager()
     assert isinstance(manager.messages, Pile)
     assert not manager.messages
@@ -68,7 +68,7 @@ def test_message_manager_with_invalid_system():
 
 
 def test_set_system():
-    """Test setting and replacing system message"""
+    """Setting and replacing system message"""
     manager = MessageManager()
     system1 = System(content={"system_message": "System 1"})
     system2 = System(content={"system_message": "System 2"})
@@ -86,7 +86,7 @@ def test_set_system():
 
 
 def test_create_instruction_basic():
-    """Test creating basic instruction message"""
+    """Creating basic instruction message"""
     instruction = Instruction(
         content={"instruction": "Test instruction"},
         sender="user",
@@ -100,7 +100,7 @@ def test_create_instruction_basic():
 
 
 def test_create_instruction_with_all_params():
-    """Test creating instruction with all parameters"""
+    """Creating instruction with all parameters"""
     instruction = Instruction(
         content={
             "instruction": "Test instruction",
@@ -130,7 +130,7 @@ def test_create_instruction_with_all_params():
 
 
 def test_create_instruction_update_existing():
-    """Test updating existing instruction"""
+    """Updating existing instruction"""
     instruction = Instruction(content={"instruction": "Original"})
     instruction.update(guidance="New guidance", sender="user")
 
@@ -219,7 +219,7 @@ def test_add_message_instruction_context_replace(message_manager):
 
 
 def test_create_system_basic():
-    """Test creating basic system message"""
+    """Creating basic system message"""
     system = System(
         content={"system_message": "Test system"},
         sender="system",
@@ -233,7 +233,7 @@ def test_create_system_basic():
 
 
 def test_create_system_with_datetime():
-    """Test creating system message with datetime"""
+    """Creating system message with datetime"""
     system = System(content={"system_message": "Test system", "system_datetime": True})
 
     assert isinstance(system, System)
@@ -241,7 +241,7 @@ def test_create_system_with_datetime():
 
 
 def test_create_system_update_existing():
-    """Test updating existing system message"""
+    """Updating existing system message"""
     system = System(content={"system_message": "Original"})
     system.update(sender="system")
 
@@ -249,7 +249,7 @@ def test_create_system_update_existing():
 
 
 def test_create_assistant_response_basic():
-    """Test creating basic assistant response"""
+    """Creating basic assistant response"""
     response = AssistantResponse(
         content={"assistant_response": "Test response"},
         sender="assistant",
@@ -263,7 +263,7 @@ def test_create_assistant_response_basic():
 
 
 def test_create_assistant_response_update_existing():
-    """Test updating existing assistant response"""
+    """Updating existing assistant response"""
     response = AssistantResponse(content={"assistant_response": "Original"})
     response.update(sender="assistant")
 
@@ -271,7 +271,7 @@ def test_create_assistant_response_update_existing():
 
 
 def test_create_action_request_basic():
-    """Test creating basic action request"""
+    """Creating basic action request"""
     request = ActionRequest(
         content={"function": "test_function", "arguments": {"arg": "value"}},
         sender="user",
@@ -286,7 +286,7 @@ def test_create_action_request_basic():
 
 
 def test_create_action_request_update_existing():
-    """Test updating existing action request"""
+    """Updating existing action request"""
     request = ActionRequest(
         content={"function": "original", "arguments": {}},
         sender="user",
@@ -298,7 +298,7 @@ def test_create_action_request_update_existing():
 
 
 def test_create_action_response_basic():
-    """Test creating basic action response"""
+    """Creating basic action response"""
     request = ActionRequest(
         content={"function": "test", "arguments": {}},
         sender="user",
@@ -323,7 +323,7 @@ def test_create_action_response_basic():
 
 
 def test_create_action_response_without_request():
-    """Test that action response requires valid request ID"""
+    """Action response requires valid request ID."""
     # ActionResponse can be created without a request, but won't have proper linking
     response = ActionResponse(
         content={
@@ -338,7 +338,7 @@ def test_create_action_response_without_request():
 
 
 def test_create_action_response_update_existing():
-    """Test updating existing action response"""
+    """Updating existing action response"""
     request = ActionRequest(
         content={"function": "test", "arguments": {}},
         sender="user",
@@ -358,7 +358,7 @@ def test_create_action_response_update_existing():
 
 
 def test_add_message_instruction(message_manager):
-    """Test adding instruction via add_message"""
+    """Adding instruction via add_message"""
     instruction = message_manager.add_message(
         instruction="Test instruction",
         context={"key": "value"},
@@ -374,7 +374,7 @@ def test_add_message_instruction(message_manager):
 
 
 def test_add_message_system(message_manager):
-    """Test adding system message via add_message"""
+    """Adding system message via add_message"""
     system = message_manager.add_message(
         system="Test system",
         sender="system",
@@ -388,7 +388,7 @@ def test_add_message_system(message_manager):
 
 
 def test_add_message_assistant_response(message_manager):
-    """Test adding assistant response via add_message"""
+    """Adding assistant response via add_message"""
     response = message_manager.add_message(
         assistant_response="Test response",
         sender="assistant",
@@ -401,7 +401,7 @@ def test_add_message_assistant_response(message_manager):
 
 
 def test_add_message_action_request(message_manager):
-    """Test adding action request via add_message"""
+    """Adding action request via add_message"""
     request = message_manager.add_message(
         action_function="test_function",
         action_arguments={"arg": "value"},
@@ -415,7 +415,7 @@ def test_add_message_action_request(message_manager):
 
 
 def test_add_message_action_response(message_manager):
-    """Test adding action response via add_message"""
+    """Adding action response via add_message"""
     # First create and add a request
     request = message_manager.add_message(
         action_function="test_function",
@@ -439,7 +439,7 @@ def test_add_message_action_response(message_manager):
 
 
 def test_add_message_with_metadata(message_manager):
-    """Test adding message with metadata"""
+    """Adding message with metadata"""
     metadata = {"custom_key": "custom_value", "priority": "high"}
     msg = message_manager.add_message(
         instruction="Test",
@@ -452,7 +452,7 @@ def test_add_message_with_metadata(message_manager):
 
 
 def test_add_message_update_existing(message_manager):
-    """Test updating existing message via add_message"""
+    """Updating existing message via add_message"""
     msg1 = message_manager.add_message(
         instruction="First version",
         sender="user",
@@ -469,7 +469,7 @@ def test_add_message_update_existing(message_manager):
 
 
 def test_add_message_multiple_types_error(message_manager):
-    """Test that adding multiple message types raises error"""
+    """Adding multiple message types raises error."""
     with pytest.raises(ValueError, match="Only one message type can be added at a time"):
         message_manager.add_message(
             instruction="Test",
@@ -480,7 +480,7 @@ def test_add_message_multiple_types_error(message_manager):
 
 
 def test_add_message_system_instruction_error(message_manager):
-    """Test that adding system and instruction together raises error"""
+    """Adding system and instruction together raises error."""
     with pytest.raises(ValueError, match="Only one message type can be added at a time"):
         message_manager.add_message(
             system="System message",
@@ -516,7 +516,7 @@ def test_sync_add_message_accepts_sync_hook(message_manager):
 
 
 def test_sync_add_message_preflight_does_not_mutate_pile(message_manager):
-    """R4-A MED-1: the async-hook guard must fire BEFORE pile mutation.
+    """The async-hook guard must fire BEFORE pile mutation.
 
     Pre-fix: add_message created and inserted the message, THEN
     _fire_on_message_added raised. Caller catching the error would
@@ -538,11 +538,11 @@ def test_sync_add_message_preflight_does_not_mutate_pile(message_manager):
 
 
 async def test_a_add_message_action_response_with_empty_output(message_manager):
-    """R4-A HIGH-3: an ActionResponse with falsey output (empty string,
-    0, False, [], {}) used to be silently dropped because the dispatch
-    branch tested ``action_output`` truthiness instead of
-    ``action_output is not None``. The ActionRequest would then be
-    re-emitted as a duplicate via the fallback branch.
+    """An ActionResponse with falsey output (empty string, 0, False, [],
+    {}) used to be silently dropped because the dispatch branch tested
+    ``action_output`` truthiness instead of ``action_output is not
+    None``. The ActionRequest would then be re-emitted as a duplicate
+    via the fallback branch.
     """
     from lionagi.protocols.messages import ActionRequest, ActionResponse
 
@@ -612,8 +612,8 @@ async def test_a_add_message_passes_through_prebuilt_action_response(
     )
 
     # The hook observed an ActionResponse whose metadata['is_error']
-    # was already True at hook time (the bug R4 closed: live persist
-    # used to see is_error=False and serialize the wrong state).
+    # was already True at hook time. Previously live persist saw
+    # is_error=False and serialized the wrong state.
     assert any(
         kind == "ActionResponse" and meta.get("is_error") is True for kind, meta in captured
     ), f"hook never observed final is_error state: {captured}"

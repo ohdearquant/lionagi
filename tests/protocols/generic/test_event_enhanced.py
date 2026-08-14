@@ -11,9 +11,7 @@ from lionagi.ln.concurrency._compat import ExceptionGroup
 from lionagi.ln.types import Unset
 from lionagi.protocols.generic.event import Event, EventStatus, Execution
 
-# ---------------------------------------------------------------------------
 # 1. Execution.retryable field
-# ---------------------------------------------------------------------------
 
 
 class TestExecutionRetryable:
@@ -64,9 +62,7 @@ class TestExecutionRetryable:
         assert "retryable=False" in s
 
 
-# ---------------------------------------------------------------------------
 # 2. Execution.add_error()
-# ---------------------------------------------------------------------------
 
 
 class TestExecutionAddError:
@@ -131,9 +127,7 @@ class TestExecutionAddError:
         assert len(ex.error.exceptions) == 10
 
 
-# ---------------------------------------------------------------------------
 # 3. Execution._serialize_exception_group()
-# ---------------------------------------------------------------------------
 
 
 class TestSerializeExceptionGroup:
@@ -175,7 +169,7 @@ class TestSerializeExceptionGroup:
         }
 
     def test_depth_limit(self):
-        """Verify that nesting deeper than MAX_DEPTH (100) is handled."""
+        """Nesting deeper than MAX_DEPTH (100) is handled."""
         ex = Execution()
         # Build a chain of 102 nested ExceptionGroups
         eg = ExceptionGroup("leaf", [ValueError("bottom")])
@@ -233,9 +227,7 @@ class TestSerializeExceptionGroup:
         assert d["error"] == "plain string"
 
 
-# ---------------------------------------------------------------------------
 # 4. Event.assert_completed()
-# ---------------------------------------------------------------------------
 
 
 class TestEventAssertCompleted:
@@ -298,9 +290,7 @@ class TestEventAssertCompleted:
             event.assert_completed()
 
 
-# ---------------------------------------------------------------------------
 # 5. Backward compatibility
-# ---------------------------------------------------------------------------
 
 
 class TestBackwardCompatibility:

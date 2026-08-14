@@ -52,22 +52,12 @@ _EDIT_TOOLS = ("Edit", "edit", "edit_file", "patch", "MultiEdit")
 
 
 def _extract_activity(session: CLISession) -> dict[str, Any]:
-    """Bounded, metadata-only record of what a leg did.
-
-    Carries no tool inputs by design. Tool arguments hold file paths, shell
-    command strings and prompts, so a block containing them could not be
-    recorded on the default path without a redactor in front of it; counting
-    instead of quoting removes the need for one. The full detail, inputs
-    included, stays available through populate_summary() under the caller's
-    explicit opt-in.
-
-    Usage and cost are absent for a different reason: they already travel in
-    the response metadata and are summed per branch downstream, so repeating
-    them here would create a second value for one fact, free to disagree
-    with the first.
-
-    Size is bounded by the number of DISTINCT tool names rather than by the
-    number of calls, so a long run costs the same few keys as a short one.
+    """Bounded, metadata-only record of what a leg did: tool call counts and
+    file-operation counts, no raw tool inputs (those can hold file paths,
+    shell commands and prompts — see populate_summary() for the full,
+    opt-in detail) and no usage/cost (already summed downstream from
+    response metadata). Bounded by distinct tool names, not call count, so a
+    long run costs the same few keys as a short one.
     """
     tool_counts: dict[str, int] = {}
     file_operations = {"reads": 0, "writes": 0, "edits": 0}

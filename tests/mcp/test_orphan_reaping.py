@@ -809,15 +809,12 @@ def test_a_child_recorded_end_wins_over_a_later_reaper_observation(
 ):
     """Ties the general hook-wins-over-reaper guarantee (see
     ``test_a_hook_end_that_lands_first_survives_the_reaper`` above) to the
-    concrete mechanism the CLI's direct-path notice delivery depends on:
-    `--notify` for an MCP-spawned run always resolves to
+    concrete mechanism: `--notify` for an MCP-spawned run always resolves to
     `lionagi.mcp._notify_hook`, so calling it IS how a run records its own
-    end, whichever of the two CLI-side notify paths (registered callback, or
-    a run that lost its persistence and delivers directly) triggered it.
-
-    Ordering matters here specifically: the child's hook runs and wins the
-    write BEFORE the reaper ever observes this run, and the reap that follows
-    must decline rather than overwrite it with `indeterminate`.
+    end, whichever CLI-side notify path triggered it. Ordering matters here
+    specifically: the child's hook runs and wins the write BEFORE the reaper
+    ever observes this run, and the reap that follows must decline rather
+    than overwrite it with `indeterminate`.
     """
     _pid_absent(monkeypatch)
     rid = _stranded()

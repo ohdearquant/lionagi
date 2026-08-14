@@ -23,10 +23,6 @@ from lionagi.lndl.assembler import NOTE_NAMESPACE, _coerce_str_to_list
 from lionagi.lndl.ast import Lact, RLvar
 from lionagi.lndl.normalize import _fix_missing_gt
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _parse(text: str):
     """Convenience: lex + parse and return the Program."""
@@ -34,11 +30,6 @@ def _parse(text: str):
     tokens = lexer.tokenize()
     parser = Parser(tokens, source_text=text)
     return parser.parse()
-
-
-# ---------------------------------------------------------------------------
-# 1. Two-token shortcut resolution
-# ---------------------------------------------------------------------------
 
 
 class TestTwoTokenShortcut:
@@ -109,11 +100,6 @@ class TestTwoTokenShortcut:
         assert lact.extra_id == "compute"
 
 
-# ---------------------------------------------------------------------------
-# 2. Dict field placeholder
-# ---------------------------------------------------------------------------
-
-
 class DictModel(BaseModel):
     data: dict[str, str]
 
@@ -159,11 +145,6 @@ class TestDictFieldPlaceholder:
         prog = _parse(text)
         result = assemble(prog, InfoModel)
         assert result == {"info": {"x": "1", "y": "2", "z": "3"}}
-
-
-# ---------------------------------------------------------------------------
-# 3. Note namespace
-# ---------------------------------------------------------------------------
 
 
 class TestNoteNamespace:
@@ -219,11 +200,6 @@ class TestNoteNamespace:
     def test_note_namespace_constant(self):
         """NOTE_NAMESPACE should be 'note'."""
         assert NOTE_NAMESPACE == "note"
-
-
-# ---------------------------------------------------------------------------
-# 4. Nested groups for list[Model]
-# ---------------------------------------------------------------------------
 
 
 class Item(BaseModel):
@@ -301,11 +277,6 @@ class TestNestedGroupsListModel:
         assert validated.items[2].name == "Three"
 
 
-# ---------------------------------------------------------------------------
-# 5. normalize._fix_missing_gt
-# ---------------------------------------------------------------------------
-
-
 class TestFixMissingGt:
     """_fix_missing_gt repairs <lact alias fn(args)</lact> missing the closing >."""
 
@@ -340,11 +311,6 @@ class TestFixMissingGt:
         result = normalize_lndl_text(bad)
         # After repair the tag should be well-formed
         assert "<lact myalias>multiply(x=1, y=2)</lact>" in result
-
-
-# ---------------------------------------------------------------------------
-# 6. _coerce_str_to_list conservative behavior
-# ---------------------------------------------------------------------------
 
 
 class TestCoerceStrToList:
@@ -386,11 +352,6 @@ class TestCoerceStrToList:
         # Must be preserved as one item, not split at every comma
         assert len(result) == 1
         assert result[0] == prose
-
-
-# ===========================================================================
-# 7. parse_function_call and qualified_name
-# ===========================================================================
 
 
 class TestParseFunctionCall:

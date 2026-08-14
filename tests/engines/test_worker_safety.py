@@ -24,9 +24,7 @@ from lionagi.engines.coding import (
 )
 from lionagi.engines.engine import Engine, EngineRun
 
-# ---------------------------------------------------------------------------
 # Helpers shared across sections
-# ---------------------------------------------------------------------------
 
 
 class _StubEngine(Engine):
@@ -55,9 +53,7 @@ class _ScriptedBranch:
         return "ok"
 
 
-# ---------------------------------------------------------------------------
 # bounded cancel_active timeout
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -115,9 +111,7 @@ async def test_cancel_active_noop_when_empty():
     await run.cancel_active()  # must not raise
 
 
-# ---------------------------------------------------------------------------
 # turn-level timeout into repair loop
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -212,9 +206,7 @@ async def test_turn_timeout_all_rounds_concludes_failed(tmp_path, monkeypatch):
     assert result.passed is False
 
 
-# ---------------------------------------------------------------------------
 # spec lint
-# ---------------------------------------------------------------------------
 
 
 def test_lint_spec_warns_missing_acceptance_criteria():
@@ -322,9 +314,7 @@ async def test_spec_lint_strict_raises_before_run(tmp_path, monkeypatch):
     assert not made, "no agent must be created when strict spec check fails"
 
 
-# ---------------------------------------------------------------------------
 # worker heartbeat + activity events
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -532,9 +522,7 @@ async def test_heartbeat_events_not_in_judge_context(tmp_path, monkeypatch):
     assert not run.events_of(WorkerHeartbeat), "HeartBeat must not pollute the chain store"
 
 
-# ---------------------------------------------------------------------------
 # stage watchdog + partial export on abort
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

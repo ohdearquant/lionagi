@@ -88,7 +88,6 @@ class TestOllamaEndpointConfiguration:
         # api_key should be removed
         endpoint = OllamaChatEndpoint(api_key="should_be_removed")
 
-        # Should not raise error
         assert endpoint is not None
 
     @patch("lionagi.providers.ollama.chat._HAS_OLLAMA", True)
@@ -208,7 +207,6 @@ class TestOllamaModelManagement:
 
         endpoint = OllamaChatEndpoint()
 
-        # Should not raise, but log warning
         with caplog.at_level("DEBUG", logger="lionagi.providers.ollama.chat"):
             endpoint._check_model("llama2")
 

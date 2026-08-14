@@ -96,7 +96,6 @@ class TestHookEventBasicBehavior:
 
         await hook_event.invoke()
 
-        # Should exit because exit=True and hook failed
         assert hook_event._should_exit is True
 
     @pytest.mark.anyio
@@ -140,7 +139,6 @@ class TestHookEventBasicBehavior:
             event_like=FakeEvent(),
         )
 
-        # Should handle the tuple exception and set error state
         await hook_event.invoke()
 
         assert hook_event.execution.status == EventStatus.FAILED
@@ -186,7 +184,6 @@ class TestHookEventCancellation:
             event_like=FakeEvent(),
         )
 
-        # Should raise cancellation due to timeout
         with pytest.raises(MyCancelled, match="Timeout"):
             await hook_event.invoke()
 
@@ -207,7 +204,6 @@ class TestHookEventDispatchErrorPolicy:
 
         await hook_event.invoke()
 
-        # Should not exit because exit=False
         assert hook_event._should_exit is False
         assert hook_event.execution.status == EventStatus.CANCELLED  # Dispatch errors are CANCELLED
         assert hook_event._exit_cause is not None
@@ -227,7 +223,6 @@ class TestHookEventDispatchErrorPolicy:
 
         await hook_event.invoke()
 
-        # Should exit because exit=True
         assert hook_event._should_exit is True
         assert hook_event.execution.status == EventStatus.CANCELLED  # Dispatch errors are CANCELLED
         assert hook_event._exit_cause is not None

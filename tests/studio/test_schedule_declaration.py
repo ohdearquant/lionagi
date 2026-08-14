@@ -26,9 +26,7 @@ from lionagi.studio.services.schedule_declaration import (
     resolve_schedule_set,
 )
 
-# ---------------------------------------------------------------------------
 # fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -82,9 +80,7 @@ schedules:
 """
 
 
-# ---------------------------------------------------------------------------
 # Closed-schema rejection at every level
-# ---------------------------------------------------------------------------
 
 
 def test_top_level_unknown_key_rejected():
@@ -456,9 +452,7 @@ def test_wrong_api_version_rejected():
         )
 
 
-# ---------------------------------------------------------------------------
 # Trigger resolution
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_cron_trigger_persists_timezone(agent_profile):
@@ -639,9 +633,7 @@ def test_resolve_github_trigger_rejects_invalid_repo(tmp_path, monkeypatch):
         resolve_schedule_set(doc, tmp_path)
 
 
-# ---------------------------------------------------------------------------
 # Target resolution
-# ---------------------------------------------------------------------------
 
 
 def test_agent_target_resolves_model_from_profile(agent_profile):
@@ -845,9 +837,7 @@ schedules:
     }
 
 
-# ---------------------------------------------------------------------------
 # cwd / project resolution
-# ---------------------------------------------------------------------------
 
 
 def test_relative_cwd_resolves_against_manifest_dir(tmp_path, monkeypatch):
@@ -953,9 +943,7 @@ schedules:
     assert resolved["hourly"].cwd == str(tmp_path.resolve())
 
 
-# ---------------------------------------------------------------------------
 # Atomic validate/diff/apply service
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1237,10 +1225,8 @@ async def test_dry_run_plan_never_writes(temp_db_path, agent_profile):
         assert rows == []
 
 
-# ---------------------------------------------------------------------------
 # Command-target args: both create paths write action_command_args, so both
 # must hold it to the same contract
-# ---------------------------------------------------------------------------
 
 
 def _command_manifest(args_yaml: str, cwd: Path) -> str:

@@ -2,30 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """The exclusive claim a finalizer holds while it closes out a manifest round.
 
-Three different processes can arrive at the same round wanting to finish it: the
-runner itself at teardown, a reaper acting on a kill request, and a reaper
-sweeping up an orphan. Only one may act, and the primitive that decides is an
-``flock`` on ``{run_dir}/finalize.lock``, taken non-blocking. The kernel ties the
-lock's lifetime to the holding process, so a dead holder's claim vanishes with it
-and takeover IS acquisition — there is no stale-lock repair path for two
-claimants to race on, because there is no repair path at all.
-
-Two properties are the whole point of this module:
-
-- **The descriptor must not reach a spawned leg.** A lock a leg inherited would
-  keep a dead runner's claim alive from inside a living child, and the claim
-  would outlive the only process that knew what it was for. What actually
-  provides this is the interpreter: since PEP 446 every descriptor Python opens
-  is non-inheritable, so ``O_CLOEXEC`` below is a statement of the requirement
-  rather than the thing that meets it. The way to lose the property is to mark
-  the descriptor inheritable, which is what the test pins.
-- **The claim decides nothing.** Every claimant arrives because of something it
-  observed BEFORE acquiring, and the gap between observing and acquiring is
-  exactly where a live holder finishes, publishes, exits, and releases the lock
-  whose availability the claimant is about to read as confirmation. So the first
-  act under the claim is a re-read, and the disposition comes only from that.
-  This module takes readers rather than state for that reason: there is no
-  parameter through which a caller could hand in what it saw earlier.
+Non-blocking ``flock`` on ``{run_dir}/finalize.lock``; a dead holder's claim
+vanishes with it (takeover IS acquisition — no stale-lock repair path). The
+descriptor must never reach a spawned leg (``O_CLOEXEC``), and the claim
+itself decides nothing — every claimant re-reads state after acquiring
+rather than trusting what it observed before. See ``docs/internals/cli.md``
+(`_finalize.py`) for why both properties are load-bearing.
 """
 
 from __future__ import annotations

@@ -36,10 +36,6 @@ def test_to_num_converts_bool_with_requested_type(value, num_type, expected):
     assert isinstance(result, num_type)
 
 
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-
-
 class TestToNumDirectNumeric:
     def test_int_input(self):
         assert to_num(42) == 42.0

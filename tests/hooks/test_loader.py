@@ -29,9 +29,6 @@ def _agent_hooks_contract() -> str:
     return " ".join(AGENT_HOOKS_REFERENCE.read_text().replace("`", "").split())
 
 
-# ── Registry ──────────────────────────────────────────────────────────────────
-
-
 def test_builtins_resolvable_by_name():
     """ADR-0047 D3 — names must be agent-YAML addressable."""
     for name in (
@@ -68,9 +65,6 @@ def test_register_handler_makes_it_addressable():
         _REGISTRY.pop("my_custom_handler_for_test", None)
 
 
-# ── load_hooks_for_agent ─────────────────────────────────────────────────────
-
-
 def test_load_hooks_resolves_string_names_to_callables():
     resolved = load_hooks_for_agent(
         {
@@ -96,9 +90,6 @@ def test_load_hooks_rejects_non_list_value():
 def test_load_hooks_empty_or_none_returns_empty_map():
     assert load_hooks_for_agent(None) == {}
     assert load_hooks_for_agent({}) == {}
-
-
-# ── build_session_bus override semantics ─────────────────────────────────────
 
 
 def test_build_session_bus_uses_defaults_when_no_profile():
@@ -225,9 +216,6 @@ def test_artifact_created_is_deprecated_and_has_no_production_emit_site():
                     emit_sites.append(f"{path.relative_to(ROOT)}:{node.lineno}")
 
     assert emit_sites == []
-
-
-# ── Deprecation alias ─────────────────────────────────────────────────────────
 
 
 import asyncio

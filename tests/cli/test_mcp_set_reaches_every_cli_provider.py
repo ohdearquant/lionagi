@@ -60,9 +60,7 @@ def _assert_secret_is_off_the_wire(kwargs: dict, args: list[str], codex_home) ->
     assert args[args.index("-p") + 1] == kwargs["profile"]
 
 
-# ---------------------------------------------------------------------------
 # The transports themselves: what an empty set means to each of them.
-# ---------------------------------------------------------------------------
 
 
 def test_an_empty_exclusive_set_is_strict_for_the_claude_transport():
@@ -93,9 +91,7 @@ def test_a_provider_without_a_transport_reports_that_it_carried_nothing():
     assert kwargs == {}
 
 
-# ---------------------------------------------------------------------------
 # Site 1 — the plain `li agent` leg (build_chat_model).
-# ---------------------------------------------------------------------------
 
 
 def test_plain_leg_hands_a_codex_request_the_resolved_set(codex_home):
@@ -156,9 +152,7 @@ def test_plain_leg_empty_set_is_the_whole_set_on_both_transports(codex_home):
     assert claude.endpoint.config.kwargs["strict_mcp_config"] is True
 
 
-# ---------------------------------------------------------------------------
 # Site 2 — the resumed leg.
-# ---------------------------------------------------------------------------
 
 
 def _wire_resume_stubs(monkeypatch, tmp_path: Path, provider: str, model: str) -> str:
@@ -319,9 +313,7 @@ async def test_resumed_antigravity_leg_rejects_an_explicit_server_set(monkeypatc
         )
 
 
-# ---------------------------------------------------------------------------
 # Site 3 — the flow / fanout worker.
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

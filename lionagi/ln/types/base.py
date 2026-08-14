@@ -84,7 +84,6 @@ class Params:
 
     @classmethod
     def allowed(cls) -> set[str]:
-        """Return the keys of the parameters."""
         if "_allowed_keys" in cls.__dict__ and cls.__dict__["_allowed_keys"]:
             return cls._allowed_keys
         cls._allowed_keys = {i for i in cls.__dataclass_fields__.keys() if not i.startswith("_")}
@@ -147,12 +146,10 @@ class DataClass:
     _allowed_keys: ClassVar[set[str]] = field(default=set(), init=False, repr=False)
 
     def __post_init__(self):
-        """Post-initialization to ensure all fields are set."""
         self._validate()
 
     @classmethod
     def allowed(cls) -> set[str]:
-        """Return the keys of the parameters."""
         if "_allowed_keys" in cls.__dict__ and cls.__dict__["_allowed_keys"]:
             return cls._allowed_keys
         cls._allowed_keys = {i for i in cls.__dataclass_fields__.keys() if not i.startswith("_")}

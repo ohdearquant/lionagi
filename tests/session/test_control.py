@@ -18,9 +18,7 @@ from lionagi.session.control import LoopBreak, LoopControl, LoopDirective
 from lionagi.session.session import Session
 from lionagi.session.signal import StructuredOutput
 
-# ---------------------------------------------------------------------------
 # LoopDirective / LoopControl / LoopBreak construction
-# ---------------------------------------------------------------------------
 
 
 class TestControlTypes:
@@ -58,9 +56,7 @@ class TestControlTypes:
         assert issubclass(LoopBreak, Exception)
 
 
-# ---------------------------------------------------------------------------
 # Branch.control() / poll_control() — one-shot semantics
-# ---------------------------------------------------------------------------
 
 
 class TestBranchControlOneShot:
@@ -110,9 +106,7 @@ class TestBranchControlOneShot:
         assert ctrl.reason is None
 
 
-# ---------------------------------------------------------------------------
 # _check_control behavior
-# ---------------------------------------------------------------------------
 
 
 class TestCheckControl:
@@ -154,9 +148,7 @@ class TestCheckControl:
         assert b.poll_control() is None  # consumed
 
 
-# ---------------------------------------------------------------------------
 # CANCEL stops the stream and finally still runs
-# ---------------------------------------------------------------------------
 
 
 class TestCancelFinallyBehavior:
@@ -241,9 +233,7 @@ class TestCancelFinallyBehavior:
         assert b.poll_control() is None  # one-shot
 
 
-# ---------------------------------------------------------------------------
 # End-to-end integration — real run() loop with loop control
-# ---------------------------------------------------------------------------
 
 
 def _make_fake_cli_model_for_control(chunks: list[StreamChunk]):

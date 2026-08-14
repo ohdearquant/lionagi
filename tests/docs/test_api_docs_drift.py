@@ -7,9 +7,7 @@ import pytest
 DOCS_DIR = Path(__file__).resolve().parents[2] / "docs" / "api"
 
 
-# ---------------------------------------------------------------------------
 # 1. Gemini provider uses GEMINI_API_KEY, not GOOGLE_API_KEY
-# ---------------------------------------------------------------------------
 class TestIModelDocs:
     """Verify imodel.md matches live provider configuration."""
 
@@ -44,9 +42,7 @@ class TestIModelDocs:
         assert "GEMINI_API_KEY" in content
 
 
-# ---------------------------------------------------------------------------
 # 2. Operations doc import paths resolve
-# ---------------------------------------------------------------------------
 class TestOperationsDocs:
     """Verify that every import shown in operations.md actually works."""
 
@@ -101,9 +97,7 @@ class TestOperationsDocs:
         assert HookEventTypes is not None
 
 
-# ---------------------------------------------------------------------------
 # 3. Session.flow() return type is a wrapper dict, not Note
-# ---------------------------------------------------------------------------
 class TestFlowReturnType:
     """Verify Session.flow() return type documentation accuracy."""
 
@@ -163,9 +157,7 @@ class TestFlowReturnType:
         assert "final_context" in content
 
 
-# ---------------------------------------------------------------------------
 # 4. Builder is a public export
-# ---------------------------------------------------------------------------
 class TestBuilderExport:
     """Verify Builder is importable as documented in flow.md."""
 

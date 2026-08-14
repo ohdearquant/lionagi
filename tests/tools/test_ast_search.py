@@ -19,11 +19,6 @@ _sg_available = (shutil.which("sg") or shutil.which("ast-grep")) is not None
 sg_required = pytest.mark.skipif(not _sg_available, reason="ast-grep (sg) binary not in PATH")
 
 
-# ---------------------------------------------------------------------------
-# Model validation
-# ---------------------------------------------------------------------------
-
-
 def test_request_defaults():
     req = AstSearchRequest(pattern="$X")
     assert req.lang == "python"
@@ -51,11 +46,6 @@ def test_response_unavailable():
     assert resp.matches == []
 
 
-# ---------------------------------------------------------------------------
-# Graceful degradation when sg binary absent
-# ---------------------------------------------------------------------------
-
-
 def test_unavailable_when_no_binary(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda _: None)
     resp = _ast_search_sync("$X", ".", "python", 50)
@@ -70,11 +60,6 @@ def test_unavailable_message_actionable(monkeypatch):
     assert resp.status == "unavailable"
     # Should tell user how to install
     assert "cargo" in resp.summary or "ast-grep.github.io" in resp.summary
-
-
-# ---------------------------------------------------------------------------
-# Integration tests (only run when sg present)
-# ---------------------------------------------------------------------------
 
 
 @sg_required
@@ -132,11 +117,6 @@ def test_search_summary_nonempty(tmp_path):
     assert resp.summary
 
 
-# ---------------------------------------------------------------------------
-# AstSearchTool class
-# ---------------------------------------------------------------------------
-
-
 def test_to_tool_returns_tool():
     tool = AstSearchTool()
     assert isinstance(tool.to_tool(), Tool)
@@ -169,11 +149,6 @@ async def test_handle_request_rejects_outside_workspace(tmp_path):
     resp = await tool.handle_request(AstSearchRequest(pattern="$X", path=str(f)))
     assert resp.status == "error"
     assert resp.summary
-
-
-# ---------------------------------------------------------------------------
-# CodingToolkit integration
-# ---------------------------------------------------------------------------
 
 
 def test_coding_toolkit_registers_ast_search(tmp_path):

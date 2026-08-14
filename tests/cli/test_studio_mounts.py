@@ -7,9 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
 # Unit tests for the pure helper functions
-# ---------------------------------------------------------------------------
 
 
 class TestIsMountAllowed:
@@ -81,9 +79,7 @@ class TestIsMountAllowed:
         assert _is_mount_allowed(Path("/proc/1/mem"), [home]) is False
 
 
-# ---------------------------------------------------------------------------
 # Attack scenario: symlink escape is rejected before docker argv is built
-# ---------------------------------------------------------------------------
 
 
 class TestSymlinkEscapeIsRejected:
@@ -180,9 +176,7 @@ class TestSymlinkEscapeIsRejected:
         assert "does_not_exist" not in argv_str
 
 
-# ---------------------------------------------------------------------------
 # Unit tests for _mount_allowed_roots
-# ---------------------------------------------------------------------------
 
 
 class TestMountAllowedRoots:

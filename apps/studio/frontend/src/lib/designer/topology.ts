@@ -20,17 +20,6 @@ export const ENGINE_KINDS: EngineKind[] = [
   "planning",
 ];
 
-/** The fields the backend actually persists for an engine definition. */
-export interface EngineDefFields {
-  name: string;
-  kind: EngineKind;
-  model?: string | null;
-  max_depth?: number | null;
-  max_agents?: number | null;
-  options?: { test_cmd?: string; export_dir?: string } | null;
-  description?: string | null;
-}
-
 export interface TopologyStage {
   /** Stable id — node identity and layout anchor. */
   id: string;

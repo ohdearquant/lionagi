@@ -193,7 +193,7 @@ class TestLoadFlowSpec:
         assert "spec file must contain a YAML/JSON object" in caplog.text
 
 
-# ── Playbook resolution ─────────────────────────────────────────────
+# Playbook resolution
 
 
 class TestResolvePlaybookPath:
@@ -262,7 +262,7 @@ class TestResolvePlaybookPath:
         assert err is None
         assert p.read_text() == "prompt: project\n"
 
-    # ── Adversarial traversal shapes — the path validator must still hold ──
+    # Adversarial traversal shapes — the path validator must still hold
 
     def test_rejects_dotdot_component(self):
         p, err = _resolve_playbook_path("../x")
@@ -300,7 +300,7 @@ class TestResolvePlaybookPath:
         assert "bare identifier" in err
 
 
-# ── argument-hint parser ─────────────────────────────────────────────
+# argument-hint parser
 
 
 class TestArgumentHintParser:
@@ -329,7 +329,7 @@ class TestArgumentHintParser:
         assert _parse_argument_hint(None) == {}
 
 
-# ── Type coercion ────────────────────────────────────────────────────
+# Type coercion
 
 
 class TestCoerceArgValue:
@@ -354,7 +354,7 @@ class TestCoerceArgValue:
         assert err is None and v is None
 
 
-# ── Prompt interpolation ─────────────────────────────────────────────
+# Prompt interpolation
 
 
 class TestInterpolatePrompt:
@@ -391,7 +391,7 @@ class TestInterpolatePrompt:
         assert out == "{missing} thing."
 
 
-# ── End-to-end via run_orchestrate ───────────────────────────────────
+# End-to-end via run_orchestrate
 
 
 class TestPlaybookEndToEnd:
@@ -770,7 +770,7 @@ class TestPlaybookEndToEnd:
         assert code == 1
 
 
-# ── ADR-0064: artifacts: block pass-through ───────────────────────────────────
+# ADR-0064: artifacts: block pass-through
 
 
 class TestPlaybookArtifactsPassThrough:

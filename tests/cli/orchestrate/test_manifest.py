@@ -49,7 +49,7 @@ def _dump_json(tmp_path, data, name="manifest.json"):
     return _write(tmp_path / name, json.dumps(data))
 
 
-# ── success cases ───────────────────────────────────────────────────────
+# success cases
 
 
 def test_minimal_manifest_loads(tmp_path):
@@ -116,7 +116,7 @@ def test_yaml_and_json_parity(tmp_path):
     assert from_yaml == from_json
 
 
-# ── snapshot semantics ──────────────────────────────────────────────────
+# snapshot semantics
 
 
 def test_brief_edit_after_load_has_no_effect(tmp_path):
@@ -151,7 +151,7 @@ def test_manifest_edit_after_load_has_no_effect(tmp_path):
     assert manifest.legs[0].label == "leg-a"
 
 
-# ── top-level schema ────────────────────────────────────────────────────
+# top-level schema
 
 
 def test_manifest_path_must_be_absolute(tmp_path):
@@ -257,7 +257,7 @@ def test_legs_at_ceiling_accepted(tmp_path):
     assert len(manifest.legs) == MAX_LEGS
 
 
-# ── defaults ─────────────────────────────────────────────────────────────
+# defaults
 
 
 def test_defaults_rejects_unknown_key(tmp_path):
@@ -276,7 +276,7 @@ def test_defaults_rejects_model_and_agent_together(tmp_path):
         load_manifest(manifest_path)
 
 
-# ── leg schema ──────────────────────────────────────────────────────────
+# leg schema
 
 
 def test_leg_rejects_unknown_key(tmp_path):
@@ -363,7 +363,7 @@ def test_timeout_at_ceiling_accepted(tmp_path):
     assert manifest.legs[0].timeout == MAX_TIMEOUT_SECONDS
 
 
-# ── label ───────────────────────────────────────────────────────────────
+# label
 
 
 @pytest.mark.parametrize(
@@ -417,7 +417,7 @@ def test_label_collision_after_lowercasing_refused(tmp_path):
         load_manifest(manifest_path)
 
 
-# ── brief ───────────────────────────────────────────────────────────────
+# brief
 
 
 def test_brief_must_be_absolute(tmp_path):
@@ -465,7 +465,7 @@ def test_brief_symlink_is_resolved(tmp_path):
     assert manifest.legs[0].brief_bytes == b"real content\n"
 
 
-# ── cwd ─────────────────────────────────────────────────────────────────
+# cwd
 
 
 def test_cwd_must_be_absolute(tmp_path):
@@ -494,7 +494,7 @@ def test_cwd_must_be_a_directory_not_a_file(tmp_path):
         load_manifest(manifest_path)
 
 
-# ── env ─────────────────────────────────────────────────────────────────
+# env
 
 
 def test_env_map_loads_as_sorted_pairs_with_verbatim_values(tmp_path):
@@ -578,7 +578,7 @@ def test_env_in_defaults_is_refused_as_unknown_key(tmp_path):
         load_manifest(manifest_path)
 
 
-# ── raw-document strictness and snapshot identity ───────────────────────
+# raw-document strictness and snapshot identity
 
 
 def test_shared_brief_literal_is_read_once_with_one_snapshot(tmp_path, monkeypatch):

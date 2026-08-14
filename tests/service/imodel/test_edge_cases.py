@@ -16,7 +16,7 @@ class TestiModelProviderSpecificEdgeCases:
             model="claude-3-5-sonnet-20241022",
             api_key="test-key",
         )
-        # Should create successfully, max_tokens required at invoke time
+        # max_tokens is required at invoke time, not construction.
         assert imodel.endpoint.config.provider == "anthropic"
 
     def test_ollama_special_handling(self):
@@ -43,7 +43,6 @@ class TestiModelProviderSpecificEdgeCases:
             model="openrouter/anthropic/claude-3-opus",
             api_key="test-key",
         )
-        # Should parse provider from model path
         assert imodel.endpoint.config.provider == "openrouter"
 
     def test_mixed_case_provider_names(self):

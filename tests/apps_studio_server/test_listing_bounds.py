@@ -583,26 +583,25 @@ class TestStoreProbe:
         """The tests above must not inherit a ``SIG_DFL`` from an earlier test.
 
         Several of them close an event loop while a database connection's
-        worker thread may still be finishing. Closing a loop closes the read
-        end of its self-pipe before the write end, so a thread handing back a
-        result in that window writes to a pipe whose peer is gone. Under the
-        interpreter default that is an ``OSError`` asyncio already swallows.
-        Under ``SIG_DFL`` the kernel kills the process first, and it dies with
-        its buffered output still buffered: no traceback, no failing
-        assertion, just a worker that stopped and a report blaming whichever
-        test it was holding.
+        worker thread may still be finishing; closing a loop closes the read
+        end of its self-pipe before the write end, so a thread handing back
+        a result in that window writes to a pipe whose peer is gone. Under
+        the interpreter default that's an ``OSError`` asyncio swallows.
+        Under ``SIG_DFL`` the kernel kills the process first, with buffered
+        output still buffered: no traceback, no failing assertion, just a
+        worker that stopped.
 
-        The CLI sets ``SIG_DFL`` on entry, deliberately, because a command in
-        a pipeline should die quietly when its reader leaves. ``signal.signal``
-        is process-wide, so any test that drives the CLI in-process hands that
-        to every test after it. A fixture in ``tests/conftest.py`` puts it
-        back; this asserts the tests here actually got the benefit.
+        The CLI sets ``SIG_DFL`` on entry deliberately, so a command in a
+        pipeline dies quietly when its reader leaves. ``signal.signal`` is
+        process-wide, so any test that drives the CLI in-process leaks that
+        policy to every test after it; a fixture in ``tests/conftest.py``
+        restores it, and this asserts the restore actually happened.
 
-        Order-dependent by nature: it can only catch the leak when something
-        that changes the policy ran earlier in this same process. Run this
-        file after ``tests/cli`` with ``-n 0`` to see it fail without that
-        fixture. Distributed across workers it may pass without proving
-        anything, which is why it is written to never fail falsely.
+        Order-dependent by nature -- it only catches the leak when something
+        that changed the policy ran earlier in this same process (run this
+        file after ``tests/cli`` with ``-n 0`` to see it fail without the
+        fixture). Distributed across workers it may pass without proving
+        anything, so it is written to never fail falsely.
         """
         import signal
 
