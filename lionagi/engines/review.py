@@ -9,10 +9,16 @@ import hashlib
 import re
 from typing import Any
 
+import anyio
 from pydantic import Field
 
 from lionagi.casts.emission import Finding, Verdict
 from lionagi.ln import gather as ln_gather
+from lionagi.ln.concurrency._compat import (
+    ExceptionGroup,
+    get_exception_group_exceptions,
+    is_exception_group,
+)
 from lionagi.providers._provider_errors import ProviderError
 
 from .engine import Engine, EngineEvent, EngineRun
@@ -25,6 +31,47 @@ __all__ = (
     "ReviewEngine",
     "DEFAULT_DIMENSIONS",
 )
+
+# Transport failures that kill one dimension's worker without saying anything
+# about the run. A dropped MCP connection surfaces as the MCP SDK's own
+# McpError, which derives from Exception rather than from ProviderError, and a
+# dropped stream surfaces as anyio's — so neither is reachable by a
+# ProviderError-only except clause even though both are exactly the
+# "ordinary provider/transport failure" this stage means to isolate.
+_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+)
+
+try:  # mcp is an optional extra ([mcp]); absent installs simply have no McpError to catch.
+    from mcp.shared.exceptions import McpError
+except ImportError:
+    pass
+else:
+    _TRANSPORT_ERRORS = (*_TRANSPORT_ERRORS, McpError)
+
+_ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_ERRORS)
+
+
+def _is_all_isolated_failure(exc: BaseException) -> bool:
+    """True iff every leaf is a per-dimension provider/transport failure, recursing into nested groups."""
+    if isinstance(exc, _ISOLATED_ERRORS):
+        return True
+    if is_exception_group(exc):
+        return all(_is_all_isolated_failure(e) for e in get_exception_group_exceptions(exc))
+    return False
+
+
+def _failure_label(exc: BaseException) -> str:
+    """Name the leaf cause(s), so a group reports what actually failed rather than 'ExceptionGroup'."""
+    if not is_exception_group(exc):
+        return type(exc).__name__
+    seen: list[str] = []
+    for leaf in get_exception_group_exceptions(exc):
+        name = _failure_label(leaf)
+        if name not in seen:
+            seen.append(name)
+    return "+".join(seen) if seen else type(exc).__name__
 
 
 class IssueFound(Finding):
@@ -303,8 +350,15 @@ class ReviewEngine(Engine):
     ) -> None:
         try:
             await self._review_dimension(run, artifact, dimension)
-        except ProviderError as exc:
-            error_type = type(exc).__name__
+        except (*_ISOLATED_ERRORS, ExceptionGroup) as exc:
+            # A group reaches here when the dimension's own task group collects
+            # several transport failures at once. Isolate only when every leaf
+            # is one: a mixed group carries something this stage has no claim
+            # to swallow (budget exhaustion, a genuine defect), and laundering
+            # it into a per-dimension degrade would hide it behind a verdict.
+            if not _is_all_isolated_failure(exc):
+                raise
+            error_type = _failure_label(exc)
             run.notify(
                 "dimension_failed",
                 dimension=dimension,
