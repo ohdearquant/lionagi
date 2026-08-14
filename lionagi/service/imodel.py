@@ -23,6 +23,7 @@ from .hooks import (
     global_hook_logger,
 )
 from .rate_limited_processor import RateLimitedAPIExecutor
+from .types import StreamChunk
 
 
 def _terminal_stream_error(api_call: APICalling) -> BaseException | None:
@@ -311,7 +312,28 @@ class iModel:  # noqa: N801
             return self.streaming_process_func(chunk)
         return processed
 
+    @staticmethod
+    def _reported_served_model(value: Any) -> str | None:
+        if isinstance(value, StreamChunk):
+            if value.type != "system":
+                return None
+            value = value.metadata
+        if not isinstance(value, dict):
+            return None
+
+        served_model = value.get("model")
+        if isinstance(served_model, str) and served_model.strip():
+            return served_model
+        return None
+
+    def _store_served_model(self, served_model: str | None) -> None:
+        if served_model is None:
+            self.provider_metadata.pop("served_model", None)
+        else:
+            self.provider_metadata["served_model"] = served_model
+
     async def stream(self, api_call=None, **kw) -> AsyncGenerator:
+        served_model = None
         if api_call is None:
             kw["stream"] = True
             api_call = await self.create_event(**kw)
@@ -325,6 +347,9 @@ class iModel:  # noqa: N801
                 stream_error = None
                 try:
                     async for i in api_call.stream():
+                        reported_model = self._reported_served_model(i)
+                        if reported_model is not None:
+                            served_model = reported_model
                         result = await self.process_chunk(i)
                         yield result if result is not None else i
                     # api_call.stream() captures a transport/provider failure as
@@ -336,6 +361,7 @@ class iModel:  # noqa: N801
                 except Exception as e:
                     raise ValueError(f"Failed to stream API call: {e}") from e
                 finally:
+                    self._store_served_model(served_model)
                     # Pop without yielding — yield-in-finally would swallow CancelledError
                     # during generator cleanup, breaking anyio.fail_after timeout enforcement.
                     self.executor.pile.pop(api_call.id, None)
@@ -345,12 +371,16 @@ class iModel:  # noqa: N801
             stream_error = None
             try:
                 async for i in api_call.stream():
+                    reported_model = self._reported_served_model(i)
+                    if reported_model is not None:
+                        served_model = reported_model
                     result = await self.process_chunk(i)
                     yield result if result is not None else i
                 stream_error = _terminal_stream_error(api_call)
             except Exception as e:
                 raise ValueError(f"Failed to stream API call: {e}") from e
             finally:
+                self._store_served_model(served_model)
                 self.executor.pile.pop(api_call.id, None)
             if stream_error is not None:
                 raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
@@ -381,17 +411,19 @@ class iModel:  # noqa: N801
                     pass
 
             completed_call = self.executor.pile.pop(api_call.id)
-            if (
-                isinstance(self.endpoint, AgenticEndpoint)
-                and completed_call
-                and completed_call.response
-            ):
-                response = completed_call.response
-                if isinstance(response, dict) and "session_id" in response:
+            response = completed_call.response if completed_call else None
+            self._store_served_model(self._reported_served_model(response))
+            if response:
+                if (
+                    isinstance(self.endpoint, AgenticEndpoint)
+                    and isinstance(response, dict)
+                    and "session_id" in response
+                ):
                     self.endpoint.session_id = response["session_id"]
 
             return completed_call
         except Exception as e:
+            self._store_served_model(None)
             raise ValueError(f"Failed to invoke API call: {e}") from e
 
     @property

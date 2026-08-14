@@ -190,3 +190,10 @@ codex_review_*.md
 
 # perf-loop scratch DB copies — never staged, never committed
 /scratch/
+
+# Tool-generated diagnostic artifacts written to repo root (fleet/execgraph tooling)
+/execgraph-*.png
+/fleet-*.png
+/fleet-*.md
+
+.pnpm-store/

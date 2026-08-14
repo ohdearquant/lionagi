@@ -45,6 +45,7 @@ from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
+    _resolve_worker_model_spec,
     attribute_worker_build_failure,
     available_roles,
     build_worker_branch,
@@ -54,8 +55,6 @@ from ._orchestration import (
     parse_orchestrator_provider,
     register_branch_hook,
     resolve_modes,
-    resolve_worker_spec,
-    role_config,
     role_roster,
     setup_orchestration,
     start_live_persist,
@@ -131,7 +130,11 @@ def _heartbeat_warning(
     max_activity_rate = max(activity_rates)
     peer_rates = activity_rates.copy()
     peer_rates.remove(max_activity_rate)
-    activity_floor = statistics.median(peer_rates) if peer_rates else 0.0
+    # Agent process trees contain many blocked infrastructure descendants.
+    # Their exact-zero rates are not a working peer baseline; including them
+    # drives the median to zero and makes this relative discriminator inert.
+    active_peer_rates = [rate for rate in peer_rates if rate > 0]
+    activity_floor = statistics.median(active_peer_rates) if active_peer_rates else 0.0
     ratio_activity_cutoff = activity_floor * _DESCENDANT_CPU_ACTIVITY_RATIO
     fallback_activity_seconds = _DESCENDANT_CPU_FALLBACK_SECONDS * math.sqrt(
         sample_interval_seconds / _DESCENDANT_CPU_FALLBACK_INTERVAL_SECONDS
@@ -164,17 +167,33 @@ def _heartbeat_warning(
 
 def _surface_dropped_spawns(env: OrchestrationEnv, dropped_spawns: list[dict]) -> None:
     rejected = [item for item in dropped_spawns if item.get("reason") == "builder_error"]
-    if not rejected:
-        return
+    if rejected:
+        evidence = []
+        for item in rejected:
+            assignee = item.get("assignee") or "unassigned"
+            error = item.get("error") or "spawn routing failed"
+            progress(f"  ⚠ SPAWN REJECTED: {assignee} — {error}")
+            evidence.append({"kind": "unroutable_spawn", "id": assignee, "label": error})
+        prior = getattr(env, "_failed_operation_evidence", None) or []
+        env._failed_operation_evidence = [*prior, *evidence]
 
-    evidence = []
-    for item in rejected:
-        assignee = item.get("assignee") or "unassigned"
-        error = item.get("error") or "spawn routing failed"
-        progress(f"  ⚠ SPAWN REJECTED: {assignee} — {error}")
-        evidence.append({"kind": "unroutable_spawn", "id": assignee, "label": error})
-    prior = getattr(env, "_failed_operation_evidence", None) or []
-    env._failed_operation_evidence = [*prior, *evidence]
+    refused = [item for item in dropped_spawns if item.get("reason") == "max_spawn_exceeded"]
+    if refused:
+        evidence = []
+        for item in refused:
+            assignee = item.get("assignee") or "unassigned"
+            emitter_id = str(item.get("emitter_id") or item.get("op_id") or assignee)
+            reason = str(item.get("reason"))
+            progress(f"  ⚠ SPAWN REFUSED: {emitter_id} → {assignee} — {reason}")
+            evidence.append(
+                {
+                    "kind": "refused_spawn",
+                    "id": emitter_id,
+                    "label": f"{assignee} ({reason})",
+                }
+            )
+        prior = getattr(env, "_spawn_refusal_evidence", None) or []
+        env._spawn_refusal_evidence = [*prior, *evidence]
 
 
 class FlowPlanError(LionError):
@@ -585,6 +604,25 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
+                spawn_refused = [
+                    s
+                    for s in sessions
+                    if str(s.get("status_reason_code") or "") == RunReasons.COMPLETED_SPAWN_REFUSED
+                ]
+                if spawn_refused:
+                    spawn_metadata = dict(metadata)
+                    spawn_metadata["spawn_refused_session_ids"] = [
+                        s["id"] for s in spawn_refused if s.get("id")
+                    ]
+                    return (
+                        "completed",
+                        RunReasons.COMPLETED_SPAWN_REFUSED,
+                        "Flow completed, but at least one child session refused "
+                        "reactively requested work because its spawn capacity "
+                        "was exhausted.",
+                        [{"kind": "session", "id": s["id"]} for s in spawn_refused if s.get("id")],
+                        spawn_metadata,
+                    )
                 # A "completed" child may still carry COMPLETED_GATE_REJECTED
                 # (a gate rejected mid-DAG and short-circuited its dependent
                 # subtree) — surface that at the invocation level too, or it
@@ -710,6 +748,14 @@ def _parse_reactive(spec: str | None) -> tuple[bool, set[str] | None]:
     return (True, roles) if roles else (True, None)
 
 
+def _remaining_spawn_capacity(
+    max_ops: int, planned_count: int, restored_spawn_count: int = 0
+) -> int:
+    """Return the remaining reactive-spawn budget for this execution attempt."""
+    initial_capacity = max_ops - planned_count if max_ops > 0 else 20
+    return max(0, initial_capacity - restored_spawn_count)
+
+
 def _flow_header_fn(w: dict, i: int, n: int) -> list[str]:
     deps = w.get("depends_on") or []
     dep_str = f"  deps: {', '.join(deps)}" if deps else ""
@@ -742,6 +788,7 @@ class _DagState:
     spawn_roles: set[str] | None
     role_base: dict[str, object]
     worker_models: list[str]
+    max_spawn: int | None = None
     op_segments: list[dict] = field(default_factory=list)
     # role → its resolved artifact_defaults (profile first, else casts Role),
     # cached once per role in _build_dag so _execute_dag can register the same
@@ -809,6 +856,7 @@ async def _build_dag(
     plan_result: _PlanResult,
     *,
     reactive_spec: str,
+    max_spawn: int,
 ) -> _DagState:
     """Wire worker branches into the operation graph builder and snapshot to Studio."""
     assignments = plan_result.assignments
@@ -820,7 +868,7 @@ async def _build_dag(
     reactive, spawn_roles = _parse_reactive(reactive_spec)
 
     def _may_spawn(role: str) -> bool:
-        return reactive and (spawn_roles is None or role in spawn_roles)
+        return max_spawn > 0 and reactive and (spawn_roles is None or role in spawn_roles)
 
     worker_models: list[str] = []
     node_ids: list[str] = []
@@ -874,6 +922,8 @@ async def _build_dag(
         role_artifact_entries.extend(leg_expected)
 
         ctx: list = [{"original_task": prompt}]
+        if ta.inputs:
+            ctx.append({"assignment_inputs": list(ta.inputs)})
         artifact_note = _artifact_directive(env.run, agent_ids[i], leg_expected)
         if dep_indices[i]:
             ups = "; ".join(
@@ -906,6 +956,10 @@ async def _build_dag(
             ctx.append({"effort_guidance": EFFORT_MAP.get(w_effort, "")})
 
         instruction = budget_preambles.get(i, "") + ta.task
+        if ta.exit_criteria:
+            instruction += (
+                f"\n\nExit criteria (must be satisfied before completion):\n{ta.exit_criteria}"
+            )
         dep_nodes = [node_ids[j] for j in dep_indices[i]]
         node = _build_worker_operate_node(
             env.builder,
@@ -930,6 +984,8 @@ async def _build_dag(
 
     # Early DAG snapshot for Studio.
     early_graph = {
+        "reactive": reactive,
+        "max_spawn": max_spawn,
         "agents": [
             {"id": agent_ids[i], "name": agent_ids[i], "model": worker_models[i]}
             for i in range(len(assignments))
@@ -978,6 +1034,7 @@ async def _build_dag(
         spawn_roles=spawn_roles,
         role_base=role_base,
         worker_models=worker_models,
+        max_spawn=max_spawn,
         role_artifact_defaults=role_artifact_defaults,
         worker_branches=worker_branches,
         messenger_bound=worker_messenger_bound,
@@ -1198,6 +1255,13 @@ async def _execute_dag(
     _segment_tasks: list = []
     _control_log_tasks: list = []
 
+    # Restored spawns already consumed spawn budget and exist as completed/
+    # failed work; both the budget below and spawn accounting must count them.
+    restored_spawn_count = len(checkpoint_spawned_seed or [])
+    max_spawn = dag_state.max_spawn
+    if max_spawn is None:
+        max_spawn = _remaining_spawn_capacity(max_ops, len(assignments), restored_spawn_count)
+
     _checkpoint_writer: CheckpointWriter | None = None
     if checkpoint_config is not None:
         _ctx_lp = getattr(env, "_live_persist", None)
@@ -1207,6 +1271,7 @@ async def _execute_dag(
             prompt=checkpoint_prompt,
             plan=checkpoint_plan or [],
             config=checkpoint_config,
+            max_spawn=max_spawn,
             # Seed with prior-checkpoint state (empty on a fresh run) so a
             # resume-of-a-resume can't silently lose context before the next flush.
             flow_context=dict(checkpoint_flow_context or {}),
@@ -1223,12 +1288,6 @@ async def _execute_dag(
     else:
         progress(f"Executing DAG (reactive off): {len(assignments)} assignments...")
     conc = max_concurrent if max_concurrent > 0 else max(len(assignments), 1)
-    # Restored spawns already consumed spawn budget and exist as completed/
-    # failed work; both the budget below and spawn accounting must count them.
-    restored_spawn_count = len(checkpoint_spawned_seed or [])
-    # --max-ops shares budget between initial plan + spawns; default cap of
-    # 20 otherwise so an un-capped reactive run can't fan out unbounded.
-    max_spawn = max(0, (max_ops - len(assignments) if max_ops > 0 else 20) - restored_spawn_count)
     # Resume must start the spawn-id ordinal sequence past whatever restored
     # spawns already used (MAX existing + 1, not count — crashes can leave
     # gaps) or a live spawn could reissue a restored spawn_id/artifact dir.
@@ -2841,17 +2900,16 @@ async def _run_flow_inner(
             if env.bare:
                 lines.append(f"  {agent_ids[i]}: {model_spec} (bare)")
                 continue
-            rm, rp = resolve_worker_spec(ta.assignee)
-            cfg = role_config(ta.assignee, env.pack)
-            if rp:
+            model, rp, cfg = _resolve_worker_model_spec(env, ta.assignee)
+            if cfg and cfg.model:
+                src = "pack"
+                modes = [] if rp else resolve_modes(ta.assignee, ta.modes or None, env.pack)
+            elif rp:
                 # A user profile supplies its own body — casts modes don't apply
                 # (profile shadows casts; ADR-0043 follow-up makes them compose).
-                model, src, modes = rm, "profile", []
-            elif cfg and cfg.model:
-                model, src = cfg.model, "pack"
-                modes = resolve_modes(ta.assignee, ta.modes or None, env.pack)
+                src, modes = "profile", []
             else:
-                model, src = model_spec, "default"
+                src = "default"
                 modes = resolve_modes(ta.assignee, ta.modes or None, env.pack)
             mode_str = f"  modes={modes}" if modes else ""
             lines.append(f"  {agent_ids[i]}: {model} ({src}){mode_str}")
@@ -2911,7 +2969,15 @@ async def _run_flow_inner(
         budget_preambles=budget_preambles,
     )
 
-    dag_state = await _build_dag(env, prompt, plan_result, reactive_spec=reactive_spec)
+    restored_spawn_count = len((resume_checkpoint or {}).get("spawned") or [])
+    max_spawn = _remaining_spawn_capacity(max_ops, len(assignments), restored_spawn_count)
+    dag_state = await _build_dag(
+        env,
+        prompt,
+        plan_result,
+        reactive_spec=reactive_spec,
+        max_spawn=max_spawn,
+    )
 
     if resume_checkpoint is not None:
         _apply_checkpoint_precompletion(

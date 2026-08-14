@@ -1,4 +1,6 @@
+import { useState } from "react";
 import Badge from "@/components/ui/Badge";
+import { FileViewerModal } from "@/components/ui/Markdown";
 import type { ArtifactContract, ArtifactVerification } from "@/lib/types";
 
 function formatBytes(size: number): string {
@@ -24,9 +26,16 @@ function formatCheckedAt(checkedAt: number): string {
 export interface ExpectedArtifactsProps {
   contract?: ArtifactContract | null;
   verification?: ArtifactVerification | null;
+  /** When set, artifact paths open the run-file viewer in place. */
+  runId?: string | null;
 }
 
-export default function ExpectedArtifacts({ contract, verification }: ExpectedArtifactsProps) {
+export default function ExpectedArtifacts({
+  contract,
+  verification,
+  runId,
+}: ExpectedArtifactsProps) {
+  const [viewerPath, setViewerPath] = useState<string | null>(null);
   const expected = contract?.expected ?? [];
   if (!contract || expected.length === 0) return null;
 
@@ -123,12 +132,23 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
                     </div>
                   )}
                 </div>
-                <div
-                  className="min-w-0 truncate font-mono text-[length:var(--t-xs)] text-content-secondary"
-                  title={entry.path}
-                >
-                  {entry.path}
-                </div>
+                {runId ? (
+                  <button
+                    type="button"
+                    onClick={() => setViewerPath(entry.path)}
+                    title={entry.path}
+                    className="min-w-0 truncate text-left font-mono text-[length:var(--t-xs)] text-accent underline decoration-dotted underline-offset-2 hover:text-accent/80"
+                  >
+                    {entry.path}
+                  </button>
+                ) : (
+                  <div
+                    className="min-w-0 truncate font-mono text-[length:var(--t-xs)] text-content-secondary"
+                    title={entry.path}
+                  >
+                    {entry.path}
+                  </div>
+                )}
                 <Badge tone={statusTone}>{statusLabel}</Badge>
                 {entry.source && (
                   <div className="md:col-start-2 md:col-span-3 text-[length:var(--t-xs)] text-content-muted">
@@ -141,6 +161,9 @@ export default function ExpectedArtifacts({ contract, verification }: ExpectedAr
           })}
         </ul>
       </div>
+      {runId && viewerPath && (
+        <FileViewerModal runId={runId} path={viewerPath} onClose={() => setViewerPath(null)} />
+      )}
     </div>
   );
 }

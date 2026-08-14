@@ -76,6 +76,42 @@ def test_marks_terminal_without_delivery(job, monkeypatch):
     assert jobs.status(job)["notify_delivery"] == {"attempted": False}
 
 
+def test_flow_terminal_reason_reaches_mcp_status_and_delivery(job, monkeypatch):
+    """The nested MCP hook must retain the flow callback's degraded reason.
+
+    The flow notify adapter supplies its versioned payload in the child env.
+    Losing that reason here flattens ``completed + spawn_refused`` back to a
+    clean MCP job and sends the downstream notice without the degradation.
+    """
+    captured: dict = {}
+
+    def fake_run(argv, **kw):
+        captured["argv"] = argv
+        captured["input"] = kw.get("input")
+        return _FakeCompleted(0)
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", fake_run)
+    monkeypatch.setenv(
+        "LIONAGI_NOTIFY_PAYLOAD",
+        json.dumps(
+            {
+                "status": "completed",
+                "reason_code": "run.completed.spawn_refused",
+            }
+        ),
+    )
+    command = json.dumps(["notify", "{reason_code}"])
+
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    rec = jobs._read_job(job)
+    assert rec["reason_code"] == "run.completed.spawn_refused"
+    assert jobs.status(job)["reason_code"] == "run.completed.spawn_refused"
+    assert captured["argv"] == ["notify", "run.completed.spawn_refused"]
+    assert json.loads(captured["input"])["reason_code"] == "run.completed.spawn_refused"
+
+
 def test_command_override_substitutes_and_delivers(job, monkeypatch):
     captured: dict = {}
 
