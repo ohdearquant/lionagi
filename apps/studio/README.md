@@ -34,6 +34,7 @@ All variables are optional; defaults are shown.
 | `LIONAGI_STUDIO_OPERATOR_CWD` | user home (`/workspace` in Docker) | Absolute execution root for Operator CLI providers |
 | `LIONAGI_HOME` | `~/.lionagi` | Base LionAGI data directory (holds `state.db`) |
 | `LIONAGI_SHOWS_ROOT` | `~/khive-work/shows` | Show artifact root |
+| `STUDIO_API_URL` | selected `--host` / `--port` in dev mode | Explicit Vite proxy target; an operator-supplied value takes precedence over CLI flags |
 | `CORS_ORIGINS` | `localhost:5173,localhost:3000` | Comma-separated allowed browser origins |
 
 ## Running
@@ -54,7 +55,8 @@ li studio --docker # auto-pulls ghcr.io/ohdearquant/lion-studio; UI + API on :87
 **Dev mode (hot-reload)**:
 
 ```bash
-li studio --dev    # Vite dev server on :3000 + uvicorn on :8765; Vite proxies /api
+li studio --dev              # Vite on :3000 + uvicorn on :8765
+li studio --dev --port 45241 # Vite proxies /api, /health, and /openapi.json to :45241
 ```
 
 **Backend only** (e.g. desktop shell):

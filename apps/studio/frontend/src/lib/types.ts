@@ -352,6 +352,8 @@ export interface AgentProfile {
   mode?: string;
   protected?: boolean;
   is_default?: boolean;
+  /** Hook assembly: named library hooks bound to provider-neutral events. */
+  hooks?: Array<{ hook: string; event: string; matcher?: string }>;
 }
 
 // ─── Model config ─────────────────────────────────────────────────────────────

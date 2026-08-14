@@ -166,7 +166,7 @@ def get_agent(name: str) -> dict[str, Any] | None:
     result["protected"] = _is_protected_system(fm)
     result["is_default"] = stem == DEFAULT_AGENT_NAME
 
-    for optional_key in ("permission_mode", "effort", "description", "role", "mode"):
+    for optional_key in ("permission_mode", "effort", "description", "role", "mode", "hooks"):
         if optional_key in fm:
             result[optional_key] = fm[optional_key]
 
@@ -191,7 +191,25 @@ _KNOWN_FRONTMATTER_KEYS = (
     "lion_system",
     "role",
     "mode",
+    "hooks",
 )
+
+
+def _validate_hooks_key(fm: dict[str, Any]) -> None:
+    """Validate (and drop-when-empty) the ``hooks`` assembly on a profile write.
+
+    ``hooks`` binds named hooks from the shared hook library to
+    provider-neutral events — see services/hooks_library.py. A dangling hook
+    name fails the save; an empty list clears the key.
+    """
+    if "hooks" not in fm:
+        return
+    if not fm["hooks"]:
+        fm.pop("hooks")
+        return
+    from .hooks_library import read_library, validate_attachments
+
+    fm["hooks"] = validate_attachments(fm["hooks"], library=read_library())
 
 
 class AgentExistsError(Exception):
@@ -259,6 +277,7 @@ def create_agent(name: str, data: dict[str, Any]) -> dict[str, Any]:
             fm[key] = value
 
     fm["lion_system"] = False
+    _validate_hooks_key(fm)
 
     if "model" in fm:
         model = _canonical_model(fm.get("model"), fm.get("provider"))
@@ -338,6 +357,8 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
             fm.pop(key, None)
         else:
             fm[key] = value
+
+    _validate_hooks_key(fm)
 
     if "model" in fm:
         model = _canonical_model(fm.get("model"), fm.get("provider"))

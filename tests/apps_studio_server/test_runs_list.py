@@ -42,6 +42,8 @@ async def _seed_sessions(db_path: Path, sessions: list[dict]) -> None:
             # key as authoritative and would otherwise write a NULL timestamp.
             if "updated_at" in s:
                 payload["updated_at"] = s["updated_at"]
+            if "invocation_kind" in s:
+                payload["invocation_kind"] = s["invocation_kind"]
             await db.create_session(payload)
 
 
@@ -513,3 +515,144 @@ def test_runs_list_reports_status_ended_at_mismatch_count(tmp_path, monkeypatch)
     assert r.status_code == 200
     data = r.json()
     assert data["status_ended_at_mismatches"] == 1
+
+
+def test_engine_child_transcript_rows_are_collapsed_out_of_the_listing(tmp_path, monkeypatch):
+    """A mirrored CLI transcript stamped as another run's engine child (see
+    claude_mirror.link_engine_child_session) duplicates that canonical run,
+    so the listing and its total must both exclude it — while the row itself
+    stays readable by id for anyone holding a direct link."""
+    db_path = tmp_path / "state.db"
+    canonical_id = str(uuid.uuid4())
+    child_id = str(uuid.uuid4())
+
+    async def _seed() -> None:
+        async with StateDB(db_path) as db:
+            for sid, name in (
+                (canonical_id, "Operator"),
+                (child_id, "Operator · engine transcript"),
+            ):
+                pid = str(uuid.uuid4())
+                await db.create_progression(pid)
+                await db.create_session(
+                    {
+                        "id": sid,
+                        "progression_id": pid,
+                        "name": name,
+                        "status": "completed",
+                        "started_at": time.time() - 60,
+                    }
+                )
+            await db.merge_session_node_metadata(child_id, {"engine_parent_run_id": canonical_id})
+
+    _run(_seed())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    r = client.get("/api/runs")
+    assert r.status_code == 200
+    data = r.json()
+    listed = {row["id"] for row in data["runs"]}
+    assert canonical_id in listed
+    assert child_id not in listed
+    assert data["total"] == 1
+
+    detail = client.get(f"/api/runs/{child_id}")
+    assert detail.status_code == 200
+
+
+def test_terminal_rows_never_read_healthy(tmp_path, monkeypatch):
+    """A finished run has no live process for "healthy" to describe, so the
+    row drops the vacuous verdict instead of projecting "failed but healthy".
+    A running row keeps its real classifier verdict."""
+    db_path = tmp_path / "state.db"
+    now = time.time()
+    sessions = [
+        {"id": str(uuid.uuid4()), "status": "completed", "started_at": now - 60},
+        {"id": str(uuid.uuid4()), "status": "failed", "started_at": now - 60},
+        {"id": str(uuid.uuid4()), "status": "cancelled", "started_at": now - 60},
+        {"id": str(uuid.uuid4()), "status": "running", "started_at": now - 5},
+    ]
+    _run(_seed_sessions(db_path, sessions))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    rows = client.get("/api/runs", params={"per_page": 50}).json()["runs"]
+    by_status = {r["status"]: r for r in rows}
+    for status in ("completed", "failed", "cancelled"):
+        assert by_status[status]["effective_health"] != "healthy"
+    # The non-terminal row keeps whatever the classifier said — the fix must
+    # not blank health where a live process could still carry one.
+    assert by_status["running"]["effective_health"] is not None
+
+
+def test_runs_list_kind_facet(tmp_path, monkeypatch):
+    """?kind= narrows by invocation_kind: 'show' admits both spellings of a
+    show-driven play root, 'agent' also admits legacy NULL-kind rows, and an
+    unknown value is refused (422) rather than silently returning nothing."""
+    db_path = tmp_path / "state.db"
+    now = time.time()
+    ids = {
+        "agent": str(uuid.uuid4()),
+        "legacy": str(uuid.uuid4()),
+        "play": str(uuid.uuid4()),
+        "flow": str(uuid.uuid4()),
+        "show-play": str(uuid.uuid4()),
+    }
+    sessions = [
+        {"id": ids["agent"], "invocation_kind": "agent", "started_at": now - 10},
+        {"id": ids["legacy"], "started_at": now - 20},  # NULL kind
+        {"id": ids["play"], "invocation_kind": "play", "started_at": now - 30},
+        {"id": ids["flow"], "invocation_kind": "flow", "started_at": now - 40},
+        {"id": ids["show-play"], "invocation_kind": "show-play", "started_at": now - 50},
+    ]
+    _run(_seed_sessions(db_path, sessions))
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    def listed(**params):
+        r = client.get("/api/runs", params=params)
+        assert r.status_code == 200
+        return {row["id"] for row in r.json()["runs"]}
+
+    assert listed(kind="play") == {ids["play"]}
+    assert listed(kind="show") == {ids["show-play"]}
+    assert listed(kind="agent") == {ids["agent"], ids["legacy"]}
+    # Facets are repeatable and OR-composed.
+    assert listed(**{"kind": ["play", "flow"]}) == {ids["play"], ids["flow"]}
+    # No facet — everything.
+    assert listed() == set(ids.values())
+    assert client.get("/api/runs", params={"kind": "bogus"}).status_code == 422
+
+
+def test_codex_cost_projects_as_null_until_tracked(tmp_path, monkeypatch):
+    """Codex runs' stored cost figure comes from a pricing table known to be
+    wrong (spend is not actually tracked), so every projection nulls it —
+    NULL already means "unreported" under the cost-visibility contract.
+    Other providers' reported costs pass through untouched."""
+    db_path = tmp_path / "state.db"
+    codex_id = str(uuid.uuid4())
+    claude_id = str(uuid.uuid4())
+
+    async def _seed():
+        async with StateDB(db_path) as db:
+            for sid, provider in ((codex_id, "codex"), (claude_id, "claude_code")):
+                pid = str(uuid.uuid4())
+                await db.create_progression(pid)
+                await db.create_session(
+                    {
+                        "id": sid,
+                        "progression_id": pid,
+                        "status": "completed",
+                        "provider": provider,
+                        "started_at": time.time(),
+                    }
+                )
+                await db.update_session(sid, total_cost_usd=33.92)
+
+    _run(_seed())
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    rows = {r["id"]: r for r in client.get("/api/runs").json()["runs"]}
+    assert rows[codex_id]["total_cost_usd"] is None
+    assert rows[claude_id]["total_cost_usd"] == 33.92
+
+    detail = client.get(f"/api/runs/{codex_id}").json()
+    assert detail["total_cost_usd"] is None
