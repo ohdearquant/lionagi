@@ -163,6 +163,13 @@ jobs:
       if: needs.changes.outputs.adr == 'true'
       run: uv run python scripts/check_adr_status_sets.py
 
+    # Runs against the PR merge commit, which is the only place a number
+    # collision between a branch's new ADR and one main took after the
+    # branch was cut is visible — each side's own diff looks clean.
+    - name: Check ADR numbering is unique and heading-consistent
+      if: needs.changes.outputs.adr == 'true'
+      run: uv run python scripts/check_adr_numbering.py
+
   test:
     runs-on: ubuntu-latest
     strategy:
