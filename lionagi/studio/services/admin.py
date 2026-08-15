@@ -238,11 +238,14 @@ class _PsSnapshotCache(NamedTuple):
 
 
 _PS_SNAPSHOT_CACHE: _PsSnapshotCache | None = None
-# The in-flight capture is stored with the loop that owns it. A Task belongs to
+# In-flight captures, keyed by the loop that owns each one. A Task belongs to
 # the loop that created it, so a caller on a different loop cannot await this
-# one -- see cached_ps_snapshot. The cached value above carries no such
-# affinity and is shared by every caller.
-_PS_SNAPSHOT_INFLIGHT: tuple[asyncio.AbstractEventLoop, asyncio.Task[str]] | None = None
+# one -- see cached_ps_snapshot. One slot per loop rather than one slot in
+# total: with a single slot, a third loop's entry evicted the second's, and the
+# evicted loop's next caller started a duplicate capture instead of joining the
+# one already running for it. The cached value above carries no such affinity
+# and is shared by every caller.
+_PS_SNAPSHOT_INFLIGHT: dict[asyncio.AbstractEventLoop, asyncio.Task[str]] = {}
 _PS_SNAPSHOT_METRICS: dict[str, int | float | None] | None = None
 
 
@@ -261,27 +264,47 @@ def _ps_snapshot_metrics_state() -> dict[str, int | float | None]:
 
 
 async def _capture_ps_snapshot() -> str:
-    """Capture once off-loop and publish the cache before waking waiters."""
+    """Capture once off-loop and publish the cache before waking waiters.
+
+    Captures on different loops overlap, and they do not finish in the order
+    they started: a scan that began earlier can return later. Publishing by
+    arrival would let that older scan replace newer evidence, so a process
+    that appears only in the newer snapshot resolves as absent. Stamping at
+    completion would compound it, since the older data would then carry the
+    later timestamp and outlive the newer snapshot in the TTL.
+
+    So a snapshot is stamped with when its own scan began, and it is
+    published only if nothing newer has been published already. Stamping at
+    the start also shortens the effective TTL by the scan's duration, which
+    is the safe direction for a cache that answers liveness questions.
+    """
     global _PS_SNAPSHOT_CACHE
 
     started = time.perf_counter()
+    taken_at = time.monotonic()
     value = await anyio.to_thread.run_sync(_ps_snapshot)
     duration_ms = (time.perf_counter() - started) * 1000
-    _PS_SNAPSHOT_CACHE = _PsSnapshotCache(
-        value=value,
-        stored_at=time.monotonic(),
-        duration_ms=duration_ms,
-    )
+
     metrics = _ps_snapshot_metrics_state()
     metrics["captures"] = int(metrics["captures"] or 0) + 1
     metrics["last_scan_duration_ms"] = round(duration_ms, 3)
+
+    current = _PS_SNAPSHOT_CACHE
+    if current is not None and current.stored_at > taken_at:
+        # A scan that started later has already published. It is the better
+        # evidence, so it stays in the cache and is what this caller gets too.
+        return current.value
+
+    _PS_SNAPSHOT_CACHE = _PsSnapshotCache(
+        value=value,
+        stored_at=taken_at,
+        duration_ms=duration_ms,
+    )
     return value
 
 
 async def cached_ps_snapshot() -> str:
     """Return a short-TTL process snapshot with async singleflight refresh."""
-    global _PS_SNAPSHOT_INFLIGHT
-
     cached = _PS_SNAPSHOT_CACHE
     if cached is not None and time.monotonic() - cached.stored_at < PS_SNAPSHOT_TTL_SECONDS:
         metrics = _ps_snapshot_metrics_state()
@@ -289,35 +312,30 @@ async def cached_ps_snapshot() -> str:
         return cached.value
 
     loop = asyncio.get_running_loop()
-    inflight = _PS_SNAPSHOT_INFLIGHT
-    task: asyncio.Task[str] | None = None
-    if inflight is not None:
-        owner, pending = inflight
-        # Singleflight is per event loop, deliberately. Awaiting a Task owned by
-        # another loop raises rather than sharing its result, so a caller on a
-        # second loop starts its own capture instead of failing. Two loops in
-        # one process is the exception (a legacy caller running its own loop
-        # beside the serving one), and one extra `ps` there beats a
-        # RuntimeError; within a loop this still collapses to a single capture.
-        if owner is loop and not pending.done():
-            task = pending
-            metrics = _ps_snapshot_metrics_state()
-            metrics["singleflight_hits"] = int(metrics["singleflight_hits"] or 0) + 1
-
-    if task is None:
+    # Singleflight is per event loop, deliberately. Awaiting a Task owned by
+    # another loop raises rather than sharing its result, so a caller on a
+    # second loop starts its own capture instead of failing. Two loops in one
+    # process is the exception (a legacy caller running its own loop beside
+    # the serving one), and one extra `ps` there beats a RuntimeError; within
+    # a loop this collapses to a single capture however many loops are live.
+    pending = _PS_SNAPSHOT_INFLIGHT.get(loop)
+    if pending is not None and not pending.done():
+        task = pending
+        metrics = _ps_snapshot_metrics_state()
+        metrics["singleflight_hits"] = int(metrics["singleflight_hits"] or 0) + 1
+    else:
         task = asyncio.create_task(_capture_ps_snapshot())
-        _PS_SNAPSHOT_INFLIGHT = (loop, task)
+        _PS_SNAPSHOT_INFLIGHT[loop] = task
 
     try:
         # One cancelled request must not cancel the shared capture underneath
         # other viewers that are already awaiting it.
         return await asyncio.shield(task)
     finally:
-        current = _PS_SNAPSHOT_INFLIGHT
-        # Clear only our own entry: a capture started by another loop after
-        # ours must not be dropped by this one's cleanup.
-        if current is not None and current[1] is task and task.done():
-            _PS_SNAPSHOT_INFLIGHT = None
+        # Clear only our own entry: a capture started on this loop after ours
+        # must not be dropped by this one's cleanup.
+        if _PS_SNAPSHOT_INFLIGHT.get(loop) is task and task.done():
+            del _PS_SNAPSHOT_INFLIGHT[loop]
 
 
 # Process start-time comparison tolerance (clock-tick rounding).

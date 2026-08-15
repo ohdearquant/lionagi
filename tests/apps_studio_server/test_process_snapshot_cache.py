@@ -31,7 +31,7 @@ def _isolate_snapshot_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     import lionagi.studio.services.admin as admin_svc
 
     monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_CACHE", None, raising=False)
-    monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_INFLIGHT", None, raising=False)
+    monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_INFLIGHT", {}, raising=False)
     monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_METRICS", None, raising=False)
 
 
@@ -275,3 +275,185 @@ async def test_concurrent_callers_on_one_loop_still_share_a_single_capture(
     assert captures == 1
     metrics = admin_svc._ps_snapshot_metrics_state()
     assert int(metrics["singleflight_hits"] or 0) >= 1
+
+
+async def test_an_older_capture_does_not_overwrite_newer_liveness_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Captures overlap and do not finish in the order they started. A scan that
+    began earlier and returned later must not replace newer evidence, or a
+    process visible only in the newer snapshot resolves as absent.
+    """
+    import threading
+
+    import lionagi.studio.services.admin as admin_svc
+
+    _isolate_snapshot_cache(monkeypatch)
+
+    entered_old = threading.Event()
+    release_old = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def capture() -> str:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            mine = calls
+        if mine == 1:
+            entered_old.set()
+            release_old.wait(timeout=10)
+            return "OLD"
+        return "NEW"
+
+    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+
+    old_task = asyncio.create_task(admin_svc._capture_ps_snapshot())
+    assert await asyncio.to_thread(entered_old.wait, 5), "the first capture never started"
+
+    # Starts strictly later, so its data is the newer evidence.
+    assert await admin_svc._capture_ps_snapshot() == "NEW"
+    assert admin_svc._PS_SNAPSHOT_CACHE.value == "NEW"
+    newer_stored_at = admin_svc._PS_SNAPSHOT_CACHE.stored_at
+
+    release_old.set()
+    # The older scan returns last. It must neither publish nor hand its own
+    # stale value back to its caller.
+    assert await old_task == "NEW"
+    assert admin_svc._PS_SNAPSHOT_CACHE.value == "NEW"
+    assert admin_svc._PS_SNAPSHOT_CACHE.stored_at == newer_stored_at
+
+
+def test_cross_loop_captures_leave_the_newest_snapshot_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same race across two event loops, which is how it arises in the
+    daemon: a legacy caller running its own loop beside the serving one.
+    """
+    import threading
+
+    import lionagi.studio.services.admin as admin_svc
+
+    _isolate_snapshot_cache(monkeypatch)
+
+    entered_slow = threading.Event()
+    release_slow = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def capture() -> str:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            mine = calls
+        if mine == 1:
+            entered_slow.set()
+            release_slow.wait(timeout=10)
+            return "OLD"
+        return "NEW"
+
+    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+
+    results: dict[str, object] = {}
+
+    def slow_loop() -> None:
+        results["slow"] = asyncio.run(admin_svc.cached_ps_snapshot())
+
+    def fast_loop() -> None:
+        assert entered_slow.wait(timeout=5), "the slow capture never started"
+        results["fast"] = asyncio.run(admin_svc.cached_ps_snapshot())
+        release_slow.set()
+
+    threads = [
+        threading.Thread(target=slow_loop, daemon=True),
+        threading.Thread(target=fast_loop, daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+        assert not t.is_alive(), "a caller never returned"
+
+    assert results["fast"] == "NEW"
+    assert admin_svc._PS_SNAPSHOT_CACHE.value == "NEW"
+
+
+def test_a_second_loop_does_not_evict_the_first_loops_singleflight_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One in-flight slot per loop, not one in total. With a single slot the
+    later loop's entry replaced the earlier one, and the earlier loop's next
+    caller then started a duplicate host-wide scan instead of joining the one
+    already running for it.
+    """
+    import threading
+
+    import lionagi.studio.services.admin as admin_svc
+
+    _isolate_snapshot_cache(monkeypatch)
+
+    captures = 0
+    captures_lock = threading.Lock()
+    first_registered = threading.Event()
+    second_registered = threading.Event()
+    observed_by_first = threading.Event()
+    release = threading.Event()
+
+    def capture() -> str:
+        nonlocal captures
+        with captures_lock:
+            captures += 1
+            mine = captures
+        if mine == 1:
+            first_registered.set()
+        elif mine == 2:
+            second_registered.set()
+        # Every capture stays in flight until the assertions have been made,
+        # so no caller can reach a warm cache and skip the slot lookup.
+        release.wait(timeout=10)
+        return "PID COMMAND\n1 init\n"
+
+    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+
+    observed: dict[str, Any] = {}
+    errors: list[BaseException] = []
+
+    async def first_loop() -> None:
+        loop = asyncio.get_running_loop()
+        one = asyncio.create_task(admin_svc.cached_ps_snapshot())
+        assert await asyncio.to_thread(second_registered.wait, 10)
+        # The other loop registered after this one. This loop's slot has to
+        # still be here; that is what its next caller joins.
+        observed["slot_survived"] = admin_svc._PS_SNAPSHOT_INFLIGHT.get(loop) is not None
+        two = asyncio.create_task(admin_svc.cached_ps_snapshot())
+        observed_by_first.set()
+        await asyncio.gather(one, two)
+
+    async def second_loop() -> None:
+        assert await asyncio.to_thread(first_registered.wait, 10)
+        await admin_svc.cached_ps_snapshot()
+
+    def run(coro_factory: Any) -> None:
+        try:
+            asyncio.run(coro_factory())
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, args=(first_loop,), daemon=True),
+        threading.Thread(target=run, args=(second_loop,), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    assert observed_by_first.wait(timeout=20), "the first loop never made its observation"
+    release.set()
+    for t in threads:
+        t.join(timeout=20)
+        assert not t.is_alive(), "a loop never returned"
+
+    assert errors == []
+    assert observed["slot_survived"] is True
+    # Two loops, two scans. A third would mean the first loop's second caller
+    # started its own instead of joining.
+    assert captures == 2
+    assert admin_svc._PS_SNAPSHOT_INFLIGHT == {}
