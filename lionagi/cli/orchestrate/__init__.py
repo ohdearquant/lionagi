@@ -551,7 +551,7 @@ def add_orchestrate_subparser(
     )
 
     _add_mcp_config_args(fo)
-    add_common_cli_args(fo)
+    add_common_cli_args(fo, resume_on_timeout_supported=False)
 
     fl = orch_sub.add_parser(
         "flow",
@@ -765,7 +765,7 @@ def add_orchestrate_subparser(
         ),
     )
     _add_mcp_config_args(fl)
-    add_common_cli_args(fl)
+    add_common_cli_args(fl, resume_on_timeout_supported=False)
 
     # `li o ctl status <id>` aliases the same status renderer as `li agent
     # status`; pause/resume/msg queue session_controls rows for the poller.
@@ -937,11 +937,38 @@ def _run_orch_command(coro, *, verbose: bool, extra_handlers: tuple = ()) -> tup
     return result, 0
 
 
+def _warn_resume_on_timeout_is_inert(args: argparse.Namespace) -> None:
+    """Tell a caller that passed ``--resume-on-timeout`` that nothing reads it.
+
+    Neither orchestrate command implements the auto-resume contract, so the
+    value is discarded. That is invisible from the outside: the run succeeds
+    and nothing in its output suggests the option did nothing, which is why
+    the only honest moment to say so is before the work starts. The option is
+    still accepted, because invocations that pass it parse today and would
+    fail outright if it were simply deleted.
+    """
+    if not getattr(args, "resume_on_timeout", False):
+        return
+
+    import warnings
+
+    from .._logging import warn
+
+    message = (
+        "--resume-on-timeout has no effect on `li orchestrate "
+        f"{args.orch_command}` and will be removed in a future release. "
+        "Only `li agent` implements it."
+    )
+    warnings.warn(message, DeprecationWarning, stacklevel=2)
+    warn(message)
+
+
 @auto_register(
     area="orchestrate",
     cli=CliDeclaration(seed="orchestrate", parser_factory=add_orchestrate_subparser),
 )
 def run_orchestrate(args: argparse.Namespace) -> int:
+    _warn_resume_on_timeout_is_inert(args)
     if args.orch_command == "fanout":
         resolved = _resolve_model_and_prompt(getattr(args, "query", None) or [])
         if resolved is None:

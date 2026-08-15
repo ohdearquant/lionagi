@@ -19,6 +19,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   on POSIX. Cross-platform descendant containment remains out of scope and is
   tracked in #2576.
 
+### Deprecated
+
+- `--resume-on-timeout` on `li o fanout` and `li o flow`. The flag is accepted
+  and listed in the help output of both commands but neither ever read it, so
+  passing it changes nothing. Both commands now say so at parse time instead of
+  accepting it silently, and will keep accepting it until it is removed in a
+  later release. It remains available and functional on `li agent`, which is
+  the surface that implements it.
+
 ## [0.35.0] - 2026-08-12
 
 A broad correctness release across the orchestration engine, the MCP surface,
