@@ -25,6 +25,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
 from .redact import public_project
 from .store import OperatorStore
 
@@ -464,7 +466,8 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         if isinstance(meta, dict) and meta.get("process_identity_mode") == "in_process":
             from lionagi.studio.services.workflow_run import cancel_in_process_run
 
-            if not await cancel_in_process_run(run_id):
+            delivery = await cancel_in_process_run(run_id)
+            if delivery == "not_hosted_here":
                 return {
                     "status": "not_cancellable",
                     "id": run_id,
@@ -475,10 +478,21 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
             # pid path below uses: never claim a state the database lacks.
             after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
             after_status = db._row_to_dict(after).get("status") if after is not None else None
+            if after_status == "cancelled":
+                outcome_status = "terminal"
+            elif after_status in SESSION_TERMINAL_STATUSES:
+                # It stopped, but at some other terminal state -- it finished,
+                # or failed, while the cancellation was in flight.
+                outcome_status = "already_terminal"
+            else:
+                # The request was delivered and the row has not reached a
+                # terminal state. Reporting it terminal here is what let a
+                # workflow that was still executing read as stopped.
+                outcome_status = "cancelling"
             return {
-                "status": "terminal" if after_status == "cancelled" else "already_terminal",
+                "status": outcome_status,
                 "id": run_id,
-                "signal": "task_cancelled",
+                "signal": "task_cancelled" if delivery == "stopped" else "task_cancel_pending",
             }
 
         outcome = await _kill_one(

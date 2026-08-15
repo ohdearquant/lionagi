@@ -637,7 +637,7 @@ async def test_cancel_in_process_run_cancels_the_driving_task():
     task = asyncio.create_task(_fake_run())
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
-        assert await cancel_in_process_run(run_id) is True
+        assert await cancel_in_process_run(run_id) == "stopped"
         assert observed["cancelled"] is True
         assert task.cancelled()
     finally:
@@ -645,15 +645,62 @@ async def test_cancel_in_process_run_cancels_the_driving_task():
         task.cancel()
 
 
-async def test_cancel_in_process_run_is_false_when_not_hosted_here():
-    """False is the honest answer for a run this process is not driving.
+async def test_cancel_in_process_run_says_not_hosted_here_for_a_run_it_does_not_drive():
+    """The honest answer for a run this process is not driving.
 
     A caller must not read it as success: marking the row cancelled on this
     result would claim a stop that no process performed.
     """
     from lionagi.studio.services.workflow_run import cancel_in_process_run
 
-    assert await cancel_in_process_run("never-registered") is False
+    assert await cancel_in_process_run("never-registered") == "not_hosted_here"
+
+
+async def test_cancel_in_process_run_reports_a_task_that_has_not_unwound_in_time():
+    """A task that swallows the cancellation must not be reported as stopped.
+
+    Waiting does not raise when it gives up, so the wait's own result is the
+    only thing that separates a task that unwound from one that is still
+    running. A caller told "stopped" here would mark a live workflow
+    cancelled.
+    """
+    import contextlib
+
+    from lionagi.studio.services.workflow_run import _IN_PROCESS_RUNS, cancel_in_process_run
+
+    run_id = "run-that-ignores-cancellation"
+    started = asyncio.Event()
+    # Lets the task be torn down at the end. Without it the task would swallow
+    # the teardown cancellation the same way it swallows the one under test,
+    # and the loop would never close.
+    stop_pretending = asyncio.Event()
+
+    async def _stubborn() -> None:
+        _IN_PROCESS_RUNS[run_id] = asyncio.current_task()
+        started.set()
+        while True:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                if stop_pretending.is_set():
+                    raise
+                # Keeps running instead of unwinding, which is exactly the
+                # case the timeout exists for.
+                continue
+
+    task = asyncio.create_task(_stubborn())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert await cancel_in_process_run(run_id, timeout=0.05) == "still_stopping"
+        # Control: the task really is still alive, so this is a test about the
+        # report rather than about a task that quietly died.
+        assert not task.done()
+    finally:
+        _IN_PROCESS_RUNS.pop(run_id, None)
+        stop_pretending.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 async def test_run_workflow_def_registers_then_unregisters_its_task(patched_env):

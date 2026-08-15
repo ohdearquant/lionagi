@@ -321,6 +321,46 @@ _PID_CREATE_TIME_TOLERANCE = 1.0
 HEALTH_SCAN_LIMIT = 500
 
 
+def process_identity_is_foreign(session: dict[str, Any]) -> bool:
+    """Whether this machine could not observe the run's process even in principle.
+
+    True when the row records a host that is not this one, or an identity mode
+    this code does not know how to check. Both mean the same thing: nothing
+    measurable here bears on whether that run is alive.
+
+    ``process_liveness`` already answers ``None`` for these, which is correct
+    as an answer to "is it alive". The reapers need the distinction because
+    they read a non-``True`` liveness as evidence of death once the row has
+    gone stale, and lean on the staleness grace to keep a merely quiet run
+    safe. That grace is protection against a *momentary* blind spot. Being on
+    another machine is a permanent one, so waiting adds no information and the
+    row is reaped precisely because it is healthy enough to keep running
+    somewhere this daemon cannot see. With a shared state store that turns
+    into one host marking another host's working runs failed.
+    """
+    from lionagi.cli._util import recorded_pid_is_foreign
+
+    meta = session.get("node_metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            return False
+    if not isinstance(meta, dict):
+        return False
+
+    mode = meta.get("process_identity_mode")
+    if isinstance(mode, str) and mode not in ("local", "in_process"):
+        return True
+
+    # Asked of the host alone, not of "host and a readable pid": a row from
+    # another machine is that machine's business whether or not its pid
+    # parses, and the pid-less fallback in process_liveness matches on session
+    # id against *this* host's process table, which reads the wrong machine's
+    # answer just as confidently.
+    return recorded_pid_is_foreign(meta)
+
+
 def process_liveness(
     session: dict[str, Any],
     artifacts_path: Path | None,
@@ -623,6 +663,11 @@ def _classify_phantom(
     session = {"id": row["id"], "node_metadata": node_metadata}
     # A running session is never a phantom while its process is observably alive.
     if process_liveness(session, ap, ps_snapshot) is True:
+        return None
+    # Nor when the process is not this machine's to observe: the staleness
+    # grace below cannot rescue a row whose liveness is permanently invisible
+    # here, so without this a healthy run on another host reaps as dead.
+    if process_identity_is_foreign(session):
         return None
     # Not yet stale: it may simply not have written artifacts yet, so give it
     # the benefit of the doubt rather than reap a fresh/quiet session.

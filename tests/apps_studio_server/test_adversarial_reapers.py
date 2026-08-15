@@ -32,6 +32,7 @@ async def _seed_session(
     started_at: float | None = None,
     updated_at: float | None = None,
     artifacts_path: str | None = None,
+    node_metadata: dict | None = None,
 ) -> str:
     sid = str(uuid.uuid4())
     now = time.time()
@@ -45,6 +46,7 @@ async def _seed_session(
                 "name": "adv-test-session",
                 "status": status,
                 "started_at": started_at or now,
+                "node_metadata": node_metadata,
             }
         )
         updates: dict = {}
@@ -459,3 +461,122 @@ def test_1173_prune_preserves_recent_terminal_sessions(tmp_path, monkeypatch):
 
     assert result["sessions_pruned"] == 0
     assert run_async(_get_session_status(db_path, sid)) == "completed"
+
+
+# ── shared state store: rows this machine cannot see are not this machine's to judge ──
+
+
+def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monkeypatch):
+    """A reaper reads this host's process table, so a remote row is unmeasurable here.
+
+    The reapers keep a session alive only on a positive liveness reading and
+    otherwise lean on a staleness grace to protect a merely quiet run. That
+    grace answers a momentary blind spot. Being on another machine is a
+    permanent one, so waiting supplies nothing and the row is reaped precisely
+    because it is still running somewhere this daemon cannot see.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    import lionagi.studio.services.admin as admin_mod
+    import lionagi.studio.services.lifecycle as lc_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+
+    stale_time = time.time() - 7200
+    remote = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            started_at=stale_time,
+            updated_at=stale_time,
+            node_metadata={"pid": 4242, "pid_host": "some-other-host"},
+        )
+    )
+    local = run_async(
+        _seed_session(
+            db_path,
+            status=None,
+            started_at=stale_time,
+            updated_at=stale_time,
+            node_metadata={"pid": 4243, "pid_host": "this-host"},
+        )
+    )
+
+    # Not patched to a constant: the real function has to be the thing that
+    # answers, or this test would pass against a liveness check that had
+    # stopped consulting the row at all.
+    assert lc_mod.process_liveness is admin_mod.process_liveness
+
+    from lionagi.studio.services.lifecycle import reap_null_status_sessions
+
+    count = run_async(reap_null_status_sessions(stale_hours=1.0))
+
+    assert run_async(_get_session_status(db_path, remote)) is None, (
+        "another host's row must be left exactly as it was"
+    )
+    assert run_async(_count_transitions(db_path, remote)) == 0
+    assert run_async(_get_session_status(db_path, local)) == "failed", (
+        "the local row must still be reaped — otherwise this passes on a dead reaper"
+    )
+    assert count == 1
+
+
+def test_phantom_classifier_returns_no_reason_for_another_machines_row(tmp_path, monkeypatch):
+    """The classifier that feeds the phantom reaper, checked directly.
+
+    Its verdict is what the reaper writes `failed` from, so the local row
+    beside it fixes what the answer would otherwise have been.
+    """
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+
+    now = time.time()
+    stale = now - 7200
+
+    def _row(meta: dict) -> dict:
+        return {
+            "id": str(uuid.uuid4()),
+            "updated_at": stale,
+            "artifacts_path": None,
+            "node_metadata": meta,
+        }
+
+    class _Row(dict):
+        def keys(self):  # noqa: D102 — sqlite3.Row-shaped access used by the classifier
+            return super().keys()
+
+    remote = _Row(_row({"pid": 4242, "pid_host": "some-other-host"}))
+    local = _Row(_row({"pid": 4242, "pid_host": "this-host"}))
+
+    monkeypatch.setattr(admin_mod, "_pid_is_live", lambda pid: False)
+
+    assert (
+        admin_mod._classify_phantom(remote, now=now, stale_seconds=3600, ps_snapshot="") is None
+    ), "another host's stale row must produce no phantom reason"
+    assert (
+        admin_mod._classify_phantom(local, now=now, stale_seconds=3600, ps_snapshot="")
+        == "process_dead"
+    ), "a local stale row with a dead pid must still classify — otherwise nothing is being tested"
+
+
+def test_process_identity_is_foreign_reads_host_and_unknown_modes(monkeypatch):
+    """Foreign means "not measurable here", which covers two distinct records."""
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    foreign = admin_mod.process_identity_is_foreign
+
+    assert foreign({"node_metadata": {"pid_host": "other-host"}}) is True
+    assert foreign({"node_metadata": {"process_identity_mode": "external"}}) is True
+    # A mode this code does know how to check is not foreign on its own.
+    assert foreign({"node_metadata": {"process_identity_mode": "local"}}) is False
+    assert foreign({"node_metadata": {"process_identity_mode": "in_process"}}) is False
+    assert foreign({"node_metadata": {"pid_host": "this-host"}}) is False
+    assert foreign({"node_metadata": {"pid": 1}}) is False
+    assert foreign({"node_metadata": None}) is False
+    assert foreign({}) is False
+    # Stored as JSON text by some read paths; the same answer either way.
+    assert foreign({"node_metadata": '{"pid_host": "other-host"}'}) is True
+    assert foreign({"node_metadata": "not json at all"}) is False

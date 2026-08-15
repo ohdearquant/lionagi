@@ -14,9 +14,18 @@ import os
 import socket
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
 
-__all__ = ("run_workflow_def", "WorkflowNotFoundError", "cancel_in_process_run")
+__all__ = (
+    "run_workflow_def",
+    "WorkflowNotFoundError",
+    "cancel_in_process_run",
+    "CancelDelivery",
+)
+
+# What a cancellation request achieved, as three separate facts rather than a
+# boolean that has to stand for all of them. See cancel_in_process_run.
+CancelDelivery = Literal["not_hosted_here", "stopped", "still_stopping"]
 
 
 class WorkflowNotFoundError(Exception):
@@ -31,27 +40,36 @@ class WorkflowNotFoundError(Exception):
 _IN_PROCESS_RUNS: dict[str, asyncio.Task[Any]] = {}
 
 
-async def cancel_in_process_run(run_id: str, *, timeout: float = 5.0) -> bool:
+async def cancel_in_process_run(run_id: str, *, timeout: float = 5.0) -> CancelDelivery:
     """Cancel a workflow run hosted in this process, waiting for it to unwind.
-
-    Returns True only when this process was running it and the cancellation was
-    delivered. False means this process is not running it, which a caller must
-    treat as "not cancelled" rather than as success: marking such a row
-    cancelled would report a stop that never happened.
 
     Waits for the task so the run's own ``CancelledError`` handler can persist
     its terminal status before the caller re-reads the row, up to *timeout*.
+
+    The three outcomes are kept apart because they call for different claims:
+
+    ``not_hosted_here``
+        This process is not running it, so nothing was cancelled. A caller
+        must treat this as "not cancelled" rather than as success: marking
+        such a row cancelled would report a stop that never happened.
+    ``stopped``
+        Delivered, and the task finished unwinding inside *timeout*.
+    ``still_stopping``
+        Delivered, but the task had not finished unwinding when the wait
+        expired. The work may well still be running. Collapsing this into
+        ``stopped`` is what let a timed-out cancellation report as a
+        completed one, since waiting does not raise when it gives up.
     """
     task = _IN_PROCESS_RUNS.get(run_id)
     if task is None or task.done():
-        return False
+        return "not_hosted_here"
     if task is asyncio.current_task():
         # Self-cancel would deadlock on the wait below, and a run cancelling
         # itself through the operator path is not a case that should exist.
-        return False
+        return "not_hosted_here"
     task.cancel()
-    await asyncio.wait({task}, timeout=timeout)
-    return True
+    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    return "stopped" if done else "still_stopping"
 
 
 async def _setup_run_persist(

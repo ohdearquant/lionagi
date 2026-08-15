@@ -19,6 +19,7 @@ from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from ._logging import log_error, warn
 from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
+from ._util import recorded_pid_is_foreign as _recorded_pid_is_foreign
 from ._util import resolve_entity as _resolve_entity
 
 
@@ -61,7 +62,54 @@ _CREATE_TIME_TOLERANCE = 0.1
 
 #: Outcomes where nothing was stopped and no cancellation was written. A caller
 #: that reports these as a kill is claiming a stop that did not happen.
-_NOT_STOPPED_SIGNALS = frozenset({"identity_mismatch", "in_process"})
+_NOT_STOPPED_SIGNALS = frozenset(
+    {"identity_mismatch", "in_process", "host_mismatch", "boot_mismatch"}
+)
+
+#: Refusals to signal, and how to say each one. A pid names a process only
+#: together with the host it was recorded on and the boot that host was in;
+#: where the record cannot be shown to name this machine's process, nothing is
+#: signalled and no cancellation is written, so the row keeps saying what is
+#: still true.
+_REFUSED_SIGNAL_REASONS: dict[str, str] = {
+    "identity_mismatch": "did not match the expected lionagi process",
+    "host_mismatch": "was recorded on a different host",
+    "boot_mismatch": "was recorded before this machine last booted",
+}
+
+# Boot time is read from the OS on each side of the comparison and can drift by
+# a little across clock adjustments. A real reboot moves it by far more than
+# this, so the tolerance costs nothing and avoids refusing on jitter.
+_BOOT_TIME_TOLERANCE = 5.0
+
+
+def _unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
+    """Why the recorded pid cannot be signalled from here, or None if it can.
+
+    A pid is only meaningful inside one host's pid space during one boot.
+    Against a shared store, another host's row carries a pid that also exists
+    here and belongs to something unrelated, so signalling it would stop a
+    stranger's process and then record the run as cancelled. A pid recorded
+    before this machine rebooted has the same problem: the numbers were
+    reissued from scratch.
+
+    Absent markers return None rather than refusing. A row written before
+    these were recorded cannot be judged either way, and not knowing where a
+    pid came from is not evidence that it is foreign; the process identity
+    check downstream still has to pass for anything to be signalled.
+    """
+    if _recorded_pid_is_foreign(meta):
+        return "host_mismatch"
+
+    raw_boot = meta.get("pid_boot_time")
+    if raw_boot is not None:
+        try:
+            recorded_boot = float(raw_boot)
+        except (TypeError, ValueError):
+            return None
+        if abs(recorded_boot - psutil.boot_time()) > _BOOT_TIME_TOLERANCE:
+            return "boot_mismatch"
+    return None
 
 
 def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
@@ -450,23 +498,31 @@ async def _kill_one(
 
     if pid is not None:
         meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
-        expected_session_id = entity_id if entity_type == "session" else None
-        raw_ct = meta.get("pid_create_time")
-        try:
-            expected_create_time = float(raw_ct) if raw_ct is not None else None
-        except (TypeError, ValueError):
-            expected_create_time = None
-        try:
-            signal_used = _terminate_pid(
-                pid,
-                grace_seconds=grace_seconds,
-                expected_cmd="lionagi",
-                expected_session_id=expected_session_id,
-                expected_create_time=expected_create_time,
-            )
-        except RuntimeError as exc:
-            warn(str(exc))
-            signal_used = "permission_denied"
+        # Asked before anything is signalled: once the pid is known to have come
+        # from another host or another boot, the local process wearing that
+        # number is a stranger, and even the identity check inside _terminate_pid
+        # would be inspecting the wrong process.
+        unaddressable = _unaddressable_pid_reason(meta)
+        if unaddressable is not None:
+            signal_used = unaddressable
+        else:
+            expected_session_id = entity_id if entity_type == "session" else None
+            raw_ct = meta.get("pid_create_time")
+            try:
+                expected_create_time = float(raw_ct) if raw_ct is not None else None
+            except (TypeError, ValueError):
+                expected_create_time = None
+            try:
+                signal_used = _terminate_pid(
+                    pid,
+                    grace_seconds=grace_seconds,
+                    expected_cmd="lionagi",
+                    expected_session_id=expected_session_id,
+                    expected_create_time=expected_create_time,
+                )
+            except RuntimeError as exc:
+                warn(str(exc))
+                signal_used = "permission_denied"
     else:
         if verbose:
             warn(f"  {entity_type} {entity_id[:12]}: no PID found — skipping OS signal")
@@ -474,10 +530,10 @@ async def _kill_one(
     if signal_used == "sigkill":
         reason_code = RunReasons.CANCELLED_FORCE_KILL
         reason_summary = f"Force-killed (SIGKILL after grace period). {user_reason}".strip()
-    elif signal_used == "identity_mismatch":
+    elif signal_used in _REFUSED_SIGNAL_REASONS:
         warn(
-            f"  {entity_type} {entity_id[:12]}: pid {pid} did not match "
-            "expected lionagi process — kill skipped"
+            f"  {entity_type} {entity_id[:12]}: pid {pid} "
+            f"{_REFUSED_SIGNAL_REASONS[signal_used]} — kill skipped"
         )
         return {
             "entity_type": entity_type,
@@ -668,6 +724,7 @@ async def _do_kill_all_stale(
     skipped_live = 0
     skipped_recent = 0
     skipped_unverifiable = 0
+    skipped_foreign_host = 0
     skipped_unlinked_plays = 0
     unverifiable_tracked = 0
 
@@ -700,6 +757,24 @@ async def _do_kill_all_stale(
                         print(
                             f"  skip {entity_type} {entity_id[:12]}: "
                             f"started recently (< {threshold_seconds}s ago)"
+                        )
+                    continue
+
+                row_meta_for_host = (
+                    row_dict.get("node_metadata")
+                    if isinstance(row_dict.get("node_metadata"), dict)
+                    else {}
+                )
+                if _recorded_pid_is_foreign(row_meta_for_host):
+                    # Recorded on another machine. Both branches below read this
+                    # host's process table, so both answer about whatever local
+                    # process holds that number: a dead reading would sweep a
+                    # run that is working fine where it actually lives.
+                    skipped_foreign_host += 1
+                    if verbose:
+                        print(
+                            f"  skip {entity_type} {entity_id[:12]}: "
+                            "recorded on another host — not judgeable from here"
                         )
                     continue
 
@@ -927,6 +1002,7 @@ async def _do_kill_all_stale(
         f"\n{prefix} {killed} stale entities "
         f"[skipped_recent={skipped_recent}, skipped_live_pid={skipped_live}, "
         f"skipped_unverifiable_pid={skipped_unverifiable}, "
+        f"skipped_foreign_host={skipped_foreign_host}, "
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )
     if unverifiable_tracked:
