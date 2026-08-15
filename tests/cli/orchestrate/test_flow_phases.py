@@ -2061,3 +2061,73 @@ async def test_synthesize_keeps_already_executed_workers_out_of_the_signal_pass(
     graph_ids = {str(n.id) for n in env.builder.get_graph().internal_nodes.values()}
     synth_ids = graph_ids - skipped
     assert len(synth_ids) == 1, f"exactly one unskipped (synthesis) node expected: {synth_ids}"
+
+
+async def test_synthesize_declares_its_node_as_uncheckpointable(tmp_path):
+    """The synthesis node must be named before the pass that runs it.
+
+    The checkpoint observer built during execution routes by a node set fixed
+    at that time, so it treats this later node as a reactive spawn. Declaring
+    it is what keeps it out of the checkpoint; ordering matters because the
+    observer fires while run_dag is running, not after it returns.
+    """
+    env = _make_env(tmp_path)
+    worker = env.builder.add_operation("operate", branch=env.orc_branch, depends_on=[])
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[worker],
+        known_nodes={worker},
+        deps_by_node={worker: []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {"id": "researcher", "agent_id": "researcher", "name": "researcher", "response": "f"}
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+    )
+
+    declared_when_called: set[str] = set()
+
+    async def _capture_run_dag(*_args, **_kw):
+        # Read the set as run_dag sees it: a declaration made after this
+        # returns would be too late for the observer.
+        declared_when_called.update(exec_result.checkpoint_skip_ids)
+        return {"operation_results": {}}
+
+    exec_result.engine_run = SimpleNamespace(run_dag=_capture_run_dag)
+
+    await _synthesize(
+        env,
+        "task",
+        plan_result,
+        dag_state,
+        exec_result,
+        synthesis_model=None,
+        model_spec="codex/gpt-5.5",
+    )
+
+    graph_ids = {str(n.id) for n in env.builder.get_graph().internal_nodes.values()}
+    synth_ids = graph_ids - {str(worker)}
+    assert len(synth_ids) == 1, f"expected exactly one synthesis node: {synth_ids}"
+    synth_id = synth_ids.pop()
+
+    assert synth_id in declared_when_called, (
+        "the synthesis node must be declared uncheckpointable BEFORE run_dag, "
+        f"since the observer fires during it. declared={declared_when_called}"
+    )
+    assert str(worker) not in declared_when_called, (
+        "only the synthesis node belongs in the skip set; skipping the planned "
+        f"worker would drop its checkpoint entry. declared={declared_when_called}"
+    )
