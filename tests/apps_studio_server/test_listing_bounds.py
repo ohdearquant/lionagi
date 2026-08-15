@@ -374,16 +374,24 @@ class TestStoreProbe:
             before = _workers()
             body = asyncio.run(admin_svc.store_probe(timeout_ms=50))
             assert body["status"] == "slow", body
+            # Waited for rather than read instantly. The worker is told to stop
+            # before it has finished stopping (see _is_live_connection_worker),
+            # and is_alive() stays True across that residual window, so a
+            # single immediate count can catch a thread that is already on its
+            # way out and call it a leak. Waiting costs the assertion nothing:
+            # a worker that genuinely outlived the probe never drops, so it
+            # still fails, just at the deadline instead of instantly.
+            deadline = time.monotonic() + 5.0
+            while _workers() > before and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert _workers() == before, "a connection worker outlived the probe"
         finally:
             blocker.rollback()
             blocker.close()
 
-        # The real-thread assertion above passes the same way whether or not
-        # the predicate checks is_alive() -- by the time it runs, a
-        # correctly-cleaned-up worker has already dropped out of
-        # threading.enumerate() entirely, so a target-only predicate and the
-        # correct one agree by coincidence, not because either was exercised.
+        # The assertion above cannot distinguish a correct predicate from one
+        # that only matches on _target: given the settle window, both agree.
+        # Force the discriminating case instead.
         # Force the discriminating case: splice a terminating-but-not-alive
         # stand-in into the real thread listing and confirm _workers() (the
         # same computation the assertion above relies on) does not count it.
@@ -453,6 +461,16 @@ class TestStoreProbe:
                     await admin_svc.store_probe(timeout_ms=1000)
 
             anyio.run(_abandon)
+            # Waited for rather than read instantly, for the same reason as the
+            # previous test: the worker is told to stop before it has finished
+            # stopping, and is_alive() stays True across that residual window.
+            # Abandonment makes the window wider, not narrower, because the
+            # caller walks away while the worker is still unwinding its own
+            # bounded wait. A worker that genuinely outlived the probe never
+            # drops, so this still fails, just at the deadline.
+            deadline = time.monotonic() + 5.0
+            while _workers() > before and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert _workers() == before, "a connection worker outlived an abandoned probe"
         finally:
             blocker.rollback()
