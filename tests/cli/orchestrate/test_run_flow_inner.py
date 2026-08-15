@@ -108,7 +108,12 @@ class _SessionBackedEngineRun:
         inspect.signature(EngineRun.run_dag).bind(self, graph, **kwargs)
         assert isinstance(graph, Graph)
         self.session.run_dag_calls.append((graph, dict(kwargs)))
-        if set(kwargs) == {"verbose"}:
+        # Route on a semantic difference between the phases rather than on the
+        # exact set of keywords: the execution phase builds worker branches and
+        # synthesis does not, so on_branch_created is what tells them apart.
+        # Keying on the whole kwargs set made this a second routing contract
+        # that had to be edited in step with every new run_dag option.
+        if "on_branch_created" not in kwargs:
             return await self.session.flow(graph, verbose=kwargs["verbose"])
         assert set(kwargs) == _RUN_DAG_KEYWORDS
         node_ids = tuple(node.id for node in graph.internal_nodes)
