@@ -54,7 +54,10 @@ class _RunListQuery(BaseModel):
     tag: list[str] | None = Field(default=None, description="Repeated tag filter (AND-composed)")
     search: str | None = Field(
         default=None,
-        description="Case-insensitive contains match on session name or agent name",
+        description=(
+            "Explicit bounded slow mode: case-insensitive contains match on "
+            "session name or agent name"
+        ),
     )
     kind: list[str] | None = Field(
         default=None,

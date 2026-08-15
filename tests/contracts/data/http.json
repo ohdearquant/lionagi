@@ -10852,10 +10852,10 @@
                     "type": "null"
                   }
                 ],
-                "description": "Explicit bounded slow mode: case-insensitive contains match on session or agent name",
+                "description": "Explicit bounded slow mode: case-insensitive contains match on session name or agent name",
                 "title": "Search"
               },
-              "description": "Explicit bounded slow mode: case-insensitive contains match on session or agent name"
+              "description": "Explicit bounded slow mode: case-insensitive contains match on session name or agent name"
             },
             {
               "name": "sort",
