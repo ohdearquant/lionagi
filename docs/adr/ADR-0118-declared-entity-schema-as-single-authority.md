@@ -594,14 +594,27 @@ Net on the schema layer: somewhere between 800 and 1,800 lines smaller, and that
 interesting part of the answer. The change that matters is that one column stops being four or
 five edits, and "what is the schema" stops having six answers.
 
-The larger cut is one I have not measured and will not estimate: the six studio service modules
-carrying persistence total 2,387 lines, of which `projects.py`, `shows.py` and `signals.py`
-(1,209 lines) reimplement `StateDB` APIs that already exist (7, 5 and 2 methods respectively),
-while `run_tags`, `approvals` and `attention` own real domain logic and only their DDL and
-connection handling go. Add the 73 direct store connections collapsing to one executor, five
-duplicated session-by-id lookups, eight repeated frame inserts, six repeated admin-event inserts,
-and two separate implementations of the same lock-read-append ledger. That work is Phase 5, and
-sizing it needs the caller-by-caller pass Phase 5 starts with.
+The larger cut is smaller than the module sizes suggest. The six studio service modules carrying
+persistence total 2,387 lines. Within `projects.py`, `shows.py` and `signals.py` (1,209 lines of
+that), the code reimplementing a `StateDB` method that already exists measures 286 lines: 159 of
+`projects.py`'s 346, 78 of `shows.py`'s 801, and 49 of `signals.py`'s 62. `StateDB` already
+carries six project methods, five show methods and two signal methods. The bulk of `shows.py` is
+filesystem show-import and presentation logic that no store method covers, so it is not a
+candidate for this cut at all. `run_tags`, `approvals` and `attention` own real domain logic and
+only their DDL and connection handling go.
+
+Phase 5 cannot treat those 286 lines as a mechanical delete, because the pairs have drifted in
+response shape. `signals.py` coalesces `op_id` to `""` and `payload` to `{}` where `StateDB`
+returns whatever the row holds, and a client reading the signal stream sees the difference.
+`projects.py`'s `update_project` reports success for a patch carrying no mutable fields when the
+project exists, where `StateDB` returns `False`, which is the difference between a 200 and a 404
+at the route. Each swap is an API contract decision with a caller behind it, so the
+caller-by-caller pass Phase 5 opens with is what sizes this work.
+
+Add to it the 38 direct store connections across 9 modules that collapse to one executor, the
+repeated session-by-id lookups in the operator package, and the admin-event insert duplicated
+between `studio/operator/store.py` and `StateDB.insert_admin_event`. Sizing the rest is Phase 5's
+opening pass, not something to estimate from here.
 
 ## Consequences
 
