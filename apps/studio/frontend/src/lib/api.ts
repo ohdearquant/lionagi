@@ -2482,6 +2482,12 @@ export interface CreateWorkflowDefRequest {
   spec_json?: WorkflowSpec;
 }
 
+export interface CreatedWorkflowDef {
+  id: string;
+  name: string;
+  created_at: number;
+}
+
 export interface UpdateWorkflowDefRequest {
   name?: string;
   description?: string;
@@ -2498,7 +2504,7 @@ export async function getWorkflowDef(defId: string): Promise<WorkflowDef> {
 
 export async function createWorkflowDef(
   body: CreateWorkflowDefRequest,
-): Promise<{ id: string; name: string; created_at: number }> {
+): Promise<CreatedWorkflowDef> {
   return fetchJson(`/api/workflow-defs/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
