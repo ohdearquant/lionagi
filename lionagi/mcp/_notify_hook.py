@@ -26,7 +26,10 @@ import argparse
 import json
 import os
 import subprocess
+import time
 from typing import Any
+
+from lionagi.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
 
 # The CLI runs this file's module by absolute interpreter path; lionagi is on
 # the path because that interpreter is the one lionagi is installed in.
@@ -34,6 +37,36 @@ from . import config, jobs
 from ._terminal_cause import read_terminal_cause
 
 _DELIVERY_TIMEOUT_S = 30
+
+_STARTED_AT = time.monotonic()
+# Interpreter start and this module's imports, which precede _STARTED_AT and so
+# cannot be measured from here.
+_STARTUP_ALLOWANCE_S = 1.0
+# Locking the record, writing the outcome, appending the console note.
+_RECORDING_RESERVE_S = 2.0
+_MIN_DELIVERY_TIMEOUT_S = 1.0
+
+
+def _supervised_delivery_timeout() -> float:
+    """How long ``main`` may spend delivering and still record what happened.
+
+    The CLI runs this hook as a lifecycle exec adapter, and that supervisor
+    kills the adapter's whole process group when its deadline expires. A
+    delivery still running at that moment takes the outcome-recording step down
+    with it, leaving the write-ahead "unknown" outcome as the run's permanent
+    answer — a notice that was never sent, recorded as a result nobody can read.
+    So the delivery's own timeout has to fire first, with enough of the deadline
+    left to write the result down.
+
+    A ceiling, not a guarantee: ``HANDLER_BUDGET_SECONDS`` is the deadline for
+    the whole terminal-callback fan-out rather than for this handler alone, so
+    a co-running handler can consume it first and the kill can still land mid
+    delivery. What it removes is the case where that outcome was certain.
+    """
+    spent = time.monotonic() - _STARTED_AT
+    remaining = HANDLER_BUDGET_SECONDS - _STARTUP_ALLOWANCE_S - spent - _RECORDING_RESERVE_S
+    return max(_MIN_DELIVERY_TIMEOUT_S, remaining)
+
 
 # A notifier's stdout/stderr is free text that may carry a credential, so it's
 # read into memory, matched against the closed vocabulary below, and dropped —
@@ -259,6 +292,7 @@ def _deliver(
     *,
     program: str | None = None,
     cwd: str | None = None,
+    timeout: float = _DELIVERY_TIMEOUT_S,
 ) -> dict[str, Any]:
     """Run the delivery command best-effort; return its outcome for the record.
 
@@ -274,7 +308,7 @@ def _deliver(
             argv,
             input=json.dumps(payload),
             text=True,
-            timeout=_DELIVERY_TIMEOUT_S,
+            timeout=timeout,
             capture_output=True,
             check=False,
             env=env,
@@ -383,6 +417,7 @@ def deliver_terminal_notice(
     command: str | None = None,
     sender: str | None = None,
     reason_code: str | None = None,
+    timeout: float = _DELIVERY_TIMEOUT_S,
 ) -> dict[str, Any]:
     """Attempt this run's configured terminal notice and report what came of it.
 
@@ -390,6 +425,11 @@ def deliver_terminal_notice(
     whose process never got this far) that must resolve identically; see
     docs/internals/mcp.md#deliver-terminal-notice-two-callers. Nothing raises —
     every way a delivery does not happen comes back as an outcome describing it.
+
+    *timeout* differs between those two callers because only one of them is
+    supervised: the hook runs under a deadline that kills it (see
+    :func:`_supervised_delivery_timeout`), the observer runs in-process with
+    nobody to cut it short.
     """
     target = target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
     sender = sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
@@ -433,6 +473,7 @@ def deliver_terminal_notice(
             _delivery_env(sender),
             program=program,
             cwd=delivery_cwd,
+            timeout=timeout,
         )
     if unusable:
         # Configured but unusable — recorded as a failure, not silence.
@@ -489,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
         command=args.command,
         sender=args.sender,
         reason_code=(terminal.record or {}).get("reason_code") or reason_code,
+        timeout=_supervised_delivery_timeout(),
     )
     recorded = jobs.record_notify_delivery(args.run_id, outcome)
     _note_delivery_in_console_log(args.run_id, outcome)

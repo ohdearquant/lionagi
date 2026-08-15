@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from lionagi.mcp import _notify_hook, config, jobs
+from lionagi.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
 from lionagi.state.lifecycle.notify_settings import (
     NotifyConfigResolution,
     ResolvedNotifyHandler,
@@ -774,6 +775,60 @@ def test_outer_notify_timeout_keeps_an_attempt_record_after_delivery(monkeypatch
     assert status["notify_delivery"]["error"] == "delivery_outcome_unknown"
     row = next(item for item in jobs.list_jobs() if item["run_id"] == run_id)
     assert row["notify_delivery_state"] == "unknown"
+
+
+def test_the_delivery_timeout_fits_inside_the_deadline_that_kills_the_hook():
+    """The hook's own timeout must fire before its supervisor's, or it never records.
+
+    The supervised path carried a 30s delivery timeout under a 10s terminal
+    callback deadline, so the hook's timeout could not fire: a slow notifier was
+    killed mid-delivery every time and the write-ahead "unknown" outcome became
+    the run's permanent answer. The reserve is the room left to write it down.
+    """
+    timeout = _notify_hook._supervised_delivery_timeout()
+
+    assert timeout >= _notify_hook._MIN_DELIVERY_TIMEOUT_S
+    assert timeout + _notify_hook._RECORDING_RESERVE_S < HANDLER_BUDGET_SECONDS
+    # The in-process observer has no supervisor, so it keeps the longer one.
+    assert timeout < _notify_hook._DELIVERY_TIMEOUT_S
+
+
+def test_the_hook_delivers_under_the_supervised_timeout(job, monkeypatch):
+    """``main`` is the supervised caller, so it must not use the in-process default."""
+    seen: dict = {}
+
+    def _capture(*args, **kwargs):
+        seen.update(kwargs)
+        return {"attempted": False}
+
+    monkeypatch.setattr(_notify_hook, "deliver_terminal_notice", _capture)
+
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed"])
+
+    assert rc == 0
+    assert seen["timeout"] < _notify_hook._DELIVERY_TIMEOUT_S
+    assert seen["timeout"] + _notify_hook._RECORDING_RESERVE_S < HANDLER_BUDGET_SECONDS
+
+
+def test_a_delivery_that_outlives_the_timeout_is_recorded_not_left_unknown(job, monkeypatch):
+    """A notifier that runs long is a recorded timeout, not an unreadable outcome.
+
+    The distinction is the whole point of the bound: "timed out" tells a reader
+    the notice did not arrive, while the write-ahead "unknown" cannot say
+    whether it did, and a run that keeps it has spent its one chance to say so.
+    """
+    monkeypatch.setattr(_notify_hook, "_supervised_delivery_timeout", lambda: 0.2)
+    command = json.dumps([sys.executable, "-c", "import time; time.sleep(5)"])
+
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    delivery = jobs.status(job)["notify_delivery"]
+    assert delivery["attempted"] is True
+    assert delivery["ok"] is False
+    assert delivery["error"] == "TimeoutExpired"
+    assert delivery["failure_class"] == "timeout"
+    assert "NOT delivered" in _console_log(job)
 
 
 def test_the_failure_notice_survives_the_runs_own_remaining_output(monkeypatch, tmp_path):
