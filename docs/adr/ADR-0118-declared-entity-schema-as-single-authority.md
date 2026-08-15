@@ -274,6 +274,23 @@ sufficient for that field. PostgreSQL supplies the same inventory from its live 
 cross-process comparison (3) is over the canonical serialization, not compiled DDL bytes:
 formatting is not a physical semantic.
 
+*The gate ships with a per-field must-fail fixture arm.* This is a landing condition on Phase 1,
+not a later refinement. P2 is the whole problem: a parity guard that has never been shown a
+divergence is indistinguishable from a broken one, and it gets cited as the reason the
+duplication is safe. The same objection is what disqualified the reference implementation's
+schema hash. So the gate carries one deliberately-divergent fixture per compared physical
+semantic:
+
+column type · nullability · default · primary key, including composite key *order* · foreign
+key, including its actions · unique constraint · check constraint · index membership · index
+key *direction*.
+
+Each arm must go red on its own. The acceptance test is a mutation, not a passing run: reverting
+an adapter's read of one field must redden exactly that field's arm and no other, which proves
+both that the arm is live and that the arms are independent. The two divergences already in the
+tree — 15 `DESC` indexes against zero, and 86 indexes against 82 — supply the direction and
+membership fixtures for free; the rest are constructed.
+
 **D4 — generated statement builders replace hand-built SQL for row CRUD.** Insert column lists,
 update SET clauses, and update allow-lists derive from the spec's field set. The 22 identifier
 interpolation sites and the five `_*_COLUMNS` frozensets are retired; "only declared columns
@@ -315,6 +332,22 @@ exists today is SQLite-only by construction, so a dual-dialect design cannot inh
 - **inspection failure or unknown shape** — quarantined: read-only inspection and export, on
   both dialects;
 - **explicit offline repair** — back up, apply an identified plan, re-introspect.
+
+Those two failure causes are not the same event and must not be treated alike. The discriminator
+is whether inspection *returned*:
+
+- **Transient** — the catalog read itself raised (I/O error, lock timeout, dropped connection).
+  Nothing was learned about the shape. Retry, bounded: **3 attempts total, backing off 250ms then
+  500ms**, and quarantine only if all three raise. A one-off I/O error must not lock a healthy
+  production store out of writable open.
+- **Structural** — inspection succeeded and returned a shape the registry does not recognize.
+  Quarantine immediately, with no retry. Retrying here is pure delay: the answer is known and
+  will not change, and a retry loop would only make an unknown-shape store look like a slow one.
+
+Both still fail closed to read-only. The retry applies to the *transient* class only, and the
+distinction has to be enforced at the catch site, because the defect this replaces is exactly a
+blanket `except Exception: continue` that could not tell the two apart and then stamped the
+version anyway.
 
 No flag turns an unverified store writable; a `force` escape hatch would rebuild the fail-open
 path this decision exists to close. Because observe-only runs over *successful* inspections
@@ -408,6 +441,28 @@ The reference hash is reimplemented, not ported: it must cover every physical se
 can detect, or it will report agreement across a real divergence — the failure mode P2 already
 demonstrates in this repository.
 
+### Ordering against ADR-0117
+
+ADR-0117 declares its canonical schema target as hand-written `CREATE TABLE` text for
+`progression_items` and `progression_storage_state`. Under D1 that is one more authored
+authority, so the two ADRs have to agree on which absorbs which rather than discovering it later.
+Naming it here because this document moves first:
+
+- **If ADR-0117 implements first**, its two tables are hand declarations that this registry folds
+  in during Phase 1, on the same footing as the 16 already inventoried. They join the Appendix A
+  population at that point rather than being treated as exceptions.
+- **If this ADR implements first**, ADR-0117's tables are authored as entity specs from the
+  outset and its DDL block becomes illustrative rather than the authority.
+
+Either way the D3 gate inherits three ADR-0117 decisions verbatim, and all three are exactly the
+physical semantics the gate exists to compare: the composite primary key `(progression_id,
+ordinal)` including its *order*, the foreign key's `ON DELETE CASCADE` action, and the
+**deliberate absence** of a unique constraint on `(progression_id, message_id)`. That last one is
+the trap. A registry that helpfully derived a unique index from "these two identify a row" would
+break ADR-0117's backfill, which must faithfully preserve legacy collections that already contain
+the same identifier more than once. An absent constraint is a declared decision here, not an
+omission to be corrected, and the gate has to be able to tell those apart.
+
 ## Phasing
 
 Each phase lands behavior-preserving, gated by equality proofs, and independently valuable.
@@ -425,9 +480,12 @@ upgraded store does not have.
 - **Phase 1:** entity specs + registry + generated `MetaData`, plus explicit storage codecs and
   the canonical serialization, in shadow mode. The D3 gate pins the generated schema against
   today's, on physical semantics, for both dialects, through the catalog adapters, before any
-  hand-written body is deleted. The `DESC`/index-count divergences are decided here. The gate
-  also pins determinism: generating twice in separate processes must produce an identical
-  canonical serialization, since the whole design rests on a schema hash and generated migrations.
+  hand-written body is deleted. **Landing condition: the per-field must-fail fixture arm ships
+  with the gate** (D3), mutation-proven — reverting one adapter field read reddens exactly that
+  field's arm. A gate that has never been shown a divergence does not count as landed. The
+  `DESC`/index-count divergences are decided here. The gate also pins determinism: generating
+  twice in separate processes must produce an identical canonical serialization, since the whole
+  design rests on a schema hash and generated migrations.
 - **Phase 2:** dialect introspection, the observe-only structural diff, and an explicit authored
   data-migration catalog — exercised against legacy fixtures *while every old authority still
   exists*. This is the phase that discovers what is actually deployed, and it applies nothing.
