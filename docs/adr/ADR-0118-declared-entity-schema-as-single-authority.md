@@ -660,6 +660,18 @@ gates unprovable. It needs its own decision, taken once the generated decoders e
 Measured file by file at the current head. "Deleted" means the hand-authored source stops
 existing, because the same facts are generated from the registry.
 
+Two kinds of figure appear below and they carry different weight, so the method is stated rather
+than left to the reader. **Structural counts** — whole-file line counts, table and column counts,
+method counts, the number of `_*_COLUMNS` frozensets — are derived from the AST or from the
+declared `MetaData`, never from a line-oriented pattern. That distinction is not pedantic: a
+regex requiring the value on the same line as the name undercounts anything spelled across
+lines, which is exactly how an earlier draft of this document reported 29 `RunReasons` codes
+instead of 30. Every structural figure here was re-derived that way and reconciles.
+**Region-bounded counts** — the rebuild machinery's 956 lines, the operator schema region's 244,
+the 286 duplicated lines in three service modules — depend on where the region is judged to
+start and stop. They are honest measurements of a boundary someone drew, they are not
+reproducible from a command alone, and they should be treated as sizing rather than as facts.
+
 | Deleted outright | Lines |
 |---|---:|
 | `state/schema.sql` (becomes a generated artifact) | 1,021 |
