@@ -236,6 +236,16 @@ class _PsSnapshotCache(NamedTuple):
     value: str
     stored_at: float
     duration_ms: float
+    # Start order as a counter rather than as a clock reading. Publication has
+    # to know which of two captures STARTED later, and a timestamp cannot
+    # answer that at this granularity: time.monotonic() resolves to about 42ns
+    # here, and roughly 15% of back-to-back reads return the same value. Two
+    # captures starting inside one tick would compare equal, the `>` test would
+    # not hold, and the earlier one would publish over the later one's evidence.
+    # A counter handed out under the publish lock is strictly increasing by
+    # construction and carries no clock dependency at all. `stored_at` is kept
+    # because the TTL is a real duration; it just no longer decides ordering.
+    sequence: int
 
 
 _PS_SNAPSHOT_CACHE: _PsSnapshotCache | None = None
@@ -255,6 +265,12 @@ _PS_SNAPSHOT_METRICS: dict[str, int | float | None] | None = None
 # writing last. An asyncio lock would only order coroutines within one loop.
 # Held for a few statements with no I/O and no await inside.
 _PS_SNAPSHOT_PUBLISH_LOCK = threading.Lock()
+# Start order for captures, handed out at scan start. See _PsSnapshotCache.sequence.
+# Its own lock rather than the publish lock: the two guard different things, and
+# sharing one would make a capture that is mid-publish block unrelated captures
+# from even starting.
+_PS_SNAPSHOT_SEQUENCE_LOCK = threading.Lock()
+_PS_SNAPSHOT_SEQUENCE = 0
 
 
 def _ps_snapshot_metrics_state() -> dict[str, int | float | None]:
@@ -290,6 +306,14 @@ async def _capture_ps_snapshot() -> str:
 
     started = time.perf_counter()
     taken_at = time.monotonic()
+    # Claimed before the scan, so it orders captures by when they STARTED,
+    # which is the ordering this cache publishes by. Taking it at publish time
+    # instead would order by arrival and reintroduce exactly the staleness the
+    # comparison below exists to prevent.
+    with _PS_SNAPSHOT_SEQUENCE_LOCK:
+        global _PS_SNAPSHOT_SEQUENCE
+        _PS_SNAPSHOT_SEQUENCE += 1
+        sequence = _PS_SNAPSHOT_SEQUENCE
     value = await anyio.to_thread.run_sync(_ps_snapshot)
     duration_ms = (time.perf_counter() - started) * 1000
 
@@ -304,7 +328,7 @@ async def _capture_ps_snapshot() -> str:
         metrics["last_scan_duration_ms"] = round(duration_ms, 3)
 
         current = _PS_SNAPSHOT_CACHE
-        if current is not None and current.stored_at > taken_at:
+        if current is not None and current.sequence > sequence:
             # A scan that started later has already published. It is the
             # better evidence, so it stays in the cache and is what this
             # caller gets too.
@@ -314,6 +338,7 @@ async def _capture_ps_snapshot() -> str:
             value=value,
             stored_at=taken_at,
             duration_ms=duration_ms,
+            sequence=sequence,
         )
     return value
 

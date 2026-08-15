@@ -1,4 +1,4 @@
-"""Scale contracts for run-list process-liveness fallback (issue #3108)."""
+"""Scale contracts for the run list's process-liveness fallback."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ def _isolate_snapshot_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_CACHE", None, raising=False)
     monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_INFLIGHT", {}, raising=False)
     monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_METRICS", None, raising=False)
+    monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_SEQUENCE", 0, raising=False)
 
 
 async def _stub_run_dependencies(
@@ -314,14 +315,85 @@ async def test_an_older_capture_does_not_overwrite_newer_liveness_evidence(
     # Starts strictly later, so its data is the newer evidence.
     assert await admin_svc._capture_ps_snapshot() == "NEW"
     assert admin_svc._PS_SNAPSHOT_CACHE.value == "NEW"
-    newer_stored_at = admin_svc._PS_SNAPSHOT_CACHE.stored_at
+    newer_sequence = admin_svc._PS_SNAPSHOT_CACHE.sequence
 
     release_old.set()
     # The older scan returns last. It must neither publish nor hand its own
-    # stale value back to its caller.
+    # stale value back to its caller. Asserting on the sequence rather than on
+    # the timestamp: the sequence is what publication compares, so an untouched
+    # sequence is the direct evidence that the older scan did not publish.
     assert await old_task == "NEW"
     assert admin_svc._PS_SNAPSHOT_CACHE.value == "NEW"
-    assert admin_svc._PS_SNAPSHOT_CACHE.stored_at == newer_stored_at
+    assert admin_svc._PS_SNAPSHOT_CACHE.sequence == newer_sequence
+
+
+async def test_captures_that_start_inside_one_clock_tick_still_publish_in_start_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Publication order must not depend on the clock separating two captures.
+
+    The monotonic clock ties often enough here to matter: it advertises about
+    42ns of resolution, and roughly one back-to-back read in seven returns the
+    same value as the read before it. Two captures that start inside one tick
+    carry the same start time, a greater-than test on those times does not
+    hold, and the capture that started earlier publishes over the later one's
+    evidence. The clock is frozen below so the tie is certain rather than
+    hoped for.
+    """
+    import threading
+
+    import lionagi.studio.services.admin as admin_svc
+
+    _isolate_snapshot_cache(monkeypatch)
+
+    frozen_reading = 1000.0
+
+    class _FrozenMonotonic:
+        """Delegates to the real time module, except that monotonic() stands still."""
+
+        @staticmethod
+        def monotonic() -> float:
+            return frozen_reading
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(time, name)
+
+    monkeypatch.setattr(admin_svc, "time", _FrozenMonotonic())
+    # Both captures below read this clock for their start time, so asserting it
+    # here is what makes the tie a fact of the test rather than an assumption.
+    assert admin_svc.time.monotonic() == frozen_reading
+
+    entered_old = threading.Event()
+    release_old = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def capture() -> str:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            mine = calls
+        if mine == 1:
+            entered_old.set()
+            release_old.wait(timeout=10)
+            return "OLD"
+        return "NEW"
+
+    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+
+    old_task = asyncio.create_task(admin_svc._capture_ps_snapshot())
+    assert await asyncio.to_thread(entered_old.wait, 5), "the first capture never started"
+
+    assert await admin_svc._capture_ps_snapshot() == "NEW"
+    published = admin_svc._PS_SNAPSHOT_CACHE
+    assert published.value == "NEW"
+    # Both captures stamped the same instant, which is the condition under test.
+    assert published.stored_at == frozen_reading
+
+    release_old.set()
+    assert await old_task == "NEW"
+    assert admin_svc._PS_SNAPSHOT_CACHE.value == "NEW"
+    assert admin_svc._PS_SNAPSHOT_CACHE.sequence == published.sequence
 
 
 def test_cross_loop_captures_leave_the_newest_snapshot_cached(
@@ -472,6 +544,12 @@ def test_cache_publish_is_mutually_exclusive_across_loops(monkeypatch):
     Asserting on overlap rather than on a lost write: the lost write needs a
     specific interleaving to show up, while overlap is the condition that
     makes the lost write possible at all, and it is observable directly.
+
+    The two captures are coordinated by event, not by elapsed time. Whichever
+    one reaches the critical section first holds it open until the other is
+    demonstrably blocked on the lock, and only then checks that it is alone.
+    Holding it open for a fixed sleep instead would prove nothing on the run
+    where the second capture arrives after the sleep ends.
     """
     import threading
 
@@ -479,24 +557,48 @@ def test_cache_publish_is_mutually_exclusive_across_loops(monkeypatch):
 
     _isolate_snapshot_cache(monkeypatch)
 
+    second_at_gate = threading.Event()
+
+    class _GatedLock:
+        """The publish lock, reporting when a capture has to wait its turn."""
+
+        def __init__(self, inner: threading.Lock) -> None:
+            self._inner = inner
+
+        def __enter__(self) -> Any:
+            if not self._inner.acquire(blocking=False):
+                second_at_gate.set()
+                self._inner.acquire()
+            return self
+
+        def __exit__(self, *_exc: Any) -> bool:
+            self._inner.release()
+            return False
+
     real_cache_cls = admin_svc._PsSnapshotCache
     inside = 0
+    entries = 0
     observed = {"max_inside": 0}
     bookkeeping = threading.Lock()
 
     def _instrumented(*args: Any, **kwargs: Any) -> Any:
-        nonlocal inside
+        nonlocal inside, entries
         with bookkeeping:
+            entries += 1
+            mine = entries
             inside += 1
             observed["max_inside"] = max(observed["max_inside"], inside)
-        # Hold the critical section open long enough that a second thread
-        # reaching it would be seen. Without the publish lock this window is
-        # wide enough to make the overlap essentially certain.
-        time.sleep(0.05)
+        if mine == 1:
+            # Without exclusion the other capture never has to wait, so it
+            # never reaches the gate and this times out.
+            assert second_at_gate.wait(timeout=10), (
+                "the second capture never had to wait for the publish lock"
+            )
         with bookkeeping:
             inside -= 1
         return real_cache_cls(*args, **kwargs)
 
+    monkeypatch.setattr(admin_svc, "_PS_SNAPSHOT_PUBLISH_LOCK", _GatedLock(threading.Lock()))
     monkeypatch.setattr(admin_svc, "_PsSnapshotCache", _instrumented)
     monkeypatch.setattr(admin_svc, "_ps_snapshot", lambda: "PID COMMAND\n1 init\n")
 
