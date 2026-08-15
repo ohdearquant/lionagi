@@ -97,9 +97,13 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
 
   const followUp = page.getByLabel("Follow-up instruction");
   await followUp.fill("Continue with the next check.");
+  // The resume watch polls the invocation's status endpoint, not its full
+  // detail: the poll only needs the terminal state, and fetching the whole
+  // record on a timer is what this view was scaled away from.
   const activityPoll = page.waitForResponse(
     (response) =>
-      response.request().method() === "GET" && /\/api\/invocations\/[^/?]+$/.test(response.url()),
+      response.request().method() === "GET" &&
+      /\/api\/invocations\/[^/?]+\/status$/.test(response.url()),
   );
   await page.getByRole("button", { name: "Resume", exact: true }).click();
   await expect(page.getByText("Follow-up accepted", { exact: true })).toBeVisible({
