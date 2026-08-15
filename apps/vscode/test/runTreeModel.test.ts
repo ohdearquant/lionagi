@@ -115,13 +115,14 @@ describe("runTreeModel NodeCancelled lane", () => {
     expect(state.nodes.get("op1")?.state).toBe("cancelled");
   });
 
-  // Documents retry semantics, and deliberately kept despite proving nothing
-  // about the NodeCancelled case itself: dropping the signal entirely also
-  // ends with the node "running", so this one stays green either way. The
-  // three above are what fail when the case is removed.
+  // The intermediate assertion is what makes this one mean anything. Ending
+  // only on "running" is a result a dropped NodeCancelled produces just as
+  // well, so without the first check the test stays green with the case
+  // removed and documents retry semantics it never exercised.
   it("a retry reopens it, matching the other terminal lanes", () => {
     const state = createRunTreeState();
     applySignalRow(state, row("NodeCancelled", "op1"));
+    expect(state.nodes.get("op1")?.state).toBe("cancelled");
     applySignalRow(state, row("NodeStarted", "op1"));
     expect(state.nodes.get("op1")?.state).toBe("running");
   });
