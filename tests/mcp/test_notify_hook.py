@@ -787,10 +787,43 @@ def test_the_delivery_timeout_fits_inside_the_deadline_that_kills_the_hook():
     """
     timeout = _notify_hook._supervised_delivery_timeout()
 
-    assert timeout >= _notify_hook._MIN_DELIVERY_TIMEOUT_S
     assert timeout + _notify_hook._RECORDING_RESERVE_S < HANDLER_BUDGET_SECONDS
     # The in-process observer has no supervisor, so it keeps the longer one.
     assert timeout < _notify_hook._DELIVERY_TIMEOUT_S
+
+
+@pytest.mark.parametrize(
+    ("spent", "expected"),
+    [
+        (0.0, 7.0),
+        # Past the point where a one-second floor would start overdrawing.
+        (6.5, 0.5),
+        (7.0, 0.0),
+        # Already inside the reserve: there is nothing left to hand out, and
+        # handing out a minimum here is what spends the recording window.
+        (9.0, 0.0),
+    ],
+)
+def test_the_delivery_timeout_is_what_the_budget_arithmetic_leaves(spent, expected, monkeypatch):
+    """Pinned per elapsed value, so the budget cannot quietly become a constant.
+
+    ``HANDLER_BUDGET_SECONDS`` minus the startup allowance, minus what this hook
+    has already spent, minus the reserve that records the outcome. Asserting
+    only that the result is positive and under the deadline passes for any fixed
+    number in that range, including one that ignores the elapsed time entirely.
+    """
+    monkeypatch.setattr(_notify_hook, "_STARTED_AT", time.monotonic() - spent)
+
+    timeout = _notify_hook._supervised_delivery_timeout()
+
+    assert timeout == pytest.approx(expected, abs=0.25)
+    # The invariant the number exists to hold. Once the budget is gone the
+    # overdraw is already there and no return value undoes it, so what the
+    # function controls is whether it hands out time it does not have.
+    assert timeout == 0.0 or (
+        spent + _notify_hook._STARTUP_ALLOWANCE_S + timeout + _notify_hook._RECORDING_RESERVE_S
+        <= HANDLER_BUDGET_SECONDS
+    )
 
 
 def test_the_hook_delivers_under_the_supervised_timeout(job, monkeypatch):

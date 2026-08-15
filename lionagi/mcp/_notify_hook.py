@@ -44,7 +44,6 @@ _STARTED_AT = time.monotonic()
 _STARTUP_ALLOWANCE_S = 1.0
 # Locking the record, writing the outcome, appending the console note.
 _RECORDING_RESERVE_S = 2.0
-_MIN_DELIVERY_TIMEOUT_S = 1.0
 
 
 def _supervised_delivery_timeout() -> float:
@@ -58,6 +57,11 @@ def _supervised_delivery_timeout() -> float:
     So the delivery's own timeout has to fire first, with enough of the deadline
     left to write the result down.
 
+    The result falls to zero rather than to any minimum. A floor would be the
+    one case worth guarding against: it applies exactly when the budget is
+    already spent, and it buys delivery time by taking it from the reserve that
+    writes the answer down.
+
     A ceiling, not a guarantee: ``HANDLER_BUDGET_SECONDS`` is the deadline for
     the whole terminal-callback fan-out rather than for this handler alone, so
     a co-running handler can consume it first and the kill can still land mid
@@ -65,7 +69,7 @@ def _supervised_delivery_timeout() -> float:
     """
     spent = time.monotonic() - _STARTED_AT
     remaining = HANDLER_BUDGET_SECONDS - _STARTUP_ALLOWANCE_S - spent - _RECORDING_RESERVE_S
-    return max(_MIN_DELIVERY_TIMEOUT_S, remaining)
+    return max(0.0, remaining)
 
 
 # A notifier's stdout/stderr is free text that may carry a credential, so it's
