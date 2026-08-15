@@ -71,8 +71,8 @@ cited as the reason the duplication is safe.
 **P3 — DDL issuance and connection ownership are not confined to the state layer.**
 `studio/operator/store.py` (2,349 lines) declares and creates 6 tables of its own and is in
 effect a second persistence layer beside `StateDB`. Four `studio/services/*` modules create 7
-more tables at service-import time. Separately, studio opens the store directly — 73
-`async with _open_db(...)` contexts across 10 files — rather than going through `StateDB`. The
+more tables at service-import time. Separately, studio opens the store directly — 38
+`async with _open_db(...)` contexts across 9 files — rather than going through `StateDB`. The
 path those contexts open is chosen by `studio/services/_db.py:27`, whose own docstring records
 that for a server-backed store it falls back to the default SQLite file and is "equally wrong
 for that deployment". `require_file_store` exists as the guard against exactly that case and is
@@ -359,7 +359,7 @@ injected fault reaches the same plan.
 **D6 — DDL issuance and store access become the state layer's exclusive right.** The six
 operator-store tables and the 7 studio-service re-declarations register in the registry (the
 latter as the state-owned tables they already duplicate). Studio loses its
-import-time `CREATE TABLE` side effects and its own connection path; the 73 direct contexts move
+import-time `CREATE TABLE` side effects and its own connection path; the 38 direct contexts move
 to one executor over the state engine, which removes the "equally wrong" fallback and the three
 services that never call `require_file_store` along with it.
 
@@ -499,7 +499,7 @@ upgraded store does not have.
   delete the old authorities; the four bespoke rebuilds become instances of the generated
   rebuild, ported in risk order (generated schedules first, literal sessions/invocations next,
   schedule-runs last because it carries backups, indexes and triggers).
-- **Phase 5:** fold operator-store and studio-service tables into the registry and route the 73
+- **Phase 5:** fold operator-store and studio-service tables into the registry and route the 38
   direct connections through the shared executor (largest blast radius; last). Operator's atomic
   CAS SQL is preserved verbatim and moved, never rewritten in the same change as its schema.
 
@@ -646,7 +646,7 @@ summed: a declaration, a statement string, and an execution call are different t
 | `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 6,683 lines; 5 `_*_COLUMNS` allow-lists; 45 `S608` |
 | `state/lifecycle/` | — | — | 8 execution calls | policy table/patch identifiers unvalidated |
 | `studio/operator/store.py` | 6 tables (+2 indexes) + own migration | yes | 119 sites | 2,349 lines; a second persistence layer |
-| `studio/services/*` | 7 re-declarations of state tables, 4 modules | at import time | 213 query sites | 73 direct store connections in 10 files |
+| `studio/services/*` | 7 re-declarations of state tables, 4 modules | at import time | 93 execution calls | 38 direct store connections in 9 files |
 
 Divergences found between the two full-schema authorities, all currently green:
 
