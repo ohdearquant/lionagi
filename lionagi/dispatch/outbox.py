@@ -334,17 +334,25 @@ async def deliver_due_dispatches(
     *,
     now: float | None = None,
     notify_template: list[str] | None = None,
+    actor: Actor | None = None,
 ) -> dict[str, int]:
     """Scan due pending/delivering rows and attempt delivery. Called from the scheduler tick.
 
     Ack-required rows loop back to pending until acked/expired/exhausted;
     claims use a time-boxed lease plus a guarded attempt-counter CAS so
     overlapping scans can't double-deliver. See docs/internals/runtime.md.
+
+    ``actor`` is recorded on every transition this scan writes and defaults to
+    the scheduler tick's own identity. A caller driving delivery from anywhere
+    else must pass its own, or the history will attribute its writes to the
+    scheduler.
     """
     if now is None:
         now = time.time()
     if notify_template is None:
         notify_template = resolve_notify_template()
+    if actor is None:
+        actor = Actor(type="scheduler", id="dispatch_delivery_loop")
 
     counts = {"attempted": 0, "delivered": 0, "dead_letter": 0, "expired": 0, "retried": 0}
 
@@ -369,7 +377,7 @@ async def deliver_due_dispatches(
         dispatch_id = row["id"]
         try:
             await _deliver_one_due_row(
-                db, row, now=now, notify_template=notify_template, counts=counts
+                db, row, now=now, notify_template=notify_template, counts=counts, actor=actor
             )
         except LookupError:
             _log.debug(
@@ -388,6 +396,7 @@ async def _deliver_one_due_row(
     now: float,
     notify_template: list[str] | None,
     counts: dict[str, int],
+    actor: Actor,
 ) -> None:
     """Claim-and-deliver one due row; per-row so a mid-scan ``LookupError``
     (row purged concurrently) can be caught without aborting the batch.
@@ -407,7 +416,7 @@ async def _deliver_one_due_row(
                     code=DispatchReasons.EXPIRED_DEADLINE,
                     summary="expires_at reached before delivery",
                 ),
-                actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
+                actor=actor,
                 idempotency_key=f"expire:{dispatch_id}:{row['attempt']}",
             ),
         )
@@ -427,7 +436,7 @@ async def _deliver_one_due_row(
                 code=DispatchReasons.DELIVERING_ATTEMPT,
                 summary=f"attempt {next_attempt}",
             ),
-            actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
+            actor=actor,
             idempotency_key=f"deliver:{dispatch_id}:{row['attempt']}",
         ),
         # Guard on pre-claim attempt (not just status) so a second
@@ -466,7 +475,7 @@ async def _deliver_one_due_row(
                         code=DispatchReasons.DEAD_LETTER_ACK_TIMEOUT,
                         summary=f"{next_attempt} sends without ack (max_attempts exhausted)",
                     ),
-                    actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
+                    actor=actor,
                     idempotency_key=f"ack_timeout:{dispatch_id}:{next_attempt}",
                 ),
             )
@@ -491,7 +500,7 @@ async def _deliver_one_due_row(
                     code=DispatchReasons.DELIVERED_TRANSPORT_OK,
                     summary=("transport command exited 0; consumer acknowledgement not implied"),
                 ),
-                actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
+                actor=actor,
                 idempotency_key=f"delivered:{dispatch_id}:{next_attempt}",
             ),
             patch=patch,
@@ -518,7 +527,7 @@ async def _deliver_one_due_row(
                     code=DispatchReasons.DEAD_LETTER_MAX_ATTEMPTS,
                     summary=f"{next_attempt} attempts exhausted: {err}",
                 ),
-                actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
+                actor=actor,
                 idempotency_key=f"dead_letter:{dispatch_id}:{next_attempt}",
             ),
         )
@@ -538,7 +547,7 @@ async def _deliver_one_due_row(
                 code=DispatchReasons.PENDING_RETRY_BACKOFF,
                 summary=f"retry in {backoff:.0f}s: {err}",
             ),
-            actor=Actor(type="scheduler", id="dispatch_delivery_loop"),
+            actor=actor,
             idempotency_key=f"retry:{dispatch_id}:{next_attempt}",
         ),
     )
