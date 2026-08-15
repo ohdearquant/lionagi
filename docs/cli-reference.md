@@ -757,10 +757,12 @@ variables `LIONAGI_MCP_NOTIFY_COMMAND` and `LIONAGI_MCP_NOTIFY_TARGET` set a
 process-wide default. Delivery outcome is recorded on the job and surfaced in
 `job.status` (`notify_delivery`), so a notice that failed to send is visible
 rather than silently lost. `job.list` carries the same outcome collapsed to one
-word in `notify_delivery_state` — `delivered`, `failed`, `unknown` when an
-attempt's final result was interrupted, or `none` when no notifier was
-configured — so a run whose notice never went out is spotted while scanning
-runs, not only when one is looked up. The full `job.status.notify_delivery`
+word in `notify_delivery_state` — `delivered`, `delivered_unverified` when it
+exited zero but that command shape's zero exit doesn't prove a send, `failed`
+when the notifier reported its own failure, `unknown` when an attempt's final
+result was interrupted or it was stopped for running past its deadline, or
+`none` when no notifier was configured — so a run whose notice never went out
+is spotted while scanning runs, not only when one is looked up. The full `job.status.notify_delivery`
 object is null only for a non-terminal run.
 
 ---
@@ -1001,6 +1003,7 @@ li agent -c "continue most recent"
 | `LIONAGI_RUN_ID` | When explicitly set for a task-producing child process, reuse the supplied run ID | `cli/_runs.py` |
 | `LIONAGI_HOME` | Override `~/.lionagi/` base dir | `lionagi/utils.py` |
 | `LIONAGI_WORKER_LIVENESS_TIMEOUT` | Seconds `run()` waits for a CLI worker's first stream chunk before retrying once, then raising `WorkerLivenessError`; default `120`, `0` disables. Applied by default only to endpoints that stream output early (`claude_code`, `codex`) — buffered endpoints (`gemini-cli`, `pi`) are unaffected unless `liveness_timeout` is passed explicitly to `run()` | `lionagi/operations/run/run.py` |
+| `LIONAGI_WORKER_IDLE_TIMEOUT` | Maximum silence between chunks from an early-streaming CLI worker; resets per chunk, defaults to `600`, and `0` disables. A miss after partial output raises `WorkerLivenessError` (`worker.stream_idle`) without retry. Buffered endpoints are unaffected unless `idle_timeout` is passed explicitly to `run()` | `lionagi/operations/run/run.py` |
 | `OPENAI_API_KEY` | OpenAI REST API key (for `iModel`, not for `codex` CLI alias) | `lionagi/config.py` |
 | `ANTHROPIC_API_KEY` | Anthropic REST API key (for `iModel`; `claude` alias uses `claude login` instead) | `lionagi/config.py` |
 | `GEMINI_API_KEY` | Gemini API key (`gemini` provider, not `gemini-code` CLI auth) | `lionagi/config.py` |

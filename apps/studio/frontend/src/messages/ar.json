@@ -173,7 +173,12 @@
     "model": {
       "label": "Model",
       "default": "افتراضي",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · موصى به",
+      "legacyGroup": "اختيار قديم",
+      "efforts": "الجهد: {efforts}",
+      "effortInModel": "يُضمَّن الجهد في معرّف النموذج",
+      "effortAsSetting": "يُرسل الجهد كإعداد لمزوّد الخدمة"
     },
     "effort": {
       "label": "الجهد",

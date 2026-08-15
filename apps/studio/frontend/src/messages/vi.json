@@ -173,7 +173,12 @@
     "model": {
       "label": "Model",
       "default": "Mặc định",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · đề xuất",
+      "legacyGroup": "Lựa chọn cũ",
+      "efforts": "Nỗ lực: {efforts}",
+      "effortInModel": "Mức nỗ lực được mã hóa trong ID mô hình",
+      "effortAsSetting": "Mức nỗ lực được gửi dưới dạng cài đặt nhà cung cấp"
     },
     "effort": {
       "label": "Nỗ lực",

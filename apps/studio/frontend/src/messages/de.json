@@ -173,7 +173,12 @@
     "model": {
       "label": "Model",
       "default": "Standard",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · empfohlen",
+      "legacyGroup": "Legacy-Auswahl",
+      "efforts": "Aufwand: {efforts}",
+      "effortInModel": "Der Aufwand ist in der Modell-ID codiert",
+      "effortAsSetting": "Der Aufwand wird als Anbieter-Einstellung gesendet"
     },
     "effort": {
       "label": "Aufwand",

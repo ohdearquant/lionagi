@@ -105,7 +105,7 @@ Six-level health model replacing the binary "phantom / not":
 
 | Level | Meaning | Action |
 |-------|---------|--------|
-| `HEALTHY` | Terminal or active with recent activity | None |
+| `HEALTHY` | Process/resources are clean, or an active process has recent activity | None |
 | `IDLE` | Alive, quiet (> 1h, < kind threshold) | Monitor |
 | `UNRESPONSIVE` | Alive but past kind threshold | Investigate |
 | `STALE` | Process dead, had work | Transition to failed |
@@ -118,6 +118,14 @@ Health is orthogonal to status: a `status='running'` session can be
 1. `status` — what the CLI last wrote.
 2. `last_message_at` vs the kind-aware threshold — activity.
 3. Process liveness — does the OS still own the PID recorded?
+
+`SessionHealth.HEALTHY` never means that execution succeeded. For a clean
+terminal session it only means no stale resource signal was supplied. The
+Studio runs API makes that distinction explicit: `effective_health` is a
+running-process signal and is `null` for every terminal row. Consumers must
+branch on `status` and `status_reason_code` for outcome; in particular,
+`failed`, `timed_out`, `aborted`, `cancelled`, and `completed_empty` are not
+successful because of any health value.
 
 ### Staleness thresholds ([ADR-0057](../adr/ADR-0057-operational-lifecycle-and-transition-audit.md))
 

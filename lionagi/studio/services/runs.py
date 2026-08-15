@@ -5,9 +5,10 @@ import os
 import stat
 import time
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.libs.path_safety import resolve_workspace_path
 
@@ -29,6 +30,40 @@ _STATUS_ALIASES: dict[str, set[str]] = {
     "timeout": {"timed_out", "timeout"},
     "pending": {"pending", "prepared"},
 }
+
+
+class _RunListQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    page: int = Field(default=1, ge=1, description="1-based page number")
+    # Refuse oversized pages instead of letting one request monopolize the store.
+    per_page: int = Field(
+        default=20,
+        ge=1,
+        le=_sessions_svc.MAX_SESSION_PAGE,
+        description=f"Rows per page (max {_sessions_svc.MAX_SESSION_PAGE})",
+    )
+    status: list[str] | None = Field(default=None, description="Repeated status filter")
+    # ADR-0079 replaced the old `worker` spelling; strict extras make a stale
+    # caller fail visibly instead of returning an unfiltered list.
+    playbook: str | None = Field(
+        default=None, description="Case-insensitive playbook contains filter"
+    )
+    project: str | None = Field(default=None, description="Exact project name filter (ADR-0063)")
+    project_null: bool = Field(default=False, description="Filter to runs with no project")
+    tag: list[str] | None = Field(default=None, description="Repeated tag filter (AND-composed)")
+    search: str | None = Field(
+        default=None,
+        description="Case-insensitive contains match on session name or agent name",
+    )
+    kind: list[str] | None = Field(
+        default=None,
+        description="Repeated orchestration-kind filter: agent, play, flow, fanout, show",
+    )
+    sort: str = Field(
+        default="recent",
+        description="Sort order: 'recent' (default) or 'cost' (highest reported spend first)",
+    )
 
 
 def _normalize_status_filter(status: str | list[str] | None) -> set[str] | None:
@@ -475,29 +510,26 @@ def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool
     return process_liveness(s, Path(ap) if ap else None, ps_snapshot)
 
 
-_TERMINAL_ROW_STATUSES = frozenset(
-    {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
-)
-
-
 def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
-    """Canonical Run row shape shared by list and detail routes."""
-    from lionagi.state.health import classify_session_health
+    """Canonical Run row shape shared by list and detail routes.
 
-    health = classify_session_health(
-        s,
-        now=now,
-        process_alive=process_alive,
-        has_artifacts=bool(s.get("artifacts_path")),
-        has_stale_locks=False,
-    )
-    # Expose the classifier verdict verbatim; the dashboard maps UNRESPONSIVE→"stuck".
-    effective_health: str | None = health.value
-    # A finished (or failed) run has no live process for "healthy" to describe —
-    # projecting it beside a terminal status reads as a contradiction ("failed
-    # but healthy"). Real terminal signals (stale locks, zombie) still pass.
-    if effective_health == "healthy" and s.get("status") in _TERMINAL_ROW_STATUSES:
-        effective_health = None
+    ``effective_health`` is a live-process diagnostic, not an execution
+    outcome. Once the session is terminal there is no process health to
+    report; callers must use ``status`` and its reason fields for the outcome.
+    """
+    effective_health: str | None = None
+    if s.get("status") == "running":
+        from lionagi.state.health import classify_session_health
+
+        health = classify_session_health(
+            s,
+            now=now,
+            process_alive=process_alive,
+            has_artifacts=bool(s.get("artifacts_path")),
+            has_stale_locks=False,
+        )
+        # The dashboard maps a live-but-quiet UNRESPONSIVE run onto "stuck".
+        effective_health = health.value
     return {
         "run_id": s["id"],
         "id": s["id"],
@@ -750,39 +782,18 @@ def _build_steps_from_db(branches: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 @studio_route("/runs/", method="GET", area="runs", name="list_runs")
 async def list_runs_route(
-    page: int = Query(default=1, ge=1, description="1-based page number"),
-    # Refused above the cap rather than served slowly: a caller can react to a
-    # 422 and ask for pages, but it cannot react to a daemon that stops answering.
-    per_page: int = Query(
-        default=20,
-        ge=1,
-        le=_sessions_svc.MAX_SESSION_PAGE,
-        description=f"Rows per page (max {_sessions_svc.MAX_SESSION_PAGE})",
-    ),
-    status: list[str] | None = Query(default=None, description="Repeated status filter"),  # noqa: B008
-    # ADR-0079: renamed from ?worker= to ?playbook= — "worker" is
-    # not in lionagi's Studio vocabulary per ADR-0079.
-    playbook: str | None = Query(
-        default=None, description="Case-insensitive playbook contains filter"
-    ),
-    project: str | None = Query(default=None, description="Exact project name filter (ADR-0063)"),
-    project_null: bool = Query(default=False, description="Filter to runs with no project"),
-    tag: list[str] | None = Query(  # noqa: B008
-        default=None, description="Repeated tag filter (AND-composed)"
-    ),
-    search: str | None = Query(
-        default=None,
-        description="Case-insensitive contains match on session name or agent name",
-    ),
-    kind: list[str] | None = Query(  # noqa: B008
-        default=None,
-        description="Repeated orchestration-kind filter: agent, play, flow, fanout, show",
-    ),
-    sort: str = Query(
-        default="recent",
-        description="Sort order: 'recent' (default) or 'cost' (highest reported spend first)",
-    ),
+    query: Annotated[_RunListQuery, Query()],
 ) -> dict[str, Any]:
+    page = query.page
+    per_page = query.per_page
+    status = query.status
+    playbook = query.playbook
+    project = query.project
+    project_null = query.project_null
+    tag = query.tag
+    search = query.search
+    kind = query.kind
+    sort = query.sort
     if sort not in _sessions_svc._SESSION_SORTS:
         raise HTTPException(status_code=422, detail="sort must be one of: recent, cost")
     where = _sessions_svc.SessionFilter(

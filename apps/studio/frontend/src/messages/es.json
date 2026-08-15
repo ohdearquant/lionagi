@@ -173,7 +173,12 @@
     "model": {
       "label": "Model",
       "default": "Predeterminado",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · recomendado",
+      "legacyGroup": "Selección heredada",
+      "efforts": "Esfuerzo: {efforts}",
+      "effortInModel": "El esfuerzo está codificado en el ID del modelo",
+      "effortAsSetting": "El esfuerzo se envía como ajuste del proveedor"
     },
     "effort": {
       "label": "Esfuerzo",

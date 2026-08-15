@@ -173,7 +173,12 @@
     "model": {
       "label": "Model",
       "default": "ডিফল্ট",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · প্রস্তাবিত",
+      "legacyGroup": "পুরোনো নির্বাচন",
+      "efforts": "প্রচেষ্টা: {efforts}",
+      "effortInModel": "প্রচেষ্টা মডেল আইডিতে এনকোড করা হয়",
+      "effortAsSetting": "প্রচেষ্টা প্রদানকারীর সেটিং হিসেবে পাঠানো হয়"
     },
     "effort": {
       "label": "প্রচেষ্টা",

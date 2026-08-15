@@ -173,7 +173,12 @@
     "model": {
       "label": "Model",
       "default": "डिफ़ॉल्ट",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · अनुशंसित",
+      "legacyGroup": "पुराना चयन",
+      "efforts": "प्रयास: {efforts}",
+      "effortInModel": "प्रयास मॉडल ID में एन्कोड किया गया है",
+      "effortAsSetting": "प्रयास प्रदाता सेटिंग के रूप में भेजा जाता है"
     },
     "effort": {
       "label": "प्रयास",
