@@ -460,13 +460,24 @@ class DependencyAwareExecutor:
         self._terminal_emitted.add(operation.id)
         self._emit_progress(str(operation.id), branch_name, status, elapsed, name_is_fallback)
 
-    def _emit_abandoned_terminal(self, operation: Operation, status: str = "failed") -> None:
-        """Safety net for a started operation that bypassed normal terminals.
+    def _emit_abandoned_terminal(
+        self, operation: Operation, status: str = "failed", *, require_started: bool = True
+    ) -> None:
+        """Safety net for an operation that bypassed normal terminals.
 
         Cancellation and unexpected errors retain their distinct outcome;
-        no-op if the operation never started or already emitted a terminal.
+        no-op if the operation already emitted a terminal.
+
+        ``require_started`` guards the unexpected-error path, where announcing
+        a failure for an operation that never ran would invent an outcome.
+        Cancellation passes it False: an operation waiting on dependencies, on
+        a pause gate, or on the capacity limiter has not started, and the graph
+        the caller is watching already lists it. Left out, it holds whatever it
+        last showed for the rest of the run -- and an operation cancelled while
+        paused was announced as paused, so that is a node reporting a live
+        state it is no longer in.
         """
-        if operation.id not in self._started_ops:
+        if require_started and operation.id not in self._started_ops:
             return
         if operation.id in self._terminal_emitted:
             return
@@ -645,7 +656,7 @@ class DependencyAwareExecutor:
             # perpetually running.
             if operation.execution.status not in Event._TERMINAL_STATUSES:
                 operation.execution.status = EventStatus.CANCELLED
-            self._emit_abandoned_terminal(operation, "cancelled")
+            self._emit_abandoned_terminal(operation, "cancelled", require_started=False)
             raise
 
         except Exception as e:

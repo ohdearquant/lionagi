@@ -527,10 +527,12 @@ async def test_abandonment_unexpected_flow_error_after_start_emits_one_terminal(
 
 
 @pytest.mark.asyncio
-async def test_never_started_op_gets_no_terminal_from_safety_net():
-    """The abandonment safety net must be a no-op for an operation that never
-    reached "started" — e.g. a sibling still queued when a group cancels —
-    so it never fabricates a terminal signal for work that never began."""
+async def test_never_started_op_gets_no_failed_terminal_from_safety_net():
+    """The abandonment safety net must not report a *failure* for an operation
+    that never reached "started", so an unexpected flow-level error never
+    fabricates an outcome for work that never began. Cancellation is the
+    deliberate exception and passes ``require_started=False``: see
+    test_op_cancelled_before_it_starts_still_emits_a_cancelled_terminal."""
 
     async def work(**kw):
         return "ok"
@@ -548,6 +550,61 @@ async def test_never_started_op_gets_no_terminal_from_safety_net():
     executor._emit_abandoned_terminal(op)
 
     assert log.calls == []
+
+
+@pytest.mark.asyncio
+async def test_op_cancelled_before_it_starts_still_emits_a_cancelled_terminal():
+    """An operation cancelled while parked on the pause gate has not started,
+    and used to get no terminal at all.
+
+    That leaves it showing whatever it last reported for the rest of the run.
+    Here it reported "paused", so a reader watching the graph sees a node
+    holding a live state it is no longer in, with nothing further coming. The
+    op is held at the gate rather than at the limiter or a dependency wait
+    because all three are the same pre-start window and this is the one whose
+    consequence is directly observable: it announces itself first.
+    """
+
+    async def work(**kw):
+        return "ok"
+
+    session = _session_with_ops(work=work)
+    graph = Graph()
+    op = Operation(operation="work", parameters={})
+    graph.add_node(op)
+
+    log = _ProgressLog()
+    executor = DependencyAwareExecutor(session=session, graph=graph, max_concurrent=10)
+    executor.on_progress = log
+    executor.operation_branches[op.id] = session.default_branch
+
+    paused = asyncio.Event()
+    original_emit_paused = executor._emit_paused
+
+    def _emit_paused_and_signal(operation):
+        original_emit_paused(operation)
+        paused.set()
+
+    executor._emit_paused = _emit_paused_and_signal
+    executor.pause()
+
+    limiter = CapacityLimiter(10)
+    task = asyncio.create_task(executor._execute_operation(op, limiter))
+
+    # Wait for the op to actually reach the gate. Cancelling before it parks
+    # would test a different window and could pass without the fix.
+    await asyncio.wait_for(paused.wait(), timeout=5)
+    assert op.id not in executor._started_ops, "the op must not have started"
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    op_id = str(op.id)
+    assert log.statuses_for(op_id) == ["cancelled"], (
+        f"expected one cancelled terminal, got {log.statuses_for(op_id)}"
+    )
+    assert op.execution.status == EventStatus.CANCELLED
 
 
 @pytest.mark.asyncio
