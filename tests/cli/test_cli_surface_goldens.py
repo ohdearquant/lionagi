@@ -222,13 +222,14 @@ SCHEDULE_SIMPLE_SUBCOMMAND_POSITIONALS = {
     "limits": [],
     "get": ["id"],
     "enable": ["id"],
-    "disable": ["id"],
     "delete": ["id"],
 }
 
-# Phase 1 observability subcommands (RunView): carry extra flags beyond
-# --help/-h, so they get their own golden rather than the "simple" shape.
-SCHEDULE_OBSERVABILITY_SUBCOMMAND_SHAPES = {
+# Subcommands carrying flags beyond --help/-h, so they get their own golden
+# rather than the "simple" shape: the Phase 1 observability commands (RunView),
+# and `disable`, which requires the reason kept in its lifecycle audit.
+SCHEDULE_FLAGGED_SUBCOMMAND_SHAPES = {
+    "disable": (["--help", "--reason", "-h"], ["id"]),
     "trigger": (["--help", "--wait", "-h"], ["id"]),
     "runs": (["--help", "--json", "--limit", "--status", "-h"], ["id"]),
     "run": (["--help", "--json", "-h"], ["id"]),
@@ -278,9 +279,9 @@ class TestScheduleSubcommandShapeGoldens:
         assert _flag_set("schedule", name) == ["--help", "-h"]
         assert _positional_dests("schedule", name) == SCHEDULE_SIMPLE_SUBCOMMAND_POSITIONALS[name]
 
-    @pytest.mark.parametrize("name", sorted(SCHEDULE_OBSERVABILITY_SUBCOMMAND_SHAPES))
-    def test_observability_subcommand_shape(self, name):
-        flags, positionals = SCHEDULE_OBSERVABILITY_SUBCOMMAND_SHAPES[name]
+    @pytest.mark.parametrize("name", sorted(SCHEDULE_FLAGGED_SUBCOMMAND_SHAPES))
+    def test_flagged_subcommand_shape(self, name):
+        flags, positionals = SCHEDULE_FLAGGED_SUBCOMMAND_SHAPES[name]
         assert _flag_set("schedule", name) == flags
         assert _positional_dests("schedule", name) == positionals
 

@@ -629,7 +629,7 @@ _REGISTERED: tuple[Verb, ...] = (
         summary="Stop a schedule firing. Reports the state that was committed.",
         executor="machine",
         cli_path="schedule disable",
-        admits=("id",),
+        admits=("id", "reason"),
     ),
     Verb(
         name="schedule.delete",

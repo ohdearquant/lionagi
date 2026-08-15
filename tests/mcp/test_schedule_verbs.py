@@ -331,7 +331,9 @@ def test_enable_and_disable_report_the_state_that_was_committed(studio):
         "schedule_id": "sched-1",
         "enabled": True,
     }
-    assert result_of("schedule.disable", {"id": "sched-1"}) == {
+    # Disabling carries the reason its lifecycle audit keeps, so the verb has a
+    # required field its sibling does not.
+    assert result_of("schedule.disable", {"id": "sched-1", "reason": "paused for maintenance"}) == {
         "schedule_id": "sched-1",
         "enabled": False,
     }
