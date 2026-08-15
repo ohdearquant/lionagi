@@ -73,7 +73,12 @@ async def build_run_detail(run_id: str) -> dict[str, Any]:
         return {"detail_unavailable": "studio_extra_not_installed"}
 
     try:
-        session = await sessions_svc.get_session(session_id)
+        # Stall signals are derived from each branch's last persisted message,
+        # so this read has to ask for the lifetime message fields rather than
+        # take the windowed defaults: without them every node reports its idle
+        # source as absent, which reads as "never active" rather than "not
+        # measured".
+        session = await sessions_svc.get_session(session_id, include_stats=True)
     except Exception:
         return {"detail_unavailable": "session_detail_unreadable"}
 

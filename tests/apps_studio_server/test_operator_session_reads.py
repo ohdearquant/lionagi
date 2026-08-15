@@ -205,6 +205,12 @@ async def test_session_detail_happy_path(db_path):
     assert result["id"] == sid
     assert len(result["branches"]) == 1
     assert result["branches"][0]["messages"][0]["content"] == {"assistant_response": "done"}
+    # A detail read carries the lifetime message fields. They are deferred by
+    # default so listings stay cheap, and a detail response that inherited that
+    # default would report an active session as having no messages at all.
+    assert result["message_stats"]["message_count"] == 1
+    assert result["branches"][0]["message_total"] == 1
+    assert result["branches"][0]["last_message_at"] is not None
 
 
 async def test_session_detail_unknown_session(db_path):

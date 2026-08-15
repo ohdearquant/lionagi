@@ -689,11 +689,14 @@ async def session_detail(arguments: dict[str, Any]) -> dict[str, Any]:
 
     source = "store"
     try:
+        # A detail read reports message_stats, which the windowed defaults
+        # leave empty; the listings are the callers that cannot afford them.
         row = await sessions_service.get_session(
             args.session_id,
             message_limit=args.message_limit,
             message_offset=0,
             message_cursor=args.message_cursor,
+            include_stats=True,
         )
     except sessions_service.MessageCursorError:
         if args.message_cursor is None:
@@ -703,6 +706,7 @@ async def session_detail(arguments: dict[str, Any]) -> dict[str, Any]:
             message_limit=args.message_limit,
             message_offset=0,
             message_cursor=None,
+            include_stats=True,
         )
         source = "fallback"
     if row is None:
