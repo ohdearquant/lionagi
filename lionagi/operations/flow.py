@@ -183,6 +183,9 @@ class DependencyAwareExecutor:
         # terminal on_progress signal, whichever exit path it takes.
         self._started_ops: set = set()
         self._terminal_emitted: set = set()
+        # Operations announced as queued, by id. Anything in here is owed a
+        # terminal signal, whether or not execution ever reached it.
+        self._queued_announced: dict[Any, Operation] = {}
         self._pause_event: ConcurrencyEvent | None = None
         # Fire-and-forget flow signal tasks, retained until each finishes so a
         # weakly referenced task can't disappear before it runs.
@@ -216,16 +219,18 @@ class DependencyAwareExecutor:
         limiter = CapacityLimiter(capacity)
 
         nodes = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
-        if self.on_progress:
-            for node in nodes:
-                _name, _fallback = self._display_name(node)
-                self._emit_progress(str(node.id), _name, "queued", 0.0, _fallback)
-        async with create_task_group() as tg:
-            self._tg = tg
-            try:
-                await self._alcall(nodes, self._execute_operation, limiter=limiter)
-            finally:
-                self._tg = None
+        for node in nodes:
+            self._announce_queued(node)
+        try:
+            async with create_task_group() as tg:
+                self._tg = tg
+                try:
+                    await self._alcall(nodes, self._execute_operation, limiter=limiter)
+                finally:
+                    self._tg = None
+        except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
+            self._cancel_announced_unfinished()
+            raise
 
         completed_ops = self._completed_operation_ids()
 
@@ -459,6 +464,34 @@ class DependencyAwareExecutor:
             return
         self._terminal_emitted.add(operation.id)
         self._emit_progress(str(operation.id), branch_name, status, elapsed, name_is_fallback)
+
+    def _announce_queued(self, operation: Operation) -> None:
+        """Announce an operation as queued, and record that it was announced.
+
+        The record is what makes cancellation settleable. A node's terminal
+        signal is otherwise emitted by the per-operation handlers, which only
+        run for nodes execution actually reached; a run cancelled before a
+        node's task exists reaches none of them, and the node holds "queued"
+        for the rest of the run. Recording the announcement means the owed
+        terminals can be derived from what the watcher was told, rather than
+        from how far execution happened to get.
+        """
+        self._queued_announced[operation.id] = operation
+        if self.on_progress:
+            name, name_is_fallback = self._display_name(operation)
+            self._emit_progress(str(operation.id), name, "queued", 0.0, name_is_fallback)
+
+    def _cancel_announced_unfinished(self) -> None:
+        """Settle every announced operation that never reached a terminal.
+
+        Deliberately keyed on the announced set rather than on execution
+        state, so it does not need to know which of the entry paths a
+        cancellation interrupted -- before the task group, between task
+        creations, or inside an operation. Anything already terminal is left
+        alone, since _emit_abandoned_terminal is a no-op for those.
+        """
+        for operation in list(self._queued_announced.values()):
+            self._emit_abandoned_terminal(operation, "cancelled", require_started=False)
 
     def _emit_abandoned_terminal(
         self, operation: Operation, status: str = "failed", *, require_started: bool = True
@@ -1027,10 +1060,11 @@ class ReactiveExecutor(DependencyAwareExecutor):
             async with create_task_group() as tg:
                 self._tg = tg
                 for node in initial:
-                    if self.on_progress:
-                        _name, _fallback = self._display_name(node)
-                        self._emit_progress(str(node.id), _name, "queued", 0.0, _fallback)
+                    self._announce_queued(node)
                     tg.start_soon(self._run_tracked, node)
+        except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
+            self._cancel_announced_unfinished()
+            raise
         finally:
             self._running = False
             self._tg = None
@@ -1093,11 +1127,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
                     async with create_task_group() as tg:
                         self._tg = tg
                         for node in initial:
-                            if self.on_progress:
-                                _name, _fallback = self._display_name(node)
-                                self._emit_progress(str(node.id), _name, "queued", 0.0, _fallback)
+                            self._announce_queued(node)
                             tg.start_soon(self._run_tracked, node)
                 except get_cancelled_exc_class():
+                    self._cancel_announced_unfinished()
                     raise  # let driver_cancel_scope absorb our own cancellation
                 except BaseException as e:  # noqa: BLE001
                     driver_errors.append(e)
@@ -1375,9 +1408,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 child.metadata["parent_id"] = str(emitter_id)
             self._assign_injected_branch(child, emitter_id, independent)
             self._emit_node_spawned(child, emitter_id, independent)
-            if self.on_progress:
-                _name, _fallback = self._display_name(child)
-                self._emit_progress(str(child.id), _name, "queued", 0.0, _fallback)
+            self._announce_queued(child)
         return True
 
     def _emit_node_spawned(self, child: Operation, emitter_id: Any, independent: bool) -> None:

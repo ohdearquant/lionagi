@@ -1,5 +1,5 @@
 // Shared, framework-free state primitives for the execution-graph progress
-// surface (progress summary counts, elapsed timer, descendant-terminal
+// surface (progress summary counts, elapsed timer, descendant-progress
 // status reconciliation, and stage/rank position). Every function here reads
 // from the SAME canonical status source the graph nodes render from
 // (`Record<string, NodeExecStatus>`, keyed by authored node id, as built by
@@ -126,7 +126,7 @@ export function formatElapsed(seconds: number | null): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-// ── Descendant-terminal suppression + terminal-run collapse ────────────────
+// ── Descendant-progress suppression + terminal-run collapse ───────────────
 
 /** Descendant statuses that prove an ancestor actually finished.
  *
@@ -187,10 +187,13 @@ function buildDescendantIndex(nodeIds: string[], edges: GraphEdge[]): Map<string
 
 // Two invariants a viewer actually relies on, applied in order:
 //
-// 1. Descendant-terminal suppression (holds regardless of `done`): a node
-//    cannot still be "running" once a descendant has reached a terminal
-//    state — the descendant could not have started without this node's
-//    output, so the stale "running" reading is corrected to "completed".
+// 1. Descendant-progress suppression (holds regardless of `done`): a node
+//    cannot still be "running" once a descendant has reached a state that
+//    required this node's output — the descendant could not have got there
+//    without it, so the stale "running" reading is corrected to "completed".
+//    Note this is narrower than "a descendant is terminal": a cancelled
+//    descendant is terminal and proves nothing, because cancellation reaches
+//    nodes that never ran. See DEPENDENCY_SATISFIED_STATUSES.
 // 2. Terminal-run collapse (only once `done`): after the run itself has
 //    ended, no node may present as still in flight. Any status that is
 //    still non-terminal at that point means "no terminal signal was ever
@@ -219,14 +222,14 @@ export function reconcileNodeStatuses(
   const afterSuppression: NodeStatusMap = { ...base };
   for (const id of nodeIds) {
     if (afterSuppression[id] !== "running") continue;
-    let hasTerminalDescendant = false;
+    let hasDependencySatisfyingDescendant = false;
     for (const d of descendants.get(id) ?? []) {
       if (DEPENDENCY_SATISFIED_STATUSES.has(base[d]!)) {
-        hasTerminalDescendant = true;
+        hasDependencySatisfyingDescendant = true;
         break;
       }
     }
-    if (hasTerminalDescendant) afterSuppression[id] = "completed";
+    if (hasDependencySatisfyingDescendant) afterSuppression[id] = "completed";
   }
 
   if (!done) return afterSuppression;

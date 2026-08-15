@@ -854,3 +854,63 @@ async def test_preterminal_completed_reaches_the_signal_bus_and_leaves_the_queue
     assert lane_for(for_op) == "succeeded", (
         f"pre-completed node projected to {lane_for(for_op)!r}, not the succeeded lane"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_cancelled_before_any_operation_task_exists_still_settles_every_node():
+    """Cancelling the run itself, in the window after nodes are announced and
+    before the executor creates their tasks.
+
+    The per-operation cancellation handler lives inside ``_execute_operation``,
+    so a cancellation that lands before any operation task exists reaches none
+    of them. Every node had already been announced "queued", so each one holds
+    that state for the rest of the run with nothing further coming.
+
+    The window is held open by replacing the fan-out with one that never
+    creates operation tasks. That is exactly the condition under test -- the
+    run is cancelled while no operation has been reached -- and it is the only
+    way to hold it open deterministically, since the real fan-out closes it
+    as fast as the scheduler allows.
+    """
+
+    async def work(**kw):
+        return "ok"
+
+    session = _session_with_ops(work=work)
+    graph = Graph()
+    ops = [Operation(operation="work", parameters={}) for _ in range(3)]
+    for op in ops:
+        graph.add_node(op)
+
+    log = _ProgressLog()
+    executor = DependencyAwareExecutor(session=session, graph=graph, max_concurrent=10)
+    executor.on_progress = log
+    for op in ops:
+        executor.operation_branches[op.id] = session.default_branch
+
+    fanned_out = asyncio.Event()
+
+    async def _never_starts_anything(_nodes, _fn, **_kw):
+        fanned_out.set()
+        await asyncio.sleep(30)
+
+    executor._alcall = _never_starts_anything
+
+    task = asyncio.create_task(executor.execute())
+    await asyncio.wait_for(fanned_out.wait(), timeout=5)
+    # Control: the nodes really were announced, and really did not start, so
+    # the assertions below are about the cancellation and not about a run that
+    # never got going.
+    for op in ops:
+        assert log.statuses_for(str(op.id)) == ["queued"]
+        assert op.id not in executor._started_ops
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    for op in ops:
+        assert log.statuses_for(str(op.id)) == ["queued", "cancelled"], (
+            f"node {str(op.id)[:8]} was left at "
+            f"{log.statuses_for(str(op.id))} with nothing further coming"
+        )
