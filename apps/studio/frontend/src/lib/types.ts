@@ -440,6 +440,8 @@ export interface ScheduleSummary {
   on_success: Record<string, unknown> | null;
   on_fail: Record<string, unknown> | null;
   last_fired_at: number | null;
+  /** Completed threshold checks, including checks that did not breach. */
+  last_evaluated_at?: number | null;
   next_fire_at: number | null;
   missed_fire_policy: string;
   overlap_policy: string;
@@ -447,8 +449,8 @@ export interface ScheduleSummary {
   github_filter?: { event?: string; base?: string; state?: string } | null;
   consecutive_failures?: number;
   last_status?: string | null;
-  /** Server-computed verdict from cadence + recorded schedule_runs, never
-   * from next_fire_at (a promise, not evidence). */
+  /** Server-computed verdict from cadence + execution/evaluation evidence,
+   * never from next_fire_at (a promise, not evidence). */
   health_state?: "healthy" | "failing" | "overdue" | "never-fired" | "no-evidence" | "disabled";
   health_last_outcome?: string | null;
   health_last_outcome_at?: number | null;
