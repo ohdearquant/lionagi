@@ -453,6 +453,34 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         for _table, child_type, child_row in children:
             await _kill_one(db, child_type, child_row["id"], child_row, user_reason=user_reason)
 
+        # An in-process run has no OS process of its own, so the kill path
+        # below has nothing to signal: it would fall through to "no pid" and
+        # persist a cancellation while the workflow kept executing. Cancelling
+        # the driving task is the only thing that actually stops the work, and
+        # only the process hosting it can do that. A run hosted elsewhere is
+        # reported not-cancellable rather than marked, because this process
+        # cannot make the row's claim true.
+        meta = row_dict.get("node_metadata")
+        if isinstance(meta, dict) and meta.get("process_identity_mode") == "in_process":
+            from lionagi.studio.services.workflow_run import cancel_in_process_run
+
+            if not await cancel_in_process_run(run_id):
+                return {
+                    "status": "not_cancellable",
+                    "id": run_id,
+                    "signal": "not_in_this_process",
+                }
+            # The run's own CancelledError handler persists its terminal
+            # status. Re-read rather than infer, on the same principle the
+            # pid path below uses: never claim a state the database lacks.
+            after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
+            after_status = db._row_to_dict(after).get("status") if after is not None else None
+            return {
+                "status": "terminal" if after_status == "cancelled" else "already_terminal",
+                "id": run_id,
+                "signal": "task_cancelled",
+            }
+
         outcome = await _kill_one(
             db,
             "session",

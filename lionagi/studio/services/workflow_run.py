@@ -16,11 +16,42 @@ import time
 import uuid
 from typing import Any
 
-__all__ = ("run_workflow_def", "WorkflowNotFoundError")
+__all__ = ("run_workflow_def", "WorkflowNotFoundError", "cancel_in_process_run")
 
 
 class WorkflowNotFoundError(Exception):
     """No WorkflowDef with the given id."""
+
+
+# Run id -> the asyncio task driving that run, for runs hosted in THIS process.
+# An in-process run has no OS process of its own, so there is no pid to signal;
+# cancelling the task is the only thing that actually stops the work. Scoped to
+# one process on purpose: a run hosted elsewhere is absent here, and absence is
+# the correct answer for this process rather than a reason to guess.
+_IN_PROCESS_RUNS: dict[str, asyncio.Task[Any]] = {}
+
+
+async def cancel_in_process_run(run_id: str, *, timeout: float = 5.0) -> bool:
+    """Cancel a workflow run hosted in this process, waiting for it to unwind.
+
+    Returns True only when this process was running it and the cancellation was
+    delivered. False means this process is not running it, which a caller must
+    treat as "not cancelled" rather than as success: marking such a row
+    cancelled would report a stop that never happened.
+
+    Waits for the task so the run's own ``CancelledError`` handler can persist
+    its terminal status before the caller re-reads the row, up to *timeout*.
+    """
+    task = _IN_PROCESS_RUNS.get(run_id)
+    if task is None or task.done():
+        return False
+    if task is asyncio.current_task():
+        # Self-cancel would deadlock on the wait below, and a run cancelling
+        # itself through the operator path is not a case that should exist.
+        return False
+    task.cancel()
+    await asyncio.wait({task}, timeout=timeout)
+    return True
 
 
 async def _setup_run_persist(
@@ -188,6 +219,13 @@ async def run_workflow_def(
 
     status = "completed"
     exc: BaseException | None = None
+    run_id = str(session.id)
+    # Publish the driving task so the cancel path has something to act on.
+    # Without this the run is unreachable: it has no pid of its own, so a
+    # cancel would have nothing to signal and could only mark the row.
+    run_task = asyncio.current_task()
+    if run_task is not None:
+        _IN_PROCESS_RUNS[run_id] = run_task
     try:
         from lionagi.engines.flow_signals import flow_progress_signals
 
@@ -216,6 +254,9 @@ async def run_workflow_def(
         status = "failed"
         exc = e
     finally:
+        # Unregister before teardown, not after: an await that raises in
+        # teardown would otherwise leave a finished run listed as cancellable.
+        _IN_PROCESS_RUNS.pop(run_id, None)
         await _teardown_run_persist(ctx, status=status, exception=exc)
 
-    return {"run_id": str(session.id), "status": status}
+    return {"run_id": run_id, "status": status}

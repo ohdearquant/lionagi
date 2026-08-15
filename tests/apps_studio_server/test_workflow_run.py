@@ -608,3 +608,86 @@ async def test_run_route_returns_404_for_missing_def(patched_env):
     with pytest.raises(HTTPException) as exc_info:
         await run_workflow_def_route("nonexistent", RunWorkflowDefRequest(inputs=None))
     assert exc_info.value.status_code == 404
+
+
+# Cancelling an in-process run. These runs have no OS process to signal, so
+# cancelling the task that drives them is the only thing that stops the work.
+
+
+async def test_cancel_in_process_run_cancels_the_driving_task():
+    from lionagi.studio.services.workflow_run import _IN_PROCESS_RUNS, cancel_in_process_run
+
+    run_id = "run-under-test"
+    started = asyncio.Event()
+    observed: dict[str, Any] = {"cancelled": False}
+
+    async def _fake_run() -> None:
+        _IN_PROCESS_RUNS[run_id] = asyncio.current_task()
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            # The real run's handler records status "cancelled" here, which is
+            # what makes task cancellation a real stop rather than a hangup.
+            observed["cancelled"] = True
+            raise
+        finally:
+            _IN_PROCESS_RUNS.pop(run_id, None)
+
+    task = asyncio.create_task(_fake_run())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert await cancel_in_process_run(run_id) is True
+        assert observed["cancelled"] is True
+        assert task.cancelled()
+    finally:
+        _IN_PROCESS_RUNS.pop(run_id, None)
+        task.cancel()
+
+
+async def test_cancel_in_process_run_is_false_when_not_hosted_here():
+    """False is the honest answer for a run this process is not driving.
+
+    A caller must not read it as success: marking the row cancelled on this
+    result would claim a stop that no process performed.
+    """
+    from lionagi.studio.services.workflow_run import cancel_in_process_run
+
+    assert await cancel_in_process_run("never-registered") is False
+
+
+async def test_run_workflow_def_registers_then_unregisters_its_task(patched_env):
+    """The run publishes its driving task while it runs and drops it after.
+
+    Registration is what makes an in-process run cancellable at all; dropping
+    it is what stops a finished run from being reported as cancellable later.
+    """
+    wf_svc, engine_defs_svc = patched_env
+
+    engine_def = await engine_defs_svc.create_engine_def({"name": "reg-eng", "kind": "research"})
+    spec = _spec()
+    spec["nodes"][2]["config"]["engine_def_id"] = engine_def["id"]
+    created = await wf_svc.create_workflow_def({"name": "reg-flow", "spec_json": spec})
+
+    from lionagi.session.session import Session
+    from lionagi.studio.services.workflow_run import _IN_PROCESS_RUNS, run_workflow_def
+
+    session = Session(default_branch=_mock_chat_branch())
+    run_id = str(session.id)
+    seen_during_run: dict[str, Any] = {"registered": None}
+
+    real_flow = Session.flow
+
+    async def _observing_flow(self, *args, **kwargs):
+        # Sampled mid-run: an assertion after the run cannot tell "registered
+        # and cleaned up" from "never registered at all".
+        seen_during_run["registered"] = _IN_PROCESS_RUNS.get(run_id) is not None
+        return await real_flow(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Session, "flow", _observing_flow)
+        result = await run_workflow_def(created["id"], {"topic": "GQA"}, _session=session)
+
+    assert result["status"] == "completed"
+    assert seen_during_run["registered"] is True
+    assert run_id not in _IN_PROCESS_RUNS

@@ -59,6 +59,10 @@ def current_pid_markers() -> dict[str, Any]:
 # Clock-tick rounding tolerance for process start time comparison (CWE-362).
 _CREATE_TIME_TOLERANCE = 0.1
 
+#: Outcomes where nothing was stopped and no cancellation was written. A caller
+#: that reports these as a kill is claiming a stop that did not happen.
+_NOT_STOPPED_SIGNALS = frozenset({"identity_mismatch", "in_process"})
+
 
 def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
     """Exact-token match: is this cmdline a lionagi CLI invocation?"""
@@ -422,6 +426,25 @@ async def _kill_one(
     """Kill one entity: terminate process, persist cancellation."""
     from lionagi.state.reasons import RunReasons
 
+    row_meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
+    if row_meta.get("process_identity_mode") == "in_process":
+        # This run has no OS process of its own: it executes inside a
+        # long-lived host. There is nothing here to signal, and signalling the
+        # host would stop every other run it carries. Persisting a
+        # cancellation would report a stop that did not happen, so this path
+        # reports that it did not stop anything. Studio's operator cancel
+        # reaches these by cancelling the driving task.
+        warn(
+            f"  {entity_type} {entity_id[:12]}: runs inside a host process, "
+            "not cancellable from here — use the Studio cancel for this run"
+        )
+        return {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "signal": "in_process",
+            "pid": None,
+        }
+
     pid = _read_pid_from_entity(row)
     signal_used = "no_pid"
 
@@ -568,7 +591,7 @@ async def _do_kill(
                     verbose=verbose,
                 )
                 results.append(r)
-                if r["signal"] == "identity_mismatch":
+                if r["signal"] in _NOT_STOPPED_SIGNALS:
                     blocked.append(r)
                 else:
                     print(
@@ -585,7 +608,7 @@ async def _do_kill(
             verbose=verbose,
         )
         results.append(r)
-        if r["signal"] == "identity_mismatch":
+        if r["signal"] in _NOT_STOPPED_SIGNALS:
             blocked.append(r)
         else:
             print(f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']})")

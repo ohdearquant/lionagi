@@ -51,11 +51,14 @@ async def _seed_session(
     status: str = "running",
     pid: int | None = None,
     started_at: float | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> str:
     sid = str(uuid.uuid4())
     pid_val = str(uuid.uuid4())
     await db.create_progression(pid_val)
     node_meta = {"pid": pid} if pid is not None else {}
+    if extra_meta:
+        node_meta.update(extra_meta)
     await db.create_session(
         {
             "id": sid,
@@ -921,6 +924,69 @@ async def test_kill_one_no_pid(temp_db_path: Path):
         assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
             "status"
         ] == "cancelled"
+
+
+async def test_kill_one_refuses_an_in_process_run(temp_db_path: Path):
+    """A run hosted inside a long-lived server has no process of its own.
+
+    There is nothing for this path to signal, and the host's own pid belongs to
+    every other run it carries. Recording a cancellation here would report a
+    stop that did not happen, so the row must be left exactly as it was.
+    """
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db,
+            status="running",
+            extra_meta={
+                "process_identity_mode": "in_process",
+                "host_pid": os.getpid(),
+            },
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="test")
+
+        # Checked before the signal, deliberately: this is the consequence the
+        # guard exists for. Without it the row reads "cancelled" while the
+        # workflow carries on executing, and asserting the signal first would
+        # let this one go unexercised whenever the guard regresses.
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert after["status"] == "running"
+
+        # Nothing written to history either, so no reader downstream can
+        # conclude a cancellation happened.
+        tr = await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM status_transitions "
+            "WHERE entity_id = ? AND status = 'cancelled'",
+            (sid,),
+        )
+        assert tr["n"] == 0
+
+        assert result["signal"] == "in_process"
+        assert result["pid"] is None
+
+
+async def test_kill_one_still_cancels_a_local_run_without_a_pid(temp_db_path: Path):
+    """The in-process guard keys on identity mode, not on a missing pid.
+
+    A local run whose pid was never recorded must keep its existing behavior;
+    otherwise the guard above would silently widen to every pid-less row.
+    """
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db, status="running", extra_meta={"process_identity_mode": "local"}
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="test")
+        assert result["signal"] == "no_pid"
+
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert after["status"] == "cancelled"
 
 
 async def test_kill_one_with_dead_pid(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
