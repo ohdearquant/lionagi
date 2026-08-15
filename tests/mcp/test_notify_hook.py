@@ -5,13 +5,15 @@
 The hook is best-effort: it always records the terminal status on the job, then
 delivers a notice only through a *configured* command (never a hardcoded one),
 substituting run fields into its argv. The delivery outcome is recorded on the
-job so a dead notice is visible, not silently lost. subprocess.run is mocked so
+job so a dead notice is visible, not silently lost. subprocess.Popen is mocked so
 no real command is spawned.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -47,12 +49,30 @@ def job(monkeypatch, tmp_path):
 
 
 class _FakeCompleted:
+    """Stand-in for the delivery process.
+
+    Popen-shaped rather than CompletedProcess-shaped: the hook starts the
+    delivery in its own process group so a timeout can take the whole tree,
+    which means it holds a handle and drives it through ``communicate``.
+    """
+
     def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
         self.returncode = returncode
         # The hook reads both streams to classify a failure, so a stand-in for a
         # finished process has to carry them.
         self.stdout = stdout
         self.stderr = stderr
+        self.pid = -1
+        self.input: str | None = None
+        self.killed = False
+
+    def communicate(self, input: str | None = None, timeout: float | None = None):
+        if input is not None:
+            self.input = input
+        return self.stdout, self.stderr
+
+    def kill(self) -> None:
+        self.killed = True
 
 
 def _no_settings_notifier(monkeypatch):
@@ -65,7 +85,7 @@ def _no_settings_notifier(monkeypatch):
 def test_marks_terminal_without_delivery(job, monkeypatch):
     """No command configured: the status is recorded and nothing is spawned."""
     calls: list = []
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
     _no_settings_notifier(monkeypatch)  # lionagi's notify.on_terminal resolves to nothing
 
     rc = _notify_hook.main(["--run-id", job, "--status", "completed"])
@@ -86,12 +106,12 @@ def test_flow_terminal_reason_reaches_mcp_status_and_delivery(job, monkeypatch):
     """
     captured: dict = {}
 
-    def fake_run(argv, **kw):
+    def fake_popen(argv, **kw):
         captured["argv"] = argv
-        captured["input"] = kw.get("input")
-        return _FakeCompleted(0)
+        captured["proc"] = _FakeCompleted(0)
+        return captured["proc"]
 
-    monkeypatch.setattr(_notify_hook.subprocess, "run", fake_run)
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
     monkeypatch.setenv(
         "LIONAGI_NOTIFY_PAYLOAD",
         json.dumps(
@@ -110,18 +130,18 @@ def test_flow_terminal_reason_reaches_mcp_status_and_delivery(job, monkeypatch):
     assert rec["reason_code"] == "run.completed.spawn_refused"
     assert jobs.status(job)["reason_code"] == "run.completed.spawn_refused"
     assert captured["argv"] == ["notify", "run.completed.spawn_refused"]
-    assert json.loads(captured["input"])["reason_code"] == "run.completed.spawn_refused"
+    assert json.loads(captured["proc"].input)["reason_code"] == "run.completed.spawn_refused"
 
 
 def test_command_override_substitutes_and_delivers(job, monkeypatch):
     captured: dict = {}
 
-    def fake_run(argv, **kw):
+    def fake_popen(argv, **kw):
         captured["argv"] = argv
-        captured["input"] = kw.get("input")
-        return _FakeCompleted(0)
+        captured["proc"] = _FakeCompleted(0)
+        return captured["proc"]
 
-    monkeypatch.setattr(_notify_hook.subprocess, "run", fake_run)
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
 
     command = json.dumps(["notify", "{run_id}", "{status}", "{label}", "{target}"])
     rc = _notify_hook.main(
@@ -132,7 +152,7 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
     assert rec["status"] == "failed"
     assert captured["argv"] == ["notify", job, "failed", "t1", "downstream"]
     # the same fields are offered as a JSON payload on stdin
-    payload = json.loads(captured["input"])
+    payload = json.loads(captured["proc"].input)
     assert payload == {
         "run_id": job,
         "status": "failed",
@@ -158,7 +178,7 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
 
 def test_delivery_failure_is_recorded_not_silent(job, monkeypatch):
     """A dead completion notice surfaces on the record, never a silent drop."""
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(7))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(7))
 
     command = json.dumps(["notify", "{status}"])
     rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
@@ -180,7 +200,7 @@ def test_delivery_spawn_error_is_recorded(job, monkeypatch):
     def boom(*_a, **_k):
         raise OSError("no such command")
 
-    monkeypatch.setattr(_notify_hook.subprocess, "run", boom)
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", boom)
 
     command = json.dumps(["nonexistent-notifier", "{status}"])
     rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
@@ -207,7 +227,7 @@ def test_unusable_command_override_is_recorded_as_a_failure(job, monkeypatch, ov
     to find out why, and the named reason is where it says so.
     """
     calls: list = []
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append(a))
     _no_settings_notifier(monkeypatch)
 
     rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", override])
@@ -224,7 +244,7 @@ def test_unusable_command_override_is_recorded_as_a_failure(job, monkeypatch, ov
 def test_configured_notifier_without_a_command_is_recorded_as_a_failure(job, monkeypatch):
     """A notifier this hook cannot run is configured, not absent."""
     calls: list = []
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append(a))
     monkeypatch.setattr(
         "lionagi.state.lifecycle.notify_settings.resolve_notify_config",
         lambda **_kw: NotifyConfigResolution(
@@ -242,7 +262,7 @@ def test_configured_notifier_without_a_command_is_recorded_as_a_failure(job, mon
 def test_unreadable_notify_settings_are_recorded_as_a_failure(job, monkeypatch):
     """Settings that raise must not be reported as no notifier configured."""
     calls: list = []
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append(a))
 
     def _boom(**_kw):
         raise RuntimeError("settings file is corrupt")
@@ -339,7 +359,7 @@ def test_rejected_settings_notifier_is_recorded_as_a_failure(job, monkeypatch, o
     have is a notice that will never arrive.
     """
     calls: list = []
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append(a))
     _settings_notifier(monkeypatch, on_terminal)
 
     rc = _notify_hook.main(["--run-id", job, "--status", "completed"])
@@ -362,7 +382,7 @@ def test_rejected_settings_notifier_is_recorded_as_a_failure(job, monkeypatch, o
 def test_silence_by_choice_stays_silence(job, monkeypatch, on_terminal):
     """The chosen-silence shapes must not become failures: nothing was asked for."""
     calls: list = []
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append(a))
     _settings_notifier(monkeypatch, on_terminal)
 
     rc = _notify_hook.main(["--run-id", job, "--status", "completed"])
@@ -375,11 +395,11 @@ def test_settings_notifier_resolves_and_delivers(job, monkeypatch):
     """The happy path still resolves through settings and delivers."""
     captured: dict = {}
 
-    def fake_run(argv, **kw):
+    def fake_popen(argv, **kw):
         captured["argv"] = argv
         return _FakeCompleted(0)
 
-    monkeypatch.setattr(_notify_hook.subprocess, "run", fake_run)
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
     _settings_notifier(monkeypatch, "notify-hook {run_id} {status}")
 
     rc = _notify_hook.main(["--run-id", job, "--status", "completed"])
@@ -392,7 +412,7 @@ def test_unknown_run_id_is_noop(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
     monkeypatch.delenv("LIONAGI_MCP_NOTIFY_COMMAND", raising=False)
     calls: list = []
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append(a))
     _no_settings_notifier(monkeypatch)
     # No job record on disk: mark_terminal reports an absent record, delivery
     # still resolves to nothing, and the hook exits cleanly.
@@ -414,7 +434,7 @@ def test_failed_delivery_ends_the_leg_log_with_a_stated_failure(job, monkeypatch
     """
     config.job_dir(job).mkdir(parents=True, exist_ok=True)
     (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(7))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(7))
 
     command = json.dumps(["notify", "{status}"])
     _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
@@ -430,7 +450,7 @@ def test_spawn_error_is_named_in_the_leg_log(job, monkeypatch):
         raise OSError("no such command")
 
     config.job_dir(job).mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(_notify_hook.subprocess, "run", boom)
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", boom)
 
     command = json.dumps(["nonexistent-notifier", "{status}"])
     _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
@@ -442,7 +462,7 @@ def test_a_configured_but_unusable_notifier_also_reaches_the_log(job, monkeypatc
     """Recorded as a failure on the job, so it must read as one in the log too."""
     config.job_dir(job).mkdir(parents=True, exist_ok=True)
     _no_settings_notifier(monkeypatch)
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(0))
 
     _notify_hook.main(["--run-id", job, "--status", "completed", "--command", "not json ["])
 
@@ -452,7 +472,7 @@ def test_a_configured_but_unusable_notifier_also_reaches_the_log(job, monkeypatc
 def test_successful_delivery_writes_nothing_to_the_log(job, monkeypatch):
     config.job_dir(job).mkdir(parents=True, exist_ok=True)
     (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(0))
 
     command = json.dumps(["notify", "{status}"])
     _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
@@ -471,7 +491,7 @@ def test_an_unverified_delivery_warns_in_the_log_instead_of_passing_silently(job
     """
     config.job_dir(job).mkdir(parents=True, exist_ok=True)
     (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(0))
 
     command = json.dumps(["kkernel", "exec", "comm.send(to='recipient', content='{status}')"])
     _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
@@ -495,7 +515,7 @@ def test_the_same_command_with_strict_is_verified_and_stays_silent(job, monkeypa
     """
     config.job_dir(job).mkdir(parents=True, exist_ok=True)
     (config.job_dir(job) / "console.log").write_text("work happened\n", encoding="utf-8")
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(0))
 
     command = json.dumps(
         ["kkernel", "exec", "--strict", "comm.send(to='recipient', content='{status}')"]
@@ -519,7 +539,7 @@ def test_silence_by_choice_writes_nothing_to_the_log(job, monkeypatch):
 
 def test_an_unwritable_log_does_not_break_the_terminal_path(job, monkeypatch):
     """The run already finished; a log that cannot be appended to is not fatal."""
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(7))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(7))
     # A directory where the log file belongs: opening it for append raises an
     # OSError from the real filesystem rather than from a patched stand-in.
     (config.job_dir(job) / "console.log").mkdir(parents=True, exist_ok=True)
@@ -539,7 +559,7 @@ def test_the_record_names_which_notifier_failed(job, monkeypatch):
     operator configuration, already readable by whoever wrote it, so naming it
     costs nothing the command's own output would have cost.
     """
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(3))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(3))
 
     command = json.dumps(["notify-webhook", "--status", "{status}"])
     rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
@@ -560,7 +580,7 @@ def test_the_named_program_is_the_configured_token_not_the_substituted_one(job, 
     spawned: list = []
     monkeypatch.setattr(
         _notify_hook.subprocess,
-        "run",
+        "Popen",
         lambda argv, **_k: spawned.append(argv) or _FakeCompleted(1),
     )
 
@@ -584,11 +604,11 @@ def test_a_notifier_that_never_started_stays_tellable_from_one_that_ran(job, mon
     def _boom(*_a, **_k):
         raise OSError("no such command")
 
-    monkeypatch.setattr(_notify_hook.subprocess, "run", _boom)
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", _boom)
     _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
     never_started = jobs._read_job(job)["notify_delivery"]
 
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(3))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(3))
     _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
     ran_and_failed = jobs._read_job(job)["notify_delivery"]
 
@@ -599,7 +619,7 @@ def test_a_notifier_that_never_started_stays_tellable_from_one_that_ran(job, mon
 
 def test_a_configuration_with_no_program_in_it_names_none(job, monkeypatch):
     """An override that never parsed has no program, and none is invented."""
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(0))
     _no_settings_notifier(monkeypatch)
 
     rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", "not json ["])
@@ -628,7 +648,7 @@ def test_the_delivery_commands_own_output_is_still_never_kept(job, monkeypatch):
         seen.update(kwargs)
         return _FakeCompleted(4, stdout="token=sk-live-AAAA", stderr="permission denied for /etc/x")
 
-    monkeypatch.setattr(_notify_hook.subprocess, "run", _run)
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", _run)
 
     command = json.dumps(["notify-webhook"])
     _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
@@ -861,7 +881,63 @@ def test_a_delivery_that_outlives_the_timeout_is_recorded_not_left_unknown(job, 
     assert delivery["ok"] is False
     assert delivery["error"] == "TimeoutExpired"
     assert delivery["failure_class"] == "timeout"
-    assert "NOT delivered" in _console_log(job)
+    # Recorded, but as unconfirmed rather than failed: a notifier can send the
+    # notice and then hang, so "NOT delivered" would be a claim this cannot
+    # support, and one an operator would act on by sending it twice.
+    assert delivery["delivery_verified"] is False
+    assert delivery["unverified_reason"] == "delivery_timed_out"
+    log = _console_log(job)
+    assert "could NOT be confirmed" in log
+    assert "NOT delivered" not in log
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+@pytest.mark.timeout(60)
+def test_a_timed_out_delivery_takes_its_forked_descendants_with_it(job, monkeypatch, tmp_path):
+    """Expiry has to collect the whole tree, not just the process it started.
+
+    A notifier that forks — a shell wrapper, a mailer that backgrounds its send
+    — leaves that descendant running when only the direct child is killed. One
+    per terminal event, holding whatever the notifier held, with nothing left
+    watching them. Real processes because the defect is in how the delivery is
+    started, which a stand-in cannot have.
+    """
+    pidfile = tmp_path / "descendant.pid"
+    script = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(120)\n"
+    )
+    monkeypatch.setattr(_notify_hook, "_supervised_delivery_timeout", lambda: 2.0)
+    command = json.dumps([sys.executable, "-c", script])
+
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    assert jobs.status(job)["notify_delivery"]["error"] == "TimeoutExpired"
+    assert pidfile.exists(), "the notifier never got far enough to fork; timeout too tight"
+    descendant = int(pidfile.read_text())
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and _alive(descendant):
+            time.sleep(0.05)
+        assert not _alive(descendant), "a forked descendant outlived the delivery"
+    finally:
+        # Never leave one behind, including when the assertion above is why.
+        try:
+            os.kill(descendant, signal.SIGKILL)
+        except OSError:
+            pass
 
 
 def test_the_failure_notice_survives_the_runs_own_remaining_output(monkeypatch, tmp_path):
@@ -962,7 +1038,7 @@ def test_delivery_runs_where_the_run_was_submitted_not_where_it_ran(monkeypatch,
     captured: dict = {}
     monkeypatch.setattr(
         _notify_hook.subprocess,
-        "run",
+        "Popen",
         lambda *_a, **kw: captured.update(kw) or _FakeCompleted(0),
     )
 
@@ -997,7 +1073,7 @@ def test_both_callers_deliver_from_the_same_directory(monkeypatch, tmp_path):
     seen: list = []
     monkeypatch.setattr(
         _notify_hook.subprocess,
-        "run",
+        "Popen",
         lambda *_a, **kw: seen.append(kw.get("cwd")) or _FakeCompleted(0),
     )
 
@@ -1022,7 +1098,7 @@ def test_an_operator_can_override_the_delivery_directory(monkeypatch, tmp_path):
     captured: dict = {}
     monkeypatch.setattr(
         _notify_hook.subprocess,
-        "run",
+        "Popen",
         lambda *_a, **kw: captured.update(kw) or _FakeCompleted(0),
     )
 
@@ -1043,7 +1119,7 @@ def test_a_named_directory_that_is_gone_refuses_rather_than_signing_elsewhere(
     rid = _job_with(monkeypatch, tmp_path, submit_cwd=str(tmp_path / "removed"))
 
     calls: list = []
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
 
     command = json.dumps(["notify", "{run_id}"])
     assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
@@ -1064,7 +1140,7 @@ def test_a_record_without_a_submit_directory_still_delivers(monkeypatch, tmp_pat
     captured: dict = {}
     monkeypatch.setattr(
         _notify_hook.subprocess,
-        "run",
+        "Popen",
         lambda *_a, **kw: captured.update(kw) or _FakeCompleted(0),
     )
 
@@ -1093,7 +1169,7 @@ def test_an_anchor_the_submission_could_not_read_refuses_rather_than_inheriting(
     rid = _job_with(monkeypatch, tmp_path, submit_cwd=None)
 
     calls: list = []
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
 
     command = json.dumps(["notify", "{run_id}"])
     assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
@@ -1113,7 +1189,7 @@ def test_a_record_missing_the_key_entirely_still_inherits(monkeypatch, tmp_path)
     captured: dict = {}
     monkeypatch.setattr(
         _notify_hook.subprocess,
-        "run",
+        "Popen",
         lambda *_a, **kw: captured.update(kw) or _FakeCompleted(0),
     )
 
@@ -1131,7 +1207,7 @@ def test_two_identity_problems_are_both_reported(monkeypatch, tmp_path):
     """
     rid = _job_with(monkeypatch, tmp_path, submit_cwd=str(tmp_path / "removed"))
 
-    monkeypatch.setattr(_notify_hook.subprocess, "run", lambda *a, **k: _FakeCompleted(0))
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(0))
 
     command = json.dumps(["notify", "{sender}"])  # asks for a sender; none is given
     assert _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command]) == 0
