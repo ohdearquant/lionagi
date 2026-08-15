@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+
+- `--resume-on-timeout` on `li o fanout` and `li o flow`. The flag was accepted
+  and listed in the help output of both commands but neither ever read it, so
+  passing it changed nothing. It is removed rather than deprecated because a
+  release spent warning about an inert flag would advertise it for longer
+  without ever making it work. It remains available and functional on
+  `li agent`, which is the surface that implements it.
+
 ## [0.35.0] - 2026-08-12
 
 A broad correctness release across the orchestration engine, the MCP surface,

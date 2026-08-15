@@ -270,13 +270,11 @@ async def test_sqlite_admission_retries_with_stable_progression_id(
         _orchestration,
         "_SQLITE_ADMISSION_RETRY_DELAYS",
         (0.0, 0.0),
-        raising=False,
     )
     monkeypatch.setattr(
         _orchestration,
         "_sleep_before_sqlite_admission_retry",
         _no_sleep,
-        raising=False,
     )
 
     run_manifest: dict = {}
@@ -328,7 +326,6 @@ async def test_admission_does_not_retry_other_dialects_or_non_contention(
         _orchestration,
         "_SQLITE_ADMISSION_RETRY_DELAYS",
         (0.0, 0.0),
-        raising=False,
     )
 
     ctx = await setup_orchestration_persist(Session(), run_manifest={})
@@ -371,13 +368,11 @@ async def test_exhausted_sqlite_admission_records_one_reason_and_cleans_handle(
         _orchestration,
         "_SQLITE_ADMISSION_RETRY_DELAYS",
         (0.0, 0.0),
-        raising=False,
     )
     monkeypatch.setattr(
         _orchestration,
         "_sleep_before_sqlite_admission_retry",
         _no_sleep,
-        raising=False,
     )
 
     ctx = await setup_orchestration_persist(Session(), run=run, run_manifest=manifest)
@@ -408,7 +403,6 @@ async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_even
         _orchestration,
         "_SQLITE_ADMISSION_RETRY_DELAYS",
         (0.0, 0.0),
-        raising=False,
     )
 
     blocker = sqlite3.connect(temp_db_path, timeout=0.01, isolation_level=None)
@@ -430,7 +424,6 @@ async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_even
         _orchestration,
         "_sleep_before_sqlite_admission_retry",
         release_writer,
-        raising=False,
     )
 
     try:
