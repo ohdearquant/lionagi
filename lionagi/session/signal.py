@@ -23,6 +23,7 @@ __all__ = (
     "NodeCompleted",
     "NodeFailed",
     "NodeSkipped",
+    "NodeCancelled",
     "NodeQueued",
     "NodeAwaitingApproval",
     "NodeEscalated",
@@ -131,6 +132,20 @@ class NodeSkipped(Signal):
     depends_on: list[str] = []
 
 
+class NodeCancelled(Signal):
+    """DAG node lifecycle: stopped before normal completion.
+
+    Cancellation is terminal, but it is neither a failure nor a skip: the node
+    may have started work before an operator or runtime stopped it.
+    """
+
+    op_id: str = ""
+    name: str = ""
+    elapsed: float = 0.0
+    parent_id: str | None = None
+    depends_on: list[str] = []
+
+
 class GateDenied(Signal):
     """Governance gate denied a proposed action."""
 
@@ -150,8 +165,11 @@ class DispatchSignal(Signal):
     body: dict = {}
 
 
-# -- Extended node lifecycle (ADR-0033): queued → running → awaiting_approval →
-# succeeded|failed|escalated. NodeStarted/Completed/Failed (above) cover running/succeeded/failed; these three cover the rest.
+# -- Extended node lifecycle (ADR-0033): queued → running →
+# {awaiting_approval, paused} → succeeded|failed|skipped|cancelled|escalated.
+# NodeStarted/Completed/Failed (above) cover running/succeeded/failed; the
+# signals below cover the rest. NodeLifecycleState is the vocabulary of record
+# and tests/protocols/test_event_schema_drift.py pins it.
 
 
 class NodeQueued(Signal):
@@ -191,7 +209,7 @@ class NodePaused(Signal):
 
 # -- Lifecycle projection (ADR-0033) ------------------------------------------
 
-#: The eight canonical per-node lifecycle states.
+#: The nine canonical per-node lifecycle states.
 NodeLifecycleState = Literal[
     "queued",
     "running",
@@ -200,13 +218,14 @@ NodeLifecycleState = Literal[
     "succeeded",
     "failed",
     "skipped",
+    "cancelled",
     "escalated",
 ]
 
 #: Terminal lanes are sticky. "skipped" belongs here because a node passed over
 #: by an edge condition is finished, not waiting -- but it is deliberately kept
 #: distinct from "failed", which means the node ran and raised.
-_TERMINAL: frozenset[str] = frozenset({"succeeded", "failed", "skipped", "escalated"})
+_TERMINAL: frozenset[str] = frozenset({"succeeded", "failed", "skipped", "cancelled", "escalated"})
 
 
 def _signal_to_state(sig: Any) -> NodeLifecycleState | None:
@@ -225,6 +244,8 @@ def _signal_to_state(sig: Any) -> NodeLifecycleState | None:
         return "failed"
     if isinstance(sig, NodeSkipped):
         return "skipped"
+    if isinstance(sig, NodeCancelled):
+        return "cancelled"
     if isinstance(sig, NodeEscalated):
         req = sig.escalation_request
         # Soft ("fyi") urgency is informational only, not terminal; only

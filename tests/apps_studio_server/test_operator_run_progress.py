@@ -464,6 +464,25 @@ async def test_run_progress_rejects_unknown_fields(db_path):
 # ── DAG progress: planned graph nodes with no materialized branch yet ─────
 
 
+async def test_run_progress_projects_cancelled_node_out_of_pending():
+    """The bounded Operator projection mirrors the live graph vocabulary."""
+    from lionagi.studio.operator.run_progress import (
+        _NODE_INFLIGHT_STATES,
+        _NODE_STATE_BUCKET,
+        _NODE_TERMINAL_STATES,
+        _node_lane,
+    )
+
+    lane = _node_lane([("NodeQueued", None), ("NodeCancelled", None)])
+    assert lane == "cancelled"
+    assert _NODE_STATE_BUCKET[lane] == "completed"
+    # A cancelled node is settled, so the terminal-run reconciliation that
+    # rewrites in-flight lanes must leave it alone rather than calling it
+    # aborted -- the two describe different events and are counted apart.
+    assert lane in _NODE_TERMINAL_STATES
+    assert lane not in _NODE_INFLIGHT_STATES
+
+
 async def test_run_progress_dag_progress_derives_from_graph_not_branches(db_path):
     """A DAG can have planned nodes with no materialized branch yet; opsTotal
     must reflect the graph, not len(branches), and each node's status must be

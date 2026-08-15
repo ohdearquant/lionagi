@@ -365,9 +365,10 @@ _NODE_KIND_TO_STATE: dict[str, str] = {
     "NodeCompleted": "succeeded",
     "NodeFailed": "failed",
     "NodeSkipped": "skipped",
+    "NodeCancelled": "cancelled",
     "NodeEscalated": "escalated",
 }
-_NODE_TERMINAL_STATES = frozenset({"succeeded", "failed", "skipped", "escalated"})
+_NODE_TERMINAL_STATES = frozenset({"succeeded", "failed", "skipped", "cancelled", "escalated"})
 # Node lanes that claim in-flight work — on a run that has itself reached a
 # terminal status these are stale by definition (the engine died or was
 # killed before emitting the node's own terminal signal).
@@ -390,6 +391,9 @@ _NODE_STATE_BUCKET = {
     # the edge condition did what it was written to do. The separate
     # skippedCount below keeps it from silently inflating the success figure.
     "skipped": "completed",
+    # Also settled, but counted separately below: cancellation can stop work
+    # after it began, unlike a skip, and must remain observable by callers.
+    "cancelled": "completed",
     # The scalar API has four buckets that must sum to total. Keep the
     # per-node "escalated" outcome distinct while its aggregate waits for
     # follow-up in pending rather than inflating failure.
@@ -509,7 +513,7 @@ async def _dag_progress(
                 lanes[node_id] = "skipped"
 
     completed = running = failed = pending = unknown = escalated = skipped = 0
-    aborted = 0
+    cancelled = aborted = 0
     node_out: list[dict[str, Any]] = []
     for node in nodes:
         node_id = node["id"]
@@ -536,6 +540,8 @@ async def _dag_progress(
                 escalated += 1
             elif lane == "skipped":
                 skipped += 1
+            elif lane == "cancelled":
+                cancelled += 1
             elif lane == "aborted":
                 aborted += 1
         node_out.append(
@@ -565,6 +571,7 @@ async def _dag_progress(
         # caller reading only the scalars cannot tell work that ran and
         # succeeded from work an edge condition passed over.
         "skippedCount": skipped,
+        "cancelledCount": cancelled,
         # Nodes cut off mid-flight by the run's own death. They fold into the
         # failed scalar (they will never complete) but a genuine op failure
         # and an engine death ask for different responses.
