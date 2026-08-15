@@ -11,7 +11,13 @@ import anyio
 import pytest
 
 from lionagi.engines.engine import Engine, EngineBudgetError
-from lionagi.engines.review import ReviewEngine, _is_all_isolated_failure
+from lionagi.engines.review import (
+    DimensionClean,
+    IssueFound,
+    ReviewEngine,
+    ReviewVerdict,
+    _is_all_isolated_failure,
+)
 from lionagi.ln.concurrency._compat import ExceptionGroup
 from lionagi.providers._provider_errors import ProviderContextError
 
@@ -239,96 +245,87 @@ def test_application_mcp_errors_are_not_isolated_as_transport_failures() -> None
     assert _is_all_isolated_failure(mixed) is False
 
 
-def test_an_approve_emitted_over_a_dead_dimension_is_structurally_capped() -> None:
-    """The prompt tells synthesis not to approve on missing coverage; the
-    engine must not depend on it complying. If a dimension never ran and the
-    synthesis model emits APPROVE anyway, the verdict event is rewritten to
-    REQUEST-CHANGES with the dead dimensions as blocking entries — approval
-    on absent coverage must be unrepresentable, not merely discouraged."""
-    from lionagi.engines.review import ReviewVerdict, _cap_approvals_on_missing_coverage
+async def test_missing_coverage_grants_no_agent_the_ability_to_issue_a_verdict() -> None:
+    """The structural invariant, asserted at the grant rather than the outcome.
 
-    approve = ReviewVerdict(verdict="APPROVE", rationale="looks clean", blocking=[])
-    with_fixes = ReviewVerdict(verdict="approve-with-fixes", rationale="minor nits", blocking=[])
-    already_blocking = ReviewVerdict(
-        verdict="REQUEST-CHANGES", rationale="real issue", blocking=["x"]
-    )
-    failed = [("security", "McpError"), ("performance", "EndOfStream")]
-
-    capped = _cap_approvals_on_missing_coverage([approve, with_fixes, already_blocking], failed)
-
-    assert capped is True
-    # Both APPROVE-family verdicts are rewritten, case-insensitively.
-    for verdict in (approve, with_fixes):
-        assert verdict.verdict == "REQUEST-CHANGES"
-        assert "security dimension did not run (McpError)" in verdict.blocking
-        assert "performance dimension did not run (EndOfStream)" in verdict.blocking
-        assert "cannot be issued" in verdict.rationale
-    # A verdict that already refuses approval is left alone.
-    assert already_blocking.rationale == "real issue"
-    assert already_blocking.blocking == ["x"]
-
-    # No dead dimensions -> nothing to cap; an APPROVE stands.
-    clean_approve = ReviewVerdict(verdict="APPROVE", rationale="fine", blocking=[])
-    assert _cap_approvals_on_missing_coverage([clean_approve], []) is False
-    assert clean_approve.verdict == "APPROVE"
-
-
-def test_the_returned_verdict_text_is_capped_even_with_no_verdict_to_rewrite() -> None:
-    """Rewriting emitted verdicts reaches nothing when synthesis emits none.
-
-    The returned string is then the entire verdict the caller sees, so it
-    carries the same refusal; the synthesis output survives as quoted context
-    where its own decision line cannot be read as the run's decision.
+    Rewriting an approval after synthesis emits it can never be airtight: the
+    session bus gathers handlers concurrently, so a subscriber registered
+    before the run already holds the APPROVE by the time any rewrite runs. The
+    engine therefore does not create a ReviewVerdict-emitting agent at all when
+    a dimension is missing. Asserting on the grant is what makes this checkable
+    — an approval that is never constructed cannot leak through any channel.
     """
-    from lionagi.engines.review import _cap_verdict_text
-
-    failed = [("security", "McpError")]
-    capped = _cap_verdict_text("DECISION: APPROVE\nAll dimensions look clean.", failed)
-
-    assert capped.startswith("DECISION: REQUEST-CHANGES\n")
-    assert "- security dimension did not run (McpError)" in capped
-    # The synthesis decision line survives only as quoted context.
-    assert "> DECISION: APPROVE" in capped
-    assert not any(line.startswith("DECISION: APPROVE") for line in capped.splitlines())
-
-    # Nothing failed -> the synthesis text is returned untouched.
-    assert _cap_verdict_text("DECISION: APPROVE", []) == "DECISION: APPROVE"
-
-
-async def test_a_raw_approve_with_no_emitted_verdict_does_not_yield_approval() -> None:
-    """End-to-end on _verdict: synthesis emits no ReviewVerdict and returns a
-    bare approval. The event cap has nothing to rewrite, so the refusal has to
-    come from the returned text or the run approves on a dimension that never
-    executed."""
-
-    class _RawApproveAgent:
-        async def operate(self, instruction: str):
-            return "DECISION: APPROVE"
-
-    class _RunWithNoVerdictEmitted:
-        def __init__(self) -> None:
-            self.notices: list[tuple[str, dict]] = []
-
-        def by_type(self, event_type):
-            return []
-
-        def notify(self, kind: str, **data) -> None:
-            self.notices.append((kind, data))
-
-        async def make_agent(self, role: str, **kwargs):
-            return _RawApproveAgent()
-
     engine = ReviewEngine()
-    run = _RunWithNoVerdictEmitted()
+    run = _CoverageRun(clean=("correctness",))
 
-    result = await engine._verdict(
+    await engine._verdict(run, "artifact.py", ("correctness", "security"), [])
+
+    granted = [kwargs.get("emits", ()) for _role, kwargs in run.agent_calls]
+    assert not any(ReviewVerdict in emits for emits in granted), (
+        f"an agent was granted the ability to emit a ReviewVerdict over missing "
+        f"coverage; grants were {granted!r}"
+    )
+    # Not merely ungranted: no synthesis agent is created at all, so the
+    # degraded path also costs no model call.
+    assert run.agent_calls == []
+
+
+async def test_the_verdict_a_gap_run_emits_is_engine_authored_and_refuses() -> None:
+    """Downstream readers take the verdict off the bus, not from the returned
+    string, so the run has to put a real REQUEST-CHANGES event there. It names
+    each dimension that did not run as a blocking entry."""
+    engine = ReviewEngine()
+    run = _CoverageRun(clean=("correctness",))
+
+    await engine._verdict(
         run, "artifact.py", ("correctness", "security"), [("security", "McpError")]
     )
 
-    assert not result.startswith("DECISION: APPROVE")
+    emitted = [e for e in run.emitted if isinstance(e, ReviewVerdict)]
+    assert len(emitted) == 1, f"expected exactly one engine-authored verdict, got {emitted!r}"
+    assert emitted[0].verdict == "REQUEST-CHANGES"
+    assert "security dimension did not run (McpError)" in emitted[0].blocking
+    assert "correctness" not in " ".join(emitted[0].blocking)
+    assert emitted[0].reversible_by and "Re-run" in emitted[0].reversible_by
+    assert any(kind == "verdict_withheld" for kind, _ in run.notices)
+
+
+async def test_a_gap_run_still_reports_what_the_surviving_dimensions_found() -> None:
+    """Skipping synthesis must not throw away the actionable half of a degraded
+    review. The issues the dimensions that did run found are rendered by the
+    engine, deterministically and at no model cost."""
+    engine = ReviewEngine()
+    issue = IssueFound(
+        dimension="correctness",
+        description="off-by-one in the retry bound",
+        severity="major",
+    )
+    run = _CoverageRun(issues=(issue,))
+
+    result = await engine._verdict(run, "artifact.py", ("correctness", "security"), [])
+
     assert result.startswith("DECISION: REQUEST-CHANGES")
-    assert "security dimension did not run (McpError)" in result
-    assert any(kind == "verdict_capped" for kind, _ in run.notices)
+    assert "security dimension did not run" in result
+    assert "off-by-one in the retry bound" in result
+    assert "[correctness]" in result
+
+
+async def test_complete_coverage_still_grants_synthesis_and_returns_its_text() -> None:
+    """The must-not-over-fire arm. With every dimension covered there is no gap,
+    so synthesis is granted the verdict capability as before and its output is
+    returned untouched. Without this arm the refusal path would pass even if it
+    fired on every run."""
+    engine = ReviewEngine()
+    run = _CoverageRun(clean=("correctness", "security"))
+
+    result = await engine._verdict(run, "artifact.py", ("correctness", "security"), [])
+
+    granted = [kwargs.get("emits", ()) for _role, kwargs in run.agent_calls]
+    assert any(ReviewVerdict in emits for emits in granted), (
+        "synthesis was not granted the verdict capability on a fully covered run"
+    )
+    assert result == "DECISION: APPROVE"
+    assert not any(kind == "verdict_withheld" for kind, _ in run.notices)
 
 
 def test_verdict_prompt_refuses_to_present_a_dead_dimension_as_reviewed() -> None:
@@ -444,17 +441,45 @@ def test_a_missing_mcp_extra_is_a_normal_configuration(monkeypatch) -> None:
 
 
 class _CoverageRun:
-    """Minimal run exposing the surface the cap paths read."""
+    """Minimal run exposing the surface the verdict paths read.
 
-    def __init__(self, *, verdicts=None, clean=(), issues=()) -> None:
-        from lionagi.engines.review import DimensionClean, IssueFound, ReviewVerdict
+    *clean* / *issues* / *verdicts* seed both this run's coverage ledger and the
+    session flow, which is what a real run produces. The ``stale_*`` arguments
+    seed the session flow **only**, standing in for a previous run on a reused
+    session: ``run.by_type()`` reads the session's accumulated flow, so anything
+    that derives this run's coverage from it counts a previous run's evidence as
+    this one's.
+    """
 
+    def __init__(
+        self,
+        *,
+        verdicts=None,
+        clean=(),
+        issues=(),
+        stale_verdicts=None,
+        stale_clean=(),
+        stale_issues=(),
+    ) -> None:
+        from lionagi.engines.review import _RunCoverage
+
+        # The stale events are in the flow first, exactly as a previous run on a
+        # reused session would have left them.
         self._by_type = {
-            ReviewVerdict: list(verdicts or []),
-            DimensionClean: [DimensionClean(dimension=d) for d in clean],
-            IssueFound: list(issues),
+            ReviewVerdict: list(stale_verdicts or []),
+            DimensionClean: [DimensionClean(dimension=d) for d in stale_clean],
+            IssueFound: list(stale_issues),
         }
+        # Mark the run boundary here, the way _run does, then add this run's own
+        # events after it.
+        self._review_coverage = _RunCoverage(self)
+        self._by_type[ReviewVerdict].extend(verdicts or [])
+        self._by_type[DimensionClean].extend(DimensionClean(dimension=d) for d in clean)
+        self._by_type[IssueFound].extend(issues)
+
         self.notices: list[tuple[str, dict]] = []
+        self.emitted: list = []
+        self.agent_calls: list[tuple[str, dict]] = []
         self.agents_made = 3
 
     def by_type(self, event_type):
@@ -463,7 +488,13 @@ class _CoverageRun:
     def notify(self, kind: str, **data) -> None:
         self.notices.append((kind, data))
 
+    async def emit(self, event):
+        self.emitted.append(event)
+        return []
+
     async def make_agent(self, role: str, **kwargs):
+        self.agent_calls.append((role, kwargs))
+
         class _Approve:
             async def operate(self, instruction: str):
                 return "DECISION: APPROVE"
@@ -490,43 +521,80 @@ async def test_a_dimension_that_emitted_nothing_cannot_be_approved_over() -> Non
     assert "correctness dimension did not run" not in result
 
 
-async def test_partial_export_does_not_hand_back_an_approval_over_missing_coverage() -> None:
-    """Exhaustion is the one exit that never reaches _verdict.
+async def test_a_previous_runs_evidence_on_a_reused_session_is_not_this_runs_coverage() -> None:
+    """``run.by_type()`` reads the *session's* accumulated flow, and a session
+    outlives a run: ``EngineRun`` takes a caller-supplied ``Session`` and
+    ``Engine.run()`` passes one through. Deriving coverage from there lets a
+    dimension that emitted nothing this run pass as covered because it emitted
+    something last run, which is the exact failure the coverage check exists to
+    catch. Coverage must come from observers this run registered."""
+    engine = ReviewEngine()
+    stale = IssueFound(
+        dimension="security", description="found on a previous run", severity="major"
+    )
+    # The session flow says security produced evidence. This run's ledger says
+    # it did not, and this run's ledger is the one that counts.
+    run = _CoverageRun(clean=("correctness",), stale_issues=(stale,), stale_clean=("security",))
 
-    A run cut short by its deadline is also the likeliest to be missing a
-    dimension, so this is the worst channel to let a stored approval out of.
+    result = await engine._verdict(run, "artifact.py", ("correctness", "security"), [])
+
+    assert "security dimension did not run (no evidence emitted)" in result, (
+        "a previous run's evidence was counted as this run's coverage"
+    )
+    assert result.startswith("DECISION: REQUEST-CHANGES")
+
+
+async def test_partial_export_returns_this_runs_verdict_not_a_previous_runs() -> None:
+    """Exhaustion is the one exit that never reaches ``_verdict``.
+
+    Reading the stored verdict off the session flow means that on a reused
+    session an exhausted run exports the *previous* run's verdict as its own
+    result, over an artifact it may never have finished reviewing.
     """
     from lionagi.engines.review import ReviewVerdict
 
-    verdict = ReviewVerdict(verdict="APPROVE", rationale="nothing came up", blocking=[])
+    previous = ReviewVerdict(verdict="APPROVE", rationale="a previous run", blocking=[])
     engine = ReviewEngine()
-    run = _CoverageRun(verdicts=[verdict], clean=("correctness",))
+    run = _CoverageRun(stale_verdicts=[previous], clean=("correctness", "security"))
 
     out = await engine._partial_export(run, "artifact.py", dimensions=("correctness", "security"))
 
-    assert "REQUEST-CHANGES" in out
-    assert not any(line.startswith("DECISION: APPROVE") for line in out.splitlines())
-    # The stored verdict is rewritten too, not just the text built from it.
-    assert verdict.verdict == "REQUEST-CHANGES"
-    assert any("security" in b for b in verdict.blocking)
+    assert out == "", f"exported a verdict this run never issued: {out!r}"
+    assert previous.verdict == "APPROVE", "a previous run's stored verdict was mutated"
 
 
-async def test_a_verdict_is_capped_when_it_arrives_not_after_synthesis_returns() -> None:
-    """Persistence and subscribers read the verdict from the run's flow.
-
-    Rewriting it after synthesis returns leaves an approval already delivered
-    to whoever was listening, so the cap runs on arrival.
-    """
+async def test_partial_export_still_returns_a_verdict_this_run_did_issue() -> None:
+    """The must-not-over-fire arm for the exit above: a verdict this run issued
+    is still exported, with the budget-exhaustion header. No coverage cap is
+    applied, and none is needed, because a ReviewVerdict exists for this run
+    only where synthesis was granted the capability to emit one."""
     from lionagi.engines.review import ReviewVerdict
 
-    observers: dict[type, list] = {}
+    mine = ReviewVerdict(verdict="APPROVE", rationale="every dimension reported", blocking=[])
+    engine = ReviewEngine()
+    run = _CoverageRun(verdicts=[mine], clean=("correctness", "security"))
+
+    out = await engine._partial_export(run, "artifact.py", dimensions=("correctness", "security"))
+
+    assert "budget_exhausted" in out
+    assert "APPROVE: every dimension reported" in out
+    assert any(kind == "verdict_emitted_on_exhaustion" for kind, _ in run.notices)
+
+
+async def test_run_marks_the_boundary_that_makes_coverage_run_scoped() -> None:
+    """Scoping is only real if ``_run`` actually records where the run begins.
+
+    Without this, every coverage test above would still pass against a reader
+    whose prior set is empty, which is the permissive default — it treats a
+    previous run's evidence as this run's, the exact defect being fixed.
+    """
 
     class _ObservingRun(_CoverageRun):
         root = ""
         _sem = asyncio.Semaphore(1)
 
         def observe(self, event_type, handler):
-            observers.setdefault(event_type, []).append(handler)
+            return None
 
         async def wait_quiescence(self):
             return None
@@ -537,17 +605,25 @@ async def test_a_verdict_is_capped_when_it_arrives_not_after_synthesis_returns()
         async def operate_with_repair(self, agent, instruction, **kwargs):
             return ""
 
+    stale = IssueFound(dimension="security", description="previous run", severity="major")
     engine = ReviewEngine(verify_clean=False)
-    run = _ObservingRun(clean=("correctness",))
+    run = _ObservingRun(stale_issues=(stale,))
+    # Drop the reader the stub pre-built, so _run is the thing that marks the
+    # boundary rather than the fixture.
+    run._review_coverage = None
+
     await engine._run(run, "artifact.py", dimensions=("correctness", "security"))
 
-    assert ReviewVerdict in observers, "no verdict observer registered, so nothing caps on arrival"
-    arriving = ReviewVerdict(verdict="APPROVE", rationale="looks clean", blocking=[])
-    for handler in observers[ReviewVerdict]:
-        handler(arriving, None)
-
-    assert arriving.verdict == "REQUEST-CHANGES", (
-        "the verdict object handed to subscribers still says APPROVE while a "
-        "dimension produced no evidence"
+    reader = engine._coverage(run)
+    assert reader.issued(run) == set(), (
+        "a previous run's issue was counted as this run's evidence, so _run did "
+        "not mark the boundary"
     )
-    assert any("security" in b for b in arriving.blocking)
+
+    # Evidence arriving after the mark is this run's.
+    mine = IssueFound(dimension="correctness", description="this run", severity="minor")
+    run._by_type[IssueFound].append(mine)
+    assert reader.issued(run) == {"correctness"}
+    assert reader.missing(run, ("correctness", "security"), []) == [
+        ("security", "no evidence emitted")
+    ]

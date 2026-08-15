@@ -15,7 +15,7 @@ from lionagi.engines.engine import Engine, EngineBudgetError, EngineResult, Engi
 from lionagi.engines.hypothesis import HypothesisEngine
 from lionagi.engines.planning import PlanningEngine
 from lionagi.engines.research import FindingEmitted, ResearchEngine
-from lionagi.engines.review import IssueFound, ReviewEngine, ReviewVerdict
+from lionagi.engines.review import DimensionClean, IssueFound, ReviewEngine, ReviewVerdict
 from lionagi.ln import gather as ln_gather
 from lionagi.ln.concurrency._compat import (
     ExceptionGroup,
@@ -163,11 +163,19 @@ async def test_review_verdict_emitted_on_exhaustion_not_dropped(monkeypatch):
     )
 
     class _FastReviewBranch:
-        def __init__(self, dimension: str):
+        def __init__(self, dimension: str, run: Any) -> None:
             self.name = f"review-{dimension}"
+            self._dimension = dimension.removeprefix("review-")
+            self._run = run
 
         async def operate(self, *, instruction: str) -> str:
-            return ""  # no issues found — keeps the repro focused on the verdict stage
+            # No issues found, said as an affirmative clean rather than as
+            # silence. A dimension that emits nothing has not reviewed anything
+            # as far as the engine can tell, and the run would refuse to reach
+            # the verdict stage at all — which would move this test off its own
+            # subject, the verdict already captured before the deadline.
+            await self._run.emit(DimensionClean(dimension=self._dimension))
+            return ""
 
     class _SlowSynthBranch:
         name = "verdict"
@@ -192,7 +200,7 @@ async def test_review_verdict_emitted_on_exhaustion_not_dropped(monkeypatch):
     async def fake_make_agent(role: str, *, name: str | None = None, exempt: bool = False, **kw):
         if name == "verdict":
             return _SlowSynthBranch(run)
-        return _FastReviewBranch(name or role)
+        return _FastReviewBranch(name or role, run)
 
     monkeypatch.setattr(run, "make_agent", fake_make_agent)
     monkeypatch.setattr(eng, "new_run", lambda **kw: run)

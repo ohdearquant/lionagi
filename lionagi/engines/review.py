@@ -257,91 +257,146 @@ def _verify_clean_instruction(artifact: str, clean: list[DimensionClean], ref: s
     )
 
 
-def _cap_approvals_on_missing_coverage(
-    verdicts: list[ReviewVerdict], failed: list[tuple[str, str]]
-) -> bool:
-    """Rewrite any APPROVE-family verdict to REQUEST-CHANGES when a dimension
-    never ran, recording each dead dimension as a blocking entry.
+class _RunCoverage:
+    """Reads this run's evidence out of a flow that may hold more than this run's.
 
-    Returns True when at least one verdict was capped. The mutation is on the
-    emitted event itself so every downstream reader — not just the return
-    string — sees a verdict that a run with missing coverage can actually
-    stand behind.
+    ``run.by_type()`` reads the *session's* accumulated flow, and a session can
+    outlive a run: ``EngineRun`` takes a caller-supplied ``Session`` and
+    ``Engine.run()`` passes one through. On a reused session a previous run's
+    evidence is therefore indistinguishable from this one's, which lets a
+    dimension that emitted nothing this run pass as covered because it emitted
+    something last run. That is the precise failure the coverage check exists
+    to catch.
+
+    Scoping is by exclusion: ``_run`` records which events were already in the
+    flow before it started, and everything else in the flow belongs to this run.
+    Filtering at read time rather than accumulating at emit time is what keeps
+    it correct regardless of when the ledger is created relative to the
+    evidence — accumulating from a subscription can only ever see what was
+    emitted after the subscription, so a stage reached without one reports every
+    dimension missing while the same artifact lists the issues they found.
+
+    Constructed with no *run* the prior set is empty, meaning "nothing is known
+    to predate this run, so treat the whole flow as ours". That is the only
+    sound default when the run boundary was never recorded.
     """
-    if not failed:
-        return False
-    gap = ", ".join(f"{name} ({err})" for name, err in failed)
-    capped = False
-    for verdict in verdicts:
-        if not verdict.verdict.strip().upper().startswith("APPROVE"):
-            continue
-        verdict.verdict = "REQUEST-CHANGES"
-        verdict.rationale = (
-            f"{verdict.rationale}\n[engine] Approval withdrawn: the following "
-            f"dimensions did not run: {gap}. Their silence is missing coverage, "
-            "not clean evidence, so an approval cannot be issued for this run."
-        ).strip()
-        for name, err in failed:
-            entry = f"{name} dimension did not run ({err})"
-            if entry not in verdict.blocking:
-                verdict.blocking.append(entry)
-        capped = True
-    return capped
+
+    __slots__ = ("_prior",)
+
+    def __init__(self, run: Any = None) -> None:
+        tracked = (IssueFound, DimensionClean, ReviewVerdict)
+        self._prior: dict[type, set[int]] = {
+            event_type: ({id(e) for e in run.by_type(event_type)} if run is not None else set())
+            for event_type in tracked
+        }
+
+    def _mine(self, run: Any, event_type: type) -> list[Any]:
+        """Events of *event_type* in the flow that were not there before this run."""
+        prior = self._prior.get(event_type, set())
+        return [e for e in run.by_type(event_type) if id(e) not in prior]
+
+    def issued(self, run: Any) -> set[str]:
+        return {i.dimension for i in self._mine(run, IssueFound)}
+
+    def clean(self, run: Any) -> set[str]:
+        return {c.dimension for c in self._mine(run, DimensionClean)}
+
+    def verdicts(self, run: Any) -> list[ReviewVerdict]:
+        return self._mine(run, ReviewVerdict)
+
+    def missing(
+        self, run: Any, dimensions: tuple[str, ...], failed: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        """Dimensions this run cannot claim to have reviewed, derived from evidence.
+
+        A dimension counts as covered only when it produced something: an issue,
+        or an affirmative clean. Deriving the gap from what arrived rather than
+        from failure bookkeeping is what makes it complete. A reviewer that
+        exhausts its emission repairs raises nothing, so it never reaches the
+        isolated-failure recorder and never lands in *failed* — and a dimension
+        that emitted nothing is indistinguishable from a clean one to everything
+        downstream.
+
+        *failed* entries keep their specific error label and their order;
+        anything else missing is appended.
+        """
+        gap: list[tuple[str, str]] = list(failed)
+        named = {name for name, _ in gap}
+        covered = self.issued(run) | self.clean(run)
+        for dimension in dimensions:
+            if dimension not in named and dimension not in covered:
+                gap.append((dimension, "no evidence emitted"))
+        return gap
 
 
-def _missing_coverage(
-    run: Any, dimensions: tuple[str, ...], failed: list[tuple[str, str]]
-) -> list[tuple[str, str]]:
-    """Dimensions this run cannot claim to have reviewed, derived from evidence.
+def _gap_blocking(gap: list[tuple[str, str]]) -> list[str]:
+    return [f"{name} dimension did not run ({err})" for name, err in gap]
 
-    A dimension counts as covered only when it produced something: an issue, or
-    an affirmative clean. Deriving the gap from what arrived rather than from
-    failure bookkeeping is what makes it complete. A reviewer that exhausts its
-    emission repairs raises nothing, so it never reaches the isolated-failure
-    recorder and never lands in *failed* — and a dimension that emitted nothing
-    is indistinguishable from a clean one to everything downstream. This is the
-    same predicate the repair loop uses to decide a dimension arrived, so a
-    dimension the engine gave up on is exactly a dimension named here.
 
-    *failed* entries keep their specific error label and their order; anything
-    else missing is appended.
+_GAP_RATIONALE = (
+    "The dimensions listed as blocking did not execute. They produced no "
+    "findings because they never ran, not because the artifact is clean along "
+    "them, so their silence is missing coverage and this run cannot issue an "
+    "approval."
+)
+
+
+def _gap_verdict(gap: list[tuple[str, str]], summary: str) -> ReviewVerdict:
+    """The verdict a run with missing coverage is entitled to, authored here.
+
+    Engine-authored rather than model-authored: when coverage is incomplete the
+    synthesis agent is never granted the ability to emit a ``ReviewVerdict``
+    (see ``_verdict``), so this is the only one that exists for such a run. That
+    is what makes the invariant structural — there is no approval to withdraw,
+    because none was ever created.
     """
-    gap: list[tuple[str, str]] = list(failed)
-    named = {name for name, _ in gap}
-    covered = {i.dimension for i in run.by_type(IssueFound)} | {
-        c.dimension for c in run.by_type(DimensionClean)
-    }
-    for dimension in dimensions:
-        if dimension not in named and dimension not in covered:
-            gap.append((dimension, "no evidence emitted"))
-    return gap
-
-
-def _cap_verdict_text(text: str, failed: list[tuple[str, str]]) -> str:
-    """Front the returned verdict text with a refusal when a dimension never ran.
-
-    Capping the emitted events only reaches a ReviewVerdict that synthesis
-    actually issued. When it issues none, this string is the whole verdict as
-    far as the caller is concerned, so the same invariant has to hold here:
-    otherwise the channel that lacks it becomes the way an approval over
-    missing coverage gets out. The synthesis output is kept underneath as
-    quoted context so nothing is lost, and so a decision line inside it can no
-    longer be read as this run's decision.
-    """
-    if not failed:
-        return text
-    blocking = "".join(f"- {name} dimension did not run ({err})\n" for name, err in failed)
-    quoted = "\n".join(f"> {line}" for line in text.splitlines()) if text else "> (no output)"
-    return (
-        "DECISION: REQUEST-CHANGES\n"
-        f"BLOCKING:\n{blocking}"
-        "RATIONALE: the dimensions listed above did not execute. They produced "
-        "no findings because they never ran, not because the artifact is clean "
-        "along them, so their silence is missing coverage and this run cannot "
-        "issue an approval.\n\n"
-        "--- synthesis output below is context, not this run's decision ---\n"
-        f"{quoted}"
+    rationale = _GAP_RATIONALE
+    if summary.strip():
+        rationale = f"{rationale}\n\n{summary.strip()}"
+    return ReviewVerdict(
+        verdict="REQUEST-CHANGES",
+        rationale=rationale,
+        blocking=_gap_blocking(gap),
+        reversible_by=(
+            "Re-run the review with every dimension executing; the gap is "
+            "missing evidence, not an adverse finding."
+        ),
     )
+
+
+def _gap_verdict_text(verdict: ReviewVerdict) -> str:
+    """Render an engine-authored gap verdict in the shape synthesis output uses.
+
+    A gap run issues no synthesis call, so this string is the whole verdict as
+    far as the caller is concerned. It keeps the ``DECISION:`` / ``BLOCKING:``
+    shape that downstream readers already parse rather than inventing a second
+    one for the degraded path.
+    """
+    blocking = "".join(f"- {entry}\n" for entry in verdict.blocking)
+    return f"DECISION: {verdict.verdict}\nBLOCKING:\n{blocking}RATIONALE: {verdict.rationale}"
+
+
+def _verdict_text(verdict: ReviewVerdict, prefix: str = "") -> str:
+    blocking = f"\n\nBlocking: {', '.join(verdict.blocking)}" if verdict.blocking else ""
+    return f"{prefix}{verdict.verdict}: {verdict.rationale}{blocking}"
+
+
+def _issue_digest(issues: list[IssueFound]) -> str:
+    """Render the issues the surviving dimensions did find.
+
+    A run with a coverage gap issues no synthesis call, so nothing else would
+    carry these into the returned text — and issues found by the dimensions
+    that *did* run are the actionable half of a degraded review. Rendered here
+    rather than summarised by a model so the degraded path stays deterministic
+    and costs no agent.
+    """
+    if not issues:
+        return ""
+    lines = []
+    for issue in issues:
+        severity = f"{issue.severity}: " if issue.severity else ""
+        lines.append(f"- [{issue.dimension}] {severity}{issue.description}")
+    return f"Issues found by the dimensions that did run ({len(issues)}):\n" + "\n".join(lines)
 
 
 def _verdict_instruction(
@@ -442,46 +497,35 @@ class ReviewEngine(Engine):
 
         See docs/internals/providers.md#review-engine-partial-export-on-deadline.
         """
-        verdicts = run.by_type(ReviewVerdict)
+        # This run's verdicts, not the session's: run.by_type() reads the
+        # session-accumulated flow, so on a reused session this exit would
+        # export a *previous* run's verdict as this one's result.
+        verdicts = self._coverage(run).verdicts(run)
         if not verdicts:
             return ""
         verdict = verdicts[-1]
-        # Exhaustion is the one exit that skips _verdict, so the cap has to be
-        # applied here too. A run cut short by its deadline is the likeliest
-        # one to be missing a dimension, which makes this the worst channel to
-        # let an approval out of.
-        gap = _missing_coverage(run, tuple(dimensions) if dimensions else self.dimensions, [])
-        _cap_approvals_on_missing_coverage([verdict], gap)
+        # No coverage cap is applied here, and none is needed. A ReviewVerdict
+        # exists in this run only if _verdict granted synthesis the capability
+        # to emit one, and it grants that only when coverage is complete. An
+        # exhausted run that never reached _verdict has no verdict to export.
         run.notify("verdict_emitted_on_exhaustion", verdict=verdict.verdict)
         status_header = (
             "**status: budget_exhausted (verdict emitted on exhaustion)** — "
             "run terminated by deadline/budget after the verdict was computed "
             f"({run.agents_made} agents)\n\n"
         )
-        blocking = f"\n\nBlocking: {', '.join(verdict.blocking)}" if verdict.blocking else ""
-        return _cap_verdict_text(
-            f"{status_header}{verdict.verdict}: {verdict.rationale}{blocking}", gap
-        )
+        return _verdict_text(verdict, status_header)
 
     async def _run(
         self, run: EngineRun, artifact: str, *, dimensions: tuple[str, ...] | None = None
     ) -> str:
         dims = tuple(dimensions) if dimensions else self.dimensions
         run.root = artifact
+        # Marks where this run begins in a flow the session may already have
+        # filled, so coverage read later is this run's and not a previous one's.
+        self._coverage(run, mark_start=True)
         run.observe(IssueFound, lambda i, _c: self._on_issue(run, i))
         failed: list[tuple[str, str]] = []
-        # Cap the verdict where it arrives, not after synthesis returns.
-        # Everything downstream — persistence, subscribers, the notify stream —
-        # reads the verdict from this flow, so rewriting it later leaves an
-        # approval already delivered to whoever was listening. Synthesis runs
-        # after every reviewer, so the coverage gap is final by the time this
-        # fires.
-        run.observe(
-            ReviewVerdict,
-            lambda v, _c: _cap_approvals_on_missing_coverage(
-                [v], _missing_coverage(run, dims, failed)
-            ),
-        )
 
         # Fan out one reviewer per dimension. Ordinary provider/transport
         # failures are isolated per dimension so completed sibling evidence is
@@ -512,6 +556,28 @@ class ReviewEngine(Engine):
         return await self._verdict(run, artifact, dims, failed)
 
     # -- reactions ------------------------------------------------------------
+
+    @staticmethod
+    def _coverage(run: EngineRun, *, mark_start: bool = False) -> _RunCoverage:
+        """This run's evidence reader, created once per run.
+
+        Attached to the run rather than the engine: one engine serves many
+        runs, and keying per-run state off the engine is how a previous run's
+        coverage leaks into this one's, which is the same mistake as reading it
+        back from a shared session.
+
+        ``mark_start=True`` records what the flow already held, and only ``_run``
+        passes it, because only ``_run`` knows where this run begins. Reached any
+        other way the reader is built with an empty prior set, which treats the
+        whole flow as this run's — the only sound reading when the boundary was
+        never recorded, and the behaviour a direct call to a single stage has
+        always had.
+        """
+        existing = getattr(run, "_review_coverage", None)
+        if existing is None:
+            existing = _RunCoverage(run if mark_start else None)
+            run._review_coverage = existing  # type: ignore[attr-defined]
+        return existing
 
     def _on_issue(self, run: EngineRun, issue: IssueFound) -> None:
         if issue.severity in self.verify_severities and not run.seen(_verify_key(issue)):
@@ -632,9 +698,12 @@ class ReviewEngine(Engine):
         dimensions: tuple[str, ...],
         failed: list[tuple[str, str]] | None = None,
     ) -> str:
+        coverage = self._coverage(run)
         issues = run.by_type(IssueFound)
         verifications = run.by_type(VerifyResult)
-        clean = [c.dimension for c in run.by_type(DimensionClean)]
+        affirmed_clean = coverage.clean(run)
+        clean = [d for d in dimensions if d in affirmed_clean]
+        gap = coverage.missing(run, dimensions, list(failed or []))
         run.notify(
             "verdict",
             issues=len(issues),
@@ -642,6 +711,22 @@ class ReviewEngine(Engine):
             clean=len(clean),
             failed=len(failed or []),
         )
+        # Every reviewer has returned by now, so the coverage gap is final.
+        #
+        # When a dimension never ran, synthesis is not given the ability to
+        # issue a verdict at all: no agent is created with a ReviewVerdict
+        # emission grant, so no approval can be constructed, dispatched, or
+        # observed. The earlier shape of this code let synthesis emit freely and
+        # rewrote an approval afterwards, which cannot be airtight — the bus
+        # gathers handlers concurrently and a subscriber registered before the
+        # run has already received the event by the time any rewrite runs. An
+        # approval that is never created needs no withdrawing.
+        if gap:
+            run.notify("verdict_withheld", failed=", ".join(name for name, _ in gap))
+            verdict = _gap_verdict(gap, _issue_digest(issues))
+            await run.emit(verdict)
+            return _gap_verdict_text(verdict)
+
         synth = await run.make_agent(
             self.synthesis_role,
             name="verdict",
@@ -654,15 +739,4 @@ class ReviewEngine(Engine):
                 artifact, dimensions, issues, verifications, clean, failed
             )
         )
-        # The instruction tells synthesis not to approve on missing coverage,
-        # but an instruction is steering, not a gate: the model can still emit
-        # APPROVE. Enforce it structurally — a run in which a dimension never
-        # executed cannot produce an approval, whatever the synthesis text says.
-        # Both channels carry the cap: the emitted verdict, and the returned
-        # text, which is the only verdict a caller sees when synthesis emits
-        # nothing structured at all.
-        gap = _missing_coverage(run, dimensions, failed or [])
-        if gap:
-            _cap_approvals_on_missing_coverage(run.by_type(ReviewVerdict), gap)
-            run.notify("verdict_capped", failed=", ".join(name for name, _ in gap))
-        return _cap_verdict_text(str(res) if res is not None else "", gap)
+        return str(res) if res is not None else ""
