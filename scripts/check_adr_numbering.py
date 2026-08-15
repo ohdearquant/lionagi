@@ -11,8 +11,13 @@ Three properties are asserted over ``docs/adr/ADR-*.md``:
 - every filename matches ``ADR-NNNN-<slug>.md`` (four-digit number);
 - no two files share a number — a failure names both filenames, since the fix
   is renumbering one of them and the reviewer needs to know which two collided;
-- the ``# ADR-NNNN:`` title heading carries the same number as the filename,
+- the first line is ``# ADR-NNNN: Human Title`` carrying the filename's number,
   which is the same drift class and equally invisible in a diff.
+
+The title is read from the first physical line only, per the ADR style standard
+(docs/governance/standards/adr-style.md). Scanning the whole document would let
+a matching heading further down — including one inside a code fence — stand in
+for a missing or misnumbered title.
 
 Usage: ``uv run scripts/check_adr_numbering.py``.
 """
@@ -28,7 +33,30 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ADR_DIR = REPO_ROOT / "docs" / "adr"
 
 _FILENAME_RE = re.compile(r"^ADR-(\d{4})-[a-z0-9][a-z0-9-]*\.md$")
-_HEADING_RE = re.compile(r"^# ADR-(\d{4}):", re.M)
+_HEADING_RE = re.compile(r"^# ADR-(\d{4}):")
+
+# The title line is short by construction, so the first line is read from a
+# bounded prefix. This also keeps the check from streaming a file that never
+# ends (a character device, say) until the CI job times out.
+_MAX_TITLE_BYTES = 4096
+
+
+def _title_line(path: Path) -> str | None:
+    """Return the file's first line, or None if it is unreadable as text."""
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(_MAX_TITLE_BYTES)
+    except OSError:
+        return None
+    line, newline, _ = head.partition(b"\n")
+    if not newline and len(head) == _MAX_TITLE_BYTES:
+        # No line break within the bounded prefix: whatever this is, it is not
+        # a title line, and the rest of the file must not be read to find out.
+        return None
+    try:
+        return line.decode("utf-8").rstrip("\r")
+    except UnicodeDecodeError:
+        return None
 
 
 def check_dir(adr_dir: Path) -> list[str]:
@@ -48,9 +76,16 @@ def check_dir(adr_dir: Path) -> list[str]:
             continue
         number = match.group(1)
         by_number.setdefault(number, []).append(path.name)
-        heading = _HEADING_RE.search(path.read_text(encoding="utf-8"))
+        if path.is_symlink():
+            errors.append(f"{path.name}: is a symlink; ADR records must be regular files")
+            continue
+        first_line = _title_line(path)
+        heading = _HEADING_RE.match(first_line) if first_line is not None else None
         if heading is None:
-            errors.append(f"{path.name}: no '# ADR-NNNN:' title heading found")
+            errors.append(
+                f"{path.name}: first line is not a '# ADR-NNNN: Human Title' heading "
+                f"(found: {first_line!r})"
+            )
         elif heading.group(1) != number:
             errors.append(
                 f"{path.name}: heading says ADR-{heading.group(1)} "
