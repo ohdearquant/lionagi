@@ -349,6 +349,15 @@ Known semantic branches include:
 | Checkpoint | `PRAGMA wal_checkpoint` | no-op result `None` |
 | Legacy CHECK rebuilds | table replacement | not run |
 
+> **Proposed successor (Progression append row):** ADR-0117 defines a normalized
+> ordered-membership target and an online cutover protocol. That record makes this row
+> phase-scoped rather than retiring it: the branch remains the binding contract while a
+> progression's phase is `json` or `dual`, because a `dual`-phase append still writes the JSON
+> value atomically alongside normalized membership. At phase `items` the JSON is frozen and no
+> longer mutated by append, so the branch no longer describes the append path. This clause
+> remains binding in full until that aspirational record is accepted with its first dependent
+> implementation.
+
 Code anchors: `lionagi/state/db.py`; `lionagi/state/engine.py`.
 
 **Exact semantics.**
