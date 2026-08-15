@@ -14,18 +14,24 @@
 <span class=w>  </span><span class=nt>&quot;verbs&quot;</span><span class=p>:</span><span class=w> </span><span class=p>[</span>
 <span class=w>    </span><span class=p>{</span>
 <span class=w>      </span><span class=nt>&quot;verb&quot;</span><span class=p>:</span><span class=w> </span><span class=s2>&quot;agent.submit&quot;</span><span class=p>,</span>
-<span class=w>      </span><span class=nt>&quot;available&quot;</span><span class=p>:</span><span class=w> </span><span class=kc>true</span><span class=p>,</span>
 <span class=w>      </span><span class=nt>&quot;summary&quot;</span><span class=p>:</span><span class=w> </span><span class=s2>&quot;Run one agent on one task as a detached background run.&quot;</span><span class=p>,</span>
-<span class=w>      </span><span class=nt>&quot;required&quot;</span><span class=p>:</span><span class=w> </span><span class=p>[]</span>
+<span class=w>      </span><span class=nt>&quot;required_unenforced&quot;</span><span class=p>:</span><span class=w> </span><span class=p>[</span><span class=s2>&quot;query&quot;</span><span class=p>],</span>
+<span class=w>      </span><span class=nt>&quot;schema_fingerprint&quot;</span><span class=p>:</span><span class=w> </span><span class=s2>&quot;ae06438e99123763&quot;</span>
+<span class=w>    </span><span class=p>},</span>
+<span class=w>    </span><span class=p>{</span>
+<span class=w>      </span><span class=nt>&quot;verb&quot;</span><span class=p>:</span><span class=w> </span><span class=s2>&quot;schedule.apply&quot;</span><span class=p>,</span>
+<span class=w>      </span><span class=nt>&quot;available&quot;</span><span class=p>:</span><span class=w> </span><span class=kc>false</span><span class=p>,</span>
+<span class=w>      </span><span class=nt>&quot;summary&quot;</span><span class=p>:</span><span class=w> </span><span class=s2>&quot;Reconcile a whole ScheduleSet file into the store, atomically.&quot;</span><span class=p>,</span>
+<span class=w>      </span><span class=nt>&quot;cli_path&quot;</span><span class=p>:</span><span class=w> </span><span class=s2>&quot;schedule apply&quot;</span>
 <span class=w>    </span><span class=p>}</span>
 <span class=w>  </span><span class=p>],</span>
-<span class=w>  </span><span class=nt>&quot;verb_count&quot;</span><span class=p>:</span><span class=w> </span><span class=mi>68</span><span class=p>,</span>
-<span class=w>  </span><span class=nt>&quot;available_count&quot;</span><span class=p>:</span><span class=w> </span><span class=mi>40</span><span class=p>,</span>
+<span class=w>  </span><span class=nt>&quot;verb_count&quot;</span><span class=p>:</span><span class=w> </span><span class=mi>70</span><span class=p>,</span>
+<span class=w>  </span><span class=nt>&quot;available_count&quot;</span><span class=p>:</span><span class=w> </span><span class=mi>44</span><span class=p>,</span>
 <span class=w>  </span><span class=nt>&quot;max_ops&quot;</span><span class=p>:</span><span class=w> </span><span class=mi>8</span><span class=p>,</span>
 <span class=w>  </span><span class=nt>&quot;help_usage&quot;</span><span class=p>:</span><span class=w> </span><span class=s2>&quot;help=true returns this catalog; help=&#39;&lt;verb&gt;&#39; returns that verb&#39;s full parameter schema; ...&quot;</span><span class=p>,</span>
 <span class=w>  </span><span class=nt>&quot;synonyms_removed_after&quot;</span><span class=p>:</span><span class=w> </span><span class=s2>&quot;2026-09-30&quot;</span>
 <span class=p>}</span>
-</code></pre></div> <p><code>help='&lt;verb&gt;'</code> returns that one verb's full parameter schema:</p> <div class="language-json highlight"><pre><span></span><code><span class=p>{</span>
+</code></pre></div> <p>An entry states only what it cannot be read without. <code>available</code> and <code>required</code> are omitted at their defaults, so a verb with neither key is available and takes no required parameters. A verb that is not served here says so and names the <code>cli_path</code> that does run it, rather than repeating why; <code>help='&lt;verb&gt;'</code> returns that reason. The one entry that carries a reason inline is a verb whose schema failed to build, which reports a defect in this server rather than a deliberate exclusion.</p> <p><code>help='&lt;verb&gt;'</code> returns that one verb's full parameter schema:</p> <div class="language-json highlight"><pre><span></span><code><span class=p>{</span>
 <span class=w>  </span><span class=nt>&quot;verb&quot;</span><span class=p>:</span><span class=w> </span><span class=s2>&quot;job.status&quot;</span><span class=p>,</span>
 <span class=w>  </span><span class=nt>&quot;schema&quot;</span><span class=p>:</span><span class=w> </span><span class=p>{</span>
 <span class=w>    </span><span class=nt>&quot;type&quot;</span><span class=p>:</span><span class=w> </span><span class=s2>&quot;object&quot;</span><span class=p>,</span>
