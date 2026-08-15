@@ -15,13 +15,14 @@ import logging
 import math
 import os
 import signal
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from lionagi.cli import _mcp_resolve
 from lionagi.ln import _proc
-from lionagi.mcp import config, jobs
+from lionagi.mcp import _notify_hook, config, jobs
 
 
 @pytest.fixture
@@ -2745,6 +2746,38 @@ def test_listing_does_not_pass_an_unverified_delivery_off_as_delivered(sandbox):
     # a caller that treats anything other than "delivered" as needing a look gets
     # the right behaviour without having to know this state exists
     assert states[unverified] != "delivered"
+
+
+def test_listing_does_not_call_a_stopped_delivery_a_failure(sandbox):
+    """A delivery stopped for running past its deadline is not a failed one.
+
+    "failed" is what a caller waiting on the notice reads as "send it again",
+    and whether it was already sent is the one thing this outcome does not
+    know: a notifier can deliver and then hang. So the word that would prompt
+    a duplicate notice is the wrong one, while silence is worse — it reads as
+    a notice that arrived. It reports unknown, which the documented sweep
+    ("act on failed or unknown") already collects.
+
+    The outcome is built by the code that records it rather than written out
+    here, so a change to that shape arrives in this test instead of leaving it
+    asserting against a record the producer stopped emitting.
+    """
+    timed_out = _notify_hook._delivery_failure(
+        subprocess.TimeoutExpired(cmd=["notify"], timeout=7.0), "notify"
+    )
+    assert timed_out["ok"] is False and timed_out["delivery_verified"] is False
+
+    stopped = _terminal_run(timed_out)
+    failed = _terminal_run(_EXITED_NONZERO)
+    delivered = _terminal_run(_DELIVERED)
+
+    states = {j["run_id"]: j["notify_delivery_state"] for j in jobs.list_jobs()}
+    assert states[stopped] == "unknown"
+    assert states[stopped] != states[failed]
+    assert states[stopped] != states[delivered]
+    # and it is still one of the two words the documented sweep acts on, so
+    # nothing has to know this case exists to keep finding it
+    assert states[stopped] in {"failed", "unknown"}
 
 
 def test_listing_does_not_read_an_absent_notifier_as_a_failure(sandbox):

@@ -757,10 +757,12 @@ variables `LIONAGI_MCP_NOTIFY_COMMAND` and `LIONAGI_MCP_NOTIFY_TARGET` set a
 process-wide default. Delivery outcome is recorded on the job and surfaced in
 `job.status` (`notify_delivery`), so a notice that failed to send is visible
 rather than silently lost. `job.list` carries the same outcome collapsed to one
-word in `notify_delivery_state` — `delivered`, `failed`, `unknown` when an
-attempt's final result was interrupted, or `none` when no notifier was
-configured — so a run whose notice never went out is spotted while scanning
-runs, not only when one is looked up. The full `job.status.notify_delivery`
+word in `notify_delivery_state` — `delivered`, `delivered_unverified` when it
+exited zero but that command shape's zero exit doesn't prove a send, `failed`
+when the notifier reported its own failure, `unknown` when an attempt's final
+result was interrupted or it was stopped for running past its deadline, or
+`none` when no notifier was configured — so a run whose notice never went out
+is spotted while scanning runs, not only when one is looked up. The full `job.status.notify_delivery`
 object is null only for a non-terminal run.
 
 ---

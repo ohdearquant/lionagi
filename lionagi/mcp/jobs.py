@@ -2123,12 +2123,20 @@ def _notify_delivery_state(outcome: Any) -> str:
 
     ``"none"``: not terminal yet, or terminal with no notifier configured —
     silence is the documented default, never a failure. ``"delivered"``: went
-    out. ``"failed"``: every way a *configured* notifier came to nothing
-    (refused, couldn't start, timed out, non-zero exit) — one fact to a caller
+    out. ``"failed"``: every way a *configured* notifier reported its own
+    failure (refused, couldn't start, non-zero exit) — one fact to a caller
     waiting on it. ``"delivered_unverified"``: ran and exited zero, but for that
     command shape a zero exit doesn't mean the message was sent — collapsing it
     into either neighbor would report a claim this can't support. ``"unknown"``:
-    the attempt started but its final outcome could not be recorded.
+    the attempt started but its final outcome could not be established — either
+    nothing was recorded at all, or it was stopped part-way, where the notice
+    may already have gone out before the hang.
+
+    A stopped-part-way delivery is deliberately not ``"failed"``. That word
+    tells a waiting caller to send the notice again, and the one thing not
+    known here is whether it was already sent; a resend on a hang that did
+    deliver is a duplicate notice. It stays inside the sweep either way, since
+    the documented sweep acts on ``"failed"`` *or* ``"unknown"``.
     """
     if not isinstance(outcome, dict):
         return "none"
@@ -2140,6 +2148,8 @@ def _notify_delivery_state(outcome: Any) -> str:
         return "delivered"
     if not outcome.get("attempted") and not outcome.get("error"):
         return "none"
+    if outcome.get("delivery_verified") is False:
+        return "unknown"
     return "failed"
 
 
