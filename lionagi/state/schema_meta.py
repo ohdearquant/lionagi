@@ -540,9 +540,10 @@ schedules = Table(
     # Rolling-window fire cap: NULL means unlimited (see schema.sql).
     Column("rate_limit", JSON),
     Column("project", Text),
-    # Metric threshold alerts config + last breach fire; see schema.sql.
+    # Metric threshold alerts config + breach/evaluation watermarks; see schema.sql.
     Column("threshold_config", JSON),
     Column("last_alert_at", Float),
+    Column("last_evaluated_at", Float),
     # Observer self-health (github_poll poller); see schema.sql.
     Column("last_healthy_poll_at", Float),
     Column("poller_consecutive_401", Integer, nullable=False, server_default="0"),

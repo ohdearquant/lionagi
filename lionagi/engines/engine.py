@@ -383,6 +383,7 @@ class EngineRun:
         secure: bool = True,
         exempt: bool = False,
         mcp_servers: list[str] | None = None,
+        mcp_config_path: str | None = None,
         extra_prompt: str | None = None,
         khive_injection: Any = None,
     ) -> Branch:
@@ -398,6 +399,8 @@ class EngineRun:
             cwd = self.engine.agent_cwd
         if extra_prompt is None:
             extra_prompt = self.engine.agent_extra_prompt
+        if mcp_config_path is None:
+            mcp_config_path = self.engine.agent_mcp_config_path
         # Resolution order: explicit call > engine-wide > role profile. An
         # effort suffix baked into the model spec outranks prof_effort too.
         prof_model, prof_effort = role_profile_route(role)
@@ -437,6 +440,8 @@ class EngineRun:
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
+        if mcp_config_path is not None:
+            spec.mcp_config_path = mcp_config_path
         if secure and tools:
             from lionagi.agent.spec import _wire_secure_guards
 
@@ -758,6 +763,7 @@ class Engine:
         cancel_timeout_s: float = 30.0,
         agent_cwd: str | None = None,
         agent_extra_prompt: str | None = None,
+        agent_mcp_config_path: str | None = None,
         khive_injection: Any = None,
         yolo: bool = False,
     ) -> None:
@@ -766,6 +772,15 @@ class Engine:
         # make_agent(cwd=..., extra_prompt=...) still wins.
         self.agent_cwd = agent_cwd
         self.agent_extra_prompt = agent_extra_prompt
+        # Which .mcp.json this engine's agents resolve. Left unset, every agent
+        # falls through to the user-level ~/.lionagi/.mcp.json, which is a
+        # machine-global file other tools write: a run then depends on a config
+        # it never named and cannot see change underneath it, and an unrelated
+        # write to that file breaks every engine on the machine at once. Naming
+        # it also makes a bad path fail loudly at resolution instead of silently
+        # falling back to the global one. Per-call
+        # make_agent(mcp_config_path=...) still wins.
+        self.agent_mcp_config_path = agent_mcp_config_path
         # Auto-approve tool permission requests for every agent this engine
         # spawns, applied per provider from the same table the CLI and profile
         # paths use. Default False: auto-approving tool execution is not

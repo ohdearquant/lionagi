@@ -79,6 +79,17 @@ class AppSettings(BaseSettings, frozen=True):
     # the watchdog. See docs/internals/support-libs.md#config-liveness-timeouts
     LIONAGI_WORKER_LIVENESS_TIMEOUT: float = 120.0
 
+    # Maximum silence between chunks for early-streaming CLI run() turns;
+    # 0 disables. Longer than first-output because a worker is silent for the
+    # whole of any tool call it makes, so this bounds the worker's slowest
+    # single tool call rather than its slowest chunk. Measured against real
+    # transcripts, 96 distinct tool calls exceeded 300s (max 362s) and none
+    # exceeded 600s, so a 300s window would kill live work. The asymmetry
+    # favours generosity: too wide only delays noticing a genuinely hung
+    # worker, while too narrow kills a healthy one mid-tool-call and reports
+    # it as a liveness failure.
+    LIONAGI_WORKER_IDLE_TIMEOUT: float = 600.0
+
     # Antigravity print-mode subprocess cap.
     # See docs/internals/support-libs.md#config-liveness-timeouts
     LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT: float = 3600.0

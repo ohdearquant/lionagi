@@ -106,6 +106,7 @@ const SAMPLE_VALUES = {
   delta: "3m",
   detail: "boom",
   duration: "3h",
+  efforts: "low / medium / high",
   end: "11:00",
   event: "PR merge",
   field: "payload",
@@ -126,6 +127,7 @@ const SAMPLE_VALUES = {
   outcome: "completed",
   plural: "s",
   position: 1,
+  provider: "OpenAI",
   rate: "1.2",
   reported: 3,
   role: "engine",
@@ -213,19 +215,21 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  // 1094 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
+  // 1097 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
   // (library.filterHooks + 29 library.hooks.* leaves) when the shared hook
   // library and per-agent assembly landed, + history.detail token-usage stats
-  // (statTokensIn/statTokensOut, natively translated in all 16 locales)
-  // + the three schedule-detail discard-dialog strings this pass adds,
-  // - fleet.detail.engineRuns, the run-detail-only key retired with its
-  // header link (its absence from the source and from every locale is
-  // asserted directly in RunDetail.test.tsx).
+  // (statTokensIn/statTokensOut, natively translated in all 16 locales), + 5
+  // for the Operator model picker's provider groups, legacy selection, and
+  // effort-transport explanation (also natively translated in all 16).
   // autoAllow and the hooks leaves are natively translated in
   // zh/ja/ko/es/fr/de/pt-BR/ru and English-copied in the remaining 7 locales
   // — that debt is attributed in the identity-leak baseline below.
-  it("en.json has 1094 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1094);
+  //
+  // 1099 = 1097 + 3 schedules.detail leaves for the discard-changes
+  // confirmation (discardChanges, discardWarning, keepEditing), minus
+  // fleet.detail.engineRuns, which this branch removes.
+  it("en.json has 1099 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1099);
   });
 
   it.each(LOCALES.map((l) => l.code))(
