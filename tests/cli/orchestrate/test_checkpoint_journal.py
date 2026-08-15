@@ -205,3 +205,66 @@ async def test_cancellation_during_append_cannot_reuse_a_durable_sequence(
     recovered = load_checkpoint(path)
     assert set(recovered["ops"]) == {"agent-1", "agent-2"}
     assert "invalid_sequence" not in recovered.get("_recovery", {})
+
+
+async def test_journal_records_in_place_nested_context_updates(tmp_path: Path):
+    """The caller mutates the shared context workspace in place and passes the
+    same object every time. A snapshot that shared nested values with it would
+    compare equal, journal nothing, and resume with context the run had already
+    moved past.
+    """
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+
+    context: dict = {"shared": {"first": 1}, "top": "a"}
+    await writer.record("agent-1", status="completed", response="one", flow_context=context)
+
+    # In place, on the object the caller still holds — no rebinding.
+    context["shared"]["second"] = 2
+    await writer.record("agent-2", status="completed", response="two", flow_context=context)
+
+    # No compaction has run (compact_every=128), so recovery is journal replay:
+    # exactly the crash window the journal exists to cover.
+    assert writer.journal_path.read_bytes() != b""
+    recovered = load_checkpoint(path)
+    assert recovered["flow_context"] == {"shared": {"first": 1, "second": 2}, "top": "a"}
+
+
+async def test_journal_records_in_place_nested_context_updates_for_spawned_nodes(tmp_path: Path):
+    """Same defect, same fix, on the reactively-spawned path."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+
+    context: dict = {"shared": {"first": 1}}
+    await writer.record_spawned(
+        "node-1", status="completed", response="one", flow_context=context, operation="communicate"
+    )
+
+    context["shared"]["second"] = 2
+    await writer.record_spawned(
+        "node-2", status="completed", response="two", flow_context=context, operation="communicate"
+    )
+
+    recovered = load_checkpoint(path)
+    assert recovered["flow_context"] == {"shared": {"first": 1, "second": 2}}
+
+
+async def test_context_snapshot_falls_back_when_a_value_refuses_deep_copy(tmp_path: Path):
+    """A value that cannot be deep-copied must not turn journaling into a crash;
+    it still has to leave a baseline that is not aliased to the caller's object.
+    """
+    from lionagi.cli.orchestrate._checkpoint import _context_snapshot
+
+    class _NoCopy:
+        def __deepcopy__(self, memo):
+            raise TypeError("cannot deep-copy this")
+
+        def __str__(self) -> str:
+            return "opaque"
+
+    source = {"nested": {"keep": 1}, "opaque": _NoCopy()}
+    snapshot = _context_snapshot(source)
+
+    assert snapshot["nested"] == {"keep": 1}
+    assert snapshot["nested"] is not source["nested"]
+    assert snapshot["opaque"] == "opaque"

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import uuid
@@ -131,7 +132,7 @@ class CheckpointWriter:
                 await self._append_delta_locked(delta)
                 self.ops[agent_id] = entry
                 if flow_context is not None:
-                    self.flow_context = dict(flow_context)
+                    self.flow_context = _context_snapshot(flow_context)
                 await self._maybe_compact_locked()
             else:
                 self.ops[agent_id] = entry
@@ -194,7 +195,9 @@ class CheckpointWriter:
                 self.spawned.append(entry)
             if flow_context is not None:
                 self.flow_context = (
-                    dict(flow_context) if self.version == CHECKPOINT_VERSION else flow_context
+                    _context_snapshot(flow_context)
+                    if self.version == CHECKPOINT_VERSION
+                    else flow_context
                 )
             if self.version == CHECKPOINT_VERSION:
                 await self._maybe_compact_locked()
@@ -329,6 +332,24 @@ def _append_journal_record(path: Path, record: dict[str, Any]) -> int:
         stream.flush()
         os.fsync(stream.fileno())
     return len(payload)
+
+
+def _context_snapshot(current: dict[str, Any]) -> dict[str, Any]:
+    """Baseline for the next delta, insulated from later in-place mutation.
+
+    The caller holds a live reference to the shared context workspace and keeps
+    mutating it between completions. A shallow copy shares every nested value
+    with that workspace, so a nested mutation compares equal against the
+    baseline, journals no delta, and a crash before compaction resumes with
+    context the run had already moved past.
+    """
+    try:
+        return copy.deepcopy(current)
+    except Exception:
+        # Something here refuses to be deep-copied. The journal already
+        # requires this to serialize, so fall back to the serialized form
+        # rather than to a shallow copy that reintroduces the aliasing.
+        return json.loads(_serialize_json(current))
 
 
 def _context_delta(

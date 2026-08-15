@@ -10,6 +10,8 @@ connection on this long-lived server. This module opens its own request-scoped c
 from __future__ import annotations
 
 import asyncio
+import os
+import socket
 import time
 import uuid
 from typing import Any
@@ -27,7 +29,8 @@ async def _setup_run_persist(
     invocation_kind: str,
     extra_node_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from lionagi.cli.kill import current_pid_markers
+    import psutil
+
     from lionagi.cli.orchestrate._orchestration import register_branch_hook
     from lionagi.state.db import StateDB
 
@@ -39,9 +42,20 @@ async def _setup_run_persist(
     session_prog_id = str(uuid.uuid4())
     await db.create_progression(session_prog_id)
 
+    # This workflow has no OS process of its own: it runs inside the long-lived
+    # server. Recording the server's pid as the run's own would make cancelling
+    # one workflow signal the server, and with it every other run it hosts, so
+    # the host is recorded under keys the kill path does not read. Liveness
+    # still bounds the run by the host's, which is the strongest true statement
+    # available about an in-process run.
+    host_pid = os.getpid()
     node_metadata = {
         **(session_dict.get("node_metadata") or {}),
-        **current_pid_markers(),
+        "process_identity_mode": "in_process",
+        "host_pid": host_pid,
+        "host_pid_create_time": psutil.Process(host_pid).create_time(),
+        "pid_host": socket.gethostname(),
+        "pid_boot_time": psutil.boot_time(),
         **(extra_node_metadata or {}),
     }
     await db.create_session(

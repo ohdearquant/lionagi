@@ -344,13 +344,18 @@ def process_liveness(
         raw_mode = meta.get("process_identity_mode")
         if isinstance(raw_mode, str):
             identity_mode = raw_mode
-        raw_pid = meta.get("pid")
+        # An in-process run has no process of its own; it records the process
+        # hosting it under separate keys, deliberately not "pid", so that the
+        # kill path cannot mistake the host for the run's own process. The
+        # host still bounds the run's liveness: if it is gone, the run is.
+        in_process = identity_mode == "in_process"
+        raw_pid = meta.get("host_pid" if in_process else "pid")
         if raw_pid is not None:
             try:
                 pid = int(raw_pid)
             except (TypeError, ValueError):
                 pid = None
-        raw_ct = meta.get("pid_create_time")
+        raw_ct = meta.get("host_pid_create_time" if in_process else "pid_create_time")
         if isinstance(raw_ct, int | float):
             create_time = float(raw_ct)
         raw_host = meta.get("pid_host")
@@ -360,7 +365,7 @@ def process_liveness(
         if isinstance(raw_boot, int | float):
             pid_boot_time = float(raw_boot)
 
-    if identity_mode not in (None, "local"):
+    if identity_mode not in (None, "local", "in_process"):
         return None
     if pid is not None and pid_host is not None and pid_host != socket.gethostname():
         return None

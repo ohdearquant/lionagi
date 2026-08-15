@@ -101,9 +101,28 @@ async def test_flow_clone_branch_transcript_persists(patched_env):
 
     persisted = await ctx["db"].get_session(ctx["session_id"])
     assert persisted["status"] == "running"
-    assert persisted["node_metadata"]["pid"] == os.getpid()
-    assert persisted["node_metadata"]["pid_create_time"] > 0
-    assert persisted["node_metadata"]["process_identity_mode"] == "local"
+    # The hosting process is recorded, but never as this run's own pid: the
+    # kill path reads "pid" and would signal the shared server.
+    assert persisted["node_metadata"]["process_identity_mode"] == "in_process"
+    assert persisted["node_metadata"]["host_pid"] == os.getpid()
+    assert persisted["node_metadata"]["host_pid_create_time"] > 0
+    assert "pid" not in persisted["node_metadata"]
+
+    # The property that matters is not the key names but what the kill path
+    # resolves from this row: no pid means cancellation records the outcome
+    # without signalling anything.
+    from lionagi.cli.kill import _read_pid_from_entity
+
+    assert _read_pid_from_entity(persisted) is None
+    # Control: the same reader does find a pid when one is genuinely recorded,
+    # so the None above is a property of the row and not a broken reader.
+    assert _read_pid_from_entity({"node_metadata": {"pid": os.getpid()}}) == os.getpid()
+
+    # Liveness must survive the change, or an in-process run becomes reapable
+    # as a phantom the moment it stops updating its row.
+    from lionagi.studio.services.admin import process_liveness
+
+    assert process_liveness(persisted, None) is True
 
     created_branches: list[Any] = []
 
