@@ -10,6 +10,7 @@ in-memory DB, mirrors test_scheduler_budget.py's sum_schedule_spend tests).
 
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -1171,3 +1172,95 @@ def test_threshold_metric_queries_serve_only_metrics_the_scheduler_accepts():
     from lionagi.studio.scheduler.threshold import VALID_METRICS
 
     assert set(StateDB._THRESHOLD_METRIC_QUERIES) <= VALID_METRICS
+
+
+# The evaluation watermark is stamped for every outcome of a breach, not
+# only the ones that fire. A suppressed breach still means the detector ran;
+# leaving last_evaluated_at unset there makes a healthy detector read as one
+# that never evaluated. Each gate gets its own arm rather than a sample,
+# because the failure mode is one branch missing the stamp.
+
+
+def _breach_schedule(**overrides) -> dict:
+    return _minimal_schedule(
+        next_fire_at=1000.0,
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+        **overrides,
+    )
+
+
+def _stamped_watermarks(svc) -> list[float]:
+    return [
+        call.kwargs["last_evaluated_at"]
+        for call in svc.update_schedule.await_args_list
+        if "last_evaluated_at" in call.kwargs
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "gate",
+    ["overlap", "budget", "rate_limit", "max_runs", "global_slot", "admitted"],
+)
+async def test_a_breach_stamps_the_watermark_whatever_suppresses_the_fire(gate: str):
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.metric_value = AsyncMock(return_value=9.0)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _breach_schedule()
+
+    stack = []
+    if gate == "overlap":
+        engine._running[schedule["id"]] = object()
+        stack.append(patch("lionagi.studio.scheduler.engine.create_skipped_run", AsyncMock()))
+    else:
+        stack.append(
+            patch.object(engine, "_check_budget", AsyncMock(return_value=gate == "budget"))
+        )
+        if gate == "budget":
+            stack.append(patch.object(engine, "_disable_for_budget_exhausted", AsyncMock()))
+        else:
+            stack.append(
+                patch.object(
+                    engine,
+                    "_reserve_rate_limit",
+                    AsyncMock(return_value=(gate != "rate_limit", None)),
+                )
+            )
+            if gate != "rate_limit":
+                stack.append(
+                    patch.object(
+                        engine,
+                        "_reserve_max_runs_budget",
+                        AsyncMock(return_value=(gate != "max_runs", None)),
+                    )
+                )
+                if gate != "max_runs":
+                    stack.append(
+                        patch.object(
+                            engine,
+                            "_reserve_global_slot",
+                            AsyncMock(return_value=(gate != "global_slot", None)),
+                        )
+                    )
+                    if gate == "global_slot":
+                        stack.append(patch.object(engine, "_maybe_record_deferred", AsyncMock()))
+    # _tracked_fire is called, not awaited (it schedules its own task), so the
+    # double is a plain mock — an AsyncMock would leave an un-awaited coroutine.
+    stack.append(patch.object(engine, "_tracked_fire"))
+
+    with contextlib.ExitStack() as es:
+        for ctx in stack:
+            es.enter_context(ctx)
+        await engine._maybe_fire(schedule, now=1000.0)
+
+    assert _stamped_watermarks(svc) == [1000.0], (
+        f"the {gate} outcome left last_evaluated_at unset, so a detector that "
+        "did evaluate reads as one that never ran"
+    )

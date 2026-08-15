@@ -347,9 +347,11 @@ def _schedule_cadence_seconds(row: dict[str, Any], *, reference_at: float) -> fl
 
     Fixed-period triggers share the scheduler's cadence resolver. Cron is not
     fixed-period, so derive its local expected gap from two consecutive
-    occurrences after the last observed execution. This uses the same
-    timezone resolver as the scheduler and never trusts ``next_fire_at`` -- a
-    stored cursor is a promise, not execution evidence.
+    occurrences after ``reference_at`` -- the newest liveness evidence the
+    caller has, which is the last execution for most schedules and the last
+    threshold evaluation for a detector that evaluates without firing. This
+    uses the same timezone resolver as the scheduler and never trusts
+    ``next_fire_at`` -- a stored cursor is a promise, not evidence of work.
     """
     from ..scheduler.engine import resolve_schedule_cadence_seconds, resolve_schedule_timezone
 
