@@ -324,12 +324,29 @@ def test_mcp_catalog_entry_shapes_are_locked_by_hand():
     """
     live = _capture.capture_mcp()
     shapes = {tuple(keys): count for keys, count in live["catalog"]["entry_key_sets"]}
+    # The complete mapping, not a sample of it: asserting two shapes leaves the
+    # other four free to change under a refreshed baseline without anything
+    # here noticing.
+    assert shapes == {
+        # a deliberately unavailable verb says so and routes the caller; its
+        # reason is one targeted help call away, not in every read of the listing
+        ("available", "cli_path", "summary", "verb"): 26,
+        # a runnable verb with required parameters names them and nothing else
+        ("required", "summary", "verb"): 24,
+        # a runnable verb with no required parameters carries neither key
+        ("summary", "verb"): 16,
+        # spawn verbs additionally publish what their fingerprint covers
+        ("required_unenforced", "schema_fingerprint", "summary", "verb"): 2,
+        ("required", "required_unenforced", "schema_fingerprint_varies_with", "summary", "verb"): 1,
+        (
+            "required_unenforced",
+            "schema_fingerprint",
+            "schema_fingerprint_varies_with",
+            "summary",
+            "verb",
+        ): 1,
+    }
     assert sum(shapes.values()) == 70
-    # a deliberately unavailable verb says so and routes the caller; its reason
-    # is one targeted help call away rather than in every read of the listing
-    assert shapes[("available", "cli_path", "summary", "verb")] == 26
-    # a runnable verb with no required parameters carries neither key
-    assert shapes[("summary", "verb")] == 16
     # No shape pairs cli_path with an inline reason. A verb whose schema failed
     # to build is the one entry that does carry a reason inline, and it has no
     # cli_path — that path reports a defect in this server and must stay
