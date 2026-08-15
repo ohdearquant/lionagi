@@ -93,7 +93,7 @@ def test_save_instance_redacts_validation_output_and_nominated_by_on_disk(tmp_pa
     nomination rationale (can name the fix) must never reach a committed instance
     JSON — the write path redacts them, not a manual step."""
     inst = _make_instance(subject="python-framework")
-    inst.validation.gold_output = "at /Users/lion/.lionagi/swebench-work/repos/_x ok"
+    inst.validation.gold_output = "at /Users/example/.lionagi/swebench-work/repos/_x ok"
     inst.validation.null_output = "some local failure trace"
     path = save_instance(inst, tmp_path)
 
