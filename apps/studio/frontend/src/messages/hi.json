@@ -116,7 +116,8 @@
       "busyPlaceholder": "Operator is working…",
       "hint": "Enter to send · Shift+Enter for a new line",
       "send": "Send",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "autoAllow": "Auto-allow proposals"
     },
     "message": {
       "you": "You",
@@ -376,6 +377,38 @@
       "creating": "Creating…",
       "create": "Create",
       "createError": "Could not create this server."
+    },
+    "filterHooks": "Hooks",
+    "hooks": {
+      "title": "Hooks",
+      "description": "Named, reusable hooks defined once here, then assembled per agent: each agent binds hooks from this library to events (before a tool call, on prompt submit, after a response). The same assembly runs on any provider CLI.",
+      "libraryTitle": "Hook library",
+      "newHook": "New hook",
+      "emptyLibrary": "No hooks defined yet. Create one to make it assemblable by every agent.",
+      "emptyLibraryHint": "Define hooks in the library first — attachments bind library hooks to events.",
+      "operatorTitle": "Operator assembly",
+      "operatorDescription": "Hooks the Studio Operator runs. The Operator inherits no user or project settings, so hooks attached here are the only ones its turns load.",
+      "enabled": "Enabled",
+      "save": "Save",
+      "saving": "Saving…",
+      "savedNotice": "Saved — applies from the next turn.",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "fieldName": "Name",
+      "fieldDescription": "Description",
+      "fieldCommand": "Command",
+      "fieldTimeout": "Timeout (seconds)",
+      "nameRequired": "A hook needs a name.",
+      "timeoutInvalid": "Timeout must be a number.",
+      "noAttachments": "No hooks attached.",
+      "attachmentHook": "Hook",
+      "attachmentOn": "on",
+      "attachmentEvent": "Event",
+      "attachmentMatcher": "Matcher",
+      "matcherPlaceholder": "matcher (optional)",
+      "removeAttachment": "Remove attachment",
+      "addAttachment": "Attach hook",
+      "agentSectionTitle": "Hooks"
     }
   },
   "history": {
@@ -445,6 +478,8 @@
       "statMessages": "मैसेज",
       "statToolCalls": "टूल कॉल",
       "statErrors": "त्रुटियाँ",
+      "statTokensIn": "इनपुट टोकन",
+      "statTokensOut": "आउटपुट टोकन",
       "statTopic": "विषय",
       "statPlay": "प्ले",
       "statPlaybook": "वर्कफ़्लो",

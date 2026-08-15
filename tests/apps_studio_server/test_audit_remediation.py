@@ -712,7 +712,10 @@ class TestScheduleArgvInjectionRouterValidation:
     def test_create_action_model_flag_returns_400(self, monkeypatch):
         """POST action_model='--bypass' → HTTP 400."""
 
-        async def _reject(_data):
+        # **_kwargs absorbs the lifecycle identity (actor, request_cwd) the
+        # route passes; this test is about the ValueError -> 400 mapping, not
+        # about which arguments carry the caller's identity.
+        async def _reject(_data, **_kwargs):
             raise ValueError("action_model '--bypass' starts with '-' and would inject a CLI flag")
 
         client = self._client_post(monkeypatch, _reject)
@@ -731,7 +734,10 @@ class TestScheduleArgvInjectionRouterValidation:
     def test_create_extra_args_flag_returns_400(self, monkeypatch):
         """POST action_extra_args=['--bypass'] → HTTP 400."""
 
-        async def _reject(_data):
+        # **_kwargs absorbs the lifecycle identity (actor, request_cwd) the
+        # route passes; this test is about the ValueError -> 400 mapping, not
+        # about which arguments carry the caller's identity.
+        async def _reject(_data, **_kwargs):
             raise ValueError(
                 "action_extra_args element '--bypass' starts with '-' and would inject a CLI flag"
             )

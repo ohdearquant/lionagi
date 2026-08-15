@@ -384,7 +384,13 @@ def _start_local(
     if dev_mode:
         # Dev mode: hot-reload Vite dev server + uvicorn side-by-side.
         # Vite proxies /api → uvicorn (configured in vite.config.mts).
-        launched = _launch_vite_dev(frontend_dir, frontend_port, host=host)
+        launched = _launch_vite_dev(
+            frontend_dir,
+            frontend_port,
+            host=host,
+            api_host=host,
+            api_port=port,
+        )
         if launched:
             frontend_proc, frontend_url = launched
             if frontend_url:
@@ -707,6 +713,8 @@ def _launch_vite_dev(
     frontend_port: int,
     *,
     host: str = "127.0.0.1",
+    api_host: str | None = None,
+    api_port: int | None = None,
 ) -> tuple[subprocess.Popen, str | None] | None:
     """Spawn the Vite dev server and resolve the URL it actually bound to.
 
@@ -716,6 +724,11 @@ def _launch_vite_dev(
     only when the process itself failed to spawn.
     """
     env = {**os.environ, "PORT": str(frontend_port)}
+    if api_host is not None and api_port is not None:
+        # An operator-supplied target is an intentional escape hatch and wins
+        # over the host/port selected by this CLI invocation.
+        url_host = f"[{api_host}]" if ":" in api_host and not api_host.startswith("[") else api_host
+        env.setdefault("STUDIO_API_URL", f"http://{url_host}:{api_port}")
     try:
         proc = subprocess.Popen(  # noqa: S603
             _vite_dev_argv(frontend_port, host),  # noqa: S607
@@ -741,6 +754,7 @@ def _launch_vite_dev(
 
 
 _warned_api_suffix = False
+_SCHEDULE_API_TIMEOUT_SECONDS = 10.0
 
 
 def _base_url() -> str:
@@ -765,6 +779,22 @@ def _base_url() -> str:
     return f"http://{host}:{port}"
 
 
+def _is_schedule_request_timeout(exc: OSError) -> bool:
+    """Return whether urllib stopped because the request exceeded its deadline."""
+    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+
+
+def _schedule_request_timeout_message(
+    *, method: str, url: str, elapsed_seconds: float, limit_seconds: float
+) -> str:
+    """Describe a timeout without claiming the mutation did not land."""
+    return (
+        f"Studio request {method} {url} timed out "
+        f"(elapsed {elapsed_seconds:.1f}s; limit {limit_seconds:g}s). "
+        "The request may still have completed; verify schedule state before retrying."
+    )
+
+
 def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
     """Minimal HTTP helper — no extra deps beyond stdlib urllib."""
     import getpass
@@ -785,14 +815,27 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
         method=method,
         headers=headers,
     )
+    started_at = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=_SCHEDULE_API_TIMEOUT_SECONDS) as resp:  # noqa: S310
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         msg = exc.read().decode(errors="replace")
         print(f"Error {exc.code}: {msg}", file=sys.stderr)
         return None
     except OSError as exc:
+        if _is_schedule_request_timeout(exc):
+            elapsed_seconds = max(0.0, time.monotonic() - started_at)
+            print(
+                _schedule_request_timeout_message(
+                    method=method,
+                    url=url,
+                    elapsed_seconds=elapsed_seconds,
+                    limit_seconds=_SCHEDULE_API_TIMEOUT_SECONDS,
+                ),
+                file=sys.stderr,
+            )
+            return None
         print(
             f"Cannot reach Studio at {_base_url()} — is `li studio` running? ({exc})",
             file=sys.stderr,

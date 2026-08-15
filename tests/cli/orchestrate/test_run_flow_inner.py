@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -413,6 +414,59 @@ async def test_run_flow_inner_max_ops_caps_planning_request(
     assert "BUDGET: at most 2 ops total" in planner.calls[0]["guidance"]
     assert env.session.run_dag_calls == []
     fake_runtime.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_flow_inner_zero_spawn_capacity_withholds_spawn_tool(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, fake_runtime
+):
+    planner = _Planner([_assignments()], expected_max_tasks=2)
+    grants: list[bool] = []
+
+    async def capture_spawn_grant(env, *, agent_id, grant_spawn, **kwargs):
+        grants.append(grant_spawn)
+        branch = Branch(name=agent_id)
+        env.session.include_branches(branch)
+        return branch, "fake/model", None, False
+
+    monkeypatch.setattr(flow_module, "plan", planner)
+    monkeypatch.setattr(flow_module, "build_worker_branch", capture_spawn_grant)
+    env = _env(tmp_path, ["research output", "implementation output"])
+
+    await _run_flow_inner(
+        "codex/gpt-5.5",
+        "characterize the flow",
+        env=env,
+        max_ops=2,
+        reactive_spec="all",
+    )
+
+    assert grants == [False, False]
+    assert env.session.run_dag_calls[0][1]["max_spawn"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_flow_inner_records_effective_spawn_capacity(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, fake_runtime
+):
+    planner = _Planner([_assignments()], expected_max_tasks=2)
+    monkeypatch.setattr(flow_module, "plan", planner)
+    env = _env(tmp_path, ["research output", "implementation output"])
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    await _run_flow_inner(
+        "codex/gpt-5.5",
+        "characterize the flow",
+        env=env,
+        max_ops=2,
+        reactive_spec="all",
+        checkpoint_config={"model_spec": "codex/gpt-5.5"},
+    )
+
+    checkpoint = json.loads(env.run.checkpoint_path.read_text())
+    assert checkpoint["max_spawn"] == 0
+    assert env._finalize_extras["reactive"] is True
+    assert env._finalize_extras["max_spawn"] == 0
 
 
 @pytest.mark.asyncio

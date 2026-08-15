@@ -116,7 +116,8 @@
       "busyPlaceholder": "Operator is working…",
       "hint": "Enter to send · Shift+Enter for a new line",
       "send": "Send",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "autoAllow": "Vorschläge automatisch erlauben"
     },
     "message": {
       "you": "You",
@@ -376,6 +377,38 @@
       "creating": "Creating…",
       "create": "Create",
       "createError": "Could not create this server."
+    },
+    "filterHooks": "Hooks",
+    "hooks": {
+      "title": "Hooks",
+      "description": "Benannte, wiederverwendbare Hooks — hier einmal definiert, dann pro Agent zusammengesetzt: Jeder Agent bindet Hooks aus dieser Bibliothek an Ereignisse (vor einem Tool-Aufruf, beim Absenden des Prompts, nach einer Antwort). Dieselbe Zusammenstellung läuft auf jedem Provider-CLI.",
+      "libraryTitle": "Hook-Bibliothek",
+      "newHook": "Neuer Hook",
+      "emptyLibrary": "Noch keine Hooks definiert. Lege einen an, damit ihn jeder Agent einbinden kann.",
+      "emptyLibraryHint": "Definiere zuerst Hooks in der Bibliothek — Anbindungen verknüpfen Bibliotheks-Hooks mit Ereignissen.",
+      "operatorTitle": "Operator-Zusammenstellung",
+      "operatorDescription": "Hooks, die der Studio-Operator ausführt. Der Operator erbt keine Benutzer- oder Projekteinstellungen; nur die hier angebundenen Hooks werden geladen.",
+      "enabled": "Aktiviert",
+      "save": "Speichern",
+      "saving": "Speichern…",
+      "savedNotice": "Gespeichert — gilt ab dem nächsten Zug.",
+      "cancel": "Abbrechen",
+      "delete": "Löschen",
+      "fieldName": "Name",
+      "fieldDescription": "Beschreibung",
+      "fieldCommand": "Befehl",
+      "fieldTimeout": "Timeout (Sekunden)",
+      "nameRequired": "Ein Hook braucht einen Namen.",
+      "timeoutInvalid": "Timeout muss eine Zahl sein.",
+      "noAttachments": "Keine Hooks angebunden.",
+      "attachmentHook": "Hook",
+      "attachmentOn": "bei",
+      "attachmentEvent": "Ereignis",
+      "attachmentMatcher": "Matcher",
+      "matcherPlaceholder": "Matcher (optional)",
+      "removeAttachment": "Anbindung entfernen",
+      "addAttachment": "Hook anbinden",
+      "agentSectionTitle": "Hooks"
     }
   },
   "history": {
@@ -445,6 +478,8 @@
       "statMessages": "Nachrichten",
       "statToolCalls": "Toolaufrufe",
       "statErrors": "Fehler",
+      "statTokensIn": "Eingabe-Tokens",
+      "statTokensOut": "Ausgabe-Tokens",
       "statTopic": "Thema",
       "statPlay": "Play",
       "statPlaybook": "Workflow",

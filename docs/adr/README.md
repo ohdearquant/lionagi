@@ -259,6 +259,8 @@ its area block.
 - 0084-0085 — unused (intentional gaps)
 - [ADR-0113](ADR-0113-execution-graph-as-primary-run-canvas.md) — The execution graph as the
   primary run canvas (sequential number; see Numbering)
+- [ADR-0116](ADR-0116-editor-client-capability-expansion.md) — Editor client capability
+  expansion; revises ADR-0082 D2 (sequential number; see Numbering)
 
 ### governance (0086-0089)
 

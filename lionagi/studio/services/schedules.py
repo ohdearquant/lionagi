@@ -365,14 +365,38 @@ _HEALTH_FAILING_THRESHOLD = 1
 _HEALTH_FAILING_OUTCOMES = ("failed", "timed_out")
 
 
-def _schedule_cadence_seconds(row: dict[str, Any]) -> float | None:
-    # Shares the scheduler's own cadence resolution rather than retyping its
-    # fallback chain -- cron/at have no fixed period and resolve to None,
-    # which skips overdue detection for them rather than guessing from
-    # next_fire_at.
-    from ..scheduler.engine import resolve_schedule_cadence_seconds
+def _schedule_cadence_seconds(row: dict[str, Any], *, reference_at: float) -> float | None:
+    """Return the schedule's expected occurrence gap at ``reference_at``.
 
-    return resolve_schedule_cadence_seconds(row)
+    Fixed-period triggers share the scheduler's cadence resolver. Cron is not
+    fixed-period, so derive its local expected gap from two consecutive
+    occurrences after the last observed execution. This uses the same
+    timezone resolver as the scheduler and never trusts ``next_fire_at`` -- a
+    stored cursor is a promise, not execution evidence.
+    """
+    from ..scheduler.engine import resolve_schedule_cadence_seconds, resolve_schedule_timezone
+
+    cadence = resolve_schedule_cadence_seconds(row)
+    if cadence is not None or row.get("trigger_type") != "cron":
+        return cadence
+
+    expr = row.get("cron_expr")
+    if not expr:
+        return None
+    try:
+        from croniter import croniter
+
+        start = datetime.fromtimestamp(reference_at, tz=resolve_schedule_timezone(row).tzinfo)
+        occurrences = croniter(expr, start_time=start)
+        first = occurrences.get_next(float)
+        second = occurrences.get_next(float)
+        gap = second - first
+        return gap if math.isfinite(gap) and gap > 0 else None
+    except Exception:
+        # Creation/update validation prevents this for current rows. Preserve
+        # list/detail availability for malformed legacy rows instead of making
+        # a read-only health badge take the whole schedules endpoint down.
+        return None
 
 
 def compute_schedule_health(
@@ -415,7 +439,7 @@ def compute_schedule_health(
             "never-fired" if last_recorded_at is None and last_fired_at is None else "no-evidence"
         )
     else:
-        cadence_seconds = _schedule_cadence_seconds(row)
+        cadence_seconds = _schedule_cadence_seconds(row, reference_at=last_executed_at)
         overdue = (
             cadence_seconds is not None
             and cadence_seconds > 0

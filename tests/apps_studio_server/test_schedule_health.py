@@ -314,10 +314,19 @@ async def test_disabled_takes_precedence_over_any_run_history(temp_db_path):
     assert detail["health_state"] == "disabled"
 
 
-async def test_cron_trigger_has_no_cadence_so_never_reports_overdue(temp_db_path):
+async def test_stopped_cron_schedule_reports_overdue(temp_db_path):
     sid = await _make_schedule(trigger_type="cron", cron_expr="0 18 * * *", interval_sec=None)
     now = time.time()
     await _seed_run(sid, status="completed", fired_at=now - 500_000)
+
+    row = await _list_row(sid)
+    assert row["health_state"] == "overdue"
+
+
+async def test_cron_schedule_firing_on_cadence_reports_healthy(temp_db_path):
+    sid = await _make_schedule(trigger_type="cron", cron_expr="*/5 * * * *", interval_sec=None)
+    now = time.time()
+    await _seed_run(sid, status="completed", fired_at=now - 60)
 
     row = await _list_row(sid)
     assert row["health_state"] == "healthy"
