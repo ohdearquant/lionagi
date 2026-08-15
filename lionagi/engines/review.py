@@ -289,6 +289,33 @@ def _cap_approvals_on_missing_coverage(
     return capped
 
 
+def _cap_verdict_text(text: str, failed: list[tuple[str, str]]) -> str:
+    """Front the returned verdict text with a refusal when a dimension never ran.
+
+    Capping the emitted events only reaches a ReviewVerdict that synthesis
+    actually issued. When it issues none, this string is the whole verdict as
+    far as the caller is concerned, so the same invariant has to hold here:
+    otherwise the channel that lacks it becomes the way an approval over
+    missing coverage gets out. The synthesis output is kept underneath as
+    quoted context so nothing is lost, and so a decision line inside it can no
+    longer be read as this run's decision.
+    """
+    if not failed:
+        return text
+    blocking = "".join(f"- {name} dimension did not run ({err})\n" for name, err in failed)
+    quoted = "\n".join(f"> {line}" for line in text.splitlines()) if text else "> (no output)"
+    return (
+        "DECISION: REQUEST-CHANGES\n"
+        f"BLOCKING:\n{blocking}"
+        "RATIONALE: the dimensions listed above did not execute. They produced "
+        "no findings because they never ran, not because the artifact is clean "
+        "along them, so their silence is missing coverage and this run cannot "
+        "issue an approval.\n\n"
+        "--- synthesis output below is context, not this run's decision ---\n"
+        f"{quoted}"
+    )
+
+
 def _verdict_instruction(
     artifact: str,
     dimensions: tuple[str, ...],
@@ -583,6 +610,10 @@ class ReviewEngine(Engine):
         # but an instruction is steering, not a gate: the model can still emit
         # APPROVE. Enforce it structurally — a run in which a dimension never
         # executed cannot produce an approval, whatever the synthesis text says.
-        if failed and _cap_approvals_on_missing_coverage(run.by_type(ReviewVerdict), failed):
+        # Both channels carry the cap: the emitted verdict, and the returned
+        # text, which is the only verdict a caller sees when synthesis emits
+        # nothing structured at all.
+        if failed:
+            _cap_approvals_on_missing_coverage(run.by_type(ReviewVerdict), failed)
             run.notify("verdict_capped", failed=", ".join(name for name, _ in failed))
-        return str(res) if res is not None else ""
+        return _cap_verdict_text(str(res) if res is not None else "", failed or [])

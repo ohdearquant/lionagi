@@ -273,6 +273,64 @@ def test_an_approve_emitted_over_a_dead_dimension_is_structurally_capped() -> No
     assert clean_approve.verdict == "APPROVE"
 
 
+def test_the_returned_verdict_text_is_capped_even_with_no_verdict_to_rewrite() -> None:
+    """Rewriting emitted verdicts reaches nothing when synthesis emits none.
+
+    The returned string is then the entire verdict the caller sees, so it
+    carries the same refusal; the synthesis output survives as quoted context
+    where its own decision line cannot be read as the run's decision.
+    """
+    from lionagi.engines.review import _cap_verdict_text
+
+    failed = [("security", "McpError")]
+    capped = _cap_verdict_text("DECISION: APPROVE\nAll dimensions look clean.", failed)
+
+    assert capped.startswith("DECISION: REQUEST-CHANGES\n")
+    assert "- security dimension did not run (McpError)" in capped
+    # The synthesis decision line survives only as quoted context.
+    assert "> DECISION: APPROVE" in capped
+    assert not any(line.startswith("DECISION: APPROVE") for line in capped.splitlines())
+
+    # Nothing failed -> the synthesis text is returned untouched.
+    assert _cap_verdict_text("DECISION: APPROVE", []) == "DECISION: APPROVE"
+
+
+async def test_a_raw_approve_with_no_emitted_verdict_does_not_yield_approval() -> None:
+    """End-to-end on _verdict: synthesis emits no ReviewVerdict and returns a
+    bare approval. The event cap has nothing to rewrite, so the refusal has to
+    come from the returned text or the run approves on a dimension that never
+    executed."""
+
+    class _RawApproveAgent:
+        async def operate(self, instruction: str):
+            return "DECISION: APPROVE"
+
+    class _RunWithNoVerdictEmitted:
+        def __init__(self) -> None:
+            self.notices: list[tuple[str, dict]] = []
+
+        def by_type(self, event_type):
+            return []
+
+        def notify(self, kind: str, **data) -> None:
+            self.notices.append((kind, data))
+
+        async def make_agent(self, role: str, **kwargs):
+            return _RawApproveAgent()
+
+    engine = ReviewEngine()
+    run = _RunWithNoVerdictEmitted()
+
+    result = await engine._verdict(
+        run, "artifact.py", ("correctness", "security"), [("security", "McpError")]
+    )
+
+    assert not result.startswith("DECISION: APPROVE")
+    assert result.startswith("DECISION: REQUEST-CHANGES")
+    assert "security dimension did not run (McpError)" in result
+    assert any(kind == "verdict_capped" for kind, _ in run.notices)
+
+
 def test_verdict_prompt_refuses_to_present_a_dead_dimension_as_reviewed() -> None:
     """A dimension whose reviewer died must not be listed as reviewed.
 
