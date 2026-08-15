@@ -207,26 +207,72 @@ direction; per-entity toggles for audit columns), registered in one central regi
 Everything else — table objects, insert/update builders, update allow-lists, the DDL snapshot,
 migration plans — derives from the registry. No other module may declare a table.
 
-**D2 — emission target is SQLAlchemy `MetaData`, not DDL strings.** The specs generate the
-`Table` objects that `schema_meta.py` hand-writes today, into one `MetaData`. This preserves
-`metadata.create_all`, dialect handling, and the proven `to_metadata`-driven rebuild machinery,
-and it is the point where this design deliberately diverges from the reference implementation's
-Postgres-DDL-text emitter. It also inherits correct creation ordering for free:
-`create_all` sorts tables topologically by foreign key. That matters more here than it does in
-the reference, because SQLite cannot add a foreign key with `ALTER TABLE` at all — FKs must be
-inline in `CREATE TABLE`, so dependency-ordered creation is mandatory rather than a nicety. The
-implementation studied applies a topological sort on its initial-create path but emits per-table
-operations in plain alphabetical order on its diff path, which is one of the places this design
-must not follow. `schema.sql` becomes a *generated* artifact emitted from the same
-specs, retained for the compatibility tests that build old-style databases; it stops being an
-authored authority. `ALL_TABLES` in the parity test is replaced by the registry's own table
-list, so the test population can no longer drift from the package.
+**D2 — structural emission targets SQLAlchemy `MetaData`; everything else is an explicit
+operation spec.** The specs generate the `Table` objects that `schema_meta.py` hand-writes today,
+into one `MetaData`. This preserves `metadata.create_all`, dialect handling, and the
+`to_metadata`-driven rebuild machinery, and it is the point where this design deliberately
+diverges from the reference implementation's Postgres-DDL-text emitter. Compiling the current
+metadata for both dialects confirms that partial index predicates, named check constraints and
+server defaults survive the round trip, so the structural half is sound.
 
-**D3 — parity is proven on physical semantics, not names.** The Phase 1 gate compares generated
-against current for column types, nullability, defaults, primary and foreign keys, unique and
-check constraints, and the full index set including key direction — not the name sets the
-current test compares. The 15 descending indexes and the 86-vs-82 index gap are resolved by an
-explicit decision per index, recorded, before either authority is deleted.
+The boundary matters more than the target. `MetaData` describes the shape a table should have;
+it cannot describe how a store gets there. These are explicitly outside it and become frozen
+operation specs with per-dialect implementations, not things inferred from a desired shape:
+
+- connection configuration and PRAGMAs, which `state/engine.py` owns today;
+- seed and reference data, which `schema.sql` carries and `state/db.py` repeats outside
+  `MetaData`;
+- ordered data transformations. The existing attention migration installs a placeholder default
+  and then derives real values from history, and a desired-minus-live structural diff cannot
+  produce that;
+- trigger bodies.
+
+Two corrections to the reasoning that first motivated this choice, both from running it:
+
+- `to_metadata()` is not a free primitive. The schedule-run rebuild already avoids the isolated
+  form because cross-table foreign keys do not resolve in it, so a rebuild must be specified
+  against the full metadata rather than a detached copy.
+- Dependency-ordered creation is *useful, not mandatory*. An earlier draft justified `MetaData`
+  partly on SQLite requiring parents before children. That is false: creating a child table
+  before its referenced parent succeeds with `PRAGMA foreign_keys=ON`, a valid row inserts, and
+  `foreign_key_check` returns empty, while an invalid row is still rejected. SQLite requires the
+  foreign key to be *in the table definition*, which is the real constraint, and it is why
+  `ALTER TABLE` cannot add one and why the rebuild pattern exists. Topological ordering remains
+  the right default; it is not what decides this call.
+
+`schema.sql` becomes a *generated* artifact emitted from the same specs plus the bootstrap
+operation specs, retained for the compatibility tests that build old-style databases; it stops
+being an authored authority. `ALL_TABLES` in the parity test is replaced by the registry's own
+table list, so the test population can no longer drift from the package.
+
+**D3 — parity is proven on physical semantics, through dialect catalog adapters.** The gate
+compares column types, nullability, defaults, primary and foreign keys, unique and check
+constraints, and the full index set including key direction — not the name sets the current test
+compares. The 15 descending indexes and the 86-vs-82 index gap are resolved by an explicit
+decision per index, recorded, before either authority is deleted.
+
+Stating the comparison is not enough, because the obvious way to implement it silently cannot
+make two of those distinctions. Against the installed SQLAlchemy, generic SQLite reflection
+returns *identical* `get_indexes()` output for an ascending and a descending index, while
+`PRAGMA index_xinfo` differs in its direction bit; and `UUID`, `JSONB` and
+`TIMESTAMP WITH TIME ZONE` columns all reflect as `NUMERIC`. A gate built on generic inspection
+would therefore report equality across exactly the changes it exists to catch. Partial predicates
+and named check text do survive the same reflection, so the defect is field-specific rather than
+a reason to distrust reflection wholesale.
+
+So the gate is defined as a frozen `PhysicalSchema` populated by per-dialect catalog adapters,
+and three separate comparisons:
+
+1. declared specs against the generated SQLAlchemy objects;
+2. generated objects against create-and-introspect results, through the dialect adapter;
+3. the canonical `PhysicalSchema` serialization across fresh processes.
+
+The SQLite adapter must read declared type text and effective affinity, index direction from
+`PRAGMA index_xinfo`, partial predicates, constraint names and expressions, foreign key actions,
+and normalized server defaults. It may use generic `Inspector` fields only where those are shown
+sufficient for that field. PostgreSQL supplies the same inventory from its live catalog. The
+cross-process comparison (3) is over the canonical serialization, not compiled DDL bytes:
+formatting is not a physical semantic.
 
 **D4 — generated statement builders replace hand-built SQL for row CRUD.** Insert column lists,
 update SET clauses, and update allow-lists derive from the spec's field set. The 22 identifier
@@ -257,10 +303,25 @@ reference's two-phase execution model (transactional operations, then `CONCURREN
 `VALIDATE` outside the transaction) collapses on SQLite, which serializes all DDL and supports
 neither; the port keeps the phase field for the PostgreSQL leg and treats rebuild-versus-alter
 as the axis that actually carries risk here.
-`MIGRATION_COLUMNS` is retired. An inspection failure blocks writable open instead of being
-swallowed; the version/hash row advances only after post-apply introspection confirms the
-resulting shape. The engine lands in observe-only mode first (classify and report, apply
-nothing) so that unknown deployed shapes surface before any of them is migrated.
+`MIGRATION_COLUMNS` is retired. The version/hash row advances only after post-apply introspection
+confirms the resulting shape. The engine lands in observe-only mode first (classify and report,
+apply nothing) so that unknown deployed shapes surface before any of them is migrated.
+
+Failing closed is a three-state contract, not a refusal. "Blocks writable open" on its own turns
+a transient catalog failure into an application lockout, and the read-only recovery path that
+exists today is SQLite-only by construction, so a dual-dialect design cannot inherit it:
+
+- **verified shape** — writable open;
+- **inspection failure or unknown shape** — quarantined: read-only inspection and export, on
+  both dialects;
+- **explicit offline repair** — back up, apply an identified plan, re-introspect.
+
+No flag turns an unverified store writable; a `force` escape hatch would rebuild the fail-open
+path this decision exists to close. Because observe-only runs over *successful* inspections
+cannot exercise the failure branch, the guard is proven by fault injection at the table, column,
+constraint and index inspection boundaries, asserting that writable open fails before any DDL or
+version write, that read and export still succeed on both dialects, and that removing the
+injected fault reaches the same plan.
 
 **D6 — DDL issuance and store access become the state layer's exclusive right.** The six
 operator-store tables and the 7 studio-service re-declarations register in the registry (the
@@ -304,13 +365,20 @@ for execution owning strings spelled `run.`, and it rules out relocating the mir
 codes into `SessionReasons`, since they too are spelled `run.` and the strings are persisted in
 `status_reason_code` and cannot change.
 
-*Fix the word that is actually wrong.* These are outcome codes, not reasons — `RunReasons`' own
-docstring already calls them "Outcomes of session execution". Rename the suffix across all
-seven: `RunOutcomes`, `SessionOutcomes`, `PlayOutcomes`, `ShowOutcomes`, `ScheduleOutcomes`,
-`TeamOutcomes`, `DispatchOutcomes`. Every string constant stays byte-identical, so no persisted
-value moves; the change is mechanical across 497 occurrences in 58 files (176 in the package,
-321 in tests), and none of these names is exported from any package `__init__`, so the public
-surface is untouched.
+*Do not rename the suffix.* An earlier draft proposed renaming all seven to `*Outcomes`, on the
+strength of `RunReasons`' own docstring calling them "Outcomes of session execution". That is
+wrong, and it is worth recording why rather than quietly dropping it. The module states its code
+grammar as `<domain>.<status_or_outcome>.<cause>`, so an outcome is one *segment* of a code and
+not the category. `SessionReasons` holds health-derived causes and a resume attribution, and
+`PlayReasons` documents itself as holding lifecycle reasons. The physical columns are named
+`status_reason_code` and the public validator reports `reason_code`. Renaming would trade one
+mixed vocabulary for a new contradiction, across 497 sites, for no behavior change. The names
+stay `*Reasons`; if the vocabulary is ever unified, a neutral `*Codes` is the candidate and it
+belongs to its own decision, not to this one.
+
+The `run.` prefix likewise stays grouped despite there being no `runs` table. Producer-domain
+code groups and table-backed entity types are different axes, and the class owns persisted
+strings spelled `run.` whatever the Python name is.
 
 *Move the entity vocabulary to the registry.* `VALID_ENTITY_TYPES` and `ENTITY_TYPE_TO_TABLE`
 are the fourth and fifth hand-maintained restatements of "which entities exist and what table
@@ -344,21 +412,36 @@ demonstrates in this repository.
 
 Each phase lands behavior-preserving, gated by equality proofs, and independently valuable.
 
-- **Phase 0 (immediately, independent of the engine):** D7 mirror moves; D8 reasons split and
-  rename. Small mechanical PRs.
-- **Phase 1:** entity specs + registry + generated `MetaData`, in shadow mode. The D3 gate pins
-  the generated schema against today's, on physical semantics, for both dialects, before any
+The ordering constraint that decides this list: the instrument that reads *deployed* shapes has
+to exist before anything generated depends on being right about them. An earlier draft put
+generated writers before introspection, which is backwards. `create_all` does not add a newly
+declared index to a table that already exists — the separate index ledger exists precisely for
+that — so a schema change made in the writer phase would still have to be applied to the spec and
+the old migration ledger together, and a missed edit points a generated writer at a shape the
+upgraded store does not have.
+
+- **Phase 0 (immediately, independent of the engine):** D7 mirror moves; the D8 entity-vocabulary
+  move. Small mechanical PRs. No class rename.
+- **Phase 1:** entity specs + registry + generated `MetaData`, plus explicit storage codecs and
+  the canonical serialization, in shadow mode. The D3 gate pins the generated schema against
+  today's, on physical semantics, for both dialects, through the catalog adapters, before any
   hand-written body is deleted. The `DESC`/index-count divergences are decided here. The gate
-  also pins determinism: generating twice in separate processes must produce byte-identical
-  output, since the whole design rests on a schema hash and generated migrations.
-- **Phase 2:** generated statement builders for insert/update; retire the interpolation sites
-  and `_*_COLUMNS`; validated identifier types in `LifecyclePolicy`. Equality proofs pin
-  generated SQL against current SQL on fixtures.
-- **Phase 3:** introspect-and-diff engine in observe-only mode; then fail-closed application;
-  retire `MIGRATION_COLUMNS`; the four bespoke rebuilds become instances of the generated
+  also pins determinism: generating twice in separate processes must produce an identical
+  canonical serialization, since the whole design rests on a schema hash and generated migrations.
+- **Phase 2:** dialect introspection, the observe-only structural diff, and an explicit authored
+  data-migration catalog — exercised against legacy fixtures *while every old authority still
+  exists*. This is the phase that discovers what is actually deployed, and it applies nothing.
+  The data-migration catalog is authored rather than derived, because desired-minus-live cannot
+  produce a placeholder-then-backfill or a one-time semantic correction.
+- **Phase 3:** generated statement builders for insert/update, in shadow/equality mode, with a
+  generated dict-compatibility adapter; retire the interpolation sites and `_*_COLUMNS`;
+  validated identifier types in `LifecyclePolicy`. Equality proofs pin generated SQL against
+  current SQL on fixtures.
+- **Phase 4:** migration application under the three-state contract; retire `MIGRATION_COLUMNS`;
+  delete the old authorities; the four bespoke rebuilds become instances of the generated
   rebuild, ported in risk order (generated schedules first, literal sessions/invocations next,
   schedule-runs last because it carries backups, indexes and triggers).
-- **Phase 4:** fold operator-store and studio-service tables into the registry and route the 73
+- **Phase 5:** fold operator-store and studio-service tables into the registry and route the 73
   direct connections through the shared executor (largest blast radius; last). Operator's atomic
   CAS SQL is preserved verbatim and moved, never rewritten in the same change as its schema.
 
@@ -404,13 +487,24 @@ concurrency, serialization and retry underneath both.
 and no reader is checked against the schema. It is the same root cause as P1: nothing connects
 the declared schema to the code that uses it.
 
-A registry makes the fix nearly free to *offer*, since the spec already knows each field's name
-and type, so a generated row decoder falls out of it. Converting the read surface is a different
-matter: it touches every caller in `cli/` and `studio/`, and it is the kind of change that, bundled
-in here, would make the equality gates unprovable. This ADR therefore makes typed decoding
-available and uses it on the generated CRUD paths (D4). Migrating the existing read surface is
-explicitly out of scope and needs its own decision, taken after Phase 2 has shown what the
-generated decoders actually look like.
+A decoder does *not* fall out of the physical type, and an earlier draft claimed it nearly did.
+The physical column cannot distinguish a JSON document stored as `JSON` from one stored as
+`TEXT`, or a generic `BLOB` from a packed finite-float vector: `messages.embedding` is
+`LargeBinary` and `progressions.collection` is `Text`, while their logical values need float32
+packing and JSON serialization respectively, and the existing row adaptation already does
+tolerant JSON decoding over a named field set. The same gap runs the other way, on writes:
+generated statements have to preserve bind types, domain defaults, validation and value
+transformations that the hand-written builders currently perform *around* the SQL.
+
+So codecs are not a read-side convenience to be deferred with the read surface. A spec names a
+logical type, a physical type per dialect, a bind codec, a result codec and a validation policy,
+and generated CRUD may not infer any of those from the SQLAlchemy type alone. That lands in
+Phase 1, with a generated dict-compatibility adapter in Phase 3 so existing callers keep the
+shape they read today.
+
+What stays out of scope is migrating the 51 public read signatures to typed returns. That
+touches every caller in `cli/` and `studio/`, and bundled in here it would make the equality
+gates unprovable. It needs its own decision, taken once the generated decoders exist.
 
 ## What this deletes
 
@@ -448,8 +542,8 @@ carrying persistence total 2,387 lines, of which `projects.py`, `shows.py` and `
 while `run_tags`, `approvals` and `attention` own real domain logic and only their DDL and
 connection handling go. Add the 73 direct store connections collapsing to one executor, five
 duplicated session-by-id lookups, eight repeated frame inserts, six repeated admin-event inserts,
-and two separate implementations of the same lock-read-append ledger. That work is Phase 4, and
-sizing it needs the caller-by-caller pass Phase 4 starts with.
+and two separate implementations of the same lock-read-append ledger. That work is Phase 5, and
+sizing it needs the caller-by-caller pass Phase 5 starts with.
 
 ## Consequences
 
@@ -462,8 +556,8 @@ sizing it needs the caller-by-caller pass Phase 4 starts with.
 - Cost: a multi-phase epic touching the widest-blast-radius files in the repository. The
   equality-proof gates are what make it safe; skipping them to move faster re-creates the
   problem this ADR exists to end.
-- Risk concentrations: the data-preserving rebuild generator (Phase 3) and the operator-store
-  fold (Phase 4). Both are sequenced last deliberately.
+- Risk concentrations: the data-preserving rebuild generator (Phase 4) and the operator-store
+  fold (Phase 5). Both are sequenced last deliberately.
 - What this ADR does *not* claim: no current SQL injection was found, and no query-plan or
   performance consequence of the index divergence has been measured. The case for the change is
   drift and ownership, not a live exploit.
