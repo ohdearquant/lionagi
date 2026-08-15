@@ -72,8 +72,9 @@ cited as the reason the duplication is safe.
 `studio/operator/store.py` (2,349 lines) declares and creates 6 tables of its own and is in
 effect a second persistence layer beside `StateDB`. Four `studio/services/*` modules create 7
 more tables of their own. That DDL does not run at import: each module holds its
-`CREATE TABLE` text as a module constant and executes it from inside request-handling functions,
-at 20 call sites, so the tables are re-asserted on the request path rather than once at startup.
+`CREATE TABLE` text as a module constant and executes it from inside request-handling functions —
+20 of them, reached from 26 call sites — so the tables are re-asserted on the request path rather
+than once at startup.
 The lazy creation this produces has already leaked across module boundaries — `sessions.py`
 reaches into `run_tags` for its private `_ensure_table` before a tag filter can run, because a
 store that has never been tagged has no `run_tags` table. Separately, studio opens the store
@@ -766,7 +767,7 @@ summed: a declaration, a statement string, and an execution call are different t
 | `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 6,683 lines; 5 `_*_COLUMNS` allow-lists; 45 `S608` |
 | `state/lifecycle/` | — | — | 8 execution calls | policy table/patch identifiers unvalidated |
 | `studio/operator/store.py` | 6 tables (+2 indexes) + own migration | yes | 119 sites | 2,349 lines; a second persistence layer |
-| `studio/services/*` | 7 re-declarations of state tables, 4 modules | on the request path, 20 call sites | 93 execution calls | 38 direct store connections in 9 files |
+| `studio/services/*` | 7 re-declarations of state tables, 4 modules | on the request path, in 20 request-handling functions | 93 execution calls | 38 direct store connections in 9 files |
 
 Divergences found between the two full-schema authorities, all currently green:
 
