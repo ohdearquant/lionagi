@@ -173,14 +173,16 @@ def test_runs_list_has_contract_fields(tmp_path, monkeypatch):
 def test_runs_list_filter_by_playbook(tmp_path, monkeypatch):
     """?playbook= filter replaces the old ?worker= param."""
     client = _make_client(tmp_path, monkeypatch, with_run=True)
-    # Correct param name; both should 200 with empty list (empty DB)
+    # The supported name serves normally with an empty database.
     r = client.get("/api/runs?playbook=some-playbook")
     assert r.status_code == 200
     assert r.json()["runs"] == []
 
-    # Old ?worker= param should still 200 (FastAPI ignores unknown query params)
+    # The removed spelling must not be silently ignored: a caller otherwise
+    # receives an unfiltered answer while believing the filter was applied.
     r2 = client.get("/api/runs?worker=my-worker")
-    assert r2.status_code == 200
+    assert r2.status_code == 422
+    assert r2.json()["detail"][0]["loc"] == ["query", "worker"]
 
 
 def test_runs_list_filter_by_status(tmp_path, monkeypatch):
