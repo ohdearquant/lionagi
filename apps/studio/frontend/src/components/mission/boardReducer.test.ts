@@ -742,9 +742,12 @@ describe("boardReducer — disposition join and active/discharged split", () => 
       null,
       { "run:r1": makeDisposition({ item_id: "run:r1", state: "acknowledged" }) },
     );
-    expect(s.attentionItems).toHaveLength(1);
-    expect(s.attentionItems[0].disposition?.state).toBe("acknowledged");
-    expect(s.dischargedAttentionItems).toHaveLength(0);
+    // Acknowledged is the one state that actually clears a gate from the
+    // active queue — the human made the decision the gate was waiting on
+    // them to see. It lands in discharged (queryable), never vanishes.
+    expect(s.attentionItems).toHaveLength(0);
+    expect(s.dischargedAttentionItems).toHaveLength(1);
+    expect(s.dischargedAttentionItems[0].disposition?.state).toBe("acknowledged");
   });
 
   it("resolved leaves the active list for dischargedAttentionItems", () => {

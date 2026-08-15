@@ -4,20 +4,16 @@
 """What the pre-spawn model check admits, per command.
 
 The check exists to refuse a submission the command would reject in its first
-second, because such a run never reaches the hook that records an end: the job
-stays non-terminal and a caller waiting on it waits forever. So its answer has
-to track what each command actually does with the arguments, not a general idea
-of what a model source looks like.
-
-Two commands disagreed with it.
-
-Flow and fanout read "no model and no agent" as a request to orchestrate and
-answer it with the default orchestrator profile. A submission naming neither is
-therefore complete, and refusing it here refused a run that would have started.
-
-An agent reads its positionals as ``[MODEL] PROMPT``, so a lone positional is
-the prompt. Treating any positional as a model admitted ``query=["do it"]`` with
-no model anywhere, which is exactly the run that dies on start.
+second: such a run never reaches the hook that records an end, so the job
+stays non-terminal and a caller waiting on it waits forever. Its answer has to
+track what each command actually does with the arguments, not a general idea
+of what a model source looks like. Two commands disagreed with a naive check:
+flow/fanout read "no model and no agent" as a request to orchestrate (and use
+the default orchestrator profile), so refusing that combination refused a run
+that would have started; and `agent` reads its positionals as
+``[MODEL] PROMPT``, so treating any positional as a model wrongly admitted
+``query=["do it"]`` with no model anywhere -- exactly the run that dies on
+start.
 """
 
 from __future__ import annotations

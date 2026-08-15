@@ -27,9 +27,7 @@ def _schedule(**kwargs) -> dict:
     return base
 
 
-# ---------------------------------------------------------------------------
 # subprocess.build_argv — basic argv shape
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvCommandShape:
@@ -83,9 +81,7 @@ class TestBuildArgvCommandShape:
         assert "/abs/path/to/li" not in argv
 
 
-# ---------------------------------------------------------------------------
 # subprocess.build_argv — templated-argv rendering
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvCommandTemplateRendering:
@@ -117,9 +113,7 @@ class TestBuildArgvCommandTemplateRendering:
         assert argv == ["kdev", "pr-7"]
 
 
-# ---------------------------------------------------------------------------
 # subprocess.build_argv — leading-'-' injection rejection on a rendered arg
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvCommandArgInjection:
@@ -163,9 +157,7 @@ class TestBuildArgvCommandArgInjection:
             build_argv(sched, {})
 
 
-# ---------------------------------------------------------------------------
 # subprocess — action_command allow-list gate
-# ---------------------------------------------------------------------------
 
 
 class TestCommandAllowlist:
@@ -267,9 +259,7 @@ class TestCommandAllowlist:
             build_argv(_schedule(action_command="--kdev"), {})
 
 
-# ---------------------------------------------------------------------------
 # services.schedules — build/validation-time refusal
-# ---------------------------------------------------------------------------
 
 
 class TestCreateScheduleCommandValidation:
@@ -410,9 +400,7 @@ class TestUpdateScheduleCommandValidation:
             self._run_update(existing, {"action_kind": "command"})
 
 
-# ---------------------------------------------------------------------------
 # CLI — --action-kind accepts 'command'
-# ---------------------------------------------------------------------------
 
 
 class TestCliActionKindChoices:
@@ -446,9 +434,7 @@ class TestCliActionKindChoices:
         assert args.action_command_args == ["review-pr"]
 
 
-# ---------------------------------------------------------------------------
 # worker.default_execute — the worker/task-application execution path
-# ---------------------------------------------------------------------------
 
 
 class TestWorkerDefaultExecuteCommandKind:
@@ -508,11 +494,9 @@ class TestWorkerDefaultExecuteCommandKind:
         assert "cannot resolve li executable" in stderr
 
 
-# ---------------------------------------------------------------------------
 # CLI — _cmd_create's --action-command-args JSON handling. TestCliActionKindChoices
 # above only pins argparse's raw string capture; the JSON-parse/shape error
 # paths inside _cmd_create itself (cli.py lines ~839-848) were untested.
-# ---------------------------------------------------------------------------
 
 
 class TestCmdCreateActionCommandArgsJSON:

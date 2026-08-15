@@ -2,15 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """The lifecycle read: a run stopped by `li kill` has to read as terminal.
 
-The kill path writes the StateDB row and signals the process. It does not write
-the MCP job record and it does not write the CLI run manifest, so before this
-seam existed a killed run was indistinguishable from an orphan — a dead pid with
-no recorded end — and `job.wait` sat on it for its whole window.
+The kill path writes the StateDB row and signals the process, but writes
+neither the MCP job record nor the CLI run manifest -- so before this seam
+existed, a killed run was indistinguishable from an orphan (a dead pid with
+no recorded end) and `job.wait` sat on it for its whole window.
 
-The first test here is end to end on purpose: a real submit, a real child that
-persists a real session row, a real `li kill`, and a real `jobs.wait`. A unit
-test over `_derive` with a hand-built record would only assert its own fixture,
-and the defect lived in the gap between the writers, not in the classifier.
+The first test here is end to end on purpose: a real submit, a real child
+that persists a real session row, a real `li kill`, and a real `jobs.wait`.
+A unit test over `_derive` with a hand-built record would only assert its
+own fixture -- the defect lived in the gap between the writers, not in the
+classifier.
 """
 
 from __future__ import annotations

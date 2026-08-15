@@ -518,17 +518,9 @@ class ActionManager(Manager):
     ) -> dict[str, list[str]]:
         from lionagi.service.connections.mcp_wrapper import MCPConnectionPool
 
-        # An omitted policy is not upgraded to a permissive one here:
-        # `mcp_security` stays None and flows through to
-        # `register_mcp_server` -> `MCPConnectionPool.get_client`, which
-        # reaches the wrapper's fail-closed `MCPSecurityConfig()` default --
-        # unless the process owner has called `set_security_config()`, an
-        # explicit process-wide decision that then applies to every
-        # omitted-policy call. Either way, this loader path never recovers a
-        # policy some OTHER caller authorized for the same identity; only the
-        # MCP proxy's own reconnect does that. A caller wanting the permissive
-        # behavior outright passes `mcp_security=MCPSecurityConfig.trusted()`
-        # explicitly.
+        # An omitted policy is not upgraded to a permissive one: it flows
+        # through to the wrapper's fail-closed default. See
+        # docs/internals/agent-runtime.md for the full trust model.
         loaded_names = MCPConnectionPool.load_config(config_path)
 
         if server_names is None:

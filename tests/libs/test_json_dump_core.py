@@ -232,7 +232,6 @@ def test_safe_fallback_custom_clip():
 
 
 def test_safe_fallback_without_error():
-    """Test that safe_fallback prevents raising TypeError."""
 
     class UnserializableObject:
         pass

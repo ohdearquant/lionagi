@@ -192,7 +192,8 @@ async def test_run_findings_not_found(db_path):
         pass
 
     result = await run_findings({"run": str(uuid.uuid4())})
-    assert result == {"found": False}
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
 
 
 async def test_run_findings_ambiguous_reference(db_path):
@@ -220,8 +221,13 @@ async def test_run_findings_zero_operations(db_path):
 
     assert result["found"] is True
     assert result["messages"] == {"items": [], "truncated": False, "returned": 0, "total": 0}
-    assert result["toolCalls"] == {"items": [], "truncated": False}
-    assert result["errors"] == {"items": [], "truncated": False}
+    assert result["toolCalls"] == {"items": [], "truncated": False, "returned": 0}
+    assert result["errors"] == {
+        "items": [],
+        "truncated": False,
+        "returned": 0,
+        "evidenceComplete": True,
+    }
     assert result["artifacts"] == {
         "contract": None,
         "contractTruncated": False,
@@ -370,18 +376,18 @@ async def test_a_secret_nested_under_a_credential_name_is_withheld_on_both_read_
 ):
     """A credential field name has to cover what is stored underneath it.
 
-    The two read layers share one rule about which field names name a secret,
-    and the point of sharing it is that a caller cannot be served on one path
-    what it is denied on the other. Asking that rule directly cannot see this
-    gap: both layers agree `auth` names a credential, and one of them still
-    served the object stored under it, because only one consulted the name
-    before descending into a container. So this asks both public tools for the
-    same payload and requires the same answer of them.
+    The two read layers share one rule about which field names a secret, so
+    a caller must not be served on one path what it is denied on the other.
+    Testing that rule directly can't see this gap: both layers agree `auth`
+    names a credential, but one of them served the object stored under it
+    anyway because only one consulted the name before descending into a
+    container. So this asks both public tools for the same payload and
+    requires the same answer.
 
-    The planted value is deliberately shapeless -- it has spaces, no known
-    prefix, and no header or assignment form -- so nothing except the field
-    name can withhold it. A secret that looked like one would pass here
-    whether the name was consulted or not.
+    The planted value is deliberately shapeless -- spaces, no known prefix,
+    no header or assignment form -- so nothing except the field name can
+    withhold it; a secret that looked like one would pass here regardless
+    of whether the name was consulted.
     """
     import json
 
@@ -772,14 +778,17 @@ async def test_run_findings_exact_id_of_a_foreign_project_run_is_not_found(db_pa
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
 
     result = await run_findings({"run": foreign})
-    assert result == {"found": False}
+    assert result["found"] is False
+    assert isinstance(result.get("reason"), str) and result["reason"]
 
 
 async def test_run_findings_turn_with_no_project_context_fails_closed(db_path, monkeypatch):
     """A turn whose identity is present but whose own context names no
-    project must never fall back to matching every project's runs --
+    project must never fall back to enumerating every project's runs --
     run_findings inherits this from resolve_run() (run_progress.py) the same
-    way it already inherits project scoping."""
+    way it already inherits project scoping. An exact full-UUID reference is
+    the one deliberate exception (it cannot enumerate), so the fenced arms
+    are exercised with a name and an id prefix."""
     from lionagi.studio.operator.run_findings import run_findings
     from lionagi.studio.operator.run_progress import MissingOwnerContextError
     from lionagi.studio.operator.store import OperatorStore
@@ -801,7 +810,14 @@ async def test_run_findings_turn_with_no_project_context_fails_closed(db_path, m
     monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
 
     with pytest.raises(MissingOwnerContextError):
-        await run_findings({"run": sid})
+        await run_findings({"run": "nightly-triage"})
+
+    with pytest.raises(MissingOwnerContextError):
+        await run_findings({"run": sid[:8]})
+
+    # The exception: the full id rides the exact-id arm through the fence.
+    result = await run_findings({"run": sid})
+    assert result["found"] is True
 
 
 async def test_run_findings_env_secret_value_is_redacted_even_without_a_known_shape(

@@ -20,7 +20,7 @@ from lionagi.cli.orchestrate.flow import (
     op_budget_share,
 )
 
-# ── _format_budget_preamble ────────────────────────────────────────────────
+# _format_budget_preamble
 
 
 def test_format_budget_preamble_contains_expected_fields():
@@ -87,7 +87,7 @@ def test_format_budget_preamble_index_and_count():
     assert "60 seconds" in text
 
 
-# ── Critical-path depth ────────────────────────────────────────────────────
+# Critical-path depth
 #
 # These call the shipped functions rather than a copy of their arithmetic. The
 # previous version of this section defined its own `_equal_split` helper and
@@ -145,7 +145,7 @@ def test_share_falls_back_to_the_op_count_without_dependency_data():
     assert op_budget_share(600, [], 3) == 200
 
 
-# ── The concurrency cap serializes ops the dependency graph says are parallel ──
+# The concurrency cap serializes ops the dependency graph says are parallel
 #
 # Depth alone is not a lower bound on makespan. `--max-concurrent 1` runs four
 # independent ops one after another, and a share computed from depth 1 hands
@@ -199,7 +199,7 @@ def test_share_treats_a_non_positive_cap_as_unbounded():
     assert op_budget_share(900, [[], [], [], [0, 1, 2]], 4) == 450
 
 
-# ── Where the two bounds interact ───────────────────────────────────────────
+# Where the two bounds interact
 #
 # A dependency does not only lengthen the chain, it idles capacity while it is
 # unsatisfied, and the ops it blocks have to be picked up later. Counting
@@ -267,7 +267,7 @@ def test_an_empty_plan_has_no_depth():
     assert max_sequential_depth([], 0, 2) == 0
 
 
-# ── The share an op is actually told ────────────────────────────────────────
+# The share an op is actually told
 #
 # `op_budget_share` being right says nothing about whether the flow uses it.
 # The equal-split divisor this PR removes survived a green suite for exactly
@@ -338,7 +338,7 @@ def test_the_flow_builds_its_preambles_through_the_shared_helper():
     )
 
 
-# ── the deadline instant is captured, not recomputed ───────────────────────
+# the deadline instant is captured, not recomputed
 
 
 def test_no_preambles_without_a_captured_deadline_instant():
@@ -490,7 +490,7 @@ def test_no_budget_preamble_when_total_budget_none():
     assert preambles == {}
 
 
-# ── OrchestrationEnv.total_budget ─────────────────────────────────────────
+# OrchestrationEnv.total_budget
 
 
 def test_orchestration_env_has_total_budget_field():

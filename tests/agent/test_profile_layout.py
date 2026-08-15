@@ -11,8 +11,6 @@ import pytest
 
 from lionagi.cli._providers import _resolve_profile_path, list_agents, load_agent_profile
 
-# ── _resolve_profile_path ────────────────────────────────────────────
-
 
 def test_resolver_prefers_directory_layout(tmp_path: Path) -> None:
     agents_dir = tmp_path / "agents"
@@ -38,9 +36,6 @@ def test_resolver_returns_none_when_missing(tmp_path: Path) -> None:
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
     assert _resolve_profile_path(agents_dir, "ghost") is None
-
-
-# ── Full loader behaviour via HOME override ──────────────────────────
 
 
 @pytest.fixture

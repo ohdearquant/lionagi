@@ -256,14 +256,12 @@ async def _apply_context_providers(
 ) -> tuple[Instruction | None, "ProviderReport | None"]:
     """Gather registered ContextProviders for call-local prompt rendering.
 
-    Returns the (pre-)built Instruction and its report, or ``(None, None)``
-    when no providers are registered (zero-overhead path). A branch with no
-    system message has no render target — providers are skipped, not invoked;
-    see ``branch.last_context_report``.
-
-    ``ins``, when given, is reused as-is instead of building a second
-    Instruction — for callers that already constructed one before this
-    async, potentially side-effecting gather runs.
+    Returns ``(None, None)`` when no providers are registered (zero-overhead
+    path), or when the branch has no system message (no render target —
+    providers are skipped, not invoked; see ``branch.last_context_report``).
+    ``ins``, when given, is reused as-is rather than building a second
+    Instruction, since the caller's copy may already reflect a side-effecting
+    gather.
     """
     if not branch._context_providers:
         return None, None

@@ -2,31 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fill declared secrets into a spawned CLI child's environment.
 
-A CLI provider authenticates from its own process environment: a codex model
-provider names an ``env_key`` and the CLI reads that variable itself. When the
-secret is kept somewhere other than the environment -- a keychain, a password
-manager, a vault agent -- the spawning process has no value to pass on, and
-the child dies with a missing-variable error that says nothing about where the
-value was meant to come from.
-
-``secrets.lookup`` in ``~/.lionagi/settings.yaml`` names a command that prints
-one secret to stdout, and the variables it may be asked for::
-
-    secrets:
-      lookup:
-        argv: [security, find-generic-password, -s, "{name}", -a, lionagi, -w]
-        names: [OPENROUTER_API_KEY]
-
-Read from the **global** settings file only, never the project-local one. The
-merged project file is content of whatever tree happens to be checked out, and
-a repository has no business naming the program that reads this machine's
-secrets. Where the value lives is a property of the machine, so it is
-configured once, where the machine is configured.
-
-The resolved value reaches the child through its environment and nowhere else:
-never a file, never an argv, never a log line. Failures are best-effort and
-additive -- a lookup that does not work leaves the environment exactly as it
-would have been, and the child fails the way it already failed.
+See docs/internals/providers.md#declared-secret-lookup for the design
+(``secrets.lookup`` in the global ``~/.lionagi/settings.yaml``, never the
+project-local one).
 """
 
 from __future__ import annotations
@@ -80,12 +58,10 @@ class ResolvedSecretLookup:
 class SecretLookupResolution:
     """The outcome of resolving ``secrets.lookup``: a lookup, or why not.
 
-    ``reason`` is set iff a lookup was asked for and refused. Chosen silence
-    (nothing configured, or ``enabled: false``) carries no reason, so a
-    misconfigured lookup stays distinguishable from an absent one instead of
-    both arriving as "no secrets were filled". Reasons are short stable
-    identifiers and never interpolate configured values; the offending value
-    goes in the matching warning.
+    ``reason`` is set iff a lookup was asked for and refused (not for chosen
+    silence — nothing configured, or ``enabled: false``), so a misconfigured
+    lookup stays distinguishable from an absent one. Reasons are short stable
+    identifiers; the offending value goes in the matching warning instead.
     """
 
     lookup: ResolvedSecretLookup | None = None
@@ -106,8 +82,8 @@ def resolve_secret_lookup_config(
     """Resolve ``secrets.lookup`` to a validated lookup, or to why there is none.
 
     Every refusal is total: one bad name rejects the whole block rather than
-    being dropped from it. A silently skipped name reads as configured while
-    resolving nothing, which is the failure this is meant to make visible.
+    being dropped from it, so a silently-skipped name can't read as configured
+    while resolving nothing.
     """
     if settings is None:
         # Imported here rather than at module scope: this module is reached
@@ -203,10 +179,9 @@ def resolve_secret_lookup_config(
 async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
     """Run the lookup for one variable, returning its value or None.
 
-    Nothing derived from the command's output reaches a log: stdout carries
-    the secret on success, and a command that prints its errors there would
-    otherwise have them recorded through the same channel. Only the program
-    name, the variable name and the exit status are ever reported.
+    Nothing derived from the command's own output reaches a log — only the
+    program name, the variable name, and the exit status are ever reported,
+    since stdout carries the secret on success.
     """
     argv = tuple(arg.replace(_NAME_PLACEHOLDER, name) for arg in lookup.argv)
     program = os.path.basename(argv[0])
@@ -263,21 +238,14 @@ async def fill_declared_secrets(
 ) -> Mapping[str, str] | None:
     """Return the environment a CLI child should get, with declared secrets filled.
 
-    ``env`` follows the CLI request-model convention: ``None`` means the child
-    inherits this process's environment. That is returned unchanged when there
-    is nothing to add, so a machine that configures no lookup spawns exactly
-    the environment it did before, and an inheriting child stays an inheriting
-    child rather than being handed a snapshot.
-
-    A variable that already carries a value is never looked up and never
-    overwritten, so exporting one is still the way to override the store for a
-    single run.
-
-    A REFUSED lookup returns ``env`` unchanged, exactly as an absent one does,
-    and says so before it does. The two are one value apart at the return and
-    the child dies the same way in both cases -- on a missing variable, naming
-    the variable and not the lookup -- so without this the operator debugging
-    that child has nothing pointing at their own configuration.
+    ``env=None`` means the child inherits this process's environment, and is
+    returned unchanged when there's nothing to add, so an inheriting child
+    stays inheriting rather than being handed a snapshot. A variable already
+    carrying a value is never looked up or overwritten. A refused lookup
+    returns ``env`` unchanged too, but logs the distinction first — otherwise
+    the child dies the same way (missing variable) whether the lookup was
+    absent or misconfigured, with nothing pointing at the operator's own
+    config.
     """
     resolution = resolve_secret_lookup_config(settings=settings)
     lookup = resolution.lookup

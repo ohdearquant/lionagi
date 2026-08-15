@@ -728,6 +728,38 @@ describe("history/RunDetail.tsx — persisted branch totals survive message pagi
     expect(runStep.result?.duration_sec).toBe(600);
     expect(runStep.result?.message_count).toBe(30_525);
   });
+
+  it("uses branch lifecycle bounds when a cancelled branch has only one message", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const runStep = branchToRunStep(
+      {
+        id: "branch-cancelled",
+        name: "architect",
+        created_at: 100,
+        started_at: null,
+        ended_at: 178.1,
+        first_message_at: 101,
+        last_message_at: 101,
+        message_total: 1,
+        messages: [
+          {
+            id: "prompt-only",
+            role: "user",
+            content: { instruction: "Investigate" },
+            sender: "user",
+            timestamp: 101,
+            lion_class: "Instruction",
+          },
+        ],
+      },
+      "cancelled",
+    );
+
+    expect(runStep.result?.duration_sec).toBe(78);
+    const { container } = renderRunStepCards([runStep]);
+    expect(container.textContent).toContain("1m 18s");
+    expect(container.textContent).not.toContain("0s");
+  });
 });
 
 describe("history/RunDetail.tsx — live branch aggregates", () => {

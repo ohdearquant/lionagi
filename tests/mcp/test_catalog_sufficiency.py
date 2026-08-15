@@ -2,17 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """The catalog has to be enough to write the call it describes.
 
-The tool tells a caller to start with ``help=true`` and says the answer is
-enough to make the common call. That promise is only kept if the entry carries
-everything the call is gated on, so these tests construct ops from the catalog
-reply and nothing else, and check that what refuses them is never the gate the
-catalog was supposed to have satisfied.
+``help=true`` promises its answer is enough to make the common call. That
+promise only holds if the entry carries everything the call is gated on, so
+these tests build ops from the catalog reply alone and check that nothing
+refuses them on a gate the catalog was supposed to have satisfied.
 
-The spawn verbs are the gated ones, and running one starts a background agent.
-So the ops here are steered into a refusal that lies *past* every gate — an
-unreadable prompt file — and the assertion is on which refusal comes back. A
-call rejected for its prompt is a call whose fingerprint was accepted, which is
-the fact under test; nothing is spawned to establish it.
+The spawn verbs are the gated ones, and running one starts a background
+agent, so the ops here are steered into a refusal that lies *past* every
+gate (an unreadable prompt file): a call rejected for its prompt is a call
+whose fingerprint was accepted, which is the fact under test -- nothing is
+actually spawned to establish it.
 """
 
 from __future__ import annotations

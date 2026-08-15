@@ -1,11 +1,15 @@
 # ADR-0114: An executable flow definition, and roles whose declared capabilities are real
 
 - **Status**: Proposed
+- **Kind**: Aspirational (records the target state)
+- **Implementation-status**: not-started (no implementation commits identified as of
+  2026-08-11; ADR-0113 D5 is blocked on the format this record designs)
+- **Area**: cli-orchestration
 - **Date**: 2026-08-08
-- **Supersedes**: none
-- **Related**: ADR-0113 (execution graph as the primary run canvas), #2836 (deterministic YAML
-  pipeline interface), #2928 (REJECT-to-replan and the refusal budget), #2929 (role instance
-  naming at the spawn boundary), #2924 (escalation children enter the DAG with no edges)
+- **Relations**: supersedes none; related to ADR-0113 (execution graph as the primary run
+  canvas), #2836 (deterministic YAML pipeline interface), #2928 (REJECT-to-replan and the
+  refusal budget), #2929 (role instance naming at the spawn boundary), #2924 (escalation
+  children enter the DAG with no edges)
 
 ## Context
 

@@ -19,9 +19,7 @@ class _StubEngine(Engine):
         return ""
 
 
-# ---------------------------------------------------------------------------
 # Non-cooperative child: catches CancelledError and loops indefinitely
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -121,9 +119,7 @@ async def test_cancel_active_logs_abandonment_for_non_cooperative_task():
     await asyncio.gather(task, return_exceptions=True)
 
 
-# ---------------------------------------------------------------------------
 # Cooperative child: should complete normally without hitting the timeout
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -159,9 +155,7 @@ async def test_cancel_active_awaits_cooperative_task_to_completion():
     assert run._active == set()
 
 
-# ---------------------------------------------------------------------------
 # Default timeout is exposed and is a sensible value
-# ---------------------------------------------------------------------------
 
 
 def test_cancel_timeout_default_on_engine():
@@ -181,9 +175,7 @@ def test_cancel_timeout_configurable():
     assert eng.cancel_timeout_s == 7.5
 
 
-# ---------------------------------------------------------------------------
 # Engine.run() lifetime guarantee preserved with non-cooperative task
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

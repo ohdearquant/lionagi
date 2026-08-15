@@ -30,7 +30,7 @@ from lionagi.state.reasons import (
     validate_reason_code,
 )
 
-# ── reasons.py — namespace and validators ────────────────────────────
+# reasons.py — namespace and validators
 
 
 class TestReasonNamespace:
@@ -160,7 +160,7 @@ class TestValidators:
         assert entity_table("sessions") == "sessions"
 
 
-# ── StateDB.update_status() — schema migration + atomic writes ───────
+# StateDB.update_status() — schema migration + atomic writes
 
 
 @pytest.fixture
@@ -529,7 +529,7 @@ class TestUpdateStatusValidation:
         assert count["n"] >= 1  # at least the pre-inserted row
 
 
-# ── Integration: CLI teardown writes a real reason ───────────────────
+# Integration: CLI teardown writes a real reason
 
 
 class TestTeardownReasonResolution:
@@ -617,7 +617,7 @@ class TestTeardownReasonResolution:
         assert cls_name in summary
 
 
-# ── ADR-0057 Phase 2: invocation transition writes reason ────────────
+# ADR-0057 Phase 2: invocation transition writes reason
 
 
 async def _create_invocation(db: StateDB, *, status: str = "running") -> str:
@@ -830,7 +830,7 @@ class TestInvocationTransition:
         assert count["n"] == 0
 
 
-# ── update_session routes status through update_status ──
+# update_session routes status through update_status
 
 
 class TestUpdateSessionRoutesStatusThroughHistory:
@@ -948,7 +948,7 @@ class TestUpdateSessionRoutesStatusThroughHistory:
         assert count["n"] == 0
 
 
-# ── update_status rejects invalid source values ──────────
+# update_status rejects invalid source values
 
 
 class TestUpdateStatusSourceValidation:

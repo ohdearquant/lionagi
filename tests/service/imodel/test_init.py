@@ -11,6 +11,7 @@ from lionagi.protocols.generic.event import EventStatus
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.hooks import HookRegistry
 from lionagi.service.imodel import iModel
+from lionagi.service.types import StreamChunk
 
 
 class TestiModel:
@@ -136,6 +137,146 @@ class TestiModel:
 
         assert len(chunks) >= 2  # Should have content chunks
 
+    @pytest.mark.asyncio
+    async def test_stream_stores_served_model_before_chunk_hook(self, base_imodel):
+        async def replace_system_chunk(_event, _chunk_type, _chunk, **_kw):
+            return {"handled": True}
+
+        base_imodel.hook_registry = HookRegistry(
+            stream_handlers={StreamChunk: replace_system_chunk}
+        )
+
+        async def mock_stream():
+            yield StreamChunk(
+                type="system",
+                metadata={"model": "provider-served-model", "session_id": "session-123"},
+            )
+
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            chunks = [
+                chunk
+                async for chunk in base_imodel.stream(
+                    messages=[{"role": "user", "content": "Hello"}]
+                )
+            ]
+
+        assert chunks == [{"handled": True}]
+        assert base_imodel.provider_metadata["served_model"] == "provider-served-model"
+
+    @pytest.mark.asyncio
+    async def test_invoke_stores_and_serializes_served_model(self, base_imodel):
+        async def mock_call(*_args, **_kwargs):
+            return {"model": "provider-served-model", "response": "Hello"}
+
+        with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
+            await base_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+
+        assert base_imodel.provider_metadata["served_model"] == "provider-served-model"
+        restored = iModel.from_dict(base_imodel.to_dict())
+        assert restored.provider_metadata["served_model"] == "provider-served-model"
+
+    @pytest.mark.asyncio
+    async def test_stream_clears_stale_served_model_when_provider_omits_it(self, base_imodel):
+        base_imodel.provider_metadata["served_model"] = "previous-served-model"
+
+        async def mock_stream():
+            yield StreamChunk(type="system", metadata={"session_id": "session-123"})
+
+        with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
+            chunks = [
+                chunk
+                async for chunk in base_imodel.stream(
+                    messages=[{"role": "user", "content": "Hello"}]
+                )
+            ]
+
+        assert len(chunks) == 1
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    async def test_invoke_clears_stale_served_model_when_provider_omits_it(self, base_imodel):
+        base_imodel.provider_metadata["served_model"] = "previous-served-model"
+
+        async def mock_call(*_args, **_kwargs):
+            return {"response": "Hello"}
+
+        with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
+            await base_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    async def test_concurrent_stream_uses_last_completed_provider_report(self, base_imodel):
+        release_unknown = asyncio.Event()
+        unknown_started = asyncio.Event()
+
+        async def mock_stream(request, **_kwargs):
+            content = request["messages"][0]["content"]
+            if content == "unknown":
+                unknown_started.set()
+                await release_unknown.wait()
+                yield StreamChunk(type="system", metadata={"session_id": "unknown"})
+                return
+            yield StreamChunk(type="system", metadata={"model": "provider-served-model"})
+
+        async def consume(content):
+            return [
+                chunk
+                async for chunk in base_imodel.stream(
+                    messages=[{"role": "user", "content": content}]
+                )
+            ]
+
+        with patch.object(base_imodel.endpoint, "stream", side_effect=mock_stream):
+            unknown_task = asyncio.create_task(consume("unknown"))
+            await unknown_started.wait()
+            await consume("reported")
+            assert base_imodel.provider_metadata["served_model"] == "provider-served-model"
+
+            release_unknown.set()
+            await unknown_task
+
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    async def test_concurrent_invoke_uses_last_completed_provider_report(self, base_imodel):
+        release_unknown = asyncio.Event()
+        unknown_started = asyncio.Event()
+
+        async def mock_call(request, **_kwargs):
+            content = request["messages"][0]["content"]
+            if content == "unknown":
+                unknown_started.set()
+                await release_unknown.wait()
+                return {"response": "unknown"}
+            return {"model": "provider-served-model", "response": "reported"}
+
+        async def invoke(content):
+            return await base_imodel.invoke(messages=[{"role": "user", "content": content}])
+
+        with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
+            unknown_task = asyncio.create_task(invoke("unknown"))
+            await unknown_started.wait()
+            await invoke("reported")
+            assert base_imodel.provider_metadata["served_model"] == "provider-served-model"
+
+            release_unknown.set()
+            await unknown_task
+
+        assert "served_model" not in base_imodel.provider_metadata
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reported_model", [None, "", "   "])
+    async def test_invoke_does_not_infer_missing_served_model(self, base_imodel, reported_model):
+        async def mock_call(*_args, **_kwargs):
+            return {"model": reported_model, "response": "Hello"}
+
+        with patch.object(base_imodel.endpoint, "call", side_effect=mock_call):
+            await base_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
+
+        assert base_imodel.model_name == "gpt-4.1-mini"
+        assert "served_model" not in base_imodel.provider_metadata
+
     def test_model_name_property(self, base_imodel):
         imodel = base_imodel
 
@@ -145,7 +286,6 @@ class TestiModel:
         imodel = base_imodel
 
         # NOTE: request_options removed due to incorrect role literals in generated models
-        # Should return OpenAIChatCompletionsRequest for OpenAI
         from lionagi.providers.openai.chat import OpenAIChatCompletionsRequest
 
         assert imodel.request_options == OpenAIChatCompletionsRequest

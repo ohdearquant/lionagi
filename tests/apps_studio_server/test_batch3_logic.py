@@ -16,9 +16,7 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # is_session_stream_done() gates on terminal status AND stale time
-# ---------------------------------------------------------------------------
 
 
 class TestIsSessionStreamDone:
@@ -170,9 +168,7 @@ class TestGetSessionStreamState:
         assert result["status"] == "completed"
 
 
-# ---------------------------------------------------------------------------
 # update_playbook() rejects invalid links via validate_playbook()
-# ---------------------------------------------------------------------------
 
 
 class TestUpdatePlaybookValidation:
@@ -434,6 +430,24 @@ class TestUpdatePlaybookSpecFieldValidation:
 
         result = svc.update_playbook("pb-workers3", {"workers": 4})
         assert result is not None
+        assert result["data"]["workers"] == 4
+
+    def test_editor_write_through_covers_every_canonical_playbook_field(self):
+        import lionagi.studio.services.playbooks as svc
+        from lionagi._flow_spec import FLOW_SPEC_FIELDS, normalize_flow_spec_keys
+
+        expected_fields = FLOW_SPEC_FIELDS - {
+            "description",
+            "links",
+            "name",
+            "steps",
+            "use",
+        }
+        assert set(svc._DECLARATIVE_KEYS) == expected_fields
+        assert {
+            next(iter(normalize_flow_spec_keys({key: None})))
+            for key in svc._DECLARATIVE_KEYS.values()
+        } == expected_fields
 
     def test_max_ops_out_of_range_raises(self, tmp_path, monkeypatch):
         """max-ops: 999 (YAML hyphenated form) must be rejected after key normalization."""

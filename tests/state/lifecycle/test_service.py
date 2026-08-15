@@ -26,7 +26,7 @@ from lionagi.state.lifecycle import (
 )
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -87,7 +87,7 @@ def _command(**overrides) -> TransitionCommand:
     return TransitionCommand(**base)
 
 
-# ── D1: result semantics ────────────────────────────────────────────────────
+# D1: result semantics
 
 
 @pytest.mark.asyncio
@@ -174,7 +174,7 @@ async def test_public_transition_applies_for_dispatch_without_reason_columns(db:
     assert row["status"] == "delivering"
 
 
-# ── delivering -> delivering: the crash-recovery claim must be guarded ─────
+# delivering -> delivering: the crash-recovery claim must be guarded
 
 
 @pytest.mark.asyncio
@@ -441,7 +441,7 @@ async def test_transition_raises_storage_error_style_for_unknown_entity_type(db:
         await service.transition(_command(entity_type="bogus_entity", entity_id=_uid()))
 
 
-# ── D4: algorithm behaviors ─────────────────────────────────────────────────
+# D4: algorithm behaviors
 
 
 @pytest.mark.asyncio

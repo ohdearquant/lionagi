@@ -81,7 +81,7 @@ class _FinalizeFailsDB:
         raise RuntimeError("database is locked")
 
 
-# ── pause / resume: idempotent apply-then-stamp ─────────────────────────────
+# pause / resume: idempotent apply-then-stamp
 
 
 async def test_pause_applies_and_stamps(tmp_path: Path) -> None:
@@ -166,7 +166,7 @@ async def test_pause_and_resume_are_excluded_from_pending_after_finalize(tmp_pat
         assert pending_after == []
 
 
-# ── message: non-idempotent stamp-then-apply ────────────────────────────────
+# message: non-idempotent stamp-then-apply
 
 
 async def test_message_deep_merges_into_context_when_pending_op_exists(tmp_path: Path) -> None:
@@ -363,7 +363,7 @@ async def test_the_poller_still_records_its_own_outcome_when_nobody_intervenes(
         assert executor.context.content["operator_messages"][-1]["text"] == "steer"
 
 
-# ── unsupported verb / stop (schema-reserved, no CLI verb emits it) ────────
+# unsupported verb / stop (schema-reserved, no CLI verb emits it)
 
 
 async def test_stop_verb_is_rejected_as_unsupported(tmp_path: Path) -> None:
@@ -381,7 +381,7 @@ async def test_stop_verb_is_rejected_as_unsupported(tmp_path: Path) -> None:
         assert finalized["applied_at"] is not None
 
 
-# ── crash safety: apply must never raise into the caller ──────────────────
+# crash safety: apply must never raise into the caller
 
 
 async def test_exception_during_apply_is_caught_and_recorded(tmp_path: Path) -> None:

@@ -541,7 +541,6 @@ class TestEndpoint:
                 async for chunk in endpoint.stream(request):
                     chunks.append(chunk)
 
-        # Should get 3 non-empty lines converted to StreamChunk objects.
         assert len(chunks) == 3
         assert all(isinstance(chunk, StreamChunk) for chunk in chunks)
         assert [chunk.type for chunk in chunks] == ["text", "text", "text"]
@@ -753,11 +752,6 @@ class TestEndpoint:
         assert mock_execute.called
 
 
-# ---------------------------------------------------------------------------
-# SSRF guard at Endpoint transport boundary (HIGH 2 regression tests)
-# ---------------------------------------------------------------------------
-
-
 class TestEndpointSSRFGuard:
     """Endpoint._call_aiohttp and _stream_aiohttp must block SSRF URLs."""
 
@@ -834,11 +828,6 @@ class TestEndpointSSRFGuard:
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
             with pytest.raises(PermissionError, match="SSRF guard"):
                 await endpoint._call_aiohttp(payload={}, headers={})
-
-
-# ---------------------------------------------------------------------------
-# Provider _call() override regression tests (HIGH: bypass via direct HTTP)
-# ---------------------------------------------------------------------------
 
 
 class TestProviderCallOverrideSSRFGuard:
@@ -927,11 +916,6 @@ class TestProviderCallOverrideSSRFGuard:
                 await endpoint._call(payload={"model": "whisper-large-v3"}, headers={})
 
 
-# ---------------------------------------------------------------------------
-# CLIEndpoint deprecation bridge
-# ---------------------------------------------------------------------------
-
-
 class TestCLIEndpointDeprecation:
     """CLIEndpoint is a deprecated alias for AgenticEndpoint."""
 
@@ -952,11 +936,6 @@ class TestCLIEndpointDeprecation:
         from lionagi.service.connections import AgenticEndpoint, CLIEndpoint
 
         assert CLIEndpoint is AgenticEndpoint
-
-
-# ---------------------------------------------------------------------------
-# Single-retry-path parity tests (collapse of backoff dual-retry layer)
-# ---------------------------------------------------------------------------
 
 
 class TestSingleRetryPathParity:
@@ -1336,11 +1315,9 @@ class TestRetryConfigDefaultRetriesRealErrors:
         assert call_count == 3
 
 
-# ---------------------------------------------------------------------------
-# #2393 — a retried POST to a non-idempotent creation endpoint must carry a
-# stable Idempotency-Key reused across every attempt, so an ambiguous lost
-# response cannot be replayed into a second billable job.
-# ---------------------------------------------------------------------------
+# A retried POST to a non-idempotent creation endpoint must carry a stable
+# Idempotency-Key reused across every attempt, so an ambiguous lost response
+# cannot be replayed into a second billable job.
 
 
 class TestIdempotencyKeyOnRetriedPosts:

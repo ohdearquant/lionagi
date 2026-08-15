@@ -22,9 +22,7 @@ from lionagi.engines.hypothesis import (
     QuestionRaised,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _wire_minimal(eng: HypothesisEngine, run: HypothesisRun) -> None:
@@ -49,9 +47,7 @@ class _StubEngine(Engine):
         return ""
 
 
-# ---------------------------------------------------------------------------
 # Internal cancellation — partial export must happen and return normally
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -176,9 +172,7 @@ async def test_budget_cancel_with_no_conclusions_returns_without_crash() -> None
     assert result in (None, ""), f"Expected None or empty string, got {result!r}"
 
 
-# ---------------------------------------------------------------------------
 # External cancellation — must still propagate as CancelledError
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

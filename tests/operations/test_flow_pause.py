@@ -33,9 +33,7 @@ def _session_with_ops(**ops):
     return session
 
 
-# ---------------------------------------------------------------------------
 # pause() / resume() as sync no-op-safe controls
-# ---------------------------------------------------------------------------
 
 
 def test_pause_installs_event_and_is_idempotent():
@@ -76,9 +74,7 @@ def test_pause_resume_pause_installs_a_fresh_event():
     assert second_gate is not first_gate
 
 
-# ---------------------------------------------------------------------------
 # Boundary semantics: already-running ops complete; not-yet-started ops block
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -202,9 +198,7 @@ async def test_pause_resume_pause_cycle_gates_each_op_in_turn():
     assert executed == ["op1", "op2"]
 
 
-# ---------------------------------------------------------------------------
 # NodePaused signal + lifecycle-lane projection
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -301,9 +295,7 @@ async def test_node_paused_reemitted_on_resume_then_fresh_pause():
     await asyncio.wait_for(task, timeout=2)
 
 
-# ---------------------------------------------------------------------------
 # Public path: executor.pause()/.resume() around a full execute() run
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -358,9 +350,7 @@ async def test_reactive_executor_inherits_pause_gate():
     assert len(result["completed_operations"]) == 1
 
 
-# ---------------------------------------------------------------------------
 # _emit_best_effort: shared fire-and-forget flow signal scheduling helper
-# ---------------------------------------------------------------------------
 
 
 def test_emit_best_effort_construction_failure_is_logged_and_task_free(caplog):
@@ -472,9 +462,7 @@ async def test_emit_best_effort_task_set_is_empty_after_successful_emission():
     assert signals[0].op_id == "x"
 
 
-# ---------------------------------------------------------------------------
 # Zero-cost: a flow that never touches pause/resume behaves identically
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

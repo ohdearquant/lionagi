@@ -29,9 +29,7 @@ from lionagi.session.signal import (
     build_run_end,
 )
 
-# ---------------------------------------------------------------------------
 # #1539 — schema_version on every signal
-# ---------------------------------------------------------------------------
 
 
 def test_schema_version_constant():
@@ -58,9 +56,7 @@ def test_schema_version_on_run_failed():
     assert RunFailed().schema_version == SIGNAL_SCHEMA_VERSION
 
 
-# ---------------------------------------------------------------------------
 # #1538 — RunEnd carries usage fields
-# ---------------------------------------------------------------------------
 
 
 def test_run_end_default_usage_fields():
@@ -144,10 +140,8 @@ def test_collect_branch_usage_anthropic_convention():
     assert usage["output_tokens"] == 30
 
 
-# ---------------------------------------------------------------------------
 # #2889 — cache-token dimensions (Anthropic cache_read/cache_creation,
 # OpenAI prompt_tokens_details.cached_tokens)
-# ---------------------------------------------------------------------------
 
 
 def test_run_end_cache_token_fields_default():
@@ -245,11 +239,9 @@ def test_collect_multi_branch_usage_sums_cache_dimensions():
     assert usage["cache_write_tokens"] == 10
 
 
-# ---------------------------------------------------------------------------
 # #2379 — claude_code whole-agent-tree usage: a per-model modelUsage
 # breakdown (subagent spend included) must be preferred over the flat,
 # top-level-loop-only usage dict when both are present on the same message.
-# ---------------------------------------------------------------------------
 
 
 def test_collect_branch_usage_prefers_model_usage_whole_tree_over_flat_usage():
@@ -561,9 +553,7 @@ def test_build_run_end_populates_from_branch():
     assert sig.data == "ok"
 
 
-# ---------------------------------------------------------------------------
 # orchestration usage aggregation — sum usage across all DAG leg branches
-# ---------------------------------------------------------------------------
 
 
 def _branch_with_usage(
@@ -639,9 +629,7 @@ def test_collect_multi_branch_usage_skips_branches_that_raise():
     assert usage["output_tokens"] == 5
 
 
-# ---------------------------------------------------------------------------
 # #1537 — NodeSpawned exists and carries expected fields
-# ---------------------------------------------------------------------------
 
 
 def test_node_spawned_defaults():
@@ -688,9 +676,7 @@ def test_node_lifecycle_signals_parent_defaults_none():
         assert sig.depends_on == []
 
 
-# ---------------------------------------------------------------------------
 # #1540 — HookSignal suppressed for MESSAGE_ADD; other points still recorded
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -737,9 +723,7 @@ async def test_hook_bus_records_other_points():
     assert len(hook_sigs) == 1
 
 
-# ---------------------------------------------------------------------------
 # NodeSpawned export from session package
-# ---------------------------------------------------------------------------
 
 
 def test_node_spawned_exported_from_session_package():

@@ -69,11 +69,6 @@ def _make_fake_cli_model(chunks: list[StreamChunk]) -> iModel:
     return m
 
 
-# ---------------------------------------------------------------------------
-# Row 1: direct chat() -> 1
-# ---------------------------------------------------------------------------
-
-
 async def test_direct_chat_fires_once():
     branch = LionAGIMockFactory.create_mocked_branch(response="hello")
     calls = _wire_prompt_submit_counter(branch)
@@ -83,11 +78,6 @@ async def test_direct_chat_fires_once():
     assert len(calls) == 1
     assert calls[0]["branch_id"] == str(branch.id)
     assert "hi there" in calls[0]["prompt"]
-
-
-# ---------------------------------------------------------------------------
-# Row 2: chat_and_record() delegating to chat() -> 1 total (forwarded, not re-originated)
-# ---------------------------------------------------------------------------
 
 
 async def test_chat_and_record_delegates_to_chat_fires_once():
@@ -125,11 +115,6 @@ async def test_chat_and_record_mints_exactly_one_token_and_forwards_it(monkeypat
     assert len(mint_calls) == 1
 
 
-# ---------------------------------------------------------------------------
-# Row 3: communicate() -> 1
-# ---------------------------------------------------------------------------
-
-
 async def test_communicate_fires_once():
     branch = LionAGIMockFactory.create_mocked_branch(response="hello")
     calls = _wire_prompt_submit_counter(branch)
@@ -138,11 +123,6 @@ async def test_communicate_fires_once():
 
     assert result == "hello"
     assert len(calls) == 1
-
-
-# ---------------------------------------------------------------------------
-# Row 4: operate() delegating to communicate() -> 1
-# ---------------------------------------------------------------------------
 
 
 async def test_operate_delegating_to_communicate_fires_once():
@@ -155,11 +135,6 @@ async def test_operate_delegating_to_communicate_fires_once():
 
     assert result == "hello"
     assert len(calls) == 1
-
-
-# ---------------------------------------------------------------------------
-# Row 5: direct run() (CLI streaming) -> 1
-# ---------------------------------------------------------------------------
 
 
 async def test_direct_run_fires_once():
@@ -175,11 +150,9 @@ async def test_direct_run_fires_once():
     assert calls[0]["branch_id"] == str(branch.id)
 
 
-# ---------------------------------------------------------------------------
 # CLI guard-rejection failure semantics: a USER_PROMPT_SUBMIT handler that
 # rejects a run() prompt must leave no trace of it in the transcript, and
 # the rejection must surface as this run's failure, not a silent success.
-# ---------------------------------------------------------------------------
 
 
 async def test_run_guard_rejection_leaves_no_instruction_persisted():
@@ -336,11 +309,6 @@ async def test_run_yielded_instruction_already_in_branch_messages():
     await gen.aclose()
 
 
-# ---------------------------------------------------------------------------
-# Row 6: ReAct() with extension rounds + a final-answer turn -> 1 total
-# ---------------------------------------------------------------------------
-
-
 async def test_react_multi_round_fires_once_total():
     """Round 1 forwards the ReAct()-driven turn; extension rounds and the
     final-answer turn are internal continuations (no-origin) and stay silent."""
@@ -399,12 +367,6 @@ async def test_react_with_interpret_fires_once_total():
     assert len(calls) == 1
 
 
-# ---------------------------------------------------------------------------
-# Row 7: failing-then-repaired parse (parse._inner_parse() -> Branch.chat()
-# with no-origin) -> 1 total, zero additional from the repair
-# ---------------------------------------------------------------------------
-
-
 class _StrictAnswer(BaseModel):
     answer: str
 
@@ -439,13 +401,6 @@ async def test_parse_inner_parse_uses_no_origin_directly():
     assert resolve_turn_origin(no_origin).disposition == "no-origin"
 
 
-# ---------------------------------------------------------------------------
-# interpret(): a direct (non-ReAct) call is itself a public ingress — raw
-# user text reaching a model for the first time in a turn — so it mints and
-# fires on its own default disposition, same as chat()/communicate().
-# ---------------------------------------------------------------------------
-
-
 async def test_direct_interpret_call_fires_once():
     branch = LionAGIMockFactory.create_mocked_branch(response="rewritten prompt")
     calls = _wire_prompt_submit_counter(branch)
@@ -454,11 +409,6 @@ async def test_direct_interpret_call_fires_once():
 
     assert result == "rewritten prompt"
     assert len(calls) == 1
-
-
-# ---------------------------------------------------------------------------
-# Supporting unit coverage for the TurnOrigin value type itself
-# ---------------------------------------------------------------------------
 
 
 def test_turn_origin_unset_mints_a_token_on_resolve():

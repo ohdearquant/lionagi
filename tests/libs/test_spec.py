@@ -11,7 +11,6 @@ class TestCommonMeta:
     """Test CommonMeta enum and utilities."""
 
     def test_allowed_returns_all_values(self):
-        """Test that allowed() returns all enum values."""
         allowed = CommonMeta.allowed()
         assert "name" in allowed
         assert "nullable" in allowed
@@ -240,7 +239,6 @@ class TestSpec:
         assert updated.name == "field"
 
     def test_immutability(self):
-        """Test that Spec is immutable."""
         spec = Spec(str, name="field")
         with pytest.raises(dataclasses.FrozenInstanceError):  # frozen dataclass (not pydantic)
             spec.base_type = int

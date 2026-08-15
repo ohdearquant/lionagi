@@ -2,32 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Studio Operator lifecycle service/adapter: ``cancel_run``.
 
-Contract: `../analyst/implementation_brief.md` §3.3. Cancels one Studio run
-(a `sessions` row) by reference -- a run id, an id prefix, a name substring,
-or ``"current"`` -- gated on the same durable human allow/deny proposal flow
-``launch_playbook`` uses (`application_mcp.py::launch_playbook`).
-
-Real in-process cancellation only, per the implementer brief: the actual
-state-changing act reuses the exact primitives ``li kill`` uses --
-``lionagi.cli._util.fetch_unique_row`` for id/prefix resolution and
-``lionagi.cli.kill._kill_one`` (SIGTERM/SIGKILL identity-checked termination
-plus ``_persist_cancel``'s guarded status write) -- so a cancellation
-performed through the Operator MCP surface is indistinguishable from one
-performed by a human running ``li kill`` directly. No subprocess is spawned;
-`application_mcp.py::launch_playbook`, which this module's proposal flow
-mirrors, does not shell out either -- it creates a proposal and polls it,
-same as `cancel_run` below.
-
-``resume_run`` (`resume_run.py`) is a separate adapter: it does not un-gate
-a cancelled run's status -- the lifecycle policy
-(`lionagi/state/lifecycle/policy.py`) has no edge out of ``cancelled`` -- it
-launches a new, separate invocation that continues the same branch's
-conversation with new input, which needs no such edge.
+Cancels one Studio run (a `sessions` row) by reference -- a run id, an id
+prefix, a name substring, or ``"current"`` -- gated on the same durable
+human allow/deny proposal flow ``launch_playbook`` uses
+(`application_mcp.py::launch_playbook`). Real in-process cancellation only:
+the state-changing act reuses the exact primitives ``li kill`` uses
+(``lionagi.cli._util.fetch_unique_row`` for id/prefix resolution,
+``lionagi.cli.kill._kill_one`` for identity-checked termination), so a
+cancellation through the Operator is indistinguishable from one run through
+``li kill`` directly -- no subprocess is spawned. See
+docs/internals/studio.md ("Turn identity and the propose/poll/execute
+pattern") for why ``resume_run`` is a separate operation rather than an
+un-gate of a cancelled run's status.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any
 
@@ -102,25 +94,23 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# A full canonical UUID (36 characters, 8-4-4-4-12 hex). Mirrors
+# ``run_progress.py``'s own copy, kept separate for the same reason
+# ``_allowed_project`` is: this module's identity/store handling stays
+# self-contained.
+_EXACT_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
 async def _current_run_id(store: OperatorStore, request_id: str) -> str | None:
     """The run the human was looking at when this instruction was sent.
 
     Deliberately reads the turn's OWN frozen context rather than a
-    later-reported live view. `get_current_view`'s freshness merge (prefer a
-    view the same page reported after the instruction was sent) is right for
-    a read -- show the freshest honestly-labelled answer -- but wrong for a
-    cancellation: acting on a view reported after the instruction was sent
-    could target a run the human was never looking at when they said "stop
-    it". Freezing to turn-start intent is the conservative choice for a
-    state-changing tool.
-
-    Reads the "s" key: the frontend's `select` effect resolver
-    (apps/studio/frontend/src/components/operator/operatorEffects.ts:147)
-    reads `selection.s ?? selection.runId ?? selection.run_id ??
-    selection.sessionId`, but the writer that actually populates the
-    reported selection (OperatorPanel.tsx:253) only ever sets `"s"` (or
-    `"sel"` for the library space) -- there is no `runId`/`run_id`/
-    `sessionId` key ever placed on the wire for mission/history views.
+    later-reported live view -- acting on a view reported after the
+    instruction was sent could target a run the human was never looking at
+    when they said "stop it". See docs/internals/studio.md ("Resolving a
+    run reference") for why this reads the "s" key specifically.
     """
     turn = await store.get_turn(request_id)
     context = turn.get("context")
@@ -139,17 +129,17 @@ async def _allowed_project(store: OperatorStore, request_id: str) -> str:
     Raises :class:`MissingOwnerContextError` rather than returning a
     sentinel when the turn's own context names no project -- a turn with no
     owner mapping must never be treated as authorized for every project's
-    runs. Mirrors ``run_progress.py::_allowed_project`` -- kept as a
-    separate small copy rather than a shared import so this module's
-    identity/store handling stays self-contained the same way
-    ``_current_run_id`` above already does.
+    runs. A separate small copy of ``run_progress.py::_allowed_project``, so
+    this module's identity/store handling stays self-contained.
     """
     turn = await store.get_turn(request_id)
     context = turn.get("context")
     project = context.get("project") if isinstance(context, dict) else None
     if not isinstance(project, str) or not project:
         raise MissingOwnerContextError(
-            "operator turn has no project context -- refusing to resolve or cancel any run"
+            "operator turn has no project context -- refusing to resolve or "
+            "cancel a run by prefix or name. Pass the run's full 36-character "
+            "id instead, or cancel the run the human has open ('current')."
         )
     return project
 
@@ -183,19 +173,14 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
     """Resolve *ref* to exactly one `sessions` row (a Studio "run").
 
     Mirrors `lionagi.cli._util.fetch_unique_row`'s exact-id-then-prefix
-    discipline, narrowed to the `sessions` table because a Studio "run" is a
-    session (`lionagi/studio/services/runs.py::get_run` is
-    `_sessions_svc.get_session` under a product-facing name). A prefix
-    matching more than one session raises `AmbiguousRunReferenceError`
-    rather than picking one -- never guess which process to signal.
-
-    Every arm -- exact id, ambiguous prefix, and the name/playbook substring
-    scan below -- is scoped to ``project`` (the calling turn's own project --
-    callers always name one; see ``_allowed_project``): a lifecycle tool
-    must not resolve, let alone propose cancelling, another project's run by
-    id, prefix, or label. A foreign exact/prefix match is reported exactly
-    like a nonexistent one (``None``) rather than as e.g. "already
-    terminal", which would itself confirm the id exists.
+    discipline, narrowed to the `sessions` table. A prefix matching more
+    than one session raises `AmbiguousRunReferenceError` rather than picking
+    one -- never guess which process to signal. Every arm is scoped to
+    ``project`` (the calling turn's own; see ``_allowed_project``): a
+    foreign exact/prefix match is reported exactly like a nonexistent one
+    (``None``), never as e.g. "already terminal", which would itself
+    confirm the id exists. See docs/internals/studio.md ("Resolving a run
+    reference").
     """
     from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
 
@@ -246,7 +231,24 @@ async def _resolve_reference(store: OperatorStore, request_id: str, ref: str) ->
             return {"found": False}
         ref = run_id
 
-    project = await _allowed_project(store, request_id)
+    ref = ref.strip()
+    try:
+        project = await _allowed_project(store, request_id)
+    except MissingOwnerContextError:
+        if _EXACT_UUID_RE.fullmatch(ref) is None:
+            raise
+        # A turn with an owner but no declared project may still resolve one
+        # run by its full id: an exact 36-character UUID identifies at most
+        # one row and cannot enumerate anything, the same position
+        # ``run_detail`` already takes for a bare id. Prefix and
+        # name-substring resolution stay behind the fence, and a turn that
+        # *does* declare a project keeps full ownership scoping on every arm.
+        async with StateDB() as db:
+            row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (ref,))
+            if row is None:
+                return {"found": False}
+            return {"found": True, "ambiguous": False, "run": db._row_to_dict(row)}
+
     async with StateDB() as db:
         try:
             row = await _resolve_run(db, ref, project=project)
@@ -401,20 +403,15 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
     """The real state-changing act -- the adapter's other half.
 
     Wire this into `OperatorCoordinator`'s ``command_executor`` for
-    ``command_type == "cancel"`` (see module docstring). Re-resolves the
-    session by exact id at execution time: the human's deliberation window
-    may have let the run finish or fail on its own, or its project could
-    have been reassigned since ``cancel_run`` resolved it -- ownership is
-    checked again here, not trusted from resolution alone. `_persist_cancel`
-    is a no-op once the row is no longer 'running', so a race here degrades
-    to ``already_terminal`` -- never a double cancel, never a wrong-run
-    cancel.
-
-    Reuses `lionagi.cli.kill`'s own deepest-first child traversal
-    (``_list_running_children``/``_kill_one``) so a cancel through the
-    Operator reaps a still-running owning invocation exactly the way
-    ``li kill --recursive`` does -- otherwise the session's process goes
-    terminal while its child process is orphaned.
+    ``command_type == "cancel"``. Re-resolves the session by exact id and
+    re-checks ownership at execution time rather than trusting the
+    resolution `cancel_run` captured. `_persist_cancel` is a no-op once the
+    row is no longer 'running', so a race here degrades to
+    ``already_terminal`` -- never a double cancel, never a wrong-run cancel.
+    Reuses `lionagi.cli.kill`'s deepest-first child traversal
+    (``_list_running_children``/``_kill_one``) so a still-running owning
+    invocation is reaped exactly the way ``li kill --recursive`` does,
+    rather than orphaned when the parent session goes terminal.
     """
     from lionagi.cli.kill import _kill_one, _list_running_children
     from lionagi.state.db import StateDB
@@ -431,15 +428,19 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
         if row is None:
             return {"status": "not_found", "id": run_id}
         row_dict = db._row_to_dict(row)
-        # A command built by cancel_run() above always carries the caller's
-        # own (non-empty) project -- _allowed_project() raises rather than
-        # letting a turn with no owner mapping reach this point. A missing
-        # or empty project here is therefore itself an ownership failure,
-        # not a value meaning "unscoped, allow any row" -- it fails exactly
-        # like a project mismatch, and exactly like a nonexistent id:
-        # confirming a foreign run's terminal status here would be the same
-        # disclosure the resolution-time ownership check exists to prevent.
-        if not isinstance(project, str) or not project or row_dict.get("project") != project:
+        # The command carries the project the resolved row held at proposal
+        # time. Two arms, both failing toward not_found rather than
+        # disclosure: a command with a real project must match the row's
+        # exactly, and a command with NO project (built from the exact-id
+        # fence arm for a row that had none -- Operator-launched runs have
+        # no project today) matches only a row that STILL has none. A row
+        # that gained an owner during the human's approval window fails
+        # closed, and a project-less command can never touch an owned row.
+        row_project = row_dict.get("project")
+        if isinstance(project, str) and project:
+            if row_project != project:
+                return {"status": "not_found", "id": run_id}
+        elif isinstance(row_project, str) and row_project:
             return {"status": "not_found", "id": run_id}
         if row_dict.get("status") != "running":
             return {"status": "already_terminal", "id": run_id}

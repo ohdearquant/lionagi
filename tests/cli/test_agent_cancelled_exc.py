@@ -11,9 +11,7 @@ import importlib
 import anyio
 import pytest
 
-# ---------------------------------------------------------------------------
 # Unit tests for lionagi.ln.concurrency.errors
-# ---------------------------------------------------------------------------
 
 
 class TestCacheAndReaderFunctions:
@@ -131,9 +129,7 @@ class TestCacheAndReaderFunctions:
         assert isinstance(exc, cancelled_exc_classes())
 
 
-# ---------------------------------------------------------------------------
 # Integration test: simulate the run_agent error path post-loop-exit
-# ---------------------------------------------------------------------------
 
 
 class TestRunAgentCancelledExcPath:

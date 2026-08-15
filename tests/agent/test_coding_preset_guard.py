@@ -9,20 +9,11 @@ import pytest
 
 from lionagi.agent.spec import AgentSpec
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 async def _make_branch(spec: AgentSpec):
     from lionagi.agent.factory import create_agent
 
     return await create_agent(spec, load_settings=False)
-
-
-# ---------------------------------------------------------------------------
-# AgentSpec.coding() — destructive-command guard
-# ---------------------------------------------------------------------------
 
 
 async def test_coding_preset_blocks_rm_rf():
@@ -106,11 +97,6 @@ async def test_coding_preset_guard_destructive_in_hook_handlers():
     assert not spec.hook_handlers.get("pre:bash"), (
         "guard_destructive must not also be registered in the ordinary pre:bash bucket"
     )
-
-
-# ---------------------------------------------------------------------------
-# Path-policy tests — the "strict path policy" claim must be functionally true
-# ---------------------------------------------------------------------------
 
 
 async def _invoke_pre_hooks(branch, tool_name: str, args: dict) -> None:
@@ -214,11 +200,6 @@ async def test_coding_preset_secure_false_no_path_guard():
     assert not spec.hook_handlers.get("pre:editor")
 
 
-# ---------------------------------------------------------------------------
-# Relative-path tests (guard_paths resolves against workspace root, not cwd)
-# ---------------------------------------------------------------------------
-
-
 async def test_coding_preset_reader_allows_relative_in_workspace(tmp_path):
     """A workspace-relative reader path ("src/foo.py") must be allowed."""
     spec = AgentSpec.coding(cwd=str(tmp_path))
@@ -263,11 +244,9 @@ async def test_coding_preset_editor_blocks_relative_traversal(tmp_path):
         )
 
 
-# ---------------------------------------------------------------------------
 # GateResult unification (ADR-0086 delta row 1) — the built-in coding guards
 # now get the same security -> user -> security recheck a PermissionPolicy
 # has always gotten, closing the mutation-gap asymmetry.
-# ---------------------------------------------------------------------------
 
 
 async def test_coding_preset_guard_rechecks_command_mutated_by_user_hook(tmp_path):
@@ -380,14 +359,6 @@ async def test_coding_preset_evaluator_exception_fails_closed(tmp_path):
     bash_tool = branch.acts.registry["bash"]
     with pytest.raises(PermissionError, match="evaluator error"):
         await bash_tool.preprocessor({"action": "run", "command": "echo hi"})
-
-
-# ---------------------------------------------------------------------------
-# Symlink-escape tests driven through the bound AgentSpec.coding() preprocessor
-# (proves the canonical containment helper is wired end-to-end via the
-# security_pre / GateResult path, not just the guard_paths() factory closure
-# in isolation).
-# ---------------------------------------------------------------------------
 
 
 async def test_coding_preset_reader_blocks_symlink_escaping_workspace(tmp_path):

@@ -144,7 +144,7 @@ export function isNoArtifactRootDetail(detail: string | undefined): boolean {
   return detail != null && detail.toLowerCase().includes("artifact root");
 }
 
-function FileViewerModal({
+export function FileViewerModal({
   runId,
   path,
   onClose,

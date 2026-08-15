@@ -76,6 +76,42 @@ def test_marks_terminal_without_delivery(job, monkeypatch):
     assert jobs.status(job)["notify_delivery"] == {"attempted": False}
 
 
+def test_flow_terminal_reason_reaches_mcp_status_and_delivery(job, monkeypatch):
+    """The nested MCP hook must retain the flow callback's degraded reason.
+
+    The flow notify adapter supplies its versioned payload in the child env.
+    Losing that reason here flattens ``completed + spawn_refused`` back to a
+    clean MCP job and sends the downstream notice without the degradation.
+    """
+    captured: dict = {}
+
+    def fake_run(argv, **kw):
+        captured["argv"] = argv
+        captured["input"] = kw.get("input")
+        return _FakeCompleted(0)
+
+    monkeypatch.setattr(_notify_hook.subprocess, "run", fake_run)
+    monkeypatch.setenv(
+        "LIONAGI_NOTIFY_PAYLOAD",
+        json.dumps(
+            {
+                "status": "completed",
+                "reason_code": "run.completed.spawn_refused",
+            }
+        ),
+    )
+    command = json.dumps(["notify", "{reason_code}"])
+
+    rc = _notify_hook.main(["--run-id", job, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    rec = jobs._read_job(job)
+    assert rec["reason_code"] == "run.completed.spawn_refused"
+    assert jobs.status(job)["reason_code"] == "run.completed.spawn_refused"
+    assert captured["argv"] == ["notify", "run.completed.spawn_refused"]
+    assert json.loads(captured["input"])["reason_code"] == "run.completed.spawn_refused"
+
+
 def test_command_override_substitutes_and_delivers(job, monkeypatch):
     captured: dict = {}
 
@@ -576,18 +612,14 @@ def test_a_configuration_with_no_program_in_it_names_none(job, monkeypatch):
 def test_the_delivery_commands_own_output_is_still_never_kept(job, monkeypatch):
     """Naming the program changes nothing about what the command may say.
 
-    Its stdout and stderr are free text that can carry a credential the command
+    Its stdout/stderr are free text that can carry a credential the command
     obtained anywhere, so the record holds only fields this hook chose. That
-    invariant is unchanged; what changed is how it is kept. The output used to
-    be discarded at the pipe, which also discarded any way to tell one failure
-    from another, so every failed delivery recorded a bare exit code. It is now
-    read, matched against a closed vocabulary, and dropped — only the matched
-    name is stored.
-
-    So this pins the boundary rather than the mechanism: the stored key set is
-    fixed, and the value in the one new field comes from the closed set. A
-    future change that lets an unmatched failure contribute its own words fails
-    here instead of passing review.
+    invariant is unchanged; what changed is how it's kept: output used to be
+    discarded at the pipe, which also discarded any way to tell one failure
+    from another, so every failed delivery recorded a bare exit code. It is
+    now read, matched against a closed vocabulary, and dropped -- only the
+    matched name is stored, so a future change letting an unmatched failure
+    contribute its own words fails here instead of passing review.
     """
     seen: dict = {}
 

@@ -22,9 +22,6 @@ def _write(path: Path, body: str) -> Path:
     return path
 
 
-# ── per-directory resolver ───────────────────────────────────────────
-
-
 def test_hyphen_request_resolves_underscore_file(tmp_path: Path) -> None:
     agents_dir = tmp_path / "agents"
     path = _write(agents_dir / "postmortem_lead.md", "x\n")
@@ -94,9 +91,6 @@ def test_one_spelling_in_both_layouts_is_not_ambiguous(tmp_path: Path) -> None:
     _write(agents_dir / "postmortem_lead.md", "flat\n")
 
     assert _resolve_profile_path(agents_dir, "postmortem-lead") == dir_path
-
-
-# ── full loader across both lookup roots ─────────────────────────────
 
 
 @pytest.fixture

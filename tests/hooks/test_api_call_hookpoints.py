@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0047 delta row 2 (issue #1965): API_PRE_CALL / API_POST_CALL / API_STREAM_CHUNK
+"""ADR-0047 delta row 2: API_PRE_CALL / API_POST_CALL / API_STREAM_CHUNK
 gain a real emit site through the typed, optional service-to-session adapter in
 ``operations/_api_hooks.py``, wired at ``operations/chat/chat.py`` (one-shot API
 calls) and ``operations/run/run.py`` (CLI streaming). A standalone iModel (no
@@ -61,9 +61,6 @@ def _make_fake_cli_model(chunks: list[StreamChunk]) -> iModel:
 
     m.stream = stream
     return m
-
-
-# ── chat() (one-shot API path) ───────────────────────────────────────────────
 
 
 async def test_chat_emits_api_pre_and_post_call_on_success():
@@ -195,9 +192,6 @@ async def test_chat_without_session_bus_does_not_crash():
     assert result == "hello"
 
 
-# ── run() (CLI streaming path) ───────────────────────────────────────────────
-
-
 async def test_run_emits_pre_call_stream_chunks_and_post_call():
     branch = Branch()
     branch.chat_model = _make_fake_cli_model(
@@ -322,7 +316,7 @@ async def test_chat_api_post_call_never_leaks_secret_shaped_error_text():
     assert secret not in json_dumps(post)
 
 
-# ── unified pairing/field invariant ──────────────────────────────────────────
+# unified pairing/field invariant
 #
 # Every API_PRE_CALL is followed by exactly one API_POST_CALL carrying
 # whatever is actually known at that point about how the call ended:
@@ -455,9 +449,6 @@ async def test_api_post_call_field_invariant_holds_across_exit_paths(scenario):
         assert post["status"] in ("failed", "error")
 
 
-# ── closed telemetry payload (issue #1965 fix leg r3) ───────────────────────
-
-
 async def test_api_post_call_closed_payload_scrubs_secret_shaped_marker_everywhere():
     """SessionObserver-backed probe: a settled call whose status object,
     tokens mapping, model name, and provider name all carry the SAME
@@ -522,9 +513,6 @@ async def test_api_post_call_closed_payload_preserves_legitimate_values():
     assert post["status"] == "completed"
 
 
-# ── multi-turn usage accumulation (issue #1965 fix leg r3) ──────────────────
-
-
 async def test_run_accumulates_usage_across_multiple_flush_windows():
     """Codex splits one run() call into multiple flush windows (a tool-call
     round-trip forces a flush between "result" chunks) and reports marginal
@@ -586,9 +574,6 @@ async def test_run_single_result_chunk_usage_unaffected_by_accumulator():
 
     post = calls[HookPoint.API_POST_CALL][0]
     assert post["tokens"] == {"input_tokens": 5, "output_tokens": 3}
-
-
-# ── stream chunk_type redaction (issue #1965 fix leg r4) ────────────────────
 
 
 async def test_api_stream_chunk_scrubs_secret_shaped_marker_in_chunk_type():
@@ -673,9 +658,6 @@ async def test_api_stream_chunk_redacts_prefixless_credential_chunk_type():
     payload = _sanitize_signal_payload(observer.by_type(HookSignal)[0])
     assert secret not in json_dumps(payload)
     assert payload["kwargs"]["chunk_type"] == "unknown"
-
-
-# ── fix-forward: emit-site numeric / logging / credential-shape hardening ────
 
 
 def test_typed_usage_drops_non_finite_counts_without_raising():

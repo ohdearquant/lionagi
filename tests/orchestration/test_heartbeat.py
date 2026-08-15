@@ -50,6 +50,32 @@ def test_floor_ticks_without_working_delta_emit_stall_warning():
     assert "60s sample" in warning
 
 
+def test_zero_idle_peers_do_not_erase_relative_activity_floor():
+    """Never-scheduled descendants must not make peer comparison inert.
+
+    Agent trees commonly contain one working process, one ticking helper, and
+    several blocked helpers.  Including the blocked zero-rate processes in the
+    median makes it zero, so the relative cutoff disappears and only the
+    absolute fallback can decide.  Here the busiest process is only 3x the one
+    active peer, below the declared 4x discriminator, even though it easily
+    clears the absolute floor.
+    """
+    warning = _warning(
+        (
+            {41: 8.0, 42: 3.0, 43: 5.0, 44: 2.0, 45: 4.0},
+            True,
+        ),
+        (
+            {41: 9.8, 42: 3.6, 43: 5.0, 44: 2.0, 45: 4.0},
+            True,
+        ),
+        sample_interval_seconds=60,
+    )
+
+    assert warning is not None
+    assert "median peer rate" in warning
+
+
 @pytest.mark.parametrize(
     "current",
     [

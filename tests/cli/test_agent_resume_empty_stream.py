@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for li agent -r (resume) empty-stream detection (closes #1427)."""
+"""Tests for li agent -r (resume) empty-stream detection."""
 
 from __future__ import annotations
 
@@ -12,9 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # Shared stub helpers
-# ---------------------------------------------------------------------------
 
 
 def _wire_agent_stubs(monkeypatch, tmp_path: Path, operate_return=None):
@@ -81,9 +79,7 @@ def _make_branch_json(tmp_path: Path) -> tuple[str, Path]:
     return branch_id, p
 
 
-# ---------------------------------------------------------------------------
 # Test: resume with empty stream → non-zero exit + actionable message
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -200,9 +196,7 @@ async def test_resume_empty_stream_exit_code_nonzero(monkeypatch, tmp_path):
     assert rc != 0, f"Expected non-zero exit code on empty-stream resume, got {rc}"
 
 
-# ---------------------------------------------------------------------------
 # Test: resume with non-empty stream → exit 0 (no regression)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -10,10 +10,6 @@ import pytest
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.connections.registry import EndpointMeta, EndpointRegistry, EndpointType
 
-# ---------------------------------------------------------------------------
-# Ollama: no key required; auth_type="none"; api_key stays None
-# ---------------------------------------------------------------------------
-
 
 class TestOllamaNoKeyRequired:
     def test_ollama_endpoint_has_no_api_key_env(self):
@@ -64,11 +60,6 @@ class TestOllamaNoKeyRequired:
         assert config._api_key == "ollama_key"
 
 
-# ---------------------------------------------------------------------------
-# Provider api_key_env metadata declared
-# ---------------------------------------------------------------------------
-
-
 def test_api_key_env_metadata_on_provider_configs():
     """All non-Ollama API providers must declare _API_KEY_ENV; Ollama must not."""
     from lionagi.providers.anthropic._config import AnthropicConfigs
@@ -105,11 +96,6 @@ def test_api_key_env_metadata_on_provider_configs():
 
     # Ollama has no key
     assert getattr(OllamaConfigs, "_API_KEY_ENV", None) is None
-
-
-# ---------------------------------------------------------------------------
-# EndpointMeta.create_config resolves api_key via api_key_env
-# ---------------------------------------------------------------------------
 
 
 def test_endpoint_meta_resolves_api_key_from_settings():
@@ -173,11 +159,6 @@ def test_endpoint_meta_respects_api_key_override():
 
     # Explicit override wins over api_key_env resolution
     assert config._api_key == "sk-explicit"
-
-
-# ---------------------------------------------------------------------------
-# Header parity: resolved api_key produces correct auth header
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

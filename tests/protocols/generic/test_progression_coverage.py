@@ -16,9 +16,7 @@ def _make_prog(*elems) -> tuple[Progression, list[Element]]:
     return prog, items
 
 
-# ---------------------------------------------------------------------------
 # __getitem__: TypeError and empty-slice branches
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionGetItem:
@@ -33,9 +31,7 @@ class TestProgressionGetItem:
             _ = prog[10:20]
 
 
-# ---------------------------------------------------------------------------
 # __setitem__: slice path and out-of-range int insert
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionSetItem:
@@ -54,9 +50,7 @@ class TestProgressionSetItem:
         assert len(prog) == 3
 
 
-# ---------------------------------------------------------------------------
 # include: ValueError and empty-refs paths
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionInclude:
@@ -73,9 +67,7 @@ class TestProgressionInclude:
         assert len(prog) == original_len
 
 
-# ---------------------------------------------------------------------------
 # exclude: ValueError and empty-refs paths
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionExclude:
@@ -92,9 +84,7 @@ class TestProgressionExclude:
         assert len(prog) == original_len
 
 
-# ---------------------------------------------------------------------------
 # pop: middle-index path
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionPop:
@@ -107,9 +97,7 @@ class TestProgressionPop:
         assert len(prog) == 3
 
 
-# ---------------------------------------------------------------------------
 # remove: invalid UUID string
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionRemove:
@@ -125,9 +113,7 @@ class TestProgressionRemove:
         assert len(prog) == orig_len
 
 
-# ---------------------------------------------------------------------------
 # index: with end parameter
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionIndex:
@@ -142,9 +128,7 @@ class TestProgressionIndex:
             prog.index(items[3].id, 0, 2)
 
 
-# ---------------------------------------------------------------------------
 # __add__ and __isub__
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionArithmetic:
@@ -172,9 +156,7 @@ class TestProgressionArithmetic:
         assert len(prog) == 2
 
 
-# ---------------------------------------------------------------------------
 # Comparison operators
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionComparisons:

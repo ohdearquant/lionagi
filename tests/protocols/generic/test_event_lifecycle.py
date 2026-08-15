@@ -13,9 +13,7 @@ import pytest
 from lionagi.ln.types import Unset
 from lionagi.protocols.generic.event import Event, EventStatus
 
-# ---------------------------------------------------------------------------
 # Test helpers
-# ---------------------------------------------------------------------------
 
 
 class SuccessEvent(Event):
@@ -74,9 +72,7 @@ class StreamCancelledEvent(Event):
         yield "after"  # never reached
 
 
-# ---------------------------------------------------------------------------
 # invoke() lifecycle tests
-# ---------------------------------------------------------------------------
 
 
 class TestInvokeLifecycle:
@@ -195,9 +191,7 @@ class TestInvokeLifecycle:
         assert event.execution.response == "ok"
 
 
-# ---------------------------------------------------------------------------
 # stream() lifecycle tests
-# ---------------------------------------------------------------------------
 
 
 class TestStreamLifecycle:

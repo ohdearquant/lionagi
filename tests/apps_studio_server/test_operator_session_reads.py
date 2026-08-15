@@ -123,9 +123,7 @@ def db_path(tmp_path: Path, monkeypatch: Any) -> Path:
     return path
 
 
-# --------------------------------------------------------------------------
 # list_sessions
-# --------------------------------------------------------------------------
 
 
 async def test_list_sessions_happy_path(db_path):
@@ -182,9 +180,7 @@ async def test_list_sessions_redacts_secret_shaped_name(db_path):
     assert SECRET_VALUE not in str(result)
 
 
-# --------------------------------------------------------------------------
 # session_detail
-# --------------------------------------------------------------------------
 
 
 async def test_session_detail_happy_path(db_path):
@@ -292,9 +288,7 @@ async def test_session_detail_falls_back_on_invalid_cursor(db_path):
     assert result["source"] == "fallback"
 
 
-# --------------------------------------------------------------------------
 # session_signals
-# --------------------------------------------------------------------------
 
 
 async def test_session_signals_happy_path(db_path):

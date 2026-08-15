@@ -4,9 +4,7 @@ import pytest
 
 from lionagi.testing import LionAGIMockFactory
 
-# ---------------------------------------------------------------------------
 # A -- Imports & Construction (no mocks, no LLM calls)
-# ---------------------------------------------------------------------------
 
 
 class TestImportsAndTopLevelExports:
@@ -205,9 +203,7 @@ class TestSessionConstruction:
         assert len(session.branches) >= 1
 
 
-# ---------------------------------------------------------------------------
 # B -- Schema & Tool Registration (no mocks)
-# ---------------------------------------------------------------------------
 
 
 class TestSchemaAndToolRegistration:
@@ -313,9 +309,7 @@ class TestSchemaAndToolRegistration:
         assert tool.tool_schema["function"]["name"] == "search"
 
 
-# ---------------------------------------------------------------------------
 # C -- API/Method Existence (no mocks, no calls)
-# ---------------------------------------------------------------------------
 
 
 class TestBranchMethodsExist:
@@ -433,9 +427,7 @@ class TestMessageTypeConstruction:
         assert MessageRole.ASSISTANT.value == "assistant"
 
 
-# ---------------------------------------------------------------------------
 # D -- LLM Integration (mocked, uses fixtures from conftest)
-# ---------------------------------------------------------------------------
 
 
 class TestMockedLLMOperations:

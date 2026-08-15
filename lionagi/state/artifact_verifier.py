@@ -299,20 +299,16 @@ def stale_artifact_markers(
     """Cheaply flag whether a recorded verdict's produced artifacts may no
     longer match what was on disk at `checked_at`.
 
-    This never re-verifies pass/fail — it only checks mtime+size and presence
-    for the artifacts the recorded verdict already found, so a caller can
-    label the verdict's currency instead of presenting a completion-time
-    snapshot as current state. Comparing size alongside mtime (both already
-    available from a single `stat()` call, so this stays a cheap read-time
-    check rather than a re-verify) narrows, though does not close, the
-    false-negative window a bare mtime check would have against a rewrite
-    that preserves both mtime and size.
-
-    Returns None only when the check cannot be performed at all — no
-    `artifacts_root`, or a verdict missing the `checked_at`/`produced` fields
-    the check needs (e.g. a payload recorded before this check existed). The
-    caller uses that to report an explicit unknown state rather than
-    silently treating an unchecked verdict as clean.
+    Never re-verifies pass/fail -- only checks mtime+size and presence for
+    the artifacts the recorded verdict already found (both from one
+    `stat()` call), so a caller can label the verdict's currency instead of
+    presenting a completion-time snapshot as current state. Comparing size
+    alongside mtime narrows, but doesn't close, the false-negative window a
+    bare mtime check would have against a rewrite that preserves both.
+    Returns None only when the check can't be performed at all -- no
+    `artifacts_root`, or a verdict missing the fields it needs -- so the
+    caller can report an explicit unknown state rather than treating an
+    unchecked verdict as clean.
     """
     if not artifacts_root:
         return None
