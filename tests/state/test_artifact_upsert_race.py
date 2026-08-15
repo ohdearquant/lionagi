@@ -184,7 +184,7 @@ def _run_race(db_path: Path, jobs: list[tuple[str, str, str, str | None, str | N
     return results
 
 
-# ── Same natural key, all four ADR-0077 shapes ───────────────────────────────
+# Same natural key, all four ADR-0077 shapes
 
 
 @pytest.mark.parametrize(
@@ -222,7 +222,7 @@ def test_concurrent_insert_artifact_same_key_does_not_raise(
     assert _count_artifacts(db_path) == 1, "the same natural key must upsert, not duplicate"
 
 
-# ── Different-keys control: the harness must not itself serialize writers ───
+# Different-keys control: the harness must not itself serialize writers
 
 
 def test_concurrent_insert_artifact_different_keys_both_succeed(tmp_path: Path) -> None:

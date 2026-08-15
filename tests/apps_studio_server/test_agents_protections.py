@@ -33,9 +33,7 @@ def _make_agents_root(tmp_path, monkeypatch):
     return root
 
 
-# ---------------------------------------------------------------------------
 # create_agent()
-# ---------------------------------------------------------------------------
 
 
 def test_create_agent_writes_file_and_defaults_to_editable(tmp_path, monkeypatch):
@@ -202,9 +200,7 @@ def test_padded_unknown_role_is_still_rejected(tmp_path, monkeypatch):
         create_agent("padded-bogus-role", {"role": "  not-a-real-role  "})
 
 
-# ---------------------------------------------------------------------------
 # delete_agent() protections
-# ---------------------------------------------------------------------------
 
 
 def test_delete_ordinary_agent_succeeds(tmp_path, monkeypatch):
@@ -314,9 +310,7 @@ def test_delete_default_agent_refused_even_when_user_owned(tmp_path, monkeypatch
     assert (root / "default.md").exists()
 
 
-# ---------------------------------------------------------------------------
 # update_agent() protections
-# ---------------------------------------------------------------------------
 
 
 def test_edit_system_agent_refused(tmp_path, monkeypatch):
@@ -413,9 +407,7 @@ def test_edit_default_agent_succeeds(tmp_path, monkeypatch):
     assert updated["effort"] == "medium"
 
 
-# ---------------------------------------------------------------------------
 # HTTP route wiring (protection status codes)
-# ---------------------------------------------------------------------------
 
 
 def _make_patched_client(tmp_path, monkeypatch):
@@ -484,12 +476,10 @@ def test_route_delete_ordinary_agent_is_200(tmp_path, monkeypatch):
     assert r2.status_code == 404
 
 
-# ---------------------------------------------------------------------------
 # The generic /definitions/agent/{name} save route is the other write path onto
 # agent files (Studio's own AgentDetail editor uses it, not PUT /agents/{name}).
 # It must honour the same "system agent is not editable" rule or the protection
 # added above is a no-op in practice.
-# ---------------------------------------------------------------------------
 
 
 def _make_definitions_client(tmp_path, monkeypatch):
@@ -580,11 +570,9 @@ def test_definitions_save_route_allows_ordinary_agent(tmp_path, monkeypatch):
     assert (agents_dir / "useragent.md").read_text().strip() == "# updated"
 
 
-# ---------------------------------------------------------------------------
 # The definitions save route also has to run the same cast role/mode
 # validation POST/PUT /api/agents/{name} apply -- otherwise a payload the
 # agents API rejects can still land on disk through the raw markdown door.
-# ---------------------------------------------------------------------------
 
 
 def test_definitions_save_route_rejects_unknown_role(tmp_path, monkeypatch):

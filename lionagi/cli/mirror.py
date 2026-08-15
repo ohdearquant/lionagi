@@ -27,12 +27,8 @@ CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 
 
 def _display_path(path: Path) -> str:
-    """Render a path under the home directory as ~/... for display.
-
-    Help text is the same on every machine this way. Printing the expanded
-    absolute path puts the running user's home directory into --help output,
-    which differs per machine and ends up in anything that captures it.
-    """
+    """Render a path under the home directory as ~/... so --help output doesn't
+    embed the running user's absolute home directory."""
     try:
         return f"~/{path.relative_to(Path.home())}"
     except ValueError:
@@ -120,8 +116,8 @@ class _FileState:
     tool_names: dict[str, str] = field(default_factory=dict)
     project: str | None = None
     project_source: str | None = None
-    # Raw transcript cwd, the session's artifact root (issue #2848) -- unlike
-    # `project`, never bucketed/fallen-back, just the directory as reported.
+    # Raw transcript cwd, the session's artifact root -- unlike `project`,
+    # never bucketed/fallen-back, just the directory as reported.
     cwd: str | None = None
     model: str | None = None
     name: str | None = None
@@ -149,10 +145,7 @@ class _FileState:
 @dataclass
 class _Lineage:
     """Cross-session conversation-lineage detector, kept across poll passes.
-
-    Indexes each file's leaf uuid; when a file's root parent resolves to a
-    different session's leaf (a continuation via ``parentUuid``), records the link.
-    """
+    See docs/internals/cli.md#mirror.py."""
 
     leaf_owner: dict[str, str] = field(default_factory=dict)  # event uuid -> session_uid
     pending: dict[str, str] = field(default_factory=dict)  # child session_uid -> parent uuid
@@ -220,10 +213,9 @@ def _resolve_project_for_mirror(cwd: str) -> tuple[str, str]:
 
 
 def _load_states() -> dict[str, _FileState]:
-    # Persist tool_names, leaf_uuid and the current codex turn alongside the byte
-    # offset so a restart resumes without losing state that otherwise lives only in
-    # process memory. Dropping the turn would leave every message written after a
-    # restart unattributed until the next turn_context happens to arrive.
+    # offsets.json persisted-state contract: see docs/internals/cli.md#mirror.py.
+    # Dropping `turn` would leave messages written after a restart unattributed
+    # until the next turn_context arrives.
     try:
         raw = json.loads(_OFFSETS_PATH.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
@@ -255,12 +247,10 @@ def _save_states(states: dict[str, _FileState]) -> None:
         }
         for key, st in states.items()
     }
-    # Only the byte offset is this module's own arithmetic. The session uid, the
-    # leaf uuid and the tool-name map are copied out of a transcript another
-    # program wrote, through a json.loads that accepts NaN and Infinity, and none
-    # of them is coerced to str on the way in. So a token no strict reader accepts
-    # can reach this file, and once here it round-trips through the equally
-    # permissive read above and never leaves. Refuse at the write instead.
+    # The session uid, leaf uuid, and tool-name map are copied out of a transcript
+    # another program wrote via a json.loads that accepts NaN/Infinity and never
+    # coerces to str. Refuse those tokens at the write instead of letting them
+    # round-trip forever through the equally permissive read above.
     raise_if_non_finite(payload)
     tmp = _OFFSETS_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload))
@@ -311,18 +301,12 @@ def _read_new_events(
     """Read complete JSONL lines past the cursor.
 
     Returns ``(events, sources, new_offset, unreadable)``. ``sources`` is the
-    per-event ``(byte_offset, byte_count, sha256)`` of each raw line, in the
-    same order as ``events`` — the basis for a resolvable mirror source pointer
-    (see ``_mirror_common.bound_mirror_content``).
-
-    The cursor is NOT advanced here — the caller only commits it after the batch
-    is durably mirrored, so a write failure re-reads the same lines next pass.
-
-    ``unreadable`` counts lines that were not JSON, or were JSON but not a record
-    object. It is reported rather than folded into the events count because a line
-    that could not be read is not a line deliberately not mirrored, and a consumer
-    comparing what a file held against what landed needs the difference between a
-    damaged corpus and an uninteresting one.
+    per-event ``(byte_offset, byte_count, sha256)`` of each raw line, same order
+    as ``events`` — basis for a resolvable mirror source pointer (see
+    ``_mirror_common.bound_mirror_content``). ``unreadable`` (lines that weren't
+    JSON, or weren't a record object) is reported separately from the events
+    count so a consumer can tell a damaged corpus from an uninteresting one.
+    Cursor-advance contract: see docs/internals/cli.md#mirror.py.
     """
     size = path.stat().st_size
     if state.offset > size:  # file truncated/rotated — re-read from the top.
@@ -387,10 +371,8 @@ def _derive_metadata(state: _FileState, events: list[dict[str, Any]]) -> None:
 
 
 def _peek_head(path: Path) -> tuple[str, str | None]:
-    """Recover (sessionId, cwd) from a transcript's head without consuming the tail.
-
-    Needed for idle files after a restart, which have no new events to derive these from.
-    """
+    """Recover (sessionId, cwd) from a transcript's head without consuming the
+    tail. See docs/internals/cli.md#mirror.py."""
     uid = ""
     cwd: str | None = None
     try:
@@ -418,13 +400,9 @@ def _peek_head(path: Path) -> tuple[str, str | None]:
 
 async def _attribute_idle(db, state: _FileState, cwd: str) -> None:
     """Attribute an idle/already-read transcript and backfill its session row.
-
-    Covers sessions mirrored before project/artifact-root attribution existed,
-    which have no new events to trigger the normal (streamed-event) attribution
-    path. The two backfills are independent: a row can already carry a project
-    from an earlier mirror pass while still missing artifacts_path (issue #2848's
-    dominant case), so each is only (re)written when actually missing.
-    """
+    See docs/internals/cli.md#mirror.py. Project and artifacts_path backfill
+    independently — a row can already carry one while missing the other, so
+    each is (re)written only when actually missing."""
     from lionagi.state.claude_mirror import session_db_id
 
     state.project, state.project_source = _resolve_project_for_mirror(cwd)
@@ -447,12 +425,10 @@ async def _attribute_idle_codex(db, state: _FileState) -> None:
     """Backfill artifacts_path for an already-read Codex rollout.
 
     ``_mirror_one_codex`` recovers ``cwd`` from the rollout header on the
-    head-check pass, but if the file has no new records that same pass (its
-    offset was restored at EOF, e.g. after a restart), it returns before ever
-    calling ``mirror_session`` — the only place ``set_session_provenance``
-    normally runs for an existing row. Without this, such a row's
-    artifacts_path stays NULL forever, even though the header supplied it.
-    """
+    head-check pass, but if that same pass has no new records (offset restored
+    at EOF, e.g. after a restart) it returns before ever calling
+    ``mirror_session`` — the only other place ``set_session_provenance`` runs.
+    Without this, such a row's artifacts_path stays NULL forever."""
     from lionagi.state.codex_mirror import session_db_id
 
     if not state.session_uid or not state.cwd:
@@ -500,8 +476,8 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
     lineage.note_head(state, events)
     lineage.note_leaf(state, events)
 
-    # Always created/kept running; the session-level idle sweep (after the whole
-    # pass) is what flips it to completed.
+    # Always kept "running"; the session-level idle sweep after the whole pass
+    # flips it to completed.
     written = await mirror_session(
         db,
         session_uid=state.session_uid,
@@ -552,12 +528,10 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window, line
                 if not state.session_uid:
                     state.session_uid = uid
                 if state.project is None and not state.attr_peeked:
-                    # Set the flag only after a successful backfill (mirrors
-                    # the codex_provenance_peeked fix below): _one_pass's
-                    # per-transcript exception handler swallows a failure
-                    # here, and a flag set beforehand would then suppress
-                    # every later retry for the process lifetime of this
-                    # in-memory state.
+                    # Flag set only after a successful backfill: this loop's
+                    # exception handler swallows failures here, and a flag set
+                    # beforehand would suppress every later retry for this
+                    # process's lifetime.
                     if cwd:
                         await _attribute_idle(db, state, cwd)
                     state.attr_peeked = True
@@ -585,11 +559,9 @@ def _peek_codex_head(path: Path) -> tuple[str, dict[str, Any] | None]:
     ``("headerless", None)`` for a complete first line that is not one, and
     ``("torn", None)`` when the line is still being written or unreadable.
     Completeness is decided by the trailing newline BEFORE any parse attempt:
-    rollouts are append-only JSONL, so a line without its newline is still
-    arriving and defers even when the bytes so far happen to parse — later
-    appends can extend or corrupt it. A newline-terminated line that cannot
-    parse is permanently corrupt and settles as headerless; the normal reader
-    accounts for the bad line.
+    rollouts are append-only JSONL, so a line without its newline may still be
+    arriving even if the bytes so far happen to parse. A newline-terminated
+    line that fails to parse is permanently corrupt and settles as headerless.
     """
     from lionagi.state.codex_mirror import session_meta
 
@@ -657,34 +629,25 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
     if not state.head_checked:
         head_status, meta = _peek_codex_head(path)
         if head_status == "torn":
-            # The first line is still being written (or unreadable), so the
-            # rollout's identity is unknown. Mirroring waits along with the
-            # classification: writing records now would key them under the path
-            # stem while the header's real UID arrives next pass, splitting one
-            # rollout into two sessions — and committing head_checked would let
-            # an orchestrated rollout slip past the skip forever.
+            # Identity unknown while the header line is still arriving.
+            # Mirroring waits with the classification: writing records now would
+            # key them under the path stem while the real UID arrives next pass,
+            # splitting one rollout into two sessions, and committing
+            # head_checked would let an orchestrated rollout skip past forever.
             return 0
         if meta and meta.get("originator") in SKIPPED_ORIGINATORS:
-            # An orchestrator's own run (e.g. a lionagi agent leg) — its
-            # session already exists under the agent's name; importing the
-            # rollout too is the double entry. Absorb what an older version
-            # may have imported (under either id this file was ever keyed
-            # by), then never read this file again.
+            # An orchestrator's own run (e.g. a lionagi agent leg) already has a
+            # session under the agent's name; importing the rollout too would
+            # double it. Absorb whatever an older version may have imported
+            # under either id this file was ever keyed by, then never read it
+            # again. State fields commit only once both absorptions return, so
+            # a failed attempt leaves exactly what the next pass needs to
+            # retry: see docs/internals/cli.md#mirror.py.
             prior_uid = state.session_uid  # a stem fallback from a pre-header pass
             resolved_uid = meta["rollout_uid"] or path.stem
             await absorb_orchestrated_session(db, resolved_uid)
             if prior_uid and prior_uid != resolved_uid:
                 await absorb_orchestrated_session(db, prior_uid)
-            # Nothing is committed to the state until both absorptions return,
-            # so a failed attempt leaves exactly what the next one needs to
-            # repeat it. Committing head_checked would stop the header being
-            # re-read, and the rollout would then be mirrored after all —
-            # the same failure the torn-header branch above declines to cause.
-            # Committing orchestrated would retire the file with a row nobody
-            # ever tore down. Overwriting session_uid would lose the stem the
-            # second absorption call needs. Absorption fails for an ordinary
-            # reason now that a contended teardown gives up rather than waiting,
-            # so this path carries real traffic.
             state.session_uid = resolved_uid
             state.head_checked = True
             state.orchestrated = True
@@ -702,10 +665,7 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
     if not records:
         state.offset = new_offset
         if state.cwd and not state.codex_provenance_peeked:
-            # Set the flag only after a successful backfill: _codex_pass's
-            # per-rollout exception handler swallows a failure here, and a
-            # flag set beforehand would then suppress every later retry for
-            # the process lifetime of this in-memory state.
+            # Flag set only after success, same reasoning as _one_pass above.
             await _attribute_idle_codex(db, state)
             state.codex_provenance_peeked = True
         return 0
@@ -749,12 +709,10 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         state.created = True
         progress(f"  mirror: {state.name or state.session_uid[:8]} (+{written} msgs)")
     elif not written and records and not state.barren_reported:
-        # A file the mirror read in full and produced nothing from is a finding, not
-        # a quiet skip: without this it is indistinguishable from a file not yet
-        # reached. The durable half is the session row the writer keeps for such a
-        # file; this only surfaces it in the run that saw it. Measured cause on the
-        # local corpus: 6 of 29,652 rollouts (all 2025-09-01/02) predate the
-        # enveloped record format and match no record type this mirror reads.
+        # A file read in full but mirrored nothing is a finding, not a quiet
+        # skip — without this it's indistinguishable from a file not yet
+        # reached. Known cause: rollouts predating the enveloped record format
+        # match no record type this mirror reads.
         state.barren_reported = True
         warn(
             f"{path.name}: read {sum(tally.seen.values())} record(s), mirrored none "
@@ -795,13 +753,12 @@ async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, th
 async def _absorb_backfill(db) -> bool:
     """Remove previously-imported rows for orchestrator-spawned rollouts.
 
-    It reads recorded provenance rather than the rollout tree, so it also
-    reaches rows whose files fall outside the sweep window; per-file absorption
-    in ``_mirror_one_codex`` covers the rest. Returns whether the sweep
-    completed cleanly — a caller that runs this once per process must only
-    stand down on True, else one bad pass would retire the backfill for the
-    process lifetime. Errors are logged, never raised: reconciliation must not
-    keep the mirror down.
+    Reads recorded provenance rather than the rollout tree, so it also reaches
+    rows whose files fall outside the sweep window (per-file absorption in
+    ``_mirror_one_codex`` covers the rest). Returns whether the sweep completed
+    cleanly — a caller that runs this once per process must only stand down on
+    True, else one bad pass retires the backfill for the process lifetime.
+    Errors are logged, never raised: reconciliation must not keep the mirror down.
     """
     from lionagi.state.codex_mirror import absorb_orchestrated_backfill
 
@@ -831,11 +788,10 @@ async def mirror_forever(
     """Tail recent transcripts into StateDB until ``stop`` is set.
 
     ``source`` selects which transcript trees to read ("claude", "codex", or
-    "both") and defaults to claude alone. A caller that scopes ``root`` has
-    scoped the mirror, and must not silently acquire an unscoped codex tree
-    under the home directory; asking for codex is therefore explicit.
-
-    Studio's in-process entry point; ``li mirror`` keeps its own loop in ``_run``.
+    "both") and defaults to claude alone — a caller that scopes ``root`` must
+    not silently also acquire an unscoped codex tree under the home directory,
+    so codex is opt-in. Studio's in-process entry point; ``li mirror`` keeps
+    its own loop in ``_run``. See docs/internals/cli.md#mirror.py.
     """
     from lionagi.state.db import StateDB
 
@@ -854,7 +810,7 @@ async def mirror_forever(
     lineage = _Lineage()
     threads: dict[str, str] = {}
     _seed_lineage(lineage, states)
-    # The connection lives inside the supervise loop so a failure to open it (e.g. a
+    # Connection lives inside the supervise loop so a failed open (e.g. a
     # locked/half-migrated state.db at studio startup) is retried, not fatal.
     backfilled = False
     while not stop.is_set():
@@ -914,8 +870,8 @@ async def _run(args: argparse.Namespace) -> int:
         if getattr(args, "codex_root", None)
         else CODEX_SESSIONS_DIR
     )
-    # A requested source whose tree is missing drops out with a warning; only when
-    # nothing requested is readable is there no work to do at all.
+    # A requested source whose tree is missing drops out with a warning; only
+    # when nothing requested is readable is there no work to do.
     if want_claude and not root.exists():
         warn(f"no Claude projects directory at {root}")
         want_claude = False
@@ -937,9 +893,8 @@ async def _run(args: argparse.Namespace) -> int:
     hint(f"li mirror: {mode} over {trees}")
 
     async with StateDB() as db:
-        # Retried every pass until one sweep completes cleanly, same as the
-        # studio's mirror_forever — a transient failure on the first attempt
-        # must not retire the backfill for the process lifetime.
+        # Retried every pass until one sweep completes cleanly (see
+        # _absorb_backfill), same as studio's mirror_forever.
         backfilled = not want_codex
         while True:
             if not backfilled:

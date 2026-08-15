@@ -269,28 +269,11 @@ def _reserve_run_dir() -> tuple[str, Path]:
 def _discard_reservation(d: Path) -> bool:
     """Give a reserved directory back, along with what a submission put in it.
 
-    A submission that fails partway through writing has already left files
-    behind, so removing only an empty directory would give the reservation back
-    for some failures and not others. The files a submission writes into its own
-    reservation are named here, and only those: they are addressed as fixed
-    names under *d*, never through a path a caller handed in. A caller may name
-    an MCP config that lives anywhere at all, and that file is theirs — it is not
-    part of this reservation whatever it points at, and nothing here can be
-    talked into deleting it.
+    See docs/internals/mcp.md#reservation-giveback for why only the fixed
+    reservation filenames are removed, why ``rmdir``'s refusal is the safety
+    net rather than a pre-check, and what the stranding marker means.
 
-    ``rmdir`` refuses a directory with anything in it, and that refusal stays the
-    safety here rather than becoming a check taken beforehand: whatever this is
-    asked to remove, a directory holding a run's state survives it — anything not
-    on the short list above stops the removal. A removal that fails for any other
-    reason leaves a directory nobody claimed, which is worth less than the error
-    that sent us here.
-
-    Returns whether the directory is actually gone afterward. When it is not —
-    the one case this function suppresses rather than raises for — a marker is
-    left in what remains of it, so a directory found later under the jobs root
-    with no job record reads as a giveback that could not run rather than as one
-    that succeeded; both leave the same absence of a job otherwise, and nothing
-    else here tells them apart.
+    Returns whether the directory is actually gone afterward.
     """
     for name in _RESERVATION_CONTENTS:
         try:
@@ -313,19 +296,12 @@ def _discard_reservation(d: Path) -> bool:
 
 
 def _discard_reservation_and_warn(d: Path, run_id: str) -> None:
-    """Give a reservation back, and say so when the giveback itself fails.
+    """Give a reservation back, and log a warning when the giveback fails.
 
-    ``_discard_reservation``'s own marker only helps an operator who later
-    goes looking under the jobs root. The boolean it returns is the only
-    signal available at the moment the failure actually happens, so every
-    caller that discards a reservation on an error path must act on it here
-    rather than let a `False` disappear along with the exception it rode in on.
-
-    The boolean says nothing about whether the marker write itself landed —
-    that write is best-effort and suppresses its own ``OSError`` — so this
-    checks the marker's actual presence afterward rather than assuming it from
-    the directory surviving. An operator reading the warning must not be sent
-    looking for a file that was never written.
+    Checks the stranding marker's actual presence rather than assuming it from
+    the directory surviving, since the marker write is itself best-effort — an
+    operator reading the warning must not be sent looking for a file that was
+    never written. See docs/internals/mcp.md#reservation-giveback.
     """
     if _discard_reservation(d):
         return
@@ -350,21 +326,11 @@ def _discard_reservation_and_warn(d: Path, run_id: str) -> None:
 
 
 def _write_job(record: dict[str, Any]) -> None:
-    # Publish atomically: write a unique temp file in the same directory, then
-    # os.replace() it into place. os.replace is atomic on the same filesystem, so
-    # a concurrent reader (status / list_jobs) never observes a torn file — and a
-    # failed write leaves the previous record intact instead of a partial one. The
-    # temp name is per-write-unique so two writers to the same run (the pid-attach
-    # write in submit() and the terminal hook) never collide on the temp itself.
-    # This makes each publish all-or-nothing; it does not serialize two writers,
-    # so a read-modify-write pair can still lose an update (last replace wins).
-    # Checked before the temp file is opened, so a refused record leaves neither a
-    # staging file nor a published one. json.dumps would write a non-finite float
-    # as the bare token NaN or Infinity, which only Python reads back: every
-    # reader of this record that is not Python — and every strict parser — would
-    # fail on it long after the run that wrote it. The start time already has a
-    # representation for "unreadable" and it is null, so nothing here encodes a
-    # sentinel that this refuses.
+    # Publish via write-temp-then-os.replace: atomic on the same filesystem, so a
+    # concurrent reader never observes a torn file, but this does not serialize
+    # two writers (last replace wins). Non-finite floats are refused before the
+    # temp file is opened, since json.dumps would write NaN/Infinity as a bare
+    # token only Python reads back. See docs/internals/mcp.md#write-job-publish.
     raise_if_non_finite(record)
     d = config.job_dir(record["run_id"])
     d.mkdir(parents=True, exist_ok=True)
@@ -1096,14 +1062,14 @@ def submit(
         mcp_config_source: str | None = None
         mcp_config_reason: str | None = None
         mcp_servers: dict[str, Any] | None = None
-        # Servers resolved for the run's workers, by name. `[]` means this run
-        # settled the question (caller disabled MCP, or a found config declares
-        # no servers) — `None` means it never resolved a set. This reports what
-        # was RESOLVED, not what the child's provider then managed to start.
-        mcp_config_servers: list[str] | None = None
+        # Server names declared in the config snapshot lionagi controls. `[]`
+        # means this layer settled its declaration as empty; `None` means it
+        # never inspected a set. Providers may merge their own global config,
+        # so this is deliberately not called the effective server set.
+        declared_mcp_servers: list[str] | None = None
         if no_mcp_config:
             mcp_config_reason = "mcp_disabled_by_caller"
-            mcp_config_servers = []
+            declared_mcp_servers = []
         elif mcp_config is not None:
             # Caller named the file; their flag is already on the line, so no
             # snapshot is taken or prepended (a second --mcp-config would let the
@@ -1132,13 +1098,13 @@ def submit(
                     # A settled "none" (as opposed to "no config found", which
                     # the resolver reports with the same null server map — only
                     # the reason string tells the two apart).
-                    mcp_config_servers = []
+                    declared_mcp_servers = []
                     mcp_config_source = str(resolution.source) if resolution.source else None
             else:
                 mcp_servers = resolution.servers
                 mcp_config_source = str(resolution.source) if resolution.source else None
                 mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
-                mcp_config_servers = sorted(
+                declared_mcp_servers = sorted(
                     mcp_servers
                 )  # readable order; child reads the snapshot file, not this list
                 options = ["--mcp-config", mcp_config_path, *options]
@@ -1196,18 +1162,10 @@ def submit(
         "kind": kind,
         "argv": argv,
         "cwd": cwd,
-        # Both working directories, because they answer different questions and a
-        # notice signed by the wrong one is the failure this pair exists to close.
-        # `cwd` is where the run executes. `submit_cwd` is this process's own
-        # directory, which is the submitting seat's: it is what the server was
-        # started in, and therefore what any directory-anchored identity lookup
-        # resolves the submitter from. A notifier that resolves who it is from its
-        # working directory reports the run's directory owner unless it is run in
-        # the submitter's, so the delivery uses this one — see
-        # _notify_hook.deliver_terminal_notice. Recorded even when the two agree,
-        # so a record read afterwards can always say which identity a notice
-        # carried rather than leaving it to be inferred from a path that has since
-        # been reused.
+        # `cwd` is where the run executes; `submit_cwd` is this server process's
+        # own directory. Recorded separately even when they agree — a directory-
+        # anchored notifier must sign as the submitter, not the run, so delivery
+        # resolves identity from submit_cwd. See docs/internals/mcp.md#deliver-terminal-notice-two-callers.
         "submit_cwd": _submit_cwd(),
         "label": label,
         "notify_command": notify_command,
@@ -1216,7 +1174,9 @@ def submit(
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
-        "mcp_config_servers": mcp_config_servers,
+        "declared_mcp_servers": declared_mcp_servers,
+        # Deprecated response/record alias; keep equal to the truthful name.
+        "mcp_config_servers": declared_mcp_servers,
         "submitted_at": _now_iso(),
         "finished_at": None,
         "status": "running",
@@ -1292,7 +1252,8 @@ def submit(
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
-        "mcp_config_servers": mcp_config_servers,
+        "declared_mcp_servers": declared_mcp_servers,
+        "mcp_config_servers": declared_mcp_servers,
         "notify_sender": notify_sender,
     }
 
@@ -1673,6 +1634,12 @@ def status(run_id: str) -> dict[str, Any]:
     notify_delivery = (job or {}).get("notify_delivery")
     if notify_delivery is None and derived["terminal"]:
         notify_delivery = {"attempted": False}
+    declared_mcp_servers = (job or {}).get("declared_mcp_servers")
+    if job is not None and "declared_mcp_servers" not in job:
+        # Backfill the accurate name from records written before it existed.
+        # The old field is a deprecated alias for the same declared snapshot,
+        # never evidence of what a provider merged or actually loaded.
+        declared_mcp_servers = job.get("mcp_config_servers")
     persistence_degraded_reason = (
         manifest.get(_PERSISTENCE_DEGRADED_REASON_FIELD) if isinstance(manifest, dict) else None
     )
@@ -1704,7 +1671,8 @@ def status(run_id: str) -> dict[str, Any]:
         "mcp_config": (job or {}).get("mcp_config"),
         "mcp_config_source": (job or {}).get("mcp_config_source"),
         "mcp_config_reason": (job or {}).get("mcp_config_reason"),
-        "mcp_config_servers": (job or {}).get("mcp_config_servers"),
+        "declared_mcp_servers": declared_mcp_servers,
+        "mcp_config_servers": declared_mcp_servers,
         _PERSISTENCE_DEGRADED_REASON_FIELD: persistence_degraded_reason,
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
@@ -2394,7 +2362,7 @@ async def wait(
     }
 
 
-def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
+def mark_terminal(run_id: str, cli_status: str, *, reason_code: str | None = None) -> WriteResult:
     """Record a terminal status for *run_id* (called by the CLI notify hook).
 
     The CLI's terminal status is trusted and recorded verbatim, never matched
@@ -2414,6 +2382,8 @@ def mark_terminal(run_id: str, cli_status: str) -> WriteResult:
             return WriteResult(job, guard.state)
         job["status"] = cli_status
         job["cli_status"] = cli_status
+        if reason_code:
+            job["reason_code"] = reason_code
         job["finished_at"] = _now_iso()
         # The hook fires as the run ends, so this is the end as it happened.
         job["finished_at_precision"] = FINISHED_AT_OBSERVED

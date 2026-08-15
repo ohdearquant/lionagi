@@ -61,9 +61,7 @@ def _make_admin_client(tmp_path, monkeypatch, db_path):
     return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
-# ---------------------------------------------------------------------------
 # Test: WHERE clause snapshot guard — simulated heartbeat between classify/UPDATE
-# ---------------------------------------------------------------------------
 
 
 def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch):
@@ -136,9 +134,7 @@ def test_transition_refused_when_heartbeat_changes_health(tmp_path, monkeypatch)
     )
 
 
-# ---------------------------------------------------------------------------
 # Test: the raw-SQL CAS write populates duration_ms like every other terminal write
-# ---------------------------------------------------------------------------
 
 
 def test_transition_sessions_populates_duration_ms(tmp_path, monkeypatch):
@@ -177,9 +173,7 @@ def test_transition_sessions_populates_duration_ms(tmp_path, monkeypatch):
     assert row["duration_ms"] == pytest.approx((row["ended_at"] - old_ts) * 1000)
 
 
-# ---------------------------------------------------------------------------
 # Test: an already-terminal session is never touched by the reconcile CAS
-# ---------------------------------------------------------------------------
 
 
 async def _seed_terminal_session(

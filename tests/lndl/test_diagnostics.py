@@ -19,10 +19,6 @@ from lionagi.lndl.diagnostics import (
     extract_lndl_chunks,
 )
 
-# ---------------------------------------------------------------------------
-# classify_chunk
-# ---------------------------------------------------------------------------
-
 
 class TestClassifyChunk:
     def test_clean_lndl_with_out(self):
@@ -72,11 +68,6 @@ class TestClassifyChunk:
         assert h.status == "clean"
 
 
-# ---------------------------------------------------------------------------
-# classify_result
-# ---------------------------------------------------------------------------
-
-
 class _M(BaseModel):
     n: int
 
@@ -108,11 +99,6 @@ class TestClassifyResult:
         assert classify_result(42) == "dict"
 
 
-# ---------------------------------------------------------------------------
-# LndlRoundRecord
-# ---------------------------------------------------------------------------
-
-
 class TestLndlRoundRecord:
     def test_health_property_uses_classify_chunk(self):
         r = LndlRoundRecord(raw="<lvar a x>1</lvar>OUT{a: [x]}", outcome="success")
@@ -130,11 +116,6 @@ class TestLndlRoundRecord:
         assert r.actions_executed == 2
         assert r.schema == "M"
         assert r.error == "Validation against M failed"
-
-
-# ---------------------------------------------------------------------------
-# LndlTrace
-# ---------------------------------------------------------------------------
 
 
 class TestLndlTrace:
@@ -183,11 +164,6 @@ class TestLndlTrace:
         assert "1 rounds" in s
         assert "success" in s
         assert "clean" in s
-
-
-# ---------------------------------------------------------------------------
-# extract_lndl_chunks
-# ---------------------------------------------------------------------------
 
 
 def _msg(assistant_response: str | None) -> SimpleNamespace:

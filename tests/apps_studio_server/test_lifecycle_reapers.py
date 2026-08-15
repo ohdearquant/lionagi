@@ -224,9 +224,7 @@ def test_reap_stale_invocations_zero_session_within_grace(tmp_path, monkeypatch)
 
 def test_reap_stale_invocations_deadline_lost_cas_does_not_stamp_ended_at(tmp_path, monkeypatch):
     """A lost CAS race on the deadline path must not leave ended_at stamped
-    while status is still "running" — the same "status and ended_at
-    disagree" defect as issue #2844, on the invocation deadline path.
-    """
+    while status is still "running"."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -253,9 +251,7 @@ def test_reap_stale_invocations_zero_session_lost_cas_does_not_stamp_ended_at(
     tmp_path, monkeypatch
 ):
     """A lost CAS race on the zero-session path must not leave ended_at
-    stamped while status is still "running" — the same "status and ended_at
-    disagree" defect as issue #2844, on the invocation zero-session path.
-    """
+    stamped while status is still "running"."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -876,9 +872,7 @@ def test_reap_phantom_sessions_skips_healthy_running(tmp_path, monkeypatch):
 
 def test_reap_phantom_sessions_lost_cas_does_not_stamp_ended_at(tmp_path, monkeypatch):
     """A lost CAS race on the status write must not leave ended_at stamped
-    while status is still "running" — that mismatch is exactly the
-    "status and ended_at disagree" defect from issue #2844.
-    """
+    while status is still "running"."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 

@@ -13,9 +13,7 @@ import pytest
 from lionagi.protocols.generic.element import Element
 from lionagi.protocols.generic.pile import Pile
 
-# ---------------------------------------------------------------------------
 # Fixtures / helpers
-# ---------------------------------------------------------------------------
 
 
 class Item(Element):
@@ -46,9 +44,7 @@ def pile_5(five_items):
     return Pile(collections=five_items)
 
 
-# ---------------------------------------------------------------------------
 # 1. to_df / dump (pandas-dependent)
-# ---------------------------------------------------------------------------
 
 pandas_missing = importlib.util.find_spec("pandas") is None
 
@@ -87,9 +83,7 @@ class TestIsHomogenous:
         assert Pile().is_homogenous() is True
 
 
-# ---------------------------------------------------------------------------
 # 11. adapt_to / adapt_from (json)
-# ---------------------------------------------------------------------------
 
 
 class TestAdaptTo:
@@ -119,9 +113,7 @@ class TestAdaptTo:
             await pile_3.adapt_to_async("json", many=True)
 
 
-# ---------------------------------------------------------------------------
 # 12. Misc: __repr__, __str__, __bool__, keys/values/items, size/is_empty
-# ---------------------------------------------------------------------------
 
 
 class TestMisc:
@@ -219,9 +211,7 @@ class TestMisc:
         assert pile_3[three_items[0].id].value == 999
 
 
-# ---------------------------------------------------------------------------
 # 13. AsyncPileIterator  (inner class)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -245,9 +235,7 @@ async def test_async_pile_iterator_stop():
         await it.__anext__()
 
 
-# ---------------------------------------------------------------------------
 # 14. filter() with lambda and type predicates
-# ---------------------------------------------------------------------------
 
 
 class TestFilterMethod:
@@ -281,9 +269,7 @@ class TestFilterMethod:
         assert values == [0, 2, 4]
 
 
-# ---------------------------------------------------------------------------
 # 15. pile[type] / pile[Filter] — getitem query via the Filter primitive
-# ---------------------------------------------------------------------------
 
 
 class TestGetitemFilter:

@@ -224,11 +224,9 @@ async def test_truncated_binary_file_over_cap_still_returns_415(
     assert exc_info.value.status_code == 415
 
 
-# ---------------------------------------------------------------------------
 # Bounded read: the cap must be enforced by the read itself, not by slicing
 # an already-materialized full read (Path.read_bytes() then [:cap] would
 # allocate the whole file before the cap applies).
-# ---------------------------------------------------------------------------
 
 
 async def test_content_read_never_calls_path_read_bytes(patched_runs_svc, tmp_path, monkeypatch):
@@ -315,12 +313,10 @@ async def test_short_reads_still_mark_oversized_file_truncated(
     assert total_returned <= 17  # cap + 1 total, even across many short reads
 
 
-# ---------------------------------------------------------------------------
 # Symlink swap after validation (TOCTOU): resolve_workspace_path validates a
 # path that was a regular file at check time; a later open-by-path would
 # follow whatever occupies that name at open time. The no-follow descriptor
 # walk must refuse the swapped target instead.
-# ---------------------------------------------------------------------------
 
 
 async def test_open_helper_refuses_target_swapped_to_symlink_after_validation(tmp_path):
@@ -370,10 +366,8 @@ async def test_open_helper_refuses_intermediate_dir_swapped_to_symlink(tmp_path)
         runs_svc._open_regular_file_no_follow(root, resolved)
 
 
-# ---------------------------------------------------------------------------
 # Endpoint-level coverage: exercise GET /api/runs/{run_id}/file through the
 # actual FastAPI route (TestClient), not just the service function directly.
-# ---------------------------------------------------------------------------
 
 
 def _make_client(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:

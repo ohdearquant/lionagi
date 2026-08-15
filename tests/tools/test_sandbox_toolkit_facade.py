@@ -15,10 +15,6 @@ import lionagi.tools.sandbox as sandbox_module
 from lionagi.session.branch import Branch
 from lionagi.tools.coding import CodingToolkit
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _init_git_repo(path: Path) -> None:
     cmds = [
@@ -49,11 +45,6 @@ def _make_sandbox_tool(git_repo, **toolkit_kwargs):
         if t.func_callable.__name__ == "sandbox":
             return tk, t.func_callable
     raise KeyError("sandbox tool not found")
-
-
-# ---------------------------------------------------------------------------
-# Constructor-level sandbox_allow_protected — operator trust decision
-# ---------------------------------------------------------------------------
 
 
 def test_sandbox_allow_protected_defaults_false(git_repo):
@@ -186,11 +177,6 @@ async def test_facade_cleanup_retry_completes_after_partial_merge_cleanup(git_re
     after = await sandbox(action="diff")
     assert after["success"] is False
     assert "No active sandbox" in after["error"]
-
-
-# ---------------------------------------------------------------------------
-# Truthful discard cleanup reporting
-# ---------------------------------------------------------------------------
 
 
 async def test_facade_discard_reports_failure_and_keeps_session(git_repo, monkeypatch):

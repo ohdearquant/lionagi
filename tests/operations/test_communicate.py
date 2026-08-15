@@ -92,9 +92,7 @@ async def test_communicate_clear_messages_clears_before_turn():
     assert len(branch.messages) == 2
 
 
-# ---------------------------------------------------------------------------
 # Coverage gap tests for communicate.py lines 48, 60, 71-76, 158-160, 169-178
-# ---------------------------------------------------------------------------
 
 import warnings
 

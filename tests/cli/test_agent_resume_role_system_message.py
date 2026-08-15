@@ -5,15 +5,14 @@
 persisted system message.
 
 A brand-new role-profile branch composes its system message via
-create_agent (role header + policy block + profile body). Once that branch
-is persisted and later reopened (-r / --continue-last / the automatic
-timeout-resume leg), `took_create_agent_path` is False for the reopened leg
-(neither --preset nor a fresh profile-role branch is being created — an
-existing branch is just being loaded back). Before the fix, the
+create_agent (role header + policy block + profile body). Once persisted and
+later reopened (-r / --continue-last / the automatic timeout-resume leg),
+`took_create_agent_path` is False for the reopened leg — an existing branch
+is just being loaded back, not freshly composed. Before the fix, the
 profile-system-prompt block ran unconditionally whenever
-`not took_create_agent_path`, so it called `branch.msgs.add_message(system=...)`
--> `set_system` -> replaced the persisted composed system message with the
-bare profile body, silently dropping the role header and policy block.
+`not took_create_agent_path`, calling `branch.msgs.add_message(system=...)`
+-> `set_system` -> replacing the persisted composed message with the bare
+profile body, silently dropping the role header and policy block.
 """
 
 from __future__ import annotations

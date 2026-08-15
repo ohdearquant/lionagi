@@ -13,10 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Claude EOF JSON repair
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.asyncio
 async def test_ndjson_from_cli_tail_repair_yields_repaired_object():
@@ -120,11 +116,6 @@ async def test_claude_ndjson_uses_repair_callback():
     assert kw["tail_repair"] is not None, "tail_repair must not be None for Claude"
 
 
-# ---------------------------------------------------------------------------
-# Codex does not double-apply workspace
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_codex_ndjson_does_not_pass_cwd(tmp_path):
     """Codex _ndjson_from_cli must NOT pass cwd= to ndjson_from_cli.
@@ -171,11 +162,6 @@ def test_codex_as_cmd_args_contains_dash_c_flag(tmp_path):
     assert "-C" in args
     c_idx = args.index("-C")
     assert args[c_idx + 1] == str(tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# Pi inherits stdin; Gemini (agy print mode) keeps the DEVNULL default
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

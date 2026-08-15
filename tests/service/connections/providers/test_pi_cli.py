@@ -344,11 +344,6 @@ async def test_pi_cli_endpoint_stream_maps_pi_chunks_to_stream_chunks(monkeypatc
     assert chunks[4].content == "done"
 
 
-# ---------------------------------------------------------------------------
-# Pi file_args path validation (fail-closed)
-# ---------------------------------------------------------------------------
-
-
 class TestPiFileArgsValidation:
     """Pi file_args must reject absolute paths and ``..`` traversal at construction time (fail-closed)."""
 

@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Operations that grant privilege stay off this surface.
 
-Every caller here is an agent. Trusting a plugin lets a bundle run code in the
-process, trusting a hook does the same for a hook bundle, and migrating the store
-rewrites what the rest of these verbs report on. Exposing any of them would let
-the thing being granted a right be the thing that grants it. These stay
-human-at-a-terminal operations.
+Every caller here is an agent. Trusting a plugin lets a bundle run code in
+the process, trusting a hook does the same for a hook bundle, and migrating
+the store rewrites what the rest of these verbs report on -- exposing any of
+them would let the thing being granted a right be the thing that grants it,
+so these stay human-at-a-terminal operations.
 
-The fence is an allowlist, so the interesting assertions are about the routes
-around it rather than about the three names: a verb that is not registered, a
-command path that is not a verb's path, and the absence of any parameter that
-carries opaque argv.
+The fence is an allowlist, so the interesting assertions are about the
+routes around it rather than the three names: a verb that is not
+registered, a command path that is not a verb's path, and the absence of
+any parameter that carries opaque argv.
 """
 
 from __future__ import annotations

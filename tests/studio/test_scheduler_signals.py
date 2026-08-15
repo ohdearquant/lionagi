@@ -1,21 +1,11 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the OBSERVER W2 scheduler signal bus + mint call sites.
+"""Tests for the scheduler signal bus and its mint call sites.
 
-Covers:
-  * SchedulerSignalBus.observe/unobserve/emit: type matching, predicate
-    (reason_code) filtering, sync + async handler dispatch.
-  * Failure semantics: emit() raises an ExceptionGroup (never a blanket
-    swallow) while still running every matching handler; the engine's mint
-    call site catches that group, writes a durable admin_events row, and
-    the tick loop keeps going (a broken handler never stops unrelated
-    schedules).
-  * build_schedule_run_signal(): mint-site-agnostic field derivation from
-    entity_id/new_status/reason_code (the same fields any
-    _guarded_terminal_status caller already has).
-  * SchedulerEngine._fire_inner() actually mints the right signal on each
-    terminal path (succeeded, failed-nonzero-exit, failed-exception,
-    cancelled).
+emit() raises an ExceptionGroup rather than swallowing handler failures,
+but still runs every matching handler first; the engine's mint call site
+catches that group, writes a durable admin_events row, and keeps ticking —
+a broken handler must never stop unrelated schedules.
 """
 
 from __future__ import annotations
@@ -35,9 +25,7 @@ from lionagi.studio.scheduler.signals import (
     record_handler_failure,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers (mirrors tests/studio/test_scheduler_engine.py's fixtures)
-# ---------------------------------------------------------------------------
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -82,9 +70,7 @@ def _make_svc() -> AsyncMock:
     return svc
 
 
-# ---------------------------------------------------------------------------
 # SchedulerSignalBus — observe/emit matching + dispatch
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -199,9 +185,7 @@ async def test_emit_with_zero_handlers_is_a_noop():
     assert results == []
 
 
-# ---------------------------------------------------------------------------
 # Per-run coordination counters (emitted/received/acted_on) + pop_run_counters
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -361,9 +345,7 @@ async def test_counters_are_isolated_per_run_id():
     assert counters_r2 == {"emitted": {"ScheduleRunSucceeded": 1}, "received": 1, "acted_on": 1}
 
 
-# ---------------------------------------------------------------------------
 # Failure semantics: ExceptionGroup, never a blanket swallow, siblings still run
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -519,9 +501,7 @@ async def test_emit_reraises_cancellation_even_with_other_handler_failures():
     assert isinstance(exc_info.value.__cause__.exceptions[0], RuntimeError)
 
 
-# ---------------------------------------------------------------------------
 # record_handler_failure — durable surfaced record
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -578,9 +558,7 @@ async def test_record_handler_failure_is_best_effort_and_never_raises(monkeypatc
     await record_handler_failure(eg, sig)
 
 
-# ---------------------------------------------------------------------------
 # build_schedule_run_signal — mint-site-agnostic field derivation
-# ---------------------------------------------------------------------------
 
 
 def test_build_schedule_run_signal_completed_derives_succeeded():
@@ -627,9 +605,7 @@ def test_build_schedule_run_signal_unknown_status_raises():
         build_schedule_run_signal(entity_id="run-4", new_status="running", reason_code="x")
 
 
-# ---------------------------------------------------------------------------
 # SchedulerEngine._fire_inner integration — mint on each terminal path
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -843,11 +819,9 @@ async def test_fire_build_argv_exception_does_not_mint_when_write_lost_race():
     assert captured == []
 
 
-# ---------------------------------------------------------------------------
 # Regression: a broken handler surfaces a durable record and the tick loop
 # continues -- it must not stop this schedule's own bookkeeping, and a
 # following, unrelated fire must still succeed normally.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

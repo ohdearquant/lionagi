@@ -14,7 +14,7 @@ from lionagi.state.session_naming import (
     sanitize_prompt_name,
 )
 
-# ── sanitize_prompt_name ──────────────────────────────────────────────────
+# sanitize_prompt_name
 
 
 def test_sanitize_strips_leading_system_message_banner() -> None:
@@ -76,7 +76,7 @@ def test_sanitize_banner_only_input_returns_none_not_empty_string() -> None:
     assert sanitize_prompt_name("Guidance: LION_SYSTEM_MESSAGE") is None
 
 
-# ── agent_role_label ──────────────────────────────────────────────────────
+# agent_role_label
 
 
 def test_agent_role_label_appends_utc_time_disambiguator() -> None:
@@ -151,7 +151,7 @@ def test_resolve_display_name_agent_tier_accepts_run_id_when_there_is_no_id() ->
     assert resolve_display_name(row) == "explorer · 9f0e · 14:22"
 
 
-# ── resolve_display_name: priority chain ──────────────────────────────────
+# resolve_display_name: priority chain
 
 
 def test_priority_user_label_wins_over_everything() -> None:
@@ -276,7 +276,7 @@ def test_prose_is_left_alone(raw: str) -> None:
     assert sanitize_prompt_name(raw) == raw
 
 
-# ── placeholder stored names ──────────────────────────────────────────────
+# placeholder stored names
 
 
 @pytest.mark.parametrize("placeholder", sorted(_UNINFORMATIVE_STORED_NAMES))

@@ -102,9 +102,7 @@ def _make_redaction_client(tmp_path, monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
 # Prompt body: leaks in the normal view, redacted in the demo view.
-# ---------------------------------------------------------------------------
 
 
 def test_redacted_view_hides_prompt_body_normal_view_still_serves_it(tmp_path, monkeypatch):
@@ -135,9 +133,7 @@ def test_redacted_view_hides_prompt_body_normal_view_still_serves_it(tmp_path, m
     assert "<redacted," in redacted_definition.text
 
 
-# ---------------------------------------------------------------------------
 # Unrecognized, env/secret-shaped frontmatter value: dropped by key name.
-# ---------------------------------------------------------------------------
 
 
 def test_env_shaped_frontmatter_value_is_masked_in_redacted_view(tmp_path, monkeypatch):
@@ -162,9 +158,7 @@ def test_env_shaped_frontmatter_value_is_masked_in_redacted_view(tmp_path, monke
     assert "internal_api_key" not in entry
 
 
-# ---------------------------------------------------------------------------
 # Safe-by-construction fields ride through unchanged in the redacted view.
-# ---------------------------------------------------------------------------
 
 
 def test_keep_fields_survive_redaction(tmp_path, monkeypatch):
@@ -201,10 +195,8 @@ def test_keep_fields_survive_redaction(tmp_path, monkeypatch):
     assert DESCRIPTION_SENTINEL not in str(list_entry)
 
 
-# ---------------------------------------------------------------------------
 # A sibling route serving the same object (version history) must not be an
 # unredacted mirror one click away from the covered detail route.
-# ---------------------------------------------------------------------------
 
 
 def test_version_history_route_is_also_redacted(tmp_path, monkeypatch):
@@ -227,10 +219,8 @@ def test_version_history_route_is_also_redacted(tmp_path, monkeypatch):
     assert SECRET_ENV_VALUE not in redacted_version.text
 
 
-# ---------------------------------------------------------------------------
 # The save path is not a bypass: a redacted payload posted back must be
 # refused, and must not touch the file on disk, while the switch is on.
-# ---------------------------------------------------------------------------
 
 
 def test_save_definition_refuses_placeholder_payload_while_demo_mode_on(tmp_path, monkeypatch):
@@ -283,11 +273,9 @@ def test_save_definition_still_works_normally_while_demo_mode_off(tmp_path, monk
     assert (agents_dir / "demoagent.md").read_text().strip() == "# updated content"
 
 
-# ---------------------------------------------------------------------------
 # A safe key's name is not a promise about its shape. A mapping or list
 # smuggled in under a safe key (role/effort/...) must be dropped, not passed
 # through by name match alone -- on every path that reads the allowlist.
-# ---------------------------------------------------------------------------
 
 
 def test_nested_value_under_safe_key_is_dropped_not_passed_through(tmp_path, monkeypatch):
@@ -355,11 +343,9 @@ def test_mcp_list_agents_drops_nested_secret_under_safe_key(tmp_path, monkeypatc
     assert NESTED_SECRET not in str(result)
 
 
-# ---------------------------------------------------------------------------
 # POST /agents/{name} and PUT /agents/{name} must not return the raw service
 # result in demo mode -- a harmless metadata edit must not be a side door to
 # the full prompt/guidance the GET routes already redact.
-# ---------------------------------------------------------------------------
 
 
 def test_create_and_update_agent_responses_are_redacted_in_demo_mode(tmp_path, monkeypatch):
@@ -411,11 +397,9 @@ def test_create_and_update_agent_responses_are_redacted_in_demo_mode(tmp_path, m
     assert PROMPT_SENTINEL in (agents_dir / "newagent2.md").read_text()
 
 
-# ---------------------------------------------------------------------------
 # The plugin-agent route is a full-content mirror of the same kind of
 # owner-authored markdown the Library agent routes protect -- it must not be
 # a silent bypass one path segment over.
-# ---------------------------------------------------------------------------
 
 
 def test_plugin_agent_route_is_redacted_in_demo_mode(tmp_path, monkeypatch):
@@ -446,11 +430,9 @@ def test_plugin_agent_route_is_redacted_in_demo_mode(tmp_path, monkeypatch):
     assert "<redacted," in redacted.text
 
 
-# ---------------------------------------------------------------------------
 # The definitions listing carries the same path/disk_path fields the single
 # get_definition() route already abbreviates -- the listing must match it
 # instead of shipping the unabridged on-disk location for every agent.
-# ---------------------------------------------------------------------------
 
 
 def test_definitions_listing_path_is_projected_in_demo_mode(tmp_path, monkeypatch):
@@ -480,11 +462,9 @@ def test_definitions_listing_path_is_projected_in_demo_mode(tmp_path, monkeypatc
     assert r_entry["disk_path"] == "demoagent.md"
 
 
-# ---------------------------------------------------------------------------
 # rollback_definition() must write the real content back, not the redacted
 # placeholder that get_version() shows an external caller -- a rollback is a
 # write, and redaction applies to reads that leave the service.
-# ---------------------------------------------------------------------------
 
 
 def test_rollback_succeeds_with_real_content_in_demo_mode(tmp_path, monkeypatch):
@@ -507,11 +487,9 @@ def test_rollback_succeeds_with_real_content_in_demo_mode(tmp_path, monkeypatch)
     assert "<redacted," not in on_disk
 
 
-# ---------------------------------------------------------------------------
 # Negative control: with the projection disabled (redact=False), the same
 # routes DO leak -- confirming the tests above exercise the projection
 # rather than passing independently of it.
-# ---------------------------------------------------------------------------
 
 
 def test_negative_control_projection_disabled_leaks_by_default(tmp_path, monkeypatch):
@@ -527,12 +505,10 @@ def test_negative_control_projection_disabled_leaks_by_default(tmp_path, monkeyp
     assert SECRET_ENV_VALUE in listing.text
 
 
-# ---------------------------------------------------------------------------
 # /api/plugins/{name} embeds each agent's {name, description} and the
 # plugin's on-disk path directly -- it must project both through the same
 # table the dedicated /plugins/{plugin}/agents/{agent} route already applies,
 # not mirror them unfiltered one path segment over.
-# ---------------------------------------------------------------------------
 
 
 def test_plugin_detail_route_redacts_nested_agents_and_path(tmp_path, monkeypatch):
@@ -574,11 +550,9 @@ def test_plugin_detail_route_redacts_nested_agents_and_path(tmp_path, monkeypatc
     assert body["path"] == "nested"
 
 
-# ---------------------------------------------------------------------------
 # /api/plugins (the list route) builds each entry from the same summary the
 # detail route abbreviates -- it must agree with /api/plugins/{name} instead
 # of shipping the unabridged on-disk path one route over.
-# ---------------------------------------------------------------------------
 
 
 def test_plugin_list_route_redacts_path_matching_detail_route(tmp_path, monkeypatch):
@@ -619,7 +593,6 @@ def test_plugin_list_route_redacts_path_matching_detail_route(tmp_path, monkeypa
     assert detail.json()["path"] == redacted_entry["path"]
 
 
-# ---------------------------------------------------------------------------
 # A scalar-shaped safe key's guard is only as good as the value it inspects.
 # list_agents()/get_agent() used to str()-coerce provider/model *before* the
 # classification table saw them, so a nested mapping smuggled in under
@@ -627,7 +600,6 @@ def test_plugin_list_route_redacts_path_matching_detail_route(tmp_path, monkeypa
 # scalar check waved through. This plants the nested value in an actual
 # on-disk agent file (not a monkeypatched, already-dict-shaped MCP row) so
 # the service layer's own coercion is what's under test.
-# ---------------------------------------------------------------------------
 
 
 def test_nested_provider_from_real_yaml_frontmatter_is_dropped(tmp_path, monkeypatch):
@@ -672,12 +644,10 @@ def test_nested_provider_from_real_yaml_frontmatter_is_dropped(tmp_path, monkeyp
     assert row["provider"] is None
 
 
-# ---------------------------------------------------------------------------
 # abbreviate_path() must refuse to str()-serialize a non-path-like value
 # rather than smuggle its content through as a "filename" -- a `path:` key
 # collides with the reserved field project_agent_fields adds for every
 # profile record.
-# ---------------------------------------------------------------------------
 
 
 def test_abbreviate_path_rejects_non_path_like_value():
@@ -721,13 +691,11 @@ def test_malformed_path_frontmatter_value_is_dropped_not_serialized(tmp_path, mo
     assert NESTED_SECRET not in redacted_definition.text
 
 
-# ---------------------------------------------------------------------------
 # snapshot_current() re-saves any definition whose disk content differs from
 # its latest stored version. The internal equality check must compare
 # against the raw stored content, not get_version()'s redacted response text
 # -- otherwise an unchanged agent file in demo mode never matches its own
 # redacted-placeholder comparison and gets re-snapshotted on every call.
-# ---------------------------------------------------------------------------
 
 
 def test_snapshot_current_does_not_resnapshot_unchanged_agent_in_demo_mode(tmp_path, monkeypatch):
@@ -748,11 +716,9 @@ def test_snapshot_current_does_not_resnapshot_unchanged_agent_in_demo_mode(tmp_p
     assert current.json()["version"] == 1
 
 
-# ---------------------------------------------------------------------------
 # Route-enumeration coverage: fails loudly when a new route is registered
 # under an area that reads agent-profile content without a redaction
 # decision having been made for it.
-# ---------------------------------------------------------------------------
 
 
 def test_route_enumeration_covers_known_agent_profile_routes():

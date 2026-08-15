@@ -15,9 +15,7 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # status_source column migration and round-trip
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration

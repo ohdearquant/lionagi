@@ -4,17 +4,17 @@
 
 These defensive ``CREATE TABLE IF NOT EXISTS`` statements intentionally make
 the protocol usable by direct Studio service callers as well as through the
-normal StateDB-opening daemon lifespan.  The tables use the canonical StateDB
-file and never fall back to process memory.
+normal StateDB-opening daemon lifespan. The tables use the canonical
+StateDB file and never fall back to process memory.
 
-Streamed frames are written once per provider chunk, so the durable record
-carries an explicit retention contract enforced on the write path -- see
+Streamed frames are written once per provider chunk under an explicit
+retention contract enforced on the write path -- see
 ``MAX_FRAME_PAYLOAD_BYTES``, ``MAX_FRAMES_PER_TURN`` and
-``MAX_TURN_PAYLOAD_BYTES``.  Nothing is ever dropped silently: an oversized
+``MAX_TURN_PAYLOAD_BYTES``. Nothing is ever dropped silently: an oversized
 payload is stored truncated and says so, and frames refused past a turn's
-budget are counted into a single ``truncation`` summary frame naming what was
-elided and how much.  Terminal ``done`` frames are exempt so a turn can always
-be closed.
+budget are counted into a single ``truncation`` summary frame naming what
+was elided and how much. Terminal ``done`` frames are exempt so a turn can
+always be closed.
 """
 
 from __future__ import annotations
@@ -205,13 +205,11 @@ class OperatorStore:
 
         A store with no file at all is refused as
         :class:`StoreNotAddressableError` rather than as an
-        ``OperatorStoreError``, because those two say different things to a
-        caller. An Operator error is about this subsystem and the routes map it
-        to 503, which invites a retry; a server-backed or in-memory store is
-        not a condition that resolves by waiting, and the app answers 501 for
-        it everywhere else. Reusing the existing refusal also keeps one
-        definition of which stores this SQLite-direct layer can open, instead of
-        a second one here that could drift from it.
+        ``OperatorStoreError``: an Operator error maps to 503 (invites a
+        retry) while a server-backed or in-memory store answers 501
+        everywhere else in the app, since waiting does not make it
+        addressable. Reusing the existing refusal keeps one definition of
+        which stores this SQLite-direct layer can open.
         """
         if self._db_path is not None:
             return self._db_path
@@ -555,15 +553,13 @@ class OperatorStore:
         """Copy a conversation's completed turns into a new, independent conversation.
 
         Only turns that reached a terminal status (completed/failed/cancelled)
-        are copied whole -- forking a conversation with a turn actively
-        streaming therefore ends the fork at the last completed turn instead
-        of copying a half-written one; the original conversation keeps
-        streaming untouched. ``up_to_sequence``, when given, additionally caps
-        the fork at the turn ending at or before that point in the source
-        conversation's history, so a user can branch from any earlier turn
-        rather than always from the tip. The new conversation starts with no
-        provider session of its own, so it does not resume the source's
-        provider-side session.
+        are copied whole, so forking mid-stream ends the fork at the last
+        completed turn rather than copying a half-written one; the source
+        conversation keeps streaming untouched. ``up_to_sequence``, when
+        given, additionally caps the fork at an earlier point in history.
+        The new conversation starts with no provider session of its own --
+        see docs/internals/studio.md ("Provider session identity vs.
+        durable branch identity").
         """
         await self.ensure_schema()
         source = await self.get_conversation(conversation_id)
@@ -710,19 +706,14 @@ class OperatorStore:
     ) -> bool:
         """Record where the page *observer* is now, independently of any turn.
 
-        *seq* is how many views that page had seen when it saw this one. Each
-        report is its own request, so two navigations by one page can arrive
-        reversed; a report that does not count higher than that page's own
-        stored count is DISCARDED, because otherwise the stale view wins and is
-        still labelled current, which is the exact failure this whole mechanism
-        exists to fix.
-
-        Each page gets its own row. A shared row would make every report erase
-        the previous page's high-water mark, and a delayed older report from the
-        page that asked could then be re-admitted as its latest -- the same stale
-        view, arriving by a longer road.
-
-        Returns whether the report was applied.
+        *seq* is how many views that page had seen when it saw this one. A
+        report that does not count higher than that page's own stored count
+        is DISCARDED, since two navigations by one page can arrive reversed
+        and admitting the lower count would let a stale view win while still
+        labelled current. Each page gets its own row, so one page's report
+        can never erase another's high-water mark -- see
+        docs/internals/studio.md ("View freshness: observation count, not
+        wall clock"). Returns whether the report was applied.
         """
         await self.ensure_schema()
         now = time.time()
@@ -802,22 +793,15 @@ class OperatorStore:
         """Record what this turn will run on and return the session it may resume.
 
         A provider session belongs to the (provider, model) pair that created
-        it, and until now the only thing that could invalidate one was an
-        explicit pin change. An unpinned conversation has no pin to change: it
-        runs on whatever the environment resolves to, which is re-read every
-        turn, so moving the default silently resumed a session that belonged to
-        the old pair. This compares the pair that is about to run against the
-        pair that last ran, which is the comparison the pin check could never
-        make.
-
-        Returns the session id to resume with, or ``None`` when the pair moved
-        and the stored session no longer belongs to this turn.
-
-        A stored pair of ``NULL`` returns the session unchanged. It means no
-        turn has recorded a resolution yet, which is not evidence that anything
-        changed, and every conversation alive when this ships is in exactly
-        that state -- reading it as a mismatch would drop every live session
-        once, at upgrade, and would look like the check working.
+        it. This compares the pair about to run against the pair that last
+        ran and drops the stored session (returning ``None``) exactly when
+        they differ -- catching the case an explicit pin change alone
+        cannot: an unpinned conversation re-reads the environment default
+        every turn, so moving that default silently tried to resume a
+        session belonging to the old pair. A stored pair of ``NULL`` (no
+        turn has resolved one yet -- true for every conversation alive at
+        upgrade) is not treated as a mismatch. See docs/internals/studio.md
+        ("Provider session identity vs. durable branch identity").
         """
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
@@ -859,41 +843,22 @@ class OperatorStore:
         """Return the identity every turn of this conversation builds its
         Branch with, minting and persisting one on the first call.
 
-        This is the fix for the Operator's own log showing N unrelated
-        branches for one N-turn conversation: previously every turn built a
-        brand-new ``Branch()`` with a fresh random id, so
-        ``setup_agent_persist`` (``lionagi/cli/_runs.py``) saw a never-before-
-        seen branch id on every turn and created a new ``sessions`` row for
-        each one. Feeding the SAME id back in lets that existing machinery's
-        own "resume" arm run instead: it looks up ``branch_id`` in the
-        ``branches`` table, and when found, reopens that branch's existing
-        session and appends to it rather than inserting a new row --
-        `setup_agent_persist` already contains this append path (used for CLI
-        resume); nothing about that machinery is changed here. This method
-        only decides what id every turn hands it.
-
-        A brand-new Branch object is still constructed in-process on every
-        turn -- this stores an IDENTITY (a UUID), never a live Branch, since
-        turns arrive as separate HTTP requests, the daemon restarts between
-        them, and two browser tabs can drive one conversation concurrently.
-        None of those can be assumed to share a Python object.
-
-        Idempotent and race-safe: wrapped in the store's usual
-        ``BEGIN IMMEDIATE`` transaction (the same pattern
-        ``claim_resolved_pair`` uses), which SQLite serializes against any
-        other write transaction on this file. Two turns racing to claim the
-        first id for one conversation therefore never see a NULL row at the
-        same time -- the second transaction blocks until the first commits,
-        then reads back the id the first one just wrote and returns that
-        instead of minting its own. The conversation never ends up with two
-        candidate ids to disagree about.
-
-        A conversation created before this column existed reads NULL here on
-        its first post-upgrade turn and adopts an id at that point --
-        deliberately, rather than backfilling one via migration. Its turns
-        already on record stay exactly as they were recorded; only turns from
-        here forward group under the newly-claimed id. No history is
-        rewritten.
+        Feeding the same claimed id into every turn's ``Branch()`` lets the
+        CLI's own "resume" logic (``setup_agent_persist`` in
+        ``lionagi/cli/_runs.py``) find it in the ``branches`` table and
+        append to the existing session, instead of a fresh random id
+        creating a new ``sessions`` row on every turn. This method only
+        decides what id gets handed in; a brand-new in-process ``Branch``
+        object is still constructed every turn, since turns arrive as
+        separate HTTP requests and two browser tabs can drive one
+        conversation concurrently -- no Python object can be assumed
+        shared. Idempotent and race-safe via the store's usual
+        ``BEGIN IMMEDIATE`` transaction: two turns racing to claim the
+        first id block against each other rather than minting two. A
+        conversation created before this column existed adopts an id on its
+        first post-upgrade turn rather than via migration backfill; turns
+        already on record are untouched. See docs/internals/studio.md
+        ("Provider session identity vs. durable branch identity").
         """
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
@@ -1017,16 +982,11 @@ class OperatorStore:
     async def clear_provider_model(self, conversation_id: str) -> None:
         """Drop this conversation's provider/model pin so it runs on the default again.
 
-        Omitting a model on a turn means "leave the pin alone", which is what
-        an unchanged composer sends, so it cannot also mean "remove the pin" --
-        without this there is no way back to the daemon's own default once a
-        conversation has been pinned. The provider session goes with it: a
-        session belongs to the pair that created it, and the next turn resolves
-        its provider from the environment rather than from that pair.
-
-        Clearing a conversation that has no pin does nothing at all. Dropping
-        the session is a consequence of the pin changing, so a repeated clear
-        must not keep discarding sessions that no pin is invalidating.
+        Omitting a model on a turn means "leave the pin alone" -- it cannot
+        also mean "remove the pin" -- so this is the only way back to the
+        daemon's default once a conversation is pinned. The provider session
+        goes with it, as a consequence of the pair changing, not as its own
+        effect: clearing an already-unpinned conversation does nothing.
         """
         await self.ensure_schema()
         async with open_db(str(self.path())) as db:
@@ -1905,6 +1865,13 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             {
                 "proposal": {
                     "id": proposal_id,
+                    # The frame is the only view of a proposal a stream client
+                    # ever sees, so it has to carry what that client needs to
+                    # check the proposal against the request it made. Without
+                    # the type, a caller can confirm a proposal by id and hash
+                    # while having no way to tell what it would actually do.
+                    # Same key and value as the full row serialization.
+                    "commandType": command_type,
                     "command": command,
                     "commandHash": command_hash,
                     "risk": risk,
@@ -2120,7 +2087,9 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 {
                     "error": {
                         "code": "denied",
-                        "message": "The operator denied this permission request",
+                        "message": (
+                            "The human at the Studio permission prompt denied this request"
+                        ),
                         "retryable": False,
                     }
                 },

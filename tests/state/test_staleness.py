@@ -45,7 +45,7 @@ async def _make_session(db: StateDB, **fields) -> dict:
     return session
 
 
-# ── staleness_check pure logic ─────────────────────────────────────────────────
+# staleness_check pure logic
 
 
 def test_running_under_threshold_is_active():
@@ -133,7 +133,7 @@ def test_threshold_for_kind_returns_expected_values():
     assert threshold_for_kind("mystery-kind") == DEFAULT_STALE_THRESHOLD
 
 
-# ── touch_session_activity DB heartbeat ────────────────────────────────────────
+# touch_session_activity DB heartbeat
 
 
 async def test_touch_session_activity_bumps_last_message_at(
@@ -180,7 +180,7 @@ async def test_touch_updates_updated_at_too(db: StateDB):
     assert row["updated_at"] == pinned
 
 
-# ── ADR scope check: thresholds dict shape ────────────────────────────────────
+# ADR scope check: thresholds dict shape
 
 
 def test_thresholds_cover_all_invocation_kinds():

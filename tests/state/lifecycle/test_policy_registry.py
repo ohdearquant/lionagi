@@ -162,7 +162,7 @@ def test_contains() -> None:
     assert "bogus" not in registry
 
 
-# ── Registry/policy immutability ────────────────────────────────────────────
+# Registry/policy immutability
 
 
 def test_registered_policy_edge_map_mutation_raises() -> None:
@@ -195,7 +195,7 @@ def test_locally_constructed_registry_accepts_registration_before_sealing() -> N
         registry.register(_policy(entity_type="other_widget", table="other_widgets"))
 
 
-# ── ImmutableEdgeMap: immutable but serialization-safe ──────────────────────
+# ImmutableEdgeMap: immutable but serialization-safe
 
 
 def test_immutable_edge_map_item_assignment_raises() -> None:

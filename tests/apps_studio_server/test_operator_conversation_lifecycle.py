@@ -56,7 +56,7 @@ def _patch_state_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     monkeypatch.setattr(runs_mod, "RUNS_ROOT", path.parent / "runs")
 
 
-# ─── Rename ──────────────────────────────────────────────────────────────
+# Rename
 
 
 @pytest.mark.asyncio
@@ -154,7 +154,7 @@ async def test_a_null_pinned_or_status_is_rejected_rather_than_acted_on(tmp_path
     await coordinator.shutdown()
 
 
-# ─── Organize: pin + archive ────────────────────────────────────────────
+# Organize: pin + archive
 
 
 @pytest.mark.asyncio
@@ -209,7 +209,7 @@ async def test_archiving_a_conversation_with_an_active_turn_conflicts(tmp_path, 
     await coordinator.shutdown()
 
 
-# ─── Fork ────────────────────────────────────────────────────────────────
+# Fork
 
 
 @pytest.mark.asyncio
@@ -368,7 +368,7 @@ async def test_forking_a_conversation_that_does_not_exist_raises_not_found(tmp_p
         await store.fork_conversation("does-not-exist")
 
 
-# ─── HTTP contract ──────────────────────────────────────────────────────
+# HTTP contract
 
 
 @pytest.mark.asyncio

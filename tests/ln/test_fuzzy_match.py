@@ -9,10 +9,6 @@ import pytest
 
 from lionagi.ln.fuzzy._fuzzy_match import fuzzy_match_keys
 
-# ---------------------------------------------------------------------------
-# 1. Non-list Sequence types — should work identically to list
-# ---------------------------------------------------------------------------
-
 
 def test_tuple_keys_exact_match():
     d = {"name": "Alice", "age": 30}
@@ -50,11 +46,6 @@ def test_tuple_empty_keys_returns_copy():
     assert result is not d
 
 
-# ---------------------------------------------------------------------------
-# 2. Mapping (dict) path — must use .keys()
-# ---------------------------------------------------------------------------
-
-
 def test_dict_keys_exact_match():
     d = {"name": "Carol", "age": 25}
     schema = {"name": str, "age": int}
@@ -63,10 +54,8 @@ def test_dict_keys_exact_match():
     assert result["age"] == 25
 
 
-# ---------------------------------------------------------------------------
 # 3. Bare str — must be rejected, NOT char-split (str is a Sequence[str] so
 #    a naive dispatch would silently iterate chars; guard must fire first)
-# ---------------------------------------------------------------------------
 
 
 def test_bare_str_raises_type_error():

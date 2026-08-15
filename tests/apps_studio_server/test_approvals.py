@@ -51,9 +51,7 @@ async def _init_db(db_path: Path) -> None:
         pass  # opens + applies schema (creates the approvals table too)
 
 
-# ---------------------------------------------------------------------------
 # Unit-level: service functions directly (no HTTP, no principal concerns)
-# ---------------------------------------------------------------------------
 
 
 def test_propose_returns_pending_row_with_hash(tmp_path, monkeypatch):
@@ -303,9 +301,7 @@ def test_get_unknown_approval_returns_none(tmp_path, monkeypatch):
     assert _run(approvals_mod.get_approval("does-not-exist")) is None
 
 
-# ---------------------------------------------------------------------------
 # HTTP-level: routes + the grant-route principal separation
-# ---------------------------------------------------------------------------
 
 
 def test_propose_route_creates_pending_approval(tmp_path, monkeypatch):
@@ -443,9 +439,7 @@ def test_grant_route_404_for_unknown_id(tmp_path, monkeypatch):
     assert resp.status_code == 404
 
 
-# ---------------------------------------------------------------------------
 # Evidence chain: hash-chained audit trail on the ledger
-# ---------------------------------------------------------------------------
 
 
 def _evidence_rows(db_path: Path) -> list[dict]:

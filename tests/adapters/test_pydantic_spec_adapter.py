@@ -246,9 +246,7 @@ and more text"""
         assert original.age == 30
 
 
-# ---------------------------------------------------------------------------
 # callable default becomes default_factory
-# ---------------------------------------------------------------------------
 
 
 def test_pydantic_field_adapter_uses_callable_metadata_as_default_factory():
@@ -267,9 +265,7 @@ def test_pydantic_field_adapter_uses_callable_metadata_as_default_factory():
     assert instance.result == "computed"
 
 
-# ---------------------------------------------------------------------------
 # strict fuzzy_match_fields raises; non-strict coerces typos and drops unknowns
-# ---------------------------------------------------------------------------
 
 
 def test_pydantic_field_adapter_strict_fuzzy_match_raises_on_unmatched_key():

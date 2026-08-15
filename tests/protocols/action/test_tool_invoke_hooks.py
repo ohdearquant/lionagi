@@ -79,7 +79,7 @@ async def test_pre_then_security_pre_then_invoke_then_post_ordering():
 
 
 async def test_security_pre_sees_external_rewrite_with_no_user_hook():
-    """D3: security_pre always validates the post-rewrite values, even with
+    """security_pre always validates the post-rewrite values, even with
     no spec-level user pre-hook present."""
     order: list[str] = []
     calls: list[tuple[int, int]] = []
@@ -109,7 +109,7 @@ async def test_security_pre_sees_external_rewrite_with_no_user_hook():
     assert fc.response == 300
 
 
-# ── Deny / ask / unrecognized (D5) ──────────────────────────────────────────
+# Deny / ask / unrecognized
 
 
 async def test_deny_short_circuits_before_invoke_and_captures_as_failed():
@@ -790,7 +790,7 @@ async def test_no_hooks_registered_behaves_as_before():
 
 
 async def test_direct_function_calling_construction_bypasses_external_hooks():
-    """D3's named, tested limit: constructing FunctionCalling directly (not
+    """A documented, tested limit: constructing FunctionCalling directly (not
     via ActionManager.invoke) never sees the tool-pre/tool-post hook layer,
     even though the Tool object is the same one registered on a manager that
     has hooks attached."""

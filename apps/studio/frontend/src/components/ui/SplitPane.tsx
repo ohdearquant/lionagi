@@ -24,6 +24,8 @@ interface Props {
   maxMasterWidth?: number;
   /** In collapsed (stacked) mode: show detail instead of master. */
   detailActive?: boolean;
+  /** Offer a hide/show toggle for the master pane (persisted per id). */
+  collapsible?: boolean;
   ariaLabelMaster?: string;
   ariaLabelDetail?: string;
 }
@@ -35,6 +37,11 @@ function storedWidth(id: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function storedMasterHidden(id: string): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(`split:${id}:master-hidden`) === "1";
+}
+
 export default function SplitPane({
   id,
   master,
@@ -43,13 +50,23 @@ export default function SplitPane({
   minMasterWidth = 260,
   maxMasterWidth = 640,
   detailActive = false,
+  collapsible = false,
   ariaLabelMaster,
   ariaLabelDetail,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [masterWidth, setMasterWidth] = useState(() => storedWidth(id, defaultMasterWidth));
   const [collapsed, setCollapsed] = useState(false);
+  const [masterHidden, setMasterHidden] = useState(() => collapsible && storedMasterHidden(id));
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const toggleMasterHidden = useCallback(() => {
+    setMasterHidden((hidden) => {
+      const next = !hidden;
+      window.localStorage.setItem(`split:${id}:master-hidden`, next ? "1" : "0");
+      return next;
+    });
+  }, [id]);
 
   useLayoutEffect(() => {
     const el = containerRef.current;
@@ -118,14 +135,51 @@ export default function SplitPane({
     );
   }
 
+  if (collapsible && masterHidden) {
+    // Master hidden: detail takes the full width behind a slim rail whose
+    // only job is to bring the list back.
+    return (
+      <div ref={containerRef} className="flex h-full min-h-0 w-full">
+        <div className="flex flex-shrink-0 flex-col border-r border-edge">
+          <button
+            type="button"
+            aria-label={ariaLabelMaster}
+            aria-expanded={false}
+            onClick={toggleMasterHidden}
+            className="flex h-9 w-6 items-center justify-center text-content-muted transition-colors hover:text-content-primary"
+          >
+            <span aria-hidden>›</span>
+          </button>
+        </div>
+        <section
+          aria-label={ariaLabelDetail}
+          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+        >
+          {detail}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div ref={containerRef} className="flex h-full min-h-0 w-full">
       <section
         aria-label={ariaLabelMaster}
-        className="flex min-h-0 flex-col overflow-hidden"
+        className="relative flex min-h-0 flex-col overflow-hidden"
         style={{ width: effectiveWidth, flexShrink: 0 }}
       >
         {master}
+        {collapsible ? (
+          <button
+            type="button"
+            aria-label={ariaLabelMaster}
+            aria-expanded
+            onClick={toggleMasterHidden}
+            className="absolute right-1 top-2 z-10 flex h-6 w-6 items-center justify-center rounded text-content-muted transition-colors hover:text-content-primary"
+          >
+            <span aria-hidden>‹</span>
+          </button>
+        ) : null}
       </section>
       {/* WAI-ARIA window-splitter pattern: a separator IS interactive (focus +
           arrow keys + drag), which jsx-a11y's static role lists don't model. */}

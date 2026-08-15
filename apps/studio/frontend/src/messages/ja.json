@@ -116,7 +116,8 @@
       "busyPlaceholder": "Operator is working…",
       "hint": "Enter to send · Shift+Enter for a new line",
       "send": "Send",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "autoAllow": "提案を自動許可"
     },
     "message": {
       "you": "You",
@@ -376,6 +377,38 @@
       "creating": "Creating…",
       "create": "Create",
       "createError": "Could not create this server."
+    },
+    "filterHooks": "フック",
+    "hooks": {
+      "title": "フック",
+      "description": "再利用可能な名前付きフックをここで一度定義し、エージェントごとに組み立てます。各エージェントはライブラリのフックをイベント(ツール呼び出し前、プロンプト送信時、応答後)にバインドします。同じ構成がどのプロバイダー CLI でも動作します。",
+      "libraryTitle": "フックライブラリ",
+      "newHook": "新規フック",
+      "emptyLibrary": "フックはまだ定義されていません。作成するとすべてのエージェントで組み立て可能になります。",
+      "emptyLibraryHint": "先にライブラリでフックを定義してください。アタッチはライブラリのフックをイベントにバインドします。",
+      "operatorTitle": "Operator の構成",
+      "operatorDescription": "Studio Operator が実行するフック。Operator はユーザー設定もプロジェクト設定も継承しないため、ここでアタッチしたフックだけが読み込まれます。",
+      "enabled": "有効",
+      "save": "保存",
+      "saving": "保存中…",
+      "savedNotice": "保存しました — 次のターンから適用されます。",
+      "cancel": "キャンセル",
+      "delete": "削除",
+      "fieldName": "名前",
+      "fieldDescription": "説明",
+      "fieldCommand": "コマンド",
+      "fieldTimeout": "タイムアウト(秒)",
+      "nameRequired": "フックには名前が必要です。",
+      "timeoutInvalid": "タイムアウトは数値で指定してください。",
+      "noAttachments": "アタッチされたフックはありません。",
+      "attachmentHook": "フック",
+      "attachmentOn": "→",
+      "attachmentEvent": "イベント",
+      "attachmentMatcher": "マッチャー",
+      "matcherPlaceholder": "マッチャー(任意)",
+      "removeAttachment": "アタッチを解除",
+      "addAttachment": "フックをアタッチ",
+      "agentSectionTitle": "フック"
     }
   },
   "history": {
@@ -445,6 +478,8 @@
       "statMessages": "メッセージ",
       "statToolCalls": "ツール呼び出し",
       "statErrors": "エラー",
+      "statTokensIn": "入力トークン",
+      "statTokensOut": "出力トークン",
       "statTopic": "トピック",
       "statPlay": "プレイ",
       "statPlaybook": "ワークフロー",
@@ -487,11 +522,42 @@
       "progressRunning": "実行中",
       "progressFailed": "失敗",
       "progressPending": "保留中",
+      "progressEscalated": "エスカレーション",
       "progressElapsed": "経過時間",
       "expandGraph": "実行グラフを展開",
       "collapseGraph": "実行グラフを折りたたむ",
       "closeExpandedGraph": "閉じる",
-      "nodeNoBranch": "「{node}」のブランチが見つかりません — このステップはまだ開始されていません。"
+      "nodeNoBranch": "「{node}」のブランチが見つかりません — このステップはまだ開始されていません。",
+      "viewGraph": "Graph",
+      "viewList": "List",
+      "viewToggleLabel": "Graph or list view",
+      "selectedNode": "Selected: {node}",
+      "controls": {
+        "pause": "Pause",
+        "pausePhasePausing": "Pausing…",
+        "pausePhasePaused": "Paused",
+        "resume": "Resume gate",
+        "steer": "Steer",
+        "steerSend": "Send",
+        "steerPlaceholder": "Message to steer the run…",
+        "confirmYes": "Confirm",
+        "confirmCancel": "Cancel",
+        "proposeFailed": "Could not propose the command.",
+        "confirmFailed": "Could not confirm the command.",
+        "confirm": {
+          "pause": "Confirm pause?",
+          "resume": "Confirm resume?",
+          "message": "Confirm sending this message?"
+        },
+        "reason": {
+          "run-terminal": "This run has ended.",
+          "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "already-pause-requested": "A pause has already been requested.",
+          "not-paused": "The run is not paused.",
+          "still-pausing": "Still finishing in-flight operations.",
+          "no-executable-path": "この操作を実行するコマンドはまだありません。"
+        }
+      }
     },
     "masterAria": "履歴一覧",
     "detailAria": "項目の詳細"

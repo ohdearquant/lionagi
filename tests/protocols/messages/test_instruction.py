@@ -27,7 +27,7 @@ class NestedRequestModel(BaseModel):
 
 
 def test_instruction_content_basic_initialization():
-    """Test basic initialization of InstructionContent"""
+    """Basic initialization of InstructionContent"""
     content = InstructionContent(instruction="Test instruction")
 
     assert content.instruction == "Test instruction"
@@ -62,7 +62,7 @@ def test_instruction_content_all_fields():
 
 
 def test_instruction_content_rendered_text_only():
-    """Test rendered property returns minimal_yaml formatted text"""
+    """Rendered property returns minimal_yaml formatted text"""
     content = InstructionContent(instruction="Test instruction", guidance="Test guidance")
 
     rendered = content.rendered
@@ -72,7 +72,7 @@ def test_instruction_content_rendered_text_only():
 
 
 def test_instruction_content_rendered_with_context():
-    """Test rendered property includes context items"""
+    """Rendered property includes context items"""
     content = InstructionContent(
         instruction="Test",
         prompt_context=["context1", {"nested": "context"}],
@@ -84,7 +84,7 @@ def test_instruction_content_rendered_with_context():
 
 
 def test_instruction_content_rendered_with_response_format():
-    """Test rendered property includes response format as JSON example"""
+    """Rendered property includes response format as JSON example"""
     content = InstructionContent(
         instruction="Test",
         response_format={"name": "John", "age": 30},
@@ -99,7 +99,7 @@ def test_instruction_content_rendered_with_response_format():
 
 
 def test_instruction_content_rendered_plain_content_override():
-    """Test plain_content bypasses structured rendering"""
+    """plain_content bypasses structured rendering"""
     content = InstructionContent(
         instruction="This should be ignored",
         guidance="Also ignored",
@@ -112,7 +112,7 @@ def test_instruction_content_rendered_plain_content_override():
 
 
 def test_instruction_content_rendered_with_images():
-    """Test rendered property returns list[dict] when images present"""
+    """Rendered property returns list[dict] when images present"""
     content = InstructionContent(
         instruction="Analyze this image",
         images=["https://example.com/image.jpg"],
@@ -129,7 +129,7 @@ def test_instruction_content_rendered_with_images():
 
 
 def test_instruction_content_rendered_multiple_images():
-    """Test rendered property with multiple images"""
+    """Rendered property with multiple images"""
     content = InstructionContent(
         instruction="Compare these images",
         images=["image1.jpg", "data:image/png;base64,abc123", "image3.jpg"],
@@ -143,7 +143,7 @@ def test_instruction_content_rendered_multiple_images():
 
 
 def test_instruction_content_image_detail_auto():
-    """Test image_detail defaults to 'auto' when images present"""
+    """image_detail defaults to 'auto' when images present"""
     content = InstructionContent(instruction="Test", images=["image.jpg"], image_detail="auto")
 
     rendered = content.rendered
@@ -151,7 +151,7 @@ def test_instruction_content_image_detail_auto():
 
 
 def test_instruction_content_base64_image_handling():
-    """Test base64 images are properly formatted"""
+    """Base64 images are properly formatted"""
     base64_str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
     content = InstructionContent(instruction="Test", images=[base64_str], image_detail="high")
 
@@ -161,7 +161,7 @@ def test_instruction_content_base64_image_handling():
 
 
 def test_from_dict_basic():
-    """Test from_dict with basic fields"""
+    """from_dict with basic fields"""
     data = {"instruction": "Do this", "guidance": "Carefully"}
     content = InstructionContent.from_dict(data)
 
@@ -170,7 +170,7 @@ def test_from_dict_basic():
 
 
 def test_from_dict_with_context():
-    """Test from_dict with context as list"""
+    """from_dict with context as list"""
     data = {"instruction": "Test", "context": ["ctx1", "ctx2"]}
     content = InstructionContent.from_dict(data)
 
@@ -179,7 +179,7 @@ def test_from_dict_with_context():
 
 
 def test_from_dict_context_single_item():
-    """Test from_dict with context as single item (converts to list)"""
+    """from_dict with context as single item (converts to list)"""
     data = {"instruction": "Test", "context": "single_context"}
     content = InstructionContent.from_dict(data)
 
@@ -188,7 +188,7 @@ def test_from_dict_context_single_item():
 
 
 def test_from_dict_with_tool_schemas():
-    """Test from_dict with tool_schemas"""
+    """from_dict with tool_schemas"""
     schemas = [{"name": "tool1"}, {"name": "tool2"}]
     data = {"instruction": "Test", "tool_schemas": schemas}
     content = InstructionContent.from_dict(data)
@@ -198,7 +198,7 @@ def test_from_dict_with_tool_schemas():
 
 
 def test_from_dict_with_images():
-    """Test from_dict with images"""
+    """from_dict with images"""
     data = {
         "instruction": "Test",
         "images": ["img1.jpg", "img2.jpg"],
@@ -211,7 +211,7 @@ def test_from_dict_with_images():
 
 
 def test_from_dict_images_default_detail():
-    """Test from_dict sets image_detail to 'auto' when images present but detail not specified"""
+    """from_dict sets image_detail to 'auto' when images present but detail not specified"""
     data = {"instruction": "Test", "images": ["img.jpg"]}
     content = InstructionContent.from_dict(data)
 
@@ -219,7 +219,7 @@ def test_from_dict_images_default_detail():
 
 
 def test_from_dict_with_pydantic_model_instance():
-    """Test from_dict with Pydantic model class for response_format"""
+    """from_dict with Pydantic model class for response_format"""
     # Pass the CLASS to from_dict for proper schema generation
     data = {"instruction": "Test", "response_format": SampleRequestModel}
     content = InstructionContent.from_dict(data)
@@ -230,7 +230,7 @@ def test_from_dict_with_pydantic_model_instance():
 
 
 def test_from_dict_with_pydantic_model_class():
-    """Test from_dict with Pydantic model class for response_format"""
+    """from_dict with Pydantic model class for response_format"""
     data = {"instruction": "Test", "response_format": SampleRequestModel}
     content = InstructionContent.from_dict(data)
 
@@ -242,7 +242,7 @@ def test_from_dict_with_pydantic_model_class():
 
 
 def test_from_dict_with_nested_pydantic_model():
-    """Test from_dict with nested Pydantic model"""
+    """from_dict with nested Pydantic model"""
     data = {"instruction": "Test", "response_format": NestedRequestModel}
     content = InstructionContent.from_dict(data)
 
@@ -253,7 +253,7 @@ def test_from_dict_with_nested_pydantic_model():
 
 
 def test_from_dict_pydantic_model_auto_derives_response_format():
-    """Test from_dict derives schema via structure from Pydantic model"""
+    """from_dict derives schema via structure from Pydantic model"""
     data = {"instruction": "Test", "response_format": SampleRequestModel}
     content = InstructionContent.from_dict(data)
 
@@ -265,7 +265,7 @@ def test_from_dict_pydantic_model_auto_derives_response_format():
 
 
 def test_from_dict_with_dict_response_schema():
-    """Test from_dict with dict response_schema"""
+    """from_dict with dict response_schema"""
     schema = {"type": "object", "properties": {"field": {"type": "string"}}}
     data = {"instruction": "Test", "response_format": schema}
     content = InstructionContent.from_dict(data)
@@ -274,7 +274,7 @@ def test_from_dict_with_dict_response_schema():
 
 
 def test_from_dict_with_explicit_response_format():
-    """Test from_dict with explicit response_format dict"""
+    """from_dict with explicit response_format dict"""
     rf = {"name": "example", "age": 25}
     data = {"instruction": "Test", "response_format": rf}
     content = InstructionContent.from_dict(data)
@@ -283,7 +283,7 @@ def test_from_dict_with_explicit_response_format():
 
 
 def test_from_dict_response_format_overrides_auto_derive():
-    """Test explicit response_format prevents auto-derivation from Pydantic model"""
+    """Explicit response_format prevents auto-derivation from Pydantic model"""
     rf = {"custom": "format"}
     data = {
         "instruction": "Test",
@@ -296,7 +296,7 @@ def test_from_dict_response_format_overrides_auto_derive():
 
 
 def test_from_dict_invalid_response_schema_type():
-    """Test from_dict silently ignores invalid response_format type (fuzzy handling)"""
+    """from_dict silently ignores invalid response_format type (fuzzy handling)"""
     data = {"instruction": "Test", "response_format": "invalid"}
 
     # Fuzzy handling: invalid types are silently ignored
@@ -305,7 +305,7 @@ def test_from_dict_invalid_response_schema_type():
 
 
 def test_from_dict_invalid_response_format_type():
-    """Test from_dict silently ignores invalid response_format type (fuzzy handling)"""
+    """from_dict silently ignores invalid response_format type (fuzzy handling)"""
     data = {"instruction": "Test", "response_format": "invalid"}
 
     # Fuzzy handling: invalid types are silently ignored
@@ -314,7 +314,7 @@ def test_from_dict_invalid_response_format_type():
 
 
 def test_from_dict_empty_dict():
-    """Test from_dict with empty dict creates default InstructionContent"""
+    """from_dict with empty dict creates default InstructionContent"""
     content = InstructionContent.from_dict({})
 
     assert content.instruction is None
@@ -323,7 +323,7 @@ def test_from_dict_empty_dict():
 
 
 def test_instruction_basic_initialization():
-    """Test basic initialization of Instruction message"""
+    """Basic initialization of Instruction message"""
     instruction = Instruction(
         content={"instruction": "Test instruction"},
         sender="user",
@@ -547,7 +547,7 @@ def test_instruction_serialization():
 
 
 def test_minimal_yaml_rendering_strips_empty_fields():
-    """Test minimal_yaml rendering strips None, empty lists, empty dicts"""
+    """minimal_yaml rendering strips None, empty lists, empty dicts"""
     content = InstructionContent(
         instruction="Test",
         guidance=None,  # Should be stripped
@@ -562,7 +562,7 @@ def test_minimal_yaml_rendering_strips_empty_fields():
 
 
 def test_minimal_yaml_rendering_includes_non_empty_fields():
-    """Test minimal_yaml includes all non-empty fields"""
+    """minimal_yaml includes all non-empty fields"""
     content = InstructionContent(
         instruction="Do this",
         guidance="Be careful",
@@ -579,7 +579,7 @@ def test_minimal_yaml_rendering_includes_non_empty_fields():
 
 
 def test_minimal_yaml_response_format_as_json_block():
-    """Test minimal_yaml renders response_format as JSON code block"""
+    """minimal_yaml renders response_format as JSON code block"""
     content = InstructionContent(
         instruction="Test",
         response_format={"key": "value", "nested": {"field": 123}},
@@ -594,7 +594,7 @@ def test_minimal_yaml_response_format_as_json_block():
 
 
 def test_minimal_yaml_response_schema_included():
-    """Test minimal_yaml includes ResponseSchema for BaseModel, ResponseFormat for dict"""
+    """minimal_yaml includes ResponseSchema for BaseModel, ResponseFormat for dict"""
     # Dict mode: only ResponseFormat (no model_json_schema available)
     schema = {"type": "object", "properties": {"name": {"type": "string"}}}
     content = InstructionContent(instruction="Test", response_format=schema)
@@ -609,7 +609,7 @@ def test_minimal_yaml_response_schema_included():
 
 
 def test_instruction_content_empty():
-    """Test empty InstructionContent renders to empty string"""
+    """Empty InstructionContent renders to empty string"""
     content = InstructionContent()
     rendered = content.rendered
 
@@ -650,7 +650,7 @@ def test_instruction_with_https_image_url():
 
 
 def test_instruction_with_data_url_image():
-    """Test data URL images are passed through correctly"""
+    """Data URL images are passed through correctly"""
     data_url = "data:image/png;base64,iVBORw0KGgo="
     instruction = Instruction(
         content={
@@ -667,7 +667,7 @@ def test_instruction_with_data_url_image():
 
 
 def test_instruction_complex_nested_context():
-    """Test deeply nested context structures"""
+    """Deeply nested context structures"""
     complex_context = {
         "level1": {"level2": {"level3": ["value1", "value2"]}},
         "array": [1, 2, 3],
@@ -685,7 +685,7 @@ def test_instruction_complex_nested_context():
 
 
 def test_instruction_large_response_format():
-    """Test large response_format structures"""
+    """Large response_format structures"""
     large_format = {f"field_{i}": f"value_{i}" for i in range(20)}
     instruction = Instruction(
         content={"instruction": "Test", "response_format": large_format},
@@ -701,7 +701,7 @@ def test_instruction_large_response_format():
 
 
 def test_from_dict_preserves_field_types():
-    """Test from_dict preserves correct field types"""
+    """from_dict preserves correct field types"""
     data = {
         "instruction": "Test",
         "context": [{"a": 1}, "string"],

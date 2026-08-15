@@ -32,10 +32,6 @@ from lionagi.tools.sandbox_backend import (
     select_backend_for_cell,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _symlink_or_skip(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
     """Create a symlink, or skip the test on platforms without symlink support."""
@@ -116,11 +112,6 @@ class FakeExecOnlyBackend(FakeBackend):
         super().__init__(hosts_prompt_cell=False)
 
 
-# ---------------------------------------------------------------------------
-# ADR-0090 adopted types
-# ---------------------------------------------------------------------------
-
-
 def test_execution_limits_defaults():
     limits = ExecutionLimits()
     assert limits.timeout_s is None
@@ -134,12 +125,6 @@ def test_execution_target_for_worker_preserves_and_overrides():
     assert worker.cwd == "/repo/agent-7"
     assert worker.sandbox_id == "sb-1"
     assert worker.metadata["agent_id"] == "agent-7"
-
-
-# ---------------------------------------------------------------------------
-# (1) Fake-backend test: provision -> run_cell -> collect -> teardown,
-#     for BOTH cell kinds, without launching Daytona.
-# ---------------------------------------------------------------------------
 
 
 async def test_fake_backend_full_lifecycle_prompt_cell():
@@ -183,11 +168,6 @@ async def test_fake_backend_full_lifecycle_exec_cell():
     assert handle.remote_id not in backend.files
 
 
-# ---------------------------------------------------------------------------
-# (2) capabilities()-driven degradation: callers never branch on backend name.
-# ---------------------------------------------------------------------------
-
-
 def test_select_backend_for_cell_degrades_prompt_cell_via_capabilities():
     remote_only = FakeExecOnlyBackend()  # Daytona-shaped: no host-side prompt-cell
     local = FakeBackend()  # can host prompt-cells
@@ -229,11 +209,6 @@ def test_get_backend_returns_shared_instances_by_name():
     assert get_backend("local_worktree") is get_backend("local_worktree")
     with pytest.raises(ValueError):
         get_backend("docker")  # slice 2, not registered yet
-
-
-# ---------------------------------------------------------------------------
-# LocalWorktreeBackend — real git worktree, no network.
-# ---------------------------------------------------------------------------
 
 
 async def test_local_worktree_backend_capabilities_hosts_prompt_cells():
@@ -306,13 +281,6 @@ async def test_local_worktree_backend_nonzero_exit_reported(git_repo):
     await backend.teardown(handle)
 
 
-# ---------------------------------------------------------------------------
-# LocalWorktreeBackend — seed-input/artifact-manifest containment (ADR-0090
-# delta 4): absolute paths, `..` traversal, and symlink escapes must all be
-# rejected before write (seed_inputs) or read (artifact_manifest/collect).
-# ---------------------------------------------------------------------------
-
-
 async def test_local_worktree_backend_rejects_absolute_seed_input_path(git_repo):
     backend = LocalWorktreeBackend()
     handle = await backend.provision(ProvisionSpec(repo_root=str(git_repo)))
@@ -372,11 +340,6 @@ async def test_local_worktree_backend_rejects_symlinked_artifact_escape(git_repo
     with pytest.raises(ValueError, match="escape"):
         await backend.collect(handle, ["link.txt"])
     await backend.teardown(handle)
-
-
-# ---------------------------------------------------------------------------
-# DaytonaBackend — thin adapter, exercised via an injected fake sandbox.
-# ---------------------------------------------------------------------------
 
 
 class _FakeDaytonaSandbox:
@@ -480,14 +443,6 @@ async def test_daytona_backend_provision_without_repo_url_uses_home_dir():
     assert handle.remote_repo_path == "/home/daytona"
     sandbox: _FakeDaytonaSandbox = handle.metadata["sandbox"]
     assert sandbox.cloned == []
-
-
-# ---------------------------------------------------------------------------
-# DaytonaBackend — seed-input/artifact-manifest containment (ADR-0090 delta
-# 4). The remote filesystem can't be resolve()-d locally, so only the
-# string-level checks (absolute, `..`) apply here; symlink-escape checking
-# is scoped to the local backend, which has real filesystem access.
-# ---------------------------------------------------------------------------
 
 
 async def test_daytona_backend_rejects_absolute_seed_input_path():

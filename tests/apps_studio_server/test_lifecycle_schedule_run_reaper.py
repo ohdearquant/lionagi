@@ -217,23 +217,21 @@ def test_reap_stale_schedule_runs_excludes_leased_task_queue_rows(tmp_path, monk
 def test_pre_terminal_write_bumps_updated_at_so_reaper_does_not_race_completion(
     tmp_path, monkeypatch
 ):
-    """A schedule_run legitimately running past the stale window is about
-    to finish: _fire_inner() first writes exit_code/ended_at via
-    update_schedule_run() (fields-only, no status), then transitions the
-    row to its terminal status via update_status(). If a periodic reaper
-    scan landed in that gap while the row's updated_at was still the old
-    stale snapshot, its expected_updated_at guard would still match and it
-    could mark the row timed_out out from under the run that is in the
-    middle of legitimately completing.
+    """A schedule_run legitimately running past the stale window is about to
+    finish: _fire_inner() first writes exit_code/ended_at via
+    update_schedule_run() (fields-only, no status), then transitions the row
+    to terminal via update_status(). If a periodic reaper scan landed in
+    that gap while updated_at was still the old stale snapshot, its
+    expected_updated_at guard would still match and could mark the row
+    timed_out out from under a run that is legitimately completing.
 
     update_schedule_run()'s field-only write now bumps updated_at on every
-    call (mirroring update_status()'s own behavior), so a reaper scan
-    landing in this exact window sees a fresh updated_at and skips the row
-    outright -- it never even reaches the CAS write. This directly
-    simulates that interleaving: seed a stale running row, perform the
-    pre-terminal field write, run the reaper, then perform the terminal
-    transition -- the row must land in its true terminal status, not
-    timed_out.
+    call (mirroring update_status()), so a reaper scan landing in this
+    window sees a fresh updated_at and skips the row before it ever reaches
+    the CAS write. This simulates the interleaving directly: seed a stale
+    running row, perform the pre-terminal field write, run the reaper, then
+    perform the terminal transition -- the row must land in its true
+    terminal status, not timed_out.
     """
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)

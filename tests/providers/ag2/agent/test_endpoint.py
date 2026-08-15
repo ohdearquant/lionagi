@@ -12,10 +12,6 @@ import pytest
 
 from lionagi.providers.ag2.agent import AG2AgentRequest, AgentConfig
 
-# ---------------------------------------------------------------------------
-# Helpers / fixtures
-# ---------------------------------------------------------------------------
-
 
 def _make_fake_agent(name: str = "fake-agent") -> MagicMock:
     """Return a minimal MagicMock that quacks like an autogen.beta.Agent."""
@@ -44,11 +40,6 @@ async def _fake_run_beta_agent(
         yield ev
 
 
-# ---------------------------------------------------------------------------
-# Model field tests (no AG2 import needed)
-# ---------------------------------------------------------------------------
-
-
 class TestAG2AgentRequestModel:
     def test_agent_field_defaults_to_none(self):
         req = AG2AgentRequest(prompt="hello")
@@ -74,14 +65,7 @@ class TestAG2AgentRequestModel:
         assert req.agent_config.name == "cfg-only"
 
 
-# ---------------------------------------------------------------------------
-# run_beta_agent signature / routing tests
-# ---------------------------------------------------------------------------
-
-
 class TestRunBetaAgentRouting:
-    """Test that run_beta_agent routes correctly without hitting AG2 imports."""
-
     @pytest.mark.asyncio
     async def test_neither_agent_nor_config_raises(self):
         from lionagi.providers.ag2.agent import run_beta_agent
@@ -152,11 +136,6 @@ class TestRunBetaAgentRouting:
         assert any("agent_config is ignored" in r.message for r in caplog.records), (
             "Expected log message about agent_config being ignored"
         )
-
-
-# ---------------------------------------------------------------------------
-# AG2BetaEndpoint.stream() integration tests (mocked AG2)
-# ---------------------------------------------------------------------------
 
 
 class TestAG2BetaEndpointStream:

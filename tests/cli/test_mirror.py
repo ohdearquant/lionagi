@@ -38,7 +38,7 @@ from lionagi.state.db import StateDB
 SID = "11111111-2222-3333-4444-555555555555"
 
 
-# ── Event builders (verified Claude JSONL shapes) ────────────────────────────
+# Event builders (verified Claude JSONL shapes)
 
 
 def _user_text(uuid: str, text: str, *, ts: str = "2026-06-20T00:00:00.000Z") -> dict:
@@ -86,7 +86,7 @@ def _db_content(msg) -> dict:
     return json.loads(c) if isinstance(c, str) else c
 
 
-# ── messages_for_event: mapping + ordering + linkage ─────────────────────────
+# messages_for_event: mapping + ordering + linkage
 
 
 def test_user_text_maps_to_single_instruction() -> None:
@@ -211,7 +211,7 @@ def test_deterministic_ids_are_idempotent() -> None:
     assert ids1 == ids2
 
 
-# ── mirror_session: idempotent write + status lifecycle ──────────────────────
+# mirror_session: idempotent write + status lifecycle
 
 
 def _conversation() -> list[dict]:
@@ -404,7 +404,7 @@ async def test_mirror_session_is_idempotent(temp_db_path: Path) -> None:
     assert first == second  # no duplicate appends
 
 
-# ── link_escalation_session: escalation-leg mirror attribution ──────────────
+# link_escalation_session: escalation-leg mirror attribution
 
 
 @pytest.mark.asyncio
@@ -450,6 +450,55 @@ async def test_link_escalation_session_overwrites_orphan_attribution(
     assert after["project_source"] == "escalation_parent"
     assert after["name"] == "escalation of gate-runner-4"
     assert after["node_metadata"]["escalated_from_session"] == "parent-op-1"
+
+
+@pytest.mark.asyncio
+async def test_link_engine_child_session_stamps_marker_and_name(
+    temp_db_path: Path,
+) -> None:
+    """An engine-backed actor's CLI transcript is mirrored with a name derived
+    from its first prompt (the actor's own system prompt). The link write must
+    replace that name and stamp the flat parent marker listings filter on."""
+    from lionagi.state.claude_mirror import link_engine_child_session
+
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=_conversation(),
+            tool_names={},
+            name="You are the resident Operator for Lion Studio. Be concise",
+            status="running",
+        )
+        linked = await link_engine_child_session(
+            db,
+            session_uid=SID,
+            parent_run_id="parent-canonical-run",
+            name="Operator · engine transcript",
+        )
+        after = await db.get_session(session_db_id(SID))
+
+    assert linked is True
+    assert after["name"] == "Operator · engine transcript"
+    assert after["node_metadata"]["engine_parent_run_id"] == "parent-canonical-run"
+
+
+@pytest.mark.asyncio
+async def test_link_engine_child_session_missing_row_returns_false(
+    temp_db_path: Path,
+) -> None:
+    """Before the mirror mints the row there is nothing to stamp; the caller
+    retries on False rather than treating it as done."""
+    from lionagi.state.claude_mirror import link_engine_child_session
+
+    async with StateDB() as db:
+        linked = await link_engine_child_session(
+            db,
+            session_uid=SID,
+            parent_run_id="parent-canonical-run",
+            name="Operator · engine transcript",
+        )
+    assert linked is False
 
 
 @pytest.mark.asyncio
@@ -694,6 +743,31 @@ async def test_reconcile_reactivates_completed_when_fresh(temp_db_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_reconcile_reactivation_clears_terminal_stamps(temp_db_path: Path) -> None:
+    """A reactivated session is running again: its terminal ended_at and
+    duration_ms must not survive the flip, or listings read "running yet
+    ended days ago" and elapsed-time surfaces keep growing off the stale
+    end mark."""
+    async with StateDB() as db:
+        await mirror_session(
+            db, session_uid=SID, events=_conversation(), tool_names={}, status="running"
+        )
+        row = await db.get_session(session_db_id(SID))
+        lm = row["last_message_at"]
+        # Go idle far past the window: terminal write stamps ended_at.
+        await reconcile_session_status(db, SID, now=lm + 10_000, live_window=300)
+        ended = await db.get_session(session_db_id(SID))
+        assert ended["status"] == "completed"
+        assert ended["ended_at"] is not None
+        # Transcript resumes within the window of the last message.
+        await reconcile_session_status(db, SID, now=lm + 1, live_window=300)
+        after = await db.get_session(session_db_id(SID))
+    assert after["status"] == "running"
+    assert after["ended_at"] is None
+    assert after["duration_ms"] is None
+
+
+@pytest.mark.asyncio
 async def test_reconcile_idle_session_stays_completed_across_passes(temp_db_path: Path) -> None:
     # The status write bumps updated_at; liveness must key off last_message_at
     # instead. Otherwise a just-completed idle session reads as fresh on the next
@@ -856,7 +930,7 @@ async def test_mirror_session_empty_no_session(temp_db_path: Path) -> None:
     assert row is None
 
 
-# ── watcher passes: session-level liveness across multiple files ─────────────
+# watcher passes: session-level liveness across multiple files
 
 
 def _iso(dt: datetime) -> str:
@@ -1012,7 +1086,7 @@ async def test_mirror_forever_retries_after_connection_open_failure(
     assert alive, "tail died on a transient open failure instead of retrying"
 
 
-# ── watcher helpers: tailing + parsing ───────────────────────────────────────
+# watcher helpers: tailing + parsing
 
 
 def test_read_new_events_buffers_partial_line(tmp_path: Path) -> None:
@@ -1103,7 +1177,7 @@ def test_since_window_argparse_type() -> None:
         _since_window("")  # empty is rejected at the CLI boundary (default=None handles "all")
 
 
-# ── project attribution fallback ─────────────────────────────────────────────
+# project attribution fallback
 
 
 def test_fallback_project_uses_folder_name_when_dir_exists(tmp_path: Path) -> None:
@@ -1137,7 +1211,7 @@ def test_derive_metadata_others_when_cwd_gone() -> None:
 
 
 def test_derive_metadata_captures_raw_cwd_as_artifact_root(tmp_path: Path) -> None:
-    # issue #2848: the raw cwd (not the bucketed project name) is the session's
+    # the raw cwd (not the bucketed project name) is the session's
     # artifact root -- every file the CLI touched lives under it.
     work = tmp_path / "my-workspace"
     work.mkdir()
@@ -1175,7 +1249,7 @@ async def test_mirror_session_backfills_missing_project(temp_db_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_mirror_session_writes_artifacts_path_from_cwd(temp_db_path: Path) -> None:
-    # issue #2848: a mirrored CLI session's cwd is its artifact root -- the run
+    # a mirrored CLI session's cwd is its artifact root -- the run
     # file viewer is otherwise structurally dead for every mirrored session.
     events = _conversation()
     async with StateDB() as db:
@@ -1204,7 +1278,7 @@ async def test_mirror_session_does_not_clobber_an_existing_artifacts_path(
     assert row["artifacts_path"] == "/work/first-guess"
 
 
-# ── conversation-lineage detector ────────────────────────────────────────────
+# conversation-lineage detector
 
 
 def _lineage_event(uid: str, euid: str, parent: str | None, role: str, text: str) -> dict:
@@ -1342,7 +1416,7 @@ async def test_idle_session_backfilled_with_project(temp_db_path: Path, tmp_path
 async def test_idle_session_backfilled_with_artifacts_path_even_when_project_already_set(
     temp_db_path: Path, tmp_path: Path
 ) -> None:
-    # issue #2848: the dominant NULL-artifacts_path population is sessions the
+    # the dominant NULL-artifacts_path population is sessions the
     # mirror already attributed a project to (in an earlier process) before this
     # fix existed -- artifacts_path must backfill on its own, not only when
     # project is also missing.
@@ -1447,7 +1521,7 @@ async def test_peek_head_skips_non_dict_head_line(temp_db_path: Path, tmp_path: 
     assert row["status"] == "completed"
 
 
-# ── restart durability: derived state persisted with the cursor ──────────────
+# restart durability: derived state persisted with the cursor
 
 
 @pytest.mark.asyncio
@@ -1574,7 +1648,7 @@ async def test_codex_file_that_mirrors_nothing_is_reported_not_skipped(tmp_path,
     assert state.barren_reported
 
 
-# ── Orchestrated codex rollouts (headless `codex exec`) ──────────────────────
+# Orchestrated codex rollouts (headless `codex exec`)
 
 
 def _codex_rollout_lines(uid: str, originator: str) -> str:
@@ -1727,7 +1801,7 @@ async def test_interactive_rollout_still_mirrors(tmp_path):
 
 
 async def test_interactive_rollout_records_artifacts_path_from_header_cwd(tmp_path):
-    # issue #2848: the session_meta header's cwd is the rollout's artifact root,
+    # the session_meta header's cwd is the rollout's artifact root,
     # the same gap claude_mirror had.
     from lionagi.cli.mirror import _FileState, _mirror_one_codex
     from lionagi.state.codex_mirror import session_db_id as codex_sid
@@ -2248,7 +2322,7 @@ async def test_a_failed_prior_stem_absorption_also_leaves_the_file_eligible(tmp_
     assert calls == [uid, stem, uid, stem], f"absorption ids across both passes: {calls}"
 
 
-# ── Bounded preview + source pointer codec (mirror_spec.md) ──────────────────
+# Bounded preview + source pointer codec (mirror_spec.md)
 
 
 def _source_line_for(raw: bytes, path: Path) -> SourceLine:
@@ -2609,12 +2683,12 @@ def test_config_omitted_preview_chars_defaults_to_500(monkeypatch):
     assert config_mod.MIRROR_PREVIEW_CHARS == 500
 
 
-# ── Live-path mirror bounding: oversized ingestion through the three real
+# Live-path mirror bounding: oversized ingestion through the three real
 # writers (claude_mirror.py, codex_mirror.py, cli/mirror.py). A unit test on
 # the codec alone (above) does not prove these are wired; each test here
 # writes an oversized transcript to disk and reads the row back out of a real
 # StateDB after it went through the module's own tailer, never constructing
-# the pointer by hand. ──────────────────────────────────────────────────────
+# the pointer by hand.
 
 _OVERSIZED_TEXT = "z" * 5000  # far beyond MIRROR_PREVIEW_CHARS default (500)
 

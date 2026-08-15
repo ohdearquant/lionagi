@@ -12,9 +12,7 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 # _run kept for non-integration sync test paths (e.g. ValueError checks without fastapi)
 from tests.apps_studio_server._helpers import run_async as _run  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # H-BE-3: save_definition() writes DB first, then disk
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -241,9 +239,7 @@ async def test_save_definition_unknown_kind_raises(tmp_path, monkeypatch):
         await defs_mod.save_definition("widget", "my-widget", "content")
 
 
-# ---------------------------------------------------------------------------
 # CRITICAL: path/glob injection — service boundary validation
-# ---------------------------------------------------------------------------
 
 
 def _make_patched_client(tmp_path, monkeypatch):
@@ -402,9 +398,7 @@ async def test_save_definition_accepts_valid_kinds(kind, tmp_path, monkeypatch):
     assert result["version"] >= 1
 
 
-# ---------------------------------------------------------------------------
 # HIGH: concurrent save race — disk must reflect the HIGHER version's content
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -465,9 +459,7 @@ async def test_concurrent_save_disk_reflects_highest_version(tmp_path, monkeypat
     )
 
 
-# ---------------------------------------------------------------------------
 # MEDIUM: StateDB failure — no file written, exception propagates
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -546,9 +538,7 @@ def test_save_definition_db_failure_returns_500_from_router(tmp_path, monkeypatc
     assert r.status_code == 500, f"Expected 500, got {r.status_code}"
 
 
-# ---------------------------------------------------------------------------
 # HIGH-R3-BE-1: symlinked agent definitions must be readable + writable
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -644,9 +634,7 @@ async def test_save_definition_writes_through_symlink(tmp_path, monkeypatch):
     assert symlink.is_symlink(), "symlink must remain a symlink after save"
 
 
-# ---------------------------------------------------------------------------
 # MEDIUM-R3-BE-2: missing kind directory must not 500
-# ---------------------------------------------------------------------------
 
 
 def test_find_definition_file_missing_base_returns_none(tmp_path):
@@ -664,10 +652,8 @@ def test_find_definition_file_missing_base_returns_none(tmp_path):
     assert result is None
 
 
-# ---------------------------------------------------------------------------
 # Nested definitions listed under the containing directory's name must also
 # be fetchable by that same name, even when the filename inside differs.
-# ---------------------------------------------------------------------------
 
 
 def test_find_definition_file_resolves_nested_dir_with_different_filename(tmp_path):

@@ -350,9 +350,11 @@ log.
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Generate and verify the mounted Studio route manifest and OpenAPI snapshot in CI; fail when an intended public service is absent or an existing method/path changes without an explicit compatibility update. | S | (filled at issue-open time) |
-| 2 | Define a shared SSE frame envelope, error frame, terminal frame, and reconnect-cursor rule for session, signal, show, and Leo streams while preserving endpoint-specific payloads. | M | (filled at issue-open time) |
+| 2 | Define a shared SSE frame envelope, error and terminal frames, a stable replay cursor (composite where timestamps can collide), bounded batch semantics, and reconnect rules for session, signal, show, and Leo streams while preserving endpoint-specific payloads; acceptance covers same-timestamp inserts, reconnect after a partial batch, explicit truncation, prompt cancellation cleanup, and shared web/VS Code behavior fixtures. | M | (filled at issue-open time) |
 | 3 | Decide whether filesystem show import is a browser-admin mutation or a CLI maintenance operation, then enforce one policy with matching authorization and confirmation behavior. | S | (filled at issue-open time) |
 | 4 | Document and test API-only, daemon-hosted SPA, Vite development, and container/reverse-proxy modes against the same host, CORS, token, and API-base rules. | S | (filled at issue-open time) |
+| 5 | Separate stream-subscription lifetime from per-poll database setup and bound per-viewer work; acceptance: idle viewers do not open a new database connection or repeat schema discovery every 500 ms, terminal checks use bounded/shared reads, disconnect closes promptly, and a repeatable benchmark records query and connection growth as viewer count rises. | M | (filled at issue-open time) |
+| 6 | Put a measured bound and observable phase/progress on startup reconciliation while preserving D3's correctness gate; acceptance: a seeded large database reaches ready within the agreed budget, only non-authoritative maintenance is deferred, and no stale execution row is exposed as healthy before reconciliation completes. | M | (filled at issue-open time) |
 
 ## Alternatives considered
 

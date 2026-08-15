@@ -8,9 +8,7 @@ from lionagi.protocols.generic.pile import Pile
 from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.graph.node import Node
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_nodes(n: int = 3) -> list[Node]:
@@ -29,9 +27,7 @@ def _flow_with_progression(n: int = 3, prog_name: str = "stage-1"):
     return flow, nodes, prog
 
 
-# ---------------------------------------------------------------------------
 # to_dict
-# ---------------------------------------------------------------------------
 
 
 class TestFlowToDict:
@@ -88,9 +84,7 @@ class TestFlowToDict:
         assert d["id"] == str(flow.id)
 
 
-# ---------------------------------------------------------------------------
 # Round-trip: to_dict -> from_dict
-# ---------------------------------------------------------------------------
 
 
 class TestFlowRoundTrip:
@@ -197,13 +191,11 @@ class TestFlowRoundTrip:
         assert flow2.name == flow.name
 
 
-# ---------------------------------------------------------------------------
 # _progression_names index rebuild
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionNamesRebuild:
-    """Test that _progression_names is rebuilt after deserialization."""
+    """_progression_names is rebuilt after deserialization."""
 
     def test_progression_names_rebuilt(self):
         flow, _, _ = _flow_with_progression(2, "my-stage")
@@ -252,9 +244,7 @@ class TestProgressionNamesRebuild:
         assert len(flow2._progression_names) == 0
 
 
-# ---------------------------------------------------------------------------
 # Empty flow round-trip
-# ---------------------------------------------------------------------------
 
 
 class TestEmptyFlowRoundTrip:
@@ -297,9 +287,7 @@ class TestEmptyFlowRoundTrip:
         assert flow2.name == "empty-but-named"
 
 
-# ---------------------------------------------------------------------------
 # Pile coercion (_coerce_pile classmethod)
-# ---------------------------------------------------------------------------
 
 
 class TestPileCoercion:
@@ -351,9 +339,7 @@ class TestPileCoercion:
         assert len(flow.items) == 2
 
 
-# ---------------------------------------------------------------------------
 # JSON round-trip
-# ---------------------------------------------------------------------------
 
 
 class TestFlowJsonRoundTrip:
@@ -377,9 +363,7 @@ class TestFlowJsonRoundTrip:
         assert flow2.get_progression("json-lookup") is not None
 
 
-# ---------------------------------------------------------------------------
 # Mutability after round-trip
-# ---------------------------------------------------------------------------
 
 
 class TestMutabilityAfterRoundTrip:
