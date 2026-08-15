@@ -35,9 +35,7 @@ def _py(script: str) -> list[str]:
     return [sys.executable, "-c", script]
 
 
-# ---------------------------------------------------------------------------
 # The invariant: the stored field is a bounded enum, not free text
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -90,9 +88,7 @@ def test_classifier_failure_yields_unknown_and_carries_nothing_out(monkeypatch):
     assert "hunter2" not in out
 
 
-# ---------------------------------------------------------------------------
 # The point of the change: a failure is now classifiable
-# ---------------------------------------------------------------------------
 
 
 def test_a_missing_notifier_is_distinguishable_from_a_refused_message():
@@ -180,9 +176,7 @@ def test_a_timeout_is_classified_without_touching_the_exceptions_captured_output
     assert "hunter2" not in repr(out)
 
 
-# ---------------------------------------------------------------------------
 # Degraded trust: a zero exit that does not mean delivered
-# ---------------------------------------------------------------------------
 
 
 def test_kkernel_exec_without_strict_is_marked_unverified():

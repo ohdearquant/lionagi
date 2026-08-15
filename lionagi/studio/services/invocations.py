@@ -35,7 +35,7 @@ def _invocation_health(
 ) -> tuple[str, float | None]:
     """Worst-of health verdict + latest activity timestamp across an
     invocation's child sessions, reusing the session health classifier
-    (ADR-0057) rather than a second vocabulary (issue #2851). "unknown"
+    (ADR-0057) rather than a second vocabulary. "unknown"
     when the invocation has no child sessions yet — liveness genuinely
     cannot be determined, never silently defaulted to "healthy"."""
     if not sessions:

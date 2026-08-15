@@ -36,23 +36,13 @@ _ADAPTER_REGISTERED = False
 
 
 def _serialize_records(records: list[dict], obj_key: str) -> str:
-    """Serialize row dicts to a JSONL or CSV string using only the standard
-    library, so the common serialization paths carry no pandas dependency.
+    """Serialize row dicts to a JSONL or CSV string, stdlib-only (no pandas).
 
-    - ``json`` → one compact JSON object per line (JSONL), newline-terminated
-      so ``mode="a"`` stays valid JSONL, matching the prior
-      ``DataFrame.to_json(orient="records", lines=True)`` which ended in "\n".
-    - ``csv`` → a header of every key seen (in first-appearance order) followed
-      by one row per record; missing keys render empty, as pandas did.
-
-    Values come from ``to_dict(mode="json")``, i.e. lionagi's canonical orjson
-    encoding (ISO datetimes, shortest round-trippable floats). That is
-    value-equal and round-trippable via ``Element.from_dict``, but its text is
-    not byte-identical to pandas for datetime/high-precision-float fields
-    (pandas rendered epoch-ms datetimes and double_precision floats).
-
-    ``parquet`` is intentionally unsupported here — it stays on the pandas /
-    ``to_df`` path in ``dump``/``adump`` since it needs a columnar engine.
+    Values come from ``to_dict(mode="json")``; text is value-equal and
+    round-trippable via ``Element.from_dict`` but not byte-identical to
+    pandas for datetime/high-precision-float fields. ``parquet`` stays on
+    the pandas ``to_df`` path in ``dump``/``adump``. See
+    docs/internals/core.md, "Pile row serialization".
     """
     if obj_key == "json":
         return "".join(
@@ -79,16 +69,10 @@ def _serialize_records(records: list[dict], obj_key: str) -> str:
 def _validate_item_type(value, /) -> set[type[T]] | None:
     """Normalize item_type to a set of classes.
 
-    Conformance is deliberately not checked here. Observable is a structural
-    protocol, so whether something is admissible is a property of an instance
-    (does it expose an ``id``?), not of its class -- a class that only assigns
-    ``self.id`` in ``__init__`` declares nothing at class level yet its
-    instances conform perfectly. Any class-level approximation would reject
-    exactly those types while the pile itself accepts their instances.
-
-    Admission stays honest instead: every item is checked against Observable
-    as it is included, so a class that cannot produce conforming instances
-    simply never gets one past that gate.
+    Conformance is not checked here: Observable is a structural protocol
+    (see ``_concepts.Observable``), so admissibility is a property of each
+    instance, not its class. Every item is checked against Observable as it
+    is included instead.
     """
     if value is None:
         return None

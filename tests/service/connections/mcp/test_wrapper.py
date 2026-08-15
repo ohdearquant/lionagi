@@ -151,7 +151,6 @@ class TestMCPConnectionPoolGetClient:
 
         with patch.object(MCPConnectionPool, "_create_client") as mock_create:
             client = await MCPConnectionPool.get_client(inline_config)
-            # Should not create new client
             mock_create.assert_not_called()
 
     @pytest.mark.asyncio
@@ -336,7 +335,6 @@ class TestMCPConnectionPoolCleanup:
             "client2": mock_client2,
         }
 
-        # Should not raise, just log
         await MCPConnectionPool.cleanup()
 
         mock_client1.__aexit__.assert_called_once()
@@ -389,7 +387,6 @@ class TestCreateMCPTool:
             tool = create_mcp_tool(mcp_config, tool_name)
             await tool()
 
-            # Should call with original name, not prefixed
             mock_client.call_tool.assert_called_once_with("actual_name", {})
 
     @pytest.mark.asyncio

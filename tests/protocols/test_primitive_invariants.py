@@ -4,22 +4,20 @@
 """Invariant/property tests for the four core primitives: Pile, Progression,
 Element, and Graph.
 
-Regression class this guards against: these primitives sit on every hot path
-(message history, tool piles, the DAG executor) and keep attracting
-performance-motivated cleanups — swapping a linear scan for a dict lookup,
-caching a computed view, batching a lock acquisition. Each of those changes is
-"obviously behavior preserving" in isolation, but the actual contracts here
-(insertion-order iteration, Pile/Progression independence, exact serialization
-round-tripping, adjacency-mapping consistency under mutation) are enforced by
-convention across many call sites, not by a single invariant check. A cleanup
-that quietly breaks ordering, thread-safety, serialization, or adjacency
-consistency ships green and is only discovered downstream, far from the
-change that caused it.
+These primitives sit on every hot path (message history, tool piles, the
+DAG executor) and keep attracting performance cleanups -- a linear scan
+swapped for a dict lookup, a computed view cached, a lock acquisition
+batched -- that look behavior-preserving in isolation. The actual contracts
+here (insertion-order iteration, Pile/Progression independence, exact
+serialization round-tripping, adjacency-mapping consistency under mutation)
+are enforced by convention across many call sites, not a single invariant
+check, so a cleanup that quietly breaks one ships green and is only caught
+downstream.
 
-Every assertion below pins CURRENT, empirically observed behavior (including
-behavior that looks like a footgun, e.g. KeyError on iterate-while-mutate) —
-it is not aspirational. If a future change deliberately alters one of these
-contracts, the test (and this docstring) should be updated alongside it.
+Every assertion pins CURRENT, empirically observed behavior, including
+footguns like KeyError on iterate-while-mutate -- it is not aspirational.
+Update the test and this docstring together if a contract deliberately
+changes.
 """
 
 from __future__ import annotations
@@ -49,9 +47,7 @@ class MyNode(Node):
     of depending on the test module's own import path."""
 
 
-# ---------------------------------------------------------------------------
 # 1. Pile — ordering, O(1) access, thread-safety, async iteration
-# ---------------------------------------------------------------------------
 
 
 class TestPileOrderingInvariants:
@@ -297,9 +293,7 @@ class TestPileIterationMutationContract:
         assert fresh_order == [items[0].id, *[i.id for i in items[2:]]]
 
 
-# ---------------------------------------------------------------------------
 # 2. Progression / Pile independence
-# ---------------------------------------------------------------------------
 
 
 class TestProgressionPileIndependence:
@@ -362,9 +356,7 @@ class TestProgressionPileIndependence:
             assert len(prog) == len(items)
 
 
-# ---------------------------------------------------------------------------
 # 3. Element.to_dict / from_dict roundtrips
-# ---------------------------------------------------------------------------
 
 
 class TestElementToDictRoundtrip:
@@ -472,9 +464,7 @@ class TestElementToDictRoundtrip:
                 assert restored.metadata.get(k) == v
 
 
-# ---------------------------------------------------------------------------
 # 4. Graph adjacency consistency
-# ---------------------------------------------------------------------------
 
 
 class TestGraphAdjacencyConsistency:

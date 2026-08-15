@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln._proc import aterminate_process_group
 
 _log = logging.getLogger(__name__)
@@ -227,13 +228,81 @@ def _render_command_arg(template: str, context: dict) -> str:
     return rendered
 
 
+_RESERVED_FLOW_FLAGS: frozenset[str] | None = None
+
+
+def _reserved_flow_flags() -> frozenset[str]:
+    """Option strings of the base `li o flow` parser, derived not hand-kept.
+
+    `li play NAME --key ...` rewrites to `li o flow -p NAME --key ...`, so a
+    playbook-arg key whose flag form matches a base flow option would be
+    parsed as that built-in flag (e.g. ``bypass`` -> ``--bypass`` disabling
+    approval controls) instead of reaching the playbook's declared args.
+    Deriving the set from the parser itself means a flag added to flow later
+    is reserved here automatically.
+    """
+    global _RESERVED_FLOW_FLAGS
+    if _RESERVED_FLOW_FLAGS is None:
+        import argparse
+
+        from lionagi.cli.orchestrate import add_orchestrate_subparser
+
+        probe = argparse.ArgumentParser(prog="li", add_help=False)
+        flow = add_orchestrate_subparser(probe.add_subparsers(dest="command"))["flow"]
+        _RESERVED_FLOW_FLAGS = frozenset(
+            option
+            for action in flow._actions
+            for option in action.option_strings
+            if option.startswith("--")
+        )
+    return _RESERVED_FLOW_FLAGS
+
+
+def _validate_playbook_args(pb_args: object) -> None:
+    """Validate a play launch's typed playbook args before argv construction.
+
+    Keys become `--key` flags (underscores map to dashes, matching the play
+    CLI's own schema-derived flags), so they must be clean identifiers that do
+    not shadow a built-in flow flag; values ride as the following token, so a
+    leading '-' would be re-parsed as a flag (CWE-88) and is rejected.
+    """
+    if not isinstance(pb_args, dict):
+        raise ValueError("action_playbook_args must be an object of arg name -> value")
+    import re
+
+    for key, value in pb_args.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key):
+            raise ValueError(f"action_playbook_args key {key!r} is not a valid playbook arg name")
+        if "--" + key.replace("_", "-") in _reserved_flow_flags():
+            raise ValueError(
+                f"action_playbook_args key {key!r} collides with a built-in flow "
+                "CLI flag and would change how the run is spawned rather than "
+                "reach the playbook's own declared args"
+            )
+        if not isinstance(value, (str, int, float, bool)):
+            raise ValueError(
+                f"action_playbook_args[{key!r}] must be a scalar, got {type(value).__name__}"
+            )
+        if isinstance(value, str) and value.startswith("-"):
+            raise ValueError(
+                f"action_playbook_args[{key!r}] starts with '-' and would inject "
+                "a CLI flag into the spawned li process"
+            )
+
+
 def _validate_prompt(prompt: str) -> None:
-    """Raise ValueError if *prompt* is exactly the end-of-options sentinel '--'.
+    """Raise ValueError when *prompt* cannot be admitted safely.
 
     build_argv places '--' before positionals, so a prompt value of exactly
     '--' would be consumed by argparse as the separator, never reaching the
-    runner. All other content (including leading '-') is safe.
+    runner. The shared character cap also keeps stored and rendered schedule
+    prompts aligned with the orchestration surfaces instead of accepting work
+    that can only fail when it fires.
     """
+    if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+        raise ValueError(
+            f"action_prompt exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters"
+        )
     if prompt == "--":
         raise ValueError(
             "action_prompt value '--' is not allowed: the literal end-of-options "
@@ -271,7 +340,9 @@ def render_action_prompt(schedule: dict, trigger_context: dict) -> str | None:
     prompt = schedule.get("action_prompt") or ""
     if not prompt:
         return None
-    return _render_template(prompt, trigger_context)
+    rendered = _render_template(prompt, trigger_context)
+    _validate_prompt(rendered)
+    return rendered
 
 
 def resolve_li_executable() -> tuple[list[str] | None, str | None]:
@@ -385,6 +456,8 @@ def build_argv(
         _validate_identifier(playbook, "action_playbook")
     if isinstance(extra, list):
         _validate_extra_args(extra)
+    if kind == "play":
+        _validate_playbook_args(schedule.get("action_playbook_args") or {})
     if kind == "engine":
         _validate_engine_options(schedule.get("action_engine_options"))
 
@@ -395,6 +468,12 @@ def build_argv(
         prompt = _render_template(prompt, trigger_context)
     if prompt:
         _validate_prompt(prompt)
+    if kind == "play" and prompt.startswith("-"):
+        # Checked AFTER template rendering: `li play` has no '--' separator,
+        # so a leading-dash positional re-parses as a flag, and a template
+        # like '{{pr_title}}' can render to one (e.g. '--bypass') even when
+        # the stored template passes a pre-render check.
+        raise ValueError("action_prompt for a play launch must not start with '-'")
 
     argv = list(executable_prefix) if executable_prefix is not None else list(_DEFAULT_LI_PREFIX)
     tmp_path: str | None = None
@@ -436,12 +515,23 @@ def build_argv(
         argv += ["o", "fanout", *flags, "--", model, prompt]
 
     elif kind == "play":
-        # `li play NAME` is a positional-only subcommand; '--' is not needed
-        # because playbook names are validated as identifiers above and there
-        # is no freeform prompt positional.
+        # `li play NAME [--args...] [prompt]` — the playbook name is a
+        # validated identifier; typed playbook args (validated above) become
+        # the play CLI's own schema-derived flags; the prompt positional
+        # interpolates into the template's {input}. Bool args are store_true
+        # flags: present when truthy, absent otherwise.
         argv += ["play"]
         if playbook:
             argv.append(playbook)
+            for key, value in (schedule.get("action_playbook_args") or {}).items():
+                flag = "--" + key.replace("_", "-")
+                if isinstance(value, bool):
+                    if value:
+                        argv.append(flag)
+                else:
+                    argv += [flag, str(value)]
+            if prompt:
+                argv.append(prompt)
 
     elif kind == "flow_yaml":
         # No positionals here (spec file carries prompt/model), so extra
@@ -609,32 +699,20 @@ async def spawn_and_wait(
 ) -> tuple[int, str]:
     """Spawn subprocess and wait for completion. Returns (exit_code, output_tail).
 
-    Both streams are captured and drained concurrently, bounded rather than
-    buffered whole -- a single ``communicate()`` on both pipes holds an
-    entire streaming leg's output in memory, and draining one at a time
-    deadlocks once the other fills.
+    Both streams are drained concurrently and bounded rather than buffered
+    whole. *tmp_path*, if given, is deleted after exit. *cwd* pins the
+    subprocess working directory (``None`` inherits the daemon's own --
+    callers should resolve a concrete path first, see
+    ``SchedulerEngine._resolve_action_cwd``). *on_launched*, if given, is
+    awaited right after the OS process is confirmed to exist, before waiting
+    on completion; a failing callback is logged and swallowed, never allowed
+    to fail an already-launched process. See docs/internals/studio.md for
+    the allow-list re-check race this closes and why streams can't drain
+    sequentially.
 
-    If *tmp_path* is given it is deleted after the subprocess exits (used by
-    the ``flow_yaml`` action kind's temp spec file). *cwd* pins the
-    subprocess working directory; ``None`` inherits the daemon's own cwd, so
-    callers should resolve a concrete path first (see
-    SchedulerEngine._resolve_action_cwd).
-
-    *action_kind* re-runs the command allow-list check here, immediately
-    before spawn, when ``"command"`` -- closes the window where an awaited
-    DB call between ``build_argv`` and this function gives a revoked
-    allow-list env var a scheduling point to land in.
-
-    *on_launched*, if given, is awaited right after ``create_subprocess_exec``
-    confirms the OS process exists, before waiting on completion -- the
-    scheduler engine uses this to mark a schedule_run "dispatched" durably,
-    closing the recovery scan's committed-but-never-launched window. A
-    failing callback is logged and swallowed, never allowed to fail the
-    process that already launched.
-
-    *deadline_seconds* defaults to the validated global/per-action-kind Studio
-    setting. Expiry terminates the owned process group before raising
-    :class:`SubprocessDeadlineExceededError`.
+    *deadline_seconds* defaults to the validated global/per-action-kind
+    Studio setting; expiry terminates the owned process group before
+    raising :class:`SubprocessDeadlineExceededError`.
     """
     if deadline_seconds is None:
         from lionagi.studio.config import invocation_deadline_seconds

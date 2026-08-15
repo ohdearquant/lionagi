@@ -5,10 +5,6 @@
 
 from lionagi.tools.file.reader import ReaderRequest, ReaderTool
 
-# ---------------------------------------------------------------------------
-# Output format: each line is `<number>\t<code>` — strip prefix before editing
-# ---------------------------------------------------------------------------
-
 
 async def test_reader_output_has_numbered_lines(tmp_path):
     f = tmp_path / "sample.py"

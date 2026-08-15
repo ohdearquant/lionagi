@@ -16,9 +16,7 @@ from lionagi.studio.scheduler.subprocess import SubprocessDeadlineExceededError
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_client(monkeypatch, fake_db: Path | None = None) -> TestClient:
@@ -79,9 +77,7 @@ def _fresh_launch_state():
     svc._user_cancelled.clear()
 
 
-# ---------------------------------------------------------------------------
 # Basic happy-path
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -149,9 +145,7 @@ class TestLaunchHappyPath:
         assert data["action_kind"] == "agent"
 
 
-# ---------------------------------------------------------------------------
 # Invalid action_kind
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -182,9 +176,7 @@ class TestLaunchInvalidKind:
         assert resp.status_code == 422, resp.text
 
 
-# ---------------------------------------------------------------------------
 # Injection rejection — validation goes through build_argv
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -260,9 +252,7 @@ class TestLaunchInjectionRejection:
         assert resp.status_code == 422, resp.text
 
 
-# ---------------------------------------------------------------------------
 # Auth coverage — launch endpoint covered by bearer middleware
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -316,9 +306,7 @@ class TestLaunchAuth:
         assert resp.status_code == 202
 
 
-# ---------------------------------------------------------------------------
 # argv goes through build_argv (validated shared path)
-# ---------------------------------------------------------------------------
 
 
 class TestLaunchArgvPath:
@@ -462,9 +450,7 @@ class TestLaunchArgvPath:
         _validate_request({"action_kind": "play", "action_playbook": "my-playbook"})
 
 
-# ---------------------------------------------------------------------------
 # _spawn_detached terminal update uses registered reason codes
-# ---------------------------------------------------------------------------
 
 
 class TestSpawnDetachedTerminalUpdate:
@@ -604,9 +590,7 @@ class TestSpawnDetachedEndedAtAtomicity:
         assert isinstance(captured.get("extra_fields", {}).get("ended_at"), float)
 
 
-# ---------------------------------------------------------------------------
 # MAJOR 1 — Admission cap: 429 when in-flight launches >= MAX_LAUNCHES
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -671,9 +655,7 @@ class TestLaunchAdmissionCap:
         assert second.status_code == 429, second.text
 
 
-# ---------------------------------------------------------------------------
 # MAJOR 2 — Shutdown drains _detached_tasks + writes cancelled row
-# ---------------------------------------------------------------------------
 
 
 class TestShutdownDrains:
@@ -764,9 +746,7 @@ class TestShutdownDrains:
         assert captured["reason_code"] == RunReasons.CANCELLED_SYSTEM
 
 
-# ---------------------------------------------------------------------------
 # MAJOR 3 — build_argv called BEFORE create_invocation
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvBeforeCreate:
@@ -821,9 +801,7 @@ class TestBuildArgvBeforeCreate:
         assert create_calls == [], "create_invocation must NOT be called if build_argv raises"
 
 
-# ---------------------------------------------------------------------------
 # Engine kind — launch a saved engine definition
-# ---------------------------------------------------------------------------
 
 
 def _stub_engine_def(monkeypatch, defn: dict | None, *, by_name_only: bool = False):
@@ -1013,9 +991,7 @@ class TestEngineScheduleAssembly:
         assert schedule["action_model"] == "claude-sonnet-4-5"
 
 
-# ---------------------------------------------------------------------------
 # build_argv engine kind — argv shape (flags first, '--', then positionals)
-# ---------------------------------------------------------------------------
 
 
 class TestBuildArgvEngineKind:
@@ -1243,9 +1219,7 @@ class TestCodingKindRequiresTestCmd:
         mock_db.create_invocation.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
 # cancel_launch — POST /api/invocations/{id}/cancel
-# ---------------------------------------------------------------------------
 
 
 class TestCancelLaunch:
@@ -1287,9 +1261,7 @@ class TestCancelLaunch:
         asyncio.run(_run())
 
 
-# ---------------------------------------------------------------------------
 # End-to-end smoke — the control loop the Den extension drives
-# ---------------------------------------------------------------------------
 
 
 class TestLaunchCancelRetrySmoke:
@@ -1378,9 +1350,7 @@ class TestLaunchCancelRetrySmoke:
         asyncio.run(_run())
 
 
-# ---------------------------------------------------------------------------
 # flow_yaml kind — YAML-driven flow launch
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
@@ -1458,9 +1428,7 @@ class TestLaunchFlowYamlKind:
         assert captured["schedule"]["action_flow_yaml"] == "prompt: hi\n"
 
 
-# ---------------------------------------------------------------------------
 # command kind — allow-listed executable, spawned directly (never through `li`)
-# ---------------------------------------------------------------------------
 
 _COMMAND_ALLOWLIST_ENV = "LIONAGI_SCHEDULER_COMMAND_ALLOWLIST"
 

@@ -3,14 +3,14 @@
 """The roster verbs: which agent profiles exist here, and what one of them runs.
 
 A caller submits a run by naming a profile, so the value of these verbs is
-entirely in whether their answer is the answer the run would get. That is what
-these assert: the same file wins, the reported configuration is the one the
-loader produced, and a name that does not exist comes back naming the ones that
-do rather than as an empty result.
+entirely in whether their answer is the answer the run would get: the same
+file wins, the reported configuration is the one the loader produced, and a
+name that does not exist comes back naming the ones that do rather than as
+an empty result.
 
-Every root here is a temp directory. Nothing in this file may read the real
-``~/.lionagi/agents/``, which is why HOME is redirected and the working directory
-moved before any resolution happens.
+Every root here is a temp directory -- nothing in this file may read the
+real ``~/.lionagi/agents/``, which is why HOME and the working directory are
+redirected before any resolution happens.
 """
 
 from __future__ import annotations

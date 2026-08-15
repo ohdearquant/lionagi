@@ -20,7 +20,7 @@ from sqlalchemy import text
 
 from lionagi.state.db import SCHEMA_VERSION, StateDB
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ async def db():
     await state.close()
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# Helpers
 
 
 def uid() -> str:
@@ -107,7 +107,7 @@ async def _make_live_persist_fixture(db: StateDB) -> tuple[str, str, str, str]:
     return session_id, session_prog_id, branch_id, branch_prog_id
 
 
-# ── Connection lifecycle ───────────────────────────────────────────────────────
+# Connection lifecycle
 
 
 async def test_open_close():
@@ -333,7 +333,7 @@ async def test_context_cancelled_open_shields_partial_engine_disposal(monkeypatc
     assert state._engine is None
 
 
-# ── Schema ─────────────────────────────────────────────────────────────────────
+# Schema
 
 
 async def test_schema_creates_all_tables(db: StateDB):
@@ -653,7 +653,7 @@ async def test_message_types_seeded(db: StateDB):
     assert row["lion_class"] == "__unknown__"
 
 
-# ── Messages ───────────────────────────────────────────────────────────────────
+# Messages
 
 
 async def test_insert_and_get_message(db: StateDB):
@@ -847,7 +847,7 @@ async def test_resolve_lion_class_auto_register(db: StateDB):
     assert row["type_id"] > 5
 
 
-# ── Progressions ───────────────────────────────────────────────────────────────
+# Progressions
 
 
 async def test_create_and_get_progression(db: StateDB):
@@ -878,7 +878,7 @@ async def test_get_progression_missing(db: StateDB):
     assert result == []
 
 
-# ── Sessions ───────────────────────────────────────────────────────────────────
+# Sessions
 
 
 async def test_create_session_with_provenance(db: StateDB):
@@ -997,7 +997,7 @@ async def test_count_sessions(db: StateDB):
     assert failed == 0
 
 
-# ── Branches ───────────────────────────────────────────────────────────────────
+# Branches
 
 
 async def test_create_and_get_branch(db: StateDB):
@@ -1107,7 +1107,7 @@ async def test_get_branch_messages(db: StateDB):
     assert [r["id"] for r in result] == [m["id"] for m in msgs]
 
 
-# ── finalize_branch (BRANCH_END guarded terminal write) ─────────────────────
+# finalize_branch (BRANCH_END guarded terminal write)
 
 
 async def _make_branch(db: StateDB, *, status: str | None = None) -> dict:
@@ -1284,7 +1284,7 @@ async def test_finalize_branch_repeated_call_does_not_flap_terminal_status(db: S
     assert row["ended_at"] == 100.0
 
 
-# ── Shows ─────────────────────────────────────────────────────────────────────
+# Shows
 
 
 async def test_create_and_get_show(db: StateDB):
@@ -1358,7 +1358,7 @@ async def test_update_show_rejects_bad_columns(db: StateDB):
         await db.update_show(show["id"], not_a_column="boom")
 
 
-# ── Plays ─────────────────────────────────────────────────────────────────────
+# Plays
 
 
 async def test_create_and_get_play(db: StateDB):
@@ -1470,7 +1470,7 @@ async def test_update_play_rejects_bad_columns(db: StateDB):
         await db.update_play(play["id"], hacker_column="evil")
 
 
-# ── Definitions ───────────────────────────────────────────────────────────────
+# Definitions
 
 
 async def test_save_and_get_definition(db: StateDB):
@@ -1576,7 +1576,7 @@ async def test_get_definition_missing(db: StateDB):
     assert result_versioned is None
 
 
-# ── Regression: SQL race + JSON roundtrip + provenance ────────────
+# Regression: SQL race + JSON roundtrip + provenance
 
 
 async def test_resolve_lion_class_concurrent_race(tmp_path):
@@ -1834,7 +1834,7 @@ async def test_session_delete_cascades_branches(db: StateDB):
     assert await db.get_branch(bid) is None
 
 
-# ── ADR-0064: Artifact contract storage ───────────────────────────────────────
+# ADR-0064: Artifact contract storage
 
 
 async def test_create_session_with_artifact_contract(db: StateDB):
@@ -1918,7 +1918,7 @@ async def test_new_db_has_artifact_columns(db: StateDB):
     assert "artifact_verification_json" in cols
 
 
-# ── readonly=True: no schema application, no create-on-open ──────────────────
+# readonly=True: no schema application, no create-on-open
 
 
 async def test_readonly_open_rejects_missing_file(tmp_path):
@@ -2041,7 +2041,7 @@ async def test_writable_read_survives_a_concurrent_write_lock(tmp_path):
         await db.close()
 
 
-# ── update_status extra_fields: schedule_run ────────────────────────────────
+# update_status extra_fields: schedule_run
 
 
 async def _make_running_schedule_run(db) -> str:

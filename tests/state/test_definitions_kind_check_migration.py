@@ -22,7 +22,7 @@ from sqlalchemy import text
 
 from lionagi.state.db import StateDB
 
-# ── Legacy fixture builders ─────────────────────────────────────────────────
+# Legacy fixture builders
 
 
 def _create_legacy_definitions_db(db_path: Path, *, unrelated_skill_literal: bool = False) -> None:
@@ -66,7 +66,7 @@ async def _definitions_create_sql(db_path: Path) -> str:
     return row[0]
 
 
-# ── Arm 1: exact legacy schema migrates ──────────────────────────────────────
+# Arm 1: exact legacy schema migrates
 
 
 async def test_exact_legacy_schema_migrates(tmp_path: Path) -> None:
@@ -96,7 +96,7 @@ async def test_exact_legacy_schema_migrates(tmp_path: Path) -> None:
     )
 
 
-# ── Arm 2: exact widened (current) schema skips the rebuild ────────────────
+# Arm 2: exact widened (current) schema skips the rebuild
 
 
 async def test_current_schema_skips_rebuild(tmp_path: Path) -> None:
@@ -128,7 +128,7 @@ async def test_current_schema_skips_rebuild(tmp_path: Path) -> None:
     assert create_sql_after == create_sql_before
 
 
-# ── Arm 3: the false-positive fixture -- old CHECK + unrelated 'skill' ─────
+# Arm 3: the false-positive fixture -- old CHECK + unrelated 'skill'
 
 
 async def test_legacy_schema_with_unrelated_skill_literal_still_migrates(tmp_path: Path) -> None:
@@ -183,7 +183,7 @@ async def test_old_substring_detector_would_have_false_positived(tmp_path: Path)
     assert old_check_still_present is True
 
 
-# ── Arm 4: failed copy retries ───────────────────────────────────────────────
+# Arm 4: failed copy retries
 
 
 async def test_rebuild_crash_mid_sequence_rolls_back_and_reopen_completes(tmp_path: Path) -> None:

@@ -69,9 +69,7 @@ def _expect_rejected(fields, match):
     asyncio.run(_run())
 
 
-# ---------------------------------------------------------------------------
 # _svc_validate_github_cursor — pure logic
-# ---------------------------------------------------------------------------
 
 
 def test_validate_cursor_accepts_the_api_spelling():
@@ -145,9 +143,7 @@ def test_why_the_format_is_strict_rather_than_pedantic():
             _svc_validate_github_cursor(wrong)
 
 
-# ---------------------------------------------------------------------------
 # The API request model — the gate that was actually missing
-# ---------------------------------------------------------------------------
 
 
 def test_patch_model_carries_github_cursor():
@@ -170,9 +166,7 @@ def test_patch_model_distinguishes_unset_from_explicit_null():
     }
 
 
-# ---------------------------------------------------------------------------
 # update_schedule — end to end against a mocked store
-# ---------------------------------------------------------------------------
 
 
 def test_update_persists_the_cursor_verbatim():
@@ -206,9 +200,7 @@ def test_update_rejects_an_impossible_cursor_before_any_write():
     _expect_rejected({"github_cursor": "2026-02-30T00:00:00Z"}, "not a real timestamp")
 
 
-# ---------------------------------------------------------------------------
 # The interleaving: an operator PATCH vs an in-flight poll, against a real store
-# ---------------------------------------------------------------------------
 
 from lionagi.state.db import StateDB  # noqa: E402
 

@@ -113,12 +113,23 @@ class _DBSchedulerStateService:
         self._open_lock = asyncio.Lock()
 
     async def open(self) -> None:
-        if not self.persistent or self._db is not None:
+        if not self.persistent:
+            return
+        # Resolve the configured store on every call instead of binding it once.
+        # A daemon keeps one database for its whole life, but the store is
+        # selectable per process, and a connection held under the previous URL
+        # would keep answering reads and writes against a database nobody asked
+        # for -- silently, since both the stale and the current one are real.
+        url = StateDB().url
+        if self._db is not None and self._db.url == url:
             return
         async with self._open_lock:
-            if self._db is not None:
+            if self._db is not None and self._db.url == url:
                 return
-            db = StateDB()
+            stale, self._db = self._db, None
+            if stale is not None:
+                await stale.close()
+            db = StateDB(url=url)
             try:
                 await db.open()
             except BaseException:
@@ -494,23 +505,13 @@ async def flush_run_telemetry(
 ) -> dict[str, Any] | None:
     """Compute and persist one run's coordination telemetry exactly once,
     riding the invocation's own terminal write (engine.py calls this only
-    after its own terminal-status guard returns True).
-
-    Pulls the bus's accumulated signal counters for *run_id* (popping them,
-    see ``SchedulerSignalBus.pop_run_counters``) and the invocation's
-    files-read overlap, merging both under a ``"coordination"`` key in
-    ``invocations.node_metadata`` (read-modify-write, since
-    ``update_invocation`` replaces node_metadata wholesale).
-
-    Returns the persisted telemetry, or ``None`` when there's nothing to
-    report (no signal emitted and no file overlap) -- node_metadata is left
-    untouched to match the measure-only surfacing rule.
-
-    Best-effort: rides an already-committed terminal write, so a failure
-    computing overlap or persisting node_metadata is logged and swallowed
-    rather than propagated or retried. Cancellation still propagates, since
-    it's a ``BaseException``, not an ``Exception``.
-    """
+    after its own terminal-status guard returns True). Pops the bus's
+    accumulated signal counters for *run_id* and merges them with the
+    invocation's files-read overlap under a ``"coordination"`` key in
+    ``invocations.node_metadata`` (read-modify-write). Returns `None` (and
+    leaves node_metadata untouched) when there's nothing to report.
+    Best-effort: a failure computing/persisting is logged and swallowed,
+    never propagated or retried; `CancelledError` still propagates."""
     signals = bus.pop_run_counters(run_id)
     try:
         overlap = await svc.compute_files_overlap(invocation_id, top_n=top_n)

@@ -17,9 +17,7 @@ from lionagi.session.branch import Branch
 from lionagi.session.session import Session
 from lionagi.session.signal import RunEnd, RunFailed, RunStart
 
-# ---------------------------------------------------------------------------
 # Shared helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_fake_cli_model(chunks: list[StreamChunk], session_id: str | None = None):
@@ -50,9 +48,7 @@ async def _drain(gen) -> list:
     return [item async for item in gen]
 
 
-# ---------------------------------------------------------------------------
 # R0 — run() emits RunStart / RunEnd on the observer bus
-# ---------------------------------------------------------------------------
 
 
 async def test_run_generator_emits_run_start_and_run_end():
@@ -116,9 +112,7 @@ async def test_run_generator_run_start_before_first_yield():
     assert received_order[0] == "RunStart", f"order was: {received_order}"
 
 
-# ---------------------------------------------------------------------------
 # R1 — Branch.ReAct() emits exactly ONE RunStart (no double-wrap)
-# ---------------------------------------------------------------------------
 
 
 async def test_react_emits_exactly_one_run_start():
@@ -226,9 +220,7 @@ async def test_react_no_signals_without_observer():
     assert result == "result"
 
 
-# ---------------------------------------------------------------------------
 # empty / empty-dict error chunk treated as end-of-stream
-# ---------------------------------------------------------------------------
 
 
 async def test_run_benign_eos_error_chunk_treated_as_end_of_stream():
@@ -318,9 +310,7 @@ async def test_run_resume_session_produces_non_empty_stream():
     assert "Resumed response" in text_msgs[0].response
 
 
-# ---------------------------------------------------------------------------
 # abandoned generators emit exactly one terminal signal
-# ---------------------------------------------------------------------------
 
 
 async def test_run_aclose_after_instruction_emits_run_end():
@@ -411,9 +401,7 @@ async def test_run_aclose_before_first_yield_no_signals():
     assert len(ends) == 0
 
 
-# ---------------------------------------------------------------------------
 # CLI-backed ReAct emits exactly one RunStart total
-# ---------------------------------------------------------------------------
 
 
 async def test_react_cli_backed_emits_single_run_start():
@@ -555,9 +543,7 @@ async def test_react_run_start_observer_exception_does_not_abort_react():
     assert result is not None, "ReAct must return a result despite RunStart observer boom"
 
 
-# ---------------------------------------------------------------------------
 # observer exception during cleanup preserves streaming_process_func
-# ---------------------------------------------------------------------------
 
 
 async def test_run_observer_exception_on_run_end_restores_stream_func():

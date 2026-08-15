@@ -523,9 +523,7 @@ async def test_no_spawn_behaves_like_normal_flow():
     assert len(result["completed_operations"]) == 1
 
 
-# ---------------------------------------------------------------------------
 # Regression: execute() must subscribe via the public observer property
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -599,9 +597,7 @@ async def test_execute_stream_subscribes_via_public_observer_not_private():
     assert any(e.spawned for e in events)
 
 
-# ---------------------------------------------------------------------------
 # NodeSpawned signal: exactly one emission per accepted spawn, correct payload
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -635,10 +631,8 @@ async def test_node_spawned_emitted_once_with_matching_payload():
     assert sig.op_id  # traceable to the injected child operation
 
 
-# ---------------------------------------------------------------------------
 # Fire-and-forget signal delivery: observer failure never changes the flow
 # result, and the executor's detached-task set drains after the run.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

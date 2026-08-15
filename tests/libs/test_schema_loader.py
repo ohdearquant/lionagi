@@ -10,10 +10,6 @@ from lionagi.libs.schema.load_pydantic_model_from_schema import (
     load_pydantic_model_from_schema,
 )
 
-# ---------------------------------------------------------------------------
-# Basic input validation
-# ---------------------------------------------------------------------------
-
 
 def test_loader_invalid_json_string_raises():
     with pytest.raises(ValueError):
@@ -23,11 +19,6 @@ def test_loader_invalid_json_string_raises():
 def test_loader_wrong_type_raises():
     with pytest.raises(TypeError):
         load_pydantic_model_from_schema(12345)
-
-
-# ---------------------------------------------------------------------------
-# Simple object schemas
-# ---------------------------------------------------------------------------
 
 
 def test_simple_object_with_required_fields():
@@ -91,11 +82,6 @@ def test_field_with_default_value():
     assert inst.count == 10
 
 
-# ---------------------------------------------------------------------------
-# Type coverage
-# ---------------------------------------------------------------------------
-
-
 def test_all_primitive_types():
     schema = {
         "type": "object",
@@ -144,11 +130,6 @@ def test_array_without_items():
     assert inst.data == [1, "two", 3.0]
 
 
-# ---------------------------------------------------------------------------
-# Enum support
-# ---------------------------------------------------------------------------
-
-
 def test_enum_constraint():
     schema = {
         "type": "object",
@@ -163,11 +144,6 @@ def test_enum_constraint():
     cls = load_pydantic_model_from_schema(schema, "StatusModel")
     inst = cls(status="active")
     assert inst.status.value == "active"
-
-
-# ---------------------------------------------------------------------------
-# Nested objects
-# ---------------------------------------------------------------------------
 
 
 def test_nested_object():
@@ -190,11 +166,6 @@ def test_nested_object():
     inst = cls(name="Alice", address={"street": "123 Main", "city": "NYC"})
     assert inst.address.street == "123 Main"
     assert inst.address.city == "NYC"
-
-
-# ---------------------------------------------------------------------------
-# $ref and $defs
-# ---------------------------------------------------------------------------
 
 
 def test_ref_with_defs():
@@ -248,11 +219,6 @@ def test_ref_with_definitions():
     assert inst.foreground.r == 255
 
 
-# ---------------------------------------------------------------------------
-# anyOf / oneOf
-# ---------------------------------------------------------------------------
-
-
 def test_anyof_nullable():
     """anyOf with null type is common for nullable fields."""
     schema = {
@@ -274,11 +240,6 @@ def test_anyof_nullable():
     assert inst2.value is None
 
 
-# ---------------------------------------------------------------------------
-# Generic object (dict without properties)
-# ---------------------------------------------------------------------------
-
-
 def test_generic_dict_object():
     schema = {
         "type": "object",
@@ -289,11 +250,6 @@ def test_generic_dict_object():
     cls = load_pydantic_model_from_schema(schema, "WithMeta")
     inst = cls(metadata={"key": "value"})
     assert inst.metadata == {"key": "value"}
-
-
-# ---------------------------------------------------------------------------
-# Title sanitization
-# ---------------------------------------------------------------------------
 
 
 def test_title_sanitization():
@@ -321,11 +277,6 @@ def test_title_with_numbers():
     assert cls.__name__ == "Fallback"
 
 
-# ---------------------------------------------------------------------------
-# Array of objects
-# ---------------------------------------------------------------------------
-
-
 def test_array_of_nested_objects():
     schema = {
         "type": "object",
@@ -351,11 +302,6 @@ def test_array_of_nested_objects():
     assert inst.items[1].label == "b"
 
 
-# ---------------------------------------------------------------------------
-# Field descriptions
-# ---------------------------------------------------------------------------
-
-
 def test_field_descriptions_preserved():
     schema = {
         "type": "object",
@@ -370,11 +316,6 @@ def test_field_descriptions_preserved():
     cls = load_pydantic_model_from_schema(schema, "Described")
     field_info = cls.model_fields["name"]
     assert field_info.description == "The user's full name"
-
-
-# ---------------------------------------------------------------------------
-# Type list (e.g. ["string", "null"])
-# ---------------------------------------------------------------------------
 
 
 def test_type_as_list():
@@ -392,11 +333,6 @@ def test_type_as_list():
     assert inst2.value is None
 
 
-# ---------------------------------------------------------------------------
-# Round-trip: model -> schema -> model
-# ---------------------------------------------------------------------------
-
-
 def test_roundtrip_schema():
     """A model's own json_schema should produce an equivalent model."""
 
@@ -409,11 +345,6 @@ def test_roundtrip_schema():
     inst = cls(name="test")
     assert inst.name == "test"
     assert inst.count == 0
-
-
-# ---------------------------------------------------------------------------
-# allOf (merge)
-# ---------------------------------------------------------------------------
 
 
 def test_allof_merge():

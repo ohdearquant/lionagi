@@ -46,16 +46,7 @@ logger = logging.getLogger(__name__)
 
 UNLIMITED_CONCURRENCY = int(os.environ.get("LIONAGI_MAX_CONCURRENCY", "10000"))
 
-# Gate-reject contract (issue #2860). A playbook-authored node opts into gate
-# semantics by setting ``operation.metadata["is_gate"] = True`` (e.g. via
-# ``OperationGraphBuilder.add_operation(..., is_gate=True)``). Once that node
-# completes, its result is inspected for a top-level ``"gate_verdict"`` key;
-# if the value is the string "reject" (case-insensitive), every direct and
-# transitive dependent of the gate is short-circuited to SKIPPED instead of
-# running against the baseline the gate just rejected. A node that isn't
-# marked ``is_gate``, or a gate whose result has no ``gate_verdict`` key (or
-# any value other than "reject"), changes nothing -- this keeps flows with no
-# gate nodes byte-identical to before.
+# Gate-reject contract: see docs/internals/core.md (operations/flow.py).
 GATE_VERDICT_KEY = "gate_verdict"
 GATE_VERDICT_REJECT = "reject"
 SKIP_REASON_UPSTREAM_GATE_REJECT = "upstream_gate_reject"
@@ -393,19 +384,22 @@ class DependencyAwareExecutor:
             from lionagi.session.signal import NodePaused  # noqa: PLC0415
 
             op_id = str(operation.id)
-            name = operation.metadata.get("reference_id", op_id[:8])
+            name, _ = self._display_name(operation)
             return NodePaused(op_id=op_id, name=name)
 
         self._emit_best_effort(_factory)
 
     def _display_name(self, operation: Operation) -> tuple[str, bool]:
         """Resolve a lifecycle-signal display name before a branch is bound:
-        the authored ``reference_id`` if the caller set one, else the op_id's
-        own 8-char prefix as a last resort. Returns ``(name, is_fallback)`` so
-        callers know whether the name is genuine without re-deriving it from
-        string equality against the op_id prefix (a real name can coincide
-        with that prefix by chance).
+        an explicit ``display_name`` or authored ``reference_id`` if the caller
+        set one, else the op_id's own 8-char prefix as a last resort. Returns
+        ``(name, is_fallback)`` so callers know whether the name is genuine
+        without re-deriving it from string equality against the op_id prefix (a
+        real name can coincide with that prefix by chance).
         """
+        display_name = operation.metadata.get("display_name")
+        if display_name is not None:
+            return display_name, False
         ref_id = operation.metadata.get("reference_id")
         if ref_id is not None:
             return ref_id, False
@@ -467,15 +461,11 @@ class DependencyAwareExecutor:
         self._emit_progress(str(operation.id), branch_name, status, elapsed, name_is_fallback)
 
     def _emit_abandoned_terminal(self, operation: Operation) -> None:
-        """Safety net for cancellation and unexpected flow-level errors.
-
-        If `operation` already emitted "started" but execution left
-        `_execute_operation` through the CancelledError or generic-Exception
-        handler without going through the normal completed/failed paths, the
-        node would otherwise render as perpetually running. Emit a "failed"
-        terminal (there is no separate cancelled/abandoned signal kind) so
-        every start still gets exactly one terminal outcome. No-op if this
-        operation never started, or a terminal was already emitted for it.
+        """Safety net: emit "failed" (no separate cancelled/abandoned signal
+        kind exists) for an operation that emitted "started" but left
+        `_execute_operation` via cancellation or an unhandled exception,
+        bypassing the normal completed/failed paths. No-op if the operation
+        never started or already has a terminal emitted.
         """
         if operation.id not in self._started_ops:
             return
@@ -668,11 +658,8 @@ class DependencyAwareExecutor:
 
     def _record_gate_verdict(self, operation: Operation) -> None:
         """Called on a completed ``is_gate`` operation; records a REJECT
-        verdict (see the module-level gate-reject contract) so
-        ``_check_edge_conditions`` can veto this gate's dependents. A result
-        with no ``gate_verdict`` key, or any value other than "reject",
-        leaves ``_gate_rejections`` untouched -- the gate completed normally
-        and nothing downstream is affected."""
+        verdict (see the gate-reject contract in docs/internals/core.md) so
+        ``_check_edge_conditions`` can veto this gate's dependents."""
         result = operation.response
         if result is not None and not isinstance(result, str | int | float | bool):
             result = to_dict(result, recursive=True)
@@ -683,25 +670,19 @@ class DependencyAwareExecutor:
         if not isinstance(verdict, str) or verdict.strip().lower() != GATE_VERDICT_REJECT:
             return
 
-        ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
+        display_name, _ = self._display_name(operation)
         self._gate_rejections[operation.id] = {
             "reason_code": SKIP_REASON_UPSTREAM_GATE_REJECT,
             "gate_id": str(operation.id),
-            "gate_name": ref_id,
+            "gate_name": display_name,
         }
 
     async def _check_edge_conditions(self, operation: Operation) -> bool:
-        """Return True if at least one valid incoming path exists or no edges; False if all incoming edges failed.
-
-        A gate reject is an absolute veto layered on top of that: if any
-        incoming edge traces back (directly or transitively) to a rejecting
-        gate, this operation is skipped regardless of any other otherwise
-        valid incoming path -- a node must never run against a baseline one
-        of its ancestors just rejected. The veto is recorded in
-        ``self._skip_reasons`` so a caller skipped for this reason (and, in
-        turn, that caller's own dependents) can be tagged and so this
-        propagates transitively via the existing `skipped_operations` check
-        below without extra bookkeeping.
+        """Return True if at least one valid incoming path exists or no
+        edges; False if all incoming edges failed. A transitive gate reject
+        is an absolute veto on top of that (docs/internals/core.md), recorded
+        in ``self._skip_reasons`` so it propagates to dependents via the
+        existing `skipped_operations` check below.
         """
         # Snapshot before awaiting: iterating the live adjacency dict across
         # an await would raise RuntimeError if reactive injection attaches an
@@ -1164,9 +1145,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
             status = "failed"
         else:
             status = "completed"
+        name, _ = self._display_name(node)
         return FlowEvent(
             operation_id=str(node.id),
-            name=node.metadata.get("reference_id", str(node.id)[:8]),
+            name=name,
             status=status,
             result=self.results.get(node.id),
             spawned=node.id in self._spawned_ids,
@@ -1199,7 +1181,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         reason = getattr(req, "reason", "")
         emitter_id = emitter.id if emitter is not None else None
         op_id = str(emitter_id) if emitter_id is not None else ""
-        name = emitter.metadata.get("reference_id", op_id[:8]) if emitter is not None else ""
+        name = self._display_name(emitter)[0] if emitter is not None else ""
 
         self._emit_node_escalated(op_id, name, reason, route, req)
 
@@ -1217,9 +1199,11 @@ class ReactiveExecutor(DependencyAwareExecutor):
             # node it retries (e.g. mirroring a CLI engine's transcript) — cheaper to
             # carry now than to re-derive `name` from a stale emitter reference later.
             child.metadata["escalated_from_name"] = name
-            # Lifecycle signals prefer reference_id over the operation UUID,
-            # so the retry is readable before its branch has been assigned.
-            child.metadata["reference_id"] = f"{name} escalation retry"
+            # Keep the human label separate from the join key: repeated retries
+            # of the same node share a label but must remain individually
+            # addressable by their own stable operation identity.
+            child.metadata["display_name"] = f"{name} escalation retry"
+            child.metadata["reference_id"] = str(child.id)
             if self._accept_node(child, emitter_id=emitter_id, independent=True):
                 self._escalated_ids.add(emitter_id)
         elif route == "notify":

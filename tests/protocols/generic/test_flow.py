@@ -13,9 +13,7 @@ from lionagi.protocols.generic.pile import Pile
 from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.graph.node import Node
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_nodes(n: int = 3) -> list[Node]:
@@ -37,9 +35,7 @@ def _make_progression(nodes: list[Node], name: str | None = None) -> Progression
     return Progression(order=[n.id for n in nodes], name=name)
 
 
-# ---------------------------------------------------------------------------
 # Construction
-# ---------------------------------------------------------------------------
 
 
 class TestFlowCreation:
@@ -56,9 +52,7 @@ class TestFlowCreation:
         assert len(flow) == 0
 
 
-# ---------------------------------------------------------------------------
 # add_progression
-# ---------------------------------------------------------------------------
 
 
 class TestAddProgression:
@@ -100,9 +94,7 @@ class TestAddProgression:
         assert len(flow.progressions) == 1
 
 
-# ---------------------------------------------------------------------------
 # remove_progression
-# ---------------------------------------------------------------------------
 
 
 class TestRemoveProgression:
@@ -138,9 +130,7 @@ class TestRemoveProgression:
         assert len(flow.progressions) == 1
 
 
-# ---------------------------------------------------------------------------
 # get_progression
-# ---------------------------------------------------------------------------
 
 
 class TestGetProgression:
@@ -173,9 +163,7 @@ class TestGetProgression:
             flow.get_progression(uuid4())
 
 
-# ---------------------------------------------------------------------------
 # add_item
-# ---------------------------------------------------------------------------
 
 
 class TestAddItem:
@@ -240,9 +228,7 @@ class TestAddItem:
         assert node.id not in external
 
 
-# ---------------------------------------------------------------------------
 # remove_item
-# ---------------------------------------------------------------------------
 
 
 class TestRemoveItem:
@@ -279,9 +265,7 @@ class TestRemoveItem:
         assert len(flow) == 0
 
 
-# ---------------------------------------------------------------------------
 # clear
-# ---------------------------------------------------------------------------
 
 
 class TestFlowClear:
@@ -298,9 +282,7 @@ class TestFlowClear:
         assert len(flow.progressions) == 0
 
 
-# ---------------------------------------------------------------------------
 # __repr__ and __len__
-# ---------------------------------------------------------------------------
 
 
 class TestFlowReprLen:
@@ -331,9 +313,7 @@ class TestFlowReprLen:
         assert "progressions=1" in r
 
 
-# ---------------------------------------------------------------------------
 # Referential integrity on init
-# ---------------------------------------------------------------------------
 
 
 class TestReferentialIntegrityOnInit:

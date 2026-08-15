@@ -384,7 +384,13 @@ def _start_local(
     if dev_mode:
         # Dev mode: hot-reload Vite dev server + uvicorn side-by-side.
         # Vite proxies /api → uvicorn (configured in vite.config.mts).
-        launched = _launch_vite_dev(frontend_dir, frontend_port, host=host)
+        launched = _launch_vite_dev(
+            frontend_dir,
+            frontend_port,
+            host=host,
+            api_host=host,
+            api_port=port,
+        )
         if launched:
             frontend_proc, frontend_url = launched
             if frontend_url:
@@ -609,31 +615,14 @@ def _await_vite_ready_url(
 ) -> str | None:
     """Read Vite's startup banner for the address it actually bound.
 
-    Loopback hosts read the `Local:` line. Non-loopback hosts (a LAN IP, or
-    the `0.0.0.0`/`::` wildcard) read `Network:` instead, since that is the
-    address reachable from outside this machine. When Vite reports more than
-    one matching line (multiple interfaces), the first one wins and a note is
-    printed saying so — callers get a single deterministic URL either way.
-
-    Returns None on failure and prints one of three distinct, actionable
-    warnings so a crashed Vite doesn't read the same as a slow one:
-
-    - the process exited early (exit code included);
-    - its output stream ended without matching a readiness line while the
-      process is still running (unexpected format);
-    - it genuinely never produced a matching line before `timeout`.
-
-    Every case includes the last `_STARTUP_TAIL_LINES` of captured output
-    (stdout merged with stderr — see `_launch_vite_dev`) so "check the Vite
-    output" is something the warning can actually show, not just say.
-
-    Callers must not construct a guessed URL from the requested host/port
-    on the failure path, since nothing may be listening there.
-
-    A background thread keeps draining stdout for the life of the process so
-    Vite never blocks on a full pipe buffer; once this function returns, that
-    thread stops parsing (the `done` flag below) and only drains. It is a
-    daemon thread and needs no explicit join — it exits with the process.
+    Loopback hosts read the `Local:` line; non-loopback hosts (LAN IP, or the
+    `0.0.0.0`/`::` wildcard) read `Network:` instead, since that's what's
+    reachable from outside this machine. Returns None on failure, printing
+    one of three distinct warnings (early exit, stream EOF while still
+    running, or a genuine timeout) each with the last `_STARTUP_TAIL_LINES`
+    of captured output. Callers must not construct a guessed URL on the
+    failure path. See docs/internals/studio.md for the background drain
+    thread's lifecycle.
     """
     parse = _parse_vite_network_url if _host_wants_lan_url(host) else _parse_vite_local_url
     hits: queue.Queue[object] = queue.Queue()
@@ -724,6 +713,8 @@ def _launch_vite_dev(
     frontend_port: int,
     *,
     host: str = "127.0.0.1",
+    api_host: str | None = None,
+    api_port: int | None = None,
 ) -> tuple[subprocess.Popen, str | None] | None:
     """Spawn the Vite dev server and resolve the URL it actually bound to.
 
@@ -733,6 +724,11 @@ def _launch_vite_dev(
     only when the process itself failed to spawn.
     """
     env = {**os.environ, "PORT": str(frontend_port)}
+    if api_host is not None and api_port is not None:
+        # An operator-supplied target is an intentional escape hatch and wins
+        # over the host/port selected by this CLI invocation.
+        url_host = f"[{api_host}]" if ":" in api_host and not api_host.startswith("[") else api_host
+        env.setdefault("STUDIO_API_URL", f"http://{url_host}:{api_port}")
     try:
         proc = subprocess.Popen(  # noqa: S603
             _vite_dev_argv(frontend_port, host),  # noqa: S607
@@ -758,6 +754,7 @@ def _launch_vite_dev(
 
 
 _warned_api_suffix = False
+_SCHEDULE_API_TIMEOUT_SECONDS = 10.0
 
 
 def _base_url() -> str:
@@ -782,6 +779,22 @@ def _base_url() -> str:
     return f"http://{host}:{port}"
 
 
+def _is_schedule_request_timeout(exc: OSError) -> bool:
+    """Return whether urllib stopped because the request exceeded its deadline."""
+    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+
+
+def _schedule_request_timeout_message(
+    *, method: str, url: str, elapsed_seconds: float, limit_seconds: float
+) -> str:
+    """Describe a timeout without claiming the mutation did not land."""
+    return (
+        f"Studio request {method} {url} timed out "
+        f"(elapsed {elapsed_seconds:.1f}s; limit {limit_seconds:g}s). "
+        "The request may still have completed; verify schedule state before retrying."
+    )
+
+
 def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
     """Minimal HTTP helper — no extra deps beyond stdlib urllib."""
     import urllib.error
@@ -795,14 +808,27 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
         method=method,
         headers={"Content-Type": "application/json"} if data else {},
     )
+    started_at = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=_SCHEDULE_API_TIMEOUT_SECONDS) as resp:  # noqa: S310
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         msg = exc.read().decode(errors="replace")
         print(f"Error {exc.code}: {msg}", file=sys.stderr)
         return None
     except OSError as exc:
+        if _is_schedule_request_timeout(exc):
+            elapsed_seconds = max(0.0, time.monotonic() - started_at)
+            print(
+                _schedule_request_timeout_message(
+                    method=method,
+                    url=url,
+                    elapsed_seconds=elapsed_seconds,
+                    limit_seconds=_SCHEDULE_API_TIMEOUT_SECONDS,
+                ),
+                file=sys.stderr,
+            )
+            return None
         print(
             f"Cannot reach Studio at {_base_url()} — is `li studio` running? ({exc})",
             file=sys.stderr,
@@ -1520,17 +1546,12 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return EXIT_EXPORT_PARTIAL if has_blocked else 0
 
 
-# ---------------------------------------------------------------------------
-# Typed quick-create — `li schedule create <kind> <name> ...`
-#
-# Dispatched from cli/main.py *before* the legacy `sched_sub` argparse tree
-# (a reserved kind token right after "create", mirroring how `agent status` /
-# `monitor run` / `wait` are special-cased there) so the existing flat
-# `li schedule create NAME --cron ... --prompt ...` form is untouched.
-# Compiles straight into a ScheduleMember and runs it through the identical
-# resolve_member()/create_quick_schedule() path a ScheduleSet member uses —
-# no forked validation, per the schedule-declaration design.
-# ---------------------------------------------------------------------------
+# Typed quick-create — `li schedule create <kind> <name> ...`. Dispatched from
+# cli/main.py before the legacy `sched_sub` argparse tree (a reserved kind
+# token right after "create"), leaving the flat `li schedule create NAME
+# --cron ... --prompt ...` form untouched. Compiles into a ScheduleMember and
+# runs it through the same resolve_member()/create_quick_schedule() path a
+# ScheduleSet member uses.
 
 QUICK_CREATE_KINDS = ("agent", "flow", "playbook", "command")
 

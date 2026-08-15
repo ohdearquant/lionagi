@@ -3,26 +3,17 @@
 
 """The marker a reclaimed message body leaves in its place.
 
-Freeing space by emptying a message's content has one failure mode that
-matters, and it is not losing the text. It is losing the fact that text was
-ever there. A body written as an empty string, or as ``{}``, is exactly what a
-turn that genuinely produced nothing writes, so a reader handed one cannot say
-which it is looking at, and neither can anything above it: nothing downstream
-has a second source for that distinction, so the two collapse into one state
-permanently and silently.
-
-A reclaimed body is therefore not emptied. It is replaced by a value that says
-what it is and what used to be there, and this module is the vocabulary both
-sides use. The writer is ``li state null-content``; the readers are whatever
-displays or counts message bodies. Kept out of ``db.py`` so asking the question
-costs a reader nothing but this import.
-
-A marker records ``at`` and ``original_bytes``, and ``original_bytes`` is the
-size of the body THAT ROW held rather than an average over whatever batch it was
-reclaimed in. That is a property of how the marker is written -- see
-``pruned_content_sql`` -- and it is stated here because this is the docstring a
-reader of the marker reaches for, and a per-row name over a batch number would
-fabricate exactly the kind of fact the marker exists to preserve.
+Emptying a message's content to free space risks losing not the text but the
+fact that text was ever there: an empty string or ``{}`` is exactly what a
+turn that genuinely produced nothing writes, so a reader can't tell the two
+apart once collapsed. A reclaimed body is therefore never emptied -- it's
+replaced by a marker that says what it is and what used to be there. This
+module is the vocabulary both sides use: the writer is ``li state
+null-content``; the readers are whatever displays or counts message bodies.
+Kept out of ``db.py`` so asking the question costs a reader nothing but this
+import. The marker records ``at`` and ``original_bytes`` -- the size of the
+body that specific row held, not an average over a batch (see
+``pruned_content_sql``).
 """
 
 from __future__ import annotations
@@ -47,19 +38,13 @@ CONTENT_PRUNED_KEY = "lion_content_pruned"
 def pruned_content_sql(*, at_param: str = "at", size_expr: str = "LENGTH(content)") -> str:
     """The marker as a SQL expression, evaluated per row against the row it replaces.
 
-    A marker records ``at`` and ``original_bytes``. The size is built from an
-    expression over the row being replaced rather than passed in, and that is the
-    whole reason this is SQL rather than a dict: the database can read each old
-    body's length while overwriting it, in one statement, so ``original_bytes``
-    is the row's OWN size.
-
-    The alternative -- computing one size in Python and writing the same marker
-    everywhere -- makes the field a batch average wearing a per-row name. That
-    number is not wrong so much as answering a different question than its label,
-    which is the failure the marker exists to prevent rather than commit.
-
-    ``size_expr`` is a caller-supplied SQL fragment and is not a place to put
-    anything a caller did not write; the default is the only production use.
+    The size is built from a SQL expression over the row being replaced,
+    rather than computed once in Python and reused, which is the whole
+    reason this returns SQL rather than a dict: the database reads each old
+    body's length while overwriting it, in one statement, so
+    ``original_bytes`` is genuinely the row's own size and not a batch
+    average wearing a per-row name. ``size_expr`` is a caller-supplied SQL
+    fragment; the default is the only production use.
     """
     return (
         f"json_object('{CONTENT_PRUNED_KEY}', "
@@ -70,21 +55,16 @@ def pruned_content_sql(*, at_param: str = "at", size_expr: str = "LENGTH(content
 def content_was_pruned(content: Any) -> bool:
     """True when this body was reclaimed, as opposed to having been empty.
 
-    Takes the column either raw (the JSON text SQLite stores) or hydrated (the
-    dict a reader has already parsed), because those reach consumers by
-    different routes and a predicate that only served one of them would answer
-    "no" for the other -- which is the same wrong answer as having no marker at
-    all, arrived at more expensively.
-
-    Anything unparseable is not reclaimed. This says nothing about the body
-    being well-formed; it answers one question only.
+    Takes the column either raw (JSON text as SQLite stores it) or hydrated
+    (a dict a reader already parsed), since those reach consumers by
+    different routes. Anything unparseable is treated as not reclaimed; this
+    says nothing about whether the body is well-formed, it answers one
+    question only.
     """
     if isinstance(content, str):
-        # A marker is a few dozen bytes and a body can be megabytes. The
-        # substring test is what keeps this from parsing every row it is handed
-        # -- and it only ever short-circuits to False, so a body that merely
-        # mentions the key still goes through the parse below and is judged on
-        # its structure rather than on its text.
+        # Cheap substring test before parsing -- a marker is a few dozen
+        # bytes, a body can be megabytes. Only ever short-circuits to False,
+        # so a body that merely mentions the key still gets parsed below.
         if CONTENT_PRUNED_KEY not in content:
             return False
         try:

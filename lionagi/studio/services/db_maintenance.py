@@ -139,21 +139,11 @@ def _dispatch_retention_predicate(
 
 
 def _session_retention_predicate(cutoff: float) -> tuple[str, tuple[Any, ...]]:
-    """What makes a session prunable, as a SQL fragment and its parameters.
-
-    Two conditions, both required: the session is in a terminal status, and it
-    has had no activity since *cutoff*. Returned as a fragment rather than a
-    whole statement because the prune asks the same question in two different
-    shapes -- once to select candidates, and once with an id restriction after
-    those rows are locked.
-
-    It comes from one place because the second read has to test exactly what the
-    first one did. Either condition can stop holding in between: a resume
-    returns a session to running, and any write moves ``updated_at`` forward. The
-    recheck exists to narrow the candidate set, so a second spelling that drifted
-    even slightly could widen it instead, and the row it wrongly admitted would
-    be one the selection had already decided to spare.
-    """
+    """What makes a session prunable (terminal status AND no activity since
+    *cutoff*), as a reusable SQL fragment + params -- the prune selects
+    candidates with it, then rechecks under lock with an id restriction
+    using the exact same fragment, so a drifted second spelling can't widen
+    the set past what selection already decided to spare."""
     placeholders = ", ".join("?" * len(_TERMINAL_SESSION_STATUSES))
     return (
         f"status IN ({placeholders}) AND updated_at <= ?",
@@ -188,30 +178,13 @@ async def checkpoint_state_db(
     actor: str = "studio_db_maintenance",
 ) -> dict[str, Any]:
     """Run ``PRAGMA wal_checkpoint(<mode>)`` and write an audit event.
-
-    Returns the PRAGMA result (busy, log_pages, checkpointed) plus the size of
-    the WAL going in and how long the whole thing took.
-
-    Those last two are here because the PRAGMA counters cannot answer the
-    question an operator brings to this record. For TRUNCATE a successful
-    checkpoint reports busy, log_pages and checkpointed all zero by
-    definition, whether it drained one page or a hundred thousand: the frames
-    are gone and the log has been reset, so there is nothing left for the
-    counters to describe. All zeros is the success signature, not evidence
-    that there was nothing to do, and reading it as the latter is the natural
-    mistake. Four consecutive rows of zeros say only that four checkpoints
-    succeeded.
-
-    ``wal_bytes_before`` is read before the connection is opened, so it is the
-    WAL this checkpoint was actually asked to deal with rather than whatever
-    is left after opening did its own work. ``elapsed_ms`` covers opening the
-    connection as well as the PRAGMA, because a checkpoint that waits can wait
-    in either place and the split cannot be recovered from the row afterwards.
-
-    Both are bounded by the same limit: the event is written after the
-    checkpoint returns, so this records a slow checkpoint and can never record
-    a hung one. A stall that never ends leaves no row at all.
-    """
+    Returns the PRAGMA result (busy, log_pages, checkpointed) plus
+    ``wal_bytes_before`` (read before the connection opens) and
+    ``elapsed_ms`` (covers opening the connection too). For TRUNCATE, all
+    three PRAGMA counters read zero on success regardless of how much was
+    drained -- that is the success signature, not evidence of nothing to do.
+    Written only after the checkpoint returns, so a hung checkpoint leaves no
+    row at all rather than a slow one. See studio.md."""
     if state_db_known_absent():
         return {
             "mode": mode,
@@ -287,17 +260,14 @@ async def _prune_session_chunk(
     archive_destination: Path | None,
     archive_id: str,
 ) -> int:
-    """Archive-then-delete one chunk of candidate session ids in the caller's transaction.
-
-    Runs the same lock/recheck/soft-FK-nullify/delete/orphan-cleanup sequence
-    ``prune_old_data`` always had, scoped to this chunk only. When
-    *archive_destination* is set, the chunk's doomed rows (sessions, branches,
-    progressions, messages) are durably archived before any DELETE statement
-    runs; a failed archive write raises and the caller's transaction rolls
-    back, so this chunk's rows are refused rather than lost. Returns the
-    number of sessions actually deleted (0 if the chunk raced empty on
-    recheck).
-    """
+    """Archive-then-delete one chunk of candidate session ids in the
+    caller's transaction, running the same lock/recheck/soft-FK-nullify/
+    delete/orphan-cleanup sequence ``prune_old_data`` always had, scoped to
+    this chunk. When *archive_destination* is set, doomed rows are durably
+    archived before any DELETE runs; a failed archive write raises and the
+    caller's transaction rolls back, so this chunk's rows are refused
+    rather than lost. Returns sessions actually deleted (0 if the chunk
+    raced empty on recheck)."""
     if not session_ids:
         return 0
 
@@ -675,21 +645,13 @@ async def prune_old_data(
     dispatch_dead_letter_keep_days: int | None = None,
     actor: str = "studio_db_maintenance",
 ) -> dict[str, int]:
-    """Archive-then-prune terminal sessions/runs/dispatches older than their keep windows.
-
-    All three root kinds -- sessions, schedule_runs, dispatch_outbox -- are
-    pruned the same way: each group of at most ``PRUNE_CHUNK_ROWS`` candidate
-    ids is archived (if ``PRUNE_ARCHIVE_DIR`` is set) and deleted in its own
-    short transaction, so the write lock is released between chunks and an
-    interrupted run keeps every chunk that already committed. No monolithic
-    retention transaction remains for any of the three. A chunk's archive
-    write is durably committed before that chunk's DELETE runs; a failed
-    archive write raises and aborts the remainder of the whole prune pass
-    (later chunks, and later root kinds, are never attempted), while every
-    chunk that already committed stays deleted. FK safety: soft-FK children
-    (artifacts/plays/team_messages/dispatch_outbox) are nullified before
-    DELETE since they lack CASCADE.
-    """
+    """Archive-then-prune terminal sessions/runs/dispatches older than their
+    keep windows. All three root kinds are pruned in chunks of at most
+    ``PRUNE_CHUNK_ROWS`` ids, each archived (if ``PRUNE_ARCHIVE_DIR`` is set)
+    and deleted in its own short transaction, so an interrupted run keeps
+    every chunk that already committed; a failed archive write aborts the
+    remainder of the pass. Soft-FK children are nullified before DELETE
+    since they lack CASCADE. See studio.md."""
     from lionagi.studio.config import (
         DISPATCH_RETENTION_DEAD_LETTER_DAYS,
         DISPATCH_RETENTION_SUCCESS_DAYS,

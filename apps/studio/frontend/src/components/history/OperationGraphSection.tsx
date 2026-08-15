@@ -32,12 +32,35 @@ const CONTINUATION_WIDTH = 1.25;
 
 // ── Node card ─────────────────────────────────────────────────────────────────
 
-function NodeCard({ node, live }: { node: OperationNode; live: boolean }) {
+function NodeCard({
+  node,
+  live,
+  onClick,
+}: {
+  node: OperationNode;
+  live: boolean;
+  onClick?: (nodeId: string) => void;
+}) {
   const isPulsing = live && node.status === "running";
+  const nodeId = node.name || node.opId;
 
   return (
     <div
-      className={`flex min-w-0 flex-col gap-1 rounded border border-edge border-l-2 bg-surface-raised px-2.5 py-2 shadow-card transition-opacity duration-150 ${STATUS_BORDER[node.status]}`}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      data-testid="op-graph-node"
+      onClick={onClick ? () => onClick(nodeId) : undefined}
+      onKeyDown={
+        onClick
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onClick(nodeId);
+              }
+            }
+          : undefined
+      }
+      className={`flex min-w-0 flex-col gap-1 rounded border border-edge border-l-2 bg-surface-raised px-2.5 py-2 shadow-card transition-opacity duration-150 ${STATUS_BORDER[node.status]} ${onClick ? "cursor-pointer" : ""}`}
     >
       <div className="flex items-center gap-1.5">
         <span className="relative flex h-2 w-2 shrink-0">
@@ -126,9 +149,14 @@ export function computeLayers(
 export default function OperationGraphSection({
   state,
   live,
+  onNodeClick,
 }: {
   state: OperationGraphState;
   live: boolean;
+  /** ADR-0113 D6: selecting a runtime graph node resolves it to a branch,
+   * same as an authored-graph node click — the caller matches it, this
+   * component only reports which node was clicked. */
+  onNodeClick?: (nodeId: string) => void;
 }) {
   const { nodes, edges } = state;
 
@@ -141,7 +169,7 @@ export default function OperationGraphSection({
       <div className="flex flex-wrap gap-2">
         {nodes.map((n) => (
           <div key={n.opId} className="w-44">
-            <NodeCard node={n} live={live} />
+            <NodeCard node={n} live={live} onClick={onNodeClick} />
           </div>
         ))}
       </div>
@@ -233,7 +261,7 @@ export default function OperationGraphSection({
                 className="absolute"
                 style={{ left: x, top: y, width: colWidth, height: cardHeight }}
               >
-                <NodeCard node={node} live={live} />
+                <NodeCard node={node} live={live} onClick={onNodeClick} />
               </div>
             );
           }),

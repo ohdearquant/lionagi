@@ -5,9 +5,7 @@ from pydantic import BaseModel
 
 from lionagi.service.imodel import iModel
 
-# ===========================================================================
 # LLM Providers (llm-providers.md)
-# ===========================================================================
 
 
 class TestLLMProviders:
@@ -154,9 +152,7 @@ class TestLLMProviders:
             pytest.skip("codex provider could not be constructed")
 
 
-# ===========================================================================
 # CLI Providers — Detailed (llm-providers.md CLI section + claude-code-usage.md)
-# ===========================================================================
 
 
 class TestCLIEndpointArchitecture:
@@ -458,9 +454,7 @@ class TestCLISessionManagement:
             pytest.skip("claude_code provider could not be constructed")
 
 
-# ===========================================================================
 # Tools (tools.md)
-# ===========================================================================
 
 
 class TestTools:
@@ -571,9 +565,7 @@ class TestTools:
         assert tool.request_options is SearchParams
 
 
-# ===========================================================================
 # MCP (mcp-servers.md)
-# ===========================================================================
 
 
 class TestMCP:

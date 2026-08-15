@@ -67,6 +67,12 @@ def _validate_request(data: dict[str, Any]) -> None:
     _svc_validate_identifier(data.get("action_project"), "action_project")
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
     _svc_validate_extra_args(data.get("action_extra_args"))
+    if data.get("action_playbook_args"):
+        from lionagi.studio.scheduler.subprocess import _validate_playbook_args
+
+        _validate_playbook_args(data["action_playbook_args"])
+        if kind != "play":
+            raise ValueError("action_playbook_args is only valid for play launches")
     if kind == "engine":
         if not (data.get("action_engine_def") or "").strip():
             raise ValueError(
@@ -110,6 +116,7 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
         "action_prompt": data.get("action_prompt") or "",
         "action_agent": data.get("action_agent"),
         "action_playbook": data.get("action_playbook"),
+        "action_playbook_args": data.get("action_playbook_args") or {},
         "action_project": data.get("action_project"),
         "action_extra_args": data.get("action_extra_args") or [],
         "action_flow_yaml": data.get("action_flow_yaml"),
@@ -342,6 +349,7 @@ class LaunchRequest(BaseModel):
     action_prompt: str | None = None
     action_agent: str | None = None
     action_playbook: str | None = None
+    action_playbook_args: dict[str, Any] | None = None
     action_project: str | None = None
     action_flow_yaml: str | None = None
     action_engine_def: str | None = None

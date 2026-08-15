@@ -1,20 +1,8 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 """Self-verifying ZIP64 archival of rows a prune chunk is about to delete.
-
-Each call publishes one self-contained ``.zip`` file containing a
-``manifest.json`` (format version, per-table row counts, per-member SHA-256
-digests) plus one ``rows/<table>.jsonl`` member per non-empty table. Rows are
-canonical UTF-8 JSON (``sort_keys=True``, compact separators), one per line.
-
-Publication is crash-safe: the archive is built in a temp file in the
-destination directory, fsynced, digest-verified by reopening it, atomically
-renamed into place, the destination directory fsynced, then verified again by
-reopening the *final* path. A partially written or unverifiable archive never
-appears under its final name, so a crash or corruption mid-write leaves
-nothing a caller could mistake for a completed, trustworthy archive. Filenames
-are unique per chunk and never reused, so a rerun after interruption cannot
-overwrite an already-published archive.
+See ``docs/internals/studio.md`` ("Retention archive") for the on-disk
+format and the publish/verify crash-safety sequence.
 """
 
 from __future__ import annotations
@@ -69,16 +57,11 @@ def _json_default(value: Any) -> Any:
 
 
 def _encode_value(v: Any) -> Any:
-    """Escape values that would collide with the codec markers, at any depth.
-
-    On backends whose driver deserializes JSON columns (asyncpg returns
-    ``dict``/``list`` for JSON/JSONB), a legitimate stored value of exactly
-    ``{"__bytes_b64__": ...}`` (or the escape wrapper itself) would otherwise
-    be misread on restore. Escaping must reach every depth because
-    ``json.dumps(default=_json_default)`` converts ``bytes`` into marker
-    dicts at every depth — a shallow escape paired with the deep bytes
-    conversion would leave nested collisions ambiguous.
-    """
+    """Escape values that would collide with the codec markers, at any
+    depth -- a legitimate stored value shaped exactly like a bytes/escape
+    marker dict would otherwise be misread on restore. Must recurse to every
+    depth since ``json.dumps(default=_json_default)`` converts ``bytes``
+    into marker dicts at every depth too."""
     if isinstance(v, dict):
         encoded = {k: _encode_value(x) for k, x in v.items()}
         if set(v) == {_BYTES_MARKER} or set(v) == {_ESCAPE_MARKER}:
@@ -169,24 +152,16 @@ def write_archive_chunk(
     tables: Mapping[str, Sequence[Mapping[str, Any]]],
     preimages: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> Path:
-    """Durably publish *tables* (table name -> rows) as one ZIP64-capable archive.
-
-    *preimages* (table name -> rows) captures the pre-mutation state of rows
-    that a caller is about to NULLIFY (soft-FK columns) rather than delete --
-    e.g. ``artifacts``/``plays``/``team_messages``/``dispatch_outbox`` rows
-    whose ``session_id`` a session-prune chunk is about to null out. They are
-    written as sibling ``preimages/<table>.jsonl`` members alongside the
-    ``rows/<table>.jsonl`` members for deleted rows, so a restore can recover
-    the original linkage instead of leaving those rows permanently orphaned.
-
-    Writes to a temp file in *destination*, fsyncs it, verifies it can be
-    reopened and its digests recomputed, renames it atomically to the final
-    path, fsyncs the destination directory, then verifies the *published*
-    file the same way. Raises :class:`ArchiveWriteError` (or the
-    :class:`ArchiveVerificationError` subclass) on any failure and leaves no
-    partial or unverifiable file under the final name -- including when the
-    failure is detected only after the rename, in which case the published
-    path is removed too.
+    """Durably publish *tables* (table name -> rows) as one ZIP64-capable
+    archive. *preimages* captures the pre-mutation state of rows a caller is
+    about to NULLIFY (soft-FK columns) rather than delete, written as
+    sibling ``preimages/<table>.jsonl`` members so a restore can recover the
+    original linkage instead of leaving those rows orphaned. Writes to a
+    temp file, fsyncs, digest-verifies by reopening, renames atomically,
+    fsyncs the directory, then verifies the *published* file the same way.
+    Raises :class:`ArchiveWriteError` (or :class:`ArchiveVerificationError`)
+    on any failure and leaves no partial/unverifiable file under the final
+    name, removing the published path too if failure is caught post-rename.
     """
     preimages = preimages or {}
     final_path = destination / f"{archive_id}.zip"

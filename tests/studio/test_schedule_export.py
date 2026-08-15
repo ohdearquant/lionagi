@@ -28,9 +28,7 @@ from lionagi.studio.services.schedule_export import (
     format_report,
 )
 
-# ---------------------------------------------------------------------------
 # fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -75,9 +73,7 @@ def _legacy_row(schedule_id: str, name: str, *, cwd: Path, **overrides) -> dict:
     return row
 
 
-# ---------------------------------------------------------------------------
 # Legacy conversion — happy path per action kind
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -184,9 +180,7 @@ async def test_legacy_flow_yaml_row_converts_ready(temp_db_path, agent_profile):
     assert written.read_text() == "workers: 2\n"
 
 
-# ---------------------------------------------------------------------------
 # Legacy conversion — BLOCKED cases
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -264,9 +258,7 @@ async def test_legacy_malformed_trigger_is_blocked_and_omitted(temp_db_path, age
     assert "demo/badcron" not in doc.schedules
 
 
-# ---------------------------------------------------------------------------
 # Round-trip: export legacy -> validate -> apply to a fresh DB -> compare
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -304,9 +296,7 @@ async def test_legacy_export_round_trips_to_a_fresh_db(tmp_path, monkeypatch, ag
     assert resolved_target["model"] == "anthropic/claude-sonnet-5"
 
 
-# ---------------------------------------------------------------------------
 # Default export — authored_spec round-trip incl. quoted notify "on"
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -410,9 +400,7 @@ async def test_default_export_is_deterministically_name_sorted(temp_db_path, age
     assert report_lines == ["demo/aaa-first", "demo/zzz-last"]
 
 
-# ---------------------------------------------------------------------------
 # CLI surface — --output vs stdout, never writes the database
-# ---------------------------------------------------------------------------
 
 
 def _export_args(**overrides) -> types.SimpleNamespace:
@@ -484,10 +472,8 @@ def test_export_never_writes_the_database(temp_db_path, agent_profile, tmp_path)
     assert before[0]["enabled"] == after[0]["enabled"]
 
 
-# ---------------------------------------------------------------------------
 # Mixed-project export -- one document per project, exact qualified-name
 # round-trip (no double-qualification)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -593,9 +579,7 @@ async def test_managed_mixed_project_export_round_trips_exact_qualified_names(
     assert doubled is None
 
 
-# ---------------------------------------------------------------------------
 # flow_yaml action_model override -- BLOCKED, not silently dropped
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -626,9 +610,7 @@ async def test_legacy_flow_yaml_with_action_model_is_blocked(temp_db_path, agent
     assert "demo/model-flow" not in doc.schedules
 
 
-# ---------------------------------------------------------------------------
 # action_extra_args -- BLOCKED, not silently dropped
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -652,9 +634,7 @@ async def test_legacy_row_with_action_extra_args_is_blocked(temp_db_path, agent_
     assert "demo/extra-args" not in doc.schedules
 
 
-# ---------------------------------------------------------------------------
 # github_poll poll_interval_sec -- BLOCKED only when set and non-default
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -704,9 +684,7 @@ async def test_legacy_github_poll_at_default_interval_stays_ready(temp_db_path, 
     assert doc.schedules["poll-default"].trigger.github.repo == "octo/repo"
 
 
-# ---------------------------------------------------------------------------
 # CLI exit code -- 2 when any row is BLOCKED, document + report still emitted
-# ---------------------------------------------------------------------------
 
 
 def test_cli_export_returns_partial_exit_code_when_a_row_is_blocked(
@@ -743,10 +721,8 @@ def test_cli_export_returns_partial_exit_code_when_a_row_is_blocked(
     assert "1 ready, 1 blocked" in report_text
 
 
-# ---------------------------------------------------------------------------
 # Flow snapshot portability -- sidecar path is relative, YAML carries no
 # host prefix, absolute cwd is flagged on the report line
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -807,9 +783,7 @@ async def test_legacy_absolute_cwd_kept_verbatim_but_flagged_on_report_line(
     assert str(agent_profile) in lines[0].message
 
 
-# ---------------------------------------------------------------------------
 # Rows with no stored project — name identity across re-apply
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -902,9 +876,7 @@ async def test_legacy_row_with_project_not_matching_qualified_name_disclosed_in_
     assert "foo/nightly" in doc.schedules
 
 
-# ---------------------------------------------------------------------------
 # GitHub cadence fallback and sibling-file collisions
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

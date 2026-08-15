@@ -24,7 +24,7 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("ended_at", "REAL"),
         # Activity marker for staleness detection (read by ADR-0057 D6).
         ("last_message_at", "REAL"),
-        # #1235: live flow phase for the `li monitor` PHASE column.
+        # Live flow phase for the `li monitor` PHASE column.
         ("current_phase", "TEXT"),
         # Optional FK to invocations table.
         ("invocation_id", "TEXT"),

@@ -4,14 +4,15 @@
 
 test_run_resume_dispatch.py's degraded-context coverage stubs
 ``launch_detached_argv`` itself, so it only proves the flag is appended (or
-withheld) in the built argv — it never exercises what happens to a refusal
-once a detached process actually runs and fails. This module keeps
-``_launches.launch_detached_argv`` and ``_spawn_detached`` real (only the
-OS-level subprocess spawn — ``spawn_and_wait`` — is stubbed, the same
-boundary test_launches_api.py stubs at), so a checkpoint with multiple
-pending inherited-context operations drives the full path: dispatch ->
-detached launch -> subprocess failure -> ``_failure_reason_summary`` ->
-persisted invocation row -> the summary a client would read.
+withheld) in the built argv -- it never exercises what happens to a
+refusal once a detached process actually runs and fails. This module
+keeps ``_launches.launch_detached_argv`` and ``_spawn_detached`` real
+(only the OS-level subprocess spawn, ``spawn_and_wait``, is stubbed, the
+same boundary test_launches_api.py stubs at), so a checkpoint with
+multiple pending inherited-context operations drives the full path:
+dispatch -> detached launch -> subprocess failure ->
+``_failure_reason_summary`` -> persisted invocation row -> the summary a
+client would read.
 """
 
 from __future__ import annotations

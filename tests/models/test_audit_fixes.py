@@ -14,9 +14,7 @@ from pydantic import Field
 from lionagi.models.hashable_model import HashableModel
 from lionagi.models.operable_model import OperableModel
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 class _Sample(HashableModel):
@@ -28,9 +26,7 @@ class _OpSample(OperableModel):
     label: str = "x"
 
 
-# ---------------------------------------------------------------------------
 # HashableModel.from_json bytes round-trip
-# ---------------------------------------------------------------------------
 
 
 class TestHashableModelFromJsonBytes:
@@ -62,9 +58,7 @@ class TestHashableModelFromJsonBytes:
         assert from_bytes.value == from_str.value
 
 
-# ---------------------------------------------------------------------------
 # OperableModel.field_hasattr — attr vs field_name
-# ---------------------------------------------------------------------------
 
 
 class TestFieldHasattr:

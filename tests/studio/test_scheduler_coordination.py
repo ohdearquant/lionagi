@@ -1,18 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for lionagi.studio.scheduler.coordination.compute_files_overlap()
-and lionagi.studio.services.scheduler_state.flush_run_telemetry().
-
-Covers:
-  * Overlap fixture: two workers reading one shared + N distinct files ->
-    count=1, top-1 with the correct worker count.
-  * Zero-worker / zero-overlap invocations report {"count": 0, "top": []},
-    never an error.
-  * top_n truncation and deterministic tie-breaking.
-  * Terminal flush: telemetry lands exactly once per run (pop_run_counters
-    is consumed, node_metadata["coordination"] merges rather than clobbers
-    pre-existing node_metadata, and a run with nothing to report leaves
-    node_metadata untouched).
+"""Tests for compute_files_overlap() and flush_run_telemetry()
+(lionagi.studio.scheduler.coordination / lionagi.studio.services.scheduler_state).
 """
 
 from __future__ import annotations
@@ -92,9 +81,7 @@ async def _make_worker_session(
         )
 
 
-# ---------------------------------------------------------------------------
 # compute_files_overlap
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -201,9 +188,7 @@ async def test_worker_with_no_file_touching_messages_excluded(db: StateDB):
     assert overlap == {"count": 0, "top": []}
 
 
-# ---------------------------------------------------------------------------
 # flush_run_telemetry
-# ---------------------------------------------------------------------------
 
 
 def _make_svc() -> AsyncMock:
@@ -318,9 +303,7 @@ async def test_flush_run_telemetry_writes_when_only_overlap_is_nonzero():
     svc.update_invocation.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
 # flush_run_telemetry must be best-effort: I/O failures never propagate
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

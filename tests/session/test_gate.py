@@ -32,7 +32,7 @@ def _adder():
     return add, calls
 
 
-# -- observer.authorize (unit) -----------------------------------------------
+# observer.authorize (unit)
 
 
 @pytest.mark.asyncio
@@ -81,7 +81,7 @@ async def test_branch_authorize_standalone_allows():
     assert await Branch().authorize(ToolInvocation(function="rm")) is True
 
 
-# -- end-to-end tool gating through _act -------------------------------------
+# end-to-end tool gating through _act
 
 
 @pytest.mark.asyncio

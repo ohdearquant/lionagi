@@ -3,47 +3,12 @@
 
 """StateDB lifecycle gate.
 
-Regression class this module pins, in plain terms:
-
-1. ``StateDB.update_status()`` has two different failure contracts that look
-   similar and have been confused before: a CAS-miss (a stale
-   ``expected_statuses``/``expected_updated_at`` guard) returns ``False``
-   silently, with no row change and no exception — an ordinary lost race.
-   Attempting to move a *terminal* entity to a different status without
-   ``override=True`` is a completely different case: it raises
-   ``TransitionRejectedError``. A caller (or a future refactor) that treats
-   one of these as the other is a live bug, not a style choice. The two
-   contracts can also *interact* — a terminal row with a stale version guard
-   is still rejected and audited because terminal-exit policy is evaluated
-   before a write-only version conflict; this file pins that interaction.
-
-2. New statuses get added to one vocabulary source (a schema ``CHECK``
-   constraint, the ``PolicyRegistry``, or the ``VALID_STATUSES_BY_ENTITY_TYPE``
-   facade in ``lionagi/state/db.py``) without a matching edit everywhere
-   else. This file pins an exact, sorted status list per entity so an
-   addition anywhere shows up here as a deliberate diff, not a silent
-   widening (or narrowing) of what ``update_status()`` accepts.
-
-3. The transition-policy edge graph (``PolicyRegistry``) is only enforced
-   by the *public* ``SQLAlchemyLifecycleService.transition()`` entry point —
-   ``StateDB.update_status()`` never enforces it (see
-   ``lionagi/state/lifecycle/adapters.py``'s ``enforce_edges`` docstring).
-   This file walks every declared edge for session/invocation/play/
-   schedule_run and asserts it applies, then samples undeclared edges and
-   asserts they come back as a ``"rejected"`` outcome (with an
-   ``admin_events`` audit row) — never a raise, never a silent write.
-
-4. The reaper pattern used throughout
-   ``lionagi/studio/services/lifecycle.py`` (guard a stale-row transition on
-   both ``expected_statuses`` *and* ``expected_updated_at``) is easy to
-   weaken without any test noticing: a change that drops the
-   ``expected_updated_at`` guard still passes every status-only test, and
-   still over-reaps a row that was legitimately re-claimed between the scan
-   and the write (status-membership alone cannot distinguish "still stale"
-   from "just re-touched"). This file reproduces that exact guarded-write
-   shape directly against ``StateDB`` and pins both outcomes: a genuinely
-   stale row is reaped, a row whose ``updated_at`` moved between read and
-   write is not.
+Pins: the CAS-miss-vs-terminal-rejection distinction in ``update_status()``,
+per-entity status vocabulary drift across its three sources of truth,
+``PolicyRegistry`` enforcement being scoped to the public
+``SQLAlchemyLifecycleService.transition()`` entry point, and the two-guard
+reaper pattern (``expected_statuses`` + ``expected_updated_at``). See
+``docs/internals/state-lifecycle.md`` for the regression detail behind each.
 
 Everything here runs against a temp-dir sqlite ``StateDB`` (``tmp_path /
 "state.db"``) — never ``~/.lionagi/state.db``, never any shared path.
@@ -85,7 +50,7 @@ def _wait_clock_past(ts: float) -> None:
         time.sleep(0.001)
 
 
-# ── Fixtures / helpers ───────────────────────────────────────────────────────
+# Fixtures / helpers
 
 
 @pytest.fixture
@@ -199,7 +164,7 @@ def _schema_check_status_values(table: str) -> frozenset[str]:
     return frozenset(values)
 
 
-# ── 1. Status vocabulary golden ──────────────────────────────────────────────
+# 1. Status vocabulary golden
 
 # Exact status vocabulary per managed entity, pinned as sorted lists. A
 # status added to (or removed from) any one of the three sources this test
@@ -293,7 +258,7 @@ def test_status_vocabulary_golden_against_schema_check(entity_type: str) -> None
     assert sorted(_schema_check_status_values(table)) == _EXPECTED_STATUSES[entity_type]
 
 
-# ── 2. Transition-policy matrix ──────────────────────────────────────────────
+# 2. Transition-policy matrix
 # Only the *public* SQLAlchemyLifecycleService.transition() entry point
 # enforces the PolicyRegistry's declared-edge graph (StateDB.update_status()
 # does not — see lionagi/state/lifecycle/adapters.py's `enforce_edges`
@@ -401,7 +366,7 @@ async def test_undeclared_edge_sample_rejected_not_raised(
     assert transitions == []
 
 
-# ── 3. CAS behavior: silent False vs raised TransitionRejectedError ─────────
+# 3. CAS behavior: silent False vs raised TransitionRejectedError
 
 
 @pytest.mark.asyncio
@@ -511,7 +476,7 @@ async def test_terminal_row_with_stale_guard_returns_false_not_raise(db: StateDB
     assert row["status"] == "completed"
 
 
-# ── 4. Reaper pattern: version-guarded stale-row transition ─────────────────
+# 4. Reaper pattern: version-guarded stale-row transition
 # Mirrors lionagi.studio.services.lifecycle.reap_stale_plays()'s exact
 # guarded-write shape (expected_statuses=<reapable set> +
 # expected_updated_at=<snapshot>) directly against StateDB, so the guarantee

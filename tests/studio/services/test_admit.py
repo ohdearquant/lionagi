@@ -120,7 +120,7 @@ async def _mark_running(db: StateDB, run_id: str, *, now: float) -> None:
     assert result.applied is True
 
 
-# ── 1. Capability mismatch -> deferred, never terminal ──────────────────────
+# Capability mismatch -> deferred, never terminal
 
 
 async def test_capability_mismatch_defers_not_terminal(db: StateDB) -> None:
@@ -145,7 +145,7 @@ async def test_capability_match_and_no_holder_admits(db: StateDB) -> None:
     assert decision == AdmissionDecision(admitted=True)
 
 
-# ── 2. Concurrency block (within waiter cap) -> deferred, never terminal ────
+# Concurrency block (within waiter cap) -> deferred, never terminal
 
 
 async def test_concurrency_block_within_cap_defers(db: StateDB) -> None:
@@ -198,7 +198,7 @@ async def test_claimed_keys_pass_local_holder_blocks_even_when_db_shows_no_runni
     assert "deferred" in decision.reason_summary
 
 
-# ── 3. Waiter-cap overflow -> terminal, unless opted into deferred ─────────
+# Waiter-cap overflow -> terminal, unless opted into deferred
 
 
 async def test_waiter_cap_exceeded_is_terminal_rejection(db: StateDB) -> None:
@@ -246,7 +246,7 @@ async def test_waiter_cap_exceeded_but_opted_into_deferred_stays_deferred(db: St
     assert "opted into deferred" in decision.reason_summary
 
 
-# ── 4. Duration guard -> terminal, unconditional ────────────────────────────
+# Duration guard -> terminal, unconditional
 
 
 async def test_duration_guard_rejects_when_at_or_above_lease_ttl(db: StateDB) -> None:
@@ -307,7 +307,7 @@ async def test_duration_guard_takes_priority_over_capability_mismatch(db: StateD
     assert decision.reason_code == RunReasons.SKIPPED_DURATION_EXCEEDS_LEASE
 
 
-# ── 5. Pure helper functions ─────────────────────────────────────────────
+# Pure helper functions
 
 
 def test_normalize_action_args_handles_json_string_dict_and_junk():
@@ -405,7 +405,7 @@ def test_notify_request_rejects_present_but_null_optional_fields():
     ) == {"deliver_to": "lambda:leo", "kind": "terminal_notify"}
 
 
-# ── 6. waiter_ahead_count / holder_is_running direct coverage ───────────────
+# waiter_ahead_count / holder_is_running direct coverage
 
 
 async def test_holder_is_running_true_and_false(db: StateDB) -> None:

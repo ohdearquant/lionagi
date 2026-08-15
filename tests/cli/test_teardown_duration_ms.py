@@ -57,11 +57,11 @@ async def test_teardown_common_populates_duration_ms_from_started_at(db, monkeyp
 
 
 async def test_teardown_common_populates_duration_ms_on_zero_turn_timeout(db, monkeypatch):
-    """The exact #2495 shape: a session that timed out with no message ever
-    appended -- the progression row exists (created alongside the session)
-    but its collection is empty, so num_turns/input_tokens stay 0 and
-    duration_ms was previously the only field that could have said where the
-    time went, yet was itself always NULL."""
+    """A session that timed out with no message ever appended: the progression
+    row exists (created alongside the session) but its collection is empty,
+    so num_turns/input_tokens stay 0 and duration_ms was previously the only
+    field that could have said where the time went, yet was itself always
+    NULL."""
     sid = "sess-duration-zero-turn"
     started_at = 1_700_000_000.0
     await db.create_progression("prog-zero-turn")

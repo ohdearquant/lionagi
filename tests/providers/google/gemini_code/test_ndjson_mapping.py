@@ -74,11 +74,6 @@ def _success_obj(**over) -> dict:
     return obj
 
 
-# ---------------------------------------------------------------------------
-# Result projection
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_response_becomes_result_stripped():
     session = await _run_objects([_success_obj()])
@@ -108,11 +103,6 @@ async def test_usage_and_turns_captured():
 async def test_duration_seconds_becomes_ms():
     session = await _run_objects([_success_obj(duration_seconds=2.0)])
     assert session.duration_ms == 2000
-
-
-# ---------------------------------------------------------------------------
-# Error handling
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -192,10 +182,8 @@ async def test_session_id_not_clobbered_by_later_null():
     assert session.session_id == "conv-first"
 
 
-# ---------------------------------------------------------------------------
 # state.db persistence chunks (system / result) — the channel run.py reads
 # session_id and provider usage metadata from during `li agent` streaming.
-# ---------------------------------------------------------------------------
 
 
 async def _run_chunks(objects: list[dict], request: GeminiCodeRequest | None = None) -> list:
@@ -355,11 +343,6 @@ async def test_unrelated_runtime_error_is_not_reclassified_as_teardown():
             pass
 
 
-# ---------------------------------------------------------------------------
-# Callbacks
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_on_text_and_on_final_fire():
     texts: list[str] = []
@@ -406,11 +389,6 @@ async def test_on_text_loop_closed_error_propagates():
             pass
 
 
-# ---------------------------------------------------------------------------
-# Model resolution
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "spec,expected",
     [
@@ -439,10 +417,8 @@ def test_resolve_agy_model(spec, expected):
     assert resolve_agy_model(spec) == expected
 
 
-# ---------------------------------------------------------------------------
 # Model resolution — effort folding (agy has no effort flag/kwarg; effort is
 # expressed only as the Low/Medium/High suffix on --model)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -505,10 +481,8 @@ def test_resolve_agy_model_36_flash_defaults_high_never_downgrades():
         assert not resolve_agy_model(spec).startswith("Gemini 3.6 Flash"), spec
 
 
-# ---------------------------------------------------------------------------
 # Model resolution — reapply_effort (li agent -r --effort re-applying effort
 # to an already-resolved persisted model)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import time
 
 from lionagi._errors import EmptyOutgoingContentError, LionError
@@ -34,6 +36,7 @@ from ._orchestration import (
     build_worker_branch,
     finalize_orchestration,
     parse_orchestrator_provider,
+    register_branch_hook,
     role_roster,
     setup_orchestration,
     start_live_persist,
@@ -45,6 +48,59 @@ from ._orchestration import (
 
 class FanoutPlanError(LionError):
     """Orchestrator failed to produce a usable plan."""
+
+
+# Rendered in place of a failed leg's output. Distinct from "(no response)",
+# which means the operation completed but returned nothing: a failed leg must
+# never read as a quiet success, and the synthesis context must be able to
+# exclude it rather than synthesize over a placeholder as if it were content.
+FAILED_WORKER_MARKER = "(worker failed: no output)"
+FAILED_SYNTHESIS_MARKER = "(synthesis failed: no output)"
+
+
+def _is_assignment_shaped_synthesis(value: object) -> bool:
+    """True when the entire response is a planner-style assignment payload."""
+    text = str(value).strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL)
+    if fenced is not None:
+        text = fenced.group(1)
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+
+    if isinstance(payload, dict) and isinstance(payload.get("assignments"), list):
+        assignments = payload["assignments"]
+    elif isinstance(payload, list):
+        assignments = payload
+    elif isinstance(payload, dict):
+        assignments = [payload]
+    else:
+        return False
+    return bool(assignments) and all(
+        isinstance(item, dict) and "task" in item and "assignee" in item for item in assignments
+    )
+
+
+async def _fresh_synthesis_branch(env: OrchestrationEnv):
+    """Build a clean synthesizer branch without the planner conversation."""
+    from lionagi.agent import AgentSpec, create_agent
+
+    spec = AgentSpec.compose(
+        "synthesizer",
+        pack=env.pack if env.pack is not None else "default",
+        grant_emissions=False,
+    )
+    branch = await create_agent(
+        spec,
+        load_settings=False,
+        chat_model=env.orc_branch.chat_model.copy(),
+    )
+    branch.name = "synthesis"
+    env.session.include_branches(branch)
+    if env._live_persist:
+        register_branch_hook(env._live_persist, branch)
+    return branch
 
 
 def _parse_worker_pool(workers_str: str | None, *, num_workers: int) -> list[str]:
@@ -213,7 +269,11 @@ async def _run_fanout(
                 raise LionTimeoutError(msg)
         else:
             result = await _run_fanout_inner(model_spec, prompt, **inner_kw)
-        if _shared.get("artifact_failures"):
+        # Two distinct failure signals feed this decision: an operation that
+        # raised (op_failures) and a worker artifact that could not be written
+        # (artifact_failures). Either alone means the run did not deliver what
+        # it reported, so neither may resolve to "completed".
+        if _shared.get("artifact_failures") or _shared.get("op_failures"):
             _terminal_status = "failed"
     except BaseException as exc:
         _terminal_status = classify_exception(exc)
@@ -350,7 +410,22 @@ async def _run_fanout_inner(
     artifact_failures: dict[int, dict] = {}
 
     from lionagi.engines import PlanningEngine
-    from lionagi.session.signal import NodeCompleted
+    from lionagi.session.signal import NodeCompleted, NodeFailed
+
+    # Keyed by op_id so the same observer serves the fanned workers here and
+    # the synthesis node later. A failed op has no entry in operation_results,
+    # which is also what a completed-but-empty op looks like — this set is the
+    # only record that distinguishes the two.
+    failed_ops: set[str] = set()
+
+    def _record_failed_op(sig, _ctx) -> None:
+        failed_ops.add(sig.op_id)
+        worker_entry = node_workers.get(sig.op_id)
+        if worker_entry is not None:
+            worker_number, _ = worker_entry
+            warn(f"Worker {worker_number} failed after {sig.elapsed:.1f}s; its leg has no output.")
+        if _shared is not None:
+            _shared["op_failures"] = sorted(failed_ops)
 
     def _save_completed_worker(sig, _ctx) -> None:
         worker_entry = node_workers.get(sig.op_id)
@@ -386,6 +461,7 @@ async def _run_fanout_inner(
             _shared["saved_workers"] = [saved_workers[i] for i in sorted(saved_workers)]
 
     env.session.observe(NodeCompleted, handler=_save_completed_worker)
+    env.session.observe(NodeFailed, handler=_record_failed_op)
     eng_run = PlanningEngine().new_run(session=env.session)
     try:
         if env.exchange is not None:
@@ -409,14 +485,22 @@ async def _run_fanout_inner(
             )
     finally:
         env.session.observer.unobserve(_save_completed_worker)
+        env.session.observer.unobserve(_record_failed_op)
     t_fanout = time.monotonic() - t1
 
     op_results = result2.get("operation_results", {})
     worker_results: list[dict] = []
     contexts: list[str] = []
     for i, nid in enumerate(fanned_nodes):
-        res = op_results.get(nid)
-        response_text = str(res) if res is not None else "(no response)"
+        if str(nid) in failed_ops:
+            # A failed leg is rendered with its marker but kept out of the
+            # synthesis context: a placeholder read alongside real worker
+            # output would be synthesized as if it were content.
+            response_text = FAILED_WORKER_MARKER
+        else:
+            res = op_results.get(nid)
+            response_text = str(res) if res is not None else "(no response)"
+            contexts.append(response_text)
         worker_results.append(
             {
                 "worker": i + 1,
@@ -425,7 +509,6 @@ async def _run_fanout_inner(
                 "time_ms": t_fanout * 1000,
             }
         )
-        contexts.append(response_text)
 
     progress(f"Phase 2 done ({t_fanout:.1f}s).")
 
@@ -434,8 +517,16 @@ async def _run_fanout_inner(
         _shared["saved_workers"] = [saved_workers[i] for i in sorted(saved_workers)]
 
     synthesis_result = None
+    if with_synthesis and not contexts:
+        # An empty context means either "every worker failed" or "no worker ran
+        # at all". Only the first one has failures to report, so name the
+        # situation that actually happened.
+        if fanned_nodes:
+            warn("Every worker failed; there is no output to synthesize.")
+        else:
+            warn("No workers ran; there is no output to synthesize.")
     if with_synthesis and contexts:
-        synth_spec = synthesis_model or model_spec
+        synth_spec = synthesis_model or env.default_model_spec
         synth_label = str(parse_model_spec(synth_spec))
 
         progress(f"Phase 3: Synthesis [{synth_label}]...")
@@ -444,22 +535,48 @@ async def _run_fanout_inner(
             synthesis_prompt or f"{SYNTHESIS_INSTRUCTION}\n\nOriginal task: {prompt}"
         )
 
+        synth_branch = await _fresh_synthesis_branch(env)
         synth_node = env.builder.add_operation(
             "operate",
-            branch=env.orc_branch,
+            branch=synth_branch,
             depends_on=fanned_nodes,
             instruction=synth_instruction,
             context=contexts,
         )
 
         t2 = time.monotonic()
-        result3 = await env.session.flow(env.builder.get_graph(), verbose=env.verbose)
+        env.session.observe(NodeFailed, handler=_record_failed_op)
+        try:
+            # Synthesis runs through the engine for the same reason the worker
+            # phase does: run_dag is what installs the node-lifecycle signal
+            # bridge, so a failed synthesis reaches the observer above. Calling
+            # session.flow directly emits no node signals at all, which leaves
+            # the observer silent and renders the failure as an empty response.
+            result3 = await eng_run.run_dag(
+                env.builder.get_graph(),
+                verbose=env.verbose,
+            )
+        finally:
+            env.session.observer.unobserve(_record_failed_op)
         t_synth = time.monotonic() - t2
 
         synth_res = result3.get("operation_results", {}).get(synth_node)
+        if str(synth_node) in failed_ops:
+            synth_text = FAILED_SYNTHESIS_MARKER
+        else:
+            synth_text = str(synth_res) if synth_res is not None else "(no response)"
+            if _is_assignment_shaped_synthesis(synth_text):
+                failed_ops.add(str(synth_node))
+                if _shared is not None:
+                    _shared["op_failures"] = sorted(failed_ops)
+                warn(
+                    "Synthesis returned a planner assignment instead of an integrated "
+                    "result; marking the synthesis leg failed."
+                )
+                synth_text = FAILED_SYNTHESIS_MARKER
         synthesis_result = {
             "model": synth_label,
-            "response": str(synth_res) if synth_res is not None else "(no response)",
+            "response": synth_text,
             "time_ms": t_synth * 1000,
         }
 

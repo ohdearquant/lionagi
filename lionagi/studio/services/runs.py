@@ -15,6 +15,7 @@ from lionagi.libs.path_safety import resolve_workspace_path
 from ..registry import studio_route
 from . import sessions as _sessions_svc
 from ._path_safety import public_path
+from .sessions import display_cost, display_model
 
 # Read-only file viewer cap (ADR file-links feature): large artifacts are
 # truncated rather than rejected outright, so a giant log still previews.
@@ -40,6 +41,25 @@ def _normalize_status_filter(status: str | list[str] | None) -> set[str] | None:
     for s in status:
         result |= _STATUS_ALIASES.get(s, {s})
     return result or None
+
+
+# The orchestration-kind facet vocabulary a caller may filter by. "show"
+# also admits "show-play" rows in SessionFilter; unknown values are refused
+# at the route so a typo can't silently return an empty page.
+VALID_KIND_FILTERS = frozenset({"agent", "play", "flow", "fanout", "show"})
+
+
+def _normalize_kind_filter(kind: str | list[str] | None) -> set[str] | None:
+    if kind is None:
+        return None
+    kinds = {kind} if isinstance(kind, str) else set(kind)
+    invalid = kinds - VALID_KIND_FILTERS
+    if invalid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown kind filter: {sorted(invalid)}; valid: {sorted(VALID_KIND_FILTERS)}",
+        )
+    return kinds or None
 
 
 def _adapt_summary(
@@ -456,6 +476,11 @@ def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool
     return process_liveness(s, Path(ap) if ap else None, ps_snapshot)
 
 
+_TERMINAL_ROW_STATUSES = frozenset(
+    {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
+)
+
+
 def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
     """Canonical Run row shape shared by list and detail routes."""
     from lionagi.state.health import classify_session_health
@@ -468,7 +493,12 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         has_stale_locks=False,
     )
     # Expose the classifier verdict verbatim; the dashboard maps UNRESPONSIVE→"stuck".
-    effective_health = health.value
+    effective_health: str | None = health.value
+    # A finished (or failed) run has no live process for "healthy" to describe —
+    # projecting it beside a terminal status reads as a contradiction ("failed
+    # but healthy"). Real terminal signals (stale locks, zombie) still pass.
+    if effective_health == "healthy" and s.get("status") in _TERMINAL_ROW_STATUSES:
+        effective_health = None
     return {
         "run_id": s["id"],
         "id": s["id"],
@@ -482,7 +512,7 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         "artifact_contract_json": s.get("artifact_contract_json"),
         "artifact_verification_json": s.get("artifact_verification_json"),
         "invocation_id": s.get("invocation_id"),
-        "model": s.get("model"),
+        "model": display_model(s.get("model")),
         "provider": s.get("provider"),
         "effort": s.get("effort"),
         "agent_hash": s.get("agent_hash"),
@@ -501,7 +531,7 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         "status_reason_summary": s.get("status_reason_summary"),
         # Cost-visibility contract: NULL means the run never reported a cost
         # (unknown), never coerced to 0.0 (free) — see usageFormat.ts.
-        "total_cost_usd": s.get("total_cost_usd"),
+        "total_cost_usd": display_cost(s.get("total_cost_usd"), s.get("provider")),
         "input_tokens": s.get("input_tokens"),
         "output_tokens": s.get("output_tokens"),
         "tags": [],
@@ -516,6 +546,7 @@ async def list_runs(
     tag: list[str] | None = None,
     *,
     search: str | None = None,
+    kind: str | list[str] | None = None,
     limit: int = _sessions_svc.MAX_SESSION_PAGE,
     offset: int = 0,
     sort: str = "recent",
@@ -532,6 +563,7 @@ async def list_runs(
         project_null=project_null,
         tags=tag,
         search=search,
+        kinds=_normalize_kind_filter(kind),
     )
     sessions = await _sessions_svc.list_sessions(limit=limit, offset=offset, where=where, sort=sort)
     now = time.time()
@@ -555,7 +587,7 @@ async def list_runs(
 
 def _status_ended_at_mismatch(run: dict[str, Any]) -> bool:
     """A row reporting ``status="running"`` alongside a non-null ``ended_at``
-    is the exact write-path defect from issue #2844: two fields describing
+    is the write-path defect this guards against: two fields describing
     the same lifecycle event that disagree about it. Scoped to this one
     direction (not the reverse, a terminal row with a null ``ended_at``)
     because that population includes legitimate pre-existing rows -- rows
@@ -585,7 +617,7 @@ def paginate_runs(
         "has_prev": page > 1,
         # Recomputed on every page fetch, not read from a stored flag, so a
         # future divergence between status and ended_at is visible without
-        # anyone querying for it (issue #2844).
+        # anyone querying for it.
         "status_ended_at_mismatches": sum(1 for r in page_runs if _status_ended_at_mismatch(r)),
     }
 
@@ -743,6 +775,10 @@ async def list_runs_route(
         default=None,
         description="Case-insensitive contains match on session name or agent name",
     ),
+    kind: list[str] | None = Query(  # noqa: B008
+        default=None,
+        description="Repeated orchestration-kind filter: agent, play, flow, fanout, show",
+    ),
     sort: str = Query(
         default="recent",
         description="Sort order: 'recent' (default) or 'cost' (highest reported spend first)",
@@ -757,6 +793,7 @@ async def list_runs_route(
         project_null=project_null,
         tags=tag,
         search=search,
+        kinds=_normalize_kind_filter(kind),
     )
     runs = await list_runs(
         playbook=playbook,
@@ -765,6 +802,7 @@ async def list_runs_route(
         project_null=project_null,
         tag=tag,
         search=search,
+        kind=kind,
         limit=per_page,
         offset=(page - 1) * per_page,
         sort=sort,

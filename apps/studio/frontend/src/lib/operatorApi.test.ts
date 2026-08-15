@@ -69,6 +69,11 @@ describe("Operator API v1", () => {
         pinned: false,
         nextSequence: 4,
         activeRequestId: null,
+        // The pinned selection survives normalization (absent here, so null):
+        // dropping these fields is what reset the composer to "Default" on
+        // every page refresh.
+        provider: null,
+        providerModel: null,
         createdAt: 10,
         updatedAt: 20,
       },

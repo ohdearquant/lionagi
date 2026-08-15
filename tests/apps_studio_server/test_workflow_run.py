@@ -410,7 +410,7 @@ async def test_workflow_run_bare_chat_model_rejected_at_compile_defense_in_depth
     assert "chat1" in str(exc_info.value)
 
 
-# ─── Per-node cwd end-to-end ──────────────────────────────────────────────────
+# Per-node cwd end-to-end
 
 
 async def test_workflow_run_node_cwd_reaches_engine_invocation(patched_env, tmp_path):

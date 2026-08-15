@@ -11,11 +11,6 @@ Python module execution.
 Fix: The codegen/exec fallback requires explicit allow_codegen=True.
 Default is allow_codegen=False — unsupported schemas raise RuntimeError
 before any code generation or exec_module call.
-
-These tests verify:
-1. allow_codegen=False (default) blocks the exec path.
-2. _load_via_codegen is never called without allow_codegen=True.
-3. Simple schemas that create_model() handles still work normally.
 """
 
 import unittest.mock
@@ -28,9 +23,7 @@ from lionagi.libs.schema.load_pydantic_model_from_schema import (
     load_pydantic_model_from_schema,
 )
 
-# ---------------------------------------------------------------------------
 # Security boundary: exec path is blocked by default
-# ---------------------------------------------------------------------------
 
 
 class TestExecBoundaryDefault:
@@ -104,11 +97,6 @@ class TestExecBoundaryDefault:
             load_pydantic_model_from_schema({"type": "object"}, allow_codegen=False)
 
         assert "allow_codegen" in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# Normal operation: create_model path works for common schemas
-# ---------------------------------------------------------------------------
 
 
 class TestNormalCreateModelPath:

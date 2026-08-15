@@ -16,10 +16,6 @@ import pytest
 
 from lionagi.ln import BcallParams
 
-# ---------------------------------------------------------------------------
-# Basic functionality
-# ---------------------------------------------------------------------------
-
 
 class TestBcallParamsCall:
     @pytest.mark.anyio

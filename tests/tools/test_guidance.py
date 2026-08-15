@@ -11,10 +11,6 @@ from lionagi.tools.code.bash import BashRequest, BashTool
 from lionagi.tools.file.editor import EditorRequest, EditorTool, _edit_sync
 from lionagi.tools.file.reader import ReaderRequest, ReaderTool
 
-# ---------------------------------------------------------------------------
-# Reader: field descriptions contain the line-prefix trap warning
-# ---------------------------------------------------------------------------
-
 
 def test_reader_action_description_warns_line_prefix():
     schema = ReaderRequest.model_json_schema()
@@ -43,21 +39,11 @@ def test_reader_offset_description_has_example():
     assert "200" in offset_desc or "offset" in offset_desc.lower()
 
 
-# ---------------------------------------------------------------------------
-# Reader: tool docstring mentions line-prefix
-# ---------------------------------------------------------------------------
-
-
 def test_reader_tool_docstring_mentions_line_prefix():
     rt = ReaderTool()
     tool = rt.to_tool()
     doc = inspect.getdoc(tool.func_callable) or ""
     assert "\\t" in doc or "prefix" in doc.lower() or "number" in doc.lower()
-
-
-# ---------------------------------------------------------------------------
-# Reader: error messages contain recovery hints
-# ---------------------------------------------------------------------------
 
 
 async def test_reader_not_found_error_has_hint(tmp_path):
@@ -92,11 +78,6 @@ async def test_reader_list_dir_not_dir_suggests_read(tmp_path):
     assert "read" in resp.error.lower()
 
 
-# ---------------------------------------------------------------------------
-# Editor: field descriptions contain line-prefix trap warning
-# ---------------------------------------------------------------------------
-
-
 def test_editor_old_string_description_warns_line_prefix():
     schema = EditorRequest.model_json_schema()
     desc = schema["properties"]["old_string"]["description"]
@@ -115,11 +96,6 @@ def test_editor_action_description_mentions_read_first():
     assert "read" in desc.lower()
 
 
-# ---------------------------------------------------------------------------
-# Editor: tool docstring has recovery guidance
-# ---------------------------------------------------------------------------
-
-
 def test_editor_tool_docstring_has_not_found_hint():
     et = EditorTool()
     tool = et.to_tool()
@@ -132,11 +108,6 @@ def test_editor_tool_docstring_mentions_line_prefix():
     tool = et.to_tool()
     doc = inspect.getdoc(tool.func_callable) or ""
     assert "prefix" in doc.lower() or "\\t" in doc or "number" in doc.lower()
-
-
-# ---------------------------------------------------------------------------
-# Editor: error messages contain recovery hints
-# ---------------------------------------------------------------------------
 
 
 async def test_editor_not_found_error_contains_reread(tmp_path):
@@ -210,11 +181,6 @@ async def test_editor_missing_new_string_error_guides(tmp_path):
     assert "new_string" in resp.error.lower() or "replacement" in resp.error.lower()
 
 
-# ---------------------------------------------------------------------------
-# Bash: field descriptions have cwd guidance
-# ---------------------------------------------------------------------------
-
-
 def test_bash_command_description_warns_operators():
     schema = BashRequest.model_json_schema()
     desc = schema["properties"]["command"]["description"]
@@ -234,11 +200,6 @@ def test_bash_timeout_description_mentions_increase():
     assert "increase" in desc.lower() or "long" in desc.lower()
 
 
-# ---------------------------------------------------------------------------
-# Bash: tool docstring has recovery hints
-# ---------------------------------------------------------------------------
-
-
 def test_bash_tool_docstring_has_recovery_section():
     bt = BashTool()
     tool = bt.to_tool()
@@ -251,11 +212,6 @@ def test_bash_tool_docstring_mentions_cwd_alternative():
     tool = bt.to_tool()
     doc = inspect.getdoc(tool.func_callable) or ""
     assert "cwd" in doc.lower()
-
-
-# ---------------------------------------------------------------------------
-# Bash: operator-rejection error mentions cwd
-# ---------------------------------------------------------------------------
 
 
 async def test_bash_operator_rejection_message_suggests_cwd():

@@ -15,9 +15,7 @@ aiosqlite = pytest.importorskip("aiosqlite", reason="aiosqlite not installed")
 import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB  # noqa: E402
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _rid() -> str:
@@ -49,9 +47,7 @@ async def _seed_engine_run(
     return rid
 
 
-# ---------------------------------------------------------------------------
 # Studio service layer: engine_runs service
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -170,9 +166,7 @@ async def test_service_spec_json_round_trips(patched_engine_runs_svc):
     assert row["spec_json"] == spec
 
 
-# ---------------------------------------------------------------------------
 # HTTP endpoint layer
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

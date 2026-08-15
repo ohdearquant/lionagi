@@ -45,9 +45,7 @@ def _clear_leo_sessions():
     leo_svc._SESSIONS.clear()
 
 
-# ---------------------------------------------------------------------------
 # Retired HTTP surface and direct session compatibility
-# ---------------------------------------------------------------------------
 
 
 def test_legacy_leo_routes_are_retired(tmp_path, monkeypatch):
@@ -68,9 +66,7 @@ def test_leo_compatibility_session_unique_ids():
     assert len(ids) == 3
 
 
-# ---------------------------------------------------------------------------
 # Session registry bounds: capacity eviction (LRU) and idle expiry
-# ---------------------------------------------------------------------------
 
 
 def test_session_registry_evicts_lru_over_cap(monkeypatch):
@@ -161,9 +157,7 @@ def test_session_registry_idle_eviction_runs_on_create():
     assert stale.id not in leo_svc._SESSIONS
 
 
-# ---------------------------------------------------------------------------
 # Direct compatibility handler rejects an unknown session
-# ---------------------------------------------------------------------------
 
 
 def test_leo_compatibility_message_unknown_session():
@@ -179,10 +173,8 @@ def test_leo_compatibility_message_unknown_session():
         )
 
 
-# ---------------------------------------------------------------------------
 # Auth gate — retired paths remain under the global /api/* bearer boundary,
 # even though an authenticated caller receives a route-level 404.
-# ---------------------------------------------------------------------------
 
 
 def test_leo_requires_bearer_when_token_set(tmp_path, monkeypatch):
@@ -221,9 +213,7 @@ def test_leo_correct_token_reaches_retired_route_404(tmp_path, monkeypatch):
     assert r.status_code == 404
 
 
-# ---------------------------------------------------------------------------
 # Tool registry shape
-# ---------------------------------------------------------------------------
 
 
 def test_leo_tool_registry_shape():
@@ -248,9 +238,7 @@ def test_leo_tool_registry_shape():
     assert "tool_run_maintenance" in names
 
 
-# ---------------------------------------------------------------------------
 # Proposed-action gating: mutating tools return proposals, never execute
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -321,9 +309,7 @@ async def test_tool_run_maintenance_invalid_action():
     assert "proposed_action" not in result
 
 
-# ---------------------------------------------------------------------------
 # UI-drive tools: declarative commands, no server-side effect
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -375,9 +361,7 @@ async def test_tool_prefill_schedule_returns_command():
     assert "prompt" in cmd["params"]
 
 
-# ---------------------------------------------------------------------------
 # Message turn with a fake Branch (no LLM network)
-# ---------------------------------------------------------------------------
 
 
 def _fake_branch_with_response(text: str) -> MagicMock:
@@ -513,9 +497,7 @@ def test_leo_prior_turn_proposals_not_reemitted():
     assert "done" in types
 
 
-# ---------------------------------------------------------------------------
 # Compatibility handler rejects a second turn while the session is busy
-# ---------------------------------------------------------------------------
 
 
 def test_leo_concurrent_turn_second_gets_409():
@@ -539,9 +521,7 @@ def test_leo_concurrent_turn_second_gets_409():
     asyncio.run(scenario())
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _parse_sse(body: str) -> list[dict[str, Any]]:

@@ -56,9 +56,7 @@ class _ProgressLog:
         return [c[1] for c in self.calls if c[0] == op_id]
 
 
-# ---------------------------------------------------------------------------
 # queued/started identity agreement (reference_id fix)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -393,9 +391,7 @@ async def test_executor_raw_callback_diverges_without_reference_id_pre_fix_sympt
     assert names[0] != names[1]
 
 
-# ---------------------------------------------------------------------------
 # exactly one terminal signal after every start
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -552,9 +548,7 @@ async def test_emit_terminal_once_is_idempotent_across_call_sites():
     assert log.statuses_for(op_id) == ["completed"]
 
 
-# ---------------------------------------------------------------------------
 # skipped is its own terminal outcome, not a failure
-# ---------------------------------------------------------------------------
 
 
 def _skip_graph():
@@ -648,9 +642,7 @@ async def test_gate_skipped_node_projects_to_the_skipped_lane_on_the_signal_bus(
     assert lane_for(for_gated) == "skipped"
 
 
-# ---------------------------------------------------------------------------
 # an operation already terminal on arrival must still be answered
-# ---------------------------------------------------------------------------
 
 
 def _one_op_graph(status):

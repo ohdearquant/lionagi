@@ -37,11 +37,6 @@ async def _chunks_from_events(events: list[dict]) -> list[StreamChunk]:
     return collected
 
 
-# ---------------------------------------------------------------------------
-# turn.failed with empty error payload → self-describing message
-# ---------------------------------------------------------------------------
-
-
 async def test_turn_failed_empty_payload_has_self_describing_content():
     """turn.failed with err={} must NOT produce '{}' as content; must be a human-readable description naming the event type."""
     events = [{"type": "turn.failed", "error": {}}]
@@ -75,11 +70,6 @@ async def test_error_event_empty_payload_benign_eos_still_applies():
     # the benign_eos sentinel is the real distinguishing property.
     # Accept any content — what matters is the benign_eos tag.
     assert error_chunks[0].metadata.get("benign_eos") is True
-
-
-# ---------------------------------------------------------------------------
-# Populated message — existing behaviour preserved
-# ---------------------------------------------------------------------------
 
 
 async def test_turn_failed_populated_message_preserved():
@@ -118,11 +108,6 @@ async def test_error_event_top_level_message_preserved():
     assert len(chunks) == 1
     assert chunks[0].type == "error"
     assert chunks[0].content == msg
-
-
-# ---------------------------------------------------------------------------
-# Edge cases: error=null, error missing, {"code": ...} no message, non-dict error
-# ---------------------------------------------------------------------------
 
 
 async def test_turn_failed_error_null_has_self_describing_content():

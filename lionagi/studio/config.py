@@ -269,7 +269,7 @@ CORS_ORIGINS: list[str] = (
     ]
 )
 
-# ── Launch admission config ───────────────────────────────────────────────────
+# Launch admission config
 # Maximum number of on-demand launch tasks that may run in parallel.
 # When saturated, POST /api/launches returns 429.
 MAX_LAUNCHES: int = int(os.environ.get("LIONAGI_STUDIO_MAX_LAUNCHES", "4"))
@@ -288,7 +288,7 @@ MAX_SCHEDULED_CONCURRENT: int = int(os.environ.get("LIONAGI_STUDIO_MAX_SCHEDULED
 MAX_ADHOC_CONCURRENT: int = int(os.environ.get("LIONAGI_STUDIO_MAX_ADHOC_CONCURRENT", "4"))
 
 
-# ── Lifecycle reaper config ───────────────────────────────────────────────────
+# Lifecycle reaper config
 # Default invocation deadline in seconds (2 hours). Override per action kind
 # via LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS (e.g. _AGENT_SECONDS).
 # Pairs with per-schedule budget_usd/budget_tokens (schedules table, see
@@ -363,7 +363,7 @@ SHOW_STALE_HOURS: float = float(os.environ.get("LIONAGI_STUDIO_SHOW_STALE_HOURS"
 # Minimum seconds between consecutive periodic reaper runs (throttle).
 REAPER_INTERVAL_SECONDS: int = int(os.environ.get("LIONAGI_STUDIO_REAPER_INTERVAL_SECONDS", "300"))
 
-# ── Scheduler cron timezone ───────────────────────────────────────────────────
+# Scheduler cron timezone
 # Cron expressions (trigger_type="cron") are interpreted in this IANA timezone;
 # next_fire_at is always stored as a UTC epoch regardless. Resolved once here
 # and frozen for the process lifetime, so it's reported on /api/admin/health
@@ -409,7 +409,7 @@ def scheduler_timezone_report() -> dict[str, Any]:
     }
 
 
-# ── DB maintenance config ─────────────────────────────────────────────────────
+# DB maintenance config
 # Size threshold in bytes above which /api/stats raises a size_alert (500 MB).
 DB_SIZE_ALERT_BYTES: int = int(
     os.environ.get("LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES", str(500 * 1024 * 1024))
@@ -445,7 +445,7 @@ DISPATCH_RETENTION_DEAD_LETTER_DAYS: int = int(
     os.environ.get("LIONAGI_STUDIO_DISPATCH_RETENTION_DEAD_LETTER_DAYS", "30")
 )
 
-# ── Ambient transcript mirror ─────────────────────────────────────────────────
+# Ambient transcript mirror
 # When on, studio tails the local agent transcript trees in-process so those
 # sessions show up (and stream live) without a separate `li mirror`. Bounded by
 # the window below, so startup catches up the recent window only and never

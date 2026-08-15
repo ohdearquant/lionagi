@@ -16,10 +16,6 @@ from lionagi.tools.code.search import (
     _validate_search_path,
 )
 
-# ---------------------------------------------------------------------------
-# Attack: _validate_search_path rejects escapes before subprocess launch
-# ---------------------------------------------------------------------------
-
 
 class TestValidateSearchPathContainment:
     """Unit tests for the path-containment guard (no subprocess needed)."""
@@ -67,11 +63,6 @@ class TestValidateSearchPathContainment:
         outside.mkdir()
         resolved, err = _validate_search_path(str(outside), None)
         assert err is None
-
-
-# ---------------------------------------------------------------------------
-# Attack: handle_request refuses escaping paths before subprocess
-# ---------------------------------------------------------------------------
 
 
 class TestSearchToolHandleRequestContainment:

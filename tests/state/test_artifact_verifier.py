@@ -18,7 +18,7 @@ from lionagi.state.artifact_verifier import (
     verify_artifact_contract,
 )
 
-# ── _safe_join ────────────────────────────────────────────────────────────────
+# _safe_join
 
 
 class TestSafeJoin:
@@ -55,7 +55,7 @@ class TestSafeJoin:
             _safe_join(str(tmp_path), "")
 
 
-# ── validate_artifact_contract ───────────────────────────────────────────────
+# validate_artifact_contract
 
 
 class TestValidateArtifactContract:
@@ -102,7 +102,7 @@ class TestValidateArtifactContract:
         validate_artifact_contract({"expected": []})
 
 
-# ── resolve_artifact_contract ─────────────────────────────────────────────────
+# resolve_artifact_contract
 
 
 class TestResolveArtifactContract:
@@ -145,7 +145,7 @@ class TestResolveArtifactContract:
         assert result["expected"][0]["required"] is True
 
 
-# ── verify_artifact_contract ──────────────────────────────────────────────────
+# verify_artifact_contract
 
 
 class TestVerifyArtifactContract:
@@ -219,7 +219,7 @@ class TestVerifyArtifactContract:
         assert len(result["produced"]) == 2
 
 
-# ── missing_artifact_summary / evidence ──────────────────────────────────────
+# missing_artifact_summary / evidence
 
 
 def test_missing_artifact_summary_single():
@@ -241,7 +241,7 @@ def test_missing_artifact_evidence():
     assert evidence == [{"kind": "expected_artifact", "id": "report", "label": "report.md"}]
 
 
-# ── canonical names required by ADR-0064 test plan ───────────────────────────
+# canonical names required by ADR-0064 test plan
 
 
 def test_resolve_contract_both_none():
@@ -427,7 +427,7 @@ def test_safe_join_glob_rejects(tmp_path):
         _safe_join(str(tmp_path), "*.md")
 
 
-# ── A bare filename resolves to whichever worker produced it ──────────────────
+# A bare filename resolves to whichever worker produced it
 #
 # In a multi-agent run each worker writes into its own subdirectory of the
 # artifacts root, and which worker produces a given artifact is decided when the
@@ -582,7 +582,7 @@ def test_the_reported_run_shape_now_passes_end_to_end(tmp_path):
     assert len(result["produced"]) == 5
 
 
-# ── stale_artifact_markers ────────────────────────────────────────────────────
+# stale_artifact_markers
 #
 # A stored verification is a snapshot taken at run completion. These markers
 # never re-verify pass/fail; they only flag, via mtime and presence, whether

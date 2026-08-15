@@ -415,30 +415,21 @@ def capture_specialized() -> list[dict[str, Any]]:
     return [_run_cli(list(argv)) for argv in SPECIALIZED_CASES]
 
 
-# A handful of the committable specialized-CLI cases capture argparse's own
-# rendered usage/help/error text verbatim (see _COMMITTABLE_SPECIALIZED_ARGV
-# in test_public_surfaces.py). That text depends on the interpreter's
-# HelpFormatter, which CPython has changed more than once across this
-# project's CI matrix. Two distinct changes are in play here, and only one of
-# them is stable enough to pin per minor version:
+# Committable specialized-CLI cases capture argparse's own rendered
+# usage/help/error text verbatim, which depends on the interpreter's
+# HelpFormatter. Two distinct CPython rendering changes are in play, only
+# one of which is stable enough to pin per minor version:
 #
-# - Invalid-choice quoting (e.g. "choose from 'a', 'b'" vs "choose from a,
-#   b") is NOT a stable per-minor-version property: it was dropped in 3.12,
-#   and CPython has since flipped it again *within* the 3.14 series (a local
-#   3.14.3 interpreter renders unquoted; CI's 3.14.6 renders quoted, for the
-#   same argparse call). A per-minor-version baseline key cannot represent a
-#   property that changes between patch releases of the same minor. This is
-#   handled by narrow, named normalization -- see
-#   ``normalize_argparse_choice_quoting`` below -- applied only to the
-#   "(choose from ...)" fragment, so the choice names themselves (this
-#   project's own subcommand list) still fail the comparison if they change.
-# - The 3.13 metavar collapse (a repeated per-option-string metavar folded
-#   into one shared metavar, e.g. "-f PATH, --file PATH" -> "-f, --file
-#   PATH") is a real, stable rendering change that also reflows the
-#   surrounding wrapped usage lines. It has not been observed to vary within
-#   a minor version, so it keeps its own pinned baseline rather than being
-#   normalized away -- normalizing it would risk masking an actual change in
-#   this CLI's own usage/help text.
+# - Invalid-choice quoting ("choose from 'a', 'b'" vs "choose from a, b") is
+#   NOT stable per minor version: dropped in 3.12, then flipped again
+#   *within* the 3.14 series (3.14.3 renders unquoted, CI's 3.14.6 quoted,
+#   for the same call). Handled by narrow normalization on just the
+#   "(choose from ...)" fragment -- see ``normalize_argparse_choice_quoting``
+#   -- so the choice names themselves still fail comparison if they change.
+# - The 3.13 metavar collapse ("-f PATH, --file PATH" -> "-f, --file PATH",
+#   which also reflows wrapped usage lines) is stable within a minor
+#   version, so it keeps its own pinned baseline rather than being
+#   normalized away.
 _SPECIALIZED_BASELINE_BY_PYVER: dict[tuple[int, int], str] = {
     (3, 10): "specialized",
     (3, 11): "specialized",  # measured byte-identical to 3.10's capture (mod. choice quoting)
@@ -484,16 +475,13 @@ _CHOOSE_FROM_RE = re.compile(r"\(choose from ((?:'[^']*'|[^,)]+)(?:, (?:'[^']*'|
 
 
 def normalize_argparse_choice_quoting(text: str) -> str:
-    """Strip the quote characters CPython's argparse ``HelpFormatter`` wraps
-    each choice name in inside a "(choose from ...)" invalid-choice error.
+    """Strip the quote characters argparse's ``HelpFormatter`` wraps each
+    choice name in inside a "(choose from ...)" invalid-choice error.
 
-    This targets exactly that fragment, not the surrounding text: the choice
-    *names* are this project's own subcommand list and remain fully
-    compared by the caller (a renamed, added, or removed choice still
-    produces a different normalized fragment and fails); only the
-    quote-or-not rendering argparse wraps them in -- which CPython has
-    flipped more than once within a single Python 3.14 patch series -- is
-    discarded.
+    Targets exactly that fragment: the choice names remain fully compared by
+    the caller (a renamed/added/removed choice still fails), only the
+    quote-or-not rendering -- which CPython has flipped more than once
+    within a single 3.14 patch series -- is discarded.
     """
 
     def _sub(match: re.Match[str]) -> str:
@@ -657,18 +645,15 @@ def capture_machine() -> list[dict[str, Any]]:
     return cases
 
 
-# ── Fresh-process import-laziness trace ──────────────────────────────────────
-
-# Self-contained subprocess payload: import only the named seed via the
-# registry's own `load_cli_command`, then report which *other* seeds' modules
-# leaked in, whether the HTTP registry got realized as a side effect, and
-# which seed(s) ended up in `_cli_realized`. Comparing against
-# `{s.module for s in iter_cli_seeds() if s.module != seed.module}` handles
-# shared modules (studio/schedule -> lionagi.studio.cli;
-# handshake/runs/lifecycle -> lionagi.cli.machine) for free: a shared
-# module's string is removed from the "other" set together with the selected
-# seed's own module, so loading `studio` never flags `lionagi.studio.cli`
-# even though `schedule` also maps to it.
+# Fresh-process import-laziness trace: self-contained subprocess payload that
+# imports only the named seed via `load_cli_command`, then reports which
+# *other* seeds' modules leaked in, whether the HTTP registry got realized as
+# a side effect, and which seed(s) ended up in `_cli_realized`. Comparing
+# against modules belonging to seeds other than this one's own handles
+# shared modules for free (e.g. studio/schedule both map to
+# lionagi.studio.cli): a shared module is excluded from "other" together
+# with the selected seed's own module, so loading `studio` never flags
+# `lionagi.studio.cli` even though `schedule` also uses it.
 _IMPORT_TRACE_SCRIPT = (
     "import sys, json\n"
     "from lionagi._auto import load_cli_command, seed_for, iter_cli_seeds, _http, _cli_realized\n"
@@ -736,15 +721,13 @@ _COMPAT_TRACE_SCRIPT = (
 
 def _run_compat_trace(module_name: str, timeout: float = 20.0) -> dict[str, Any]:
     """Import *module_name* alone in a fresh subprocess and report its public
-    ``dir()``. A compat module's own ``__init__.py`` declares its intended
-    re-exports, but Python also binds any submodule onto its parent package's
-    namespace the moment *anything* imports that submodule dotted-path --
-    including unrelated code elsewhere in the process (e.g. a lazy import
-    inside a different module). In-process capture would pick up whichever of
-    those happened to run first in this pytest worker, making the result
-    depend on suite composition rather than the compat module's own surface.
-    A fresh subprocess with a declared import set (only *module_name* itself)
-    removes that dependency."""
+    ``dir()``. Python binds any submodule onto its parent package's
+    namespace the moment *anything* imports that dotted path, including
+    unrelated code elsewhere in the process -- so in-process capture would
+    pick up whichever import happened to run first in this pytest worker,
+    making the result depend on suite composition rather than the compat
+    module's own surface. A fresh subprocess with a declared import set
+    (only *module_name* itself) removes that dependency."""
     proc = subprocess.run(
         [sys.executable, "-c", _COMPAT_TRACE_SCRIPT, module_name],
         cwd=REPO_ROOT,

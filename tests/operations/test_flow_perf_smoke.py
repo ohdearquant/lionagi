@@ -3,50 +3,41 @@
 
 """Coarse perf smoke gate on the flow executor's per-node scheduling tax.
 
-REGRESSION CLASS this guards against: the executor's per-node scheduling
-overhead (the fixed cost of driving one graph node through dependency
-tracking, predecessor lookup, and edge-condition checks, independent of the
-model call itself) is invisible in normal test runs because every unit test
-uses small graphs. A regression here only shows up once an orchestration run
-with hundreds or thousands of nodes gets noticeably slower in production. A
-recent optimization pass (adjacency edge lookup, a predecessor cache, and an
-alcall fast path) roughly halved this per-node cost; nothing previously
-guarded the floor, so a future change (e.g. an accidental O(V*E)
-reintroduction in predecessor/edge-condition lookups) could silently undo
-that win.
+Regression class guarded: per-node scheduling overhead (dependency
+tracking, predecessor lookup, edge-condition checks — independent of the
+model call) is invisible in normal test runs since every unit test uses
+small graphs; a regression only surfaces once an orchestration run with
+hundreds/thousands of nodes gets noticeably slower in production. A prior
+optimization pass (adjacency edge lookup, a predecessor cache, an alcall
+fast path) roughly halved this cost; nothing previously guarded the floor,
+so e.g. an accidental O(V*E) reintroduction in predecessor/edge-condition
+lookups could silently undo that win.
 
-This is deliberately a CEILING ASSERT, not a benchmark or a percentage-based
-regression check: it drives a 1000-node linear chain and a 1000-node wide
-fan-out through ``Session.flow`` / ``DependencyAwareExecutor`` with a stubbed,
-near-instant ``Branch.chat`` (no network, no real model latency — isolates
-scheduling overhead from provider variance) and asserts each shape completes
-under a generous wall-clock ceiling. Hosted/shared-host CPU variance has been
-observed to exceed 20% on runs like this and has previously false-redded a
-CI perf gate on a diff that was provably unrelated to the hot path, which is
-exactly why this gate uses a wide ceiling tuned to catch an
-order-of-magnitude regression rather than tracking percentage drift.
+This is a ceiling assert, not a benchmark or percentage-based regression
+check: it drives a 1000-node linear chain and a 1000-node wide fan-out
+through ``Session.flow``/``DependencyAwareExecutor`` with a stubbed,
+near-instant ``Branch.chat`` (isolates scheduling overhead from provider
+variance) and asserts each shape completes under a generous wall-clock
+ceiling. Hosted/shared-host CPU variance has been observed to exceed 20% on
+runs like this and previously false-redded a CI perf gate on an unrelated
+diff — hence a wide ceiling tuned to catch an order-of-magnitude regression,
+not percentage drift. Construction reuses the same path production flows use
+(``OperationGraphBuilder`` -> ``Graph`` -> ``Session.flow``).
 
-Construction reuses the same path production flows use
-(``OperationGraphBuilder`` -> ``Graph`` -> ``Session.flow``, with a stubbed
-``Branch.chat``), the same approach used by this repo's flow-kernel
-micro-benchmark scripts.
+Ceiling provenance: local medians on this heavily loaded shared dev host
+(12 repeats/shape, stubbed chat, max_concurrent=50): linear ~5.8-7.0s median
+(worst 17.3s), fan-out ~3.1-3.2s median (worst 14.3s). A quiet,
+process-isolated run of the same code recorded linear=718ms / fanout=502ms.
+The ceilings below are ~10x the noisy local median, clearing both the quiet
+reference and every noisy sample observed here.
 
-Ceiling provenance: local medians measured on this (heavily loaded, shared)
-dev host across two independent runs (12 total repeats per shape, stubbed
-chat, max_concurrent=50): linear ~5.8-7.0s median (worst single sample
-17.3s), fan-out ~3.1-3.2s median (worst single sample 14.3s). A quiet,
-process-isolated measurement of this same post-optimization code recorded
-linear=718ms / fanout=502ms. The ceilings below are ~10x this host's noisy
-local median, which comfortably clears both that quiet-host reference and
-every noisy sample observed here.
-
-The wall-clock CEILING asserts run in the repository's dedicated performance
-lane (advisory, outside the required correctness suite) because they are
-timing-sensitive to shared-host CPU variance. The scheduling CORRECTNESS that
-those ceilings depend on — that the executor drives every node of a linear
-chain and a wide fan-out to COMPLETED — is asserted separately at a small,
-scale-independent size and runs in the required suite, so a scheduling
-regression that fails nodes is caught even when the timing lane is advisory.
+The wall-clock ceiling asserts run in the repository's dedicated
+performance lane (advisory, outside the required correctness suite) since
+they're timing-sensitive to shared-host variance. The scheduling
+correctness those ceilings depend on — every node of a linear chain and a
+wide fan-out reaches COMPLETED — is asserted separately at a small,
+scale-independent size in the required suite, so a scheduling regression
+that fails nodes is still caught when the timing lane is advisory.
 """
 
 from __future__ import annotations

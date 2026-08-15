@@ -30,9 +30,7 @@ async def _cancel_after_launch(*args, on_launched=None, **kwargs):
     raise asyncio.CancelledError()
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -79,9 +77,7 @@ def _make_svc() -> AsyncMock:
     return svc
 
 
-# ---------------------------------------------------------------------------
 # resolve_invocation_terminal tests (pure-logic, no DB)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -120,8 +116,8 @@ async def test_resolve_terminal_completed_empty_child_taints_invocation():
 @pytest.mark.asyncio
 async def test_resolve_terminal_nonterminal_child_not_trusted_as_completed():
     """A leader process exiting 0 is not evidence that a still-running child
-    session's own work finished (see #2535 -- the terminal stamp today comes
-    from the leader's stderr pipe closing, not from the work ending). A
+    session's own work finished (the terminal stamp today comes from the
+    leader's stderr pipe closing, not from the work ending). A
     child session that has not reached ANY terminal status must not be
     silently trusted via the fallback_status="completed" path -- it belongs
     on completed_empty (no positive evidence), the same bucket a
@@ -231,9 +227,7 @@ async def test_resolve_terminal_cancelled():
     assert status == "cancelled"
 
 
-# ---------------------------------------------------------------------------
 # SchedulerEngine._fire() — happy path (exit_code=0)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -945,9 +939,7 @@ async def test_fire_cancellation_schedule_run_cas_miss_does_not_skip_side_effect
     svc.count_schedule_runs.assert_awaited()
 
 
-# ---------------------------------------------------------------------------
 # Coordination telemetry: terminal-write races must not leak signal counters
-# ---------------------------------------------------------------------------
 
 
 def _lose_invocation_race(entity_type, entity_id, *, new_status, **kwargs):
@@ -1164,9 +1156,7 @@ async def test_fire_normal_completion_dispatches_signal_before_flush_pops_counte
     assert coordination["signals"]["emitted"] == {"ScheduleRunSucceeded": 1}
 
 
-# ---------------------------------------------------------------------------
 # SchedulerEngine.fire_now() — delegates through service
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1196,9 +1186,7 @@ async def test_fire_now_returns_none_when_schedule_missing():
     assert run_id is None
 
 
-# ---------------------------------------------------------------------------
 # _maybe_fire() tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1237,9 +1225,7 @@ async def test_maybe_fire_fires_when_no_overlap():
     mock_tracked.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # create_skipped_run helper
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1265,9 +1251,7 @@ async def test_create_skipped_run_calls_svc_create_and_update_status():
     assert call.kwargs["new_status"] == "skipped"
 
 
-# ---------------------------------------------------------------------------
 # SchedulerEngine construction — default vs injected service
-# ---------------------------------------------------------------------------
 
 
 def test_engine_uses_default_svc_when_none_provided():
@@ -1286,11 +1270,9 @@ def test_engine_uses_injected_svc():
     assert engine._svc is svc
 
 
-# ---------------------------------------------------------------------------
 # Cron timezone resolution — the P1 fix: cron_expr is resolved in the
 # configured timezone (default: system local), not UTC. next_fire_at is
 # still stored as a UTC epoch.
-# ---------------------------------------------------------------------------
 
 
 def test_compute_next_fire_uses_configured_timezone(monkeypatch):
@@ -1411,10 +1393,8 @@ def test_compute_next_fire_cron_null_resolved_timezone_uses_scheduler_tz(monkeyp
     assert got_utc == datetime(2026, 7, 2, 22, 0, 0, tzinfo=timezone.utc)
 
 
-# ---------------------------------------------------------------------------
 # 'at' trigger — fire-once semantics (no next occurrence to compute; the
 # fired row's next_fire_at must be explicitly cleared, not left in place).
-# ---------------------------------------------------------------------------
 
 
 def test_compute_next_fire_at_trigger_returns_none():
@@ -1588,11 +1568,9 @@ async def test_maybe_fire_at_trigger_already_fired_refused_by_max_runs_gate():
     svc.update_schedule.assert_awaited_once_with("sched-001", enabled=0)
 
 
-# ---------------------------------------------------------------------------
 # recompute_next_fire — shared recompute+log path for daemon start, PATCH,
 # and disable->enable (services/schedules.py hooks it too; see
 # tests/studio/test_schedule_tz_recompute.py for those integration paths).
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -2187,7 +2165,7 @@ async def test_check_missed_fires_excludes_github_poll(monkeypatch):
 async def test_tick_does_not_await_worker_pass_before_evaluating_schedules(monkeypatch, tmp_path):
     """_tick() must not await the ad-hoc task-worker pass before loading and
     evaluating due schedules -- a hung/slow worker pass would otherwise defer
-    every schedule's evaluation for the whole pass (see #2750). The worker
+    every schedule's evaluation for the whole pass. The worker
     pass here never completes; _tick() must still return promptly and fire
     the due schedule in the same cycle."""
     import lionagi.state.db as state_db_mod
@@ -2256,8 +2234,7 @@ async def test_tick_does_not_await_worker_pass_before_evaluating_schedules(monke
 @pytest.mark.asyncio
 async def test_tick_worker_pass_is_single_flight(monkeypatch, tmp_path):
     """A second _tick() must not start a second worker-pass task while the
-    first is still running -- single-flight, not an unguarded task per tick
-    (see #2750's fix-shape constraint)."""
+    first is still running -- single-flight, not an unguarded task per tick."""
     import lionagi.state.db as state_db_mod
     import lionagi.studio.scheduler.engine as engine_mod
     from lionagi.studio.scheduler.engine import SchedulerEngine
@@ -2303,9 +2280,7 @@ async def test_tick_worker_pass_is_single_flight(monkeypatch, tmp_path):
         await asyncio.wait_for(engine._worker_task, timeout=2.0)
 
 
-# ---------------------------------------------------------------------------
 # max_runs / one-shot semantics
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -2566,9 +2541,7 @@ async def test_max_runs_build_argv_exception_still_checked():
     assert disable_calls
 
 
-# ---------------------------------------------------------------------------
 # max_runs enforcement BEFORE firing (pre-flight reservation), not just after
-# ---------------------------------------------------------------------------
 
 
 class _StatefulSvc:
@@ -2769,8 +2742,8 @@ async def test_max_runs_claim_released_on_pre_run_failure_allows_retry():
     """A max_runs claim must not leak when the fire fails before a terminal
     schedule_run is ever recorded (e.g. create_invocation() raising).
 
-    Reproduces the round-2 finding: reserve the budget, let create_invocation
-    blow up once, confirm the claim is released (not stuck inflight with zero
+    Reserves the budget, lets create_invocation
+    blow up once, confirms the claim is released (not stuck inflight with zero
     terminal runs), then confirm a retry fire succeeds and the schedule
     completes exactly max_runs times total — not zero (stuck) and not more
     than max_runs (double-fired)."""
@@ -2813,22 +2786,13 @@ async def test_max_runs_claim_released_on_pre_run_failure_allows_retry():
 
 @pytest.mark.asyncio
 async def test_max_runs_reservation_snapshots_inflight_before_stale_count_read():
-    """Pins the round-3 finding: a concurrent reserve must not overshoot
-    max_runs by combining a stale persisted count with an already-released
-    in-flight claim.
-
-    Forces the exact interleaving the reviewer's reproducer exploited:
-    fire A holds a claim (in-flight, not yet terminal). Reserve B starts its
-    admission check and its count_schedule_runs() read is suspended
-    mid-flight. While B is suspended, A completes: its terminal run is
-    recorded AND its claim is released — both entirely inside B's await
-    window. B's count() then resumes and returns the count as it was
-    when the read started (stale — before A's write), simulating a real
-    DB read that began before the write landed. If _reserve_max_runs_budget
-    read `inflight` only after this await (the round-2 shape), it would see
-    inflight=0 (already released) + used=0 (stale) and incorrectly admit a
-    second top-level fire for max_runs=1. Reading `inflight` before the
-    await (the round-3 fix) must still see A's claim and refuse B."""
+    """A concurrent reserve must not overshoot max_runs by combining a stale
+    persisted count with an already-released in-flight claim. Forces fire A
+    to complete (recording its run and releasing its claim) entirely inside
+    the window where B's own count_schedule_runs() read is suspended, so B's
+    read comes back stale. See docs/internals/studio.md's
+    scheduler/engine.py section (`_reserve_max_runs_budget`) for why reading
+    `inflight` before that await is what keeps this safe."""
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
     svc = _StatefulSvc()
@@ -2878,9 +2842,7 @@ async def test_max_runs_reservation_snapshots_inflight_before_stale_count_read()
     assert await real_count("sched-once", chain_depth=0) == 1
 
 
-# ---------------------------------------------------------------------------
 # _fire() — action_kind='command'
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -2962,9 +2924,7 @@ async def test_fire_command_kind_nonzero_exit_records_failed_status():
     assert failed_calls, "Expected update_status('schedule_run', ..., new_status='failed')"
 
 
-# ---------------------------------------------------------------------------
 # error_detail on the broad-except handler (real StateDB)
-# ---------------------------------------------------------------------------
 
 
 class _DbSvc:

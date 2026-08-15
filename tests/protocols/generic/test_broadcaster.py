@@ -9,9 +9,7 @@ import pytest
 
 from lionagi.service.broadcaster import Broadcaster
 
-# ---------------------------------------------------------------------------
 # Helpers -- fresh event/broadcaster types per test to avoid cross-pollution
-# ---------------------------------------------------------------------------
 
 
 def _make_broadcaster():
@@ -27,9 +25,7 @@ def _make_broadcaster():
     return _Evt, _Bcst
 
 
-# ---------------------------------------------------------------------------
 # Subclass / _event_type
-# ---------------------------------------------------------------------------
 
 
 class TestSubclass:
@@ -40,9 +36,7 @@ class TestSubclass:
         assert Bcst._event_type is Evt
 
 
-# ---------------------------------------------------------------------------
 # subscribe
-# ---------------------------------------------------------------------------
 
 
 class TestSubscribe:
@@ -68,9 +62,7 @@ class TestSubscribe:
         assert Bcst.get_subscriber_count() == 1
 
 
-# ---------------------------------------------------------------------------
 # unsubscribe
-# ---------------------------------------------------------------------------
 
 
 class TestUnsubscribe:
@@ -96,9 +88,7 @@ class TestUnsubscribe:
         assert Bcst.get_subscriber_count() == 0
 
 
-# ---------------------------------------------------------------------------
 # broadcast -- sync subscribers
-# ---------------------------------------------------------------------------
 
 
 class TestBroadcastSync:
@@ -132,9 +122,7 @@ class TestBroadcastSync:
         assert results_b == ["hi"]
 
 
-# ---------------------------------------------------------------------------
 # broadcast -- async subscribers
-# ---------------------------------------------------------------------------
 
 
 class TestBroadcastAsync:
@@ -168,9 +156,7 @@ class TestBroadcastAsync:
         assert async_results == ["mix"]
 
 
-# ---------------------------------------------------------------------------
 # broadcast -- wrong event type
-# ---------------------------------------------------------------------------
 
 
 class TestBroadcastWrongType:
@@ -187,9 +173,7 @@ class TestBroadcastWrongType:
             await Bcst.broadcast(OtherEvent())
 
 
-# ---------------------------------------------------------------------------
 # broadcast -- exception suppression
-# ---------------------------------------------------------------------------
 
 
 class TestBroadcastExceptionSuppression:
@@ -213,9 +197,7 @@ class TestBroadcastExceptionSuppression:
         assert after_error == ["ok"]
 
 
-# ---------------------------------------------------------------------------
 # get_subscriber_count
-# ---------------------------------------------------------------------------
 
 
 class TestGetSubscriberCount:
@@ -248,9 +230,7 @@ class TestGetSubscriberCount:
         assert Bcst.get_subscriber_count() == 0
 
 
-# ---------------------------------------------------------------------------
 # weakref cleanup
-# ---------------------------------------------------------------------------
 
 
 class TestWeakrefCleanup:
@@ -273,9 +253,7 @@ class TestWeakrefCleanup:
         assert Bcst.get_subscriber_count() == 0
 
 
-# ---------------------------------------------------------------------------
 # Subclass isolation
-# ---------------------------------------------------------------------------
 
 
 class TestSubclassIsolation:
@@ -312,9 +290,7 @@ class TestSubclassIsolation:
         assert BcstB.get_subscriber_count() == 1
 
 
-# ---------------------------------------------------------------------------
 # Singleton pattern per subclass
-# ---------------------------------------------------------------------------
 
 
 class TestSingleton:

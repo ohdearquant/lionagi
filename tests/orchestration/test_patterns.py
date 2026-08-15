@@ -123,6 +123,39 @@ class TestRoleNodeBuilder:
         ]
         assert any("SPAWN REJECTED" in line and "missing" in line for line in emitted)
 
+    def test_spawn_refused_by_capacity_is_visible_as_degraded_evidence(self, monkeypatch):
+        """A cap refusal is requested work the executor did not perform.
+
+        It must not be folded into the builder-error failure path, but it must
+        leave structured evidence for the run's status/terminal reason rather
+        than surviving only as the executor's warning line.
+        """
+        from lionagi.cli.orchestrate import flow as flow_mod
+
+        emitted: list[str] = []
+        env = SimpleNamespace()
+        dropped = [
+            {
+                "reason": "max_spawn_exceeded",
+                "assignee": "reviewer",
+                "emitter_id": "parent-op",
+                "op_id": "refused-child",
+            }
+        ]
+        monkeypatch.setattr(flow_mod, "progress", emitted.append)
+
+        flow_mod._surface_dropped_spawns(env, dropped)
+
+        assert env._spawn_refusal_evidence == [
+            {
+                "kind": "refused_spawn",
+                "id": "parent-op",
+                "label": "reviewer (max_spawn_exceeded)",
+            }
+        ]
+        assert not getattr(env, "_failed_operation_evidence", None)
+        assert any("SPAWN REFUSED" in line and "parent-op" in line for line in emitted)
+
     def test_custom_operation_preserved(self):
         session, roles = _roles("researcher")
         nb = role_node_builder(roles)

@@ -1,16 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0071 D1 slice 2: the task-application submit surface.
+"""ADR-0071: the task-application submit surface.
 
-Covers submit_task's round-trip write, the CAS-governed queued -> cancelled
-cancel path, and rejection of a malformed TaskApplication. The transition
-vocabulary's negative-boundary tests (queued -> running is now allowed by
-D3; terminal re-entry is rejected) live in test_task_worker.py alongside the
-worker that exercises the queued -> running edge. ADR-0071 D3's
-submit-time AdmissionRejectedError pre-check (duration guard, waiter cap) is
-covered in the final section; the authoritative claim-time admit() gate is
-covered in test_admit.py and test_worker_admission.py.
+The transition vocabulary's negative-boundary tests (queued -> running is
+allowed; terminal re-entry is rejected) live in test_task_worker.py
+alongside the worker that exercises the queued -> running edge. The
+authoritative claim-time admit() gate is covered in test_admit.py and
+test_worker_admission.py.
 """
 
 from __future__ import annotations
@@ -43,7 +40,7 @@ def _actor() -> Actor:
     return Actor(type="operator", id="test")
 
 
-# ── 1. Submit round-trip ─────────────────────────────────────────────────
+# Submit round-trip
 
 
 async def test_submit_task_writes_queued_row_with_every_field(db: StateDB) -> None:
@@ -118,7 +115,7 @@ async def test_submit_task_eligibility_only_capabilities_no_concurrency_key(db: 
     assert row["concurrency_key"] is None
 
 
-# ── 2. CAS-governed queued -> cancelled ──────────────────────────────────
+# CAS-governed queued -> cancelled
 
 
 async def test_cancel_task_succeeds_via_transition_store(db: StateDB) -> None:
@@ -152,7 +149,7 @@ async def test_cancel_task_twice_is_not_applied_second_time(db: StateDB) -> None
     assert await cancel_task(db, run_id, actor=_actor()) is False
 
 
-# ── 3. Rejection paths ───────────────────────────────────────────────────
+# Rejection paths
 
 
 async def test_submit_task_rejects_unknown_action_kind(db: StateDB) -> None:
@@ -209,7 +206,7 @@ async def test_submit_task_rejects_idempotency_key_until_dedup_exists(db: StateD
     assert row["n"] == 0
 
 
-# ── 4. ADR-0071 D3: submit-time AdmissionRejectedError pre-check ──────────
+# ADR-0071 D3: submit-time AdmissionRejectedError pre-check
 
 
 async def test_submit_task_rejects_duration_at_or_above_lease_ttl(db: StateDB) -> None:

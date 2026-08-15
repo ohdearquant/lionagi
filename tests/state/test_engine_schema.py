@@ -21,7 +21,7 @@ from lionagi.state.engine import (
 )
 from lionagi.state.schema_meta import metadata
 
-# ── normalize_state_db_url ────────────────────────────────────────────────────
+# normalize_state_db_url
 
 
 def test_normalize_none_returns_sqlite_default():
@@ -82,7 +82,7 @@ def test_normalize_postgresql_asyncpg_already_qualified():
     assert normalize_state_db_url(original) == original
 
 
-# ── mask_db_url ───────────────────────────────────────────────────────────────
+# mask_db_url
 
 
 def test_mask_no_password():
@@ -114,7 +114,7 @@ def test_mask_short_password():
     assert "[3 chars]" in masked
 
 
-# ── dialect_of ────────────────────────────────────────────────────────────────
+# dialect_of
 
 
 def test_dialect_sqlite():
@@ -127,7 +127,7 @@ def test_dialect_postgresql():
     assert dialect_of("postgres://host/db") == "postgresql"
 
 
-# ── make_engine (SQLite only — sync verification) ────────────────────────────
+# make_engine (SQLite only — sync verification)
 
 
 def test_make_engine_sqlite_creates_engine():
@@ -141,7 +141,7 @@ def test_make_engine_sqlite_creates_engine():
     asyncio.run(engine.dispose())
 
 
-# ── make_readonly_engine ──────────────────────────────────────────────────────
+# make_readonly_engine
 
 
 def test_make_readonly_engine_rejects_postgres():
@@ -187,7 +187,7 @@ async def test_make_readonly_engine_rejects_writes(tmp_path):
         await ro_engine.dispose()
 
 
-# ── Schema-parity: MetaData vs schema.sql (SQLite leg, always runs) ──────────
+# Schema-parity: MetaData vs schema.sql (SQLite leg, always runs)
 
 ALL_TABLES = {
     "schema_meta",
@@ -512,7 +512,7 @@ async def test_metadata_unique_enforcement_present(sqlite_meta_engine):
         assert key in found, f"missing unique enforcement: {key}; found={found}"
 
 
-# ── Postgres leg (pg_url fixture: testcontainers, or LIONAGI_TEST_PG_URL) ─────
+# Postgres leg (pg_url fixture: testcontainers, or LIONAGI_TEST_PG_URL)
 
 
 async def test_metadata_create_all_postgres(pg_url):
@@ -554,7 +554,7 @@ def _create_in_schema(sync_conn, schema_name: str) -> None:
     scoped.create_all(sync_conn, checkfirst=True)
 
 
-# ── WAL-reset precondition ────────────────────────────────────────────────────
+# WAL-reset precondition
 
 
 @pytest.mark.parametrize(

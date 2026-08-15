@@ -20,6 +20,8 @@ export interface FleetFilters {
   project?: string;
   projectNull?: boolean;
   search?: string;
+  /** Orchestration-kind facet: agent | play | flow | fanout | show. */
+  kind?: string;
 }
 
 export function useFleet(filters?: FleetFilters): FleetState {
@@ -30,6 +32,7 @@ export function useFleet(filters?: FleetFilters): FleetState {
   const project = filters?.project;
   const projectNull = filters?.projectNull ?? false;
   const search = filters?.search;
+  const kind = filters?.kind;
 
   useEffect(() => {
     let active = true;
@@ -75,7 +78,13 @@ export function useFleet(filters?: FleetFilters): FleetState {
         const nowSec = Math.floor(Date.now() / 1000);
         const [invsResp, runsResp] = await Promise.all([
           listInvocations({ limit: 200 }),
-          listRuns({ per_page: 200, project, project_null: projectNull, search }),
+          listRuns({
+            per_page: 200,
+            project,
+            project_null: projectNull,
+            search,
+            kind: kind ? [kind] : undefined,
+          }),
         ]);
         if (!active) return;
 
@@ -94,6 +103,7 @@ export function useFleet(filters?: FleetFilters): FleetState {
             project,
             projectNull,
             search,
+            kind,
           });
         }
       } catch (err) {
@@ -123,7 +133,7 @@ export function useFleet(filters?: FleetFilters): FleetState {
     // Changing a filter restarts polling immediately (via the effect's own
     // teardown/setup) rather than waiting up to POLL_INTERVAL_MS for the next
     // tick to pick up the new scope.
-  }, [project, projectNull, search]);
+  }, [project, projectNull, search, kind]);
 
   return state;
 }
