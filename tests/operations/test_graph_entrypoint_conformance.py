@@ -3988,7 +3988,13 @@ async def test_synthesize_calls_execution_engine_with_builder_graph(tmp_path):
         model_spec="codex/gpt-5.5",
     )
 
-    run_dag_spy.assert_awaited_once_with(env.builder.get_graph(), verbose=False)
+    run_dag_spy.assert_awaited_once_with(
+        env.builder.get_graph(),
+        verbose=False,
+        # The synthesis node is the only node in this graph, so there is no
+        # earlier pass whose finished nodes have to be kept out of the signals.
+        skip_signal_ops=set(),
+    )
     passed_graph = run_dag_spy.call_args.args[0]
     assert passed_graph.nodes == env.builder._nodes
     assert len(passed_graph.nodes) == 1
