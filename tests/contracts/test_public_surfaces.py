@@ -314,6 +314,29 @@ def test_mcp_catalog_matches_baseline():
     assert live["catalog"] == expected["catalog"]
 
 
+def test_mcp_catalog_entry_shapes_are_locked_by_hand():
+    """Second, independent lock on the shape of a catalog entry.
+
+    Every caller reads this listing, so a field added to or dropped from all 70
+    entries changes what the whole surface says while leaving verb names and
+    counts identical. Hand-typed rather than derived from the JSON, so the
+    baseline and this test have to be wrong the same way to pass together.
+    """
+    live = _capture.capture_mcp()
+    shapes = {tuple(keys): count for keys, count in live["catalog"]["entry_key_sets"]}
+    assert sum(shapes.values()) == 70
+    # a deliberately unavailable verb says so and routes the caller; its reason
+    # is one targeted help call away rather than in every read of the listing
+    assert shapes[("available", "cli_path", "summary", "verb")] == 26
+    # a runnable verb with no required parameters carries neither key
+    assert shapes[("summary", "verb")] == 16
+    # No shape pairs cli_path with an inline reason. A verb whose schema failed
+    # to build is the one entry that does carry a reason inline, and it has no
+    # cli_path — that path reports a defect in this server and must stay
+    # readable without a second call, so it is not asserted away here.
+    assert not any("cli_path" in keys and "reason" in keys for keys in shapes)
+
+
 def test_mcp_projections_match_baseline():
     expected = _load("mcp")
     live = _capture.capture_mcp()

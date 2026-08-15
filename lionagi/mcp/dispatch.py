@@ -135,13 +135,24 @@ def catalog() -> dict[str, Any]:
     nothing extra). Where the schema depends on an argument, no fingerprint is
     quoted — it would never match — and the entry instead names the parameter
     it varies with.
+
+    Every caller pays for this listing, so an entry states only what it cannot
+    be read without. ``available`` and ``required`` are omitted at their
+    defaults, and an unavailable verb names the ``cli_path`` that does run it
+    rather than repeating the paragraph on why it is not served here — that
+    paragraph is what ``help='<verb>'`` returns. A verb whose schema failed to
+    build is the exception and keeps its reason inline: it reports a defect in
+    this server rather than a deliberate exclusion, and it must not need a
+    second call to be noticed.
     """
     entries: list[dict[str, Any]] = []
     for verb in VERBS.values():
-        entry: dict[str, Any] = {"verb": verb.name, "available": True, "summary": verb.summary}
+        entry: dict[str, Any] = {"verb": verb.name, "summary": verb.summary}
         try:
             schema = verb_schema(verb)
-            entry["required"] = list(schema.get("required", []))
+            required = list(schema.get("required", []))
+            if required:
+                entry["required"] = required
             unenforced = list(schema.get("x-required-unenforced", []))
             if unenforced:
                 entry["required_unenforced"] = unenforced
@@ -157,26 +168,27 @@ def catalog() -> dict[str, Any]:
                 "verb": absent.name,
                 "available": False,
                 "summary": absent.summary,
-                "reason": absent.reason,
+                "cli_path": absent.cli_path,
             }
         )
-    available = [e for e in entries if e["available"]]
+    available = [e for e in entries if e.get("available", True)]
     return {
         "verbs": entries,
         "verb_count": len(entries),
         "available_count": len(available),
         "max_ops": MAX_OPS,
         "help_usage": (
-            "help=true returns this catalog; help='<verb>' returns that verb's full "
-            "parameter schema; help={'verb': '<verb>', 'playbook': '<name>'} resolves a "
-            "playbook's own declared arguments into the schema. An entry carrying a "
-            "schema_fingerprint names a verb whose ops must repeat it: "
-            "{'op': 'agent.submit', 'args': {...}, 'schema_fingerprint': '<from this entry>'}. "
-            "An entry carrying schema_fingerprint_varies_with names the parameters that "
-            "change the schema: pass one of them and the fingerprint to send is the one "
-            "help returns for that spelling, not the one quoted here. "
-            "required_unenforced names parameters the parser will not refuse a call for "
-            "omitting but the command cannot do its work without."
+            "help='<verb>' returns that verb's full parameter schema, and for an "
+            "unavailable one the reason it is not served here. "
+            "help={'verb': '<verb>', 'playbook': '<name>'} resolves a playbook's own "
+            "declared arguments into the schema. An entry omits 'available' and "
+            "'required' when they are true and empty. A schema_fingerprint must be "
+            "repeated on that verb's ops as a sibling of 'args': "
+            "{'op': 'agent.submit', 'args': {...}, 'schema_fingerprint': '<from this entry>'}; "
+            "where the entry carries schema_fingerprint_varies_with instead, pass one of "
+            "the parameters it names to help and send the fingerprint returned for that "
+            "spelling. required_unenforced names parameters the parser will not refuse a "
+            "call for omitting but the command cannot do its work without."
         ),
         "synonyms_removed_after": SYNONYM_REMOVAL_DATE,
     }

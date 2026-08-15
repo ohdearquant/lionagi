@@ -156,7 +156,8 @@ def test_a_catalog_built_call_to_an_ordinary_read_verb_succeeds(tmp_path) -> Non
         client.initialize()
         catalog = client.request(help=True)
         entry = _entry(catalog, "job.list")
-        assert entry["required"] == []
+        # no required parameters is spelled by omitting the key
+        assert entry.get("required", []) == []
         assert "schema_fingerprint" not in entry
         result = client.op("job.list", {})
 
