@@ -29,7 +29,7 @@ import {
   listMcpServers,
 } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
-import type { EngineDef } from "@/lib/api";
+import type { CreatedWorkflowDef, EngineDef } from "@/lib/api";
 
 // Kinds with no creation flow at all — the toolbar's "+ New" button and the
 // empty-state's create CTA are both meaningless here (skills come from
@@ -354,6 +354,7 @@ function LibraryPage() {
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
 
   // Collapsed split-pane: show detail when a selection exists or create is open.
   const [detailActive, setDetailActive] = useState(false);
@@ -395,14 +396,21 @@ function LibraryPage() {
     // in `filtered`, so it falls through to select-first.
     if (sel) {
       const parsed = parseSel(sel);
+      const isOptimisticWorkflow =
+        parsed?.kind === "workflow" && optimisticWorkflow?.name === parsed.name;
+      const isHiddenWorkflow =
+        parsed?.kind === "workflow" &&
+        items.some((item) => item.kind === "workflow" && item.name === parsed.name);
       if (
-        parsed &&
-        filtered.some(
-          (i) =>
-            i.kind === parsed.kind &&
-            i.name === parsed.name &&
-            (parsed.kind !== "playbook" || i.subKind === parsed.subKind),
-        )
+        isOptimisticWorkflow ||
+        isHiddenWorkflow ||
+        (parsed &&
+          filtered.some(
+            (i) =>
+              i.kind === parsed.kind &&
+              i.name === parsed.name &&
+              (parsed.kind !== "playbook" || i.subKind === parsed.subKind),
+          ))
       ) {
         return;
       }
@@ -457,7 +465,8 @@ function LibraryPage() {
 
   const selectedWorkflowId =
     parsed?.kind === "workflow"
-      ? (items.find((i) => i.kind === "workflow" && i.name === parsed.name)?.meta ?? parsed.name)
+      ? (items.find((i) => i.kind === "workflow" && i.name === parsed.name)?.meta ??
+        (optimisticWorkflow?.name === parsed.name ? optimisticWorkflow.id : null))
       : null;
 
   const isEmpty = !loading && filtered.length === 0;
@@ -689,11 +698,12 @@ function LibraryPage() {
     detailPane = (
       <div className="flex h-full flex-col overflow-hidden">
         <CreateWorkflowPanel
-          onCreated={(name) => {
+          onCreated={(workflow) => {
+            setOptimisticWorkflow(workflow);
             setShowCreate(false);
             void reload();
             void navigate({
-              search: (prev) => ({ ...prev, sel: encodeSel("workflow", name) }),
+              search: (prev) => ({ ...prev, sel: encodeSel("workflow", workflow.name) }),
               replace: false,
             });
           }}
