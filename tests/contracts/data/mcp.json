@@ -198,6 +198,61 @@
       "team.receive",
       "team.send",
       "team.show"
+    ],
+    "entry_key_sets": [
+      [
+        [
+          "available",
+          "cli_path",
+          "summary",
+          "verb"
+        ],
+        26
+      ],
+      [
+        [
+          "required",
+          "required_unenforced",
+          "schema_fingerprint_varies_with",
+          "summary",
+          "verb"
+        ],
+        1
+      ],
+      [
+        [
+          "required",
+          "summary",
+          "verb"
+        ],
+        24
+      ],
+      [
+        [
+          "required_unenforced",
+          "schema_fingerprint",
+          "schema_fingerprint_varies_with",
+          "summary",
+          "verb"
+        ],
+        1
+      ],
+      [
+        [
+          "required_unenforced",
+          "schema_fingerprint",
+          "summary",
+          "verb"
+        ],
+        2
+      ],
+      [
+        [
+          "summary",
+          "verb"
+        ],
+        16
+      ]
     ]
   },
   "projections": {

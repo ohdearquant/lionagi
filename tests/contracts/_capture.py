@@ -21,6 +21,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -604,7 +605,24 @@ def capture_mcp() -> dict[str, Any]:
             "available_count": catalog["available_count"],
             "max_ops": catalog["max_ops"],
             "verb_names": sorted(v["verb"] for v in catalog["verbs"]),
-            "available_verb_names": sorted(v["verb"] for v in catalog["verbs"] if v["available"]),
+            # the catalog omits `available` at its default, so absence means available
+            "available_verb_names": sorted(
+                v["verb"] for v in catalog["verbs"] if v.get("available", True)
+            ),
+            # Which keys an entry carries is the contract every caller reads, and
+            # names and counts alone are blind to it: fields can be added to or
+            # dropped from all 70 entries without moving anything above. Held as
+            # the distinct key sets with their frequency, so the baseline moves on
+            # a shape change without carrying a row per verb.
+            # lists rather than tuples: this is compared against the JSON
+            # baseline, which has no tuple to round-trip back to
+            "entry_key_sets": [
+                [sorted(shape), count]
+                for shape, count in sorted(
+                    Counter(frozenset(v) for v in catalog["verbs"]).items(),
+                    key=lambda kv: sorted(kv[0]),
+                )
+            ],
         },
         "projections": projections,
         "projection_count": len(projections),
