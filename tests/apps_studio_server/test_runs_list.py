@@ -173,6 +173,18 @@ async def test_list_runs_offloads_process_snapshot(tmp_path, monkeypatch):
     assert snapshot_threads[0] != event_loop_thread
 
 
+@pytest.mark.parametrize("unknown_name", ["limit", "worker"])
+def test_runs_list_rejects_unknown_query_parameters(tmp_path, monkeypatch, unknown_name):
+    db_path = tmp_path / "state.db"
+    client = _make_client(tmp_path, monkeypatch, db_path)
+
+    response = client.get("/api/runs", params={unknown_name: "200"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", unknown_name]
+    assert response.json()["detail"][0]["type"] == "extra_forbidden"
+
+
 # GET /api/runs/projects — per-project counts for the lazy runs explorer
 
 

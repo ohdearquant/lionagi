@@ -515,7 +515,10 @@ Code anchors: `lionagi/state/health.py`; `lionagi/state/staleness.py`.
 **Exact semantics.**
 
 - Terminal execution statuses classify `zombie` only when stale locks remain; otherwise they are
-  `healthy`. Artifact presence alone never makes a terminal session a zombie.
+  `healthy`. Here `healthy` means process/resources are clean, never that execution succeeded.
+  Artifact presence alone never makes a terminal session a zombie. Studio's run projection exposes
+  this classifier as `effective_health` only while `status=running`; it returns `null` after any
+  terminal status, whose outcome is carried by `status` and its reason fields.
 - A null or absent status is treated as completed and therefore follows the terminal branch.
 - Activity time is the first truthy value of `last_message_at`, `updated_at`, `started_at`, then 0.
 - For a running session with no confirmed live process, no artifacts, and zero messages,

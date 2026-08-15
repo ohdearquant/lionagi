@@ -1872,16 +1872,33 @@ class SchedulerEngine:
             breach["spend_is_partial"] = True
         return breach
 
-    async def _advance_next_fire_only(self, schedule: dict, now: float) -> None:
-        """Advance next_fire_at without firing the schedule's action.
+    async def _record_evaluation_without_firing(self, schedule: dict, now: float) -> None:
+        """Record a completed evaluation and advance next_fire_at, firing nothing.
 
         Used by the threshold-alert paths in ``_maybe_fire`` where the
         cadence tick fires (so the metric is re-checked next time) but no
         breach (or an in-cooldown breach) means no action should spawn.
+        ``last_evaluated_at`` is evidence that the quiet detector itself is
+        alive; unlike ``next_fire_at``, it records completed work rather than
+        a future promise.
         """
         next_at = self._compute_next_fire(schedule, now)
+        fields: dict[str, float] = {"last_evaluated_at": now}
         if next_at:
-            await self._svc.update_schedule(schedule["id"], next_fire_at=next_at)
+            fields["next_fire_at"] = next_at
+        await self._svc.update_schedule(schedule["id"], **fields)
+
+    async def _mark_threshold_evaluated(self, schedule: dict, now: float) -> None:
+        """Stamp the liveness watermark for an evaluation that found a breach.
+
+        The evaluation is complete the moment the metric has been read; what
+        happens next -- overlap skip, budget, rate limit, max_runs, a full
+        global slot, or an actual fire -- decides whether to *act*, not
+        whether the detector ran. Stamping here rather than inside each of
+        those outcomes is what keeps a suppressed breach from reading as a
+        detector that never evaluated.
+        """
+        await self._svc.update_schedule(schedule["id"], last_evaluated_at=now)
 
     async def _maybe_fire(self, schedule: dict, now: float) -> None:
         threshold_extra: dict[str, Any] | None = None
@@ -1889,7 +1906,7 @@ class SchedulerEngine:
         if schedule.get("threshold_config"):
             breach = await self._evaluate_threshold_breach(schedule, now)
             if breach is None:
-                await self._advance_next_fire_only(schedule, now)
+                await self._record_evaluation_without_firing(schedule, now)
                 return
             # Cooldown: suppress refiring while still within the metric's
             # own window of the last alert, so a sustained breach doesn't
@@ -1906,7 +1923,7 @@ class SchedulerEngine:
             # synchronous -- no await in between -- so a second tick can't
             # slip in between the gate and the reservation becoming visible.
             if in_cooldown or sid in self._threshold_pending:
-                await self._advance_next_fire_only(schedule, now)
+                await self._record_evaluation_without_firing(schedule, now)
                 return
             self._threshold_pending.add(sid)
             threshold_claim = _ThresholdCooldownClaim(self, sid)
@@ -1926,6 +1943,17 @@ class SchedulerEngine:
         slot_claim: _GlobalSlotClaim | None = None
         handed_off = False
         try:
+            if threshold_extra is not None:
+                # Every remaining outcome -- overlap skip, budget, rate limit,
+                # max_runs, a full global slot, or the fire itself -- returns
+                # through a path of its own, so the watermark is stamped here,
+                # once, ahead of all of them. It sits inside the try because
+                # the cooldown reservation above is already held: a failure
+                # writing the watermark has to give that reservation back
+                # through the finally, or the alert stays muted until restart
+                # while the next tick keeps seeing a pending fire.
+                await self._mark_threshold_evaluated(schedule, now)
+
             if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
                 _log.debug("Skipping overlapping fire for %s", schedule["name"])
                 skipped_run_id = uuid.uuid4().hex[:12]

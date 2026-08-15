@@ -493,6 +493,10 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- (no refire until window_minutes has elapsed since the last alert).
   threshold_config    JSON,
   last_alert_at       REAL,
+  -- Detector-liveness watermark for threshold schedules. This advances
+  -- whenever the metric is evaluated, including the healthy no-breach path;
+  -- last_alert_at remains the most recent action-producing breach.
+  last_evaluated_at   REAL,
   -- Observer self-health (github_poll poller): last_healthy_poll_at is
   -- stamped on any 2xx/304 github_poll() read (including a healthy-empty
   -- one); poller_consecutive_401 counts consecutive 401s and resets only

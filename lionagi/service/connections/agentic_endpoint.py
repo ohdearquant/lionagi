@@ -14,7 +14,8 @@ class AgenticEndpoint(Endpoint):
 
     is_cli: ClassVar[bool] = True
 
-    # Early-first-chunk transports gate run.py's liveness watchdog (LIONAGI_WORKER_LIVENESS_TIMEOUT).
+    # Early-streaming transports gate run.py's default first-output and
+    # between-chunk liveness watchdogs.
     # See docs/internals/runtime.md.
     streams_first_output_early: ClassVar[bool] = False
 

@@ -323,8 +323,12 @@ not-terminal-yet and no-notifier-configured — silence is the documented
 default there, never a failure — and `delivered_unverified` is deliberately
 not collapsed into either neighbor (a zero exit from a command shape whose
 zero exit doesn't prove a send supports neither claim). `unknown` means the
-attempt began but the process ended before its final result could replace the
-write-ahead record; inspect or reconcile it rather than treating it as success.
+attempt began but its final result never replaced the write-ahead record —
+either the process ended first, or the delivery was stopped part-way for
+running past its deadline. A stopped delivery is not `failed`: a notifier can
+send the notice and then hang, and `failed` reads as an instruction to send it
+again. Inspect or reconcile an `unknown` rather than treating it as either
+success or a clean non-delivery.
 
 #### signal-leader-group-safety
 

@@ -95,7 +95,7 @@ class ProviderAdapterError(ProviderError):
 
 
 class WorkerLivenessError(ProviderError):
-    """Spawn/hang failure: no first-stream output within the liveness window across every retry, distinct from a classified content error."""
+    """Worker missed a first-output or between-chunk liveness window."""
 
     def __init__(
         self,

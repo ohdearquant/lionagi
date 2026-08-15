@@ -692,6 +692,7 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "id",
         "interval_sec",
         "last_alert_at",
+        "last_evaluated_at",
         "last_fired_at",
         "last_healthy_poll_at",
         "last_status",

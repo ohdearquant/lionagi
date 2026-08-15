@@ -77,7 +77,7 @@ def test_no_delivery_runs_when_the_template_needs_a_sender_and_none_was_given(
     rid = _job(monkeypatch, tmp_path)
     spawned: list = []
     monkeypatch.setattr(
-        _notify_hook.subprocess, "run", lambda *a, **k: spawned.append(a) or _Completed()
+        _notify_hook.subprocess, "Popen", lambda *a, **k: spawned.append(a) or _Completed()
     )
 
     rc = _notify_hook.main(
@@ -106,11 +106,11 @@ def test_a_template_that_needs_a_sender_delivers_when_one_is_given(monkeypatch, 
     rid = _job(monkeypatch, tmp_path)
     spawned: list = []
 
-    def fake_run(argv, **kw):
+    def fake_popen(argv, **kw):
         spawned.append(argv)
         return _Completed()
 
-    monkeypatch.setattr(_notify_hook.subprocess, "run", fake_run)
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
 
     rc = _notify_hook.main(
         [
@@ -137,11 +137,11 @@ def test_a_template_without_the_placeholder_is_unaffected_by_a_missing_sender(
     rid = _job(monkeypatch, tmp_path)
     spawned: list = []
 
-    def fake_run(argv, **kw):
+    def fake_popen(argv, **kw):
         spawned.append(argv)
         return _Completed()
 
-    monkeypatch.setattr(_notify_hook.subprocess, "run", fake_run)
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
 
     rc = _notify_hook.main(
         ["--run-id", rid, "--status", "completed", "--command", '["notify", "{run_id}"]']
@@ -152,4 +152,13 @@ def test_a_template_without_the_placeholder_is_unaffected_by_a_missing_sender(
 
 
 class _Completed:
+    """Popen-shaped: the hook holds a handle and drives it through communicate."""
+
     returncode = 0
+    pid = -1
+
+    def communicate(self, input: str | None = None, timeout: float | None = None):
+        return "", ""
+
+    def kill(self) -> None:
+        pass
