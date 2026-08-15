@@ -1244,6 +1244,13 @@ export interface SessionDetail {
   invocation_id?: string | null;
   /** Project scope used by Operator write tools to fail closed across runs. */
   project?: string | null;
+  /** Whether a queued run control would ever reach a runner (services/
+   * sessions.py get_session, computed by the admission path's own predicate).
+   * False for a mirrored or imported agent session, which no lionagi run owns:
+   * the server admits no control for one, so no control is offered either.
+   * Absent is read as false by the control surface — a missing capability is
+   * not evidence of a capability. */
+  has_control_consumer?: boolean | null;
   // ADR-0028: denormalized status reason (services/sessions.py get_session
   // already returns these; the type was just missing them).
   status_reason_code?: string | null;

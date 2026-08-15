@@ -6294,8 +6294,19 @@ class StateDB:
         verb: str,
         payload: dict[str, Any] | None = None,
         created_at: float | None = None,
+        project: str | None = None,
     ) -> str | None:
         """Queue a control verb for *session_id*; returns the new control id, or None.
+
+        *project*, when given, is an ownership predicate carried into the same
+        admission condition as the status check, so a caller that is only
+        authorized for one project cannot queue a control against a run in
+        another. It belongs in the statement for the same reason the status
+        check does: a caller-side ``SELECT project`` followed by an insert
+        leaves a window in which the run is reassigned, and the insert then
+        commits against a run the approval never covered. Omitting it keeps
+        the previous unscoped behavior for callers that have already
+        established ownership by other means.
 
         The admission condition (session still 'running') is evaluated by the
         INSERT statement itself, not by a caller-side status check, to close
@@ -6313,12 +6324,34 @@ class StateDB:
         other append-only session logs.
         """
         control_id = uuid.uuid4().hex
-        admit_source = (
-            "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
-            if self.dialect == "sqlite"
-            else "FROM (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running' "
-            "FOR UPDATE) _admitted"
-        )
+        # Four complete literals, selected rather than assembled: the statement
+        # text never depends on a runtime value, and the ownership predicate is
+        # visible in the SQL it actually runs. :project stays a bound parameter
+        # in the two owned forms.
+        if self.dialect == "sqlite":
+            admit_source = (
+                "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid "
+                "AND status = 'running' AND project = :project)"
+                if project is not None
+                else "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
+            )
+        else:
+            admit_source = (
+                "FROM (SELECT 1 FROM sessions WHERE id = :sid "
+                "AND status = 'running' AND project = :project FOR UPDATE) _admitted"
+                if project is not None
+                else "FROM (SELECT 1 FROM sessions WHERE id = :sid "
+                "AND status = 'running' FOR UPDATE) _admitted"
+            )
+        params = {
+            "id": control_id,
+            "sid": session_id,
+            "verb": verb,
+            "payload": payload,
+            "created_at": created_at if created_at is not None else time.time(),
+        }
+        if project is not None:
+            params["project"] = project
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
@@ -6328,13 +6361,7 @@ class StateDB:
                     "SELECT :id, :sid, :verb, :payload, :created_at, NULL, NULL, NULL "
                     f"{admit_source}"  # noqa: S608 — dialect-selected literal, no caller input
                 ).bindparams(bindparam("payload", type_=JSON)),
-                {
-                    "id": control_id,
-                    "sid": session_id,
-                    "verb": verb,
-                    "payload": payload,
-                    "created_at": created_at if created_at is not None else time.time(),
-                },
+                params,
             )
             if not result.rowcount:
                 return None

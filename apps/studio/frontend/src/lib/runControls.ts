@@ -50,6 +50,14 @@ export type ControlReasonCode =
   | "already-pause-requested"
   | "not-paused"
   | "still-pausing"
+  /** Nothing is running that would drain a control for this session. A
+   * mirrored or imported agent run carries invocation_kind "agent" like a live
+   * one, but no lionagi runner owns it, so the server refuses every control
+   * queued against it. Offered and disabled rather than hidden, on the same
+   * reasoning as agent-no-pause-seam: the limit is a property of this run, and
+   * a reader who sees no control at all cannot tell that from a missing
+   * feature. */
+  | "no-live-consumer"
   /** No command exists that would carry this verb out, so the control is
    * shown and refused rather than offered and unable to deliver. See
    * COMMAND_TYPES_BY_VERB for which verbs are backed. */
@@ -167,9 +175,21 @@ export function resumeControlState(
   return offeredState(true, "not-paused");
 }
 
-export function steerControlState(kind: ControlKind, runTerminal: boolean): ControlState {
+/** `hasControlConsumer` mirrors session_has_control_consumer (studio/operator/
+ * run_control.py), which is what the server's own admission asks. It is a
+ * required argument rather than an optional one so a caller cannot omit the
+ * question by accident: the failure it guards against is a steer that is
+ * offered, clicked, and then refused with "no_consumer", and that failure is
+ * invisible until someone clicks. Callers pass a strict boolean, so a response
+ * that never carried the field disables the control instead of assuming it. */
+export function steerControlState(
+  kind: ControlKind,
+  runTerminal: boolean,
+  hasControlConsumer: boolean,
+): ControlState {
   if (!CONSUMER_KINDS_BY_VERB.message.has(kind)) return NOT_OFFERED;
   if (runTerminal) return offeredState(true, "run-terminal");
+  if (!hasControlConsumer) return offeredState(true, "no-live-consumer");
   return offeredState(false);
 }
 

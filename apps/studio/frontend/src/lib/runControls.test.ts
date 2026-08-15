@@ -165,7 +165,7 @@ describe("lib/runControls — steerControlState (row 8: steer offered on an agen
   it("is offered and enabled for flow, play, and agent runs alike", async () => {
     const { steerControlState } = await import("./runControls");
     for (const kind of ["flow", "play", "agent"] as const) {
-      expect(steerControlState(kind, false)).toEqual({
+      expect(steerControlState(kind, false, true)).toEqual({
         offered: true,
         disabled: false,
         reasonCode: null,
@@ -175,9 +175,30 @@ describe("lib/runControls — steerControlState (row 8: steer offered on an agen
 
   it("is disabled with a terminal reason once the run has ended", async () => {
     const { steerControlState } = await import("./runControls");
-    const result = steerControlState("agent", true);
+    const result = steerControlState("agent", true, true);
     expect(result.disabled).toBe(true);
     expect(result.reasonCode).toBe("run-terminal");
+  });
+
+  // A mirrored or imported agent run carries invocation_kind "agent" like a
+  // live one, so kind alone cannot tell them apart. The server refuses every
+  // control queued against one, and a control offered here that the server
+  // refuses is a button that can never do anything.
+  it("is offered but disabled when nothing would drain a control", async () => {
+    const { steerControlState } = await import("./runControls");
+    const result = steerControlState("agent", false, false);
+    expect(result).toEqual({
+      offered: true,
+      disabled: true,
+      reasonCode: "no-live-consumer",
+    });
+  });
+
+  it("still ends a terminal run with the terminal reason, not the consumer one", async () => {
+    const { steerControlState } = await import("./runControls");
+    // Both conditions hold at once; the reader is told the run has ended,
+    // which is the fact that will not change.
+    expect(steerControlState("agent", true, false).reasonCode).toBe("run-terminal");
   });
 });
 

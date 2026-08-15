@@ -2501,7 +2501,10 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
 
   const flatGraph = { name: "run", description: "", nodes: [], edges: [] };
 
-  function sessionOf(invocationKind: string | null) {
+  // has_control_consumer mirrors what services/sessions.py projects for every
+  // session: true for flow and play unconditionally, and for an agent run only
+  // when a lionagi runner owns it and declared that it drains controls.
+  function sessionOf(invocationKind: string | null, hasControlConsumer = true) {
     return {
       id: "run-mount-controls",
       name: "run-mount-controls",
@@ -2509,6 +2512,7 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
       updated_at: 0,
       status: "running",
       invocation_kind: invocationKind,
+      has_control_consumer: hasControlConsumer,
       branches: [],
       graph: flatGraph,
     };
@@ -2598,6 +2602,42 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
       expect(
         container.querySelector<HTMLButtonElement>('[data-testid="run-controls-steer"]')?.disabled,
       ).toBe(false);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("disables steering for an agent run no runner owns, and says why", async () => {
+    // A mirrored or imported session carries invocation_kind "agent" like a
+    // live one. The server refuses every control queued against it, so an
+    // enabled steer here would be a button that can never queue anything.
+    const { container, unmount } = await mountRunDetail(sessionOf("agent", false));
+    try {
+      const steer = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-steer"]',
+      );
+      expect(steer).not.toBeNull();
+      expect(steer?.disabled).toBe(true);
+      const reason = container.querySelector(
+        '[data-testid="run-controls-reason-no-live-consumer"]',
+      );
+      expect(reason?.textContent).toBe(
+        "This run is a mirrored or imported session, so no runner would deliver a control.",
+      );
+    } finally {
+      unmount();
+    }
+  });
+
+  it("a response that never carried the capability field does not enable steering", async () => {
+    // Absent is not evidence of a capability: the strict compare in RunDetail
+    // is what keeps a missing field from reading as permission.
+    const { has_control_consumer: _omitted, ...withoutField } = sessionOf("agent");
+    const { container, unmount } = await mountRunDetail(withoutField);
+    try {
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-steer"]')?.disabled,
+      ).toBe(true);
     } finally {
       unmount();
     }

@@ -14,6 +14,7 @@ from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 from lionagi.state.session_naming import resolve_display_name
 
+from ..operator.run_control import session_has_control_consumer
 from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._db import require_file_store, store_exists, store_path
@@ -709,7 +710,7 @@ async def get_session(
                       show_topic, show_play_name, artifacts_path,
                       artifact_contract_json, artifact_verification_json,
                       source_kind, status, started_at, ended_at, last_message_at,
-                      model, provider, effort, agent_hash, invocation_id,
+                      model, provider, effort, agent_hash, invocation_id, run_id,
                       node_metadata, project, project_source,
                       status_reason_code, status_reason_summary, status_evidence_refs,
                       total_cost_usd, input_tokens, output_tokens
@@ -890,6 +891,10 @@ async def get_session(
         "effort": session_row["effort"],
         "agent_hash": session_row["agent_hash"],
         "invocation_id": session_row["invocation_id"],
+        # Whether a queued run control would ever reach a runner. Computed by
+        # the admission path's own predicate rather than restated here, so a
+        # client cannot offer a control this session's admission would refuse.
+        "has_control_consumer": session_has_control_consumer(dict(session_row)),
         # ADR-0063: project detection.
         "project": session_row["project"],
         "project_source": session_row["project_source"],

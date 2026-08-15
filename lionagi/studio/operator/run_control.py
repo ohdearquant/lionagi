@@ -77,6 +77,37 @@ class SteerRunInput(_StrictInput):
     message: str = Field(min_length=1, max_length=8_000)
 
 
+class MissingOwnerContextError(ValueError):
+    """The calling turn has no durable project mapping to authorize against.
+
+    A turn whose identity is present but whose own context names no project
+    must never be treated as authorized for every project's runs. A separate
+    small copy of ``run_progress.py``'s and ``cancel_run.py``'s, kept local for
+    the same reason theirs are: this module's identity and store handling stays
+    self-contained.
+    """
+
+
+async def _allowed_project(store: OperatorStore, request_id: str) -> str:
+    """The project this Operator turn is scoped to.
+
+    Raises rather than returning a sentinel, which is the difference that
+    matters for a control. ``run_progress.py``'s copy returns ``None`` when the
+    turn identity is absent entirely, so read paths fall open for direct calls;
+    a control mutates the run it names, so there is no version of "no scope" it
+    can safely proceed under.
+    """
+    turn = await store.get_turn(request_id)
+    context = turn.get("context")
+    project = context.get("project") if isinstance(context, dict) else None
+    if not isinstance(project, str) or not project:
+        raise MissingOwnerContextError(
+            "operator turn has no project context -- refusing to propose a "
+            "control against a run it cannot prove it owns"
+        )
+    return project
+
+
 def _identity() -> tuple[OperatorStore, str, str]:
     import os
 
@@ -98,6 +129,25 @@ def _runner_drains_controls(session: dict[str, Any]) -> bool:
     return bool(metadata.get("drains_controls")) if isinstance(metadata, dict) else False
 
 
+def session_has_control_consumer(session: dict[str, Any]) -> bool:
+    """Whether a control queued against this session would ever be drained.
+
+    Only agent sessions can fail this. The agent runner stamps ``run_id`` on
+    the sessions it creates and declares ``drains_controls`` when it starts, so
+    an agent row missing either is a mirrored or imported session that no
+    lionagi run owns. A control admitted for one sits pending forever with
+    nobody to deliver or close it.
+
+    Exported because the read surfaces have to answer the same question the
+    admission below answers. A Studio client that offers a steer this would
+    refuse gets a control that can never queue, so the offer and the refusal
+    read from one rule rather than from two that can drift apart.
+    """
+    if session.get("invocation_kind") != "agent":
+        return True
+    return bool(session.get("run_id")) and _runner_drains_controls(session)
+
+
 def _admission_refusal(session: dict[str, Any], verb: str) -> str | None:
     """Return a stable refusal code, or ``None`` when a consumer exists."""
 
@@ -106,11 +156,8 @@ def _admission_refusal(session: dict[str, Any], verb: str) -> str | None:
     kind = session.get("invocation_kind")
     if kind not in _CONSUMER_KINDS_BY_VERB.get(verb, frozenset()):
         return "unsupported_kind"
-    if kind == "agent":
-        if not session.get("run_id"):
-            return "no_consumer"
-        if not _runner_drains_controls(session):
-            return "no_consumer"
+    if not session_has_control_consumer(session):
+        return "no_consumer"
     return None
 
 
@@ -158,6 +205,26 @@ def _tool_result(proposal: dict[str, Any], session_id: str, verb: str) -> dict[s
 async def _propose_run_control(
     *, run: str, verb: Literal["pause", "resume", "message"], payload: dict[str, Any] | None
 ) -> dict[str, Any]:
+    # Establish the turn's authority BEFORE resolving a reference, because
+    # resolution and authorization are not the same question and this path
+    # answers the harder one. ``resolve_run`` deliberately lets a turn with no
+    # declared project resolve an exact full UUID: a bare id identifies at most
+    # one row and cannot enumerate, which makes it safe for a read. A control
+    # MUTATES the run it names, so "cannot enumerate" stops being the relevant
+    # property -- an unscoped turn holding one foreign id could act on that run.
+    # Requiring the project scope here keeps the read hatch where it belongs
+    # without widening it to writes.
+    #
+    # It also has to happen before resolution rather than after, or the two
+    # refusals become an oracle: "missing_owner_context" would mean the id
+    # resolved and "not_found" would mean it did not, which tells an unscoped
+    # turn exactly which run ids exist in other projects.
+    store, conversation_id, request_id = _identity()
+    try:
+        allowed_project = await _allowed_project(store, request_id)
+    except MissingOwnerContextError:
+        return {"queued": False, "reason": "missing_owner_context"}
+
     resolution = await resolve_run(run)
     if not resolution["found"]:
         return {"queued": False, "reason": "not_found"}
@@ -184,12 +251,22 @@ async def _propose_run_control(
 
     project = session.get("project")
     if not isinstance(project, str) or not project:
-        # A real Operator turn is project-scoped and resolve_run already fails
-        # closed when that scope is missing. Keep the command envelope equally
-        # strict so execution never interprets null as "all projects".
+        # Keep the command envelope strict so execution never interprets null
+        # as "all projects".
         return {"queued": False, "reason": "missing_owner_context", "id": session_id}
+    if project != allowed_project:
+        # Reported as absence, matching execute_run_control_command: a distinct
+        # refusal here would turn the proposal path into a probe for which run
+        # ids exist in other projects.
+        #
+        # A second fence. resolve_run already scopes every arm for a turn that
+        # declares a project, so nothing reaches this line today -- disabling
+        # it reddens no test, which is the honest description of it. It stays
+        # because ownership for a control belongs to the path that mutates the
+        # run: if resolve_run's scoping is ever relaxed, this refuses instead
+        # of silently widening what a control can reach.
+        return {"queued": False, "reason": "not_found"}
 
-    store, conversation_id, request_id = _identity()
     command = {
         "session_id": session_id,
         "verb": verb,
@@ -292,10 +369,15 @@ async def execute_run_control_command(
             session_id=session_id,
             verb=verb,
             payload=payload,
+            project=project,
         )
     if control_id is None:
-        # insert_session_control's own running-row condition is the final
-        # admission decision and closes the terminalization race.
+        # insert_session_control's own admission condition is the final
+        # decision and closes two races at once: the run terminalizing, and
+        # the run being reassigned to another project between the check above
+        # and this insert. The check above still runs, because it is what
+        # distinguishes the refusal reasons for the caller; it is not what
+        # enforces ownership.
         raise ValueError("run is no longer running")
     return {
         "status": "queued",

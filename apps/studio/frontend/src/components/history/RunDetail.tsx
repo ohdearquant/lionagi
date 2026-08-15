@@ -1504,6 +1504,7 @@ function RunControls({
   project,
   kind,
   runTerminal,
+  hasControlConsumer,
   pausePhase,
   onPauseAccepted,
   onResumeAccepted,
@@ -1512,6 +1513,7 @@ function RunControls({
   project?: string | null;
   kind: ControlKind | null;
   runTerminal: boolean;
+  hasControlConsumer: boolean;
   pausePhase: PausePhase;
   onPauseAccepted: () => void;
   onResumeAccepted: () => void;
@@ -1533,7 +1535,10 @@ function RunControls({
     "resume",
     resumeControlState(kind, runTerminal, pausePhase),
   );
-  const steerState = applyExecutablePath("message", steerControlState(kind, runTerminal));
+  const steerState = applyExecutablePath(
+    "message",
+    steerControlState(kind, runTerminal, hasControlConsumer),
+  );
 
   async function propose(verb: ControlVerb, message?: string) {
     setBusy(verb);
@@ -2590,6 +2595,10 @@ export default function RunDetail({ id }: RunDetailProps) {
           project={session.project}
           kind={controlKind}
           runTerminal={runTerminal}
+          // Strict compare: a response that never carried the field leaves the
+          // steer disabled with a stated reason, rather than offering a control
+          // the server would refuse.
+          hasControlConsumer={session.has_control_consumer === true}
           pausePhase={pausePhase}
           onPauseAccepted={handlePauseAccepted}
           onResumeAccepted={handleResumeAccepted}

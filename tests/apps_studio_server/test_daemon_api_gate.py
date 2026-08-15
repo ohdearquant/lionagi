@@ -575,6 +575,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "effort",
         "ended_at",
         "graph",
+        "has_control_consumer",
         "id",
         "input_tokens",
         "invocation_id",
