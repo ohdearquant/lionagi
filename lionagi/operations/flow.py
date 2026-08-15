@@ -384,19 +384,22 @@ class DependencyAwareExecutor:
             from lionagi.session.signal import NodePaused  # noqa: PLC0415
 
             op_id = str(operation.id)
-            name = operation.metadata.get("reference_id", op_id[:8])
+            name, _ = self._display_name(operation)
             return NodePaused(op_id=op_id, name=name)
 
         self._emit_best_effort(_factory)
 
     def _display_name(self, operation: Operation) -> tuple[str, bool]:
         """Resolve a lifecycle-signal display name before a branch is bound:
-        the authored ``reference_id`` if the caller set one, else the op_id's
-        own 8-char prefix as a last resort. Returns ``(name, is_fallback)`` so
-        callers know whether the name is genuine without re-deriving it from
-        string equality against the op_id prefix (a real name can coincide
-        with that prefix by chance).
+        an explicit ``display_name`` or authored ``reference_id`` if the caller
+        set one, else the op_id's own 8-char prefix as a last resort. Returns
+        ``(name, is_fallback)`` so callers know whether the name is genuine
+        without re-deriving it from string equality against the op_id prefix (a
+        real name can coincide with that prefix by chance).
         """
+        display_name = operation.metadata.get("display_name")
+        if display_name is not None:
+            return display_name, False
         ref_id = operation.metadata.get("reference_id")
         if ref_id is not None:
             return ref_id, False
@@ -673,11 +676,11 @@ class DependencyAwareExecutor:
         if not isinstance(verdict, str) or verdict.strip().lower() != GATE_VERDICT_REJECT:
             return
 
-        ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
+        display_name, _ = self._display_name(operation)
         self._gate_rejections[operation.id] = {
             "reason_code": SKIP_REASON_UPSTREAM_GATE_REJECT,
             "gate_id": str(operation.id),
-            "gate_name": ref_id,
+            "gate_name": display_name,
         }
 
     async def _check_edge_conditions(self, operation: Operation) -> bool:
@@ -1150,9 +1153,10 @@ class ReactiveExecutor(DependencyAwareExecutor):
             status = "failed"
         else:
             status = "completed"
+        name, _ = self._display_name(node)
         return FlowEvent(
             operation_id=str(node.id),
-            name=node.metadata.get("reference_id", str(node.id)[:8]),
+            name=name,
             status=status,
             result=self.results.get(node.id),
             spawned=node.id in self._spawned_ids,
@@ -1185,7 +1189,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         reason = getattr(req, "reason", "")
         emitter_id = emitter.id if emitter is not None else None
         op_id = str(emitter_id) if emitter_id is not None else ""
-        name = emitter.metadata.get("reference_id", op_id[:8]) if emitter is not None else ""
+        name = self._display_name(emitter)[0] if emitter is not None else ""
 
         self._emit_node_escalated(op_id, name, reason, route, req)
 
@@ -1203,9 +1207,11 @@ class ReactiveExecutor(DependencyAwareExecutor):
             # node it retries (e.g. mirroring a CLI engine's transcript) — cheaper to
             # carry now than to re-derive `name` from a stale emitter reference later.
             child.metadata["escalated_from_name"] = name
-            # Lifecycle signals prefer reference_id over the operation UUID,
-            # so the retry is readable before its branch has been assigned.
-            child.metadata["reference_id"] = f"{name} escalation retry"
+            # Keep the human label separate from the join key: repeated retries
+            # of the same node share a label but must remain individually
+            # addressable by their own stable operation identity.
+            child.metadata["display_name"] = f"{name} escalation retry"
+            child.metadata["reference_id"] = str(child.id)
             if self._accept_node(child, emitter_id=emitter_id, independent=True):
                 self._escalated_ids.add(emitter_id)
         elif route == "notify":

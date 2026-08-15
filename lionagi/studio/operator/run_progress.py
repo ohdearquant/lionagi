@@ -14,12 +14,21 @@ see docs/internals/studio.md ("Resolving a run reference").
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .redact import MAX_CANDIDATES, public_project, scrub_text
+
+# A full canonical UUID (36 characters, 8-4-4-4-12 hex). A reference in this
+# form identifies at most one row and cannot enumerate anything, which is what
+# lets it pass the project fence below the same way ``run_detail``'s bare-id
+# lookup does.
+_EXACT_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
 __all__ = ("MissingOwnerContextError", "RunProgressInput", "resolve_run", "run_progress")
 
@@ -49,7 +58,9 @@ class RunProgressInput(_StrictModel):
         description=(
             "Run reference: a run/session id, an id prefix, a name or "
             "playbook substring (minimum 3 characters), or 'current' for the "
-            "run the human is looking at."
+            "run the human is looking at. Prefix and substring resolution "
+            "need the turn to carry a project context; without one, only a "
+            "full 36-character id or 'current' resolves."
         ),
     )
 
@@ -85,6 +96,27 @@ def _scrub(value: Any) -> Any:
     enum, so it can carry the same secret- or path-shaped substrings a
     message body can."""
     return scrub_text(value) if isinstance(value, str) else value
+
+
+# The health classifier's own terminal set (lionagi/state/health.py): for
+# these statuses it answers "healthy" whenever the run left no residue
+# (no stale locks), because health is a LIVENESS concept and a finished
+# run has no liveness. Projected next to status="failed", though, the
+# word "healthy" reads as a claim about the run's outcome and misleads
+# the caller. So for terminal runs this projection drops the vacuous
+# "healthy" and keeps only a pathological verdict (e.g. a zombie's
+# leftover locks), which is the only health information a finished run
+# can still carry.
+_TERMINAL_STATUSES = frozenset(
+    {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
+)
+
+
+def _terminal_safe_health(run: dict[str, Any]) -> str | None:
+    health = run.get("effective_health")
+    if run.get("status") in _TERMINAL_STATUSES and health == "healthy":
+        return None
+    return health
 
 
 def _candidate(row: dict[str, Any]) -> dict[str, Any]:
@@ -163,7 +195,9 @@ async def _allowed_project() -> str | None:
     project = context.get("project") if isinstance(context, dict) else None
     if not isinstance(project, str) or not project:
         raise MissingOwnerContextError(
-            "operator turn has no project context -- refusing to resolve any run"
+            "operator turn has no project context -- refusing to resolve a run "
+            "by prefix or name. Pass the run's full 36-character id instead, "
+            "or ask about the run the human has open ('current')."
         )
     return project
 
@@ -199,27 +233,63 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     name/playbook substring matching 2-``MAX_CANDIDATES`` sessions, comes
     back as candidates; more than ``MAX_CANDIDATES`` text matches come back
     as the newest ``MAX_CANDIDATES`` plus ``truncated: True``. Every arm is
-    scoped to the calling turn's project (when it names one) -- see
-    docs/internals/studio.md ("Resolving a run reference").
+    scoped to the calling turn's project (when it names one). A turn whose
+    identity is present but whose context names no project may still resolve
+    an exact full-UUID reference (or 'current') -- a bare id identifies at
+    most one row and cannot enumerate, so it is safe where prefix and
+    substring resolution are not -- see docs/internals/studio.md
+    ("Resolving a run reference").
     """
     from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
     from lionagi.state.db import StateDB
 
     normalized = ref.strip()
     if not normalized:
-        return {"found": False}
+        return {"found": False, "reason": "empty run reference"}
 
-    project = await _allowed_project()
-
+    from_current_view = False
     if normalized.lower() == "current":
+        # Resolved before the project fence: this only reads the human's own
+        # view selection, it enumerates nothing. Whatever id it yields still
+        # goes through the same fence-or-exact-id logic as a typed reference.
         session_id = await _resolve_current()
         if session_id is None:
-            return {"found": False}
+            return {
+                "found": False,
+                "reason": "no run is selected in the human's current view",
+            }
+        normalized = session_id
+        from_current_view = True
+
+    try:
+        project = await _allowed_project()
+    except MissingOwnerContextError:
+        if _EXACT_UUID_RE.fullmatch(normalized) is None:
+            raise
+        # A turn with an owner but no declared project may still look up one
+        # run by its full id: an exact 36-character UUID identifies at most
+        # one row and cannot enumerate anything, the same position
+        # ``run_detail`` already takes for a bare id. Prefix and
+        # name-substring resolution stay behind the fence above, and a turn
+        # that *does* declare a project keeps full ownership scoping on
+        # every arm, including this one.
         async with StateDB(readonly=True) as db:
-            row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
+            row = await db.fetch_one("SELECT id FROM sessions WHERE id = ?", (normalized,))
+        if row is None:
+            return {"found": False, "reason": "no run with that id"}
+        return {"found": True, "ambiguous": False, "session_id": row["id"]}
+
+    if from_current_view:
+        # A 'current' selection under a project-scoped turn keeps the
+        # pre-existing direct lookup + ownership check.
+        async with StateDB(readonly=True) as db:
+            row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (normalized,))
         if row is None or not _owns(row.get("project"), project):
-            return {"found": False}
-        return {"found": True, "ambiguous": False, "session_id": session_id}
+            return {
+                "found": False,
+                "reason": "the current view's selection is not a run this turn can read",
+            }
+        return {"found": True, "ambiguous": False, "session_id": normalized}
 
     async with StateDB(readonly=True) as db:
         try:
@@ -227,7 +297,10 @@ async def resolve_run(ref: str) -> dict[str, Any]:
         except AmbiguousIdError as exc:
             owned = await _fetch_ambiguous_candidates(db, exc.candidates, project=project)
             if not owned:
-                return {"found": False}
+                return {
+                    "found": False,
+                    "reason": "no matching run within this turn's project scope",
+                }
             if len(owned) == 1:
                 return {"found": True, "ambiguous": False, "session_id": owned[0]["id"]}
             return {
@@ -242,11 +315,17 @@ async def resolve_run(ref: str) -> dict[str, Any]:
             }
         if row is not None:
             if not _owns(row.get("project"), project):
-                return {"found": False}
+                return {
+                    "found": False,
+                    "reason": "no matching run within this turn's project scope",
+                }
             return {"found": True, "ambiguous": False, "session_id": row["id"]}
 
     if len(normalized) < 3:
-        return {"found": False}
+        return {
+            "found": False,
+            "reason": "reference too short: name or playbook substrings need 3+ characters",
+        }
 
     rows = await _find_sessions_by_text(normalized, limit=MAX_CANDIDATES + 1, project=project)
     return _resolution_from_rows(rows)
@@ -254,7 +333,7 @@ async def resolve_run(ref: str) -> dict[str, Any]:
 
 def _resolution_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
-        return {"found": False}
+        return {"found": False, "reason": "no run matches that name or playbook substring"}
     if len(rows) == 1:
         return {"found": True, "ambiguous": False, "session_id": rows[0]["id"]}
     truncated = len(rows) > MAX_CANDIDATES
@@ -290,6 +369,10 @@ _NODE_KIND_TO_STATE: dict[str, str] = {
     "NodeEscalated": "escalated",
 }
 _NODE_TERMINAL_STATES = frozenset({"succeeded", "failed", "skipped", "cancelled", "escalated"})
+# Node lanes that claim in-flight work — on a run that has itself reached a
+# terminal status these are stale by definition (the engine died or was
+# killed before emitting the node's own terminal signal).
+_NODE_INFLIGHT_STATES = frozenset({"running", "awaiting_approval", "paused"})
 _NODE_STATE_BUCKET = {
     "queued": "pending",
     "running": "running",
@@ -297,6 +380,11 @@ _NODE_STATE_BUCKET = {
     "paused": "running",
     "succeeded": "completed",
     "failed": "failed",
+    # A node the run's death cut off mid-flight. It did not observably fail
+    # on its own, but it will never complete either — failure is the only
+    # scalar bucket that doesn't misread as success or outstanding work; the
+    # separate abortedCount keeps it distinguishable from genuine failures.
+    "aborted": "failed",
     # Settled, so it folds into "completed" rather than "pending": a skipped
     # node will never run, and parking it in pending would leave a finished
     # flow reporting outstanding work forever. It is not a failure either --
@@ -337,28 +425,72 @@ def _node_lane(events: list[tuple[str, str | None]]) -> str:
 async def _node_lanes_by_name(session_id: str) -> dict[str, str]:
     from lionagi.state.db import StateDB
 
-    async with StateDB(readonly=True) as db:
-        signals = await db.get_session_signals_after(session_id, 0, limit=_SIGNAL_READ_LIMIT)
-
     by_name: dict[str, list[tuple[str, str | None]]] = {}
-    for signal in signals:
-        kind = signal.get("kind")
-        if kind not in _NODE_KIND_TO_STATE:
-            continue
-        payload = signal.get("payload") or {}
-        name = payload.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        route = payload.get("route")
-        by_name.setdefault(name, []).append((kind, route if isinstance(route, str) else None))
+    # Paged to exhaustion: reading only the first page and reconciling on it
+    # treats the prefix as the whole history, so a NodeCompleted past the page
+    # boundary reads as a stale in-flight lane and a terminal run then relabels
+    # a genuinely completed node "aborted".
+    after_seq = 0
+    async with StateDB(readonly=True) as db:
+        while True:
+            signals = await db.get_session_signals_after(
+                session_id, after_seq, limit=_SIGNAL_READ_LIMIT
+            )
+            if not signals:
+                break
+            for signal in signals:
+                kind = signal.get("kind")
+                if kind not in _NODE_KIND_TO_STATE:
+                    continue
+                payload = signal.get("payload") or {}
+                name = payload.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                route = payload.get("route")
+                by_name.setdefault(name, []).append(
+                    (kind, route if isinstance(route, str) else None)
+                )
+            last_seq = signals[-1].get("seq")
+            if not isinstance(last_seq, int) or last_seq <= after_seq:
+                # No forward progress in the cursor means another page would
+                # re-read the same rows; stop rather than spin.
+                break
+            after_seq = last_seq
+            if len(signals) < _SIGNAL_READ_LIMIT:
+                break
     return {name: _node_lane(events) for name, events in by_name.items()}
 
 
-async def _dag_progress(session_id: str, graph: dict[str, Any]) -> dict[str, Any]:
+def _evidence_failed_op_ids(run: dict[str, Any]) -> set[str]:
+    """Node ids the run's own failure evidence names as failed operations."""
+    refs = run.get("status_evidence_refs")
+    out: set[str] = set()
+    if isinstance(refs, list):
+        for ref in refs:
+            if (
+                isinstance(ref, dict)
+                and ref.get("kind") == "failed_operation"
+                and isinstance(ref.get("id"), str)
+                and ref["id"]
+            ):
+                out.add(ref["id"])
+    return out
+
+
+async def _dag_progress(
+    session_id: str, graph: dict[str, Any], run: dict[str, Any]
+) -> dict[str, Any]:
     """DAG-node totals/state for a run's planned graph, including nodes with
     no materialized branch yet. Honest about what it cannot map: a node with
     no recorded lifecycle signal reports status "unknown" rather than being
-    silently assumed not-yet-started."""
+    silently assumed not-yet-started.
+
+    Once the run itself is terminal, per-node lanes are reconciled against
+    that fact instead of replayed verbatim: a dead run's engine often never
+    emitted node-terminal signals, so the raw lanes would report agents
+    mid-flight days after the run ended. Nodes the run's failure evidence
+    names read "failed"; other in-flight lanes read "aborted"; nodes that
+    never started read "skipped"."""
     nodes = [
         node
         for node in (graph.get("nodes") or [])
@@ -366,7 +498,22 @@ async def _dag_progress(session_id: str, graph: dict[str, Any]) -> dict[str, Any
     ]
     lanes = await _node_lanes_by_name(session_id)
 
-    completed = running = failed = pending = unknown = escalated = skipped = cancelled = 0
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+    if run.get("status") in SESSION_TERMINAL_STATUSES:
+        named_failed = _evidence_failed_op_ids(run)
+        for node in nodes:
+            node_id = node["id"]
+            lane = lanes.get(node_id)
+            if node_id in named_failed:
+                lanes[node_id] = "failed"
+            elif lane in _NODE_INFLIGHT_STATES:
+                lanes[node_id] = "aborted"
+            elif lane == "queued" or lane is None:
+                lanes[node_id] = "skipped"
+
+    completed = running = failed = pending = unknown = escalated = skipped = 0
+    cancelled = aborted = 0
     node_out: list[dict[str, Any]] = []
     for node in nodes:
         node_id = node["id"]
@@ -395,6 +542,8 @@ async def _dag_progress(session_id: str, graph: dict[str, Any]) -> dict[str, Any
                 skipped += 1
             elif lane == "cancelled":
                 cancelled += 1
+            elif lane == "aborted":
+                aborted += 1
         node_out.append(
             {
                 "id": node_id,
@@ -423,6 +572,10 @@ async def _dag_progress(session_id: str, graph: dict[str, Any]) -> dict[str, Any
         # succeeded from work an edge condition passed over.
         "skippedCount": skipped,
         "cancelledCount": cancelled,
+        # Nodes cut off mid-flight by the run's own death. They fold into the
+        # failed scalar (they will never complete) but a genuine op failure
+        # and an engine death ask for different responses.
+        "abortedCount": aborted,
         "nodes": node_out,
     }
 
@@ -431,7 +584,7 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
     args = RunProgressInput.model_validate(arguments)
     resolution = await resolve_run(args.run)
     if not resolution["found"]:
-        return {"found": False}
+        return {"found": False, "reason": resolution.get("reason")}
     if resolution.get("ambiguous"):
         return {
             "found": True,
@@ -445,7 +598,7 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
 
     run = await get_run(resolution["session_id"])
     if run is None:
-        return {"found": False}
+        return {"found": False, "reason": "the resolved run vanished before it could be read"}
 
     branches = run.get("branches") or []
     ops_completed = ops_running = ops_failed = ops_pending = 0
@@ -484,7 +637,7 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
         # graph the run is. Derive totals/state from the graph itself instead
         # -- branches remain the source for `currentOps` below, which is
         # about what has actually started, not what is merely planned.
-        dag_progress = await _dag_progress(resolution["session_id"], graph)
+        dag_progress = await _dag_progress(resolution["session_id"], graph, run)
         ops_total = dag_progress["total"]
         ops_completed = dag_progress["completed"]
         ops_running = dag_progress["running"]
@@ -496,7 +649,7 @@ async def run_progress(arguments: dict[str, Any]) -> dict[str, Any]:
         "ambiguous": False,
         "id": run.get("id"),
         "status": run.get("status"),
-        "effectiveHealth": run.get("effective_health"),
+        "effectiveHealth": _terminal_safe_health(run),
         "startedAt": started_at,
         "endedAt": ended_at,
         "elapsedSeconds": elapsed_seconds,

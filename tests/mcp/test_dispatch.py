@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.mcp import dispatch, jobs, verbs
 
 
@@ -89,6 +90,15 @@ def test_help_for_a_verb_returns_the_projected_schema():
     assert schema["properties"]["timeout"]["type"] == "integer"
     assert schema["properties"]["yolo"]["type"] == "boolean"
     assert schema["properties"]["agent"]["x-flag"] == "--agent"
+
+
+def test_agent_submit_schema_discloses_the_prompt_admission_cap():
+    schema = call(help="agent.submit")
+    prompt = schema["schema"]["properties"]["prompt"]
+    prompt_file = schema["schema"]["properties"]["prompt_file"]
+
+    assert prompt["maxLength"] == MAX_SPEC_PROMPT_CHARS
+    assert str(MAX_SPEC_PROMPT_CHARS) in prompt_file["description"]
 
 
 def test_help_for_an_unavailable_verb_says_why_instead_of_failing():
@@ -912,6 +922,41 @@ def test_a_submission_that_names_a_model_still_spawns(submitted, op, args):
     answer = call(ops=[spawn_op(op, args)])["ops"][0]
     assert answer["ok"] is True
     assert submitted["kind"]
+
+
+def test_agent_submit_rejects_inline_prompt_over_shared_limit_before_spawn(submitted):
+    answer = call(
+        ops=[
+            spawn_op(
+                "agent.submit",
+                {"query": ["codex"], "prompt": "x" * (MAX_SPEC_PROMPT_CHARS + 1)},
+            )
+        ]
+    )["ops"][0]
+
+    assert answer["ok"] is False
+    assert answer["error"]["kind"] == "invalid_input"
+    assert str(MAX_SPEC_PROMPT_CHARS) in answer["error"]["message"]
+    assert submitted == {}
+
+
+def test_agent_submit_rejects_prompt_file_over_shared_limit_before_spawn(submitted, tmp_path):
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text("x" * (MAX_SPEC_PROMPT_CHARS + 1))
+
+    answer = call(
+        ops=[
+            spawn_op(
+                "agent.submit",
+                {"query": ["codex"], "prompt_file": str(prompt_file)},
+            )
+        ]
+    )["ops"][0]
+
+    assert answer["ok"] is False
+    assert answer["error"]["kind"] == "invalid_input"
+    assert str(MAX_SPEC_PROMPT_CHARS) in answer["error"]["message"]
+    assert submitted == {}
 
 
 def test_a_spec_file_may_be_the_thing_that_names_the_model(submitted):

@@ -191,6 +191,28 @@ describe("reconcileNodeStatuses — terminal-run unknown status", () => {
   });
 });
 
+describe("reconcileNodeStatuses — evidence-named failed ops outrank stale lanes", () => {
+  it("marks the op the run's failure evidence names as failed even when its lane is queued", () => {
+    const statuses: Record<string, NodeExecStatus> = { critic: "queued", explorer: "running" };
+    const result = reconcileNodeStatuses(
+      ["critic", "explorer"],
+      [],
+      statuses,
+      true,
+      new Set(["critic"]),
+    );
+    expect(result.critic).toBe("failed");
+    expect(result.explorer).toBe("pending");
+  });
+
+  it("applies evidence even on a live run and never marks unnamed nodes", () => {
+    const statuses: Record<string, NodeExecStatus> = { a: "running", b: "completed" };
+    const result = reconcileNodeStatuses(["a", "b"], [], statuses, false, new Set(["a"]));
+    expect(result.a).toBe("failed");
+    expect(result.b).toBe("completed");
+  });
+});
+
 describe("reconcileNodeStatuses — descendant-terminal suppression of stale running display", () => {
   // source -> mid -> sink, mirroring the measured defect: 5 root/mid nodes
   // stuck "running" forever while their descendants had already finished.
