@@ -277,7 +277,7 @@ function ItemLink({
   }
   if (item.kind === "play") {
     return (
-      <Link {...playDeepLink()} className={className} style={style}>
+      <Link {...playDeepLink(item.sessionId)} className={className} style={style}>
         {children}
       </Link>
     );

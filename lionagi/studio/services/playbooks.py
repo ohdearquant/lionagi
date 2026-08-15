@@ -11,6 +11,10 @@ import yaml
 from fastapi import Body, HTTPException
 
 from lionagi._flow_spec import (
+    FLOW_SPEC_FIELDS,
+    flow_spec_yaml_key,
+)
+from lionagi._flow_spec import (
     normalize_flow_spec_keys as _normalize_spec_keys,
 )
 from lionagi._flow_spec import (
@@ -167,19 +171,10 @@ def install_builtin_playbook(name: str) -> dict[str, Any]:
     return {"installed": installed_now, "playbook": get_playbook(stem)}
 
 
-# Declarative-format keys we will write through from the editor. Anything not
-# in this list is preserved as-is from the existing YAML so handcrafted keys
-# (or future additions) don't get clobbered.
-_DECLARATIVE_KEYS: tuple[str, ...] = (
-    "agent",
-    "effort",
-    "max-ops",
-    "prompt",
-    "args",
-    "yolo",
-    "show-graph",
-    "argument-hint",
-)
+_SPECIAL_PLAYBOOK_KEYS = frozenset({"description", "links", "name", "steps", "use"})
+_DECLARATIVE_KEYS: dict[str, str] = {
+    field: flow_spec_yaml_key(field) for field in sorted(FLOW_SPEC_FIELDS - _SPECIAL_PLAYBOOK_KEYS)
+}
 
 
 def create_playbook(name: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -191,14 +186,15 @@ def create_playbook(name: str, data: dict[str, Any] | None = None) -> dict[str, 
         raise FileExistsError(f"Playbook '{stem}' already exists")
 
     data = data or {}
-    spec_err = _check_spec_fields(_normalize_spec_keys(data))
+    normalized_data = _normalize_spec_keys(data)
+    spec_err = _check_spec_fields(normalized_data)
     if spec_err:
         raise ValueError(spec_err)
 
     content: dict[str, Any] = {"description": data.get("description") or ""}
 
-    for key in _DECLARATIVE_KEYS:
-        value = data.get(key)
+    for field, key in _DECLARATIVE_KEYS.items():
+        value = normalized_data.get(field)
         if value not in (None, ""):
             content[key] = value
 
@@ -249,9 +245,9 @@ def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if not path.exists():
         return None
 
-    # Validate before the merge: the merge silently drops unknown keys (e.g. 'workers'),
-    # so validating the raw payload catches bad values that would otherwise pass through.
-    spec_err = _check_spec_fields(_normalize_spec_keys(data))
+    # Validate before the merge so invalid values never reach the on-disk spec.
+    normalized_data = _normalize_spec_keys(data)
+    spec_err = _check_spec_fields(normalized_data)
     if spec_err:
         raise ValueError(spec_err)
 
@@ -280,10 +276,12 @@ def update_playbook(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(links, list) and len(links) > 0:
         merged["links"] = links
 
-    for key in _DECLARATIVE_KEYS:
-        if key not in data:
+    for field, key in _DECLARATIVE_KEYS.items():
+        if field not in normalized_data:
             continue
-        value = data[key]
+        value = normalized_data[field]
+        if key != field:
+            merged.pop(field, None)
         if value is None or value == "":
             merged.pop(key, None)
         else:

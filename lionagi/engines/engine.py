@@ -479,6 +479,16 @@ class EngineRun:
         res = await branch.operate(instruction=instruction, **operate_kwargs)
         attempt = 0
         while not arrived() and attempt < retries:
+            budget = getattr(branch, "token_budget", None)
+            if getattr(budget, "is_critical", False):
+                self.notify(
+                    "emission_repair_skipped",
+                    agent=getattr(branch, "name", "") or "",
+                    reason="context_critical",
+                    used=getattr(budget, "used", None),
+                    limit=getattr(budget, "limit", None),
+                )
+                break
             attempt += 1
             self.notify(
                 "emission_repair",

@@ -23,6 +23,7 @@ export type StoredEffectAcknowledgement =
 const FLEET_KEYS = new Set([
   "s",
   "status",
+  "kind",
   "playbook",
   "project",
   "page",

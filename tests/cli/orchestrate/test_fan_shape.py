@@ -64,7 +64,9 @@ async def test_flow_dag_gives_independent_assignments_no_sequential_edges(tmp_pa
         "lionagi.cli.orchestrate.flow.build_worker_branch",
         return_value=(_FakeBranch(), "codex/gpt-5.5", None, False),
     ):
-        dag_state = await _build_dag(env, "do stuff", plan_result, reactive_spec="off")
+        dag_state = await _build_dag(
+            env, "do stuff", plan_result, reactive_spec="off", max_spawn=20
+        )
 
     assert len(dag_state.node_ids) == 6
 
@@ -101,7 +103,7 @@ async def test_flow_dag_preserves_declared_dependency_chain(tmp_path):
         "lionagi.cli.orchestrate.flow.build_worker_branch",
         return_value=(_FakeBranch(), "codex/gpt-5.5", None, False),
     ):
-        dag_state = await _build_dag(env, "task", plan_result, reactive_spec="off")
+        dag_state = await _build_dag(env, "task", plan_result, reactive_spec="off", max_spawn=20)
 
     counts = _label_counts(env.builder)
     assert counts[("depends_on",)] == 1

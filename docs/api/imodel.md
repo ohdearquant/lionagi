@@ -34,9 +34,14 @@ model = li.iModel(
 | `limit_tokens` | `int \| None` | `None` | Max tokens per rate-limit cycle |
 | `concurrency_limit` | `int \| None` | `None` | Max concurrent streams |
 | `streaming_process_func` | `Callable \| None` | `None` | Custom chunk processor for streaming responses |
-| `provider_metadata` | `dict \| None` | `None` | Auxiliary provider metadata; non-CLI session lookup reads its `session_id` key |
+| `provider_metadata` | `dict \| None` | `None` | Auxiliary provider metadata; see the keys below |
 | `hook_registry` | `HookRegistry \| dict \| None` | `HookRegistry()` | Pre/post invocation hooks |
 | `**kwargs` | — | — | Provider-specific config (e.g., `model="gpt-4o"`, `temperature=0.7`) |
+
+When a provider reports the model that actually served a request, `iModel`
+stores it in `provider_metadata["served_model"]`. The key remains absent when
+the provider does not report a model; it is never inferred from the requested
+`model` value. Non-CLI session lookup reads `provider_metadata["session_id"]`.
 
 ## Endpoint types
 
