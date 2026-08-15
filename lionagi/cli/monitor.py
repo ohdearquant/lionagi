@@ -452,13 +452,19 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
 
 
 def _invocation_to_row(inv: dict[str, Any]) -> dict[str, Any]:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
     return {
         "id": inv["id"][:16],
         "type": "invocation",
         "project": "-",
         "status": inv.get("status") or "?",
         "phase": inv.get("skill") or "-",
-        "elapsed": _elapsed(inv.get("started_at"), inv.get("ended_at")),
+        "elapsed": _elapsed(
+            inv.get("started_at"),
+            inv.get("ended_at"),
+            terminal=inv.get("status") in SESSION_TERMINAL_STATUSES,
+        ),
         "agents": str(inv.get("session_count") or 0),
     }
 
@@ -476,13 +482,19 @@ def _show_to_row(show: dict[str, Any]) -> dict[str, Any]:
 
 
 def _play_to_row(play: dict[str, Any]) -> dict[str, Any]:
+    from lionagi.state.db import PLAY_TERMINAL_STATUSES
+
     return {
         "id": play["id"][:16],
         "type": "play",
         "project": play.get("session_project") or "-",
         "status": play.get("status") or "?",
         "phase": _trunc(play.get("name") or "-", 18),
-        "elapsed": _elapsed(play.get("started_at"), play.get("ended_at")),
+        "elapsed": _elapsed(
+            play.get("started_at"),
+            play.get("ended_at"),
+            terminal=play.get("status") in PLAY_TERMINAL_STATUSES,
+        ),
         "agents": str(play.get("branch_count") or 0),
     }
 
@@ -513,6 +525,8 @@ def _render_branch_lines(rows: list[dict[str, Any]], *, indent: str = "  ") -> l
 
 
 async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
     lines: list[str] = []
     lines.append(_bold(f"SESSION  {sess['id']}"))
     lines.append(f"  status:    {_colour_status(sess.get('status') or '?')}")
@@ -529,6 +543,7 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
             sess.get("started_at"),
             sess.get("ended_at"),
             approximate=bool(sess.get("ended_at_is_approximate")),
+            terminal=sess.get("status") in SESSION_TERMINAL_STATUSES,
         )
     )
     started = sess.get("started_at")
@@ -667,13 +682,22 @@ def _format_coordination_line(telemetry: dict[str, Any]) -> str | None:
 
 
 async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
     lines: list[str] = []
     lines.append(_bold(f"INVOCATION  {inv['id']}"))
     lines.append(f"  status:        {_colour_status(inv.get('status') or '?')}")
     lines.append(f"  skill:         {inv.get('skill') or '-'}")
     lines.append(f"  plugin:        {inv.get('plugin') or '-'}")
     lines.append(f"  session_count: {inv.get('session_count') or 0}")
-    lines.append(f"  elapsed:       {_elapsed(inv.get('started_at'), inv.get('ended_at'))}")
+    lines.append(
+        "  elapsed:       "
+        + _elapsed(
+            inv.get("started_at"),
+            inv.get("ended_at"),
+            terminal=inv.get("status") in SESSION_TERMINAL_STATUSES,
+        )
+    )
     started = inv.get("started_at")
     if started:
         lines.append(
@@ -748,7 +772,11 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
                 # continue) and not [done] (would sweep live work as finished).
                 # Its own marker flags a data problem instead of guessing.
                 marker = _red("  [????]  ")
-            pelapsed = _elapsed(play.get("started_at"), play.get("ended_at"))
+            pelapsed = _elapsed(
+                play.get("started_at"),
+                play.get("ended_at"),
+                terminal=pstatus in PLAY_TERMINAL_STATUSES,
+            )
             pname = _trunc(play.get("name") or play["id"][:12], 24)
             pstatus_col = _colour_status(pstatus)
             lines.append(f"{marker}{pname:<24}  {pstatus_col}  {pelapsed}")
@@ -757,6 +785,8 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
 
 
 async def _detail_play(db: Any, play: dict[str, Any]) -> str:
+    from lionagi.state.db import PLAY_TERMINAL_STATUSES
+
     lines: list[str] = []
     lines.append(_bold(f"PLAY  {play['id']}"))
     lines.append(f"  name:     {play.get('name') or '-'}")
@@ -764,7 +794,14 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
     lines.append(f"  playbook: {play.get('playbook') or '-'}")
     lines.append(f"  effort:   {play.get('effort') or '-'}")
     lines.append(f"  attempt:  {play.get('attempt') or 1}")
-    lines.append(f"  elapsed:  {_elapsed(play.get('started_at'), play.get('ended_at'))}")
+    lines.append(
+        "  elapsed:  "
+        + _elapsed(
+            play.get("started_at"),
+            play.get("ended_at"),
+            terminal=play.get("status") in PLAY_TERMINAL_STATUSES,
+        )
+    )
     started = play.get("started_at")
     if started:
         lines.append(f"  started:  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}")

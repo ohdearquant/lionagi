@@ -2307,3 +2307,46 @@ async def test_show_detail_marks_blocked_play_as_done(temp_db_path: Path) -> Non
     assert "[done]" in blocked_line
     assert "[wait]" not in blocked_line
     assert "[wait]" in gated_line, "an undecided play is unfinished, not done"
+
+
+def test_terminal_rows_with_no_recorded_end_report_unknown_for_every_entity():
+    """Sessions are not the only population with this shape.
+
+    Measured against a real store: 6961 terminal sessions, 58 terminal plays
+    and 3 terminal invocations carry no recorded end. Fixing the session row
+    alone leaves the other two rendering a span that grows on every redraw,
+    which is the same defect wearing a different table.
+    """
+    from lionagi.cli.monitor import _invocation_to_row, _play_to_row
+
+    long_ago = time.time() - 86_400
+
+    inv = _invocation_to_row(
+        {"id": "inv123def456", "status": "completed", "started_at": long_ago, "ended_at": None}
+    )
+    # Plays carry their own terminal vocabulary, disjoint from the session one
+    # -- "completed" is not a play status at all.
+    play = _play_to_row(
+        {"id": "ply123def456", "status": "merged", "started_at": long_ago, "ended_at": None}
+    )
+
+    assert inv["elapsed"] == "-"
+    assert play["elapsed"] == "-"
+
+
+def test_running_rows_of_every_entity_are_still_measured():
+    """Control: the terminal status suppresses the span, not the missing end.
+    A running row of either kind is still measured up to now."""
+    from lionagi.cli.monitor import _invocation_to_row, _play_to_row
+
+    recent = time.time() - 45
+
+    inv = _invocation_to_row(
+        {"id": "inv123def456", "status": "running", "started_at": recent, "ended_at": None}
+    )
+    play = _play_to_row(
+        {"id": "ply123def456", "status": "running", "started_at": recent, "ended_at": None}
+    )
+
+    assert inv["elapsed"] != "-"
+    assert play["elapsed"] != "-"
