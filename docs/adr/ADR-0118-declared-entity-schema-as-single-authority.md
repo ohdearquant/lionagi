@@ -71,7 +71,13 @@ cited as the reason the duplication is safe.
 **P3 — DDL issuance and connection ownership are not confined to the state layer.**
 `studio/operator/store.py` (2,349 lines) declares and creates 6 tables of its own and is in
 effect a second persistence layer beside `StateDB`. Four `studio/services/*` modules create 7
-more tables at service-import time. Separately, studio opens the store directly — 38
+more tables of their own. That DDL does not run at import: each module holds its
+`CREATE TABLE` text as a module constant and executes it from inside request-handling functions,
+at 20 call sites, so the tables are re-asserted on the request path rather than once at startup.
+The lazy creation this produces has already leaked across module boundaries — `sessions.py`
+reaches into `run_tags` for its private `_ensure_table` before a tag filter can run, because a
+store that has never been tagged has no `run_tags` table. Separately, studio opens the store
+directly — 38
 `async with _open_db(...)` contexts across 9 files — rather than going through `StateDB`. The
 path those contexts open is chosen by `studio/services/_db.py:27`, whose own docstring records
 that for a server-backed store it falls back to the default SQLite file and is "equally wrong
@@ -239,6 +245,15 @@ Two corrections to the reasoning that first motivated this choice, both from run
   foreign key to be *in the table definition*, which is the real constraint, and it is why
   `ALTER TABLE` cannot add one and why the rebuild pattern exists. Topological ordering remains
   the right default; it is not what decides this call.
+- Kahn ordering needs a self-edge rule before it is adopted literally, because this schema
+  already has one: `schedule_runs.chain_parent_id` references `schedule_runs(id)`, so a
+  dependency graph built straight from the foreign keys contains a self-loop, no node ever has
+  in-degree zero, and the sort reports a cycle on a schema that is perfectly well-formed. The
+  rule is to drop self-edges when building the graph. A table's dependency on itself carries no
+  ordering information: it is satisfied by its own `CREATE TABLE`, which is exactly the
+  `ALTER TABLE` limitation above, and the same holds for the rebuild path, where the copy target
+  is created with the self-reference in its definition. Mutual cycles between *different* tables
+  are a genuinely different case and remain an error rather than being dropped along with it.
 
 `schema.sql` becomes a *generated* artifact emitted from the same specs plus the bootstrap
 operation specs, retained for the compatibility tests that build old-style databases; it stops
@@ -248,8 +263,8 @@ table list, so the test population can no longer drift from the package.
 **D3 — parity is proven on physical semantics, through dialect catalog adapters.** The gate
 compares column types, nullability, defaults, primary and foreign keys, unique and check
 constraints, and the full index set including key direction — not the name sets the current test
-compares. The 15 descending indexes and the 86-vs-82 index gap are resolved by an explicit
-decision per index, recorded, before either authority is deleted.
+compares. The 15 descending indexes, the 86-vs-82 index gap and the one default divergence are
+resolved by an explicit recorded decision each, before either authority is deleted.
 
 Stating the comparison is not enough, because the obvious way to implement it silently cannot
 make two of those distinctions. Against the installed SQLAlchemy, generic SQLite reflection
@@ -302,8 +317,11 @@ escape hatch that validates identifiers, rather than being scattered through rou
 
 **D5 — migration is a diff between declared and introspected schema, and it fails closed.** At
 open, introspect the live database, diff against the declared schema, and produce a
-risk-classified plan: additive columns become `ALTER TABLE ADD COLUMN`; everything else becomes
-a generated rebuild — the pattern `state/db.py` already implements by hand for four tables.
+risk-classified plan: additive columns become `ALTER TABLE ADD COLUMN` *where SQLite will accept
+one*; everything else becomes
+a generated rebuild — the pattern `state/db.py` already implements by hand as seven rebuild
+paths over five tables (`sessions`, `schedules` three times, `invocations`, `schedule_runs`,
+`definitions`), each keyed to a different legacy shape it has to recognise and replace.
 The generated rebuild derives the target table, its indexes and its triggers from the specs. The
 current rebuilds do the opposite: they read the live catalog and replay it, assembling the copy
 statement's column list from catalog-read names and re-executing index DDL strings taken from
@@ -312,6 +330,18 @@ That faithfully preserves whatever the database happens to contain, including ob
 declares, so a rebuild carries drift forward instead of resolving it — a database built from the
 old DDL path keeps its 15 descending indexes through every future migration. It is also the one
 place where identifiers reach SQL from a source no allow-list covers.
+
+"Additive" is not a safe synonym for "cheap", and the classifier has to say so. D1 lets a field
+be declared non-null without a default, and SQLite refuses `ADD COLUMN` for exactly that shape;
+so does an expression default, which is why `artifacts.updated_at` is spelled differently in the
+two authorities today. An additive column therefore classifies as `ADD COLUMN` only when it is
+nullable, or non-null with a constant default that SQLite accepts. A non-null column without a
+default, or with an expression default, is either routed to the generated rebuild with an
+authored backfill supplying the value for existing rows, or rejected before execution when no
+backfill is declared. Rejecting is the fail-closed answer and is preferred to inventing a value:
+a migration that silently backfills a column the declaration says must be meaningful is a data
+decision the schema layer is not entitled to make. The classifier is proven on a populated
+fixture table, because on an empty one the distinction does not appear.
 
 Risk is classified per dialect, not once: the same logical change has different mechanics on
 each backend, so a type widening that is a cheap `ALTER` on PostgreSQL is a full table rebuild
@@ -333,6 +363,25 @@ exists today is SQLite-only by construction, so a dual-dialect design cannot inh
   both dialects;
 - **explicit offline repair** — back up, apply an identified plan, re-introspect.
 
+Quarantine has to be *enforced by the connection*, not by callers agreeing to behave, and that
+needs a named mechanism per dialect or the state is read-only in name only:
+
+- **SQLite** — the existing `mode=ro` URI open plus `PRAGMA query_only`, which is what
+  `make_readonly_engine()` already does.
+- **PostgreSQL** — `default_transaction_read_only` on the session, set at connect, with
+  `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` as the statement form; a dedicated
+  read-only role is the stronger form where the deployment can provide one, and is preferred
+  when available because a session setting can be reset by anything holding the connection.
+
+If neither is available on a PostgreSQL store, quarantine **denies the open** rather than
+handing back a writable connection. This is the specific hole the current code names in its own
+docstring: `read_only_open_supported()` returns False for server-backed stores, and it warns
+that callers needing read-only *for safety* must not use it, because it hands them a writable
+connection precisely there. A dual-dialect fail-closed contract cannot be built on a helper with
+that shape, so the enforcement above replaces it rather than wrapping it. The fault-injection
+suite runs on both dialects and asserts a write is refused *by the connection* under quarantine,
+not merely that no write was attempted.
+
 Those two failure causes are not the same event and must not be treated alike. The discriminator
 is whether inspection *returned*:
 
@@ -349,6 +398,22 @@ distinction has to be enforced at the catch site, because the defect this replac
 blanket `except Exception: continue` that could not tell the two apart and then stamped the
 version anyway.
 
+One consequence of "unknown shape means quarantine" has to be settled before Phase 4 turns
+application on, because the phasing creates the condition on purpose. Migration applies in Phase
+4; the operator-store tables do not enter the registry until Phase 5. Between those two points a
+normal, healthy store contains the operator's six tables, which the registry has never heard of,
+and a literal reading quarantines every deployment that has ever opened the operator. The seven
+studio-service tables are not part of this: they re-declare tables the registry already owns, so
+the diff recognises their shapes and only their ownership is unresolved until Phase 5.
+
+The registry therefore distinguishes *unregistered* from *unknown*. Tables named in an explicit
+transitional allow-list are out of scope for the diff: not inspected, not migrated, not grounds
+for quarantine. The allow-list is authored, enumerated table by table rather than pattern
+matched, and Phase 5 empties it by moving each entry into the registry proper. An empty
+allow-list is the end state, and the gate that proves Phase 5 is done is that it is empty while
+every table is still accounted for. A table that is in neither the registry nor the allow-list
+is genuinely unknown and still quarantines, which is the case the contract is for.
+
 No flag turns an unverified store writable; a `force` escape hatch would rebuild the fail-open
 path this decision exists to close. Because observe-only runs over *successful* inspections
 cannot exercise the failure branch, the guard is proven by fault injection at the table, column,
@@ -359,7 +424,7 @@ injected fault reaches the same plan.
 **D6 — DDL issuance and store access become the state layer's exclusive right.** The six
 operator-store tables and the 7 studio-service re-declarations register in the registry (the
 latter as the state-owned tables they already duplicate). Studio loses its
-import-time `CREATE TABLE` side effects and its own connection path; the 38 direct contexts move
+per-request `CREATE TABLE` re-assertions and its own connection path; the 38 direct contexts move
 to one executor over the state engine, which removes the "equally wrong" fallback and the three
 services that never call `require_file_store` along with it.
 
@@ -371,7 +436,7 @@ roughly 17 files; no compatibility shims (own-use policy).
 
 **D8 — `reasons.py` is keyed two different ways at once; separate them.** The module holds two
 vocabularies that look like one. The seven code classes are keyed on *producer domain*, and each
-owns exactly one code prefix: `RunReasons` → `run.` (29 codes), `SessionReasons` → `session.`
+owns exactly one code prefix: `RunReasons` → `run.` (30 codes), `SessionReasons` → `session.`
 (6), `PlayReasons` → `play.` (8), `ShowReasons` → `show.` (5), `ScheduleReasons` → `schedule.`
 (7), `TeamReasons` → `team.` (1), `DispatchReasons` → `dispatch.` (8). Everything around them —
 `VALID_ENTITY_TYPES`, `ENTITY_ROUTE_ALIASES`, `ENTITY_TABLE_ALIASES`, `ENTITY_TYPE_TO_TABLE`,
@@ -418,6 +483,28 @@ are the fourth and fifth hand-maintained restatements of "which entities exist a
 each lives in"; under D1 both are derived from the registry rather than typed. The aliases stay
 as an explicit compatibility map. Whether `dispatch` is an entity type gets decided at that
 point rather than inherited.
+
+"Derived from the registry" has to mean derived from a *projection* of it, and the projection
+needs declaring, because the two sets are not the same size and never were. The registry holds
+32 persisted entities. `VALID_ENTITY_TYPES` holds six — `session`, `show`, `play`, `invocation`,
+`team`, `schedule_run` — and it is not an inventory of what is stored; it is the set of things
+whose status transitions the lifecycle service validates. Deriving it from the full registry
+would silently authorise `update_status()` against every table in the schema, which is a
+widening of a write-time validator and not a de-duplication.
+
+So D1 grows a per-entity `lifecycle_managed` toggle alongside the audit-column toggles, and the
+entity vocabulary is the registry filtered by it. The parity gate for this move is set equality
+against today's hand-typed six, asserted before the old constant is deleted, so the projection
+is proven to reproduce the current set rather than assumed to.
+
+`dispatch` is the one case that does not fall out of the toggle, and it needs its own answer
+rather than a default. It has a domain class and a lifecycle policy but is absent from
+`VALID_ENTITY_TYPES` today, so marking `dispatch_outbox` lifecycle-managed would change
+behaviour by admitting a type the validator currently rejects, and leaving it unmarked
+perpetuates a policy that exists but is unreachable through the validator. Either is defensible;
+neither should happen as a side effect of a schema refactor. The decision is recorded when the
+toggle is introduced, and the parity gate above is what forces it to be made: the derived set
+either equals the hand-typed six, or the difference is `dispatch` and someone has chosen it.
 
 **D9 — what carries over, what is reworked, what is left behind.** The target design splits
 cleanly along a dialect seam, and that seam is what makes adopting it tractable:
@@ -496,9 +583,13 @@ upgraded store does not have.
   validated identifier types in `LifecyclePolicy`. Equality proofs pin generated SQL against
   current SQL on fixtures.
 - **Phase 4:** migration application under the three-state contract; retire `MIGRATION_COLUMNS`;
-  delete the old authorities; the four bespoke rebuilds become instances of the generated
-  rebuild, ported in risk order (generated schedules first, literal sessions/invocations next,
-  schedule-runs last because it carries backups, indexes and triggers).
+  delete the old authorities; the seven bespoke rebuild paths become instances of the generated
+  rebuild, ported in risk order (the three generated schedules rebuilds first, literal
+  sessions/invocations next, then definitions, and schedule-runs last because it carries backups,
+  indexes and triggers). The `definitions.kind` rebuild is one of the seven and is easy to miss
+  when reading the phase as "port the CHECK-constraint rebuilds": it drops a legacy two-value
+  `kind` CHECK that has to be gone before a `kind='skill'` row can be saved, so it carries a
+  behavioural precondition and not only a shape change.
 - **Phase 5:** fold operator-store and studio-service tables into the registry and route the 38
   direct connections through the shared executor (largest blast radius; last). Operator's atomic
   CAS SQL is preserved verbatim and moved, never rewritten in the same change as its schema.
@@ -622,7 +713,7 @@ opening pass, not something to estimate from here.
 - The identifier-interpolation class disappears rather than being re-guarded site by site.
 - Migration gains introspection, risk classification and a fail-closed contract, which the
   current hand-ledger cannot express; SQLite's `ALTER TABLE` limits are honored by making the
-  rebuild a generated operation instead of four bespoke ones.
+  rebuild a generated operation instead of seven bespoke ones.
 - Studio stops being able to open the wrong database file.
 - Cost: a multi-phase epic touching the widest-blast-radius files in the repository. The
   equality-proof gates are what make it safe; skipping them to move faster re-creates the
@@ -646,7 +737,7 @@ summed: a declaration, a statement string, and an execution call are different t
 | `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 6,683 lines; 5 `_*_COLUMNS` allow-lists; 45 `S608` |
 | `state/lifecycle/` | — | — | 8 execution calls | policy table/patch identifiers unvalidated |
 | `studio/operator/store.py` | 6 tables (+2 indexes) + own migration | yes | 119 sites | 2,349 lines; a second persistence layer |
-| `studio/services/*` | 7 re-declarations of state tables, 4 modules | at import time | 93 execution calls | 38 direct store connections in 9 files |
+| `studio/services/*` | 7 re-declarations of state tables, 4 modules | on the request path, 20 call sites | 93 execution calls | 38 direct store connections in 9 files |
 
 Divergences found between the two full-schema authorities, all currently green:
 
@@ -655,7 +746,23 @@ Divergences found between the two full-schema authorities, all currently green:
 | Index count | 86 | 82 |
 | Descending index direction | 15 indexes | 0 |
 | `idx_sessions_run_id` | present | absent (also in the migration registry) |
+| `artifacts.updated_at` default | `DEFAULT (strftime('%s','now'))` | no `server_default` |
 | Header version | `v1` in the comment | seeds `version` `3` |
+
+The `artifacts.updated_at` divergence is deliberate and carries its reason in the code: `ALTER
+TABLE` rejects an expression default, so the column that `schema.sql` creates with one is
+declared without it on the `MetaData` side, and the insert path sets the value explicitly. It is
+listed here because D3 treats defaults as physical semantics, which makes this a divergence the
+parity gate must decide about rather than a free-standing implementation note — and because a
+generated authority has to pick one of the two spellings and then answer what happens to stores
+already built from the other. Naming it is also a correction: this table previously implied the
+two authorities differed only in index count and direction.
+
+The defaults dimension was then enumerated across all 32 tables rather than spot-checked, since
+a dimension proven to be missing an entry is not usefully repaired one row at a time.
+`schema.sql` carries 38 column defaults and `schema_meta.py` 37; every other pair matches once
+SQLite's quoted rendering is normalised against SQLAlchemy's. `artifacts.updated_at` is the
+whole of the gap.
 
 Cross-cutting: 361 lexical `text(` sites in `state/` + `studio/` against zero in `protocols/` and
 `service/`; 88 `S608` suppressions across 12 files; 22 identifier interpolations; 34
