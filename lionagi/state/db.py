@@ -3765,6 +3765,25 @@ class StateDB:
                 metadata=lifecycle_metadata,
             )
 
+    async def _lock_schedule_enabled_in_tx(self, conn: Any, schedule_id: str) -> bool | None:
+        """Read a schedule's ``enabled`` flag and hold the row for this
+        transaction, returning ``None`` when there is no such row.
+
+        Every lifecycle write reads the current state, mutates, and appends a
+        transition describing the move. Those three steps are only truthful if
+        nothing else changes the row in between: without the lock a concurrent
+        writer can flip ``enabled`` or delete the schedule after the read, and
+        the transition still gets appended, describing a move that did not
+        happen or naming a schedule that no longer exists. SQLite serializes
+        write transactions already, so the clause is added only where it is
+        both needed and supported.
+        """
+        sql = "SELECT enabled FROM schedules WHERE id = :id"
+        if self.dialect != "sqlite":
+            sql += " FOR UPDATE"
+        row = (await conn.execute(text(sql), {"id": schedule_id})).mappings().first()
+        return None if row is None else bool(row["enabled"])
+
     async def _append_schedule_lifecycle_in_tx(
         self,
         conn: Any,
@@ -4011,24 +4030,15 @@ class StateDB:
             for schedule_id, fields in updates:
                 previous = None
                 if "enabled" in fields:
-                    previous = (
-                        (
-                            await conn.execute(
-                                text("SELECT enabled FROM schedules WHERE id = :id"),
-                                {"id": schedule_id},
-                            )
-                        )
-                        .mappings()
-                        .first()
-                    )
+                    previous = await self._lock_schedule_enabled_in_tx(conn, schedule_id)
                 stmt, params = self._build_update_schedule_stmt(schedule_id, fields)
                 await conn.execute(stmt, params)
-                if previous is not None and bool(previous["enabled"]) != bool(fields["enabled"]):
+                if previous is not None and previous != bool(fields["enabled"]):
                     target_enabled = bool(fields["enabled"])
                     await self._append_schedule_lifecycle_in_tx(
                         conn,
                         schedule_id=schedule_id,
-                        previous_status="enabled" if previous["enabled"] else "disabled",
+                        previous_status="enabled" if previous else "disabled",
                         status="enabled" if target_enabled else "disabled",
                         reason_code=(
                             _ScheduleReasons.ENABLED_REQUEST
@@ -4041,19 +4051,10 @@ class StateDB:
                         metadata=lifecycle_metadata,
                     )
             for schedule_id in disables:
-                previous = (
-                    (
-                        await conn.execute(
-                            text("SELECT enabled FROM schedules WHERE id = :id"),
-                            {"id": schedule_id},
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
+                previous = await self._lock_schedule_enabled_in_tx(conn, schedule_id)
                 stmt, params = self._build_update_schedule_stmt(schedule_id, {"enabled": 0})
                 await conn.execute(stmt, params)
-                if previous is not None and bool(previous["enabled"]):
+                if previous:
                     await self._append_schedule_lifecycle_in_tx(
                         conn,
                         schedule_id=schedule_id,
@@ -4172,18 +4173,10 @@ class StateDB:
         async with self._tx() as conn:
             previous_enabled: bool | None = None
             if "enabled" in fields:
-                row = (
-                    (
-                        await conn.execute(
-                            text("SELECT enabled FROM schedules WHERE id = :id"),
-                            {"id": schedule_id},
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
-                if row is not None:
-                    previous_enabled = bool(row["enabled"])
+                previous_enabled = await self._lock_schedule_enabled_in_tx(conn, schedule_id)
+                if previous_enabled is None:
+                    # No row to update and nothing to attribute a change to.
+                    return
             await conn.execute(stmt, params)
             target_enabled = bool(fields.get("enabled"))
             if previous_enabled is not None and previous_enabled != target_enabled:
@@ -4290,22 +4283,13 @@ class StateDB:
         lifecycle_metadata: dict[str, Any] | None = None,
     ) -> bool:
         async with self._tx() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        text("SELECT enabled FROM schedules WHERE id = :id"),
-                        {"id": schedule_id},
-                    )
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
+            previous_enabled = await self._lock_schedule_enabled_in_tx(conn, schedule_id)
+            if previous_enabled is None:
                 return False
             await self._append_schedule_lifecycle_in_tx(
                 conn,
                 schedule_id=schedule_id,
-                previous_status="enabled" if row["enabled"] else "disabled",
+                previous_status="enabled" if previous_enabled else "disabled",
                 status="deleted",
                 reason_code=_ScheduleReasons.DELETED_REQUEST,
                 reason_summary=lifecycle_reason_summary,

@@ -492,7 +492,10 @@ def _enable(argv: list[str]) -> dict[str, Any]:
 
 def _disable(argv: list[str]) -> dict[str, Any]:
     known = _parse("disable", argv, unhonoured={})
-    _studio(f"/{_quote(known.id)}/disable", method="POST")
+    # The route refuses a disable with no reason, and a bodyless POST reaches it
+    # as reason=None. The parser already requires --reason, so the value exists
+    # here; not sending it turned every machine disable into a 400.
+    _studio(f"/{_quote(known.id)}/disable", method="POST", body={"reason": known.reason})
     return {"schedule_id": known.id, "enabled": False}
 
 

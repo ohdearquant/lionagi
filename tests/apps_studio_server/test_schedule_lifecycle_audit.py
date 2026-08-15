@@ -167,3 +167,63 @@ def test_delete_appends_a_durable_tombstone_before_removing_schedule(
     assert tombstone["status"] == "deleted"
     assert tombstone["actor"] == "operator:bob"
     assert tombstone["reason_code"] == "schedule.deleted.request"
+
+
+def test_actor_taken_from_the_request_is_recorded_as_a_claim_not_a_verified_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An actor read off a header is labelled as self-reported.
+
+    Studio authenticates with one shared bearer token, or with none, so there
+    is no per-caller principal to bind the header to and any authorized caller
+    can send any name. The name is still worth keeping, but a reader has to be
+    able to tell "this process said it was X" from "X is who it was", so the
+    label rides every record whose actor came from the request.
+    """
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    client = _client()
+    identity = {"x-lionagi-actor": "operator:carol", "x-lionagi-cwd": "/projects/ops"}
+
+    schedule_id = client.post(
+        "/api/schedules/", json=_spec("attribution-claimed"), headers=identity
+    ).json()["id"]
+    assert (
+        client.post(
+            f"/api/schedules/{schedule_id}/disable",
+            json={"reason": "Stand down for the maintenance window"},
+            headers=identity,
+        ).status_code
+        == 200
+    )
+
+    history = client.get(f"/api/schedules/{schedule_id}").json()["lifecycle_history"]
+    disable_row, create_row = history[0], history[1]
+    assert disable_row["actor"] == "operator:carol"
+    assert disable_row["metadata"]["actor_attribution"] == "self-reported"
+    assert create_row["metadata"]["actor_attribution"] == "self-reported"
+
+
+def test_a_default_actor_nobody_claimed_is_not_labelled_self_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control: with no actor header there is no claim to qualify.
+
+    The label has to discriminate. Applied unconditionally it would mark the
+    fallback actor as something a caller asserted, which is the opposite of
+    what happened, and the field would stop carrying information.
+    """
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    client = _client()
+
+    schedule_id = client.post("/api/schedules/", json=_spec("attribution-default")).json()["id"]
+    assert (
+        client.post(
+            f"/api/schedules/{schedule_id}/disable",
+            json={"reason": "Stand down for the maintenance window"},
+        ).status_code
+        == 200
+    )
+
+    history = client.get(f"/api/schedules/{schedule_id}").json()["lifecycle_history"]
+    assert history[0]["actor"] == "operator"
+    assert "actor_attribution" not in history[0]["metadata"]

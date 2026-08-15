@@ -14,7 +14,7 @@ import logging
 from typing import Any, Protocol
 
 from lionagi.state.db import TERMINAL_RUN_STATUSES, StateDB
-from lionagi.state.reasons import RunReasons
+from lionagi.state.reasons import RunReasons, ScheduleReasons
 from lionagi.studio.scheduler import coordination as _coordination
 
 _log = logging.getLogger(__name__)
@@ -120,6 +120,12 @@ class _DBSchedulerStateService:
             fields.setdefault(
                 "lifecycle_reason_summary", "Scheduler automatically disabled the schedule."
             )
+            # Without this the store's own default applies, which is the
+            # operator-request code, so every automatic shutdown was filed in
+            # the ledger as something a person asked for. A caller that knows
+            # the cause passes it and keeps that detail; one that does not
+            # still cannot claim a request that never happened.
+            fields.setdefault("lifecycle_reason_code", ScheduleReasons.DISABLED_AUTOMATIC)
         async with StateDB() as db:
             await db.update_schedule(
                 schedule_id, guard_cursor_forward=guard_cursor_forward, **fields

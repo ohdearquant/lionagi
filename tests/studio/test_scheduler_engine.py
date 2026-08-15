@@ -1565,7 +1565,12 @@ async def test_maybe_fire_at_trigger_already_fired_refused_by_max_runs_gate():
 
     svc.create_invocation.assert_not_awaited()
     svc.create_schedule_run_and_advance.assert_not_awaited()
-    svc.update_schedule.assert_awaited_once_with("sched-001", enabled=0)
+    svc.update_schedule.assert_awaited_once_with(
+        "sched-001",
+        enabled=0,
+        lifecycle_reason_code="schedule.disabled.max_runs",
+        lifecycle_reason_summary="Schedule disabled because its max_runs allowance is exhausted.",
+    )
 
 
 # recompute_next_fire — shared recompute+log path for daemon start, PATCH,

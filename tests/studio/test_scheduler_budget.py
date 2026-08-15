@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from lionagi.state.db import TERMINAL_RUN_STATUSES
+from lionagi.state.reasons import ScheduleReasons
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -213,7 +214,12 @@ async def test_maybe_fire_disables_and_records_when_over_budget():
         await engine._maybe_fire(schedule, now=1000.0)
 
     mock_tracked.assert_not_called()
-    svc.update_schedule.assert_awaited_once_with("sched-001", enabled=0)
+    svc.update_schedule.assert_awaited_once_with(
+        "sched-001",
+        enabled=0,
+        lifecycle_reason_code=ScheduleReasons.DISABLED_BUDGET_EXHAUSTED,
+        lifecycle_reason_summary="Schedule disabled because its configured spend budget is exhausted.",
+    )
     svc.create_schedule_run.assert_awaited_once()
     (run_payload,), _ = svc.create_schedule_run.await_args
     assert run_payload["trigger_context"]["budget_exhausted"] is True
@@ -245,7 +251,12 @@ async def test_disable_still_lands_when_the_annotation_reread_fails():
         await engine._maybe_fire(schedule, now=1000.0)
 
     mock_tracked.assert_not_called()
-    svc.update_schedule.assert_awaited_once_with("sched-001", enabled=0)
+    svc.update_schedule.assert_awaited_once_with(
+        "sched-001",
+        enabled=0,
+        lifecycle_reason_code=ScheduleReasons.DISABLED_BUDGET_EXHAUSTED,
+        lifecycle_reason_summary="Schedule disabled because its configured spend budget is exhausted.",
+    )
     svc.create_schedule_run.assert_awaited_once()
     (run_payload,), _ = svc.create_schedule_run.await_args
     assert run_payload["trigger_context"]["budget_exhausted"] is True
@@ -391,7 +402,12 @@ async def test_tick_github_disables_without_polling_when_over_budget():
         await engine._tick_github(schedule, now=10_000.0)
 
     mock_poll.assert_not_awaited()
-    svc.update_schedule.assert_awaited_once_with("sched-001", enabled=0)
+    svc.update_schedule.assert_awaited_once_with(
+        "sched-001",
+        enabled=0,
+        lifecycle_reason_code=ScheduleReasons.DISABLED_BUDGET_EXHAUSTED,
+        lifecycle_reason_summary="Schedule disabled because its configured spend budget is exhausted.",
+    )
     svc.create_schedule_run.assert_awaited_once()
     (run_payload,), _ = svc.create_schedule_run.await_args
     assert run_payload["trigger_context"]["budget_exhausted"] is True

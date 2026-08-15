@@ -159,6 +159,12 @@ class ScheduleReasons:
     ENABLED_REQUEST = "schedule.enabled.request"
     DISABLED_REQUEST = "schedule.disabled.request"
     DELETED_REQUEST = "schedule.deleted.request"
+    # Automatic shutdowns. DISABLED_AUTOMATIC is what an unclassified scheduler
+    # disable lands as: it says less than the two below, but it never claims a
+    # person asked for it, which is the one thing the ledger must not get wrong.
+    DISABLED_AUTOMATIC = "schedule.disabled.automatic"
+    DISABLED_MAX_RUNS = "schedule.disabled.max_runs"
+    DISABLED_BUDGET_EXHAUSTED = "schedule.disabled.budget_exhausted"
 
 
 class TeamReasons:

@@ -1095,7 +1095,14 @@ class SchedulerEngine:
                 return
             allowed, claim = await self._reserve_max_runs_budget(schedule)
             if not allowed:
-                await self._svc.update_schedule(schedule["id"], enabled=0)
+                await self._svc.update_schedule(
+                    schedule["id"],
+                    enabled=0,
+                    lifecycle_reason_code=ScheduleReasons.DISABLED_MAX_RUNS,
+                    lifecycle_reason_summary=(
+                        "Schedule disabled because its max_runs allowance is exhausted."
+                    ),
+                )
                 return
             slot_allowed, slot_claim = await self._reserve_global_slot()
             if not slot_allowed:
@@ -1827,7 +1834,14 @@ class SchedulerEngine:
                 "unreported_sessions": spend.get("unreported_sessions"),
             },
         )
-        await self._svc.update_schedule(schedule["id"], enabled=0)
+        await self._svc.update_schedule(
+            schedule["id"],
+            enabled=0,
+            lifecycle_reason_code=ScheduleReasons.DISABLED_BUDGET_EXHAUSTED,
+            lifecycle_reason_summary=(
+                "Schedule disabled because its configured spend budget is exhausted."
+            ),
+        )
 
     async def _evaluate_threshold_breach(self, schedule: dict, now: float) -> dict[str, Any] | None:
         """Evaluate ``schedule["threshold_config"]`` against live metrics.
@@ -1993,7 +2007,14 @@ class SchedulerEngine:
                     schedule["id"],
                     schedule.get("max_runs"),
                 )
-                await self._svc.update_schedule(schedule["id"], enabled=0)
+                await self._svc.update_schedule(
+                    schedule["id"],
+                    enabled=0,
+                    lifecycle_reason_code=ScheduleReasons.DISABLED_MAX_RUNS,
+                    lifecycle_reason_summary=(
+                        "Schedule disabled because its max_runs allowance is exhausted."
+                    ),
+                )
                 return
 
             slot_allowed, slot_claim = await self._reserve_global_slot()
@@ -2152,7 +2173,12 @@ class SchedulerEngine:
                 max_runs,
                 count,
             )
-            await self._svc.update_schedule(sid, enabled=0)
+            await self._svc.update_schedule(
+                sid,
+                enabled=0,
+                lifecycle_reason_code=ScheduleReasons.DISABLED_MAX_RUNS,
+                lifecycle_reason_summary=(f"Schedule disabled after reaching max_runs={max_runs}."),
+            )
 
     async def _fire(
         self,
