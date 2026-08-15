@@ -1925,11 +1925,6 @@ class SchedulerEngine:
             self._threshold_pending.add(sid)
             threshold_claim = _ThresholdCooldownClaim(self, sid)
             threshold_extra = breach
-            # Every remaining outcome -- overlap skip, budget, rate limit,
-            # max_runs, a full global slot, or the fire itself -- returns
-            # through a path of its own, so the watermark is stamped here,
-            # once, ahead of all of them.
-            await self._mark_threshold_evaluated(schedule, now)
 
         # Every await from here through _tracked_fire() (create_skipped_run,
         # _check_budget, _reserve_max_runs_budget, _reserve_global_slot, or
@@ -1945,6 +1940,17 @@ class SchedulerEngine:
         slot_claim: _GlobalSlotClaim | None = None
         handed_off = False
         try:
+            if threshold_extra is not None:
+                # Every remaining outcome -- overlap skip, budget, rate limit,
+                # max_runs, a full global slot, or the fire itself -- returns
+                # through a path of its own, so the watermark is stamped here,
+                # once, ahead of all of them. It sits inside the try because
+                # the cooldown reservation above is already held: a failure
+                # writing the watermark has to give that reservation back
+                # through the finally, or the alert stays muted until restart
+                # while the next tick keeps seeing a pending fire.
+                await self._mark_threshold_evaluated(schedule, now)
+
             if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
                 _log.debug("Skipping overlapping fire for %s", schedule["name"])
                 skipped_run_id = uuid.uuid4().hex[:12]

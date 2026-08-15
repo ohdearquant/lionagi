@@ -1264,3 +1264,39 @@ async def test_a_breach_stamps_the_watermark_whatever_suppresses_the_fire(gate: 
         f"the {gate} outcome left last_evaluated_at unset, so a detector that "
         "did evaluate reads as one that never ran"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_watermark_write_gives_back_the_cooldown_reservation():
+    """A leaked reservation would mute the alert until the engine restarts.
+
+    The watermark is stamped after the cooldown reservation is taken, so the
+    write has to sit inside the region whose finally releases that reservation.
+    """
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.metric_value = AsyncMock(return_value=9.0)
+    svc.update_schedule = AsyncMock(side_effect=RuntimeError("db down"))
+    engine = SchedulerEngine(svc=svc)
+    schedule = _breach_schedule()
+
+    with pytest.raises(RuntimeError, match="db down"):
+        await engine._maybe_fire(schedule, now=1000.0)
+
+    assert schedule["id"] not in engine._threshold_pending, (
+        "the failed watermark write kept the cooldown reservation, so every "
+        "later tick reads a fire as already pending and the alert never fires again"
+    )
+
+    # The next tick, against a healthy service, still fires.
+    svc.update_schedule = AsyncMock()
+    with (
+        patch.object(engine, "_check_budget", AsyncMock(return_value=False)),
+        patch.object(engine, "_reserve_rate_limit", AsyncMock(return_value=(True, None))),
+        patch.object(engine, "_reserve_max_runs_budget", AsyncMock(return_value=(True, None))),
+        patch.object(engine, "_reserve_global_slot", AsyncMock(return_value=(True, None))),
+        patch.object(engine, "_tracked_fire") as fire,
+    ):
+        await engine._maybe_fire(schedule, now=1100.0)
+    assert fire.call_count == 1
