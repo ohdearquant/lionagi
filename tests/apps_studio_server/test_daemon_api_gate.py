@@ -574,6 +574,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "duration_ms",
         "effort",
         "ended_at",
+        "ended_at_is_approximate",
         "graph",
         "id",
         "input_tokens",
