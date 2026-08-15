@@ -446,3 +446,57 @@ def test_active_snapshot_caps_children_per_invocation_and_stops_claiming_health(
     )
     assert health["wide-inv"] == "unknown"
     assert health["narrow-inv"] == "healthy"
+
+    partial = {
+        row["id"]: row["health_from_partial_children"] for row in payload["active_invocations"]
+    }
+    assert partial["wide-inv"] is True
+    assert partial["narrow-inv"] is False, (
+        "the uncapped invocation must not be marked partial, or the flag says "
+        "nothing and every consumer learns to ignore it"
+    )
+
+
+def test_a_non_healthy_verdict_survives_truncation_and_is_marked_as_a_floor(tmp_path, monkeypatch):
+    """Truncation makes the verdict a lower bound, and the two kinds of verdict
+    do not survive that equally.
+
+    "healthy" asserts that nothing worse exists anywhere, which is precisely what
+    the unread children could refute, so it is downgraded. "orphaned" asserts that
+    some child IS orphaned, which reading the rest could only worsen — discarding
+    it would hide a known-bad invocation from the very view built to surface them.
+    It stays, carrying the flag that says it may understate.
+
+    This fixture is the one that separates the two rules: a blanket
+    "truncated means unknown" passes the healthy case above and fails here.
+    """
+    import lionagi.state.db as state_db_mod
+    from lionagi.studio.services import active_snapshot as snap_mod
+
+    monkeypatch.setattr(snap_mod, "MAX_INVOCATION_CHILDREN", 2)
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    _run(_seed_fanout_children(db_path, wide=5, narrow=1))
+
+    def _fake_health(sessions, *, now, ps_snapshot):
+        # The capped sample of the wide invocation already contains a bad child.
+        return ("orphaned" if len(sessions) > 1 else "healthy"), now
+
+    monkeypatch.setattr("lionagi.studio.services.invocations._invocation_health", _fake_health)
+    monkeypatch.setattr(
+        "lionagi.studio.services.runs._session_liveness", lambda *_args, **_kwargs: True
+    )
+
+    from lionagi.studio.app import app
+
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    payload = client.get("/api/active-snapshot", params={"run_limit": 10}).json()
+
+    rows = {row["id"]: row for row in payload["active_invocations"]}
+    assert rows["wide-inv"]["health"] == "orphaned", (
+        "a proven-bad child must not be erased by the cap that hid its siblings"
+    )
+    assert rows["wide-inv"]["health_from_partial_children"] is True, (
+        "and the consumer must be told the verdict is a floor, since an unread "
+        "child could be worse still"
+    )

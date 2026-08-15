@@ -260,30 +260,52 @@ async def _active_invocation_children(
         if (row["running_child_count"] or 0) > MAX_INVOCATION_CHILDREN
     }
 
-    # Ranked per invocation rather than by one global LIMIT: a flat cap would
-    # spend the whole budget on the first invocation and leave every later one
-    # looking childless.
-    cursor = await db.execute(
-        f"""
-        SELECT * FROM (
-            SELECT sessions.*,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY invocation_id ORDER BY created_at, id
-                   ) AS child_rank
-            FROM sessions
-            WHERE status = 'running' AND invocation_id IN ({placeholders})
-              AND {_not_engine_mirror("sessions")}
-        )
-        WHERE child_rank <= ?
-        ORDER BY invocation_id, created_at, id
-        """,  # noqa: S608
-        [*invocation_ids, MAX_INVOCATION_CHILDREN],
-    )
+    # The aggregate above already says which invocations exceed the cap, and that
+    # is what lets the read be split. A single ROW_NUMBER query over every
+    # invocation at once would rank and materialise the entire running-child
+    # population before the cap could discard any of it, so the cap would bound
+    # the rows returned while leaving the work per poll proportional to fanout.
+    #
+    # Narrow invocations are read in one plain statement with no window at all.
+    # Wide ones are rare by construction (an invocation has to exceed the cap to
+    # be here) and each takes its own statement with a real LIMIT, so the rows
+    # visited are bounded by cap x wide-invocation-count rather than by the total
+    # child population. Ranking per invocation, rather than one global LIMIT,
+    # still matters: a flat cap would spend the whole budget on the first
+    # invocation and leave every later one looking childless.
     by_invocation: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in await cursor.fetchall():
-        child = dict(row)
-        child.pop("child_rank", None)
-        by_invocation[row["invocation_id"]].append(child)
+
+    narrow_ids = [i for i in invocation_ids if i not in truncated]
+    if narrow_ids:
+        narrow_placeholders = ",".join("?" for _ in narrow_ids)
+        cursor = await db.execute(
+            f"""
+            SELECT * FROM sessions
+            WHERE status = 'running' AND invocation_id IN ({narrow_placeholders})
+              AND {_not_engine_mirror("sessions")}
+            ORDER BY invocation_id, created_at, id
+            """,  # noqa: S608
+            narrow_ids,
+        )
+        for row in await cursor.fetchall():
+            by_invocation[row["invocation_id"]].append(dict(row))
+
+    for invocation_id in invocation_ids:
+        if invocation_id not in truncated:
+            continue
+        cursor = await db.execute(
+            f"""
+            SELECT * FROM sessions
+            WHERE status = 'running' AND invocation_id = ?
+              AND {_not_engine_mirror("sessions")}
+            ORDER BY created_at, id
+            LIMIT ?
+            """,  # noqa: S608
+            (invocation_id, MAX_INVOCATION_CHILDREN),
+        )
+        for row in await cursor.fetchall():
+            by_invocation[invocation_id].append(dict(row))
+
     return dict(by_invocation), last_activity, with_children, truncated
 
 
@@ -302,7 +324,11 @@ def _prepare_session(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _serialize_invocation(
-    row: dict[str, Any], *, health: str | None, last_activity_at: float | None
+    row: dict[str, Any],
+    *,
+    health: str | None,
+    last_activity_at: float | None,
+    health_from_partial_children: bool = False,
 ) -> dict[str, Any]:
     node_metadata = _parse_json_col(row.get("node_metadata"))
     return {
@@ -323,6 +349,7 @@ def _serialize_invocation(
         "project": row.get("project"),
         "project_source": row.get("project_source"),
         "health": health,
+        "health_from_partial_children": health_from_partial_children,
         "last_activity_at": last_activity_at,
     }
 
@@ -459,14 +486,24 @@ async def read_active_snapshot(
     for row in active_invocations_raw:
         invocation_id = row["id"]
         running_children = child_rows.get(invocation_id, [])
+        partial = invocation_id in children_truncated
         if running_children:
             health, _ = _invocations_svc._invocation_health(
                 running_children, now=observed_at, ps_snapshot=process_snapshot
             )
-            if invocation_id in children_truncated and health == SessionHealth.HEALTHY.value:
-                # Worst-of across children, so a capped sample can only be
-                # optimistic. Every child read looked healthy and the rest went
-                # unread, which is the one verdict the sample cannot support.
+            if partial and health == SessionHealth.HEALTHY.value:
+                # Health is worst-of over children, so a capped sample yields a
+                # LOWER BOUND on severity, and the two kinds of verdict survive
+                # truncation differently.
+                #
+                # A non-healthy verdict is a presence claim: some child really is
+                # idle or orphaned, and reading the remaining children could only
+                # raise that, never lower it. It stays, and the flag below says it
+                # may understate.
+                #
+                # "healthy" is the one absence claim in the vocabulary — it asserts
+                # that nothing worse exists anywhere, which is exactly what the
+                # unread children could refute. That one is downgraded.
                 health = "unknown"
         elif invocation_id in invocations_with_children:
             health = SessionHealth.HEALTHY.value
@@ -477,6 +514,7 @@ async def read_active_snapshot(
                 row,
                 health=health,
                 last_activity_at=child_activity.get(invocation_id),
+                health_from_partial_children=partial,
             )
         )
     recent_invocations = [
